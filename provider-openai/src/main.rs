@@ -86,6 +86,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     register_provider(iii.clone()).await?;
+    #[cfg(feature = "console-ui")]
+    provider_openai::ui::register(&iii);
     tracing::info!(url = %cli.url, "provider-openai registered");
 
     tokio::signal::ctrl_c().await?;

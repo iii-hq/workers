@@ -2,6 +2,7 @@ import { Copy } from 'lucide-react'
 import { useMemo } from 'react'
 import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
 import { Badge } from '@/components/ui/Badge'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { functionTriggerFromSpan } from '../lib/functionTriggerFromSpan'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
@@ -53,18 +54,14 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
       {/* Function trigger — read-only card (no approval handlers) */}
       {functionTrigger && (
         <div>
-          <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-2.5">
-            function trigger
-          </div>
+          <div className="iii-ui-eyebrow mb-2.5">function trigger</div>
           <FunctionTriggerCard message={functionTrigger} defaultOpen />
         </div>
       )}
 
       {/* Timing */}
       <div>
-        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-2.5">
-          timing
-        </div>
+        <div className="iii-ui-eyebrow mb-2.5">timing</div>
         <div className="rounded-md bg-surface">
           <div className="px-4 pt-4 pb-3">
             <div className="flex items-baseline justify-between mb-2">
@@ -87,7 +84,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
                 className={
                   span.pending
                     ? 'h-full bg-accent animate-pulse'
-                    : 'h-full bg-accent transition-all duration-300'
+                    : 'h-full bg-accent transition-all duration-[var(--motion-duration-panel)]'
                 }
                 style={{
                   width: span.pending
@@ -98,7 +95,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
             </div>
           </div>
           <div className="border-t border-rule px-4 py-2.5 flex items-center justify-between">
-            <span className="font-mono text-[11px] text-ink-faint lowercase">
+            <span className="font-mono text-[11px] text-ink-faint">
               position in trace
             </span>
             <span className="font-mono text-[11px] text-ink tabular-nums">
@@ -114,13 +111,11 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
 
       {/* Status */}
       <div>
-        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-2.5">
-          status
-        </div>
+        <div className="iii-ui-eyebrow mb-2.5">status</div>
         <div className="rounded-md bg-surface px-4 py-3">
           <div className="flex items-center gap-2.5">
             <StatusDot tone={tone} />
-            <span className="font-mono text-[13px] font-semibold text-ink lowercase">
+            <span className="font-mono text-[13px] font-semibold text-ink">
               {span.status}
             </span>
           </div>
@@ -129,24 +124,16 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
 
       {/* Worker & Operation */}
       <div>
-        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-2.5">
-          worker & operation
-        </div>
+        <div className="iii-ui-eyebrow mb-2.5">worker & operation</div>
         <div className="rounded-md bg-surface divide-y divide-rule-2">
           <div className="px-4 py-2.5 flex items-center justify-between">
-            <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-              worker
-            </span>
-            <span className="font-mono text-[13px] text-ink lowercase">
-              {worker}
-            </span>
+            <span className="iii-ui-eyebrow">worker</span>
+            <span className="font-mono text-[13px] text-ink">{worker}</span>
           </div>
           <div className="px-4 py-2.5 flex items-center justify-between gap-4">
-            <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex-shrink-0">
-              operation
-            </span>
+            <span className="iii-ui-eyebrow flex-shrink-0">operation</span>
             <span
-              className="font-mono text-[13px] text-ink truncate lowercase"
+              className="font-mono text-[13px] text-ink truncate"
               title={span.name}
             >
               {span.name}
@@ -154,9 +141,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
           </div>
           {span.depth === 0 && (
             <div className="px-4 py-2.5 flex items-center justify-between">
-              <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-                type
-              </span>
+              <span className="iii-ui-eyebrow">type</span>
               <Badge variant="accent">Root span</Badge>
             </div>
           )}
@@ -165,9 +150,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
 
       {/* Identifiers */}
       <div>
-        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-2.5">
-          identifiers
-        </div>
+        <div className="iii-ui-eyebrow mb-2.5">identifiers</div>
         <div className="rounded-md bg-surface divide-y divide-rule-2">
           {[
             { label: 'trace id', value: span.trace_id, field: 'traceId' },
@@ -188,9 +171,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
               onClick={() => copyToClipboard(field, value)}
               className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-surface-hover transition-colors group text-left"
             >
-              <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex-shrink-0">
-                {label}
-              </span>
+              <span className="iii-ui-eyebrow flex-shrink-0">{label}</span>
               <div className="flex items-center gap-2 min-w-0 ml-4">
                 <span
                   className="font-mono text-[11px] text-ink truncate tabular-nums"
@@ -199,9 +180,9 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
                   {value}
                 </span>
                 {copiedField === field ? (
-                  <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-accent flex-shrink-0">
+                  <Eyebrow className="text-accent flex-shrink-0">
                     copied
-                  </span>
+                  </Eyebrow>
                 ) : (
                   <Copy className="size-4 text-ink-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
                 )}
@@ -213,23 +194,17 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
 
       {/* Hierarchy */}
       <div>
-        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-2.5">
-          hierarchy
-        </div>
+        <div className="iii-ui-eyebrow mb-2.5">hierarchy</div>
         <div className="rounded-md bg-surface divide-y divide-rule-2">
           <div className="px-4 py-2.5 flex items-center justify-between">
-            <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-              depth
-            </span>
+            <span className="iii-ui-eyebrow">depth</span>
             <span className="font-mono text-[13px] text-ink tabular-nums">
               {span.depth}
             </span>
           </div>
           {span.flags !== undefined && (
             <div className="px-4 py-2.5 flex items-center justify-between">
-              <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-                flags
-              </span>
+              <span className="iii-ui-eyebrow">flags</span>
               <span className="font-mono text-[13px] text-ink tabular-nums">
                 0x{span.flags.toString(16)}
               </span>

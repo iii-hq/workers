@@ -31,6 +31,44 @@ import { truncateRuntimeId } from '../lib/shared'
 import { createRunRenderer } from './run'
 
 vi.mock('@iii-dev/console-ui', () => ({
+  Badge: ({ children, variant }: { children?: React.ReactNode; variant?: string }) => (
+    <span data-stub="badge" data-variant={variant ?? 'default'}>
+      {children}
+    </span>
+  ),
+  Chip: ({ children, tone }: { children?: React.ReactNode; tone?: string }) => (
+    <span data-stub="chip" data-tone={tone}>
+      {children}
+    </span>
+  ),
+  StatusPanel: ({
+    headline,
+    detail,
+    variant,
+  }: {
+    headline?: React.ReactNode
+    detail?: React.ReactNode
+    variant?: string
+  }) => (
+    <div data-stub="status-panel" data-variant={variant}>
+      {headline}
+      {detail}
+    </div>
+  ),
+  TerminalStream: ({
+    label,
+    text,
+    tone,
+  }: {
+    label: string
+    text: string
+    tone?: string
+  }) =>
+    text.length === 0 ? null : (
+      <pre data-stub="terminal-stream" data-label={label} data-tone={tone}>
+        {text}
+      </pre>
+    ),
   Tooltip: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   TooltipTrigger: ({ children }: { children?: React.ReactNode }) => (
     <>{children}</>
@@ -129,10 +167,10 @@ describe('the process result', () => {
     )
     expect(out).toContain('exit 2')
     expect(out).toContain('its own message is in stderr')
-    expect(out).toContain('cr-ui-exit-code failed')
+    expect(out).toContain('data-variant="warn"')
     expect(out).toContain('SystemExit: 2')
     // warn, never alert — alert is reserved for infrastructure failures.
-    expect(out).not.toContain('cr-ui-alert')
+    expect(out).not.toContain('data-variant="alert"')
     expect(out).toContain('data-language="python"')
   })
 
@@ -247,7 +285,7 @@ describe('a gate denial', () => {
     expect(out).toContain('never ran')
     expect(out).toContain('permissions')
     // Never the alert tone `ErrorCard` uses for an infrastructure failure.
-    expect(out).not.toContain('cr-ui-alert')
+    expect(out).not.toContain('data-variant="alert"')
   })
 
   it('never prints the args_excerpt runtime id, and shows no RuntimeChip', () => {
@@ -318,12 +356,14 @@ describe('the runtime-origin and network chips', () => {
 })
 
 describe('size caps', () => {
-  it('clamps a chatty stdout instead of flooding the chat', () => {
+  /** The clamp itself lives in the console's TerminalStream; the card hands
+   *  it the whole (redacted) stream and nothing else renders it. */
+  it('hands a chatty stdout to TerminalStream, which clamps it', () => {
     const stdout = Array.from({ length: 500 }, (_, i) => `line ${i}`).join('\n')
     const out = settled({ code: 'x' }, { ...OK_RES, stdout })
-    expect(out).toContain('line 0')
-    expect(out).not.toContain('line 499')
-    expect(out).toContain('expand')
+    expect(out).toContain('data-stub="terminal-stream"')
+    expect(out).toContain('data-label="stdout"')
+    expect(out).toContain('line 499')
   })
 
   it('clamps a long program, and a one-line minified one', () => {

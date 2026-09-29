@@ -1,3 +1,4 @@
+import { Zap } from 'lucide-react'
 import {
   ActionLine,
   Chip,
@@ -38,9 +39,7 @@ export function TriggerInfoView({
           <StatusPill label="loading…" variant="default" />
           {req ? (
             <Chip>
-              <span className="text-ink-faint uppercase tracking-[0.06em]">
-                trigger
-              </span>
+              <span className="iii-ui-eyebrow">trigger</span>
               <span className="ml-1 text-ink break-all">{req.id}</span>
             </Chip>
           ) : null}
@@ -57,23 +56,19 @@ export function TriggerInfoView({
       <MetaRow>
         <StatusPill label="trigger type" variant="accent" />
         <Chip>
-          <span className="text-ink-faint uppercase tracking-[0.06em]">
-            worker
-          </span>
+          <span className="iii-ui-eyebrow">worker</span>
           <span className="ml-1 text-ink">{detail.worker_name}</span>
         </Chip>
         {typeof detail.instance_count === 'number' ? (
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              registered
-            </span>
+            <span className="iii-ui-eyebrow">registered</span>
             <span className="ml-1 text-ink tabular-nums">
               {detail.instance_count}
             </span>
           </Chip>
         ) : null}
       </MetaRow>
-      <ActionLine symbol="⚡" tone="accent">
+      <ActionLine icon={<Zap />} tone="accent">
         <span className="font-mono text-[13px] text-accent break-all">
           {detail.id}
         </span>

@@ -89,16 +89,46 @@ iii trigger compose::add worker=browser
 
 `iii trigger compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose
-project. The worker drives a Chromium/Chrome already installed on the
-machine; point `executable` at a specific binary if auto-detection picks the
-wrong one.
+project. By default the worker drives a Chromium/Chrome already installed on
+the machine; point `executable` at a specific binary if auto-detection picks
+the wrong one.
 
-To watch sessions live, pick elements into chat, and follow the agent's
-browsing from a UI, add the [console](https://github.com/iii-hq/workers/tree/main/ade) worker as well:
+### Engines
+
+Interactive sessions run on one of two engines, both driven over the Chrome
+DevTools Protocol, so the `browser::*` functions are the same code path:
+
+| `engine` | What it needs | What you get |
+|---|---|---|
+| `chromium` (default) | Chrome, Chromium, or Edge installed | Everything: live view, real screenshots, pick mode, styles, downloads, `headless: false` |
+| `lightpanda` | The [Lightpanda](https://lightpanda.io) binary (`lightpanda` on PATH, or `executable`) | DOM + JavaScript without rendering: navigate, snapshot, act, evaluate/execute, console and network capture, cookies, history, dom::read |
+
+Lightpanda is a headless browser written in Zig (V8 for JavaScript, its own
+DOM, libcurl for HTTP) that drops the rendering engine on purpose: a single
+binary, sub-100 ms start, around a tenth of Chrome's memory. The worker
+spawns `lightpanda serve` on a loopback port the first time a tab needs a
+page and ends it when the last live tab sleeps, the same lifecycle as the
+Chromium process; cookies persist through `data_dir/lightpanda/cookies.json`
+(written when the process exits). Element geometry is synthetic but
+consistent, so clicking by `ref` works, and the accessibility tree names
+controls from their contents.
+
+What it cannot do, because nothing is laid out or painted: there is no
+screencast, so the console's live viewport and the corner preview stay on a
+single `browser::screenshot` frame (Lightpanda renders that as a text-only
+PNG); pick mode (`Overlay`), `browser::styles::read` (`CSS`), `clear-data`'s
+per-origin storage wipe, and recording are unavailable; `file://` pages are
+refused ("UnsupportedProtocol"); `headful: true` and
+`browser::sessions::attach` are Chromium only. `browser::doctor` reports the
+configured engine and the binary it resolved.
 
 ```bash
-iii trigger compose::add worker=ade
+brew install lightpanda-io/browser/lightpanda
+# or the nightly binary: https://github.com/lightpanda-io/browser/releases/tag/nightly
 ```
+
+Then set `engine: lightpanda` in the browser configuration (Settings →
+browser → Launch).
 
 ## Quickstart
 
@@ -142,8 +172,15 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-The rest of the surface: `browser::act` (click/hover/type/press/scroll by
-ref or coordinates, left/right/middle and double-click), `browser::evaluate`
+The rest of the surface: `browser::elements` (visible controls as an
+indexed table with `n` refs, plus the visible text, from one read),
+`browser::run` (reach a goal in one call: the optional judge worker picks
+each click/type/select/scroll from the table, text comes from the caller's
+`inputs`; without a judge it returns `judge_unavailable` and the table),
+`browser::act` (click/hover/type/select/press/scroll by ref or coordinates,
+left/right/middle and double-click; ref targets are scrolled into view and
+refused when disabled, hidden or covered; typing into a field by ref replaces
+its value), `browser::evaluate`
 (JS expression), `browser::screenshot` (viewable JPEG), `browser::history`
 (back/forward/reload, surviving sleep and restarts), `browser::history::list`
 (visited pages for a history panel), `browser::find-in-page` (find bar:
@@ -207,8 +244,8 @@ available.
 
 ## Scraping and HTML parsing (`browser::*`)
 
-The worker also ships a native Rust port of the [scrapling](https://github.com/D4Vinci/Scrapling)
-worker's surface: 19 functions covering HTTP and browser fetching, screenshots,
+The worker also ships a native Rust port of the [Scrapling](https://github.com/D4Vinci/Scrapling)
+surface: 19 functions covering HTTP and browser fetching, screenshots,
 persistent sessions, crawling, and — the part that needs no browser at all —
 parsing HTML you already have.
 
@@ -302,7 +339,7 @@ Safe mode rejects caller proxies and checks every connection against private,
 loopback, link-local (including cloud metadata), CGNAT, multicast and reserved
 ranges. Set `browser.scrapling.allow_loopback: true` to scrape a local dev
 server; every other private range stays blocked. Compat mode intentionally
-reproduces the standalone worker's unrestricted network behavior and should be
+reproduces the Python wrapper's unrestricted network behavior and should be
 enabled only for trusted calls. All nine functions remain at the
 `needs_approval` default in `iii-permissions.yaml`, unlike the ten parse
 functions.
@@ -326,11 +363,11 @@ worker's unbounded response and retry/redirect quirks.
 
 ### Compatibility modes and certification
 
-Request/response schemas are golden-pinned to the frozen Python wrapper apart
-from provider-id mapping. Native calls use `browser::<leaf>`; Python keeps
-`scrapling::<leaf>`. Python `scrapling::screenshot` maps to native
-`browser::screenshot-url`, while `browser::screenshot` remains the interactive
-session screenshot. Crawl streams default to `browser::crawl`.
+Request/response schemas are golden-pinned to the Python wrapper this
+surface replaced. Every call is `browser::<leaf>`: the wrapper's
+`scrapling::screenshot` is `browser::screenshot-url` here, while
+`browser::screenshot` is the interactive session screenshot, and crawl
+streams default to `browser::crawl`.
 
 `security_mode: safe` is the default. It keeps SSRF checks and resource
 ceilings, refuses network options the safe engine cannot enforce, rejects
@@ -339,7 +376,7 @@ eligible on Tier-1 Linux x86_64/aarch64 builds produced with the certified
 curl-impersonate and Chromium artifacts. Other targets reject compat instead
 of silently degrading. Eligibility is not a claim that an arbitrary local
 build is certified: builds without the frozen artifacts return a capability
-error, and callers should keep using safe mode or the standalone worker.
+error, and callers should keep using safe mode.
 
 The parser/query core, CSS-to-XPath translation, XPath 1.0 evaluation, Python
 regex behavior, Markdown conversion, selector generation, and adaptive
@@ -358,37 +395,33 @@ Cloudflare handling and screenshot transforms use that same private runtime.
 Certified builds fail when pinned artifacts are absent or mismatched; there is
 no silent fallback from compat to safe.
 
-The standalone worker remains the oracle and production fallback during
-rollout. Migrate calls to `browser::<leaf>` (with screenshot mapped to
-`browser::screenshot-url`) only after draining its sessions, then compare both
-providers through one stable release and at least 30 days without an
-untriaged mismatch. Removing the standalone worker is a separate change.
+The standalone `scrapling` worker was the oracle and the production
+fallback during rollout. It has been removed, and with it the Python
+differentials that compared the two implementations call by call.
 
-### Regenerating the parse goldens
+### The parse goldens
 
-`tests/golden/schemas/browser.*.json` and `tests/golden/behavior/**`
-are written **only** by `scripts/gen_goldens.py`, run against the reference
-Python implementation — never by `UPDATE_GOLDENS=1`, so a passing test always
-means "Rust still agrees with Python":
-
-```bash
-~/.iii/managed/scrapling/usr/local/bin/python3.12 scripts/gen_goldens.py schemas
-~/.iii/managed/scrapling/usr/local/bin/python3.12 scripts/gen_goldens.py behavior
-```
+`tests/golden/schemas/browser.*.json` and `tests/golden/behavior/**` are the
+frozen record of what the Python implementation answered, captured while both
+ran side by side. They are no longer regenerable — the generator ran against
+that implementation — so they are now ordinary regression fixtures: a test
+failure means this worker's behavior moved, and the fixture is only ever
+updated by hand, deliberately, with the change explained.
 
 ## Configuration
 
 Stored in the `configuration` worker under the `browser` key. `data_dir` is
-read at startup; `executable`, `headless`, and the viewport apply the next
-time the Chromium process launches (the first live tab after boot, or after
-every tab went to sleep). Scrapling settings live in an isolated nested
+read at startup; `engine`, `executable`, `headless`, and the viewport apply
+the next time the browser process launches (the first live tab after boot,
+or after every tab went to sleep). Scrapling settings live in an isolated nested
 block: bulk/default policy can be read per call, while the session cap, idle
 timeout, and adaptive database path are snapshotted at worker startup.
 Restart after changing a startup-snapshotted value.
 
 ```yaml
 browser:
-  executable: ''            # empty = auto-detect Chrome/Chromium/Edge
+  engine: chromium          # chromium | lightpanda (see Engines above)
+  executable: ''            # empty = auto-detect Chrome/Chromium/Edge, or `lightpanda` on PATH
   data_dir: ./data/browser  # profile/ (cookies, logins), downloads/, tabs.json; startup setting
   headless: true            # false shows a real window locally
   max_sessions: 4           # tabs with a page open at once; the LRU unwatched tab sleeps past it
@@ -432,7 +465,7 @@ browser:
     max_sessions: 8
     session_idle_timeout_s: 900
     adaptive_storage_path: data/scrapling/elements.db # relative to III_COMPOSE_DIR
-    adaptive_max_bytes: 268435456 # safe only; compat preserves unbounded oracle behavior
+    adaptive_max_bytes: 268435456 # safe only; compat preserves the unbounded wrapper behavior
 ```
 
 `file` is on the default scheme list so a local document can be opened and
@@ -469,7 +502,7 @@ bindings accept an optional `{ "session_id": "..." }` filter.
 
 | Trigger type | Fires when | Payload to subscribers |
 |---|---|---|
-| `browser::session-started` | A tab opened and is ready | `{ session_id, url, headless, timestamp }` |
+| `browser::session-started` | A tab opened and is ready | `{ session_id, url, headless, preview, timestamp }` — `preview: false` when the opener passed `preview: false` to `sessions::start` (the console's own tab controls do) |
 | `browser::session-stopped` | A tab closed for good | `{ session_id, reason: "stopped" \| "idle" \| "expired" \| "crashed", timestamp }` |
 | `browser::session-updated` | A tab woke (`active: true`) or went to sleep (`active: false`) | `{ session_id, active, url, title, timestamp }` |
 | `browser::navigated` | The page committed a navigation | `{ session_id, url, timestamp }` |

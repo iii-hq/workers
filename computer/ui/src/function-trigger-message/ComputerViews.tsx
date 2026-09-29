@@ -81,9 +81,7 @@ export function SessionListView({ output }: { output: unknown }) {
             {session.screen.width}x{session.screen.height}
           </span>
           {session.screencast_active ? (
-            <Badge variant="accent" className="cp-ui-pill">
-              streaming
-            </Badge>
+            <Badge variant="accent">streaming</Badge>
           ) : null}
         </li>
       ))}
@@ -108,7 +106,7 @@ export function ActView({
   const label = typeof action === 'string' ? action : 'act'
   return (
     <p className="cp-ui-line">
-      <Badge variant={ok ? 'default' : 'alert'} className="cp-ui-pill">
+      <Badge variant={ok ? 'default' : 'alert'}>
         {ok ? label : `${label} failed`}
       </Badge>
       <span className="cp-ui-detail">{detail}</span>
@@ -133,9 +131,7 @@ export function DisplaysView({ output }: { output: unknown }) {
             {display.name || 'display'} · {display.width}x{display.height}
           </span>
           {display.primary ? (
-            <Badge variant="default" className="cp-ui-pill">
-              primary
-            </Badge>
+            <Badge variant="default">primary</Badge>
           ) : null}
         </li>
       ))}

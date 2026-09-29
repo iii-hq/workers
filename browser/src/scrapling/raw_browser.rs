@@ -22,7 +22,7 @@ use crate::ssrf::SsrfPolicy;
 /// The frozen Tier-1 Chromium builds compat mode certifies against: the
 /// x86_64 Chrome-for-Testing 148 build and the aarch64 Playwright chromium
 /// build 1223 (same 148 milestone; Playwright snapshots report patch .0).
-/// Both are pinned by sha256 in oracle/manifest.json and fetched by
+/// Both are pinned by sha256 in artifacts/manifest.json and fetched by
 /// scripts/fetch_chromium_artifacts.sh.
 pub(crate) const CERTIFIED_CHROME_VERSIONS: &[&str] = &["148.0.7778.96", "148.0.7778.0"];
 const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36";
@@ -2285,9 +2285,11 @@ fn chromium_executable(config: &WorkerConfig, _real_chrome: bool) -> Result<Path
             "configured browser.scrapling.chromium_executable is not a file".to_string()
         });
     }
+    // Scrapling drives a real Chromium regardless of the interactive engine.
     let mut interactive = config.clone();
+    interactive.engine = crate::config::BrowserEngine::Chromium;
     interactive.executable.clear();
-    crate::functions::doctor::detect_chromium(&interactive).ok_or_else(|| {
+    crate::functions::doctor::detect_executable(&interactive).ok_or_else(|| {
         "no Chromium executable found; configure browser.scrapling.chromium_executable".to_string()
     })
 }
@@ -2859,7 +2861,7 @@ mod tests {
     async fn safe_browser_fetches_loopback_through_the_gate() {
         let executable = std::env::var_os("SCRAPLING_CHROMIUM_EXECUTABLE")
             .map(PathBuf::from)
-            .or_else(|| crate::functions::doctor::detect_chromium(&WorkerConfig::default()));
+            .or_else(|| crate::functions::doctor::detect_executable(&WorkerConfig::default()));
         let Some(executable) = executable.filter(|path| certify_chromium(path).is_ok()) else {
             return;
         };

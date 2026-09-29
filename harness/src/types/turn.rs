@@ -151,6 +151,20 @@ pub struct TurnOptions {
     /// naming an explicit prompt field sheds it (the escape hatch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentIdentity>,
+    /// The profile's preloaded function contracts as frozen into the prompt:
+    /// id → content digest, `None` for an id that was unavailable at
+    /// resolution. Travels with `agent`; the per-step stale check compares it
+    /// against the live registry (`turn_loop::preloaded_stale_notice`) since
+    /// the frozen block itself is the shared cache prefix and never changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preloaded_contracts: Option<BTreeMap<String, Option<String>>>,
+    /// A spawned child's `<preloaded_functions>` block, rendered once at spawn
+    /// from its narrowed allow-list and the function ids its task names
+    /// (`subagent::child_contract_ids`). It rides AFTER the cache seam, in the
+    /// runtime aid, so default-identity sessions keep sharing the stable
+    /// prefix; its digests are merged into `preloaded_contracts`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seeded_contracts: Option<String>,
     /// Cap on output-contract validation retries before finalising with a
     /// best-effort result (harness.md § Output contract).
     #[serde(default = "default_max_validation_retries")]
@@ -251,6 +265,10 @@ pub struct CallCheckpoint {
     /// field existed; release falls back to transcript recovery then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_arguments: Option<Value>,
+    /// Argument repairs applied before the hold (MOT-4847), so a release
+    /// still notes them on the result and its origin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciled: Option<Vec<crate::reconcile::Change>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -277,6 +295,15 @@ pub struct FunctionContractLedgerEntry {
     /// still model-visible. Newly appended and legacy rows start ineligible.
     #[serde(default)]
     pub eligible: bool,
+}
+
+/// Consecutive identical failures of one call (same function and arguments)
+/// within the current turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FailedCall {
+    /// Digest of the failing result's model-visible content.
+    pub error_digest: String,
+    pub count: u32,
 }
 
 /// The durable loop record (`harness_turn/<session_id>`). Seeded by CAS from
@@ -322,6 +349,12 @@ pub struct TurnRecord {
     /// most recently assembled model context for this session.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub function_contract_ledger: BTreeMap<String, FunctionContractLedgerEntry>,
+    /// Identical failures this turn, keyed by the digest of
+    /// `[function_id, arguments]`: an entry that reaches the repeat limit makes
+    /// the next identical call fail locally instead of re-running the target.
+    /// A success clears its entry; every new turn starts empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub failed_calls: BTreeMap<String, FailedCall>,
     /// Last effective names-only skill view admitted to the transcript.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_ack: Option<SkillAck>,
@@ -407,11 +440,11 @@ pub struct IdemRecord {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
-    fn record() -> TurnRecord {
+    pub(crate) fn record() -> TurnRecord {
         TurnRecord {
             turn_id: "t_1".into(),
             session_id: "s_1".into(),
@@ -442,12 +475,15 @@ mod tests {
                 agent: None,
                 max_validation_retries: 2,
                 max_transient_resumes: 1,
+                preloaded_contracts: None,
+                seeded_contracts: None,
             },
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
             functions_generation: None,
             function_contract_ledger: Default::default(),
+            failed_calls: Default::default(),
             skill_ack: None,
             skills_started: false,
             context_snapshot: None,
@@ -475,6 +511,15 @@ mod tests {
     }
 
     #[test]
+    fn failed_calls_are_omitted_when_empty_and_default_on_legacy_records() {
+        let value = serde_json::to_value(record()).unwrap();
+        assert!(value.get("failed_calls").is_none());
+
+        let decoded: TurnRecord = serde_json::from_value(value).unwrap();
+        assert!(decoded.failed_calls.is_empty());
+    }
+
+    #[test]
     fn legacy_contract_ledger_entries_default_to_ineligible() {
         let decoded: FunctionContractLedgerEntry = serde_json::from_value(serde_json::json!({
             "contract_digest": "contract",
@@ -496,6 +541,7 @@ mod tests {
             child_session_reused: reused,
             held_by: None,
             held_arguments: None,
+            reconciled: None,
             pending_timeout_ms: None,
             pending_at: None,
         }
@@ -615,6 +661,8 @@ mod tests {
         assert_eq!(r.skill_ack, None);
         assert!(!r.skills_started);
         assert_eq!(r.options.agent, None);
+        assert_eq!(r.options.preloaded_contracts, None);
+        assert_eq!(r.options.seeded_contracts, None);
     }
 
     #[test]

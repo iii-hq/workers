@@ -7,7 +7,7 @@
  */
 
 import { StatusDot } from '@/components/ui/StatusDot'
-import { cn } from '@/lib/utils'
+
 import {
   formatDuration,
   formatRelative,
@@ -75,20 +75,20 @@ export function SpanHoverCard({
         className="rounded-md bg-panel-raised shadow-floating px-3 py-2.5 min-w-[200px]"
         style={{ maxWidth: CARD_MAX_WIDTH }}
       >
-        <div className="font-mono text-[12.5px] text-ink leading-tight mb-1.5 break-all lowercase">
+        <div className="font-mono text-[12.5px] text-ink leading-tight mb-1.5 break-all">
           {span.label ?? span.id}
         </div>
 
         {span.meta ? (
           <div className="flex items-center gap-1.5 mb-2">
             <StatusDot tone={tone} pulse={running} />
-            <span className="text-[10px] text-ink-faint font-mono lowercase truncate">
+            <span className="text-[11px] text-ink-faint font-mono truncate">
               {span.meta}
             </span>
           </div>
         ) : null}
 
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] font-mono">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] font-mono">
           <div className="flex justify-between gap-2">
             <span className="text-ink-faint">Duration</span>
             <span className="text-accent tabular-nums">
@@ -105,13 +105,11 @@ export function SpanHoverCard({
           </div>
           <div className="flex justify-between gap-2">
             <span className="text-ink-faint">Status</span>
-            <span className={cn('lowercase', STATUS_TEXT[tone])}>
-              {statusLabel}
-            </span>
+            <span className={STATUS_TEXT[tone]}>{statusLabel}</span>
           </div>
           {tracePercent != null && (
             <div className="flex justify-between gap-2">
-              <span className="text-ink-faint lowercase">% trace</span>
+              <span className="text-ink-faint">% trace</span>
               <span className="text-ink tabular-nums">
                 {tracePercent.toFixed(1)}%
               </span>

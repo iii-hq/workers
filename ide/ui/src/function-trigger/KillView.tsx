@@ -1,5 +1,6 @@
+import { ActionLine, Badge } from '@iii-dev/console-ui'
+import { X } from 'lucide-react'
 import { truncateMiddle } from '../lib/format'
-import { ActionLine, FooterPill, StatusPill } from '../lib/terminal'
 import { jobStatusPill } from './format'
 import {
   safeParseResponse,
@@ -27,9 +28,9 @@ export function ShellKillView({ input, output, running }: ShellKillViewProps) {
 
   return (
     <div className="shui-card">
-      <div className="shui-slab warn">
+      <div className="shui-slab" data-tone="warn">
         <div className="shui-baseline-row">
-          <span className="t-warn">×</span>
+          <X aria-hidden className="shui-glyph t-warn" />
           <span className="t-ink">
             {running ? 'killing job…' : 'killed job'}
           </span>
@@ -42,10 +43,10 @@ export function ShellKillView({ input, output, running }: ShellKillViewProps) {
         {resp?.reason ? <div className="shui-note">{resp.reason}</div> : null}
         {resp && status ? (
           <div className="shui-row">
-            <StatusPill label={status.label} variant={status.tone} />
-            <FooterPill tone={resp.killed ? 'accent' : 'warn'}>
+            <Badge variant={status.tone}>{status.label}</Badge>
+            <Badge variant={resp.killed ? 'accent' : 'warn'}>
               {resp.killed ? 'killed' : 'not running'}
-            </FooterPill>
+            </Badge>
           </div>
         ) : null}
       </div>
@@ -60,10 +61,8 @@ export function ShellKillPreview({ input }: { input: unknown }) {
   if (!req.success) return null
   return (
     <div className="shui-card">
-      <ActionLine symbol="×" tone="warn">
-        <span className="shui-line">
-          kill job <code className="shui-inline-code">{req.data.job_id}</code>
-        </span>
+      <ActionLine icon={<X aria-hidden />} tone="warn">
+        kill job <code className="shui-inline-code">{req.data.job_id}</code>
       </ActionLine>
     </div>
   )

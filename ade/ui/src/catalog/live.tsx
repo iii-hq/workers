@@ -12,9 +12,9 @@
  * the agent thinking out loud.
  */
 
-import { type Host, StatusDot } from '@iii-dev/console-ui'
+import { Eyebrow, type Host, StatusDot } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { formatDuration } from './ActivityFeed'
+import { agoLabel, formatDuration } from './ActivityFeed'
 import { type SpanEvent, useSpanFeed } from './engine'
 
 const FEED_LENGTH = 18
@@ -98,16 +98,6 @@ export function useLiveActivity(host: Host): LiveActivity {
   return { feed, lastCall, pulsing }
 }
 
-/** "3s ago" for the live meta line; empty under a second so fresh rows read as now. */
-export function agoLabel(atMs: number, nowMs: number): string {
-  const seconds = Math.floor((nowMs - atMs) / 1000)
-  if (seconds < 1) return 'now'
-  if (seconds < 60) return `${seconds}s ago`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  return `${Math.floor(minutes / 60)}h ago`
-}
-
 /**
  * The strip under the page head: recent function calls, newest on the left.
  * Clicking one jumps to that function.
@@ -126,7 +116,7 @@ export function NowStrip({
   if (shown.length === 0) {
     return (
       <div className="console-catalog-nowstrip" data-empty="true">
-        <span className="console-catalog-nowstrip-label">Recent calls</span>
+        <Eyebrow className="console-catalog-nowstrip-label">Recent calls</Eyebrow>
         <span className="quiet">No calls recorded since this page opened</span>
       </div>
     )
@@ -135,7 +125,7 @@ export function NowStrip({
   const now = Date.now()
   return (
     <div className="console-catalog-nowstrip">
-      <span className="console-catalog-nowstrip-label">Recent calls</span>
+      <Eyebrow className="console-catalog-nowstrip-label">Recent calls</Eyebrow>
       <div className="console-catalog-nowstrip-track">
         {shown.map((span) => (
           <button

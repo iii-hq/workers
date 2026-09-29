@@ -107,6 +107,9 @@ pub struct SessionStartedEvent {
     pub session_id: String,
     pub url: String,
     pub headless: bool,
+    /// False when the opener asked for no live preview (`preview: false`
+    /// on `sessions::start`); consoles then show no thumbnail for it.
+    pub preview: bool,
     pub timestamp: i64,
 }
 

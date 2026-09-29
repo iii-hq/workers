@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Deps;
 use crate::error::SessionError;
-use crate::types::{JsonMap, SessionMeta, SessionStatus};
+use crate::types::{JsonMap, SessionKind, SessionMeta, SessionStatus};
 
 /// Sort order for `session::list`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -25,6 +25,9 @@ pub struct ListRequest {
     pub cursor: Option<String>,
     /// Only sessions with this status.
     pub status: Option<SessionStatus>,
+    /// Only sessions whose kind is one of these. Omit for every kind; an
+    /// empty list matches nothing.
+    pub kinds: Option<Vec<SessionKind>>,
     /// Equality filter against `SessionMeta.metadata` (tenancy):
     /// every given key must equal the stored value.
     pub metadata: Option<JsonMap>,

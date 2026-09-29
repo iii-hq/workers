@@ -4,10 +4,11 @@
  * (create dialog + file ops share it).
  */
 
-import { Badge, Input } from '@iii-dev/console-ui'
-import { useCopyFlash } from '../lib/clipboard'
+import { Badge, Button, IconButton, Input, StatusPanel } from '@iii-dev/console-ui'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
+import { Copy, Plus, X } from 'lucide-react'
 import type { SandboxError } from './errors'
-import { CopyIcon } from './icons'
 
 export function CopyButton({
   text,
@@ -30,15 +31,15 @@ export function CopyButton({
       title={title ?? 'copy'}
       aria-label={label ?? title ?? 'copy'}
     >
-      <CopyIcon aria-hidden />
+      <Copy size={16} aria-hidden />
       {label ? <span>{label}</span> : null}
       {state === 'copied' ? (
-        <span className="flash" aria-hidden>
+        <span className={uiClasses.eyebrow} aria-hidden>
           copied
         </span>
       ) : null}
       {state === 'failed' ? (
-        <span className="flash" aria-hidden>
+        <span className={uiClasses.eyebrow} aria-hidden>
           copy failed
         </span>
       ) : null}
@@ -93,25 +94,24 @@ export function EnvRowsEditor({
             aria-label={`env value ${index + 1}`}
             disabled={disabled}
           />
-          <button
-            type="button"
-            className="cr-page-linkish"
-            aria-label={`remove env row ${index + 1}`}
+          <IconButton
+            variant="ghost"
+            label={`remove env row ${index + 1}`}
             onClick={() => onChange(rows.filter((_, i) => i !== index))}
             disabled={disabled}
           >
-            ×
-          </button>
+            <X size={16} aria-hidden />
+          </IconButton>
         </div>
       ))}
-      <button
-        type="button"
-        className="cr-page-linkish"
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={() => onChange([...rows, { key: '', value: '' }])}
         disabled={disabled}
       >
-        + env var
-      </button>
+        <Plus size={16} aria-hidden /> env var
+      </Button>
     </div>
   )
 }
@@ -120,19 +120,21 @@ export function EnvRowsEditor({
  *  note, and whether retrying can help at all. */
 export function SandboxErrorCard({ error }: { error: SandboxError }) {
   return (
-    <div className="cr-page-errcard" role="alert">
-      <div className="cr-page-errcard-head">
-        {error.code ? <code className="cr-page-errcode">{error.code}</code> : null}
-        {error.retryable !== null ? (
-          <Badge variant={error.retryable ? 'warn' : 'alert'}>
-            {error.retryable ? 'retryable' : 'not retryable'}
-          </Badge>
-        ) : null}
-      </div>
-      <div className="cr-page-errcard-msg">{error.message}</div>
-      {error.fix_note ? (
-        <div className="cr-page-errcard-fix">{error.fix_note}</div>
-      ) : null}
-    </div>
+    <StatusPanel
+      variant="alert"
+      role="alert"
+      headline={
+        <>
+          {error.code ? <code className="cr-page-errcode">{error.code}</code> : null}
+          {error.retryable !== null ? (
+            <Badge variant={error.retryable ? 'warn' : 'alert'}>
+              {error.retryable ? 'retryable' : 'not retryable'}
+            </Badge>
+          ) : null}{' '}
+          {error.message}
+        </>
+      }
+      detail={error.fix_note}
+    />
   )
 }

@@ -25,50 +25,13 @@
   min-width: 0;
 }
 
-/* The glyph sits inside the field: the shared Input keeps its own surface,
-   focus ring and disabled treatment, and this only makes room for the icon. */
 [data-iii-ui='cron'] .cron-ui-search {
-  position: relative;
-  display: flex;
-  align-items: center;
-  min-width: 0;
   width: 220px;
 }
 
-[data-iii-ui='cron'] .cron-ui-search > svg {
-  position: absolute;
-  left: 10px;
-  color: var(--color-ink-ghost);
-  pointer-events: none;
-}
-
-[data-iii-ui='cron'] .cron-ui-search input {
-  padding-left: 32px;
-}
-
-[data-iii-ui='cron'] .cron-ui-search input::-webkit-search-cancel-button {
-  appearance: none;
-}
-
-@media (max-width: 640px) {
+@container (max-width: 640px) {
   [data-iii-ui='cron'] .cron-ui-search {
     display: none;
-  }
-}
-
-[data-iii-ui='cron'] .cron-ui-spin {
-  animation: cron-ui-spin 900ms linear infinite;
-}
-
-@keyframes cron-ui-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  [data-iii-ui='cron'] .cron-ui-spin {
-    animation: none;
   }
 }
 
@@ -199,13 +162,6 @@
   min-height: 44px;
 }
 
-[data-iii-ui='cron'] .cron-ui-detail-eyebrow {
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--color-ink-faint);
-}
-
 [data-iii-ui='cron'] .cron-ui-detail-scroll {
   min-height: 0;
   overflow-y: auto;
@@ -218,10 +174,6 @@
   flex-direction: column;
   min-height: 0;
   flex: 1;
-}
-
-[data-iii-ui='cron'] .cron-ui-back {
-  transform: rotate(90deg);
 }
 
 [data-iii-ui='cron'] .cron-ui-detail {
@@ -329,7 +281,7 @@
   min-height: 76px;
   padding: 8px 12px;
   border: 1px solid transparent;
-  border-radius: 2px;
+  border-radius: 6px;
   background: var(--color-surface);
   color: var(--color-ink);
   font-family: var(--font-sans);
@@ -354,7 +306,7 @@
   border-color: var(--color-rule-focus);
 }
 
-@media (max-width: 640px) {
+@container (max-width: 640px) {
   [data-iii-ui='cron'] .cron-ui-content {
     padding: 12px;
   }
@@ -406,10 +358,6 @@
   font-family: var(--font-mono, ui-monospace, monospace);
 }
 
-[data-iii-ui='cron'] .cron-ui-config-error {
-  color: var(--color-alert);
-}
-
 [data-iii-ui='cron'] .cron-ui-config-opaque {
   display: flex;
   min-width: 0;
@@ -422,7 +370,7 @@
 [data-iii-ui='cron'] .cron-ui-editor-field .cron-ui-code-editor {
   min-height: 132px;
   border: 1px solid var(--color-rule);
-  border-radius: 2px;
+  border-radius: 6px;
 }
 
 /* Trigger activity is a compact source section inside host-owned chrome. */
@@ -459,7 +407,7 @@
 [data-iii-ui='cron'] .cron-trigger-activity__timezone {
   flex: none;
   color: var(--color-ink-faint);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -475,7 +423,7 @@
   width: fit-content;
   max-width: 100%;
   padding: 3px 6px;
-  border-radius: 4px;
+  border-radius: 6px;
   background: var(--color-panel-raised);
   color: var(--color-ink-faint);
   font-size: 11.5px;

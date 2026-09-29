@@ -4,8 +4,25 @@ import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 
 export const TooltipProvider = TooltipPrimitive.Provider
-export const Tooltip = TooltipPrimitive.Root
 export const TooltipTrigger = TooltipPrimitive.Trigger
+
+export interface TooltipProps extends TooltipPrimitive.TooltipProps {
+  /** Shorthand: `children` become the trigger (`asChild`) and this the content. */
+  label?: React.ReactNode
+}
+
+/** Radix root; with `label`, also the trigger/content composition. */
+export function Tooltip({ label, children, ...props }: TooltipProps) {
+  if (label == null) {
+    return <TooltipPrimitive.Root {...props}>{children}</TooltipPrimitive.Root>
+  }
+  return (
+    <TooltipPrimitive.Root {...props}>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </TooltipPrimitive.Root>
+  )
+}
 
 export const TooltipContent = React.forwardRef<
   React.ElementRef<typeof TooltipPrimitive.Content>,

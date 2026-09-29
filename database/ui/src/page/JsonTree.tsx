@@ -10,9 +10,9 @@
  * same here as it does in the table it came from.
  */
 
+import { ChevronRight, Copy } from 'lucide-react'
 import { useState } from 'react'
 import { cellText } from '../lib/grid-cursor'
-import { ChevronRight, Copy } from './icons'
 
 /** Children rendered before the tail summary. Long arrays are common. */
 const MAX_CHILDREN = 100
@@ -77,7 +77,7 @@ function Node({
   const hidden = entries.length - shown.length
 
   return (
-    <div className="db-json-node">
+    <div>
       <div className="db-json-row" style={{ paddingLeft: `${depth * 12}px` }}>
         {branch ? (
           <button

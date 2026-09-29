@@ -5,8 +5,8 @@
  */
 
 import { Card, CardBody, CardHeader, Skeleton } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { type ReactNode, useState } from 'react'
-import { errorMessage } from '../lib/format'
 
 export function SectionCard({
   title,
@@ -55,7 +55,8 @@ export function LoadingRows({ rows = 3 }: { rows?: number }) {
   )
 }
 
-export { formatBytes, formatDuration } from '../lib/format'
+export { formatBytes } from '@iii-dev/console-ui/format'
+export { formatDuration } from '../lib/format'
 
 export function useBusyAction(
   onNotice: (notice: { kind: 'error' | 'success'; text: string } | null) => void,

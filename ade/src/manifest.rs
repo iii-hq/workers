@@ -2,7 +2,7 @@
 //!
 //! Five required fields: `name`, `version`, `description`,
 //! `default_config` (object), `supported_targets` (non-empty array).
-//! `default_config` mirrors YAML-backed defaults (`http_port` only);
+//! `default_config` mirrors YAML-backed defaults (`http_port`, `data_dir`);
 //! the engine WebSocket URL is a CLI flag (`--url`), not config file.
 
 use serde::Serialize;
@@ -28,6 +28,7 @@ pub fn build_manifest() -> ModuleManifest {
                 .to_string(),
         default_config: serde_json::json!({
             "http_port": cfg.http_port,
+            "data_dir": cfg.data_dir,
         }),
         supported_targets: vec![env!("TARGET").to_string()],
     }
@@ -70,5 +71,7 @@ mod tests {
         let m = build_manifest();
         let cfg = ConsoleConfig::default();
         assert_eq!(m.default_config["http_port"], cfg.http_port);
+        assert_eq!(m.default_config["data_dir"], cfg.data_dir);
+        assert_eq!(m.default_config["data_dir"], "data/ade");
     }
 }

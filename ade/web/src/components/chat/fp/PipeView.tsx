@@ -1,5 +1,6 @@
 import { FilterChip } from '@/components/chat/engine/shared'
 import { MetaRow, StatusPill } from '@/components/chat/sandbox/shared'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import {
   type PipeResponse,
   pipeRequestSchema,
@@ -140,9 +141,9 @@ export function PipeView({ input, output, running }: PipeViewProps) {
         </div>
       ) : res?.value_preview ? (
         <div>
-          <div className="px-3 pt-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-ghost">
+          <Eyebrow as="div" className="px-3 pt-2 text-ink-ghost">
             preview
-          </div>
+          </Eyebrow>
           <pre className="overflow-x-auto whitespace-pre-wrap break-all px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink">
             {res.value_preview}
           </pre>

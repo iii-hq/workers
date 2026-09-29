@@ -15,12 +15,29 @@
  */
 
 import {
+  Badge,
   Button,
   ConfirmDialog,
   type Host,
+  IconButton,
   Input,
   SegmentedControl,
+  StatusPanel,
+  Toolbar,
 } from '@iii-dev/console-ui'
+import { copyText } from '@iii-dev/console-ui/format'
+import { usePaneState } from '@iii-dev/console-ui/hooks'
+import uiClasses from '@iii-dev/console-ui/ui-classes'
+import {
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  Globe,
+  HatGlasses,
+  MessageSquarePlus,
+  RefreshCw,
+  X,
+} from 'lucide-react'
 import type { RefObject } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
@@ -63,15 +80,6 @@ import {
 import { toUrl } from '../lib/address'
 import { cn } from '../lib/cn'
 import { useBrowserSessionEvent } from '../lib/events'
-import {
-  ExternalLink,
-  Globe,
-  Incognito,
-  MessageSquarePlus,
-  RefreshCw,
-  X,
-} from '../lib/icons'
-import { ChevronLeftIcon } from '../lib/widgets'
 import {
   type Annotation,
   type AnnotationSet,
@@ -168,22 +176,6 @@ const PANE_LABELS: Record<DevtoolsPane, string> = {
   history: 'History',
 }
 
-function readStored(key: string): string | null {
-  try {
-    return window.localStorage.getItem(key)
-  } catch {
-    return null
-  }
-}
-
-function writeStored(key: string, value: string) {
-  try {
-    window.localStorage.setItem(key, value)
-  } catch {
-    /* private mode / quota — persistence is best-effort */
-  }
-}
-
 interface SessionViewProps {
   /** Opens the saved-sets dialog (page-level; works without a tab). */
   onOpenSavedSets?: (key?: string | null) => void
@@ -214,32 +206,22 @@ export function SessionView({
 
   // Developer tools: hidden until asked for, then remembered per workspace
   // tab (open or not, and which pane) so a reload lands where it was left.
-  const devtoolsStoreKey = `browser-ui:${tabId || 'page'}:devtools`
-  const devtoolsPaneStoreKey = `browser-ui:${tabId || 'page'}:dock`
-  const [devtoolsOpen, setDevtoolsOpenState] = useState(
-    () => readStored(devtoolsStoreKey) === 'true',
+  const [devtoolsOpenStored, setDevtoolsOpen] = usePaneState(
+    `browser-ui:${tabId || 'page'}:devtools`,
+    false,
   )
-  const [devtoolsPane, setDevtoolsPaneState] = useState<DevtoolsPane>(() => {
-    const stored = readStored(devtoolsPaneStoreKey)
-    return DEVTOOLS_PANES.includes(stored as DevtoolsPane)
-      ? (stored as DevtoolsPane)
-      : 'console'
-  })
-  const setDevtoolsOpen = useCallback(
-    (open: boolean) => {
-      setDevtoolsOpenState(open)
-      writeStored(devtoolsStoreKey, String(open))
-    },
-    [devtoolsStoreKey],
+  const devtoolsOpen = devtoolsOpenStored === true
+  const [storedPane, setDevtoolsPane] = usePaneState<DevtoolsPane>(
+    `browser-ui:${tabId || 'page'}:dock`,
+    'console',
   )
+  const devtoolsPane = DEVTOOLS_PANES.includes(storedPane)
+    ? storedPane
+    : 'console'
   const toggleDevtools = useCallback(
     () => setDevtoolsOpen(!devtoolsOpen),
     [devtoolsOpen, setDevtoolsOpen],
   )
-  const setDevtoolsPane = (pane: DevtoolsPane) => {
-    setDevtoolsPaneState(pane)
-    writeStored(devtoolsPaneStoreKey, pane)
-  }
 
   const [reseedToken, setReseedToken] = useState(0)
   // Bumped when the tab wakes under us, so the screencast is started again
@@ -764,11 +746,10 @@ export function SessionView({
   const copyCookies = useCallback(() => {
     void (async () => {
       try {
-        if (!navigator.clipboard) {
+        const cookies = await listBrowserCookies(host.iii, sessionId)
+        if (!(await copyText(JSON.stringify(cookies, null, 2)))) {
           throw new Error('clipboard unavailable in this context')
         }
-        const cookies = await listBrowserCookies(host.iii, sessionId)
-        await navigator.clipboard.writeText(JSON.stringify(cookies, null, 2))
         setActionError(`copied ${cookies.length} cookies to the clipboard`)
       } catch (err) {
         setActionError(errorMessage(err))
@@ -1032,11 +1013,9 @@ export function SessionView({
       <HistoryPanel host={host} sessionId={sessionId} enabled={enabled} />
     )
 
-  const viewportLabel = live.error
-    ? `live view failed: ${live.error}`
-    : asleep
-      ? 'opening the page…'
-      : 'waiting for the first frame…'
+  const viewportLabel = asleep
+    ? 'Opening the page…'
+    : 'Waiting for the first frame…'
   const marks = annotations.length
 
   return (
@@ -1050,7 +1029,7 @@ export function SessionView({
     >
       <div className="br-ui-browser-frame">
         <form
-          className="br-ui-toolbar"
+          className={cn(uiClasses.toolbar, 'br-ui-toolbar')}
           onSubmit={(event) => {
             event.preventDefault()
             submitUrl()
@@ -1067,7 +1046,7 @@ export function SessionView({
               title="back"
               aria-label="back"
             >
-              <ChevronLeftIcon className="br-ui-chrome-icon" />
+              <ChevronLeft size={16} aria-hidden />
             </button>
             <button
               type="button"
@@ -1076,7 +1055,7 @@ export function SessionView({
               title="forward"
               aria-label="forward"
             >
-              <ChevronLeftIcon className="br-ui-chrome-icon is-forward" />
+              <ChevronRight size={16} aria-hidden />
             </button>
             <button
               type="button"
@@ -1090,7 +1069,7 @@ export function SessionView({
           </fieldset>
           <div className="br-ui-address">
             {session.incognito ? (
-              <Incognito size={16} aria-hidden className="br-ui-address-icon" />
+              <HatGlasses size={16} aria-hidden className="br-ui-address-icon" />
             ) : (
               <Globe size={16} aria-hidden className="br-ui-address-icon" />
             )}
@@ -1124,12 +1103,12 @@ export function SessionView({
               className="br-ui-url-input"
             />
             {session.read_only ? (
-              <span className="br-ui-address-tag">read-only</span>
+              <Badge variant="warn">read-only</Badge>
             ) : null}
           </div>
           {session.incognito ? (
             <span className="br-ui-incognito-pill" title="Incognito tab: nothing is saved">
-              <Incognito size={14} aria-hidden />
+              <HatGlasses size={16} aria-hidden />
               Incognito
             </span>
           ) : null}
@@ -1149,7 +1128,7 @@ export function SessionView({
               !annotating && marks > 0 && 'has-marks',
             )}
           >
-            <MessageSquarePlus size={17} aria-hidden />
+            <MessageSquarePlus size={16} aria-hidden />
             {!annotating && marks > 0 ? (
               <span className="br-ui-chrome-badge">{marks}</span>
             ) : null}
@@ -1186,21 +1165,17 @@ export function SessionView({
               openSavedSets: () => onOpenSavedSets?.(),
             }}
           />
-          <button type="submit" className="br-ui-address-submit" tabIndex={-1}>
+          <button type="submit" className="br-ui-visually-hidden" tabIndex={-1}>
             navigate to address
           </button>
         </form>
 
         {actionError ? (
-          <div className="br-ui-banner alert" role="alert">
-            <span>{actionError}</span>
-            <button
-              type="button"
-              className="br-ui-linkish quiet"
-              onClick={() => setActionError(null)}
-            >
-              dismiss
-            </button>
+          <div className="br-ui-banner" role="alert">
+            <StatusPanel variant="alert" headline={actionError} />
+            <Button variant="ghost" size="sm" onClick={() => setActionError(null)}>
+              Dismiss
+            </Button>
           </div>
         ) : null}
 
@@ -1244,16 +1219,12 @@ export function SessionView({
           />
         ) : null}
         {handoff ? (
-          <div className="br-ui-handoff" role="alert">
-            <div className="br-ui-handoff-text">
-              <span className="br-ui-handoff-title">Waiting for you</span>
-              <span className="br-ui-handoff-instructions">
-                {handoff.instructions}
-                {handoffs.length > 1
-                  ? ` (${handoffs.length - 1} more waiting)`
-                  : ''}
-              </span>
-            </div>
+          <div className="br-ui-banner" role="alert">
+            <StatusPanel
+              variant="warn"
+              headline="Waiting for you"
+              detail={`${handoff.instructions}${handoffs.length > 1 ? ` (${handoffs.length - 1} more waiting)` : ''}`}
+            />
             <Button variant="primary" size="sm" onClick={confirmHandoff}>
               I'm done
             </Button>
@@ -1270,10 +1241,63 @@ export function SessionView({
           }}
         />
         {annotating || marks > 0 ? (
-          <fieldset className="br-ui-annot-tools" aria-label="annotation tools">
+          <Toolbar
+            aria-label="annotation tools"
+            end={
+              <>
+                {marks > 0 ? (
+                  <>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={sendAnnotations}
+                      disabled={sending || typeof host.chat?.compose !== 'function'}
+                      title="send the pins to the chat, one attachment each (⌘↵)"
+                    >
+                      {sending ? 'Sending…' : `Send ${marks} to chat`}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={saveSet}
+                      disabled={saving}
+                      title="save this set for later; anyone on this engine can reopen it"
+                    >
+                      {saving ? 'Saving…' : 'Save'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={downloadAnnotations}
+                      title="save the frozen view with its pins as a PNG"
+                    >
+                      Download
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={clearAnnotations}
+                      title="drop every mark"
+                    >
+                      Clear
+                    </Button>
+                  </>
+                ) : null}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={toggleAnnotate}
+                  title={annotating ? 'back to the live view' : 'resume annotating'}
+                >
+                  {annotating ? 'Done' : 'Resume'}
+                </Button>
+              </>
+            }
+          >
             {annotating ? (
               <>
                 <SegmentedControl<AnnotationTool>
+                  variant="radio"
                   value={tool}
                   onChange={setTool}
                   options={[
@@ -1298,7 +1322,6 @@ export function SessionView({
                       title: 'Drag an arrow, then add a note',
                     },
                   ]}
-                  className="br-ui-tabs"
                   aria-label="annotation tool"
                 />
                 <span className="br-ui-annot-hint">{TOOL_HINTS[tool]} Esc ends.</span>
@@ -1345,58 +1368,13 @@ export function SessionView({
                 view
               </span>
             )}
-            {marks > 0 ? (
-              <>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={sendAnnotations}
-                  disabled={sending || typeof host.chat?.compose !== 'function'}
-                  title="send the pins to the chat, one attachment each (⌘↵)"
-                >
-                  {sending ? 'Sending…' : `Send ${marks} to chat`}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={saveSet}
-                  disabled={saving}
-                  title="save this set for later; anyone on this engine can reopen it"
-                >
-                  {saving ? 'Saving…' : 'Save'}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={downloadAnnotations}
-                  title="save the frozen view with its pins as a PNG"
-                >
-                  Download
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={clearAnnotations}
-                  title="drop every mark"
-                >
-                  Clear
-                </Button>
-              </>
-            ) : null}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={toggleAnnotate}
-              title={annotating ? 'back to the live view' : 'resume annotating'}
-            >
-              {annotating ? 'Done' : 'Resume'}
-            </Button>
-          </fieldset>
+          </Toolbar>
         ) : null}
         <Viewport
           frame={annotating && frozen ? frozen : live.frame}
           loading={live.loading}
           emptyLabel={viewportLabel}
+          error={live.error}
           annotation={viewportAnnotation}
           onSurfaceResize={onSurfaceResize}
           onClickAt={handleClickAt}
@@ -1410,6 +1388,7 @@ export function SessionView({
           <div className="br-ui-dock">
             <div className="br-ui-dock-head">
               <SegmentedControl<DevtoolsPane>
+                variant="tabs"
                 value={devtoolsPane}
                 onChange={setDevtoolsPane}
                 options={DEVTOOLS_PANES.map((pane) => ({
@@ -1419,18 +1398,15 @@ export function SessionView({
                       ? `Downloads ${downloadCount}`
                       : PANE_LABELS[pane],
                 }))}
-                className="br-ui-tabs"
                 aria-label="Developer tools"
               />
-              <button
-                type="button"
+              <IconButton
+                label="hide developer tools"
                 className="br-ui-dock-toggle"
-                aria-label="hide developer tools"
-                title="hide developer tools"
                 onClick={() => setDevtoolsOpen(false)}
               >
                 <X size={16} aria-hidden />
-              </button>
+              </IconButton>
             </div>
             <div className="br-ui-dock-body">{paneBody(devtoolsPane)}</div>
           </div>

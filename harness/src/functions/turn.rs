@@ -37,7 +37,8 @@ pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepRes
         .message_preview
         .clone()
         .filter(|p| !p.trim().is_empty());
-    let session_name = deps.session().await.title(&session_id).await;
+    let hints = deps.session().await.turn_hints(&session_id).await;
+    let session_name = hints.title;
     let is_subagent = payload.depth > 0;
     let kind = if is_subagent {
         "harness.subagent"
@@ -61,6 +62,12 @@ pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepRes
     }
     if let Some(display_name) = subagent_display_name.as_deref() {
         baggage.push(("iii.tag.display_name", display_name));
+    }
+    // The session's judge provider rides the turn's context: every judge call
+    // this turn causes (call reconciliation here, function search in the
+    // directory, browser::run) routes to it, and other sessions never see it.
+    if let Some(provider) = hints.judge_provider.as_deref() {
+        baggage.push((judge_contract::PROVIDER_BAGGAGE_KEY, provider));
     }
     // The explicit step span matters: the baggage only materializes as span
     // attributes when a span STARTS inside this scope, and downstream workers
@@ -112,6 +119,8 @@ fn is_transient_step_error(error: &HarnessError) -> bool {
 
 async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, HarnessError> {
     let (session_id, turn_id) = (payload.session_id.clone(), payload.turn_id.clone());
+    // Orphan recovery must not re-enqueue a step that is executing here.
+    let _inflight = deps.inflight.enter(&session_id);
     let mut transient_attempts = 0u32;
     let result = loop {
         match turn_loop::run_step(deps, payload.clone()).await {
@@ -132,7 +141,16 @@ async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, Ha
             }
             Err(e) => {
                 tracing::error!(session_id = %session_id, turn_id = %turn_id, error = %e, "turn step failed; finalising turn as failed");
-                break turn_loop::fail_turn(deps, &session_id, &turn_id, &e.to_string()).await?;
+                // Keep failure finalization out of this future's inline state:
+                // its size propagates through every handler wrapper even on
+                // successful turns, exhausting the SDK thread's debug stack.
+                break Box::pin(turn_loop::fail_turn(
+                    deps,
+                    &session_id,
+                    &turn_id,
+                    &e.to_string(),
+                ))
+                .await?;
             }
         }
     };
@@ -163,6 +181,24 @@ fn record_step_status(result: &TurnStepResult) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_future_keeps_failure_finalization_out_of_its_inline_state() {
+        // Inspect the real future type without constructing dependencies or
+        // polling it. An inline fail_turn future previously grew this state
+        // to about 31 KiB and overflowed the SDK thread through its wrappers.
+        fn future_size<F: std::future::Future>(
+            _: impl FnOnce(&'static Deps, TurnStepPayload) -> F,
+        ) -> usize {
+            std::mem::size_of::<F>()
+        }
+
+        let bytes = future_size(run);
+        assert!(
+            bytes <= 1024,
+            "turn runner future is {bytes} bytes; keep large finalization futures boxed"
+        );
+    }
 
     #[test]
     fn boot_race_errors_are_transient_and_real_failures_are_not() {

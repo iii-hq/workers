@@ -1,0 +1,302 @@
+{
+  "description": "Record what an investigation concluded about a group. Called by the agent from inside its own investigation session; the session's identity comes from the invocation, never from the payload. Each call is a new version and the most recent one stands.",
+  "function_id": "sentinel::diagnosis::record",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "ConfidenceV1": {
+        "enum": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "type": "string"
+      },
+      "DiagnosisCategoryV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "bug",
+              "configuration",
+              "dependency",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Real, but it went away on its own: a timeout, a restart, a race.",
+            "enum": [
+              "transient"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The failure is the designed behaviour of the code.",
+            "enum": [
+              "expected"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "DiagnosisEvidenceV1": {
+        "additionalProperties": false,
+        "description": "One thing the agent is pointing at, and why it matters.",
+        "properties": {
+          "excerpt": {
+            "description": "At most 400 characters of the thing itself.",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/EvidenceKindV1"
+          },
+          "line": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "Relative to the repository root, for `code`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "span_id": {
+            "description": "The span this points at, for `trace`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "why": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "excerpt",
+          "kind",
+          "why"
+        ],
+        "type": "object"
+      },
+      "DiagnosisV1": {
+        "additionalProperties": false,
+        "description": "What an investigation concluded. Written by the agent, never by this worker, and kept verbatim: a later version supersedes it without erasing it, so the same failure diagnosed twice can be compared.",
+        "properties": {
+          "category": {
+            "$ref": "#/definitions/DiagnosisCategoryV1"
+          },
+          "confidence": {
+            "$ref": "#/definitions/ConfidenceV1"
+          },
+          "missing_evidence": {
+            "description": "What would have raised the confidence. An honest `low` with this filled in is a better answer than a guess.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "proposed_fix": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ProposedFixV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "related_groups": {
+            "description": "Groups the agent believes share this cause. A suggestion the console shows; nothing is merged on the strength of it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reproduction": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "root_cause": {
+            "$ref": "#/definitions/RootCauseV1"
+          },
+          "summary": {
+            "description": "One to three sentences, written for a person.",
+            "type": "string"
+          },
+          "version_note": {
+            "description": "Drift between the checkout that was read and the version that failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "category",
+          "confidence",
+          "root_cause",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "EvidenceKindV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "trace",
+              "log"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A place in the repository, as a path relative to its root.",
+            "enum": [
+              "code"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ProposedFixV1": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "risk": {
+            "$ref": "#/definitions/RiskV1"
+          },
+          "steps": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "description",
+          "files",
+          "risk",
+          "steps"
+        ],
+        "type": "object"
+      },
+      "RiskV1": {
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "type": "string"
+      },
+      "RootCauseV1": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/definitions/DiagnosisEvidenceV1"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "description",
+          "evidence"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "The agent's one write. There is no `investigation_id` and no `session_id` here on purpose: identity comes from the invocation's baggage, which the agent does not control, so no payload can point a diagnosis at somebody else's investigation.",
+    "properties": {
+      "diagnosis": {
+        "$ref": "#/definitions/DiagnosisV1"
+      },
+      "group_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "diagnosis",
+      "group_id"
+    ],
+    "title": "DiagnosisRecordRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "GroupStatusV1": {
+        "description": "The lifecycle of a group. `resolved` and `ignored` are human decisions; `regressed` is the one the ingest makes on its own, and the reason the worker exists.",
+        "oneOf": [
+          {
+            "enum": [
+              "new",
+              "diagnosed",
+              "resolved",
+              "ignored"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass of an investigation is running.",
+            "enum": [
+              "investigating"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence after a resolve.",
+            "enum": [
+              "regressed"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "diagnosis_id": {
+        "type": "string"
+      },
+      "group_status": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/GroupStatusV1"
+          }
+        ],
+        "description": "Where the group was left. A resolved, ignored or regressed group keeps its state and takes the diagnosis anyway."
+      },
+      "version": {
+        "description": "1 on this investigation's first recording, and up from there.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "diagnosis_id",
+      "group_status",
+      "version"
+    ],
+    "title": "DiagnosisRecordResponseV1",
+    "type": "object"
+  }
+}

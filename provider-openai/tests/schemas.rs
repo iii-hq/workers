@@ -44,6 +44,8 @@ fn catalog_lists_all_functions_in_registration_order() {
             "provider::openai::refresh_models",
             "provider::openai::on_router_ready",
             "provider::openai::embed",
+            "provider::openai::image::generate",
+            "provider::openai::image::read",
             "provider::openai::count_tokens",
         ]
     );

@@ -1,0 +1,11 @@
+{
+  "name": "@iii-workers/stories-compiler",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Builds CSF story files with the project's own Vite, emits the module graph and the story manifest. Materialized by the stories worker under data/stories/compiler and installed there with npm.",
+  "dependencies": {
+    "@happy-dom/global-registrator": "^20.0.0",
+    "vite": "^8.0.0"
+  }
+}

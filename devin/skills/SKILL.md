@@ -71,10 +71,15 @@ Devin itself, add another iii worker to the bus instead of bolting it on.
 ## Functions
 
 - `devin::run` — run one local CLI turn and wait; accepts `prompt` (or a
-  `messages` array), `cwd`, and `iii_context`; returns
-  `{session_id, devin_session_id, url, result, stop_reason, is_error}`.
+  `messages` array), `cwd`, `iii_context`, `parent_session_id`, and
+  `session_recording`; returns
+  `{session_id, devin_session_id, url, result, stop_reason, is_error}`. Unless
+  `session_recording` is off, the turn is also recorded as a `session-manager`
+  session with the same `session_id` (prompt, streamed output, failure notice,
+  status): nested under `parent_session_id` when given, otherwise an
+  `automation` session. Read it back with `session::messages`.
 - `devin::start` — same payload, returns `{session_id, started}` immediately;
-  progress arrives on the streams.
+  progress arrives in the session transcript and on the streams.
 - `devin::stop` — interrupt the live CLI run for a session.
 - `devin::status` — point-in-time view of a recorded run: live flag, status,
   linked Devin session id.

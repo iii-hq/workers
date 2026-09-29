@@ -53,7 +53,20 @@ The current required frontmatter validation stays in place; the body — the
 system prompt — may be empty. Unknown frontmatter keys remain harmless, so fields that iii does not
 consume do not prevent a profile from loading. The keys iii consumes are
 `name`, `description`, `logo`, `skills`, `functions`, `model`,
-`reasoning_effort`, `icon`, `color` and `extends`.
+`reasoning_effort`, `icon`, `color`, `extends`, `hidden` and
+`composer_placeholder`.
+
+## Composer placeholder
+
+`composer_placeholder:` is an optional example request the chat shows in an
+empty composer while the profile is selected. It is presentation metadata:
+the directory serves it on `list` and `get` and never appends it to the
+resolved `system_prompt`. It is profile-local — it does not inherit through
+`extends`, so a specialized child without its own example gets the chat's
+generic hint instead of an unrelated parent's. Whitespace runs collapse to one
+space, blank means absent (the key is omitted from responses), and a value
+longer than 200 characters fails the frontmatter gate, so a write is rejected
+and a hand-edited file is skipped at scan time, like an invalid `icon`.
 
 ## Preloaded functions
 
@@ -120,18 +133,31 @@ harness refuses to run it until the chain resolves. A local `iii.md` that
 extends `iii` is a self-loop (the bundled copy it shadows is not in the
 catalog to extend).
 
-## Bundled base profiles `iii` and `iii-minimal`
+## Bundled profiles `default`, `iii`, and `iii-minimal`
 
-The worker binary embeds two agent profiles: `iii`, whose body is the harness
-default identity verbatim (a unit test pins the two copies to each other), and
-`iii-minimal`, the minimal directory-first identity (the same embedded file
-that serves as the bundled `iii-minimal` system prompt). Both follow the
-bundled system-prompt contract: always present in `list`/`get` with
-`builtin: true` and an empty `modified_at`, shadowed by a local
-`<agents_folder>/<id>.md`, `update` copy-on-writes that local file, `create`
-of the id writes the same shadow, `delete` of the local file falls back to
-the bundled copy, and nothing is ever seeded on disk. `extends: iii` builds
-on the full iii doctrine; `extends: iii-minimal` on the compact one.
+The worker binary embeds three agent profiles. `default` (display name
+"Default") is the minimal directory-first identity; its body is the bundled
+`iii-minimal` system prompt's body, and a unit test pins the two copies to
+each other. `iii` is the harness default identity verbatim (also pinned by a
+test) and carries `hidden: true`: it is out of the new-session gallery but
+remains a valid parent and runs by id. `iii-minimal` is the previous id of
+`default`, kept as a hidden alias with `extends: default` and no body of its
+own, so chains, saved sessions, and explicit invocations that name it resolve
+to the same identity as before.
+
+All three follow the bundled system-prompt contract: always present in
+`list`/`get` with `builtin: true` and an empty `modified_at`, shadowed by a
+local `<agents_folder>/<id>.md`, `update` copy-on-writes that local file,
+`create` of the id writes the same shadow, `delete` of the local file falls
+back to the bundled copy, and nothing is ever seeded on disk. `extends:
+default` builds on the compact identity; `extends: iii` on the full iii
+doctrine.
+
+The profile id `default` is unrelated to the harness's stored default prompt
+(`system-prompts/default.md`, a *system prompt* entry that overrides the
+embedded identity for sessions sent without an agent). The ADE selects the
+`default` profile for new sessions, so the card marked in the gallery is the
+profile the first send runs.
 
 `model` and `reasoning_effort` are optional, verbatim catalog selections. A
 catalog key may include its provider (`provider::model`); the harness splits
@@ -211,6 +237,11 @@ request schema, taken from its cached registry snapshot with one
 `engine::functions::info` batch for ids the snapshot cannot vouch for — to
 that frozen prompt; ids the engine does not know are named as unavailable.
 The declared ids also travel in `SessionMeta.metadata.agent_profile.functions`.
+The harness also freezes each preloaded contract's digest on the turn: a
+later registry change to one of those ids reaches the model as a per-id
+notice on every step, never as a rewrite of the frozen block — that block
+(with the skills index) is the stable prompt prefix that sessions on the same
+profile share through provider prompt caching.
 When the profile declares (or inherits) `skills`, the harness appends a
 `<preloaded_skills>` block after it — one `<skill id="…">` section per id
 with the body `directory::skills::get` serves, fetched once at resolution;

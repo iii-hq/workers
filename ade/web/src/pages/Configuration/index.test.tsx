@@ -104,7 +104,6 @@ const KNOWN_WORKER_CONFIGURATION_IDS = [
   'queue',
   'rbac-proxy',
   'sandbox-code-runner',
-  'scrapling',
   'security-scan',
   'session-manager',
   'shell',

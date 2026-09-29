@@ -11,6 +11,34 @@
         ],
         "type": "string"
       },
+      "PromptCacheIntent": {
+        "description": "Why a request's stable prefix is shareable across sessions: `surface_digest` is the caller's content identity for the text before the boundary (`sha256:<hex>`). A routing/accounting hint only — never a provider cache handle, and never evidence of a cache hit.",
+        "properties": {
+          "surface_digest": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "surface_digest"
+        ],
+        "type": "object"
+      },
+      "PromptSection": {
+        "description": "One ordered system-prompt section. `cache_boundary` marks the end of a cumulative prefix worth its own provider cache entry (the frozen agent-profile surface). Adapters without a boundary concept read the sections joined with \"\\n\\n\", which must equal `system_prompt` when both forms are sent.",
+        "properties": {
+          "cache_boundary": {
+            "default": false,
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
       "StreamChannelRef": {
         "properties": {
           "access_key": {
@@ -33,6 +61,17 @@
     },
     "description": "Input of the `router::chat` iii function: a [`ChatCall`] plus the caller's write channel. The handler relays assistant frames to `writer_ref` and also returns the terminal [`ChatResponse`].",
     "properties": {
+      "cache_intent": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/PromptCacheIntent"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
       "max_output_tokens": {
         "default": null,
         "format": "uint64",
@@ -81,6 +120,16 @@
         "default": null,
         "type": [
           "string",
+          "null"
+        ]
+      },
+      "system_sections": {
+        "default": null,
+        "items": {
+          "$ref": "#/definitions/PromptSection"
+        },
+        "type": [
+          "array",
           "null"
         ]
       },

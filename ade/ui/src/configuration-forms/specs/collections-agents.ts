@@ -208,6 +208,18 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
         ],
       },
       {
+        title: 'Call dispatch',
+        fields: [
+          select(
+            'call_reconciliation',
+            'Argument reconciliation',
+            [choice('off', 'Off'), choice('coerce', 'Coerce'), choice('judge', 'Judge')],
+            'Repairs malformed call arguments before dispatch. Coerce parses stringified JSON the schema rejects (lossless); Judge also asks judge::evaluate about renamed keys, enum values and stray fields when it is deployed. Unset uses Judge.',
+            { optional: true },
+          ),
+        ],
+      },
+      {
         title: 'Parentless sessions',
         fields: [
           object(
@@ -252,6 +264,7 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
       'dispatch_timeout_ms',
       'stream_coalesce_ms',
       'sweep_expression',
+      'call_reconciliation',
       'default_functions.allow[]',
       'default_functions.deny[]',
       'default_functions.expose',

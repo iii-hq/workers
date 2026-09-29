@@ -387,6 +387,10 @@ async fn execute(
                         "e2e_run_id": run_id,
                         "e2e_scenario": spec.id,
                     })),
+                    // Suite-made sessions are not human chats: `e2e` keeps
+                    // them (and their sub-agents) out of the console's
+                    // default session list.
+                    kind: Some("e2e".to_string()),
                 }),
                 options: Some(SendOptions {
                     max_turns: Some(spec.execution.max_turns),

@@ -4,9 +4,11 @@ import {
   adjacentTabId,
   CHAT_SCREEN,
   chatSessionScreen,
+  deepLinkScreen,
   defaultTabs,
   isChatScreen,
   MAX_COLUMNS,
+  type OpenDirection,
   parseActivation,
   parseActiveTabId,
   parseWorkspaceTabs,
@@ -16,6 +18,7 @@ import {
   screenLabel,
   sessionIdForChatScreen,
   shouldFlushPendingWrite,
+  type TabScreen,
   tabColumns,
   tabLabel,
   tabPaneIds,
@@ -37,39 +40,44 @@ import {
 const NO_EXT = new Map<string, string>()
 
 describe('parseWorkspaceTabs', () => {
-  it('returns [] for an empty / malformed config', () => {
+  it('returns [] for an empty / malformed document', () => {
     expect(parseWorkspaceTabs({})).toEqual([])
-    expect(parseWorkspaceTabs({ workspace: 'nope' })).toEqual([])
-    expect(parseWorkspaceTabs({ workspace: { tabs: 'nope' } })).toEqual([])
+    expect(parseWorkspaceTabs({ tabs: 'nope' })).toEqual([])
+    expect(parseWorkspaceTabs({ tabs: null })).toEqual([])
+    // The pre-data_dir shape (nested under the configuration entry's
+    // `workspace` key) is migrated server-side; the document is flat.
+    expect(
+      parseWorkspaceTabs({
+        workspace: { tabs: [{ id: 't', screens: ['chat'] }] },
+      }),
+    ).toEqual([])
   })
 
   it('keeps valid tabs (incl. empty and null columns) and drops malformed ones', () => {
     const tabs = parseWorkspaceTabs({
-      workspace: {
-        tabs: [
-          { id: 't1', screens: ['traces'] },
-          { id: 't2', screens: ['chat', 'workers'] },
-          { id: 't3', screens: ['ext:my-page'] },
-          { id: 't4', columns: 2, screens: [] },
-          { id: 't5', columns: 2, screens: [null, 'traces'] },
-          { id: 't6', columns: 3, screens: ['traces', 'chat', 'workers'] },
-          { id: 't7', columns: 2, screens: ['chat', 'traces'], sizes: [1, 3] },
-          { id: 't8', screens: ['chat:child:attempt:2'] },
-          { id: 'bad-empty-chat-session', screens: ['chat:'] },
-          { id: 'bad-screen', screens: ['nonsense'] },
-          {
-            id: 'bad-too-many-screens',
-            screens: Array.from({ length: MAX_COLUMNS + 1 }, () => 'traces'),
-          },
-          {
-            id: 'bad-columns',
-            columns: MAX_COLUMNS + 1,
-            screens: ['traces'],
-          },
-          { id: 'bad-sizes', screens: ['traces'], sizes: [0, -1] },
-          { screens: ['traces'] },
-        ],
-      },
+      tabs: [
+        { id: 't1', screens: ['traces'] },
+        { id: 't2', screens: ['chat', 'workers'] },
+        { id: 't3', screens: ['ext:my-page'] },
+        { id: 't4', columns: 2, screens: [] },
+        { id: 't5', columns: 2, screens: [null, 'traces'] },
+        { id: 't6', columns: 3, screens: ['traces', 'chat', 'workers'] },
+        { id: 't7', columns: 2, screens: ['chat', 'traces'], sizes: [1, 3] },
+        { id: 't8', screens: ['chat:child:attempt:2'] },
+        { id: 'bad-empty-chat-session', screens: ['chat:'] },
+        { id: 'bad-screen', screens: ['nonsense'] },
+        {
+          id: 'bad-too-many-screens',
+          screens: Array.from({ length: MAX_COLUMNS + 1 }, () => 'traces'),
+        },
+        {
+          id: 'bad-columns',
+          columns: MAX_COLUMNS + 1,
+          screens: ['traces'],
+        },
+        { id: 'bad-sizes', screens: ['traces'], sizes: [0, -1] },
+        { screens: ['traces'] },
+      ],
     })
     expect(tabs.map((t) => t.id)).toEqual([
       't1',
@@ -85,9 +93,7 @@ describe('parseWorkspaceTabs', () => {
 
   it("migrates legacy 'configuration' screens to empty columns", () => {
     const tabs = parseWorkspaceTabs({
-      workspace: {
-        tabs: [{ id: 'cfg', columns: 2, screens: ['configuration', 'traces'] }],
-      },
+      tabs: [{ id: 'cfg', columns: 2, screens: ['configuration', 'traces'] }],
     })
     expect(tabs).toHaveLength(1)
     expect(tabs[0].screens).toEqual([null, 'traces'])
@@ -95,12 +101,10 @@ describe('parseWorkspaceTabs', () => {
 
   it('rewrites migrated per-worker screens to their ext form', () => {
     const tabs = parseWorkspaceTabs({
-      workspace: {
-        tabs: [
-          { id: 'mig', columns: 2, screens: ['memory', 'worktrees'] },
-          { id: 'mig2', columns: 2, screens: ['browser', 'github'] },
-        ],
-      },
+      tabs: [
+        { id: 'mig', columns: 2, screens: ['memory', 'worktrees'] },
+        { id: 'mig2', columns: 2, screens: ['browser', 'github'] },
+      ],
     })
     expect(tabs).toHaveLength(2)
     expect(tabs[0].screens).toEqual(['ext:memory', 'ext:worktree'])
@@ -109,40 +113,38 @@ describe('parseWorkspaceTabs', () => {
 
   it('round-trips valid pane ids and strips only malformed identity metadata', () => {
     const tabs = parseWorkspaceTabs({
-      workspace: {
-        tabs: [
-          {
-            id: 'stable',
-            columns: 2,
-            screens: ['chat', 'traces'],
-            paneIds: ['pane-chat', 'pane-traces'],
-          },
-          {
-            id: 'legacy',
-            columns: 2,
-            screens: ['chat', 'traces'],
-            paneIds: ['pane-chat', ''],
-          },
-          {
-            id: 'wrong-shape',
-            columns: 1,
-            screens: ['chat'],
-            paneIds: 'legacy-value',
-          },
-          {
-            id: 'duplicate',
-            columns: 2,
-            screens: ['chat', 'traces'],
-            paneIds: ['same', 'same'],
-          },
-          {
-            id: 'misaligned',
-            columns: 2,
-            screens: ['chat', 'traces'],
-            paneIds: ['only-one'],
-          },
-        ],
-      },
+      tabs: [
+        {
+          id: 'stable',
+          columns: 2,
+          screens: ['chat', 'traces'],
+          paneIds: ['pane-chat', 'pane-traces'],
+        },
+        {
+          id: 'legacy',
+          columns: 2,
+          screens: ['chat', 'traces'],
+          paneIds: ['pane-chat', ''],
+        },
+        {
+          id: 'wrong-shape',
+          columns: 1,
+          screens: ['chat'],
+          paneIds: 'legacy-value',
+        },
+        {
+          id: 'duplicate',
+          columns: 2,
+          screens: ['chat', 'traces'],
+          paneIds: ['same', 'same'],
+        },
+        {
+          id: 'misaligned',
+          columns: 2,
+          screens: ['chat', 'traces'],
+          paneIds: ['only-one'],
+        },
+      ],
     })
 
     expect(tabs).toHaveLength(5)
@@ -165,11 +167,11 @@ describe('tabColumns', () => {
 describe('active pointer round-trip', () => {
   it('writes and reads the pointer without clobbering siblings', () => {
     const value = withActiveTabId(
-      { traces: { views: [] }, workspace: { tabs: defaultTabs() } },
+      { fromTheFuture: { keep: true }, tabs: defaultTabs() },
       'tab-x',
     )
     expect(parseActiveTabId(value)).toBe('tab-x')
-    expect(value.traces).toEqual({ views: [] })
+    expect(value.fromTheFuture).toEqual({ keep: true })
     expect(parseWorkspaceTabs(value)).toEqual(defaultTabs())
   })
 
@@ -196,14 +198,23 @@ describe('screen mapping + labels', () => {
     expect(() => chatSessionScreen('   ')).toThrow(/non-empty session id/)
   })
 
-  it('maps views to screens; ext-without-id and configuration have none', () => {
-    expect(screenForView('workers', null)).toBe('workers')
-    expect(screenForView('ext', 'my-page')).toBe('ext:my-page')
-    // The ext transient (view and page id land in separate commits) must
-    // not resolve to a fallback screen — that used to spawn duplicate tabs.
-    expect(screenForView('ext', null)).toBeNull()
+  it('maps views to screens; configuration has none', () => {
+    expect(screenForView('workers')).toBe('workers')
+    expect(screenForView('traces')).toBe('traces')
     // Settings are an overlay page, not a tab screen.
-    expect(screenForView('configuration', null)).toBeNull()
+    expect(screenForView('configuration')).toBeNull()
+  })
+
+  it('resolves deep links to screens and ignores everything else', () => {
+    expect(deepLinkScreen('#/workers')).toBe('workers')
+    // `#/traces` is a standalone surface, never a workspace deep link.
+    expect(deepLinkScreen('#/traces')).toBeNull()
+    // The bare hash is what a consumed deep link leaves behind: not a link.
+    expect(deepLinkScreen('')).toBeNull()
+    expect(deepLinkScreen('#/')).toBeNull()
+    expect(deepLinkScreen('#/configuration/workers/browser')).toBeNull()
+    expect(deepLinkScreen('#/worker/state')).toBeNull()
+    expect(deepLinkScreen('#/ext/state-manager')).toBeNull()
   })
 
   it('labels ext screens through the registry, falling back to the id', () => {
@@ -398,7 +409,7 @@ describe('panel column transforms', () => {
       withColumnAdded(withColumnAdded(base, 'right'), 'left'),
       'right',
     )
-    const parsed = parseWorkspaceTabs({ workspace: { tabs: [four] } })
+    const parsed = parseWorkspaceTabs({ tabs: [four] })
     expect(parsed).toHaveLength(1)
     expect(tabColumns(parsed[0])).toBe(4)
   })
@@ -411,9 +422,9 @@ describe('withScreenOpenedBeside', () => {
       columns: 2,
       screens: [CHAT_SCREEN, null],
     }
-    expect(withScreenOpenedBeside(tab, 'ext:shell')?.screens).toEqual([
+    expect(withScreenOpenedBeside(tab, 'ext:ide')?.screens).toEqual([
       CHAT_SCREEN,
-      'ext:shell',
+      'ext:ide',
     ])
   })
 
@@ -424,8 +435,8 @@ describe('withScreenOpenedBeside', () => {
       screens: [CHAT_SCREEN, 'traces'],
       paneIds: ['pane-chat', 'pane-traces'],
     }
-    const next = withScreenOpenedBeside(tab, 'ext:shell')
-    expect(next?.screens).toEqual([CHAT_SCREEN, 'ext:shell', 'traces'])
+    const next = withScreenOpenedBeside(tab, 'ext:ide')
+    expect(next?.screens).toEqual([CHAT_SCREEN, 'ext:ide', 'traces'])
     expect(next?.paneIds?.[0]).toBe('pane-chat')
     expect(next?.paneIds?.[2]).toBe('pane-traces')
     expect(next?.sizes?.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1)
@@ -448,9 +459,9 @@ describe('withScreenOpenedBeside', () => {
     const existing: WorkspaceTab = {
       id: 'a',
       columns: 2,
-      screens: [CHAT_SCREEN, 'ext:shell'],
+      screens: [CHAT_SCREEN, 'ext:ide'],
     }
-    expect(withScreenOpenedBeside(existing, 'ext:shell')).toBe(existing)
+    expect(withScreenOpenedBeside(existing, 'ext:ide')).toBe(existing)
 
     const fullScreens = [
       CHAT_SCREEN,
@@ -464,7 +475,7 @@ describe('withScreenOpenedBeside', () => {
       columns: MAX_COLUMNS,
       screens: fullScreens,
     }
-    expect(withScreenOpenedBeside(full, 'ext:shell')).toBeNull()
+    expect(withScreenOpenedBeside(full, 'ext:ide')).toBeNull()
   })
 })
 
@@ -472,10 +483,10 @@ describe('withWorkspaceScreenOpened', () => {
   it('activates an already-open panel without duplicating it', () => {
     const tabs: WorkspaceTab[] = [
       { id: 'chat', screens: [CHAT_SCREEN, 'traces'] },
-      { id: 'shell', screens: ['ext:shell'] },
+      { id: 'shell', screens: ['ext:ide'] },
     ]
     expect(
-      withWorkspaceScreenOpened(tabs, 'chat', 'ext:shell', () => 'new'),
+      withWorkspaceScreenOpened(tabs, 'chat', 'ext:ide', () => 'new'),
     ).toEqual({
       tabs,
       activeTabId: 'shell',
@@ -485,7 +496,7 @@ describe('withWorkspaceScreenOpened', () => {
   it('stays put when the workspace you are on already shows that screen', () => {
     const tabs: WorkspaceTab[] = [
       { id: 'first-chat', screens: [CHAT_SCREEN] },
-      { id: 'chat-and-shell', screens: [CHAT_SCREEN, 'ext:shell'] },
+      { id: 'chat-and-shell', screens: [CHAT_SCREEN, 'ext:ide'] },
     ]
     // Opening chat from the second tab must not send you to the first one
     // just because it was created earlier.
@@ -534,10 +545,10 @@ describe('withWorkspaceScreenOpened', () => {
     const open = withWorkspaceScreenOpened(
       [{ id: 'chat', columns: 2, screens: [CHAT_SCREEN, 'traces'] }],
       'chat',
-      'ext:shell',
+      'ext:ide',
       () => 'new',
     )
-    expect(open.tabs[0].screens).toEqual([CHAT_SCREEN, 'ext:shell', 'traces'])
+    expect(open.tabs[0].screens).toEqual([CHAT_SCREEN, 'ext:ide', 'traces'])
 
     const fullScreens = [
       CHAT_SCREEN,
@@ -555,14 +566,14 @@ describe('withWorkspaceScreenOpened', () => {
         },
       ],
       'full',
-      'ext:shell',
+      'ext:ide',
       () => 'new',
     )
     expect(full.activeTabId).toBe('new')
     expect(full.tabs[1]).toEqual({
       id: 'new',
       columns: 2,
-      screens: [CHAT_SCREEN, 'ext:shell'],
+      screens: [CHAT_SCREEN, 'ext:ide'],
     })
   })
 
@@ -612,7 +623,7 @@ describe('withScreenDetached', () => {
 
   it('round-trips through the validator', () => {
     const detached = withScreenDetached(base, 0)
-    const parsed = parseWorkspaceTabs({ workspace: { tabs: [detached] } })
+    const parsed = parseWorkspaceTabs({ tabs: [detached] })
     expect(parsed).toHaveLength(1)
     expect(parsed[0].screens).toEqual([null])
   })
@@ -627,6 +638,8 @@ describe('console::workspace fixtures (shared with the Rust worker)', () => {
         f.screen,
         () => 'tab-new',
         () => 'pane-new',
+        ('relativeTo' in f ? f.relativeTo : CHAT_SCREEN) as TabScreen,
+        ('direction' in f ? f.direction : 'right') as OpenDirection,
       )
       expect({ tabs: result.tabs, activeTabId: result.activeTabId }).toEqual(
         f.expect,
@@ -743,7 +756,7 @@ describe('activation provenance', () => {
   })
 
   it('reads a pointer written before the fields existed', () => {
-    expect(parseActivation({ workspace: { activeTabId: 'old' } })).toEqual({
+    expect(parseActivation({ activeTabId: 'old' })).toEqual({
       tabId: 'old',
       at: 0,
       by: 'browser',
@@ -754,7 +767,9 @@ describe('activation provenance', () => {
   it('treats anything but "function" as a browser write', () => {
     expect(
       parseActivation({
-        workspace: { activeTabId: 't', activatedAt: 3, activatedBy: 'robot' },
+        activeTabId: 't',
+        activatedAt: 3,
+        activatedBy: 'robot',
       }),
     ).toMatchObject({ by: 'browser' })
   })
@@ -792,14 +807,14 @@ describe('resolvePointer', () => {
 
 describe('persisted shapes from earlier releases', () => {
   it('restores a 1.9.x layout without activation fields or pane ids', () => {
+    // The same object the worker lifts out of the configuration entry's
+    // `workspace` key into `<data_dir>/workspace.json` on first boot.
     const value = {
-      workspace: {
-        tabs: [
-          { id: 'tab-home', columns: 2, screens: ['chat', 'traces'] },
-          { id: 'tab-2', name: 'Shell', screens: ['ext:shell'] },
-        ],
-        activeTabId: 'tab-2',
-      },
+      tabs: [
+        { id: 'tab-home', columns: 2, screens: ['chat', 'traces'] },
+        { id: 'tab-2', name: 'Shell', screens: ['ext:ide'] },
+      ],
+      activeTabId: 'tab-2',
     }
     const tabs = parseWorkspaceTabs(value)
     expect(tabs.map((t) => t.id)).toEqual(['tab-home', 'tab-2'])

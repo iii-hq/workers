@@ -15,3 +15,4 @@ config:
   events_stream: agent::events
   raw_events_stream: devin::events
   iii_context: true
+  session_recording: true

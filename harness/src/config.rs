@@ -17,6 +17,19 @@ use serde_json::Value;
 
 use crate::types::turn::FunctionPolicy;
 
+/// How [`WorkerConfig::call_reconciliation`] repairs malformed call arguments.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CallReconciliation {
+    /// Dispatch arguments exactly as the model wrote them.
+    Off,
+    /// Lossless repairs only: parse stringified JSON the schema rejects.
+    Coerce,
+    /// `coerce`, then ask the judge worker (when deployed) about the rest.
+    #[default]
+    Judge,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
@@ -47,6 +60,30 @@ pub struct WorkerConfig {
     /// retries remain owned by llm-router.
     #[serde(default = "default_max_transient_resumes")]
     pub max_transient_resumes: u32,
+
+    /// Capture-time byte cap on a function result (`content` + `details`);
+    /// over it, an elision marker replaces the result. 0 disables, values
+    /// under 1 KiB are raised to 1 KiB (MOT-4498).
+    #[serde(default = "default_max_result_bytes")]
+    pub max_result_bytes: usize,
+
+    /// Send the system prompt to `router::chat` as `system_sections` (the
+    /// frozen profile/identity prefix, then the per-session context) plus a
+    /// `cache_intent` digest, so cache-aware providers can route every session
+    /// on the same profile to one prefix entry — where the provider supports it
+    /// and the prefix meets its minimum cacheable size (MOT-4798). `false`
+    /// sends the flat string only.
+    #[serde(default = "default_prompt_cache_sections")]
+    pub prompt_cache_sections: bool,
+
+    /// Repair malformed function-call arguments against the target's request
+    /// schema before dispatch (MOT-4847). `coerce` parses values the model
+    /// sent as stringified JSON (`"true"`, `"[...]"`, `"{...}"`) where the
+    /// schema wants another type; `judge` also asks `judge::evaluate`, when
+    /// it is deployed, to settle renamed keys, off-enum values and unknown
+    /// fields; `off` dispatches arguments exactly as written.
+    #[serde(default)]
+    pub call_reconciliation: CallReconciliation,
 
     /// TTL for `harness_idem` webhook-dedupe rows. Seconds.
     #[serde(default = "default_idem_ttl_secs")]
@@ -228,6 +265,15 @@ fn default_max_transient_resumes() -> u32 {
     // (observed live 2026-07-21, session dcmcp-scan-p6w4-c-aq).
     3
 }
+/// Default for [`WorkerConfig::max_result_bytes`]: 256 KiB, the same ceiling
+/// `database` uses for its history (MOT-4372); the 16 MiB frame limit is the
+/// hard wall, the cap is also session hygiene.
+fn default_max_result_bytes() -> usize {
+    262_144
+}
+fn default_prompt_cache_sections() -> bool {
+    true
+}
 fn default_idem_ttl_secs() -> u64 {
     86_400
 }
@@ -238,7 +284,9 @@ fn default_context_timeout_ms() -> u64 {
     320_000
 }
 fn default_router_timeout_ms() -> u64 {
-    320_000
+    // ≥ llm-router's 600s stream budget plus its ack margin: the held-open
+    // router::chat trigger must outlive the longest single provider stream.
+    620_000
 }
 fn default_dispatch_timeout_ms() -> u64 {
     300_000
@@ -299,6 +347,9 @@ impl Default for WorkerConfig {
             max_children: default_max_children(),
             max_validation_retries: default_max_validation_retries(),
             max_transient_resumes: default_max_transient_resumes(),
+            max_result_bytes: default_max_result_bytes(),
+            prompt_cache_sections: default_prompt_cache_sections(),
+            call_reconciliation: CallReconciliation::default(),
             idem_ttl_secs: default_idem_ttl_secs(),
             session_timeout_ms: default_session_timeout_ms(),
             context_timeout_ms: default_context_timeout_ms(),
@@ -325,6 +376,8 @@ mod tests {
         assert_eq!(cfg.max_depth, 3);
         assert_eq!(cfg.max_children, 8);
         assert_eq!(cfg.max_transient_resumes, 3);
+        assert_eq!(cfg.max_result_bytes, 262_144);
+        assert!(cfg.prompt_cache_sections);
         assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
         assert_eq!(cfg.projects_file_path, "data/harness-projects.json");
     }

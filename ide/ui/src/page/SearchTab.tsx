@@ -5,7 +5,7 @@
    and virtualized so a thousand hits stay light. Searches run as you
    type (debounced), a stale response never overwrites a newer one. */
 
-import { IconButton } from '@iii-dev/console-ui'
+import { EmptyState, IconButton, SearchField } from '@iii-dev/console-ui'
 import {
   CaseSensitive,
   ChevronDown,
@@ -20,7 +20,7 @@ import {
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { errorMessage } from '../lib/format'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import type { Host } from '@iii-dev/console-ui'
 import { coderSearch } from './coder'
 import { FileTypeIcon } from './file-type-icon'
@@ -109,6 +109,12 @@ export function SearchTab({
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set())
   const [focusIndex, setFocusIndex] = useState(-1)
   const inputRef = useRef<HTMLInputElement>(null)
+  // The page's search verb and the console's pane focus both look the box
+  // up by attribute; the shared field carries no data-* props.
+  useEffect(() => {
+    inputRef.current?.setAttribute('data-shell-search-input', '')
+    inputRef.current?.setAttribute('data-autofocus', '')
+  }, [])
   const listRef = useRef<HTMLDivElement>(null)
   // Only the newest in-flight search may land — a slow older response
   // must not overwrite a newer one.
@@ -411,25 +417,18 @@ export function SearchTab({
         }}
       >
         <div className="shui-search-box">
-          <input
+          <SearchField
             ref={inputRef}
-            type="text"
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={setQuery}
             placeholder="Search"
             aria-label="Search query"
-            autoComplete="off"
-            spellCheck={false}
-            data-shell-search-input=""
-            data-autofocus=""
+            className="shui-search-query"
             onKeyDown={(event) => {
               if (event.key === 'ArrowDown' && rows.length > 0) {
                 event.preventDefault()
                 setFocusIndex(stepSearchRow(rows, -1, 1))
                 listRef.current?.focus()
-              } else if (event.key === 'Escape' && query !== '') {
-                event.preventDefault()
-                setQuery('')
               }
             }}
           />
@@ -499,7 +498,9 @@ export function SearchTab({
 
       {error ? <div className="shui-side-note warn">{error}</div> : null}
       {results && rows.length === 0 && !searching ? (
-        <div className="shui-side-note">No results found. Review your settings for configured exclusions.</div>
+        <div className="shui-side-empty">
+          <EmptyState title="No results" description="Nothing matched. Review the query and the configured exclusions." />
+        </div>
       ) : null}
       {results?.truncated ? (
         <div className="shui-search-truncated">Showing the first results only — narrow the query or the folder.</div>

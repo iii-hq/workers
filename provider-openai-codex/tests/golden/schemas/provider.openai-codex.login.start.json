@@ -1,0 +1,43 @@
+{
+  "description": "Start a ChatGPT device-code login. Returns the verification URL and one-time user code; the provider completes and saves the session in the background.",
+  "function_id": "provider::openai-codex::login::start",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "expires_at": {
+        "description": "Unix timestamp in seconds.",
+        "format": "int64",
+        "type": "integer"
+      },
+      "interval": {
+        "description": "Seconds between status requests from the UI.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "login_id": {
+        "type": "string"
+      },
+      "user_code": {
+        "type": "string"
+      },
+      "verification_uri": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "expires_at",
+      "interval",
+      "login_id",
+      "user_code",
+      "verification_uri"
+    ],
+    "title": "LoginStartResponse",
+    "type": "object"
+  }
+}

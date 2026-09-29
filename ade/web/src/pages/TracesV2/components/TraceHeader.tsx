@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { Fragment, useMemo } from 'react'
 import { Button } from '@/components/ui/Button'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { cn } from '@/lib/utils'
 import type { TraceChatLink } from '../lib/traceChatLink'
 import { getWorkerColor } from '../lib/traceColors'
@@ -100,14 +101,14 @@ export function TraceHeader({
   return (
     <div className="border-b border-rule-2 flex-shrink-0">
       <div className="flex items-center gap-2 px-3 pt-3 pb-1.5">
-        <span className="px-1.5 py-0.5 font-mono text-[11px] font-medium uppercase tracking-[0.06em] flex-shrink-0 rounded-xs bg-surface text-ink-faint lowercase">
+        <span className="px-1.5 py-0.5 font-mono text-[11px] font-medium flex-shrink-0 rounded-xs bg-surface text-ink-faint">
           {rootWorker}
         </span>
         <h2
-          className="font-mono text-[13px] font-semibold text-ink leading-tight truncate flex-1 min-w-0 lowercase"
-          title={rootSpan?.name || 'trace details'}
+          className="font-mono text-[13px] font-semibold text-ink leading-tight truncate flex-1 min-w-0"
+          title={rootSpan?.name || 'Trace details'}
         >
-          {rootSpan?.name || 'trace details'}
+          {rootSpan?.name || 'Trace details'}
         </h2>
         <Button
           variant="icon"
@@ -128,9 +129,7 @@ export function TraceHeader({
         >
           <span className="tabular-nums">{traceId.substring(0, 12)}</span>
           {copied ? (
-            <span className="text-accent text-[10px] uppercase tracking-[0.06em]">
-              copied
-            </span>
+            <Eyebrow className="text-accent">copied</Eyebrow>
           ) : (
             <Copy className="size-4 opacity-0 group-hover:opacity-100 transition-opacity" />
           )}
@@ -210,7 +209,7 @@ export function TraceHeader({
                 <div
                   key={worker}
                   className={cn(
-                    'h-full transition-all duration-300',
+                    'h-full transition-all duration-[var(--motion-duration-panel)]',
                     i > 0 && 'border-l border-rule-2',
                   )}
                   style={{
@@ -226,14 +225,14 @@ export function TraceHeader({
             {workerList.map((worker) => (
               <div
                 key={worker}
-                className="flex items-center gap-1 font-mono text-[10px] text-ink-faint"
+                className="flex items-center gap-1 font-mono text-[11px] text-ink-faint"
               >
                 <span
                   aria-hidden
                   className="w-1.5 h-1.5 flex-shrink-0"
                   style={{ backgroundColor: getWorkerColor(worker) }}
                 />
-                <span className="truncate lowercase">{worker}</span>
+                <span className="truncate">{worker}</span>
               </div>
             ))}
           </div>
@@ -250,7 +249,7 @@ export function TraceHeader({
               <button
                 type="button"
                 onClick={() => onSpanClick?.(span)}
-                className="font-mono text-[11px] text-ink-faint hover:text-ink hover:bg-surface-hover rounded-xs truncate max-w-[140px] flex-shrink-0 px-1 py-0.5 transition-colors lowercase"
+                className="font-mono text-[11px] text-ink-faint hover:text-ink hover:bg-surface-hover rounded-xs truncate max-w-[140px] flex-shrink-0 px-1 py-0.5 transition-colors"
                 title={span.name}
               >
                 {span.name}

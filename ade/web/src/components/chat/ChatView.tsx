@@ -54,6 +54,7 @@ import {
 import type {
   ApprovalStreamEvent,
   CompactResult,
+  ContextUsageReport,
   QueuedMessagePreview,
 } from '@/lib/backend/types'
 import { requestComposerFocus } from '@/lib/composer-insert'
@@ -61,10 +62,10 @@ import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import type { FileMentionRef } from '@/lib/file-mention-token'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
+import { ChatFileNavigation, openChatFile } from '@/lib/file-navigation'
 import { createWorkspaceFileSearch } from '@/lib/file-search'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { getIiiClient } from '@/lib/iii-client'
-import { requestPanelOpen } from '@/lib/panel-context'
 import { withScreenWakeLock } from '@/lib/screen-wake-lock'
 import { newMessageId } from '@/lib/session-id'
 import { isCallSettled } from '@/lib/sessions/entry-mapper'
@@ -74,6 +75,7 @@ import {
   parseCompactCommand,
   slashChip,
 } from '@/lib/slash-commands'
+import { onThinkingLevelChangeRequest } from '@/lib/thinking-level-request'
 import {
   CHAT_FOCUS_DROP_GRACE_MS,
   clearChatMessageFocus,
@@ -84,6 +86,7 @@ import { turnAnchorMessageId, turnFirstEntryId } from '@/lib/turn-anchor'
 import { SEND_FAILED_CODE } from '@/lib/turn-failure'
 import {
   useExtComposerActions,
+  useExtComposerControls,
   useExtSessionChips,
   useExtSessionTurnSummaries,
 } from '@/lib/ui-slots'
@@ -126,6 +129,7 @@ import {
 } from '@/types/chat'
 import type { PageCommandsApi } from '@/types/injectable-ui'
 import { ActiveSubagentChips } from './ActiveSubagentChips'
+import { idleComposerPlaceholder } from './agent-defaults'
 import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
@@ -227,6 +231,7 @@ interface ChatViewProps {
   onCompactConversation: (id: string, marker: Message) => void
 }
 
+/** Coordinate a conversation's composer, transcript and file navigation using its own workspace. */
 export function ChatView({
   conversation,
   backend,
@@ -272,6 +277,10 @@ export function ChatView({
     if (readOnly) return
     setModelPickerOpenRequest((current) => (current ?? 0) + 1)
   }, [readOnly])
+  /* An agent profile that pins the model locks the model-and-reasoning panel
+     (ChatSettingsSheet passes `modelDisabled` to the panel that carries the
+     effort control, not only to the model list). */
+  const modelLocked = Boolean(conversation.agentProfile?.model)
   const handleThinkingLevelChange = useCallback(
     (next: ThinkingLevel) => onUpdateThinkingLevel(conversation.id, next),
     [conversation.id, onUpdateThinkingLevel],
@@ -306,24 +315,18 @@ export function ChatView({
   // referenced lines when the mention carries a window. Relative mentions
   // resolve against the session's folder; absolute ones (a file referenced
   // from a shell rooted elsewhere) go as they are.
+  const [fileOpenError, setFileOpenError] = useState<string | null>(null)
   const handleOpenFileMention = useCallback(
     (ref: FileMentionRef) => {
       if (!workingDirEnabled || ref.path.endsWith('/')) return
-      const dir = workingDirRef.current
-      const path = ref.path.startsWith('/')
-        ? ref.path
-        : dir
-          ? `${dir.replace(/\/+$/, '')}/${ref.path}`
-          : null
-      if (!path) return
-      requestPanelOpen({
-        pageId: 'shell',
-        context: {
-          type: 'file',
-          path,
-          ...(ref.range ? { line: ref.range.from, endLine: ref.range.to } : {}),
-        },
-      })
+      setFileOpenError(null)
+      try {
+        openChatFile(ref, workingDirRef.current)
+      } catch (error) {
+        setFileOpenError(
+          error instanceof Error ? error.message : 'Could not open this file.',
+        )
+      }
     },
     [workingDirEnabled],
   )
@@ -927,6 +930,44 @@ export function ChatView({
     (chip) => chip.id === 'context',
   )
 
+  /* The context meter reads the harness's own accounting for the last
+   * generate step, once the transcript is ready and again each time a turn
+   * ends; the estimate inside ContextUsage only stands in before the first
+   * generate. Kept across a turn so the bar does not fall back to the
+   * estimate mid-stream. */
+  const [contextReport, setContextReport] = useState<{
+    id: string
+    report: ContextUsageReport
+  } | null>(null)
+  useEffect(() => {
+    const contextUsage = backend.contextUsage
+    if (
+      !contextUsage ||
+      conversation.draft ||
+      conversation.hydrated === false ||
+      streamingIndicator
+    )
+      return
+    let alive = true
+    void contextUsage(conversation.id)
+      .then((report) => {
+        if (alive && report !== null)
+          setContextReport({ id: conversation.id, report })
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [
+    backend.contextUsage,
+    conversation.id,
+    conversation.draft,
+    conversation.hydrated,
+    streamingIndicator,
+  ])
+  const reportedContext =
+    contextReport?.id === conversation.id ? contextReport.report : undefined
+
   /* Injected turn summaries live beside the composer rather than in the
    * transcript. Workers own their data and subscribe by session id; the host
    * only gives them the active turn state. */
@@ -947,6 +988,36 @@ export function ChatView({
       )
     })
   }, [extSessionTurnSummaries, conversation.id, streamingIndicator])
+
+  // Worker settings for this session, beside the model picker. Writes go
+  // through the console's own metadata writer (never the worker's), so they
+  // cannot race the model/thinking writes and apply from the next turn on.
+  const extComposerControls = useExtComposerControls()
+  const setSessionMetadata = conversationsCtx?.setSessionMetadata
+  const composerControls = useMemo(() => {
+    if (extComposerControls.length === 0 || !setSessionMetadata) return null
+    const metadata = conversation.sessionMetadata ?? {}
+    const setMetadata = (patch: Record<string, unknown>) =>
+      setSessionMetadata(conversation.id, patch)
+    return [...extComposerControls].sort(compareChips).map((control) => {
+      const Control = control.render
+      return (
+        <Control
+          key={control.id}
+          sessionId={conversation.id}
+          isStreaming={streamingIndicator}
+          metadata={metadata}
+          setMetadata={setMetadata}
+        />
+      )
+    })
+  }, [
+    extComposerControls,
+    setSessionMetadata,
+    conversation.id,
+    conversation.sessionMetadata,
+    streamingIndicator,
+  ])
 
   const extComposerActions = useExtComposerActions()
   const composerActions = useMemo(() => {
@@ -2264,9 +2335,7 @@ export function ChatView({
   const handleLoadActivityEntries = useMemo(
     () =>
       loadActivityEntries
-        ? (entryIds: string[]) => {
-            void loadActivityEntries(conversation.id, entryIds)
-          }
+        ? (entryIds: string[]) => loadActivityEntries(conversation.id, entryIds)
         : undefined,
     [loadActivityEntries, conversation.id],
   )
@@ -2278,10 +2347,10 @@ export function ChatView({
 
   const isDock = density === 'dock'
   const compact = isDock || onBack !== undefined
-  const headerPad = compact ? 'px-3 sm:px-4' : 'px-3 sm:px-6 lg:px-9'
+  const headerPad = compact ? 'px-3 @2xl:px-4' : 'px-3 @2xl:px-6 @5xl:px-9'
   const footerPad = compact
-    ? 'px-3 pb-3 pt-2 sm:px-4 sm:pb-4'
-    : 'px-3 pb-3 pt-2 sm:px-6 sm:pb-5 lg:px-9 lg:pb-6'
+    ? 'px-3 pb-3 pt-2 @2xl:px-4 @2xl:pb-4'
+    : 'px-3 pb-3 pt-2 @2xl:px-6 @2xl:pb-5 @5xl:px-9 @5xl:pb-6'
 
   // Resolve the working directory to its managed worktree so landed /
   // land-blocked events can be scoped to this conversation.
@@ -2373,6 +2442,23 @@ export function ChatView({
         return true
       }),
     [conversation.id, handleWorkingDirChange, workingDirEnabled],
+  )
+
+  /* Same shape as the working-directory request above: the page asks, the
+     view that owns the session decides. `handleThinkingLevelChange` is the
+     one the picker calls, so a page and the picker leave the conversation in
+     the same state. */
+  useEffect(
+    () =>
+      onThinkingLevelChangeRequest(({ sessionId, level }) => {
+        // An agent profile that pins the model disables the whole
+        // model-and-reasoning panel, effort included, so a page must not
+        // reach past a control the operator cannot use.
+        if (sessionId !== conversation.id || modelLocked) return false
+        handleThinkingLevelChange(level)
+        return true
+      }),
+    [conversation.id, handleThinkingLevelChange, modelLocked],
   )
 
   // Picking a worktree claims it for this session; the working dir itself
@@ -2584,13 +2670,19 @@ export function ChatView({
               {/* Header read-outs share ONE surface. This system draws no
                 lines (index.css:44-52 — rule/rule-2 are transparent in both
                 themes), so a group is a fill, not a run of dividers. It also
-                keeps the related session metadata visually together. */}
-              <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5 max-lg:hidden">
+                keeps the related session metadata visually together.
+                The group stays at every pane width; each read-out owns its
+                narrow form under a 30rem pane (`@container`, the design
+                system's narrow-container threshold): the context meter —
+                built-in or the harness chip — drops to its `used/usable`
+                counts, the sandbox chip is already `⬚ N`. */}
+              <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5">
                 {sessionChips}
                 {hasInjectedContextChip ? null : (
                   <ContextUsage
                     messages={conversation.messages}
                     contextWindow={contextWindow}
+                    reported={reportedContext}
                   />
                 )}
               </div>
@@ -2602,7 +2694,8 @@ export function ChatView({
                 target without letting an error widen the header. */}
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 lg:self-stretch lg:size-auto lg:px-1">
+                  {/* viewport: phone chrome — hidden from the phone header, touch size */}
+                  <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 @5xl:self-stretch @5xl:size-auto @5xl:px-1">
                     <StatusDot
                       tone={
                         conversation.status === 'error'
@@ -2668,52 +2761,62 @@ export function ChatView({
         />
       ) : null}
 
-      <RegisteredTriggerStatusProvider
-        loaded={triggersSnapshotSessionId === conversation.id}
-        triggersById={triggersById}
+      <ChatFileNavigation
+        messages={conversation.messages}
+        historyComplete={
+          conversation.hydrated !== false &&
+          conversation.history?.hasMore !== true
+        }
+        workingDir={conversation.workingDir ?? null}
+        enabled={workingDirEnabled}
       >
-        <MessageList
-          messages={conversation.messages}
-          agentName={conversation.agentProfile?.name}
-          sessionId={conversation.id}
-          spawnContext={{
-            title: conversation.title,
-            model: effectiveModel,
-            appearance: conversation.subagentAppearance,
-          }}
-          transcriptHydrated={conversation.hydrated !== false}
-          isThinking={isThinking}
-          turnVisualPhase={turnVisualState.phase}
-          turnKey={turnVisualState.turnKey}
-          thinkingDetail={
-            conversation.status === 'working' && conversation.statusReason
-              ? conversation.statusReason
-              : (phaseDetail ?? waitingFallback)
-          }
-          density={density}
-          onResolveApproval={resolveApproval}
-          onAlwaysAllow={handleAlwaysAllow}
-          onResolveFilesystemAccess={handleFilesystemResolve}
-          onManageFilesystemAccess={handleManageFilesystemAccess}
-          onConfigureProvider={handleOpenModelPicker}
-          workingDir={conversation.workingDir ?? null}
-          onWorkingDirChange={
-            workingDirEnabled ? handleWorkingDirChange : undefined
-          }
-          defaultWorkingDir={defaultWorkingDir}
-          worktreePicker={
-            worktreeEnabled
-              ? { enabled: true, onPick: handlePickWorktree }
-              : undefined
-          }
+        <RegisteredTriggerStatusProvider
+          loaded={triggersSnapshotSessionId === conversation.id}
           triggersById={triggersById}
-          focusMessageId={focusMessageId}
-          onFocusMessageHandled={handleFocusMessageHandled}
-          history={conversation.history}
-          onLoadOlder={handleLoadOlder}
-          onLoadActivityEntries={handleLoadActivityEntries}
-        />
-      </RegisteredTriggerStatusProvider>
+        >
+          <MessageList
+            messages={conversation.messages}
+            agentName={conversation.agentProfile?.name}
+            sessionId={conversation.id}
+            spawnContext={{
+              title: conversation.title,
+              model: effectiveModel,
+              appearance: conversation.subagentAppearance,
+            }}
+            transcriptHydrated={conversation.hydrated !== false}
+            isThinking={isThinking}
+            turnVisualPhase={turnVisualState.phase}
+            turnKey={turnVisualState.turnKey}
+            thinkingDetail={
+              conversation.status === 'working' && conversation.statusReason
+                ? conversation.statusReason
+                : (phaseDetail ?? waitingFallback)
+            }
+            density={density}
+            onResolveApproval={resolveApproval}
+            onAlwaysAllow={handleAlwaysAllow}
+            onResolveFilesystemAccess={handleFilesystemResolve}
+            onManageFilesystemAccess={handleManageFilesystemAccess}
+            onConfigureProvider={handleOpenModelPicker}
+            workingDir={conversation.workingDir ?? null}
+            onWorkingDirChange={
+              workingDirEnabled ? handleWorkingDirChange : undefined
+            }
+            defaultWorkingDir={defaultWorkingDir}
+            worktreePicker={
+              worktreeEnabled
+                ? { enabled: true, onPick: handlePickWorktree }
+                : undefined
+            }
+            triggersById={triggersById}
+            focusMessageId={focusMessageId}
+            onFocusMessageHandled={handleFocusMessageHandled}
+            history={conversation.history}
+            onLoadOlder={handleLoadOlder}
+            onLoadActivityEntries={handleLoadActivityEntries}
+          />
+        </RegisteredTriggerStatusProvider>
+      </ChatFileNavigation>
       <LiveRegion announcement={announcer.announcement} />
 
       {readOnly ? (
@@ -2726,6 +2829,14 @@ export function ChatView({
         </footer>
       ) : (
         <footer className={footerPad}>
+          {fileOpenError ? (
+            <p
+              role="alert"
+              className="mx-auto max-w-[760px] break-words text-[12px] text-alert"
+            >
+              {fileOpenError}
+            </p>
+          ) : null}
           <div className="mx-auto max-w-[760px]">
             {conversationsCtx ? (
               <ActiveSubagentChips
@@ -2812,7 +2923,7 @@ export function ChatView({
               modelOptions={modelOptions}
               catalogLoading={catalogLoading}
               modelPickerOpenRequest={modelPickerOpenRequest}
-              modelLocked={Boolean(conversation.agentProfile?.model)}
+              modelLocked={modelLocked}
               functionEntries={functionEntries}
               searchFiles={searchFiles}
               onOpenFileMention={
@@ -2851,6 +2962,7 @@ export function ChatView({
               onAttachmentsChange={handleComposerAttachmentsChange}
               syncedAttachments={conversation.draftAttachments}
               composerActions={composerActions}
+              composerControls={composerControls}
               onSubmit={handleSubmit}
               onStop={handleStop}
               stopping={stopping}
@@ -2862,6 +2974,10 @@ export function ChatView({
               blocked={harnessBlocked}
               submitBlocked={submitBlocked}
               autoFocus={focusComposerOnOpen && !harnessBlocked}
+              idlePlaceholder={idleComposerPlaceholder(
+                conversation.agentProfile,
+                conversation.messages.length > 0,
+              )}
               blockedPlaceholder={
                 conversationsCtx
                   ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)

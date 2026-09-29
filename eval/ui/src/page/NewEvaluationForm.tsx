@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Button,
+  Eyebrow,
   Input,
   Select,
   StatusPanel,
   Tabs,
   TabsList,
   TabsTrigger,
+  uiClasses,
 } from '@iii-dev/console-ui'
-import { errorMessage } from '../api'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { Field, TextArea } from '../components'
 import {
   buildRequest,
@@ -100,7 +102,7 @@ export function NewEvaluationForm({
       setErrors(built.errors)
       window.requestAnimationFrame(() => {
         const firstError = formRef.current?.querySelector<HTMLElement>(
-          '.eval-ui-field-error',
+          `.${uiClasses.fieldError}`,
         )
         if (!firstError) return
         const details = firstError.closest('details')
@@ -181,21 +183,21 @@ export function NewEvaluationForm({
         />
       ) : null}
       {Object.keys(errors).length > 0 ? (
-        <div className="eval-ui-error-summary" role="alert">
-          <strong>
-            Fix {Object.keys(errors).length}{' '}
-            {Object.keys(errors).length === 1 ? 'field' : 'fields'} to run this
-            comparison.
-          </strong>
-          <span>{[...new Set(Object.values(errors))].join(' · ')}</span>
-        </div>
+        <StatusPanel
+          variant="alert"
+          role="alert"
+          headline={`Fix ${Object.keys(errors).length} ${
+            Object.keys(errors).length === 1 ? 'field' : 'fields'
+          } to run this comparison.`}
+          detail={[...new Set(Object.values(errors))].join(' · ')}
+        />
       ) : null}
 
       <section className="eval-ui-panel">
         <div className="eval-ui-step-head">
           <span className="eval-ui-step-number">1</span>
           <div>
-            <div className="eval-ui-panel-title">choose what changes</div>
+            <Eyebrow as="div">choose what changes</Eyebrow>
             <p>Only the selected input differs between A and B.</p>
           </div>
         </div>
@@ -373,7 +375,7 @@ export function NewEvaluationForm({
             ) : null}
             <div className="eval-ui-shared-editor">
               <div className="eval-ui-shared-editor-head">
-                <span>shared by A + B</span>
+                <Eyebrow>shared by A + B</Eyebrow>
                 <strong>{comparison.sharedLabel}</strong>
               </div>
               <Field
@@ -399,7 +401,7 @@ export function NewEvaluationForm({
         <div className="eval-ui-step-head">
           <span className="eval-ui-step-number">2</span>
           <div>
-            <div className="eval-ui-panel-title">shared run settings</div>
+            <Eyebrow as="div">shared run settings</Eyebrow>
             <p>The same model and limits are applied to A and B.</p>
           </div>
         </div>
@@ -453,11 +455,11 @@ export function NewEvaluationForm({
               {manualModel ? 'use model catalog' : 'enter model manually'}
             </button>
           ) : modelCatalogError ? (
-            <span className="eval-ui-hint">
+            <span className={uiClasses.fieldDescription}>
               model catalog unavailable — {modelCatalogError}
             </span>
           ) : (
-            <span className="eval-ui-hint">
+            <span className={uiClasses.fieldDescription}>
               model catalog is empty; enter a model manually.
             </span>
           )}
@@ -514,10 +516,10 @@ export function NewEvaluationForm({
         </div>
       </section>
 
-      <details className="eval-ui-advanced eval-ui-success-criteria">
-        <summary>success criteria (optional)</summary>
+      <details className="eval-ui-advanced">
+        <summary className={uiClasses.eyebrow}>success criteria (optional)</summary>
         <div className="eval-ui-advanced-body">
-          <span className="eval-ui-hint">
+          <span className={uiClasses.fieldDescription}>
             Leave the expected value or custom function empty to collect outputs
             and metrics without scoring either variant.
           </span>
@@ -571,7 +573,7 @@ export function NewEvaluationForm({
                   }
                 />
                 {form.evaluatorMode === 'normalized_text' ? (
-                  <span className="eval-ui-hint">
+                  <span className={uiClasses.fieldDescription}>
                     Ignores letter case, repeated whitespace, and surrounding
                     punctuation.
                   </span>
@@ -608,7 +610,7 @@ export function NewEvaluationForm({
       </details>
 
       <details className="eval-ui-advanced">
-        <summary>advanced harness options</summary>
+        <summary className={uiClasses.eyebrow}>advanced harness options</summary>
         <div className="eval-ui-advanced-body">
           <div className="eval-ui-grid-3">
             <Field
@@ -800,7 +802,9 @@ function VariantEditor({
       <div className="eval-ui-variant-head">
         <span className="eval-ui-variant-marker">{marker}</span>
         <div>
-          <div className="eval-ui-variant-title">{role}</div>
+          <Eyebrow as="div" className="eval-ui-variant-title">
+            {role}
+          </Eyebrow>
           <p>{hint}</p>
         </div>
       </div>

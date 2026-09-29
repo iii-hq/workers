@@ -9,10 +9,10 @@
  *
  * - src/catalog/FunctionsPage — every registered function, its schemas, an
  *                               invoke panel, and its live call feed
- *                               (#/ext/functions)
+ *                               (page `functions`)
  * - src/catalog/TriggersPage  — trigger types and their live bindings, each
  *                               with its family's real fire path
- *                               (#/ext/triggers)
+ *                               (page `triggers`)
  *
  * Both run off engine signals (`engine::functions-available`,
  * `engine::workers-available`, `trace`) rather than timers, so they are live

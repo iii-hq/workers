@@ -85,6 +85,9 @@ pub struct SendOptions {
     /// Every model used by the tree must advertise catalog pricing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cost_usd: Option<f64>,
+    /// Omitting both reasoning fields on an existing session inherits the
+    /// prior turn's; naming either resolves fresh (`provider_options: {}`
+    /// resets to the provider default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
     /// Provider-native per-call options, namespaced by provider id.
@@ -116,6 +119,10 @@ pub struct SessionInit {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// Session kind stored on creation: `user` (default), `automation` or
+    /// `e2e`. Opaque to the harness; validated by session-manager.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -264,7 +271,15 @@ async fn start_with_delivery_lock(
     // Resolve the agent profile (if named) BEFORE the model gate and session
     // creation: the profile's model is a fallback for a session-creating send,
     // and a failed resolve must leave no session or budget ledger behind.
-    let agent = resolve_send_agent(deps, &cfg, &req, prev.as_ref()).await?;
+    // The one dispatch-policy rule for this send: persisted as
+    // `options.functions` AND the policy its profile's contracts freeze under.
+    let functions = send_functions(
+        &cfg,
+        &req,
+        prev.as_ref().and_then(|p| p.options.functions.as_ref()),
+    )
+    .cloned();
+    let agent = resolve_send_agent(deps, &cfg, &req, prev.as_ref(), functions.as_ref()).await?;
 
     // A profile-associated model is authoritative for that profile. Console
     // locks its picker to the same value, while this server-side precedence
@@ -311,18 +326,15 @@ async fn start_with_delivery_lock(
         crate::prompt::effective_default(&deps.iii).await.identity
     };
     let mut options = build_options(&cfg, &req, model, provider, agent.as_ref(), &identity);
-    inherit_prior_functions(
-        &mut options,
-        prev.as_ref()
-            .and_then(|p| p.options.functions.as_ref())
-            // An agent send with no explicit policy gets the configured
-            // default instead of deny-all: an identity picked to DO something
-            // must be able to dispatch. `prev` and `agent` are mutually
-            // exclusive (resolve_send_agent).
-            .or_else(|| agent.as_ref().and(cfg.default_functions.as_ref())),
-    );
+    options.functions = functions;
     if let (true, Some(prev)) = (inherits_prompt, prev.as_ref()) {
         inherit_prior_system_prompt(&mut options, &prev.options);
+    }
+    if let (true, Some(prev)) = (
+        reasoning_fields_omitted(req.options.as_ref()),
+        prev.as_ref(),
+    ) {
+        inherit_prior_reasoning(&mut options, &prev.options);
     }
     // A profile's skills are PRELOADED into its prompt (agents.rs), never a
     // filter: only an explicit `options.skills` narrows the skills index.
@@ -341,16 +353,16 @@ async fn start_with_delivery_lock(
     tag_send_span_with_message(&message);
 
     // Resolve the session (ensure if id given, else create).
-    let (title, metadata) = req
+    let (title, metadata, kind) = req
         .session
         .as_ref()
-        .map(|s| (s.title.clone(), s.metadata.clone()))
-        .unwrap_or((None, None));
+        .map(|s| (s.title.clone(), s.metadata.clone(), s.kind.clone()))
+        .unwrap_or((None, None, None));
     let metadata = session_metadata_with_agent(metadata, agent.as_ref());
     let session_id = match &req.session_id {
         Some(id) => {
             let ensured = session
-                .ensure(id, title.as_deref(), metadata.as_ref())
+                .ensure(id, title.as_deref(), metadata.as_ref(), kind.as_deref())
                 .await?;
             // Console materialises its draft before calling harness::send, so
             // ensure cannot apply the authoritative Directory snapshot on
@@ -365,7 +377,11 @@ async fn start_with_delivery_lock(
             }
             id.clone()
         }
-        None => session.create(title.as_deref(), metadata.as_ref()).await?,
+        None => {
+            session
+                .create(title.as_deref(), metadata.as_ref(), kind.as_deref())
+                .await?
+        }
     };
     tag_failed_send_with_session(
         &session_id,
@@ -926,7 +942,8 @@ fn build_options(
 ) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
     let mut thinking_level = opts.thinking_level;
-    let mut provider_options = opts.provider_options;
+    // `{}` is the explicit reset; it reaches the router as no options at all.
+    let mut provider_options = opts.provider_options.filter(|map| !map.is_empty());
     if let Some(agent) = agent {
         agent.apply_reasoning(
             provider.as_deref(),
@@ -965,6 +982,8 @@ fn build_options(
             .max_validation_retries
             .unwrap_or(cfg.max_validation_retries),
         max_transient_resumes: cfg.max_transient_resumes,
+        preloaded_contracts: agent.map(|a| a.contract_digests.clone()),
+        seeded_contracts: None,
     }
 }
 
@@ -984,16 +1003,28 @@ pub(crate) fn session_metadata_with_agent(
     Some(Value::Object(object))
 }
 
-/// A steer also inherits the prior turn's dispatch policy unless this send
-/// names its own: `functions` is fail-closed, so leaving it `None` on a fresh
-/// steer record would silently DISARM a live run — every turn from the nudge
-/// onward denied all dispatch. Explicit strip stays possible
-/// (`options.functions: { allow: [] }`).
-fn inherit_prior_functions(options: &mut TurnOptions, prev_functions: Option<&FunctionPolicy>) {
-    if options.functions.is_some() {
-        return;
-    }
-    options.functions = prev_functions.cloned();
+/// The dispatch policy a send runs under — and the one its profile's
+/// preloaded contracts freeze against. An explicit `options.functions` (even
+/// `{ allow: [] }`, the deliberate strip) wins. A steer otherwise keeps the
+/// prior turn's policy whole: `functions` is fail-closed, so `None` on a fresh
+/// steer record would silently DISARM a live run. A profile send with neither
+/// gets the configured default instead of deny-all — an identity picked to DO
+/// something must be able to dispatch. A plain new send stays `None`.
+/// `prev` and `options.agent` are mutually exclusive (`agent_send_id`).
+fn send_functions<'a>(
+    cfg: &'a WorkerConfig,
+    req: &'a SendRequest,
+    prev_functions: Option<&'a FunctionPolicy>,
+) -> Option<&'a FunctionPolicy> {
+    let options = req.options.as_ref();
+    options
+        .and_then(|o| o.functions.as_ref())
+        .or(prev_functions)
+        .or_else(|| {
+            options
+                .and_then(|o| o.agent.as_ref())
+                .and(cfg.default_functions.as_ref())
+        })
 }
 
 fn select_skill_context(
@@ -1107,6 +1138,24 @@ fn inherit_prior_system_prompt(options: &mut TurnOptions, prev: &TurnOptions) {
     options.system_prompt = prev.system_prompt.clone();
     options.skills_prompt = prev.skills_prompt.clone();
     options.agent = prev.agent.clone();
+    options.preloaded_contracts = prev.preloaded_contracts.clone();
+    options.seeded_contracts = prev.seeded_contracts.clone();
+}
+
+/// True when a send names neither `thinking_level` nor `provider_options` —
+/// the condition under which an existing session keeps the prior turn's
+/// reasoning instead of falling back to the provider default.
+fn reasoning_fields_omitted(opts: Option<&SendOptions>) -> bool {
+    opts.is_none_or(|o| o.thinking_level.is_none() && o.provider_options.is_none())
+}
+
+/// Reasoning is sticky like model and prompt: a silent effort change also
+/// busts the provider's messages cache. The two fields travel as one unit so
+/// a stale native effort never overrides an explicit `thinking_level` (the
+/// same rule as `subagent::child_reasoning`).
+fn inherit_prior_reasoning(options: &mut TurnOptions, prev: &TurnOptions) {
+    options.thinking_level = prev.thinking_level;
+    options.provider_options = prev.provider_options.clone();
 }
 
 /// Resolve `options.agent` for this send, or `None` when absent. Validation
@@ -1116,11 +1165,15 @@ async fn resolve_send_agent(
     cfg: &WorkerConfig,
     req: &SendRequest,
     prev: Option<&TurnRecord>,
+    functions: Option<&FunctionPolicy>,
 ) -> Result<Option<crate::agents::ResolvedAgent>, HarnessError> {
     let Some(id) = agent_send_id(req.options.as_ref(), prev.is_some())? else {
         return Ok(None);
     };
-    crate::agents::resolve(deps, cfg, id).await.map(Some)
+    let policy = crate::policy::CompiledPolicy::from(functions);
+    crate::agents::resolve(deps, cfg, id, &policy)
+        .await
+        .map(Some)
 }
 
 /// The pre-fetch half of agent-send validation: which id (if any) this send
@@ -1362,6 +1415,8 @@ pub(crate) async fn seed_new(
         display_parent_session_id: lineage.display_parent_session_id.clone(),
         functions_generation,
         function_contract_ledger,
+        // Per turn: a new message may have changed what failed before.
+        failed_calls: Default::default(),
         skill_ack,
         skills_started,
         context_snapshot: None,
@@ -1375,7 +1430,7 @@ pub(crate) async fn seed_new(
         updated_at: now,
     };
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-    turn_loop::enqueue_step(
+    if let Err(error) = turn_loop::enqueue_step(
         &deps.iii,
         session_id,
         &turn_id,
@@ -1383,7 +1438,16 @@ pub(crate) async fn seed_new(
         record.message_preview.as_deref(),
         lineage.depth,
     )
-    .await?;
+    .await
+    {
+        // The record is already `Running`; left as is, no step would ever run
+        // it and the session would stay "working" with its messages parked.
+        // Finalize it as failed so the error is visible and the session
+        // accepts new sends.
+        let mut record = record;
+        Box::pin(turn_loop::fail_unenqueued_turn(deps, &mut record, &error)).await;
+        return Err(error);
+    }
     Ok(StartOutcome {
         session_id: session_id.to_string(),
         turn_id,
@@ -1878,6 +1942,8 @@ mod tests {
             agent: None,
             max_validation_retries: 2,
             max_transient_resumes: 1,
+            preloaded_contracts: None,
+            seeded_contracts: None,
         }
     }
 
@@ -1899,6 +1965,7 @@ mod tests {
             display_parent_session_id: None,
             functions_generation: Some(generation),
             function_contract_ledger: Default::default(),
+            failed_calls: Default::default(),
             skill_ack: Some(crate::types::turn::SkillAck {
                 generation,
                 fingerprint: Some(format!("sha256:{generation}")),
@@ -2160,23 +2227,26 @@ mod tests {
             expose: Default::default(),
         };
 
+        let cfg = WorkerConfig::default();
         // A steer with no policy of its own keeps the run armed exactly as
         // the prior turn left it.
-        let mut options = options_with(None);
-        inherit_prior_functions(&mut options, Some(&broad));
-        let compiled = policy::CompiledPolicy::from(options.functions.as_ref());
+        let steer = agent_send_request(SendOptions::default());
+        let compiled = policy::CompiledPolicy::from(send_functions(&cfg, &steer, Some(&broad)));
         assert!(compiled.allows("state::get"));
         assert!(compiled.allows("state::set"));
 
         // An explicit policy on the send still beats inheritance.
-        let strip = FunctionPolicy {
-            allow: vec![],
-            deny: vec![],
-            expose: Default::default(),
-        };
-        let mut options = options_with(Some(strip));
-        inherit_prior_functions(&mut options, Some(&broad));
-        assert!(!policy::CompiledPolicy::from(options.functions.as_ref()).allows("state::get"));
+        let strip = agent_send_request(SendOptions {
+            functions: Some(FunctionPolicy::default()),
+            ..Default::default()
+        });
+        assert!(
+            !policy::CompiledPolicy::from(send_functions(&cfg, &strip, Some(&broad)))
+                .allows("state::get")
+        );
+
+        // A plain new send with no policy stays fail-closed, default or not.
+        assert!(send_functions(&cfg, &steer, None).is_none());
     }
 
     #[test]
@@ -2191,6 +2261,11 @@ mod tests {
         let mut prev = options_with(None);
         prev.system_prompt = Some("frozen custom prompt".into());
         prev.skills_prompt = Some("frozen skill prompt".into());
+        prev.preloaded_contracts = Some(std::collections::BTreeMap::from([(
+            "state::get".to_string(),
+            Some("sha256:frozen".to_string()),
+        )]));
+        prev.seeded_contracts = Some("<preloaded_functions>…</preloaded_functions>".into());
         inherit_prior_system_prompt(&mut options, &prev);
         assert_eq!(
             options.system_prompt.as_deref(),
@@ -2200,6 +2275,10 @@ mod tests {
             options.skills_prompt.as_deref(),
             Some("frozen skill prompt")
         );
+        // The frozen contract digests travel with the identity, and so does a
+        // spawned child's seeded contract block.
+        assert_eq!(options.preloaded_contracts, prev.preloaded_contracts);
+        assert_eq!(options.seeded_contracts, prev.seeded_contracts);
 
         // A prior `disabled` turn's None inherits too — disabled stays disabled.
         let mut options = bare_options();
@@ -2225,6 +2304,61 @@ mod tests {
             ..Default::default()
         };
         assert!(!prompt_fields_omitted(Some(&bare_strategy)));
+    }
+
+    fn codex_effort(effort: &str) -> BTreeMap<String, Value> {
+        BTreeMap::from([(
+            "openai-codex".to_string(),
+            serde_json::json!({ "reasoning_effort": effort }),
+        )])
+    }
+
+    #[test]
+    fn a_send_naming_no_reasoning_field_inherits_the_prior_reasoning_whole() {
+        assert!(reasoning_fields_omitted(None));
+        assert!(reasoning_fields_omitted(Some(&SendOptions::default())));
+
+        let mut prev = bare_options();
+        prev.thinking_level = Some(ThinkingLevel::Xhigh);
+        prev.provider_options = Some(codex_effort("xhigh"));
+        let mut next = bare_options();
+        inherit_prior_reasoning(&mut next, &prev);
+        assert_eq!(next.thinking_level, Some(ThinkingLevel::Xhigh));
+        assert_eq!(next.provider_options, prev.provider_options);
+    }
+
+    #[test]
+    fn naming_either_reasoning_field_blocks_inheritance() {
+        // A new level alone must not pick up the prior native effort, which
+        // would override it at the provider.
+        let level_only = SendOptions {
+            thinking_level: Some(ThinkingLevel::Low),
+            ..Default::default()
+        };
+        assert!(!reasoning_fields_omitted(Some(&level_only)));
+        let native_only = SendOptions {
+            provider_options: Some(codex_effort("high")),
+            ..Default::default()
+        };
+        assert!(!reasoning_fields_omitted(Some(&native_only)));
+
+        // `provider_options: {}` is the reset hatch: it names the field, and
+        // the turn reaches the router with no reasoning options at all.
+        let reset = SendOptions {
+            provider_options: Some(BTreeMap::new()),
+            ..Default::default()
+        };
+        assert!(!reasoning_fields_omitted(Some(&reset)));
+        let opts = build_options(
+            &WorkerConfig::default(),
+            &agent_send_request(reset),
+            "m".into(),
+            None,
+            None,
+            crate::prompt::DEFAULT,
+        );
+        assert_eq!(opts.thinking_level, None);
+        assert_eq!(opts.provider_options, None);
     }
 
     #[test]
@@ -2525,6 +2659,7 @@ mod tests {
             skills: vec!["review".into()],
             functions: Vec::new(),
             model: model.map(str::to_string),
+            contract_digests: Default::default(),
             reasoning_effort: None,
             name: "Tech Leader".into(),
             icon: None,
@@ -2675,25 +2810,12 @@ mod tests {
     #[test]
     fn agent_send_defaults_functions_to_the_configured_baseline() {
         let cfg = WorkerConfig::default();
-        let agent = resolved_agent(None);
         let req = agent_send_request(SendOptions {
             agent: Some("tech-leader".into()),
             ..Default::default()
         });
         // Absent policy + agent → the configured default applies.
-        let mut opts = build_options(
-            &cfg,
-            &req,
-            "m".into(),
-            None,
-            Some(&agent),
-            crate::prompt::DEFAULT,
-        );
-        inherit_prior_functions(
-            &mut opts,
-            None.or_else(|| Some(&agent).and(cfg.default_functions.as_ref())),
-        );
-        let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
+        let compiled = policy::CompiledPolicy::from(send_functions(&cfg, &req, None));
         assert!(compiled.allows("harness::spawn"));
         assert!(compiled.allows("state::set"));
         // Explicit policy wins over the agent default.
@@ -2706,19 +2828,7 @@ mod tests {
             }),
             ..Default::default()
         });
-        let mut opts = build_options(
-            &cfg,
-            &req,
-            "m".into(),
-            None,
-            Some(&agent),
-            crate::prompt::DEFAULT,
-        );
-        inherit_prior_functions(
-            &mut opts,
-            None.or_else(|| Some(&agent).and(cfg.default_functions.as_ref())),
-        );
-        let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
+        let compiled = policy::CompiledPolicy::from(send_functions(&cfg, &req, None));
         assert!(compiled.allows("state::get"));
         assert!(!compiled.allows("harness::spawn"));
     }
@@ -2726,7 +2836,8 @@ mod tests {
     #[test]
     fn agent_identity_inherits_with_the_prompt_and_sheds_with_it() {
         let cfg = WorkerConfig::default();
-        let agent = resolved_agent(None);
+        let mut agent = resolved_agent(Some("openai-codex::codex/gpt-5.6-sol"));
+        agent.reasoning_effort = Some("high".into());
         let req = agent_send_request(SendOptions {
             agent: Some("tech-leader".into()),
             ..Default::default()
@@ -2734,17 +2845,21 @@ mod tests {
         let prev = build_options(
             &cfg,
             &req,
-            "m".into(),
-            None,
+            "codex/gpt-5.6-sol".into(),
+            Some("openai-codex".into()),
             Some(&agent),
             crate::prompt::DEFAULT,
         );
 
-        // A bare steer inherits prompt AND identity.
+        // A bare steer inherits prompt AND identity, and the profile's
+        // reasoning effort stays authoritative past turn 1.
         let mut next = bare_options();
         inherit_prior_system_prompt(&mut next, &prev);
+        inherit_prior_reasoning(&mut next, &prev);
         assert_eq!(next.system_prompt, prev.system_prompt);
         assert_eq!(next.agent, prev.agent);
+        assert_eq!(next.thinking_level, Some(ThinkingLevel::High));
+        assert_eq!(next.provider_options, Some(codex_effort("high")));
 
         // An explicit prompt field resolves fresh — no inherit call — and the
         // freshly built options carry no identity.
@@ -2760,5 +2875,23 @@ mod tests {
             crate::prompt::DEFAULT,
         );
         assert_eq!(explicit.agent, None);
+    }
+    #[tokio::test]
+    async fn agent_send_validation_runs_before_profile_rpc() {
+        let deps = crate::functions::subscribe::tests::disconnected_deps();
+        let cfg = WorkerConfig::default();
+        let invalid = agent_send_request(SendOptions {
+            agent: Some("fixture".into()),
+            system_prompt: Some("conflicting prompt".into()),
+            ..Default::default()
+        });
+        let error = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            resolve_send_agent(&deps, &cfg, &invalid, None, None),
+        )
+        .await
+        .expect("validation must run before profile RPC")
+        .unwrap_err();
+        assert_eq!(error.code(), "harness/invalid_request");
     }
 }

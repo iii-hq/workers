@@ -87,16 +87,6 @@ export function createEvalApi(host: Host): EvalApi {
   }
 }
 
-export function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message
-  if (typeof error === 'string') return error
-  try {
-    return JSON.stringify(error)
-  } catch {
-    return 'unknown error'
-  }
-}
-
 export function isTerminal(status: EvalStatus): boolean {
   return (
     status === 'completed' ||

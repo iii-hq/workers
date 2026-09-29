@@ -1,7 +1,7 @@
 /**
  * Pure page logic, kept out of components so it is testable without a DOM:
- * family badge labels, export filename slugs, relative timestamps, error
- * normalization, and the starter source every new canvas is created with.
+ * family badge labels, export filename slugs, and the starter source every
+ * new canvas is created with.
  */
 
 import type { CanvasFormat } from '../lib/types'
@@ -68,32 +68,6 @@ export function exportFilename(name: string, ext: 'svg' | 'png'): string {
     .slice(0, 64)
     .replace(/-+$/, '')
   return `${slug || 'canvas'}.${ext}`
-}
-
-/** Compact "how long ago" for the sidebar rows; absolute date past 30 days. */
-export function relativeTime(unixSecs: number, nowSecs: number): string {
-  const delta = Math.max(0, nowSecs - unixSecs)
-  if (delta < 60) return 'just now'
-  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`
-  if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`
-  if (delta < 86400 * 30) return `${Math.floor(delta / 86400)}d ago`
-  return new Date(unixSecs * 1000).toISOString().slice(0, 10)
-}
-
-/** Normalize whatever a rejected bus call throws into a readable string. */
-export function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message
-  if (typeof err === 'string') return err
-  if (err && typeof err === 'object') {
-    const message = (err as { message?: unknown }).message
-    if (typeof message === 'string') return message
-    try {
-      return JSON.stringify(err)
-    } catch {
-      // fall through to String()
-    }
-  }
-  return String(err)
 }
 
 /** What `canvas::create` is seeded with from the sidebar's new button. */

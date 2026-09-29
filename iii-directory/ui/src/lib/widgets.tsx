@@ -1,162 +1,78 @@
 /**
- * Small presentational pieces shared by the function-trigger views and the
- * page. Ports of the console's sandbox/directory card chrome, restyled
- * with `dir-ui-*` classes (styles.css, scoped under
- * `[data-iii-ui="iii-directory"]`) — injected UI can't lean on the
- * console's Tailwind utility output.
+ * Compositions over the shared primitives that every function-trigger view
+ * repeats: a read-only row on the list recipe, an eyebrow-headed section,
+ * the identity line, metadata pairs and the running-state body.
  */
 
-import { Badge } from '@iii-dev/console-ui'
+import { Eyebrow, type MetaRowItem, Skeleton } from '@iii-dev/console-ui'
+import uiClasses from '@iii-dev/console-ui/ui-classes'
 import type { ReactNode } from 'react'
 
-export function Chip({ children, className }: { children: ReactNode; className?: string }) {
-  return <span className={`dir-ui-chip${className ? ` ${className}` : ''}`}>{children}</span>
+/** `MetaRow` items from label/value pairs, dropping the empty ones. */
+export function kv(pairs: [ReactNode, ReactNode | null | undefined | false][]): MetaRowItem[] {
+  return pairs.flatMap(([label, value]) => (value == null || value === false || value === '' ? [] : [{ label, value }]))
 }
 
-/** Two-tone chip with a small uppercase label and a value. */
-export function KvChip({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <Chip>
-      <span className="k">{label}</span>
-      <span className="v">{children}</span>
-    </Chip>
-  )
-}
-
-export function MetaRow({ children }: { children: ReactNode }) {
-  return <div className="dir-ui-meta">{children}</div>
-}
-
-export function StatusPill({
-  label,
-  variant = 'default',
+/** A static list row (a read-out, not a `ListItem` button). */
+export function Row({
+  title,
+  mono,
+  description,
+  meta,
 }: {
-  label: string
-  variant?: 'default' | 'warn' | 'alert' | 'accent'
+  title: ReactNode
+  /** The title is a machine id. */
+  mono?: boolean
+  description?: ReactNode
+  /** Trailing column: chips and fine print. */
+  meta?: ReactNode
 }) {
   return (
-    <Badge variant={variant} className="dir-ui-pill-flat">
-      {label}
-    </Badge>
-  )
-}
-
-export function ActionLine({
-  symbol,
-  children,
-  tone = 'accent',
-}: {
-  symbol: string
-  children: ReactNode
-  tone?: 'accent' | 'warn' | 'ink'
-}) {
-  return (
-    <div className="dir-ui-action">
-      <span className={`sym tone-${tone}`}>{symbol}</span>
-      <div className="body">{children}</div>
+    <div className={uiClasses.listItem}>
+      <span className={uiClasses.listItemContent}>
+        <span className={`${uiClasses.listItemTitle}${mono ? ' dir-ui-mono' : ''}`}>{title}</span>
+        {description ? (
+          <span className={uiClasses.listItemDescription} title={typeof description === 'string' ? description : undefined}>
+            {description}
+          </span>
+        ) : null}
+      </span>
+      {meta ? <span className={uiClasses.listItemMeta}>{meta}</span> : null}
     </div>
   )
 }
 
-/** The card wrapper every settled/running view sits in. */
-export function Card({ children }: { children: ReactNode }) {
-  return <div className="dir-ui-card">{children}</div>
+export function Rows({ children }: { children: ReactNode }) {
+  return <div className={`${uiClasses.list} dir-ui-rows`}>{children}</div>
 }
 
-export function SectionHead({ children }: { children: ReactNode }) {
-  return <div className="dir-ui-section-head">{children}</div>
-}
-
-export function SubHead({ children }: { children: ReactNode }) {
-  return <div className="dir-ui-subhead">{children}</div>
-}
-
-export function EmptyRow({ label }: { label: string }) {
-  return <div className="dir-ui-empty">· {label}</div>
-}
-
-/** Narrow-mode drill-out affordance (the state worker's ← pattern). */
-export function BackButton({ onClick, label }: { onClick: () => void; label: string }) {
+export function Section({ label, children }: { label: ReactNode; children: ReactNode }) {
   return (
-    <button type="button" className="dir-ui-back" onClick={onClick} aria-label={label} title={label}>
-      <ChevronLeftIcon className="dir-ui-back-icon" />
-    </button>
+    <div>
+      <Eyebrow as="div" className="dir-ui-section-head">
+        {label}
+      </Eyebrow>
+      {children}
+    </div>
   )
 }
 
-/* ── inline icons ─────────────────────────────────────────────────────
- * Injected UI has no icon library to import — these are hand-inlined
- * 24×24 stroke glyphs (lucide geometry: 1.5px stroke, round caps) sized
- * by the caller's className. All are decorative (aria-hidden); the
- * enclosing control carries the accessible name. */
-
-function iconProps(className?: string) {
-  return {
-    className,
-    viewBox: '0 0 24 24',
-    fill: 'none',
-    stroke: 'currentColor',
-    strokeWidth: 1.5,
-    strokeLinecap: 'round',
-    strokeLinejoin: 'round',
-  } as const
-}
-
-/** Document-with-folded-corner + "M" tick: the markdown file identity. */
-export function MarkdownFileIcon({ className }: { className?: string }) {
+/** The `ƒ name` line body: id in mono, description under it. */
+export function Identity({ name, description }: { name: string; description?: string | null }) {
   return (
-    <svg {...iconProps(className)} aria-hidden="true">
-      <path d="M14 3v5h5" />
-      <path d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
-      <path d="M9 17v-4l2 2 2-2v4" />
-    </svg>
+    <span className="dir-ui-identity">
+      <span className="dir-ui-id">{name}</span>
+      {description ? <span className="dir-ui-desc">{description}</span> : null}
+    </span>
   )
 }
 
-export function SearchIcon({ className }: { className?: string }) {
+/** The running-state body: two breathing lines under the metadata strip. */
+export function Loading({ label }: { label: string }) {
   return (
-    <svg {...iconProps(className)} aria-hidden="true">
-      <circle cx="11" cy="11" r="7" />
-      <path d="m20 20-3.5-3.5" />
-    </svg>
+    <div className="dir-ui-loading" role="status" aria-label={label}>
+      <Skeleton style={{ width: '58%' }} />
+      <Skeleton style={{ width: '36%' }} />
+    </div>
   )
-}
-
-export function XIcon({ className }: { className?: string }) {
-  return (
-    <svg {...iconProps(className)} aria-hidden="true">
-      <path d="M18 6 6 18" />
-      <path d="m6 6 12 12" />
-    </svg>
-  )
-}
-
-export function PlusIcon({ className }: { className?: string }) {
-  return (
-    <svg {...iconProps(className)} aria-hidden="true">
-      <path d="M12 5v14" />
-      <path d="M5 12h14" />
-    </svg>
-  )
-}
-
-export function PencilIcon({ className }: { className?: string }) {
-  return (
-    <svg {...iconProps(className)} aria-hidden="true">
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z" />
-    </svg>
-  )
-}
-
-export function ChevronLeftIcon({ className }: { className?: string }) {
-  return (
-    <svg {...iconProps(className)} aria-hidden="true">
-      <path d="m15 18-6-6 6-6" />
-    </svg>
-  )
-}
-
-export function PulseLine({ label }: { label: string }) {
-  return <div className="dir-ui-pulse">· {label}</div>
 }

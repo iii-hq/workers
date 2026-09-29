@@ -12,7 +12,8 @@
 # editing `./data/configuration/iii-directory.yaml` directly.
 #
 # Tunable fields hot-reload on change (registry_url, download_timeout_ms,
-# registry_cache_ttl_ms, filter_unregistered, function_search_mode). Topology fields require a
+# registry_cache_ttl_ms, filter_unregistered, function_search_mode and all
+# function_search_judge_* options). Topology fields require a
 # worker restart (skills_folder, local_skills_folder, agents_folder,
 # global_agents_folder, agents_skills_folder, global_agents_skills_folder,
 # auto_download, function_search_model_path, function_search_model_download).
@@ -61,17 +62,38 @@ download_timeout_ms: 60000
 
 # --- Function search (tunable, hot-reload) ---
 
-# Search lane: hybrid (BM25 fused with the local MiniLM model) is the default.
-# Lexical is BM25 only. Hybrid serves BM25 until the model bundle below is ready.
-function_search_mode: hybrid
+# Search lane: judge (the default) ranks through the optional `judge` worker
+# when `judge::evaluate` is registered and answers. Whenever the judge is
+# missing, has no provider or API key, or fails, it behaves as hybrid (BM25
+# fused with the local MiniLM model) and skips the judge for 30 s; a missed
+# deadline falls back for that lane only. Lexical is
+# BM25 only. Hybrid serves BM25 until the model bundle below is ready.
+# Credentials and the model name live in the judge-typesafe worker, not here.
+function_search_mode: judge
+
+# Judge options (hot-reloadable).
+# Integer 1..30000 ms for all judge calls in a public search, shared across
+# batches. The registry judge call gets what the parallel registry lookup leaves;
+# Hybrid fallback runs outside the budget, so total search time may exceed it.
+function_search_judge_timeout_ms: 3000
+# Finite 0..1 inclusive; 0.5 is an initial calibration value.
+function_search_judge_min_relevance: 0.5
+# Finite 0..1 inclusive; floor for the installed-skills and registered-triggers sections.
+function_search_judge_side_lane_min_relevance: 0.3
+# A valid result with no relevant functions stays empty. The judge scores a
+# per-capability shortlist (BM25 fused with MiniLM, 16 deep) of functions,
+# registry contracts, skills and triggers; judge failures fall back to Hybrid,
+# then Lexical if the local model is disabled, missing, unready or fails.
+# Registry judge ranking evaluates only the pool returned by upstream lexical
+# search; it cannot recover workers that the registry did not return.
 
 # Local semantic model directory: the pinned MiniLM bundle. Changing it
-# requires restart; `null` disables the semantic lane.
+# requires restart; `null` disables Hybrid, and makes the judge's fallback BM25-only.
 # function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf
 
-# With a semantic mode and a missing/incomplete bundle at boot, download the
+# With Judge or Hybrid and a missing/incomplete bundle at boot, download the
 # pinned files from Hugging Face once (each verified by length and SHA-256).
-# Set false for air-gapped stacks; the worker then stays BM25-only until the
+# Set false for air-gapped stacks; Hybrid then stays BM25-only until the
 # bundle is provisioned by hand.
 function_search_model_download: true
 

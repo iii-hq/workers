@@ -55,7 +55,7 @@
          before any module loading starts (a map parsed later is rejected
          wholesale under classic import-map semantics). The console's own
          bundle has no bare imports at runtime, so this affects only
-         injected worker scripts, which bundle with these five specifiers
+         injected worker scripts, which bundle with these six specifiers
          external. Relative URLs on purpose — the build uses base './' for
          arbitrary subpath mounting. -->
     <script type="importmap">
@@ -65,7 +65,8 @@
           "react-dom": "./vendor/react-dom.js",
           "react-dom/client": "./vendor/react-dom-client.js",
           "react/jsx-runtime": "./vendor/jsx-runtime.js",
-          "@iii-dev/console-ui": "./vendor/console-ui.js"
+          "@iii-dev/console-ui": "./vendor/console-ui.js",
+          "lucide-react": "./vendor/lucide-react.js"
         }
       }
     </script>

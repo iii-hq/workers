@@ -20,7 +20,7 @@ for small values).
 
 ## When to Use
 
-- Fetch a document and persist it without reading it: `scrapling::fetch` →
+- Fetch a document and persist it without reading it: `browser::fetch` →
   `fp::get {path: "/content"}` → `fp::take {n: 20000}` → `state::set`,
   all inside one `fp::pipe`.
 - Move any big function result into another function's arguments — never

@@ -10,6 +10,7 @@ import {
   Link as LinkIcon,
   TriangleAlert,
 } from 'lucide-react'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import {
   Tooltip,
   TooltipContent,
@@ -22,10 +23,10 @@ export function LockedBadge() {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="inline-flex items-center gap-1 text-warn cursor-help text-[10px] uppercase tracking-[0.06em]">
+        <Eyebrow className="inline-flex items-center gap-1 text-warn cursor-help">
           <TriangleAlert aria-hidden className="size-4" />
           locked
-        </span>
+        </Eyebrow>
       </TooltipTrigger>
       <TooltipContent>
         matches non_accessible_globs — listed, but coder::* ops on it return

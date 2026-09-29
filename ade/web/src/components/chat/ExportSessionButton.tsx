@@ -80,7 +80,7 @@ export function ExportSessionButton({
           <Download className="size-4 shrink-0" aria-hidden />
           <span
             className={cn(
-              'font-sans text-sm max-lg:hidden',
+              'font-sans text-sm @max-5xl:hidden',
               exported && 'text-accent',
             )}
           >

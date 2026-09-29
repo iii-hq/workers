@@ -63,3 +63,14 @@ fn configuration_register_is_denied() {
         Decision::Deny { .. }
     ));
 }
+
+/// The new atomic initializer must not bypass the existing configuration-write restrictions.
+#[test]
+fn configuration_ensure_is_denied() {
+    // The atomic register/seed twin must be denied wherever register is, so an
+    // agent cannot bypass the schema/seed protection through the new name.
+    assert!(matches!(
+        repository_permissions().check("configuration::ensure", &json!({}), PermissionMode::Manual),
+        Decision::Deny { .. }
+    ));
+}

@@ -6,6 +6,8 @@ use crate::fs::error::FsError;
 use crate::fs::{FsBackend, LsRequest, LsResponse};
 use crate::functions::fs_dispatch::pick_backend;
 
+/// `shell::fs::ls`: list one directory on the host or a sandbox, name-sorted
+/// and cut to the requested page (see [`LsResponse::paginate`]).
 pub async fn handle(
     host: Arc<dyn FsBackend>,
     iii: iii_sdk::IIIClient,
@@ -17,7 +19,12 @@ pub async fn handle(
     // an agent can branch on `error.code` instead of parsing the message.
     let req: LsRequest = serde_json::from_value(payload)
         .map_err(|e| FsError::new("S210", format!("bad ls payload: {e}")))?;
+    let (page, page_size) = (req.page, req.page_size);
     let (target, args) = req.split();
     let backend = pick_backend(target, host, iii, sandbox_enabled);
-    backend.ls(args).await.map_err(iii_sdk::errors::Error::from)
+    backend
+        .ls(args)
+        .await
+        .map(|resp| resp.paginate(page, page_size))
+        .map_err(iii_sdk::errors::Error::from)
 }

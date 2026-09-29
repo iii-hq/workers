@@ -77,6 +77,10 @@ import {
 import type { TurnVisualPhase } from './turn-visual-state'
 import './chat-motion.css'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 interface MessageListProps {
   messages: MessageType[]
   /**
@@ -161,10 +165,12 @@ interface MessageListProps {
   onLoadOlder?: () => void
   /**
    * Fetch whole entries for placeholder calls a paged read left behind, so a
-   * group can show them when expanded (or while collapsed, when a renderer
-   * wants the call visible).
+   * group can show them when expanded, a single card can show them when
+   * opened, or a renderer that wants the call visible while collapsed can
+   * draw it. May resolve to whether the read succeeded, so an open card can
+   * show a failure instead of a skeleton.
    */
-  onLoadActivityEntries?: (entryIds: string[]) => void
+  onLoadActivityEntries?: (entryIds: string[]) => Promise<boolean> | undefined
 }
 
 const TRIGGER_RESULT_DWELL_MS = 250
@@ -1173,8 +1179,8 @@ export function MessageList({
 
   const listPad =
     density === 'dock'
-      ? 'px-3 py-5 sm:px-4 sm:py-6'
-      : 'px-3 py-5 sm:px-6 sm:py-7 lg:px-9 lg:py-8'
+      ? 'px-3 py-5 @2xl:px-4 @2xl:py-6'
+      : 'px-3 py-5 @2xl:px-6 @2xl:py-7 @5xl:px-9 @5xl:py-8'
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
@@ -1239,7 +1245,7 @@ export function MessageList({
       >
         <div
           ref={contentRef}
-          className="chat-message-stack mx-auto flex max-w-[720px] flex-col gap-y-6 sm:gap-y-8"
+          className="chat-message-stack mx-auto flex max-w-[720px] flex-col gap-y-6 @2xl:gap-y-8"
         >
           {header}
           {history && messages.length > 0 ? (
@@ -1389,7 +1395,7 @@ export function MessageList({
           data-transcript-loading=""
           aria-live="polite"
           className={cn(
-            'pointer-events-none absolute inset-0 flex items-center justify-center font-sans text-base text-ink-faint transition-opacity duration-200',
+            'pointer-events-none absolute inset-0 flex items-center justify-center font-sans text-base text-ink-faint transition-opacity duration-[var(--motion-duration-control)]',
             openingIndicator ? 'opacity-100' : 'opacity-0',
           )}
         >
@@ -1652,16 +1658,17 @@ function FunctionTriggerGroup({
   const canCollapse = hiddenCount > 0
   // Placeholders the collapsed view shows anyway (a display renderer claims
   // them) are fetched as soon as they appear — a handful per session. The
-  // rest wait for "show all". Ids asked for once are not asked again by this
-  // group; the store dedupes across groups and in flight.
+  // rest wait for their card to open or "show all". Automatic requests run
+  // once per id in this group; the store dedupes across groups and in flight.
   const unloadedCalls = row.items.flatMap((item) =>
     item.kind === 'function-trigger' && item.message.unloaded
       ? [item.message]
       : [],
   )
   const requestedEntryIdsRef = useRef(new Set<string>())
-  // `retry` is the explicit click: a placeholder still standing after an
-  // earlier request means that fetch failed, and asking again is the retry.
+  // `retry` bypasses this group's once-per-id set: "show all" and a card
+  // opening are explicit asks, and a placeholder still standing after an
+  // earlier request means that fetch failed, so asking again is the retry.
   // The store dedupes ids still in flight, so a double click costs nothing.
   const requestEntries = (
     calls: readonly FunctionTriggerMessage[],
@@ -1673,7 +1680,7 @@ function FunctionTriggerGroup({
     )
     if (ids.length === 0) return
     for (const id of ids) requestedEntryIdsRef.current.add(id)
-    onLoadActivityEntries(ids)
+    return onLoadActivityEntries(ids)
   }
   const displayPlaceholderSignature = unloadedCalls
     .filter((call) => hasDisplayRenderer(call.functionId))
@@ -1805,6 +1812,11 @@ function FunctionTriggerGroup({
                               : undefined)
                           }
                           defaultOpenCalls={defaultOpenCalls}
+                          onLoadDetails={
+                            item.kind === 'function-trigger'
+                              ? () => requestEntries([item.message], true)
+                              : undefined
+                          }
                           onResolveApproval={onResolveApproval}
                           onAlwaysAllow={onAlwaysAllow}
                           onResolveFilesystemAccess={onResolveFilesystemAccess}
@@ -1860,8 +1872,11 @@ function resolveEmptyState(
       ? (next: SystemPromptState) => ctx.setSystemPrompt(active.id, next)
       : undefined,
     agentProfile: active?.agentProfile,
+    // Only a chat created here (still a local draft) starts on Default; a
+    // session another surface created is shown as its creator left it.
+    preselectDefaultAgent: active?.draft === true,
     onAgentProfileChange: active
-      ? (next) => ctx.setAgentProfile(active.id, next)
+      ? (next, options) => ctx.setAgentProfile(active.id, next, options)
       : undefined,
     ...directory,
   }

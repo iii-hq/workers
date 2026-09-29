@@ -45,6 +45,12 @@ export interface ComposerInsert {
    * reference that belongs inside the sentence being written.
    */
   inline?: boolean
+  /**
+   * Send the draft once the text has landed, instead of leaving it for the
+   * user to send. For a surface that hands over a whole prompt — a guided
+   * tour's step, say — where the click WAS the decision to send.
+   */
+  submit?: boolean
 }
 
 type ComposerInsertListener = (insert: ComposerInsert) => void
@@ -53,9 +59,13 @@ const inserts = bufferedBus<ComposerInsert>()
 
 export function insertIntoComposer(
   text: string,
-  options: { inline?: boolean } = {},
+  options: { inline?: boolean; submit?: boolean } = {},
 ): void {
-  inserts.publish({ text, inline: options.inline === true })
+  inserts.publish({
+    text,
+    inline: options.inline === true,
+    submit: options.submit === true,
+  })
 }
 
 export function onComposerInsert(listener: ComposerInsertListener): () => void {

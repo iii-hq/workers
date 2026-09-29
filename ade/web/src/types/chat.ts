@@ -41,6 +41,23 @@ export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'default'
 
 export type Role = 'user' | 'assistant' | 'thought' | 'function-trigger'
 
+/**
+ * Who a session is for (`SessionMeta.kind`): a chat a person started, a run
+ * an automation started, or a session an end-to-end suite created. The
+ * sidebar filters on it; nothing else changes with it.
+ */
+export type ConversationKind = 'user' | 'automation' | 'e2e'
+
+export const CONVERSATION_KINDS: readonly ConversationKind[] = [
+  'user',
+  'automation',
+  'e2e',
+]
+
+export function isConversationKind(value: unknown): value is ConversationKind {
+  return (CONVERSATION_KINDS as readonly unknown[]).includes(value)
+}
+
 export interface Attachment {
   id: string
   name: string
@@ -194,14 +211,15 @@ export interface FunctionTriggerMessage extends BaseMessage {
    * A placeholder from a paged transcript read: the call's arguments and
    * result were left out of the page (`TranscriptItem.elided`) because it
    * sits inside a collapsed activity run. The card draws a skeleton in
-   * place of the panes; expanding the group fetches the whole entries and
-   * this flag goes away. `input` is `undefined` while it is set.
+   * place of the panes; opening the card or expanding the group fetches the
+   * whole entries and this flag goes away. `input` is `undefined` while it
+   * is set.
    */
   unloaded?: boolean
   /**
    * The transcript entry id of this call's `function_result`, when a read has
-   * shown it. It is what lets an expand name the exact entries to fetch
-   * instead of guessing at ids.
+   * shown it. It is what lets an open or expand name the exact entries to
+   * fetch instead of guessing at ids.
    */
   resultEntryId?: string
 }
@@ -459,6 +477,17 @@ export interface AgentProfileSnapshot {
   reasoningEffort?: ThinkingLevel
   icon?: SubagentIcon
   color?: SubagentColor
+  /** The profile's example for the empty composer — a hint, never sent. */
+  composerPlaceholder?: string
+}
+
+/** How a profile selection reached the session. */
+export interface AgentProfileChangeOptions {
+  /**
+   * An automatic selection (the new-session default) must not rewrite the
+   * user's reasoning-effort preference when the profile has none of its own.
+   */
+  keepThinkingLevel?: boolean
 }
 
 export interface Conversation {
@@ -471,6 +500,12 @@ export interface Conversation {
   title: string
   /** flips to true after the user explicitly renames; otherwise auto-derived */
   titleManual?: boolean
+  /**
+   * Who the session is for. Absent means `user`: a local draft, or a
+   * session-manager that predates kinds. A spawned sub-agent carries its
+   * own value but is listed under its root's (see `conversation-view`).
+   */
+  kind?: ConversationKind
   model: ModelId | null
   /**
    * Per-session reasoning effort, persisted as session metadata. Drafts seed

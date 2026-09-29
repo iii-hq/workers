@@ -19,12 +19,11 @@ import {
   type ConfigFormProps,
   type Host,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { Plus, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import {
-  PlusIcon,
-  TrashIcon,
   api,
-  errorMessage,
   type AgentProfile,
   type Column,
   type ConfigInfo,
@@ -367,7 +366,7 @@ export function KanbanConfigForm({ value, onChange, errors, focusField }: Config
       <SettingsSection
         action={
           <Button onClick={addColumn} size="sm" variant="pill">
-            <PlusIcon />
+            <Plus size={16} />
             Add column
           </Button>
         }
@@ -418,7 +417,7 @@ export function KanbanConfigForm({ value, onChange, errors, focusField }: Config
                       size="sm"
                       variant="ghost"
                     >
-                      <TrashIcon />
+                      <Trash2 size={16} />
                       Remove column
                     </Button>
                   }

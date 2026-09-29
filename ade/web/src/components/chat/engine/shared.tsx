@@ -46,9 +46,7 @@ interface FilterChipProps {
 export function FilterChip({ label, value }: FilterChipProps) {
   return (
     <Chip className="items-baseline">
-      <span className="shrink-0 text-ink-faint uppercase tracking-[0.06em]">
-        {label}
-      </span>
+      <span className="iii-ui-eyebrow shrink-0">{label}</span>
       <span className="ml-1 min-w-0 wrap-anywhere text-ink">{value}</span>
     </Chip>
   )
@@ -56,7 +54,7 @@ export function FilterChip({ label, value }: FilterChipProps) {
 
 export function InternalChip() {
   return (
-    <Chip className="text-warn border-warn/40">
+    <Chip className="bg-warn-muted text-warn">
       <span>Internal</span>
     </Chip>
   )

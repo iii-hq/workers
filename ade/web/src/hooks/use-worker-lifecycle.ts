@@ -73,12 +73,12 @@ export function useWorkerLifecycle(opts: UseWorkerLifecycleOptions): void {
     let offTrigger: (() => void) | undefined
 
     void (async () => {
-      const client = await getIiiClient()
-      if (cancelled) return
-      // Unique per (base id × hook instance); `client.on` then appends the
-      // per-tab `::<browserId>`.
-      const localFnId = `${fnId}::${instanceId}`
       try {
+        const client = await getIiiClient()
+        if (cancelled) return
+        // Unique per (base id × hook instance); `client.on` then appends the
+        // per-tab `::<browserId>`.
+        const localFnId = `${fnId}::${instanceId}`
         offHandler = client.on(localFnId, (data: unknown) => {
           onEventRef.current(data)
         })

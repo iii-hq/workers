@@ -93,8 +93,11 @@ function boundaryDenyRegex(keyword: string): RegExp {
   return new RegExp(`(?:^|::)${keyword}(?:$|_|::)`, 'i')
 }
 
-export const DEFAULT_DENY_PATTERNS: ReadonlyArray<RegExp> =
-  DENY_KEYWORDS.map(boundaryDenyRegex)
+export const DEFAULT_DENY_PATTERNS: ReadonlyArray<RegExp> = [
+  ...DENY_KEYWORDS.map(boundaryDenyRegex),
+  // Operator-only login controls lack the auth/credential keyword boundary.
+  /^provider::openai-codex::login::/i,
+]
 
 export const DEFAULT_DENY_EXACT: ReadonlySet<string> = new Set([
   'agent::trigger',

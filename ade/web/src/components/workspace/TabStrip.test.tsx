@@ -5,7 +5,7 @@ import { TabStrip, tabIndexForKey } from './TabStrip'
 
 const tabs: WorkspaceTab[] = [
   { id: 'a', screens: ['chat', 'traces'] },
-  { id: 'b', name: 'IDE', screens: ['ext:shell'] },
+  { id: 'b', name: 'IDE', screens: ['ext:ide'] },
   { id: 'c', screens: ['workers'] },
 ]
 

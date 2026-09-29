@@ -1,5 +1,5 @@
 {
-  "description": "Search available functions for the unmet external capabilities of a step (usually one to six, at most eighteen per call); returns compact function-id candidates grouped by worker.",
+  "description": "Search available functions for the unmet external capabilities of a step (usually one to six, at most eighteen per call); returns compact function-id candidates grouped by worker, plus matching installed skill documents under `skills` and registered trigger bindings under `triggers`.",
   "function_id": "directory::search_functions",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -39,6 +39,14 @@
           "function_id"
         ],
         "type": "object"
+      },
+      "FunctionSearchMode": {
+        "enum": [
+          "lexical",
+          "hybrid",
+          "judge"
+        ],
+        "type": "string"
       },
       "InstallCall": {
         "description": "A ready-made `compose::add` target and payload. Under agent-trigger exposure, the caller still supplies the wrapper's user-facing `description`.",
@@ -108,6 +116,59 @@
           "namespace"
         ],
         "type": "object"
+      },
+      "SkillCandidate": {
+        "description": "An installed skill document (a `directory::skills::list` row) whose content matches a requested capability.",
+        "properties": {
+          "description": {
+            "description": "First description sentence, capped at 160 bytes.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Pass to `directory::skills::get { id }` to read the document.",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "TriggerCandidate": {
+        "description": "A registered trigger binding (an `engine::registered-triggers::list` row) whose event, schedule, or hook matches a requested capability.",
+        "properties": {
+          "config": {
+            "description": "The binding's configuration (cron expression, hook filters, …)."
+          },
+          "function_id": {
+            "description": "The function the trigger runs; inspect it with `engine::functions::info`.",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "trigger_type": {
+            "type": "string"
+          },
+          "worker_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "config",
+          "function_id",
+          "id",
+          "trigger_type"
+        ],
+        "type": "object"
       }
     },
     "properties": {
@@ -125,6 +186,28 @@
         "format": "double",
         "type": "number"
       },
+      "search_mode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/FunctionSearchMode"
+          }
+        ],
+        "description": "The search mode that actually produced these results: `judge`, `hybrid` or `lexical`. It can be lower than the configured mode when a batch fell back (judge worker absent or failing, or no local model)."
+      },
+      "skills": {
+        "description": "Installed skill documents matching the capabilities. Read one with `directory::skills::get { id }` before acting on it.",
+        "items": {
+          "$ref": "#/definitions/SkillCandidate"
+        },
+        "type": "array"
+      },
+      "triggers": {
+        "description": "Registered trigger bindings matching the capabilities: what already fires, schedules, or hooks a function for them.",
+        "items": {
+          "$ref": "#/definitions/TriggerCandidate"
+        },
+        "type": "array"
+      },
       "workers": {
         "items": {
           "$ref": "#/definitions/SearchWorker"
@@ -134,8 +217,8 @@
     },
     "required": [
       "guidance",
-      "installable",
       "latency_ms",
+      "search_mode",
       "workers"
     ],
     "title": "SearchFunctionsResponse",

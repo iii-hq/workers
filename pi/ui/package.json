@@ -14,9 +14,12 @@
     "@xterm/xterm": "^6.0.0"
   },
   "devDependencies": {
-    "@types/react": "^19.2.14",
-    "esbuild": "^0.25.0",
-    "react": "^19.2.8",
-    "typescript": "^5.9.2"
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "esbuild": "catalog:",
+    "lucide-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "typescript": "catalog:"
   }
 }

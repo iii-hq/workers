@@ -60,6 +60,10 @@ import {
 } from './tabs/WorkersTab/hooks'
 import { WorkerEditor } from './tabs/WorkersTab/WorkerEditor'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 const NARROW_BELOW = 720
 
 const CONFIGURATION_ICONS: Record<string, LucideIcon> = {
@@ -99,7 +103,6 @@ const CONFIGURATION_ICONS: Record<string, LucideIcon> = {
   queue: ListTodo,
   'rbac-proxy': KeyRound,
   'sandbox-code-runner': Code2,
-  scrapling: Globe2,
   'security-scan': ScanSearch,
   'session-manager': MessagesSquare,
   shell: SquareTerminal,
@@ -155,7 +158,6 @@ const CONFIGURATION_NAMES: Record<string, string> = {
   queue: 'Queue',
   'rbac-proxy': 'RBAC Proxy',
   'sandbox-code-runner': 'Sandbox Code Runner',
-  scrapling: 'Scrapling',
   'security-scan': 'Security Scan',
   'session-manager': 'Session Manager',
   shell: 'IDE',

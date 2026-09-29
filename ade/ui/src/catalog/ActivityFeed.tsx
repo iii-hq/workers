@@ -11,7 +11,14 @@
  * body, which turns "this call failed in production" into one click.
  */
 
-import { Button, type Host, JsonHighlight } from '@iii-dev/console-ui'
+import {
+  Button,
+  Eyebrow,
+  type Host,
+  JsonHighlight,
+  StatusDot,
+} from '@iii-dev/console-ui'
+import { formatRelative } from '@iii-dev/console-ui/format'
 import { useCallback, useState } from 'react'
 import {
   type CallRecord,
@@ -20,7 +27,7 @@ import {
   useResource,
 } from './engine'
 import { pretty } from './schema'
-import { Note } from './widgets'
+import { ErrorNote, Note } from './widgets'
 
 function clockTime(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour12: false })
@@ -55,12 +62,10 @@ function withoutInjected(input: unknown): unknown {
   return copy
 }
 
-function ago(ms: number, now: number): string {
-  const seconds = Math.max(0, Math.round((now - ms) / 1000))
-  if (seconds < 60) return `${seconds}s ago`
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  return `${Math.round(minutes / 60)}h ago`
+/** "3s ago" for the live meta lines; the shared clock decides the unit. */
+export function agoLabel(atMs: number, nowMs: number): string {
+  const relative = formatRelative(atMs, nowMs)
+  return relative === 'just now' ? relative : `${relative} ago`
 }
 
 export function ActivityFeed({
@@ -85,11 +90,7 @@ export function ActivityFeed({
   useLiveSignals(host, ['trace'], calls.reload, { debounceMs: 1200 })
 
   if (calls.error) {
-    return (
-      <div className="console-catalog-error">
-        engine::traces::spans failed — {calls.error}
-      </div>
-    )
+    return <ErrorNote call="engine::traces::spans" message={calls.error} />
   }
   if (calls.data === null) return <Note>Reading recent calls…</Note>
   if (calls.data.length === 0) {
@@ -156,15 +157,15 @@ function CallRow({
         className="console-catalog-call-head"
         onClick={onToggle}
       >
-        <span className="dot" data-ok={call.ok} />
+        <StatusDot tone={call.ok ? 'ok' : 'alert'} />
         <span className="time">{clockTime(call.startedAtMs)}</span>
-        <span className="ago">{ago(call.startedAtMs, now)}</span>
+        <span className="ago">{agoLabel(call.startedAtMs, now)}</span>
         <span className="worker">{call.worker}</span>
         <span className="duration">{formatDuration(call.durationMs)}</span>
       </button>
       {open ? (
         <div className="console-catalog-call-body">
-          <div className="console-catalog-field-label">
+          <Eyebrow as="div" className="console-catalog-field-label">
             input
             {call.input !== undefined ? (
               <Button
@@ -175,7 +176,7 @@ function CallRow({
                 replay
               </Button>
             ) : null}
-          </div>
+          </Eyebrow>
           <JsonHighlight
             code={
               call.input === undefined ? '(not recorded)' : pretty(call.input)
@@ -183,7 +184,9 @@ function CallRow({
             className="console-catalog-json"
             wrap
           />
-          <div className="console-catalog-field-label">Output</div>
+          <Eyebrow as="div" className="console-catalog-field-label">
+            Output
+          </Eyebrow>
           <JsonHighlight
             code={
               call.output === undefined ? '(not recorded)' : pretty(call.output)

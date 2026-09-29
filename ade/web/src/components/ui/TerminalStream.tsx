@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { AnsiText } from '@/components/ui/AnsiText'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { cn } from '@/lib/utils'
 
 /** Lines of a stream shown before it collapses behind the toggle. */
@@ -32,7 +33,7 @@ export function clampStream(
 }
 
 interface TerminalStreamProps {
-  /** Pane label (`stdout`, `stderr`, `build`), rendered uppercase. */
+  /** Pane label (`stdout`, `stderr`, `build`), rendered as an eyebrow. */
   label: string
   /** The stream body; renders nothing when empty — the caller decides
       what "no output" should say, if anything. */
@@ -75,9 +76,7 @@ export function TerminalStream({
 
   return (
     <div className={cn('min-w-0', className)}>
-      <div className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
-        {label}
-      </div>
+      <Eyebrow as="div">{label}</Eyebrow>
       <pre
         className={cn(
           'm-0 mt-1 max-h-[480px] overflow-y-auto whitespace-pre-wrap break-words font-mono text-[12.5px] leading-[1.55]',
@@ -90,9 +89,11 @@ export function TerminalStream({
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="mt-1 cursor-pointer font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint transition-colors hover:text-ink"
+          className="mt-1 cursor-pointer"
         >
-          {expanded ? 'collapse' : `expand · ${totalLines} lines`}
+          <Eyebrow className="transition-colors hover:text-ink">
+            {expanded ? 'collapse' : `expand · ${totalLines} lines`}
+          </Eyebrow>
         </button>
       ) : null}
     </div>

@@ -1,3 +1,4 @@
+import { ArrowRight, SquareFunction } from 'lucide-react'
 import type { ReactNode } from 'react'
 import {
   ActionLine,
@@ -5,6 +6,7 @@ import {
   MetaRow,
   StatusPill,
 } from '@/components/chat/sandbox/shared'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import {
   safeParseRequest,
   safeParseResponse,
@@ -110,9 +112,7 @@ export function WorkerAddView({ input, output, running }: WorkerOpViewProps) {
         title={sourceTitle(req.source)}
         chips={[
           <Chip key="src">
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              source
-            </span>
+            <span className="iii-ui-eyebrow">source</span>
             <span className="ml-1 text-ink">{req.source.kind}</span>
           </Chip>,
           req.force ? <FlagChip key="force" label="force" /> : null,
@@ -121,7 +121,7 @@ export function WorkerAddView({ input, output, running }: WorkerOpViewProps) {
           ) : null,
         ]}
       >
-        <ActionLine symbol="→" tone="ink">
+        <ActionLine icon={<ArrowRight />} tone="ink">
           <span className="break-all">{sourceLabel}</span>
         </ActionLine>
         <RunningHint label="installing worker…" />
@@ -140,16 +140,14 @@ export function WorkerAddView({ input, output, running }: WorkerOpViewProps) {
       chips={[
         resp.version ? (
           <Chip key="v">
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              version
-            </span>
+            <span className="iii-ui-eyebrow">version</span>
             <span className="ml-1 text-ink">{resp.version}</span>
           </Chip>
         ) : null,
         resp.awaited_ready ? <FlagChip key="ready" label="ready" /> : null,
       ]}
     >
-      <ActionLine symbol="→" tone="ink">
+      <ActionLine icon={<ArrowRight />} tone="ink">
         <span className="break-all">{sourceLabel}</span>
       </ActionLine>
       <ConfigPathRow path={resp.config_path} />
@@ -321,7 +319,7 @@ function OpShell({
         <StatusPill label={statusLabel} variant={statusVariant} />
         {renderedChips}
       </MetaRow>
-      <ActionLine symbol="ƒ" tone="accent">
+      <ActionLine icon={<SquareFunction />} tone="accent">
         <span className="font-mono text-[13px] text-accent break-all">
           {title}
         </span>
@@ -342,9 +340,7 @@ function RunningHint({ label }: { label: string }) {
 function ConfigPathRow({ path }: { path: string }) {
   return (
     <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[11px] text-ink-faint break-all">
-      <span className="uppercase tracking-[0.06em] text-[10px] mr-1">
-        config
-      </span>
+      <Eyebrow className="mr-1">config</Eyebrow>
       {path}
     </div>
   )
@@ -407,9 +403,7 @@ function configChip(path: string) {
 function FlagChip({ label }: { label: string }) {
   return (
     <Chip>
-      <span className="uppercase tracking-[0.06em] text-ink-faint">
-        {label}
-      </span>
+      <span className="iii-ui-eyebrow">{label}</span>
     </Chip>
   )
 }

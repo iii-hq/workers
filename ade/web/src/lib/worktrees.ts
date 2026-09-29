@@ -148,7 +148,8 @@ export function shortWorktreeId(worktreeId: string): string {
 }
 
 /**
- * Badge/status tone per DESIGN.md status semantics: accent = live/running,
+ * Badge/status tone per ade/skills/design-system.md ("Principles", neutral selection
+ * and status): accent = live/running,
  * warn = warning, alert = error; everything else stays ink.
  */
 export function lifecycleTone(

@@ -1,3 +1,4 @@
+import { $isCodeNode } from '@lexical/code-core'
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext'
 import { TextNode } from 'lexical'
 import { useEffect } from 'react'
@@ -30,6 +31,9 @@ export function SlashCommandTransformPlugin() {
   useEffect(() => {
     return editor.registerNodeTransform(TextNode, (node) => {
       if (!node.isSimpleText()) return
+      // Code is literal: no pills inside `inline code` or a fenced block
+      // (the rendered message leaves those alone too).
+      if (node.hasFormat('code') || $isCodeNode(node.getParent())) return
       const text = node.getTextContent()
       const match = text.match(SKILL_PATTERN)
       if (!match || match.index === undefined) return

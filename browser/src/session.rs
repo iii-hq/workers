@@ -1,5 +1,6 @@
-//! The browser model: one shared Chromium process (the browser) with one
-//! page per tab, the way a real browser works. A `Tab` is the durable
+//! The browser model: one shared browser process (a Chromium, or a
+//! `lightpanda serve` driven over CDP — see `config::BrowserEngine`) with
+//! one page per tab, the way a real browser works. A `Tab` is the durable
 //! record — url, title, history, back/forward stack — that survives the page
 //! being closed and, for regular tabs, the worker restarting (`tabs.json`
 //! under `data_dir`). A `Session` is a tab with its page open: the CDP event
@@ -32,12 +33,14 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    origin_label, origin_policy_config_key_for, origin_policy_for, SharedConfig, WorkerConfig,
+    origin_label, origin_policy_config_key_for, origin_policy_for, BrowserEngine, SharedConfig,
+    WorkerConfig,
 };
 use crate::events::{
     Bounds, ConsoleEventPayload, DownloadChangedEvent, Emitter, EventKind, FrameEventPayload,
     NavigatedEvent, PickedElement, PickedEvent, SessionStoppedEvent, SessionUpdatedEvent,
 };
+use crate::functions::doctor;
 
 /// Truncation caps for values that end up in ring buffers and event
 /// payloads — a page can log megabytes; the model reads a summary.
@@ -429,6 +432,19 @@ pub struct Tab {
     /// ignores frames older than the last one it saw keeps working after
     /// the tab slept and woke into a fresh page.
     frame_seq: AtomicU64,
+    /// Ref name counters: snapshot `e` refs, pick `p` refs, dom `d` refs, and the floor
+    /// above every `n` element id (a new document's registry numbers from
+    /// there). Never reset, so a ref name is never reused for another node:
+    /// one from an earlier snapshot, page or pick fails as unknown instead of
+    /// naming something else. On the tab, like `frame_seq`, so they hold
+    /// across sleep and wake into a fresh page under the same session id.
+    pub ref_counter: AtomicU64,
+    pick_counter: AtomicU64,
+    next_element_id: AtomicU64,
+    /// Behind `d` refs (`browser::dom::read`). Chrome's node ids restart in
+    /// every renderer process (a cross-site navigation, a wake), so they
+    /// cannot name refs themselves.
+    dom_counter: AtomicU64,
     url: Mutex<String>,
     title: Mutex<String>,
     /// Visited pages, newest last, for the history panel. Capped.
@@ -632,17 +648,23 @@ impl Tab {
     }
 }
 
-/// The worker's own Chromium process, shared by every launched tab. Launched
+/// The worker's own browser process, shared by every launched tab. Launched
 /// lazily by the first tab that needs a page and closed again when the last
 /// live tab sleeps, which also flushes the profile to disk.
 pub struct SharedBrowser {
     browser: tokio::sync::Mutex<Browser>,
+    pub engine: BrowserEngine,
     pub headless: bool,
     /// The browser's user agent with the `Headless` marker dropped, applied
     /// to every page: sites that refuse "HeadlessChrome" (x.com answers 400)
     /// then serve the page they serve any Chrome.
     user_agent: Mutex<String>,
     handler: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The `lightpanda serve` process when the engine is Lightpanda:
+    /// chromiumoxide only *connected* to it, so closing the browser means
+    /// ending this child ourselves (SIGTERM first, so it writes its cookie
+    /// jar on the way out).
+    child: tokio::sync::Mutex<Option<tokio::process::Child>>,
 }
 
 impl SharedBrowser {
@@ -655,12 +677,20 @@ impl SharedBrowser {
 
     async fn close(&self) {
         let mut browser = self.browser.lock().await;
-        if browser.close().await.is_err() {
-            if let Some(Err(e)) = browser.kill().await {
-                tracing::warn!(error = %e, "browser kill failed");
+        if let Some(mut child) = self.child.lock().await.take() {
+            // A spawned `lightpanda serve` is ours to end: SIGTERM is its
+            // clean exit (the one that writes the cookie jar), and it does
+            // not answer `Browser.close` — waiting on that would stall the
+            // caller for chromiumoxide's whole request timeout.
+            terminate_child(&mut child).await;
+        } else {
+            if browser.close().await.is_err() {
+                if let Some(Err(e)) = browser.kill().await {
+                    tracing::warn!(error = %e, "browser kill failed");
+                }
             }
+            let _ = browser.wait().await;
         }
-        let _ = browser.wait().await;
         if let Some(handler) = self
             .handler
             .lock()
@@ -670,6 +700,26 @@ impl SharedBrowser {
             handler.abort();
         }
     }
+}
+
+/// SIGTERM, a short grace period, then SIGKILL — the sequence that lets
+/// `lightpanda serve` write its cookie jar on the way out.
+async fn terminate_child(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        // SAFETY: plain libc call on the pid of a child this process spawned
+        // and still owns (not yet waited on).
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+        if tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+            .await
+            .is_ok()
+        {
+            return;
+        }
+    }
+    let _ = child.kill().await;
 }
 
 /// Which CDP connection a live session speaks over. An attached session's
@@ -708,6 +758,9 @@ pub struct Session {
     /// 1->0, so stopping a recording never cuts off a UI viewer (and vice
     /// versa). A watched tab is never put to sleep.
     pub screencast_consumers: std::sync::atomic::AtomicUsize,
+    /// Console panes watching (screencast consumers minus previews and
+    /// recordings): a pane auto-fit is arbitrated on this count only.
+    pub pane_viewers: std::sync::atomic::AtomicUsize,
     /// Set while a `browser::recording` is capturing; the screencast pump
     /// writes decoded frames into it.
     pub recording: tokio::sync::Mutex<Option<Recording>>,
@@ -717,13 +770,13 @@ pub struct Session {
     seq: AtomicU64,
     /// Snapshot/pick refs (`e1`, `p3`, …) → CDP backend node ids. Cleared on
     /// navigation — backend ids do not survive a document swap. Snapshot
-    /// refs accumulate (names are session-monotonic), so a ref from an
+    /// refs accumulate (names are tab-monotonic), so a ref from an
     /// earlier snapshot of the same document still resolves to the node it
     /// named instead of colliding with a newer snapshot's numbering.
     pub refs: Mutex<HashMap<String, i64>>,
-    /// Session-monotonic counter behind snapshot ref names; never reset
-    /// within a session so ref names are unique across snapshots.
-    pub ref_counter: AtomicU64,
+    /// This document's `d` ref per DOM node (backend node id → name), so a
+    /// node read twice keeps its name. Cleared with `refs` on navigation.
+    dom_names: Mutex<HashMap<i64, String>>,
     /// Bumped on every top-document navigation. Snapshots report it so a
     /// caller can tell which document epoch its refs belong to.
     generation: AtomicU64,
@@ -731,6 +784,9 @@ pub struct Session {
     /// `browser::snapshot` diff mode. None before the first snapshot and
     /// after a navigation.
     pub snapshot_keys: Mutex<Option<Vec<String>>>,
+    /// Requests the page has started and not finished (id → start epoch ms),
+    /// so `browser::run` can wait for what an action triggered.
+    pub inflight: Mutex<HashMap<String, i64>>,
     /// Cross-call state for `browser::execute`; lives until the page closes.
     pub exec_state: Mutex<serde_json::Value>,
     /// Serializes explicit navigation, execute, and file-input attachment.
@@ -742,7 +798,6 @@ pub struct Session {
     /// their paths, then removed on stop.
     upload_dirs: Mutex<Vec<PathBuf>>,
     upload_counter: AtomicU64,
-    pick_counter: AtomicU64,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
@@ -849,7 +904,10 @@ impl Session {
     }
 
     pub fn next_pick_ref(&self) -> String {
-        format!("p{}", self.pick_counter.fetch_add(1, Ordering::Relaxed) + 1)
+        format!(
+            "p{}",
+            self.tab.pick_counter.fetch_add(1, Ordering::Relaxed) + 1
+        )
     }
 
     pub fn resolve_ref(&self, r: &str) -> Option<i64> {
@@ -864,18 +922,42 @@ impl Session {
     /// "unknown ref" error every ref-taking handler shares. The message is
     /// load-bearing for agent self-correction, so it lives in one place.
     pub fn resolve_ref_or_err(&self, r: &str) -> Result<i64, iii_sdk::errors::Error> {
-        self.resolve_ref(r).ok_or_else(|| {
-            iii_sdk::errors::Error::Handler(format!(
-                "unknown ref '{r}' (document generation {}); refs come from browser::snapshot / \
-                 browser::dom::read / a pick and die on navigation. Re-snapshot, then use a \
-                 fresh ref.",
-                self.generation()
-            ))
-        })
+        self.resolve_ref(r).ok_or_else(|| self.unknown_ref(r))
+    }
+
+    /// The canonical "unknown ref" error, also used for `n` refs the page's
+    /// element registry no longer holds.
+    pub fn unknown_ref(&self, r: &str) -> iii_sdk::errors::Error {
+        iii_sdk::errors::Error::Handler(format!(
+            "unknown ref '{r}' (document generation {}); refs come from browser::snapshot / \
+             browser::elements / browser::dom::read / a pick and die on navigation. Re-read \
+             the page, then use a fresh ref.",
+            self.generation()
+        ))
     }
 
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
+    }
+
+    /// The first `n` element id a new document's registry hands out.
+    pub fn next_element_id(&self) -> u64 {
+        self.tab.next_element_id.load(Ordering::Relaxed)
+    }
+
+    /// Record a registry's next id after a read (ids only move up).
+    pub fn saw_element_ids(&self, next: u64) {
+        self.tab.next_element_id.fetch_max(next, Ordering::Relaxed);
+    }
+
+    /// Requests started at or after `since_ms` that have not finished.
+    pub fn pending_requests_since(&self, since_ms: i64) -> usize {
+        self.inflight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .filter(|started| **started >= since_ms)
+            .count()
     }
 
     /// True while the Chromium screencast is running (at least one consumer:
@@ -892,8 +974,31 @@ impl Session {
         let mut refs = self.refs.lock().unwrap_or_else(|p| p.into_inner());
         if refs.len().saturating_add(map.len()) > MAX_REFS {
             refs.clear();
+            // A cached `d` name must never outlive its entry in `refs`.
+            self.dom_names
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
         }
         refs.extend(map);
+    }
+
+    /// The `d` ref for a DOM node: one name per node for the document's
+    /// life, numbered from the tab's counter so a name never comes back for
+    /// another node (on another page, or after the tab wakes).
+    pub fn dom_ref(&self, backend_node_id: i64) -> String {
+        let mut names = self.dom_names.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(name) = names.get(&backend_node_id) {
+            return name.clone();
+        }
+        let name = format!(
+            "d{}",
+            self.tab.dom_counter.fetch_add(1, Ordering::Relaxed) + 1
+        );
+        names.insert(backend_node_id, name.clone());
+        drop(names);
+        self.add_ref(name.clone(), backend_node_id);
+        name
     }
 
     pub fn add_ref(&self, r: String, backend_node_id: i64) {
@@ -908,6 +1013,10 @@ impl Session {
     /// state, not document state.
     fn clear_refs(&self) {
         self.refs.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.dom_names
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
         *self.snapshot_keys.lock().unwrap_or_else(|p| p.into_inner()) = None;
         self.generation.fetch_add(1, Ordering::Relaxed);
     }
@@ -1084,6 +1193,13 @@ impl Sessions {
         self.data_dir.join("profile")
     }
 
+    /// Lightpanda's profile: `cookies.json`, loaded at launch and written
+    /// at exit (`--cookie` / `--cookie-jar`). Kept apart from Chromium's
+    /// profile since the formats share nothing.
+    fn lightpanda_dir(&self) -> PathBuf {
+        self.data_dir.join("lightpanda")
+    }
+
     fn downloads_dir(&self) -> PathBuf {
         self.data_dir.join("downloads")
     }
@@ -1126,6 +1242,10 @@ impl Sessions {
                 ttl_ms: record.ttl_ms,
                 last_used_ms: AtomicU64::new(now_ms() as u64),
                 frame_seq: AtomicU64::new(0),
+                ref_counter: AtomicU64::new(0),
+                pick_counter: AtomicU64::new(0),
+                next_element_id: AtomicU64::new(1),
+                dom_counter: AtomicU64::new(0),
                 url: Mutex::new(record.url),
                 title: Mutex::new(record.title),
                 history: Mutex::new(record.history),
@@ -1242,6 +1362,10 @@ impl Sessions {
             ttl_ms: request.ttl_ms,
             last_used_ms: AtomicU64::new(now_ms() as u64),
             frame_seq: AtomicU64::new(0),
+            ref_counter: AtomicU64::new(0),
+            pick_counter: AtomicU64::new(0),
+            next_element_id: AtomicU64::new(1),
+            dom_counter: AtomicU64::new(0),
             url: Mutex::new("about:blank".to_string()),
             title: Mutex::new(String::new()),
             history: Mutex::new(Vec::new()),
@@ -1360,7 +1484,7 @@ impl Sessions {
         let mut params = cdp_target::CreateTargetParams::new("about:blank");
         params.browser_context_id = context_id.clone();
         params.new_window = Some(true);
-        let page = match shared.browser.lock().await.new_page(params).await {
+        let page = match open_page(&shared, params).await {
             Ok(page) => page,
             Err(e) => {
                 if let Some(context) = &context_id {
@@ -1409,21 +1533,22 @@ impl Sessions {
             viewport_height: AtomicU32::new(cfg.viewport_height),
             latest_frame: Mutex::new(None),
             screencast_consumers: std::sync::atomic::AtomicUsize::new(0),
+            pane_viewers: std::sync::atomic::AtomicUsize::new(0),
             recording: tokio::sync::Mutex::new(None),
             page: page.clone(),
             console: Mutex::new(RingBuffer::new(cfg.console_buffer as usize)),
             network: Mutex::new(RingBuffer::new(cfg.network_buffer as usize)),
             seq: AtomicU64::new(1),
             refs: Mutex::new(HashMap::new()),
-            ref_counter: AtomicU64::new(0),
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
+            dom_names: Mutex::new(HashMap::new()),
+            inflight: Mutex::new(HashMap::new()),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
             navigation_error: Mutex::new(None),
             upload_dirs: Mutex::new(Vec::new()),
             upload_counter: AtomicU64::new(0),
-            pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(Vec::new()),
         });
 
@@ -1479,8 +1604,9 @@ impl Sessions {
         }
     }
 
-    /// The shared Chromium, launched on first use. `headful` overrides the
-    /// configured mode for a launch; a running browser keeps its mode.
+    /// The shared browser, launched on first use. `headful` overrides the
+    /// configured mode for a Chromium launch; a running browser keeps its
+    /// mode, and Lightpanda has no window to show.
     async fn ensure_browser(
         self: &Arc<Self>,
         headful: Option<bool>,
@@ -1490,29 +1616,29 @@ impl Sessions {
             return Ok(shared.clone());
         }
         let cfg = self.config.load_full();
-        let headless = match headful {
-            Some(headful) => !headful,
-            None => cfg.headless,
-        };
-        let profile = self.profile_dir();
-        std::fs::create_dir_all(&profile)
-            .map_err(|e| format!("cannot create profile dir {}: {e}", profile.display()))?;
-        let browser_config = build_browser_config(&cfg, headless, &profile)?;
-        let (browser, mut handler) = match Browser::launch(browser_config).await {
-            Ok(launched) => launched,
-            Err(first) if reap_orphan_chromium(&profile) => {
-                tracing::warn!(error = %first, "launch failed against an orphaned Chromium; reaped it, retrying");
-                Browser::launch(build_browser_config(&cfg, headless, &profile)?)
-                    .await
-                    .map_err(|e| format!("failed to launch Chromium: {e}"))?
+        let (browser, mut handler, child, headless) = match cfg.engine {
+            BrowserEngine::Chromium => {
+                let headless = match headful {
+                    Some(headful) => !headful,
+                    None => cfg.headless,
+                };
+                let (browser, handler) =
+                    launch_chromium(&cfg, headless, &self.profile_dir()).await?;
+                (browser, handler, None, headless)
             }
-            Err(e) => return Err(format!("failed to launch Chromium: {e}")),
+            BrowserEngine::Lightpanda => {
+                let (browser, handler, child) =
+                    launch_lightpanda(&cfg, &self.lightpanda_dir()).await?;
+                (browser, handler, Some(child), true)
+            }
         };
         let shared = Arc::new(SharedBrowser {
             browser: tokio::sync::Mutex::new(browser),
+            engine: cfg.engine,
             headless,
             user_agent: Mutex::new(String::new()),
             handler: Mutex::new(None),
+            child: tokio::sync::Mutex::new(child),
         });
         // The handler pump ends when the CDP connection drops: a clean
         // close (the slot was already emptied) or Chromium dying underneath
@@ -1542,7 +1668,7 @@ impl Sessions {
             .unwrap_or_default();
         *shared.user_agent.lock().unwrap_or_else(|p| p.into_inner()) = user_agent;
         *slot = Some(shared.clone());
-        tracing::info!(headless, profile = %profile.display(), "browser launched");
+        tracing::info!(engine = cfg.engine.as_str(), headless, "browser launched");
         Ok(shared)
     }
 
@@ -1724,6 +1850,10 @@ impl Sessions {
             ttl_ms: None,
             last_used_ms: AtomicU64::new(now as u64),
             frame_seq: AtomicU64::new(0),
+            ref_counter: AtomicU64::new(0),
+            pick_counter: AtomicU64::new(0),
+            next_element_id: AtomicU64::new(1),
+            dom_counter: AtomicU64::new(0),
             url: Mutex::new(url.clone().unwrap_or_else(|| "about:blank".to_string())),
             title: Mutex::new(String::new()),
             history: Mutex::new(Vec::new()),
@@ -1744,21 +1874,22 @@ impl Sessions {
             viewport_height: AtomicU32::new(cfg.viewport_height),
             latest_frame: Mutex::new(None),
             screencast_consumers: std::sync::atomic::AtomicUsize::new(0),
+            pane_viewers: std::sync::atomic::AtomicUsize::new(0),
             recording: tokio::sync::Mutex::new(None),
             page: page.clone(),
             console: Mutex::new(RingBuffer::new(cfg.console_buffer as usize)),
             network: Mutex::new(RingBuffer::new(cfg.network_buffer as usize)),
             seq: AtomicU64::new(1),
             refs: Mutex::new(HashMap::new()),
-            ref_counter: AtomicU64::new(0),
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
+            dom_names: Mutex::new(HashMap::new()),
+            inflight: Mutex::new(HashMap::new()),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
             navigation_error: Mutex::new(None),
             upload_dirs: Mutex::new(Vec::new()),
             upload_counter: AtomicU64::new(0),
-            pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(vec![handler_task]),
         });
 
@@ -2211,7 +2342,11 @@ impl Sessions {
         if let Some(shared) = taken {
             shared.close().await;
         }
-        for dir in [self.profile_dir(), self.downloads_dir()] {
+        for dir in [
+            self.profile_dir(),
+            self.downloads_dir(),
+            self.lightpanda_dir(),
+        ] {
             match std::fs::remove_dir_all(&dir) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -2258,6 +2393,182 @@ async fn discovered_pages(browser: &Browser) -> Result<Vec<Page>, String> {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     Ok(Vec::new())
+}
+
+/// Spawn the system Chromium on `profile_dir`, reaping an orphan from a
+/// killed worker once if it still holds the profile lock.
+async fn launch_chromium(
+    cfg: &WorkerConfig,
+    headless: bool,
+    profile: &std::path::Path,
+) -> Result<(Browser, chromiumoxide::Handler), String> {
+    std::fs::create_dir_all(profile)
+        .map_err(|e| format!("cannot create profile dir {}: {e}", profile.display()))?;
+    let browser_config = build_browser_config(cfg, headless, profile)?;
+    match Browser::launch(browser_config).await {
+        Ok(launched) => Ok(launched),
+        Err(first) if reap_orphan_chromium(profile) => {
+            tracing::warn!(error = %first, "launch failed against an orphaned Chromium; reaped it, retrying");
+            Browser::launch(build_browser_config(cfg, headless, profile)?)
+                .await
+                .map_err(|e| format!("failed to launch Chromium: {e}"))
+        }
+        Err(e) => Err(format!("failed to launch Chromium: {e}")),
+    }
+}
+
+/// Open a page target in the shared browser. chromiumoxide's `new_page`
+/// resolves only once the main frame reports `Page.lifecycleEvent(load)`,
+/// which Chromium replays the moment lifecycle events are enabled;
+/// Lightpanda emits it on a real navigation only, so a fresh `about:blank`
+/// target never counts as loaded and `new_page` would wait forever. There
+/// the target is created raw and the handler's `get_page` (which needs the
+/// session, not the load) is polled while it attaches and initializes.
+async fn open_page(
+    shared: &SharedBrowser,
+    params: cdp_target::CreateTargetParams,
+) -> Result<Page, chromiumoxide::error::CdpError> {
+    let browser = shared.browser.lock().await;
+    if shared.engine != BrowserEngine::Lightpanda {
+        return browser.new_page(params).await;
+    }
+    let target_id = browser.execute(params).await?.result.target_id;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match browser.get_page(target_id.clone()).await {
+            Ok(page) => return Ok(page),
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// How long `lightpanda serve` gets to start listening before the launch
+/// is reported failed. The binary starts in well under a second.
+const LIGHTPANDA_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Spawn `lightpanda serve` on a free loopback port and connect to it over
+/// CDP. The child is returned to be owned (and ended) by the
+/// `SharedBrowser`. Cookies persist through `profile_dir/cookies.json`:
+/// loaded when the file exists, written by Lightpanda at exit. Loopback and
+/// private networks are reachable by default, so a dev server on localhost
+/// loads; the worker's own scheme allowlist and origin policies still gate
+/// every navigation.
+async fn launch_lightpanda(
+    cfg: &WorkerConfig,
+    profile_dir: &std::path::Path,
+) -> Result<(Browser, chromiumoxide::Handler, tokio::process::Child), String> {
+    let bin = doctor::detect_executable(cfg).ok_or_else(|| {
+        let issue = doctor::missing_executable_issue(cfg);
+        format!("{}; {}", issue.what, issue.enable_how)
+    })?;
+    std::fs::create_dir_all(profile_dir)
+        .map_err(|e| format!("cannot create profile dir {}: {e}", profile_dir.display()))?;
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map_err(|e| format!("no free loopback port for lightpanda: {e}"))?
+        .port();
+    reap_orphan_lightpanda(profile_dir);
+    let cookie_jar = profile_dir.join("cookies.json");
+    let mut command = tokio::process::Command::new(&bin);
+    command
+        .arg("serve")
+        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
+        .arg("--cookie-jar")
+        .arg(&cookie_jar)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        // Quiet unless it fails (its default log level is warn): a crash
+        // message is what an operator needs in the worker's own log.
+        .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true);
+    if cookie_jar.is_file() {
+        command.arg("--cookie").arg(&cookie_jar);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("failed to spawn {}: {e}", bin.display()))?;
+    if let Some(pid) = child.id() {
+        let _ = std::fs::write(profile_dir.join(LIGHTPANDA_PID_FILE), pid.to_string());
+    }
+
+    // Straight to the socket: Lightpanda serves CDP on `/`, and its
+    // `/json/version` lacks the `V8-Version`/`WebKit-Version` fields
+    // chromiumoxide's discovery parser insists on (it would silently fall
+    // back to dialing the http URL as a websocket).
+    let endpoint = format!("ws://127.0.0.1:{port}/");
+    let deadline = tokio::time::Instant::now() + LIGHTPANDA_READY_TIMEOUT;
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!("lightpanda exited before serving CDP: {status}"));
+        }
+        let handler_config = chromiumoxide::handler::HandlerConfig {
+            viewport: Some(chromiumoxide::handler::viewport::Viewport {
+                width: cfg.viewport_width,
+                height: cfg.viewport_height,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        match Browser::connect_with_config(endpoint.clone(), handler_config).await {
+            Ok((browser, handler)) => {
+                tracing::info!(port, profile = %profile_dir.display(), "lightpanda serve started");
+                return Ok((browser, handler, child));
+            }
+            Err(e) if tokio::time::Instant::now() < deadline => {
+                tracing::debug!(error = %e, "lightpanda not accepting CDP yet");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(e) => {
+                terminate_child(&mut child).await;
+                return Err(format!("lightpanda did not accept CDP on {endpoint}: {e}"));
+            }
+        }
+    }
+}
+
+/// Where `launch_lightpanda` notes its child's pid, for the next launch to
+/// reap it if this worker died without closing it.
+const LIGHTPANDA_PID_FILE: &str = "serve.pid";
+
+/// A worker killed without cleanup leaves its `lightpanda serve` running
+/// (nothing ties the child to the parent). When the pid noted at the last
+/// launch still runs a `lightpanda serve` on THIS profile's cookie jar,
+/// end it; nothing else is ever touched.
+#[cfg(not(unix))]
+fn reap_orphan_lightpanda(_profile: &std::path::Path) {}
+
+#[cfg(unix)]
+fn reap_orphan_lightpanda(profile: &std::path::Path) {
+    let pid_file = profile.join(LIGHTPANDA_PID_FILE);
+    let Some(pid) = std::fs::read_to_string(&pid_file)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<i32>().ok())
+    else {
+        return;
+    };
+    let _ = std::fs::remove_file(&pid_file);
+    let Ok(ps) = std::process::Command::new("ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()
+    else {
+        return;
+    };
+    let command = String::from_utf8_lossy(&ps.stdout);
+    if !command.contains("lightpanda") || !command.contains(&*profile.to_string_lossy()) {
+        return;
+    }
+    tracing::warn!(
+        pid,
+        "reaping an orphaned lightpanda serve from a previous run"
+    );
+    // SAFETY: plain libc call on a pid we just verified runs lightpanda on
+    // our own profile directory.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
 }
 
 /// One profile for the whole browser, like a browser: Chromium holds a
@@ -2572,6 +2883,43 @@ async fn spawn_event_pumps(
         }));
     }
 
+    // In-flight requests, for the post-action network settle. One task owns
+    // every update and drains starts before finishes (`biased`): the CDP
+    // handler delivers a request's start to its channel before its finish,
+    // so a fast request can never be finished first and then left pending.
+    if let (Ok(mut started), Ok(mut finished), Ok(mut failed)) = (
+        page.event_listener::<cdp_network::EventRequestWillBeSent>()
+            .await,
+        page.event_listener::<cdp_network::EventLoadingFinished>()
+            .await,
+        page.event_listener::<cdp_network::EventLoadingFailed>()
+            .await,
+    ) {
+        let s = session.clone();
+        tasks.push(tokio::spawn(async move {
+            loop {
+                let done = tokio::select! {
+                    biased;
+                    Some(event) = started.next() => {
+                        let mut inflight = s.inflight.lock().unwrap_or_else(|p| p.into_inner());
+                        if inflight.len() >= 2_048 {
+                            inflight.clear();
+                        }
+                        inflight.insert(event.request_id.inner().to_string(), now_ms());
+                        continue;
+                    }
+                    Some(event) = finished.next() => event.request_id.inner().to_string(),
+                    Some(event) = failed.next() => event.request_id.inner().to_string(),
+                    else => break,
+                };
+                s.inflight
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&done);
+            }
+        }));
+    }
+
     // network: request → response/failure, correlated by request id
     let pending: Arc<Mutex<HashMap<String, (String, String)>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -2583,12 +2931,13 @@ async fn spawn_event_pumps(
         let pending = pending.clone();
         tasks.push(tokio::spawn(async move {
             while let Some(event) = events.next().await {
+                let id = event.request_id.inner().to_string();
                 let mut pending = pending.lock().unwrap_or_else(|p| p.into_inner());
                 if pending.len() >= 2_048 {
                     pending.clear();
                 }
                 pending.insert(
-                    event.request_id.inner().to_string(),
+                    id,
                     (event.request.method.clone(), event.request.url.clone()),
                 );
             }

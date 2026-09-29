@@ -1,0 +1,6 @@
+[data-iii-ui='judge-laya'] .laya-ui-form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}

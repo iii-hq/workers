@@ -50,8 +50,8 @@ broken diagram never lands in the store or renders as an error card.
 - Nothing here renders. Headless callers get source back, never SVG or
   pixels; drawing happens in the console.
 - Not a file store and not a document editor: the source is one diagram,
-  capped by the configured `max_source_bytes`. Files belong to the shell and
-  editor workers.
+  capped by the configured `max_source_bytes`. Files belong to the shell
+  worker.
 - `canvas::validate` checks that source parses, not that the diagram is any
   good — a valid diagram can still be the wrong diagram.
 - A canvas's format is fixed at creation; `canvas::update` changes name and

@@ -2,6 +2,10 @@ import { ArrowUpRight } from 'lucide-react'
 import type * as React from 'react'
 import { cn } from '@/lib/utils'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 /** Visual action label for a widget whose surrounding control owns the click.
     Children replace the default "Open details" copy when the destination
     is more specific (a sub-agent card opens the child's chat). */

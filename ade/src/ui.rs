@@ -119,7 +119,6 @@ mod tests {
             "queue",
             "rbac-proxy",
             "sandbox-code-runner",
-            "scrapling",
             "security-scan",
             "session-manager",
             "shell",
@@ -131,7 +130,7 @@ mod tests {
             "workflow",
             "worktree",
         ];
-        assert_eq!(ids.len(), 39);
+        assert_eq!(ids.len(), 38);
         for id in ids {
             let registration = format!("configForms.register(\"{id}\"");
             assert!(
@@ -161,8 +160,8 @@ mod tests {
         );
     }
 
-    /// The pages are useless if their ids drift from the routes the nav and
-    /// deep links use (`#/ext/functions`, `#/ext/triggers`).
+    /// The pages are useless if their ids drift from the screens the nav
+    /// and the workspace open (`ext:functions`, `ext:triggers`).
     #[test]
     fn embedded_catalog_page_registers_every_page() {
         for id in ["functions", "triggers"] {

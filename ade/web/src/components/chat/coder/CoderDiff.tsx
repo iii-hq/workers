@@ -48,7 +48,7 @@ export function CoderOverwritePreview({
     <div className="border-b border-rule-2 last:border-b-0">
       <div className="bg-paper-2 border-b border-rule-2 px-3 py-2 flex flex-wrap items-center gap-1.5">
         <Chip label="path">{path}</Chip>
-        <Chip label="overwrite" className="border-warn text-warn">
+        <Chip label="overwrite" className="bg-warn-muted text-warn">
           true
         </Chip>
       </div>

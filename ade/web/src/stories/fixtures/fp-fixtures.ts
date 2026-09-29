@@ -33,7 +33,7 @@ const pipePreview =
 
 const pipeThrough = [
   {
-    function: 'scrapling::fetch',
+    function: 'browser::fetch',
     payload: {
       url: 'https://example.com/circuit-breakers',
       format: 'markdown',
@@ -47,7 +47,7 @@ const pipeThrough = [
 
 const pipeDoneDetails = {
   steps: [
-    { function: 'scrapling::fetch', chars: 84_213 },
+    { function: 'browser::fetch', chars: 84_213 },
     { function: 'fp::get', chars: 81_902 },
     { function: 'fp::take', chars: 20_000 },
     { function: 'state::set', chars: 46 },
@@ -97,15 +97,15 @@ export const pipeStepError = base(
     error: {
       kind: 'function_error',
       message:
-        'pipe failed at step 2 (fp::get): path "/body" matched nothing; available top-level keys: content, status · completed: scrapling::fetch→84213ch',
+        'pipe failed at step 2 (fp::get): path "/body" matched nothing; available top-level keys: content, status · completed: browser::fetch→84213ch',
       details: {
         message:
-          'pipe failed at step 2 (fp::get): path "/body" matched nothing; available top-level keys: content, status · completed: scrapling::fetch→84213ch',
+          'pipe failed at step 2 (fp::get): path "/body" matched nothing; available top-level keys: content, status · completed: browser::fetch→84213ch',
       },
       content: [
         {
           type: 'text' as const,
-          text: 'pipe failed at step 2 (fp::get): path "/body" matched nothing; available top-level keys: content, status · completed: scrapling::fetch→84213ch',
+          text: 'pipe failed at step 2 (fp::get): path "/body" matched nothing; available top-level keys: content, status · completed: browser::fetch→84213ch',
         },
       ],
     },

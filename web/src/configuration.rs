@@ -90,12 +90,12 @@ fn spec() -> config_client::EntrySpec {
     }
 }
 
-/// Register the schema. A `--config` seed (like the built-in default) is
-/// installed only when nothing is stored yet — `configuration::register`
-/// REPLACES the stored value whenever `initial_value` is supplied, so an
-/// unconditional seed would clobber operator console edits on every boot.
+/// Register the schema and seed the built-in default (or a `--config` seed)
+/// atomically via `config_client::ensure`: the candidate is installed ONLY
+/// when nothing is stored yet, so an operator's console edit is preserved on
+/// every boot instead of being clobbered by an unconditional re-seed.
 pub async fn register_config(iii: &IIIClient, seed: Option<&WebConfig>) -> Result<(), String> {
-    config_client::register(iii, &spec(), seed.map(WebConfig::to_json)).await
+    config_client::ensure(iii, &spec(), seed.map(WebConfig::to_json)).await
 }
 
 pub async fn fetch_config(iii: &IIIClient) -> Result<WebConfig, String> {

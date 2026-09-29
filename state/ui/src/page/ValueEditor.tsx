@@ -18,11 +18,18 @@ import {
   Button,
   CodeEditor,
   type Host,
+  IconButton,
+  KeyCombo,
   type PageCommandsApi,
+  Skeleton,
+  StatusBar,
+  StatusDot,
+  StatusPanel,
 } from '@iii-dev/console-ui'
+import { errorMessage, formatBytes } from '@iii-dev/console-ui/format'
+import { ArrowLeft } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { type Subscribe, useStateEvents } from '../lib/events'
-import { BackButton } from '../lib/widgets'
 
 export function ValueEditor({
   host,
@@ -69,9 +76,7 @@ export function ValueEditor({
         setLoadError(null)
         setStored({ loaded: true, value })
       })
-      .catch((err: unknown) =>
-        setLoadError(err instanceof Error ? err.message : String(err)),
-      )
+      .catch((err: unknown) => setLoadError(errorMessage(err)))
   }, [host, scope, itemKey])
   useEffect(load, [load])
 
@@ -127,7 +132,7 @@ export function ValueEditor({
     try {
       JSON.parse(text)
     } catch (err) {
-      parseError = err instanceof Error ? err.message : String(err)
+      parseError = errorMessage(err)
     }
   }
 
@@ -154,7 +159,7 @@ export function ValueEditor({
       window.clearTimeout(flashTimer.current)
       flashTimer.current = window.setTimeout(() => setSavedFlash(false), 2400)
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err))
+      setSaveError(errorMessage(err))
     } finally {
       setSaving(false)
     }
@@ -199,7 +204,7 @@ export function ValueEditor({
   const saveStatus = saving
     ? 'saving…'
     : savedFlash
-      ? '✓ saved'
+      ? 'saved'
       : dirty
         ? 'unsaved'
         : ''
@@ -209,18 +214,14 @@ export function ValueEditor({
     <div className="state-ui-doc-inner" onKeyDown={onWorkspaceKeyDown}>
       <header className="state-ui-doc-head">
         {narrow ? (
-          <BackButton onClick={onBack} label={`back to ${scope}`} />
+          <IconButton label={`back to ${scope}`} onClick={onBack}>
+            <ArrowLeft size={16} aria-hidden />
+          </IconButton>
         ) : null}
         <div className="state-ui-doc-identity">
           <span className="state-ui-doc-name" title={`${scope} / ${itemKey}`}>
             <span className="txt">{itemKey}</span>
-            {dirty ? (
-              <span
-                className="state-ui-dirty-dot"
-                title="unsaved changes"
-                aria-hidden
-              />
-            ) : null}
+            {dirty ? <StatusDot tone="accent" title="unsaved changes" /> : null}
           </span>
           {!narrow ? (
             <span className="state-ui-doc-crumb">
@@ -256,63 +257,65 @@ export function ValueEditor({
       </header>
 
       {serverNotice?.kind === 'deleted' ? (
-        <div className="state-ui-banner warn" role="status">
-          <span>This key was deleted on the server — saving recreates it.</span>
-        </div>
+        <StatusPanel
+          variant="warn"
+          role="status"
+          className="state-ui-banner"
+          headline="This key was deleted on the server — saving recreates it."
+        />
       ) : null}
 
       {serverNotice?.kind === 'changed' ? (
-        <div className="state-ui-banner warn" role="status">
-          <span>This value changed on the server while you were editing.</span>
-          <button
-            type="button"
-            className="state-ui-linkish"
-            onClick={loadLatest}
-          >
-            load latest (discards your draft)
-          </button>
-        </div>
+        <StatusPanel
+          variant="warn"
+          role="status"
+          className="state-ui-banner"
+          headline="This value changed on the server while you were editing."
+          action={
+            <Button variant="ghost" size="sm" onClick={loadLatest}>
+              load latest (discards your draft)
+            </Button>
+          }
+        />
       ) : null}
 
       {saveError ? (
-        <div className="state-ui-banner alert" role="alert">
-          <span>
-            state::set failed.
-            <span className="detail">{saveError}</span>
-          </span>
-          <button
-            type="button"
-            className="state-ui-linkish"
-            onClick={() => void save()}
-          >
-            retry
-          </button>
-          <button
-            type="button"
-            className="state-ui-linkish quiet"
-            onClick={() => setSaveError(null)}
-          >
-            dismiss
-          </button>
-        </div>
+        <StatusPanel
+          variant="alert"
+          role="alert"
+          className="state-ui-banner"
+          headline="state::set failed."
+          detail={saveError}
+          action={
+            <>
+              <Button variant="ghost" size="sm" onClick={() => void save()}>
+                retry
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setSaveError(null)}>
+                dismiss
+              </Button>
+            </>
+          }
+        />
       ) : null}
 
       {loadError ? (
-        <div className="state-ui-error-panel grow">
-          <p>
-            {scope} / {itemKey} could not be loaded.
-            <span className="detail">{loadError}</span>
-          </p>
-          <Button variant="ghost" size="sm" onClick={load}>
-            retry
-          </Button>
-        </div>
+        <StatusPanel
+          variant="alert"
+          className="state-ui-error-panel"
+          headline={`${scope} / ${itemKey} could not be loaded.`}
+          detail={loadError}
+          action={
+            <Button variant="ghost" size="sm" onClick={load}>
+              retry
+            </Button>
+          }
+        />
       ) : !stored.loaded ? (
         <div className="state-ui-doc-loading" aria-hidden>
-          <span className="bar w40" />
-          <span className="bar w90" />
-          <span className="bar w75" />
-          <span className="bar w30" />
+          {[40, 90, 75, 30].map((w) => (
+            <Skeleton key={w} className="state-ui-skel" style={{ width: `${w}%` }} />
+          ))}
         </div>
       ) : (
         <>
@@ -326,32 +329,33 @@ export function ValueEditor({
               placeholder="null"
             />
           </div>
-          <footer className="state-ui-statusbar">
-            <span className="fact">json</span>
-            <span className="fact">
+          <StatusBar
+            as="footer"
+            className="state-ui-statusbar"
+            end={
+              parseError ? (
+                <span className="state-ui-status alert" title={parseError}>
+                  invalid JSON — {parseError}
+                </span>
+              ) : dirty ? (
+                <span className="state-ui-status">
+                  <KeyCombo binding="Mod+S" /> saves
+                </span>
+              ) : liveAt ? (
+                <span className="state-ui-status ok">updated live</span>
+              ) : (
+                <span className="state-ui-status">all changes saved</span>
+              )
+            }
+          >
+            <span>json</span>
+            <span>
               {lines} line{lines === 1 ? '' : 's'}
             </span>
-            <span className="fact">{formatKb(bytes)}</span>
-            <span className="spacer" />
-            {parseError ? (
-              <span className="status alert" title={parseError}>
-                invalid JSON — {parseError}
-              </span>
-            ) : dirty ? (
-              <span className="status">⌘S saves</span>
-            ) : liveAt ? (
-              <span className="status ok">updated live ↻</span>
-            ) : (
-              <span className="status">all changes saved</span>
-            )}
-          </footer>
+            <span>{formatBytes(bytes)}</span>
+          </StatusBar>
         </>
       )}
     </div>
   )
-}
-
-function formatKb(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  return `${(bytes / 1024).toFixed(1)} KB`
 }

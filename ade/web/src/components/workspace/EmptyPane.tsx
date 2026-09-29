@@ -14,6 +14,10 @@ import type { TabScreen } from '@/lib/workspace-tabs'
 import { filterScreenOptions } from './empty-pane-search'
 import type { ScreenOption } from './use-screen-options'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 const DESKTOP_PANE_SEARCH_QUERY = `(min-width: 640px) and ${DESKTOP_POINTER_QUERY}`
 
 interface EmptyPaneProps {
@@ -120,8 +124,8 @@ export function EmptyPane({
       <div className="flex min-h-0 w-full flex-1 flex-col items-center justify-center p-4 @md:p-6">
         <div className="flex max-h-full min-h-0 w-full max-w-md flex-col gap-3 text-left">
           <div className="flex shrink-0 flex-col gap-1">
-            <h2 className="text-balance font-mono text-base font-medium lowercase text-ink sm:text-sm">
-              attach a page
+            <h2 className="text-balance font-mono text-base font-medium text-ink sm:text-sm">
+              Attach a page
             </h2>
             <p className="hidden text-pretty font-mono text-sm text-ink-faint @md:block">
               Choose what this panel should show.
@@ -152,13 +156,13 @@ export function EmptyPane({
               aria-activedescendant={
                 activeOption ? `${listId}-option-${activeIndex}` : undefined
               }
-              className="min-w-0 flex-1 bg-transparent font-mono text-base lowercase text-ink outline-none placeholder:text-ink-ghost sm:text-[0.8125rem]"
+              className="min-w-0 flex-1 bg-transparent font-mono text-base text-ink outline-none placeholder:text-ink-ghost sm:text-[0.8125rem]"
             />
           </div>
 
           <div className={cn(uiClasses.panel, 'flex min-h-0 flex-col')}>
-            <div className="flex shrink-0 items-center justify-between gap-3 px-3 py-2 font-mono text-[0.6875rem] uppercase tracking-wide text-ink-faint">
-              <div>{query ? 'results' : 'all pages'}</div>
+            <div className="flex shrink-0 items-center justify-between gap-3 px-3 py-2 iii-ui-eyebrow">
+              <div>{query ? 'Results' : 'All pages'}</div>
               <div
                 aria-live="polite"
                 className="shrink-0 tabular-nums text-ink-ghost"

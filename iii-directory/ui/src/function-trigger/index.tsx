@@ -30,16 +30,11 @@ import { SkillsGetView, SkillsIndexView, SkillsListView } from './SkillsViews'
 import { SkillsUpdateView, SystemPromptsUpdateView } from './UpdateViews'
 
 function FunctionIdLabel({ functionId }: { functionId: string }) {
-  if (!functionId.startsWith('directory::')) {
-    return <span style={{ color: 'var(--color-ink)' }}>{functionId}</span>
-  }
-  const tail = functionId.slice('directory::'.length)
+  const ns = functionId.startsWith('directory::') ? 'directory::' : ''
   return (
     <>
-      <span style={{ color: 'var(--color-ink-faint)' }}>directory::</span>
-      <span style={{ color: 'var(--color-ink)', fontWeight: 500 }}>
-        {tail}
-      </span>
+      {ns ? <span style={{ color: 'var(--color-ink-faint)' }}>{ns}</span> : null}
+      <span style={{ color: 'var(--color-ink)', fontWeight: ns ? 500 : undefined }}>{functionId.slice(ns.length)}</span>
     </>
   )
 }

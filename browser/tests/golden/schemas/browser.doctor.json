@@ -20,6 +20,7 @@
       "configured_origin_policies",
       "data_dir",
       "default_origin_policy_set",
+      "engine",
       "headless_default",
       "issues",
       "max_sessions",
@@ -55,12 +56,14 @@
         "type": "boolean"
       },
       "chromium_path": {
+        "description": "The engine binary the worker would launch (a Chromium/Chrome, or the `lightpanda` binary). The field name predates the `engine` setting.",
         "type": [
           "string",
           "null"
         ]
       },
       "chromium_version": {
+        "description": "`<binary> --version`, first line.",
         "type": [
           "string",
           "null"
@@ -77,6 +80,10 @@
       },
       "default_origin_policy_set": {
         "type": "boolean"
+      },
+      "engine": {
+        "description": "Configured engine: `chromium` or `lightpanda`.",
+        "type": "string"
       },
       "headless_default": {
         "type": "boolean"

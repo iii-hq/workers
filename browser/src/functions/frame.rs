@@ -13,12 +13,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ScreencastStartInput {
     pub session_id: String,
+    /// A corner thumbnail rather than a pane: streams frames but does not
+    /// count as a viewer for `browser::resize` fit arbitration.
+    #[serde(default)]
+    pub preview: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ScreencastStopInput {
     /// Stopping the screencast on an unknown session succeeds.
     pub session_id: String,
+    /// Must match the `preview` the start was made with.
+    #[serde(default)]
+    pub preview: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

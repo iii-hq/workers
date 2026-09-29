@@ -162,7 +162,7 @@ export function FilesystemAccessPrompt({
             <button
               type="button"
               onClick={() => setConfirmOpen(false)}
-              className="font-mono text-[12px] px-3 py-1 border border-rule text-ink-faint hover:text-ink hover:border-ink transition-colors"
+              className="font-mono text-[12px] px-3 py-1 rounded-sm bg-surface text-ink-faint hover:bg-surface-hover hover:text-ink transition-colors"
             >
               cancel
             </button>
@@ -172,7 +172,7 @@ export function FilesystemAccessPrompt({
                 setConfirmOpen(false)
                 void run('always')
               }}
-              className="font-mono text-[12px] px-3 py-1 border border-alert bg-alert text-bg hover:bg-bg hover:text-alert transition-colors"
+              className="font-mono text-[12px] px-3 py-1 rounded-sm bg-alert text-bg hover:bg-alert/90 transition-colors"
             >
               always allow {requestedRoot}
             </button>

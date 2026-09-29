@@ -1,5 +1,5 @@
 /**
- * The shell explorer page (#/ext/shell): an editor-shaped surface over
+ * The shell explorer page (page `ide`): an editor-shaped surface over
  * the worker's own functions. One tab strip holds everything the main
  * pane can show: a file (its real content, editable), a diff (one file
  * against one source: the index, a Harness turn, a revision, a recorded
@@ -30,6 +30,8 @@ import {
   type PageRenderProps,
   PageShell,
   PageSidebar,
+  Tooltip,
+  useConfirm,
 } from '@iii-dev/console-ui'
 import type { GitStatusEntry } from '@pierre/trees'
 import {
@@ -46,7 +48,7 @@ import {
   Terminal,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { errorMessage } from '../lib/format'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { ActivityBar, type SideView } from './ActivityBar'
 import {
   type MissingPaths,
@@ -64,12 +66,12 @@ import { DEFAULT_DIFF_OPTIONS, DiffTab, type DiffOptions, type DiffTabActions, t
 import { EditorTabs } from './EditorTabs'
 import { type EditorCache, EditorPane } from './EditorPane'
 import { refreshCleanEditorCacheEntry } from './editor-cache'
-import { copyText, createEntry, deleteEntry, duplicateFile, duplicateName, renameEntry } from './file-actions'
+import { copyText } from '@iii-dev/console-ui/format'
+import { createEntry, deleteEntry, duplicateFile, duplicateName, renameEntry } from './file-actions'
 import { createObjectUrlRegistry } from './file-bytes'
 import { type ExplorerActions, FilesTab } from './FilesTab'
 import { type GitChange, type GitState, gitChanges } from './git'
 import { gitDiscard } from './git-actions'
-import { HoverTip } from './HoverTip'
 import { EDITOR_FULL_READ_BUDGET } from './large-file'
 import { useWorkspaceChanges } from './live'
 import {
@@ -309,6 +311,13 @@ export function ShellExplorerPage({
     endLine?: number
     seq: number
   } | null>(null)
+  const revealSeqRef = useRef(0)
+  /** Clear only the acknowledged request; a newer navigation must remain pending. */
+  const onRevealHandled = useCallback((path: string, seq: number) => {
+    setRevealLineRequest((pending) =>
+      pending?.path === path && pending.seq === seq ? null : pending,
+    )
+  }, [])
   const historyRef = useRef<NavHistory>(EMPTY_HISTORY)
   const [historyState, setHistoryState] = useState({ back: false, forward: false })
   const navigatingRef = useRef(false)
@@ -324,6 +333,7 @@ export function ShellExplorerPage({
   const [timelineNote, setTimelineNote] = useState<string | null>(null)
   const [reverting, setReverting] = useState<string | null>(null)
   const [pendingDiscard, setPendingDiscard] = useState<GitChange | null>(null)
+  const { confirm, dialog: confirmDialog } = useConfirm()
 
   const activeTab = activeTabOf(tabs)
   const tabVisible = !terminalActive
@@ -341,10 +351,14 @@ export function ShellExplorerPage({
     return () => window.removeEventListener('beforeunload', warn)
   }, [dirtyPaths])
 
-  const confirmDiscardAllEdits = useCallback(() => {
+  const confirmDiscardAllEdits = useCallback(async () => {
     if (dirtyPaths.size === 0) return true
-    return window.confirm(`discard unsaved changes in ${dirtyPaths.size} ${dirtyPaths.size === 1 ? 'file' : 'files'}?`)
-  }, [dirtyPaths])
+    return confirm({
+      title: `discard unsaved changes in ${dirtyPaths.size} ${dirtyPaths.size === 1 ? 'file' : 'files'}?`,
+      confirmLabel: 'Discard',
+      tone: 'danger',
+    })
+  }, [dirtyPaths, confirm])
 
   // ── boot: worker info + this workspace tab's persisted state ──
   useEffect(() => {
@@ -573,13 +587,13 @@ export function ShellExplorerPage({
       showTab((s) => (options.pin ? openPinned(s, fileTarget(relPath)) : openPreview(s, fileTarget(relPath))))
       if (options.line !== undefined) {
         const line = options.line
-        setRevealLineRequest((previous) => ({
+        setRevealLineRequest({
           path: relPath,
           line,
           column: options.column,
           endLine: options.endLine,
-          seq: (previous?.seq ?? 0) + 1,
-        }))
+          seq: ++revealSeqRef.current,
+        })
       }
     },
     [showTab],
@@ -598,10 +612,11 @@ export function ShellExplorerPage({
   const dropFileCache = useCallback((path: string) => {
     objectUrlsRef.current.release(cacheRef.current.get(path)?.image)
     cacheRef.current.delete(path)
+    setRevealLineRequest((pending) => pending?.path === path ? null : pending)
   }, [])
 
   const closeTabIds = useCallback(
-    (ids: readonly string[]) => {
+    async (ids: readonly string[]) => {
       if (ids.length === 0) return
       const closing = new Set(ids)
       const current = tabsRef.current
@@ -611,9 +626,14 @@ export function ShellExplorerPage({
       const dirty = filePaths.filter((path) => dirtyPaths.has(path))
       if (
         dirty.length > 0 &&
-        !window.confirm(
-          dirty.length === 1 ? `discard unsaved changes to ${dirty[0]}?` : `discard unsaved changes in ${dirty.length} files?`,
-        )
+        !(await confirm({
+          title:
+            dirty.length === 1
+              ? `discard unsaved changes to ${dirty[0]}?`
+              : `discard unsaved changes in ${dirty.length} files?`,
+          confirmLabel: 'Discard',
+          tone: 'danger',
+        }))
       ) {
         return
       }
@@ -636,7 +656,7 @@ export function ShellExplorerPage({
       })
       syncHistoryState()
     },
-    [dirtyPaths, dropFileCache, syncHistoryState],
+    [dirtyPaths, dropFileCache, syncHistoryState, confirm],
   )
   const closeTabId = useCallback((id: string) => closeTabIds([id]), [closeTabIds])
 
@@ -865,7 +885,7 @@ export function ShellExplorerPage({
   const revertTurnFiles = useCallback(
     async (turnId: string, paths?: readonly string[]) => {
       if (!conversationId || reverting !== null) return
-      if (!confirmDiscardAllEdits()) return
+      if (!(await confirmDiscardAllEdits())) return
       setReverting(turnId)
       setTimelineNote(null)
       try {
@@ -1136,7 +1156,7 @@ export function ShellExplorerPage({
       void validateRootTarget(
         () => workspaceValidate(host, nextRoot),
         () => rootResolveSeqRef.current === resolveSeq,
-      ).then((result) => {
+      ).then(async (result) => {
         if (result.outcome !== 'validated') {
           onResolved?.(result.outcome, undefined, result.outcome === 'failed' ? result.error : undefined)
           if (result.outcome === 'failed') setRootChangeSettledEpoch((epoch) => epoch + 1)
@@ -1151,7 +1171,7 @@ export function ShellExplorerPage({
         }
         // Validation can take long enough for a draft to begin. Confirm at
         // commit time so the validated transition cannot discard newer work.
-        if (!confirmDiscardAllEdits()) {
+        if (!(await confirmDiscardAllEdits())) {
           onResolved?.('declined')
           setRootChangeSettledEpoch((epoch) => epoch + 1)
           return
@@ -1171,6 +1191,7 @@ export function ShellExplorerPage({
         objectUrlsRef.current.releaseAll()
         cacheRef.current.clear()
         diffCacheRef.current.clear()
+        setRevealLineRequest(null)
         historyRef.current = EMPTY_HISTORY
         setHistoryState({ back: false, forward: false })
         // The folder being left keeps what was open in it; the one being
@@ -1342,12 +1363,12 @@ export function ShellExplorerPage({
     [changeRoot, conversationId, host],
   )
 
-  // ── deep link: #/ext/shell/open/<encoded-abs>[:line] ──
-  // The chat's "open in shell" lands here. The request is captured (and
-  // stripped from the URL) immediately, then applied once the root has
-  // resolved — re-rooting to the file's own folder when it lives outside
+  // ── open request ──
+  // The chat's "open in shell" arrives as panel context (parseShellPanelContext
+  // below). The request is captured immediately, then applied once the root
+  // has resolved — re-rooting to the file's own folder when it lives outside
   // the browsed one; the effect refires on the new root and opens it.
-  const pendingOpenRef = useRef<{ abs: string; line?: number; endLine?: number } | null>(null)
+  const pendingOpenRef = useRef<{ abs: string; line?: number; endLine?: number; column?: number } | null>(null)
   const pendingOpenCaptureSeqRef = useRef(0)
   const pendingOpenRequestSeqRef = useRef(0)
   const pendingOpenRootRequestRef = useRef<{ target: string; token: ScopedRequestToken } | null>(null)
@@ -1356,10 +1377,10 @@ export function ShellExplorerPage({
   const pendingOpenRetryTimerRef = useRef<number | null>(null)
   const [pendingOpenError, setPendingOpenError] = useState<string | null>(null)
   const [openBump, setOpenBump] = useState(0)
-  const requestOpen = useCallback((abs: string, line?: number, endLine?: number) => {
+  const requestOpen = useCallback((abs: string, line?: number, endLine?: number, column?: number) => {
     if (rootRef.current !== null) rootResolveSeqRef.current += 1
     pendingOpenCaptureSeqRef.current += 1
-    pendingOpenRef.current = { abs, line, endLine }
+    pendingOpenRef.current = { abs, line, endLine, column }
     pendingOpenRootRequestRef.current = null
     pendingOpenWaitingForRetryRef.current = false
     pendingOpenRetryRef.current = 0
@@ -1370,28 +1391,6 @@ export function ShellExplorerPage({
     }
     setOpenBump((n) => n + 1)
   }, [])
-  useEffect(() => {
-    const capture = () => {
-      const m = window.location.hash.match(/^#\/ext\/shell\/open\/([^/]+)/)
-      if (m === null) return
-      window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#/ext/shell`)
-      const raw = m[1]
-      const colon = raw.lastIndexOf(':')
-      const hasLine = colon !== -1 && /^\d+$/.test(raw.slice(colon + 1))
-      const encoded = hasLine ? raw.slice(0, colon) : raw
-      let abs: string
-      try {
-        abs = decodeURIComponent(encoded)
-      } catch {
-        return // malformed percent escape — not our link
-      }
-      if (!abs.startsWith('/')) return
-      requestOpen(abs, hasLine ? Number.parseInt(raw.slice(colon + 1), 10) : undefined)
-    }
-    capture()
-    window.addEventListener('hashchange', capture)
-    return () => window.removeEventListener('hashchange', capture)
-  }, [requestOpen])
   // biome-ignore lint/correctness/useExhaustiveDependencies: openBump and rootChangeSettledEpoch re-run the pending open
   useEffect(() => {
     const pending = pendingOpenRef.current
@@ -1404,7 +1403,7 @@ export function ShellExplorerPage({
       pendingOpenWaitingForRetryRef.current = false
       pendingOpenRetryRef.current = 0
       setPendingOpenError(null)
-      openFileTab(pending.abs.slice(prefix.length), { pin: true, line: pending.line, endLine: pending.endLine })
+      openFileTab(pending.abs.slice(prefix.length), { pin: true, line: pending.line, endLine: pending.endLine, column: pending.column })
     } else if (pending.abs !== root) {
       const target = deepLinkRootTarget(pending.abs, workingDirRef.current)
       if (pendingOpenWaitingForRetryRef.current || pendingOpenRootRequestRef.current?.target === target) return
@@ -1471,18 +1470,18 @@ export function ShellExplorerPage({
 
   // ── panel context from other surfaces ──
   const openContextFile = useCallback(
-    (path: string, line?: number, endLine?: number): boolean => {
+    (path: string, line?: number, endLine?: number, column?: number): boolean => {
       if (root === null) return false
       setSideTab('files')
       setCollapsed(false)
       if (!path.startsWith('/')) {
-        openFileTab(path, { pin: true, line, endLine })
+        openFileTab(path, { pin: true, line, endLine, column })
         return true
       }
       // Reuse the validated deep-link pipeline for contextual panel
       // requests. It safely re-roots when the file lives outside the current
       // workspace and preserves the same retry/error behavior.
-      requestOpen(path, line, endLine)
+      requestOpen(path, line, endLine, column)
       return true
     },
     [root, openFileTab, requestOpen],
@@ -1512,7 +1511,7 @@ export function ShellExplorerPage({
     // root necessarily resolves. Leave file events unapplied until the safe
     // open pipeline can accept them.
     if (context.type === 'file') {
-      if (!openContextFile(context.path, context.line, context.endLine)) return
+      if (!openContextFile(context.path, context.line, context.endLine, context.column)) return
       appliedContextRef.current = panelContext.id
       return
     }
@@ -1835,7 +1834,7 @@ export function ShellExplorerPage({
       actions={
         info && root ? (
           <div className="shui-page-actions">
-            <HoverTip label="Go back (Shift+Alt+Left)">
+            <Tooltip label="Go back (Shift+Alt+Left)">
               <button
                 type="button"
                 className="shui-side-tab"
@@ -1845,8 +1844,8 @@ export function ShellExplorerPage({
               >
                 <ArrowLeft aria-hidden className="shui-side-tab-icon" />
               </button>
-            </HoverTip>
-            <HoverTip label="Go forward (Shift+Alt+Right)">
+            </Tooltip>
+            <Tooltip label="Go forward (Shift+Alt+Right)">
               <button
                 type="button"
                 className="shui-side-tab"
@@ -1856,9 +1855,9 @@ export function ShellExplorerPage({
               >
                 <ArrowRight aria-hidden className="shui-side-tab-icon" />
               </button>
-            </HoverTip>
+            </Tooltip>
             {sideTab === 'files' && !collapsed ? (
-              <HoverTip label={showHidden ? 'Hide hidden files (dotfiles)' : 'Show hidden files (dotfiles)'}>
+              <Tooltip label={showHidden ? 'Hide hidden files (dotfiles)' : 'Show hidden files (dotfiles)'}>
                 <button
                   type="button"
                   className={`shui-side-tab${showHidden ? ' active' : ''}`}
@@ -1868,9 +1867,9 @@ export function ShellExplorerPage({
                 >
                   {showHidden ? <Eye aria-hidden className="shui-side-tab-icon" /> : <EyeOff aria-hidden className="shui-side-tab-icon" />}
                 </button>
-              </HoverTip>
+              </Tooltip>
             ) : null}
-            <HoverTip label={terminalOpen ? 'Hide terminal' : 'Open terminal (zsh)'}>
+            <Tooltip label={terminalOpen ? 'Hide terminal' : 'Open terminal (zsh)'}>
               <button
                 type="button"
                 className={`shui-side-tab${terminalOpen ? ' active' : ''}`}
@@ -1880,9 +1879,9 @@ export function ShellExplorerPage({
               >
                 <Terminal aria-hidden className="shui-side-tab-icon" />
               </button>
-            </HoverTip>
+            </Tooltip>
             {narrow ? (
-              <HoverTip label={collapsed ? 'Show the sidebar' : 'Hide the sidebar'}>
+              <Tooltip label={collapsed ? 'Show the sidebar' : 'Hide the sidebar'}>
                 <button
                   type="button"
                   className="shui-collapse-btn"
@@ -1895,7 +1894,7 @@ export function ShellExplorerPage({
                     <PanelLeft aria-hidden className="shui-side-tab-icon" />
                   )}
                 </button>
-              </HoverTip>
+              </Tooltip>
             ) : null}
           </div>
         ) : undefined
@@ -1904,7 +1903,9 @@ export function ShellExplorerPage({
         onRequestClose === undefined
           ? undefined
           : () => {
-              if (confirmDiscardAllEdits()) onRequestClose()
+              void confirmDiscardAllEdits().then((ok) => {
+                if (ok) onRequestClose()
+              })
             }
       }
     />
@@ -2185,6 +2186,7 @@ export function ShellExplorerPage({
                 dock={terminalDock}
                 size={terminalBottomSize}
                 onDockChange={changeTerminalDock}
+                narrow={narrow}
                 onSizeChange={setTerminalBottomSize}
                 onClose={closeTerminal}
               />
@@ -2201,6 +2203,7 @@ export function ShellExplorerPage({
                 createObjectUrl={objectUrlsRef.current.create}
                 wordWrap={diffOptions.wordWrap}
                 reveal={revealLineRequest?.path === activeFilePath ? revealLineRequest : null}
+                onRevealHandled={onRevealHandled}
                 goToLineSeq={goToLineSeq}
                 onSaved={afterDiskChange}
                 onDirtyChange={onDirtyChange}
@@ -2291,6 +2294,7 @@ export function ShellExplorerPage({
           recent={tabFilePaths(tabs, recentPaths(historyRef.current, 60), 8)}
           onOpenFile={(rel) => openFileTab(rel, { pin: true })}
         />
+        {confirmDialog}
         <ConfirmDialog
           open={pendingDiscard !== null}
           onOpenChange={(open) => {
@@ -2320,6 +2324,7 @@ export function ShellExplorerPage({
             dock={terminalDock}
             size={terminalDock === 'bottom' ? terminalBottomSize : terminalRightSize}
             onDockChange={changeTerminalDock}
+            narrow={narrow}
             onSizeChange={terminalDock === 'bottom' ? setTerminalBottomSize : setTerminalRightSize}
             onClose={closeTerminal}
           />

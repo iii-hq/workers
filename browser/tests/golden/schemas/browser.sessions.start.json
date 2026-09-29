@@ -22,6 +22,14 @@
           "null"
         ]
       },
+      "preview": {
+        "description": "Whether consoles pop a live preview of the new tab (default true). The console's own tab controls pass `false`: the page that opened the tab already shows it, in every console window. Agents leave it.",
+        "default": null,
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
       "read_only": {
         "description": "Inspection-only session for its whole lifetime: act, evaluate, execute and styles::write are rejected; navigation and reads work.",
         "default": null,

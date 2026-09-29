@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ContextUsageReport } from '@/lib/backend/types'
 import {
   estimateConversationTokens,
   formatTokenCount,
@@ -9,15 +10,35 @@ import type { Message } from '@/types/chat'
 interface ContextUsageProps {
   messages: readonly Message[]
   contextWindow?: number
+  /**
+   * The harness's own accounting for the last request: what it cost, the
+   * input budget it was fit into, and what was left. The chars/4 estimate
+   * over the loaded rows, against the model's raw window, only stands in
+   * before the first generate: it grows with every live row and shrinks to
+   * the elided tail page on reload.
+   */
+  reported?: ContextUsageReport
 }
 
 const WARN_THRESHOLD = 0.75
 const DANGER_THRESHOLD = 0.9
 
-export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
+export function ContextUsage({
+  messages,
+  contextWindow,
+  reported,
+}: ContextUsageProps) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
-  const tokens = useMemo(() => estimateConversationTokens(messages), [messages])
+  const estimate = useMemo(
+    () => estimateConversationTokens(messages),
+    [messages],
+  )
+  const tokens = reported?.total ?? estimate
+  const estimated = reported === undefined
+  // The reported budget already excludes the output allocation, so it, not
+  // the model's raw window, is the capacity the last request was fit into.
+  const capacity = reported?.usable ?? contextWindow
 
   useEffect(() => {
     if (!open) return
@@ -37,12 +58,14 @@ export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
     }
   }, [open])
 
-  const hasContextWindow = contextWindow !== undefined && contextWindow > 0
-  const ratio = hasContextWindow ? Math.min(1, tokens / contextWindow) : 0
+  const hasCapacity = capacity !== undefined && capacity > 0
+  const ratio = hasCapacity ? Math.min(1, tokens / capacity) : 0
   const pct = Math.round(ratio * 100)
-  const available = hasContextWindow
-    ? Math.max(0, contextWindow - tokens)
-    : null
+  const available = reported
+    ? reported.free
+    : hasCapacity
+      ? Math.max(0, capacity - tokens)
+      : null
 
   let tone: 'normal' | 'warn' | 'danger' = 'normal'
   if (ratio >= DANGER_THRESHOLD) tone = 'danger'
@@ -67,19 +90,23 @@ export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
     <div ref={rootRef} className="relative flex self-stretch items-center">
       <button
         type="button"
-        aria-label={`context: approximately ${tokens.toLocaleString()} tokens${hasContextWindow ? ` of ${contextWindow.toLocaleString()} (${pct}%)` : ''} — click for details`}
+        aria-label={`context: ${estimated ? 'approximately ' : ''}${tokens.toLocaleString()} tokens${hasCapacity ? ` of ${capacity.toLocaleString()} (${pct}%)` : ''} — click for details`}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
         className="flex self-stretch items-center gap-1.5 rounded-sm font-sans text-sm text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
       >
-        <span>ctx</span>
-        {hasContextWindow ? (
+        {/* Under a 30rem pane (`@container` on the chat root) the meter
+            keeps only the counts you act on — `12.3k/200k`: the label, the
+            bar and the percentage hide. Without a capacity the lone number
+            needs its label to read as context, so `ctx` stays. */}
+        <span className={cn(hasCapacity && '@max-[30rem]:hidden')}>ctx</span>
+        {hasCapacity ? (
           <>
             <span
               // `surface-active`, not `surface`: the header group this sits in
               // is itself `bg-surface`, so the track needs added contrast.
-              className="relative h-[6px] w-14 overflow-hidden bg-surface-active"
+              className="relative h-[6px] w-14 overflow-hidden bg-surface-active @max-[30rem]:hidden"
               role="progressbar"
               aria-label="context window usage"
               aria-valuenow={pct}
@@ -88,9 +115,13 @@ export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
             >
               <span className={fillClass} style={{ width: `${pct}%` }} />
             </span>
-            <span className={cn('tabular-nums', labelToneClass)}>{pct}%</span>
-            <span className="text-ink-faint">
-              {formatTokenCount(tokens)}/{formatTokenCount(contextWindow)}
+            <span
+              className={cn('tabular-nums @max-[30rem]:hidden', labelToneClass)}
+            >
+              {pct}%
+            </span>
+            <span className="tabular-nums text-ink-faint">
+              {formatTokenCount(tokens)}/{formatTokenCount(capacity)}
             </span>
           </>
         ) : (
@@ -108,21 +139,28 @@ export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
         >
           <div className="flex items-baseline justify-between gap-3">
             <span className="font-medium">Context</span>
-            <span className="text-xs text-ink-faint">Estimated</span>
+            <span className="text-xs text-ink-faint">
+              {estimated ? 'Estimated' : 'Last request'}
+            </span>
           </div>
           <div className="mt-3 space-y-2">
             <ContextDetailRow label="Conversation" value={tokens} />
-            {hasContextWindow && available !== null ? (
+            {hasCapacity && available !== null ? (
               <>
                 <ContextDetailRow label="Available" value={available} />
-                <ContextDetailRow label="Window" value={contextWindow} />
+                <ContextDetailRow
+                  label={estimated ? 'Window' : 'Input budget'}
+                  value={capacity}
+                />
               </>
             ) : null}
           </div>
           <p className="mt-3 border-t border-rule-2 pt-2 text-xs leading-relaxed text-ink-faint">
-            {hasContextWindow
-              ? 'An estimate based on the messages loaded in this chat.'
-              : 'The selected model did not report a context-window limit.'}
+            {!hasCapacity
+              ? 'The selected model did not report a context-window limit.'
+              : estimated
+                ? 'An estimate based on the messages loaded in this chat.'
+                : 'What the last request sent to the model actually used.'}
           </p>
         </div>
       ) : null}

@@ -1,6 +1,6 @@
 //! Effective per-request config for the Codex Responses backend: OAuth access
 //! token + ChatGPT account id + url + max_tokens. The credential comes from the
-//! `auth-credentials` vault (`auth::get_token`); the api_url/max_tokens come
+//! provider session (or existing external credentials); api_url/max_tokens come
 //! from the router's `resolve`. This provider is OAuth-only — API keys belong
 //! on `provider-openai`.
 use llm_router::types::router::ProviderResolveResponse;
@@ -50,15 +50,15 @@ impl std::fmt::Display for ConfigError {
         match self {
             ConfigError::NotConfigured => f.write_str(
                 "provider openai-codex not configured: sign in with ChatGPT in the console \
-                 (Configuration → providers), or import an existing ~/.codex/auth.json",
+                 (Configuration → providers), or use an existing ~/.codex/auth.json before disconnecting",
             ),
             ConfigError::ApiKeyRejected => f.write_str(
-                "provider openai-codex requires a ChatGPT OAuth login (oauth::openai-codex); \
+                "provider openai-codex requires a ChatGPT OAuth login from the provider form; \
                  API keys belong on provider-openai under provider \"openai\"",
             ),
             ConfigError::MissingAccountId => f.write_str(
-                "provider openai-codex: missing ChatGPT account id — sign in again with \
-                 oauth::openai-codex",
+                "provider openai-codex: missing ChatGPT account id — sign in again in \
+                 the Codex provider form",
             ),
             ConfigError::InvalidApiUrl(u) => write!(
                 f,

@@ -1,3 +1,4 @@
+import { SquareFunction } from 'lucide-react'
 import {
   ActionLine,
   Chip,
@@ -44,30 +45,24 @@ export function WorkersRegisterView({
         <StatusPill label={headerLabel} variant={headerVariant} />
         {req.runtime ? (
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              runtime
-            </span>
+            <span className="iii-ui-eyebrow">runtime</span>
             <span className="ml-1 text-ink">{req.runtime}</span>
           </Chip>
         ) : null}
         {req.version ? (
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              version
-            </span>
+            <span className="iii-ui-eyebrow">version</span>
             <span className="ml-1 text-ink">{req.version}</span>
           </Chip>
         ) : null}
         {req.os ? (
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              os
-            </span>
+            <span className="iii-ui-eyebrow">os</span>
             <span className="ml-1 text-ink">{req.os}</span>
           </Chip>
         ) : null}
       </MetaRow>
-      <ActionLine symbol="ƒ" tone="accent">
+      <ActionLine icon={<SquareFunction />} tone="accent">
         <span className="font-mono text-[13px] text-accent break-all">
           {req.name ?? req._caller_worker_id}
         </span>

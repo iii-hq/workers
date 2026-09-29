@@ -87,6 +87,10 @@
   --color-alert-muted: rgba(255, 0, 38, 0.08);
   --color-warn: #a87a00;
   --color-warn-muted: rgba(168, 122, 0, 0.12);
+  /* Status as small text (11–12px): the same hues pushed to AA on the
+     surface ramp. A dot, a mark or a badge keeps the base tone. */
+  --color-alert-strong: #c60021;
+  --color-warn-strong: #7a5700;
   /* Diff additions (coder update-file echoes) — the palette's only green.
      Desaturated to sit with alert/warn; 5.3:1 on cream at 12px (AA). */
   --color-ok: #356f3d;
@@ -253,6 +257,8 @@
   --color-alert-muted: rgba(240, 93, 104, 0.12);
   --color-warn: #f5a524;
   --color-warn-muted: rgba(245, 165, 36, 0.12);
+  --color-alert-strong: #ff4d63;
+  --color-warn-strong: #d49b00;
   --color-ok: #36c98f;
   --color-ok-muted: rgba(54, 201, 143, 0.12);
   --color-workdir: #0ea5e9;
@@ -607,6 +613,7 @@
   }
 }
 
+/* viewport: phone chrome — panels only sit side by side on desktop */
 @media (min-width: 640px) and (prefers-reduced-motion: no-preference) {
   .workspace-panel-enter-left,
   .workspace-panel-enter-right {
@@ -933,6 +940,71 @@
   color: var(--color-ink);
 }
 
+/* The WYSIWYG blocks, drawn the way the sent message renders them (see the
+   ul / ol / code / pre renderers in lib/markdown.tsx) so the draft is a
+   preview, not a guess. Class names come from the editor theme in
+   LexicalShell; paragraphs are plain lines. */
+.composer-editor p {
+  margin: 0;
+}
+
+.composer-editor .composer-ul,
+.composer-editor .composer-ol {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+}
+
+.composer-editor .composer-ul {
+  list-style: disc;
+}
+
+.composer-editor .composer-ul .composer-ul {
+  list-style: circle;
+}
+
+.composer-editor .composer-ol {
+  list-style: decimal;
+  font-variant-numeric: tabular-nums;
+}
+
+.composer-editor .composer-li {
+  margin: 0;
+}
+
+.composer-editor .composer-li::marker {
+  color: var(--color-ink-faint);
+}
+
+/* The item that only holds a nested list: no bullet of its own. */
+.composer-editor .composer-li-nested {
+  list-style: none;
+}
+
+.composer-editor .composer-inline-code {
+  font-family: var(--font-code);
+  font-size: 0.875em;
+  padding: 1px 4px;
+  border: 1px solid var(--color-rule-2);
+  background: var(--color-paper-2);
+  color: var(--color-ink);
+}
+
+.composer-editor .composer-code {
+  display: block;
+  margin: 0.375rem 0;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--color-rule-2);
+  border-radius: 6px;
+  background: var(--color-bg);
+  font-family: var(--font-code);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-ink);
+  white-space: pre;
+  overflow-x: auto;
+  tab-size: 2;
+}
+
 .composer-placeholder {
   pointer-events: none;
   position: absolute;
@@ -948,6 +1020,7 @@
    mobile the blurred composer is a one-line field, like a text input: the
    toolbar folds away with the extra lines, and focusing it grows the
    writing surface (and its buttons) back. */
+/* viewport: phone chrome — the one-line phone composer */
 @media (max-width: 639px) {
   /* Blurred: exactly one line (top padding + line-height), no bottom
      padding, so the next line never peeks in. The measured content height
@@ -1002,6 +1075,7 @@
   }
 }
 
+/* viewport: phone chrome — 16px editor text on phones, 14px on desktop */
 @media (min-width: 640px) {
   .composer-editor,
   .composer-placeholder {

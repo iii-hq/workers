@@ -26,7 +26,12 @@ import {
   CodeEditor,
   type CodeEditorHandle,
   type Host,
+  StatusDot,
+  uiClasses,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { usePaneState, useSplitDrag } from '@iii-dev/console-ui/hooks'
+import { CircleAlert, Maximize } from 'lucide-react'
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
@@ -49,8 +54,7 @@ import {
   svgDimensions,
   svgWithBackground,
 } from './export'
-import { errorMessage, exportFilename } from './helpers'
-import { AlertCircle, Maximize } from './icons'
+import { exportFilename } from './helpers'
 import {
   beginRender,
   INITIAL_PREVIEW,
@@ -165,48 +169,25 @@ export function MermaidPane({
   }, [saveRef, save])
 
   // ── editor|preview split ratio (drag handle between the halves) ──
-  const [splitPct, setSplitPct] = useState(() => {
-    const stored = Number(window.localStorage.getItem(SPLIT_PCT_KEY))
-    return Number.isFinite(stored) && stored > 0 ? clampSplit(stored) : 44
-  })
+  // Same localStorage key and number encoding as before; arrows step 2%.
+  const [splitStored, setSplitPct] = usePaneState(SPLIT_PCT_KEY, 44)
+  const splitPct = clampSplit(Number(splitStored) || 44)
   const splitRef = useRef<HTMLDivElement | null>(null)
-  const splitDragRef = useRef(false)
-  const onSplitPointerDown = useCallback(
-    (e: ReactPointerEvent<HTMLDivElement>) => {
-      splitDragRef.current = true
-      try {
-        e.currentTarget.setPointerCapture(e.pointerId)
-      } catch {
-        // capture is best-effort
-      }
-    },
-    [],
-  )
-  const onSplitPointerMove = useCallback(
-    (e: ReactPointerEvent<HTMLDivElement>) => {
-      if (!splitDragRef.current) return
+  const splitDrag = useSplitDrag<{ x: number; left: number; width: number }>({
+    horizontal: true,
+    begin: (e) => {
       const rect = splitRef.current?.getBoundingClientRect()
-      if (!rect || rect.width === 0) return
-      setSplitPct(clampSplit(((e.clientX - rect.left) / rect.width) * 100))
+      return rect && rect.width > 0
+        ? { x: e.clientX, left: rect.left, width: rect.width }
+        : null
     },
-    [],
-  )
-  const splitPctRef = useRef(splitPct)
-  splitPctRef.current = splitPct
-  const onSplitPointerUp = useCallback(
-    (e: ReactPointerEvent<HTMLDivElement>) => {
-      if (splitDragRef.current) {
-        window.localStorage.setItem(SPLIT_PCT_KEY, String(splitPctRef.current))
-      }
-      splitDragRef.current = false
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId)
-      } catch {
-        // never captured
-      }
-    },
-    [],
-  )
+    move: (origin, delta) =>
+      setSplitPct(
+        clampSplit(((origin.x + delta - origin.left) / origin.width) * 100),
+      ),
+    step: (direction) =>
+      setSplitPct((pct) => clampSplit(Number(pct) + direction * 2)),
+  })
 
   // One handler at the pane root: keydown bubbles out of Monaco, so ⌘S /
   // ctrl-S saves from either half of the split.
@@ -469,7 +450,7 @@ export function MermaidPane({
         <span className="cv-title" title={`${record.name} · ${record.id}`}>
           {record.name}
         </span>
-        {dirty ? <span className="cv-dirty" title="unsaved changes" /> : null}
+        {dirty ? <StatusDot tone="accent" title="unsaved changes" /> : null}
         <span className="cv-spacer" />
         {saveError ? (
           <span className="cv-note-inline warn" title={saveError}>
@@ -543,13 +524,15 @@ export function MermaidPane({
 
         <div
           className="cv-split-handle"
-          onPointerDown={onSplitPointerDown}
-          onPointerMove={onSplitPointerMove}
-          onPointerUp={onSplitPointerUp}
           role="separator"
+          tabIndex={0}
           aria-orientation="vertical"
           aria-label="resize editor and preview"
-          title="drag to resize"
+          aria-valuemin={24}
+          aria-valuemax={72}
+          aria-valuenow={Math.round(splitPct)}
+          title="drag to resize; arrow keys nudge"
+          {...splitDrag}
         />
 
         <div
@@ -584,10 +567,10 @@ export function MermaidPane({
 
           {preview.error !== null ? (
             <div className="cv-diag" role="status">
-              <AlertCircle size={16} aria-hidden className="cv-diag-icon" />
+              <CircleAlert size={16} aria-hidden className="cv-diag-icon" />
               <div className="cv-diag-body">
                 {preview.errorLine !== null ? (
-                  <span className="cv-diag-line">line {preview.errorLine}</span>
+                  <span className={`${uiClasses.eyebrow} cv-diag-line`}>line {preview.errorLine}</span>
                 ) : null}
                 <pre className="cv-diag-msg">{preview.error}</pre>
               </div>

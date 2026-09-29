@@ -18,7 +18,7 @@ use crate::protocol::{
     snapshot, validate_identifier, validate_live_binding, validate_renderable, ActionRecord,
     DeleteSurface, DeleteSurfaceMessage, LiveBinding, ServerMessage, SessionState, SurfaceExport,
     SurfaceRecord, SurfaceRevision, SurfaceStatus, SurfaceSummary, SurfaceTemplate, CATALOG_ID,
-    PAGE_HASH, PROTOCOL_VERSION,
+    PAGE_ID, PROTOCOL_VERSION,
 };
 use crate::store::Store;
 
@@ -598,7 +598,7 @@ pub async fn apply(deps: &Deps, req: ApplyRequest) -> Result<SurfaceReceipt, Str
             catalog_id: CATALOG_ID.into(),
             revision: outcome.revision,
             component_count: 0,
-            page: PAGE_HASH.into(),
+            page: PAGE_ID.into(),
         },
     };
     save_state(deps, &mut state, &cfg).await?;
@@ -1626,7 +1626,7 @@ fn receipt(surface: &SurfaceRecord, status: SurfaceStatus) -> SurfaceReceipt {
         catalog_id: surface.catalog_id.clone(),
         revision: surface.revision,
         component_count: surface.components.len(),
-        page: PAGE_HASH.into(),
+        page: PAGE_ID.into(),
     }
 }
 

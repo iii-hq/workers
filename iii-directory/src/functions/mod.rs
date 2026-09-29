@@ -21,6 +21,8 @@ pub mod prompts;
 pub mod registry;
 pub mod search;
 pub mod search_index;
+#[doc(hidden)]
+pub mod search_judge;
 #[cfg(test)]
 mod search_relevance;
 #[doc(hidden)]

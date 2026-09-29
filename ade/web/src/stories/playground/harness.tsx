@@ -21,6 +21,8 @@ const PLAYGROUND_MODEL_OPTIONS: ModelOption[] = [
   { id: 'openai::gpt-5-mini', label: 'gpt-5 mini', contextWindow: 400_000 },
 ]
 
+import { Eyebrow, eyebrowClassName } from '@/components/ui/Eyebrow'
+import { cn } from '@/lib/utils'
 import { EventLog, type EventLogHandle } from './EventLog'
 
 function makeConvo(): Conversation {
@@ -131,15 +133,19 @@ export function PlaygroundHarness({
     <div className="flex h-full min-h-0">
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
         <div className="px-9 py-2 border-b border-rule flex items-center justify-between">
-          <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint flex items-center gap-2 min-w-0">
+          <Eyebrow
+            as="div"
+            size="lg"
+            className="flex items-center gap-2 min-w-0"
+          >
             <span>scenario</span>
             <span className="text-ink-ghost">·</span>
             <span className="text-ink truncate">{label ?? backend.id}</span>
-          </div>
+          </Eyebrow>
           <button
             type="button"
             onClick={handleReset}
-            className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint hover:text-ink transition-colors"
+            className={cn(eyebrowClassName, 'hover:text-ink transition-colors')}
             aria-label="reset playground conversation"
           >
             reset

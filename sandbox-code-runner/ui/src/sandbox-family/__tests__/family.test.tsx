@@ -3,7 +3,7 @@
  * to markup: the 15-id membership, error-before-success, fall-through
  * on unparseable payloads, the never-throw fence, the exit-reason
  * verdict, the S003 `slots busy` chip, the 1 MiB truncation chip, the
- * SGR spans, and the sandbox-id copy+jump chip.
+ * ANSI hand-off to TerminalStream, and the sandbox-id copy+jump chip.
  *
  * Renders through `react-dom/server` against a stubbed
  * `@iii-dev/console-ui` (the real package's JS entry throws by design —
@@ -17,30 +17,66 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { createSandboxFamilyRenderer, SandboxFunctionIdLabel } from '../index'
 
-vi.mock('@iii-dev/console-ui', () => ({
-  Badge: ({ children, variant }: { children?: ReactNode; variant?: string }) => (
-    <span data-stub="badge" data-variant={variant}>
-      {children}
-    </span>
-  ),
-  StatusDot: ({ tone, pulse }: { tone?: string; pulse?: boolean }) => (
-    <span data-stub="status-dot" data-tone={tone} data-pulse={pulse} />
-  ),
-  EmptyState: ({ title, description }: { title: string; description: string }) => (
-    <div data-stub="empty-state">
-      {title} — {description}
-    </div>
-  ),
-  Tooltip: ({ children }: { children?: ReactNode }) => <>{children}</>,
-  TooltipTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
-  TooltipContent: ({ children }: { children?: ReactNode }) => <span data-stub="tooltip-content">{children}</span>,
-  CodeHighlight: ({ code, language }: { code: string; language: string }) => (
-    <pre data-stub="code-highlight" data-language={language}>
-      {code}
-    </pre>
-  ),
-  JsonHighlight: ({ code }: { code: string }) => <pre data-stub="json-highlight">{code}</pre>,
-}))
+vi.mock('@iii-dev/console-ui', () => {
+  const passthrough = ({ children, className }: { children?: ReactNode; className?: string }) => (
+    <div className={className}>{children}</div>
+  )
+  return {
+    Badge: ({ children, variant }: { children?: ReactNode; variant?: string }) => (
+      <span data-stub="badge" data-variant={variant ?? 'default'}>
+        {children}
+      </span>
+    ),
+    Chip: ({ children, tone }: { children?: ReactNode; tone?: string }) => (
+      <span data-stub="chip" data-tone={tone}>
+        {children}
+      </span>
+    ),
+    StatusPanel: ({ headline, detail, variant }: { headline?: ReactNode; detail?: ReactNode; variant?: string }) => (
+      <div data-stub="status-panel" data-variant={variant}>
+        {headline}
+        {detail}
+      </div>
+    ),
+    TerminalCommandLine: ({ command, chips, className }: { command: string; chips?: ReactNode; className?: string }) => (
+      <div data-stub="terminal-command-line" className={className}>
+        {command}
+        {chips}
+      </div>
+    ),
+    TerminalStream: ({ label, text, tone, ansi }: { label: string; text: string; tone?: string; ansi?: boolean }) =>
+      text.length === 0 ? null : (
+        <pre data-stub="terminal-stream" data-label={label} data-tone={tone} data-ansi={ansi}>
+          {text}
+        </pre>
+      ),
+    Table: passthrough,
+    TableBody: passthrough,
+    TableCell: passthrough,
+    TableFooter: passthrough,
+    TableHead: passthrough,
+    TableHeader: passthrough,
+    TableRow: passthrough,
+    TableViewport: passthrough,
+    StatusDot: ({ tone, pulse }: { tone?: string; pulse?: boolean }) => (
+      <span data-stub="status-dot" data-tone={tone} data-pulse={pulse} />
+    ),
+    EmptyState: ({ title, description }: { title: string; description: string }) => (
+      <div data-stub="empty-state">
+        {title} — {description}
+      </div>
+    ),
+    Tooltip: ({ children }: { children?: ReactNode }) => <>{children}</>,
+    TooltipTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
+    TooltipContent: ({ children }: { children?: ReactNode }) => <span data-stub="tooltip-content">{children}</span>,
+    CodeHighlight: ({ code, language }: { code: string; language: string }) => (
+      <pre data-stub="code-highlight" data-language={language}>
+        {code}
+      </pre>
+    ),
+    JsonHighlight: ({ code }: { code: string }) => <pre data-stub="json-highlight">{code}</pre>,
+  }
+})
 
 const SB = '00000000-0000-0000-0000-000000000000'
 
@@ -137,7 +173,7 @@ describe('the settled exec card', () => {
     expect(out).toContain('cargo test')
     expect(out).toContain('ok')
     expect(out).toContain('exit 0')
-    expect(out).toContain('cr-fam-pill ok')
+    expect(out).toContain('data-variant="ok"')
     expect(out).toContain('42ms')
   })
 
@@ -166,7 +202,7 @@ describe('the exit-reason verdict (§4.1.1)', () => {
   it('folds a timeout into the single pill', () => {
     const out = verdict({ exit_code: null, timed_out: true, duration_ms: 1500 })
     expect(out).toContain('timed out @ 1.5s')
-    expect(out).toContain('cr-fam-pill warn')
+    expect(out).toContain('data-variant="warn"')
     expect(out).not.toContain('>no exit<')
   })
 
@@ -185,12 +221,12 @@ describe('the exit-reason verdict (§4.1.1)', () => {
   it('keeps a plain failing exit as alert', () => {
     const out = verdict({ exit_code: 2, success: false })
     expect(out).toContain('exit 2')
-    expect(out).toContain('cr-fam-pill alert')
+    expect(out).toContain('data-variant="alert"')
   })
 })
 
 describe('ANSI SGR colors (§4.1.2)', () => {
-  it('maps SGR runs onto token classes inside the stream', () => {
+  it('hands SGR-bearing streams to TerminalStream with ansi on', () => {
     const out = html(
       renderer.tryRender(
         msg({
@@ -202,10 +238,9 @@ describe('ANSI SGR colors (§4.1.2)', () => {
         }),
       ),
     )
-    expect(out).toContain('cr-fam-ansi-ok')
-    expect(out).toContain('cr-fam-ansi-alert')
-    expect(out).toContain('cr-fam-ansi-bold')
-    expect(out).not.toContain('\x1b')
+    expect(out).toContain('data-stub="terminal-stream"')
+    expect(out).toContain('data-ansi="true"')
+    expect(out).toContain('3 passed')
   })
 })
 

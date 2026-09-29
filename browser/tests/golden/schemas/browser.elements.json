@@ -1,0 +1,168 @@
+{
+  "function_id": "browser::elements",
+  "description": "The page's visible, enabled controls in the viewport as an indexed table (ref, role, label, current value, checked/expanded state, what browser::act can do with each, and <select> options), plus the visible text, from one read. Cheaper and flatter than browser::snapshot: use it to drive forms and read what an action changed. Refs (`n4`) stay valid while the element stays in the document.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ElementsInput",
+    "type": "object",
+    "required": [
+      "session_id"
+    ],
+    "properties": {
+      "session_id": {
+        "type": "string"
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ElementsOutput",
+    "type": "object",
+    "required": [
+      "can_scroll_down",
+      "can_scroll_up",
+      "elements",
+      "omitted",
+      "text",
+      "title",
+      "url"
+    ],
+    "properties": {
+      "busy": {
+        "description": "The page is still loading: the document, a region marked `aria-busy`, or (in `browser::run`) requests an action started that had not finished when the run stopped waiting.",
+        "default": false,
+        "type": "boolean"
+      },
+      "can_scroll_down": {
+        "type": "boolean"
+      },
+      "can_scroll_up": {
+        "type": "boolean"
+      },
+      "elements": {
+        "description": "Visible, enabled controls inside the viewport, in document order.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/Element"
+        }
+      },
+      "generation": {
+        "description": "Document generation; navigation advances it and every `n` ref dies.",
+        "default": 0,
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0.0
+      },
+      "omitted": {
+        "description": "Controls past the 250-element cap, not listed.",
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0.0
+      },
+      "text": {
+        "description": "Visible text in the viewport, up to 6000 characters.",
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "url": {
+        "type": "string"
+      }
+    },
+    "definitions": {
+      "Element": {
+        "description": "One control. `operations` says what `browser::act` can do with it.",
+        "type": "object",
+        "required": [
+          "label",
+          "operations",
+          "ref",
+          "role"
+        ],
+        "properties": {
+          "autocomplete": {
+            "description": "The field's `autocomplete` hint (`username`, `current-password`, …).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checked": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expanded": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input_type": {
+            "description": "`<input>` type when not `text` (`email`, `password`, `tel`, …).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "description": "Accessible name (aria-labelledby, aria-label, label, text, title, or placeholder).",
+            "type": "string"
+          },
+          "more_options": {
+            "description": "Options beyond the listed 50; `select` still accepts them by label.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "name": {
+            "description": "The field's `name` (or `id`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operations": {
+            "description": "`click`, `type` and/or `select`.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "options": {
+            "description": "Enabled `<select>` option labels (first 50), for `act` `select`.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ref": {
+            "description": "`n` ref `browser::act` accepts; valid while the element stays in this document.",
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "selected": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "description": "Current value of a field or dropdown; a set password reads `(set)`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

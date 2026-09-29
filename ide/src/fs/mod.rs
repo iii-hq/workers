@@ -273,6 +273,14 @@ pub struct LsRequest {
     pub target: Target,
     /// Jail-relative when fs.host_roots are set, else absolute.
     pub path: String,
+    /// 1-based page of the name-sorted listing. Default 1.
+    #[serde(default)]
+    pub page: Option<u32>,
+    /// Entries per page. Default 500, clamped to 2000. A directory larger
+    /// than one page answers `has_more: true` — request the next `page`
+    /// rather than expecting the whole directory in one result.
+    #[serde(default)]
+    pub page_size: Option<u32>,
     /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
@@ -714,10 +722,42 @@ impl ReadRequest {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct LsResponse {
-    /// Metadata for each entry in the directory.
+    /// Metadata for each entry on this page, sorted by name.
     pub entries: Vec<FsEntry>,
+    /// Entries in the whole directory, across every page.
+    #[serde(default)]
+    pub total: u64,
+    /// The 1-based page this response carries.
+    #[serde(default)]
+    pub page: u32,
+    /// The page size actually applied (after clamping).
+    #[serde(default)]
+    pub page_size: u32,
+    /// True when later pages exist; request `page + 1` to continue.
+    #[serde(default)]
+    pub has_more: bool,
+}
+impl LsResponse {
+    /// One name-sorted page of a full listing; cut at the registration
+    /// boundary so host and sandbox share the contract (MOT-4498).
+    pub fn paginate(mut self, page: Option<u32>, page_size: Option<u32>) -> Self {
+        self.entries.sort_by(|a, b| a.name.cmp(&b.name));
+        let page = page.unwrap_or(1).max(1);
+        // ~160 B per entry on the wire keeps a default page under the harness cap.
+        let page_size = page_size.unwrap_or(500).clamp(1, 2000);
+        let total = self.entries.len();
+        let start = ((page - 1) as usize * page_size as usize).min(total);
+        let end = (start + page_size as usize).min(total);
+        self.entries.drain(..start);
+        self.entries.truncate(end - start);
+        self.total = total as u64;
+        self.page = page;
+        self.page_size = page_size;
+        self.has_more = end < total;
+        self
+    }
 }
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
@@ -1032,6 +1072,40 @@ mod tests {
         assert!(!batch);
         assert_eq!(specs[0].mode, "0644");
         assert!(!specs[0].parents);
+    }
+
+    fn entry(name: &str) -> FsEntry {
+        FsEntry {
+            name: name.into(),
+            is_dir: false,
+            size: 0,
+            mode: "0644".into(),
+            mtime: 0,
+            is_symlink: false,
+        }
+    }
+
+    #[test]
+    fn ls_paginate_sorts_slices_and_flags_more() {
+        let full = || LsResponse {
+            entries: vec![entry("c"), entry("a"), entry("b")],
+            ..Default::default()
+        };
+        let p1 = full().paginate(Some(1), Some(2));
+        let names = |r: &LsResponse| r.entries.iter().map(|e| e.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&p1), ["a", "b"]);
+        assert!(p1.has_more);
+        assert_eq!((p1.total, p1.page, p1.page_size), (3, 1, 2));
+        let p2 = full().paginate(Some(2), Some(2));
+        assert_eq!(names(&p2), ["c"]);
+        assert!(!p2.has_more);
+        // Past the end: empty page, nothing more, no panic.
+        let p9 = full().paginate(Some(9), Some(2));
+        assert!(p9.entries.is_empty() && !p9.has_more);
+        // Page 0 and an oversized page size are clamped, not rejected.
+        let clamped = full().paginate(Some(0), Some(u32::MAX));
+        assert_eq!((clamped.page, clamped.page_size), (1, 2000));
+        assert_eq!(full().paginate(None, None).page_size, 500);
     }
 
     #[test]

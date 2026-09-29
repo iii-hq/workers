@@ -117,16 +117,44 @@ impl RowChangedHandler {
         match pool {
             Some(Pool::Postgres(pg)) => {
                 let sql = native::install_sql(table).map_err(config_error)?;
-                let client = pg.acquire().await.map_err(|e| {
+                let mut client = pg.acquire().await.map_err(|e| {
                     config_error(format!("db `{}`: acquiring connection: {e}", cfg.db))
                 })?;
-                client.batch_execute(&sql).await.map_err(|e| {
-                    let text = e.to_string();
+                let install_error = |error: tokio_postgres::Error| {
+                    let text = error
+                        .as_db_error()
+                        .map(|error| error.message().to_string())
+                        .unwrap_or_else(|| error.to_string());
                     config_error(format!(
                         "installing native capture triggers on `{table}`: {text}{}",
                         pg_install_hint(&text, table)
                     ))
-                })?;
+                };
+                // Every binding replaces the SAME notify function, including
+                // bindings for different tables. Concurrent CREATE OR REPLACE
+                // can fail with `tuple concurrently updated`. A DB-scoped lock
+                // coordinates separate pools/processes too (not just this bus).
+                // Acquire in its own statement so READ COMMITTED refreshes the
+                // DDL snapshot after a competing installer has committed.
+                let transaction = client
+                    .build_transaction()
+                    .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
+                    .start()
+                    .await
+                    .map_err(install_error)?;
+                // Stable two-int advisory namespace reserved for iii native
+                // row-capture installation. No user-controlled lock key or SQL.
+                transaction
+                    .batch_execute("SELECT pg_advisory_xact_lock(1768515886, 1919907683)")
+                    .await
+                    .map_err(install_error)?;
+                transaction
+                    .batch_execute(&sql)
+                    .await
+                    .map_err(install_error)?;
+                transaction.commit().await.map_err(install_error)?;
+                // On any error, transaction drop rolls back both the DDL and
+                // the lock before the connection can return to the pool.
             }
             Some(Pool::Sqlite(sq)) => {
                 let conn = sq.acquire().await.map_err(|e| {
@@ -254,6 +282,72 @@ mod tests {
             pools: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         };
         (handler, config)
+    }
+
+    /// Concurrent bindings share the notify function across tables and pools.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_postgres_capture_registrations_keep_every_subscriber() {
+        let Ok(url) = std::env::var("TEST_POSTGRES_URL") else {
+            eprintln!("skipping: TEST_POSTGRES_URL not set");
+            return;
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let (admin, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls).await.unwrap();
+            let connection = tokio::spawn(async move { connection.await.unwrap() });
+            let schema = format!("iii_capture_race_{}", uuid::Uuid::new_v4().simple());
+            admin.batch_execute(&format!(
+                "CREATE SCHEMA {schema}; CREATE TABLE {schema}.a (id int); CREATE TABLE {schema}.b (id int);"
+            )).await.unwrap();
+            let mut scoped_url = url::Url::parse(&url).unwrap();
+            scoped_url.query_pairs_mut().append_pair("options", &format!("-csearch_path={schema}"));
+            let worker_config = WorkerConfig::from_yaml(&format!(
+                "databases:\n  p:\n    url: {}\n    capture: native\n    pool:\n      max: 8\n    tls:\n      mode: disable\n", scoped_url
+            )).unwrap();
+            let mut handlers = Vec::new();
+            // Independent pools also cover separate worker instances.
+            for _ in 0..2 {
+                let pool = crate::pool::build("p", &worker_config.databases["p"]).await.unwrap();
+                handlers.push(Arc::new(RowChangedHandler {
+                    bus: Arc::new(RowChangeBus::new(Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:9")), 100)),
+                    config: Arc::new(tokio::sync::RwLock::new(worker_config.clone())),
+                    pools: Arc::new(tokio::sync::RwLock::new(HashMap::from([("p".into(), pool)]))),
+                }));
+            }
+            let barrier = Arc::new(tokio::sync::Barrier::new(16));
+            let mut registrations = tokio::task::JoinSet::new();
+            for index in 0..16 {
+                let handler = handlers[index % handlers.len()].clone();
+                let barrier = barrier.clone();
+                let mut binding = trigger(&format!("concurrent-{index}"), "p");
+                binding.config = serde_json::json!({ "db": "p", "table": if index % 4 < 2 { "a" } else { "b" } });
+                registrations.spawn(async move {
+                    barrier.wait().await;
+                    handler.register_trigger(binding).await
+                });
+            }
+            let mut errors = Vec::new();
+            while let Some(result) = registrations.join_next().await {
+                if let Err(error) = result.unwrap() { errors.push(error.to_string()); }
+            }
+            let subscribers: usize = handlers.iter().map(|handler| handler.bus.subscriber_count()).sum();
+            let installed: i64 = admin.query_one(
+                "SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND NOT t.tgisinternal",
+                &[&schema],
+            ).await.unwrap().get(0);
+            // A failed install must release its lock and leave the pool usable.
+            let mut missing = trigger("missing-table", "p");
+            missing.config = serde_json::json!({ "db": "p", "table": "absent" });
+            assert!(handlers[0].register_trigger(missing).await.is_err());
+            let mut recovery = trigger("recovery", "p");
+            recovery.config = serde_json::json!({ "db": "p", "table": "a" });
+            let recovered = handlers[0].register_trigger(recovery).await;
+            admin.batch_execute(&format!("DROP SCHEMA {schema} CASCADE")).await.unwrap();
+            connection.abort();
+            assert!(errors.is_empty(), "concurrent registration failures: {errors:?}");
+            assert_eq!(subscribers, 16);
+            assert_eq!(installed, 6, "three capture triggers on each table");
+            recovered.expect("registration remains usable after a failed install");
+        }).await.expect("concurrent registration/cleanup deadline");
     }
 
     #[test]

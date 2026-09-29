@@ -15,7 +15,7 @@ export function FullPermissionsBanner({
     <div
       role="status"
       aria-live="polite"
-      className="flex items-center justify-between gap-3 border-y border-alert bg-alert/10 px-4 py-2"
+      className="flex items-center justify-between gap-3 bg-alert-muted px-4 py-2"
     >
       <p className="font-mono text-[12px] text-ink">
         <span className="font-semibold text-alert">
@@ -29,7 +29,7 @@ export function FullPermissionsBanner({
       <button
         type="button"
         onClick={onDisable}
-        className="font-mono text-[12px] px-3 py-1 border border-ink bg-ink text-bg hover:bg-bg hover:text-ink transition-colors shrink-0"
+        className="font-mono text-[12px] px-3 py-1 rounded-sm bg-ink text-bg hover:bg-ink/90 transition-colors shrink-0"
       >
         disable
       </button>

@@ -461,6 +461,9 @@ mod tests {
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::from_millis(0)),
             semantic: crate::functions::search_semantic::SemanticSearch::default(),
+            judge: crate::functions::search_judge::JudgeSearch::default(),
+            registered_workers: None,
+            iii: None,
         }
     }
 

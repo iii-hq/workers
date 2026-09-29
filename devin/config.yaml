@@ -43,3 +43,9 @@ raw_events_stream: devin::events
 # engine functions through the iii CLI, the same as the grok and codex workers.
 # Defaults on for parity; override per turn with the iii_context payload field.
 iii_context: true
+
+# Record each devin::run / devin::start turn as a session-manager session so it
+# is listed in the console (prompt, streamed output, failure notice, status).
+# Skipped automatically when session-manager is not installed. Override per turn
+# with the session_recording payload field.
+session_recording: true

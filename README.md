@@ -8,6 +8,24 @@ useful.
 Workers are installed via `iii trigger compose::add worker=<name>`, which
 resolves the matching asset for the host from the workers registry API.
 
+## Develop the Harness locally
+
+The [`template/`](template/README.md) project runs the local Harness source with
+Harness Medium agent profiles, skills and configuration seeds already in place:
+
+```bash
+cd template
+iii compose --up
+```
+
+It uses the sibling worker directories in this checkout, including `../harness`,
+not a published Harness package. See the [template guide](template/README.md) for
+authentication, the console URL and restarting a worker after a source change.
+With the stack stopped, refresh upstream profiles and skills using
+`./template/sync.sh --stack-stopped` (or preview with `--dry-run`). It preserves
+local configuration and Compose files and records the exact imported commit.
+The original [source-only stack](harness/DEVELOPMENT.md) remains available.
+
 ## Skills
 
 Each worker ships an agent skill under `<worker>/skills/`. Install them with the
@@ -43,6 +61,7 @@ npx skills add iii-hq/iii --all
 | [`harness`](harness/) | Node | TS port of the iii harness stack — bundles `harness` (provider registry + credentials/settings/permissions via the `configuration` worker), `turn-orchestrator`, `hook-fanout`, `models-catalog`, the `provider-*` workers, `llm-budget`, and `context-compaction` as one pnpm monorepo. Approval is delegated to the standalone `approval-gate` worker via the `pre_trigger` hook. Conversations persist in `session-manager`. See [`harness/README.md`](harness/README.md). |
 | [`eval`](eval/) | Rust | Durable same-model A/B evaluation for prompts and system prompts — runs paired harness sessions, delegates correctness to iii evaluator functions, and reports pass rates with token, cost, latency, function-call, trace, and span metrics. |
 | [`security-scan`](security-scan/) | Rust | Report-only security reviews of operator-configured repositories at immutable Git commits, using a read-only Harness policy and durable deduplication. |
+| [`sentinel`](sentinel/) | Rust | Error monitor for the engine: groups failures from trace and log telemetry by deterministic fingerprint, freezes the evidence before the in-memory span ring discards it, and opens assisted harness investigations beside the console page. |
 | [`codex`](codex/) | Rust | OpenAI Codex as an iii worker — `codex::*` spawn the codex CLI for headless turns, mirror raw thread events onto `codex::events`, and stream AgentEvent frames onto `agent::events`. |
 | [`grok`](grok/) | Rust | xAI Grok CLI as an iii worker — `grok::*` spawn the grok CLI for headless turns (`grok --print --output-format streaming-json`), mirror raw events onto `grok::events`, and stream AgentEvent frames onto `agent::events`. |
 | [`devin`](devin/) | Rust | Devin as an iii worker: `devin::run` drives the local devin CLI and streams AgentEvent frames onto `agent::events`, `devin::session::*` wrap the Devin cloud session lifecycle, and `devin::api` reaches any v3 endpoint. |
@@ -56,11 +75,15 @@ npx skills add iii-hq/iii --all
 | [`slack`](slack/) | Rust | Slack Web API as `slack::*` functions plus a harness bridge — @mention-triggered turns, native `chat.*Stream` replies, Block Kit approvals. See [`slack/architecture/`](slack/architecture/). |
 | [`context-manager`](context-manager/) | Rust | Model-ready context assembly — four `context::*` functions for token counting, function-result pruning, and history compaction over caller-supplied messages. Storage-agnostic; summarisation via `llm-router` when installed. |
 | [`database`](database/) | Rust | PostgreSQL, MySQL, and SQLite client — query, execute, transactions, prepared statements, and change feeds. |
-| [`editor`](editor/) | Rust | A shared code workspace — open buffers, file tree, unified diffs, fuzzy find and conflict-safe saves, held in `state` so an agent and a person see one editor. Files and git go through `ide`; ships a console editor page. |
 | [`vscode`](vscode/) | Node | VS Code as an iii worker — `vscode::*` runs the VS Code Server through the `code` CLI per workspace, and a Console page embeds the Workbench for the working directory. |
 | [`compose-ui`](compose-ui/) | Rust | The compose daemon in the Console — a **Compose** page over `compose::*` with live container state, lifecycle actions, worker packages, and per-container log tails, plus a `compose-ui::changed` trigger type for supervisor changes. |
 | [`kanban`](kanban/) | Rust | File-backed kanban board — `kanban::*` tickets, threaded comments and agent assignment, the `kanban:change` / `kanban:comment` trigger types agents wake on, an injectable console board and ticket screen, and bundled Product Manager / Tech Lead / Backend / Frontend agent profiles with their skills. |
+| [`stories`](stories/) | Rust | Component stories for any React project — builds CSF story files with the project's own Vite (monorepo-aware), indexes components and their states per git line, compares the working tree with a branch, a commit or a chat turn, renders deterministic screenshots and DOM/React trees through `browser`, and injects an explorer and compare page into the console. |
 | [`iii-directory`](iii-directory/) | Rust | Engine introspection, workers-registry proxy, filesystem-backed skills, system prompts, and agent profiles, plus one-shot lexical function search — `directory::search_functions` returns compact candidates for the relevant functions (BM25 + coverage pruning, installed + installable-from-registry) and directs callers to batch selected ids through `engine::functions::info`; its search hint is injected at most once per turn. |
+| [`judge`](judge/) | Rust | Provider-neutral Noul, Choice and Score evaluations through `judge::evaluate` and caller-scoped cancellation (plus the internal `judge::models::list` for tools that size requests), forwarded to the selected `judge-<provider>` worker. |
+| [`judge-laya`](judge-laya/) | Rust | laya provider for `judge`: the ModernBERT typed-decision model downloaded from the Hugging Face Hub and run in-process (candle), no API key or external service, behind `judge-laya::*`. |
+| [`judge-decider`](judge-decider/) | Rust | decider provider for `judge`: decider-4b v2 (a Qwen3.5-4B-Base fine-tune for typed decisions, GGUF) downloaded from the Hugging Face Hub and run in-process through llama.cpp, no API key or external service, behind `judge-decider::*`. |
+| [`judge-typesafe`](judge-typesafe/) | Rust | TypeSafe JEV provider for `judge`: worker-owned credentials, configurable limits, per-call retries and a Console configuration form behind `judge-typesafe::*`. |
 | [`lsp`](lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
 | [`lsp-vscode`](lsp-vscode/) | Node | VS Code extension package `iii-lsp`, embedding the `lsp` server. |
 | [`image-resize`](image-resize/) | Rust | Image resize via channel I/O — JPEG/PNG/WebP with EXIF auto-orient, scale-to-fit / crop-to-fit. |
@@ -84,7 +107,6 @@ npx skills add iii-hq/iii --all
 | [`ide`](ide/) | Rust | Unix shell + filesystem worker — `shell::exec` with denylist/timeout/output caps and background jobs; `fs::ls`/`stat`/`mkdir`/`rm`/`chmod`/`mv`/`grep`/`sed`/`read`/`write` with host jail, denylist, and size caps. |
 | [`storage`](storage/) | Rust | S3-compatible object storage across AWS S3, GCS, Cloudflare R2, and a managed local rustfs backend. Streamed uploads, presigned URLs, and object change triggers. |
 | [`tailscale`](tailscale/) | Rust | Tailscale as an iii worker — the `tailscale` CLI as 38 typed `tailscale::*` functions (connectivity, peers, exit nodes, preferences, Serve and Funnel publishing, Taildrop, certificates, Taildrive, accounts, tailnet lock, updates) with a Console page: links as QR codes, devices, network diagnostics, settings. |
-| [`scrapling`](scrapling/) | Python | [Scrapling](https://github.com/D4Vinci/Scrapling) as an iii worker — `scrapling::*` map three fetch tiers (HTTP / Camoufox stealth / Playwright), screenshots, and CSS/XPath/regex/adaptive extraction over the bus. |
 | [`browser`](browser/) | Rust | Interactive Chromium sessions over CDP with console/network capture, a11y-tree snapshots with actionable refs, viewable screenshots, and DevTools element picking for the console UI. |
 | [`a2ui`](a2ui/) | Rust | A2UI v0.9.1 generative interfaces for Harness sessions — `a2ui::generate` turns compact intent into validated declarative surfaces, persists them per conversation, renders them inline in chat and on an injectable Console page, and routes user actions back into the originating session. |
 | [`canvas`](canvas/) | Rust | Diagrams as editable source — `canvas::*` store mermaid text and freeform whiteboard scenes under stable 8-character ids, draw element by element via `canvas::element::*`, serve the per-family mermaid syntax primer, and validate source before it lands; the console streams each canvas live in chat and on a canvas page. |
@@ -135,20 +157,25 @@ deployment. GitHub Actions only executes its authenticated steps.
 See [`docs/sops/release.md`](docs/sops/release.md) for the sequence and recovery
 rules.
 
-Targets per build (Windows targets are skipped on POSIX-only workers such
-as `ide`):
+Default targets per build (workers with platform restrictions declare an
+explicit subset in `.deploy/workers.yaml`; for example, `ide` excludes Windows
+and `sandbox-code-runner` excludes Intel macOS):
 
 ```text
 aarch64-apple-darwin
 x86_64-apple-darwin
 x86_64-pc-windows-msvc
-i686-pc-windows-msvc
 aarch64-pc-windows-msvc
 x86_64-unknown-linux-gnu
 x86_64-unknown-linux-musl
 aarch64-unknown-linux-gnu
 armv7-unknown-linux-gnueabihf
 ```
+
+Intel macOS builds run natively on GitHub's `macos-15-intel` runner; Apple
+Silicon builds keep the dedicated `workers-release-macos-arm-5core` pool.
+Changes to this matrix take effect in newly built and published worker versions;
+existing Registry versions and immutable release assets are not retrofitted.
 
 ### Local binary matrix
 

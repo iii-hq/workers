@@ -5,8 +5,8 @@
  * viewport no longer tracks the pane. Reset returns to tracking the pane.
  */
 
-import { Button, Input, Selector } from '@iii-dev/console-ui'
-import { RefreshCw } from '../lib/icons'
+import { Button, Input, Selector, Toolbar } from '@iii-dev/console-ui'
+import { RefreshCw } from 'lucide-react'
 
 export interface DevicePreset {
   id: string
@@ -97,8 +97,26 @@ export function DeviceToolbar({
   onReset,
 }: DeviceToolbarProps) {
   return (
-    <fieldset className="br-ui-device" aria-label="device toolbar">
-      <legend className="br-ui-visually-hidden">device toolbar</legend>
+    <Toolbar
+      className="br-ui-device"
+      aria-label="device toolbar"
+      end={
+        <>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onRotate}
+            title="rotate"
+            aria-label="rotate viewport"
+          >
+            <RefreshCw size={16} aria-hidden />
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onReset} title="fit to pane">
+            Reset
+          </Button>
+        </>
+      }
+    >
       <Selector
         value={device.presetId ?? 'custom'}
         onChange={(id) => {
@@ -138,18 +156,6 @@ export function DeviceToolbar({
         />
       </span>
       <span className="br-ui-device-dpr">{device.deviceScaleFactor}×</span>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={onRotate}
-        title="rotate"
-        aria-label="rotate viewport"
-      >
-        <RefreshCw size={16} aria-hidden />
-      </Button>
-      <Button variant="ghost" size="sm" onClick={onReset} title="fit to pane">
-        Reset
-      </Button>
-    </fieldset>
+    </Toolbar>
   )
 }

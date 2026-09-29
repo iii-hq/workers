@@ -15,7 +15,7 @@
    The FlatTree in props is the source of truth; the model is patched by
    diff so expansion, focus and selection survive a watcher burst. */
 
-import { ConfirmDialog, IconButton } from '@iii-dev/console-ui'
+import { ConfirmDialog, EmptyState, IconButton, SearchField } from '@iii-dev/console-ui'
 import type { FileTreeDirectoryHandle, FileTreeRowDecoration, GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import {
@@ -591,39 +591,8 @@ export function FilesTab({
           </>
         }
       />
-      <div className="shui-tree-filter-shell">
-        <div className="shui-tree-filter">
-          <label className="shui-sr-only" htmlFor={filterId}>
-            Filter files
-          </label>
-          <Search aria-hidden className="shui-tree-filter-search" />
-          <input
-            id={filterId}
-            type="text"
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            placeholder="Filter files…"
-            autoComplete="off"
-            spellCheck={false}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape' && filter !== '') {
-                event.preventDefault()
-                setFilter('')
-              }
-            }}
-          />
-          {filter !== '' ? (
-            <button
-              type="button"
-              className="shui-tree-filter-clear"
-              aria-label="Clear file filter"
-              title="clear file filter"
-              onClick={() => setFilter('')}
-            >
-              <X aria-hidden />
-            </button>
-          ) : null}
-        </div>
+      <div className="shui-tree-filter">
+        <SearchField id={filterId} value={filter} onChange={setFilter} placeholder="Filter files…" aria-label="Filter files" />
       </div>
       {note !== null ? (
         <div className="shui-tree-note warn" role="alert">
@@ -645,11 +614,17 @@ export function FilesTab({
         {!tree ? (
           <div className="shui-side-note">loading tree…</div>
         ) : tree.paths.length === 0 ? (
-          <div className="shui-side-note">
-            {hiddenFiltered ? 'nothing visible — hidden entries are filtered' : 'empty folder'}
+          <div className="shui-side-empty">
+            {hiddenFiltered ? (
+              <EmptyState title="Nothing visible" description="Every entry here is hidden and hidden files are filtered out." />
+            ) : (
+              <EmptyState title="Empty folder" description="There are no files in this folder yet." />
+            )}
           </div>
         ) : filterMatchCount === 0 ? (
-          <div className="shui-side-note">no matching files</div>
+          <div className="shui-side-empty">
+            <EmptyState title="No matching files" description="Nothing in this folder matches the filter." />
+          </div>
         ) : (
           <FileTree
             model={model}

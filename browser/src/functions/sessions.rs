@@ -36,6 +36,11 @@ pub struct StartInput {
     /// until stopped (what the console does).
     #[serde(default)]
     pub ttl_ms: Option<u64>,
+    /// Whether consoles pop a live preview of the new tab (default true).
+    /// The console's own tab controls pass `false`: the page that opened
+    /// the tab already shows it, in every console window. Agents leave it.
+    #[serde(default)]
+    pub preview: Option<bool>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

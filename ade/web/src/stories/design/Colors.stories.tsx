@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { cn } from '@/lib/utils'
 
 interface Swatch {
@@ -58,16 +59,16 @@ const STATUS: Swatch[] = [
 function SwatchRow({ list, label }: { list: Swatch[]; label: string }) {
   return (
     <div>
-      <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint mb-3">
+      <Eyebrow as="div" size="lg" className="mb-3">
         {label}
-      </div>
+      </Eyebrow>
       <div className="grid grid-cols-2 @3xl:grid-cols-3 gap-3 @container">
         {list.map((s) => (
           <div key={s.token} className="border border-rule bg-bg">
             <div className={cn('h-12 border-b border-rule-2', s.className)} />
             <div className="px-3 py-2 flex flex-col gap-0.5">
               <span className="font-mono text-[12px] text-ink">{s.token}</span>
-              <span className="font-mono text-[11px] text-ink-faint lowercase">
+              <span className="font-mono text-[11px] text-ink-faint">
                 {s.note}
               </span>
             </div>

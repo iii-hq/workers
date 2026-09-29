@@ -1,0 +1,22 @@
+{
+  "description": "Disconnect this provider, cancel pending login, and persistently disable automatic use of legacy credentials. Does not sign out the Codex CLI.",
+  "function_id": "provider::openai-codex::auth::logout",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "Ack",
+    "type": "object"
+  }
+}

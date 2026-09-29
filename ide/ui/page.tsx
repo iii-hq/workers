@@ -3,11 +3,11 @@
  * (react + @iii-dev/console-ui external) into dist/page.js and served
  * over the `console:script` trigger (see src/ui.rs). The stylesheet is
  * its own asset: ./styles.css ships over `console:style` as
- * shell/styles.css.
+ * ide/styles.css.
  *
  * `setup(host)` composes the worker's two console contributions:
  *
- * - src/page/             — the shell explorer (#/ext/shell): file tree +
+ * - src/page/             — the shell explorer (page `ide`): file tree +
  *                           git + search sidebar beside the shared Monaco
  *                           editor / FileDiff pane
  * - src/function-trigger/ — how shell::* function triggers render in
@@ -35,9 +35,9 @@ export default function setup(host: Host) {
   const terminalRouter = createTerminalOutputRouter(host)
 
   host.pages.register({
-    id: 'shell',
+    id: 'ide',
     title: 'IDE',
-    configurationId: 'shell',
+    configurationId: 'ide',
     render: (props: PageRenderProps) => (
       <ShellExplorerPage
         host={host}

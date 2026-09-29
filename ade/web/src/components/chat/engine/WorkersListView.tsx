@@ -73,25 +73,19 @@ function WorkerRow({ worker }: { worker: WorkerSummary }) {
         <StatusBadge status={worker.status} />
         {worker.runtime ? (
           <SmallChip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              runtime
-            </span>
+            <span className="iii-ui-eyebrow">runtime</span>
             <span className="ml-1 text-ink">{worker.runtime}</span>
           </SmallChip>
         ) : null}
         {worker.os ? (
           <SmallChip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              os
-            </span>
+            <span className="iii-ui-eyebrow">os</span>
             <span className="ml-1 text-ink">{worker.os}</span>
           </SmallChip>
         ) : null}
         {worker.isolation ? (
           <SmallChip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              isolation
-            </span>
+            <span className="iii-ui-eyebrow">isolation</span>
             <span className="ml-1 text-ink">{worker.isolation}</span>
           </SmallChip>
         ) : null}
@@ -125,7 +119,7 @@ function StatusBadge({ status }: { status: string }) {
   const variant = statusToVariant(status)
   return (
     <span
-      className={`font-mono text-[10px] uppercase tracking-[0.06em] border px-1.5 py-0.5 ${variant}`}
+      className={`font-mono text-[11px] rounded-sm px-1.5 py-0.5 ${variant}`}
     >
       {status}
     </span>
@@ -135,17 +129,17 @@ function StatusBadge({ status }: { status: string }) {
 function statusToVariant(status: string): string {
   const s = status.toLowerCase()
   if (s === 'connected' || s === 'active' || s === 'ready') {
-    return 'text-accent border-accent/40 bg-paper-2'
+    return 'bg-accent-muted text-accent'
   }
   if (s === 'disconnected' || s === 'stopped' || s === 'down') {
-    return 'text-ink-faint border-rule-2 bg-paper-2'
+    return 'bg-paper-2 text-ink-faint'
   }
-  return 'text-warn border-warn/40 bg-paper-2'
+  return 'bg-warn-muted text-warn'
 }
 
 function SmallChip({ children }: { children: ReactNode }) {
   return (
-    <span className="font-mono text-[10px] border border-rule-2 bg-paper-2 px-1.5 py-0.5">
+    <span className="font-mono text-[11px] rounded-sm bg-paper-2 px-1.5 py-0.5">
       {children}
     </span>
   )

@@ -1,10 +1,5 @@
-/**
- * Every rule is scoped under [data-iii-ui="pdf"].
- *
- * Injected CSS is unlayered, so one unscoped selector silently beats the
- * console's own fully-layered styles across the whole document. Colors come
- * from the console's design tokens, so both themes work without a media query.
- */
+/* Every rule is scoped under [data-iii-ui="pdf"]: injected CSS is unlayered, so one
+   unscoped selector beats the console's layered styles. Colors come from tokens. */
 
 [data-iii-ui="pdf"] .pdf-ui {
   display: flex;
@@ -27,7 +22,7 @@
   gap: 0.75rem;
   padding: 2.25rem 1.5rem;
   border: 1px dashed var(--color-rule);
-  border-radius: 0.5rem;
+  border-radius: 6px;
   background: var(--color-panel);
   transition:
     border-color var(--motion-duration-fast) var(--motion-ease-standard),
@@ -116,16 +111,8 @@
   gap: 0.15rem;
   padding: 0.6rem 0.75rem;
   border: 1px solid var(--color-rule-2);
-  border-radius: 0.375rem;
+  border-radius: 6px;
   background: var(--color-panel);
-}
-
-[data-iii-ui="pdf"] .pdf-ui__stat-label {
-  color: var(--color-ink-ghost);
-  font-size: 0.7rem;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  margin: 0;
 }
 
 [data-iii-ui="pdf"] .pdf-ui__stat-value {
@@ -156,7 +143,7 @@
   align-items: baseline;
   gap: 0.6rem;
   padding: 0.35rem 0.6rem;
-  border-radius: 0.3rem;
+  border-radius: 6px;
   background: var(--color-panel);
   font-size: 0.85rem;
 }
@@ -181,7 +168,7 @@
   max-height: 34rem;
   overflow: auto;
   border: 1px solid var(--color-rule-2);
-  border-radius: 0.375rem;
+  border-radius: 6px;
   padding: 1rem;
   background: var(--color-bg);
 }
@@ -203,13 +190,6 @@
   align-items: center;
   gap: 0.5rem;
   margin-bottom: 0.5rem;
-}
-
-[data-iii-ui="pdf"] .pdf-ui__page-no {
-  color: var(--color-ink-ghost);
-  font-size: 0.75rem;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
 /* The shared Monaco editor grows with its content, so the pane scrolls. */

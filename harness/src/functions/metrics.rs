@@ -99,40 +99,46 @@ pub struct SessionUsageTotalsV1 {
     pub turns: u64,
     pub function_calls: u64,
     pub function_call_errors: u64,
-    /// Summed over every generation that reported it. `null` means at least
-    /// one generation did not report the counter (a provider that omits it, or
-    /// a turn that failed before usage came back) — never a measured zero, so
-    /// the key is always present and a reader can tell the two apart.
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<u64>::json_schema")]
     pub input_tokens: Option<u64>,
-    /// Summed over every generation that reported it. `null` means at least
-    /// one generation did not report the counter (a provider that omits it, or
-    /// a turn that failed before usage came back) — never a measured zero, so
-    /// the key is always present and a reader can tell the two apart.
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<u64>::json_schema")]
     pub output_tokens: Option<u64>,
-    /// Summed over every generation that reported it. `null` means at least
-    /// one generation did not report the counter (a provider that omits it, or
-    /// a turn that failed before usage came back) — never a measured zero, so
-    /// the key is always present and a reader can tell the two apart.
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<u64>::json_schema")]
     pub cache_read_tokens: Option<u64>,
-    /// Summed over every generation that reported it. `null` means at least
-    /// one generation did not report the counter (a provider that omits it, or
-    /// a turn that failed before usage came back) — never a measured zero, so
-    /// the key is always present and a reader can tell the two apart.
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<u64>::json_schema")]
     pub cache_write_tokens: Option<u64>,
-    /// Summed over every generation that reported it. `null` means at least
-    /// one generation did not report the counter (a provider that omits it, or
-    /// a turn that failed before usage came back) — never a measured zero, so
-    /// the key is always present and a reader can tell the two apart.
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<u64>::json_schema")]
     pub reasoning_tokens: Option<u64>,
-    /// Summed over every generation that reported it. `null` means at least
-    /// one generation did not report the counter (a provider that omits it, or
-    /// a turn that failed before usage came back) — never a measured zero, so
-    /// the key is always present and a reader can tell the two apart.
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<f64>::json_schema")]
     pub cost_usd: Option<f64>,
 }
@@ -147,40 +153,46 @@ pub struct SessionUsageV1 {
     pub turns: u64,
     pub function_calls: u64,
     pub function_call_errors: u64,
-    /// Summed over every generation that reported it. `null` means at least
-    /// one generation did not report the counter (a provider that omits it, or
-    /// a turn that failed before usage came back) — never a measured zero, so
-    /// the key is always present and a reader can tell the two apart.
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<u64>::json_schema")]
     pub input_tokens: Option<u64>,
-    /// Summed over every generation that reported it. `null` means at least
-    /// one generation did not report the counter (a provider that omits it, or
-    /// a turn that failed before usage came back) — never a measured zero, so
-    /// the key is always present and a reader can tell the two apart.
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<u64>::json_schema")]
     pub output_tokens: Option<u64>,
-    /// Summed over every generation that reported it. `null` means at least
-    /// one generation did not report the counter (a provider that omits it, or
-    /// a turn that failed before usage came back) — never a measured zero, so
-    /// the key is always present and a reader can tell the two apart.
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<u64>::json_schema")]
     pub cache_read_tokens: Option<u64>,
-    /// Summed over every generation that reported it. `null` means at least
-    /// one generation did not report the counter (a provider that omits it, or
-    /// a turn that failed before usage came back) — never a measured zero, so
-    /// the key is always present and a reader can tell the two apart.
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<u64>::json_schema")]
     pub cache_write_tokens: Option<u64>,
-    /// Summed over every generation that reported it. `null` means at least
-    /// one generation did not report the counter (a provider that omits it, or
-    /// a turn that failed before usage came back) — never a measured zero, so
-    /// the key is always present and a reader can tell the two apart.
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<u64>::json_schema")]
     pub reasoning_tokens: Option<u64>,
-    /// Summed over every generation that reported it. `null` means at least
-    /// one generation did not report the counter (a provider that omits it, or
-    /// a turn that failed before usage came back) — never a measured zero, so
-    /// the key is always present and a reader can tell the two apart.
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<f64>::json_schema")]
     pub cost_usd: Option<f64>,
     /// The session's latest per-generation context snapshot (categories,
@@ -558,51 +570,56 @@ impl UsageAccumulator {
     }
 }
 
+/// Generations a counter may miss and still be summed. A provider that fails
+/// mid-stream leaves one partial generation without usage; the rest of the
+/// session still measures it. More than one missing is a gap, not a sum.
+const UNREPORTED_GENERATIONS_TOLERATED: u64 = 1;
+
 #[derive(Debug, Default)]
 struct OptionalU64Sum {
     value: u64,
-    observations: u64,
-    all_present: bool,
+    reported: u64,
+    unreported: u64,
 }
 
 impl OptionalU64Sum {
     fn observe(&mut self, value: Option<u64>) {
-        if self.observations == 0 {
-            self.all_present = true;
-        }
-        self.observations += 1;
         match value {
-            Some(value) => self.value = self.value.saturating_add(value),
-            None => self.all_present = false,
+            Some(value) => {
+                self.value = self.value.saturating_add(value);
+                self.reported += 1;
+            }
+            None => self.unreported += 1,
         }
     }
 
     fn finish(self) -> Option<u64> {
-        (self.observations > 0 && self.all_present).then_some(self.value)
+        (self.reported > 0 && self.unreported <= UNREPORTED_GENERATIONS_TOLERATED)
+            .then_some(self.value)
     }
 }
 
 #[derive(Debug, Default)]
 struct OptionalF64Sum {
     value: f64,
-    observations: u64,
-    all_present: bool,
+    reported: u64,
+    unreported: u64,
 }
 
 impl OptionalF64Sum {
     fn observe(&mut self, value: Option<f64>) {
-        if self.observations == 0 {
-            self.all_present = true;
-        }
-        self.observations += 1;
         match value {
-            Some(value) => self.value += value,
-            None => self.all_present = false,
+            Some(value) => {
+                self.value += value;
+                self.reported += 1;
+            }
+            None => self.unreported += 1,
         }
     }
 
     fn finish(self) -> Option<f64> {
-        (self.observations > 0 && self.all_present).then_some(self.value)
+        (self.reported > 0 && self.unreported <= UNREPORTED_GENERATIONS_TOLERATED)
+            .then_some(self.value)
     }
 }
 
@@ -720,24 +737,48 @@ mod tests {
         assert_eq!(totals.cache_read_tokens, None);
     }
 
+    fn generation(usage: serde_json::Value) -> AgentMessage {
+        message(json!({
+            "role": "assistant",
+            "content": [],
+            "stop_reason": "end",
+            "usage": usage,
+            "model": "model",
+            "provider": "provider",
+            "timestamp": 1
+        }))
+    }
+
     #[test]
-    fn optional_usage_never_reports_partial_sums() {
+    fn one_generation_cut_before_usage_is_left_out_of_the_sum() {
         let mut usage = UsageAccumulator::default();
-        for input in [Some(10), None] {
-            usage.observe(&message(json!({
-                "role": "assistant",
-                "content": [],
-                "stop_reason": "end",
-                "usage": {"input": input, "output": 1},
-                "model": "model",
-                "provider": "provider",
-                "timestamp": 1
-            })));
+        usage.observe(&generation(
+            json!({"input": 10, "output": 1, "cost_usd": 0.5}),
+        ));
+        // A stream the provider cut mid-response persists without any usage.
+        usage.observe(&generation(serde_json::Value::Null));
+        usage.observe(&generation(
+            json!({"input": 5, "output": 2, "cost_usd": 0.25}),
+        ));
+        let totals = usage.finish_totals(1);
+        assert_eq!(totals.turns, 3);
+        assert_eq!(totals.input_tokens, Some(15));
+        assert_eq!(totals.output_tokens, Some(3));
+        assert_eq!(totals.cost_usd, Some(0.75));
+        // A counter the provider never reports stays unreported.
+        assert_eq!(totals.cache_read_tokens, None);
+    }
+
+    #[test]
+    fn more_than_one_unreported_generation_is_a_gap_not_a_sum() {
+        let mut usage = UsageAccumulator::default();
+        for input in [Some(10), None, None] {
+            usage.observe(&generation(json!({"input": input, "output": 1})));
         }
         let totals = usage.finish_totals(1);
-        assert_eq!(totals.turns, 2);
+        assert_eq!(totals.turns, 3);
         assert_eq!(totals.input_tokens, None);
-        assert_eq!(totals.output_tokens, Some(2));
+        assert_eq!(totals.output_tokens, Some(3));
     }
 
     #[test]

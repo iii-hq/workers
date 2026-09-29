@@ -4,18 +4,25 @@
  * on the filter. Clicking a row navigates the session there.
  */
 
-import { type Host, Input } from '@iii-dev/console-ui'
+import {
+  EmptyState,
+  type Host,
+  List,
+  ListItem,
+  SearchField,
+  StatusPanel,
+} from '@iii-dev/console-ui'
+import { Globe } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BROWSER_NAVIGATED_TRIGGER,
   type BrowserHistoryVisit,
   errorMessage,
+  formatAgo,
   listBrowserHistory,
   navigateBrowser,
 } from '../lib/browser'
 import { useBrowserSessionEvent } from '../lib/events'
-import { formatMtime } from '../lib/format'
-import { Globe, Search } from '../lib/icons'
 
 const HISTORY_FEED_FN = 'iii::browser-ui::history-feed'
 
@@ -65,47 +72,38 @@ export function HistoryPanel({ host, sessionId, enabled }: HistoryPanelProps) {
   )
   return (
     <div className="br-ui-history">
-      <div className="br-ui-history-search">
-        <Search size={16} aria-hidden className="br-ui-history-search-icon" />
-        <Input
-          value={query}
-          onChange={setQuery}
-          placeholder="Search history"
-          aria-label="search history"
-          preserveCase
-          className="br-ui-history-search-input"
-        />
-      </div>
+      <SearchField
+        value={query}
+        onChange={setQuery}
+        placeholder="Search history"
+        aria-label="search history"
+        className="br-ui-panel-search"
+      />
       {error ? (
-        <p className="br-ui-history-empty">history failed: {error}</p>
+        <StatusPanel variant="alert" headline="History failed" detail={error} />
       ) : visits.length === 0 ? (
-        <p className="br-ui-history-empty">
-          {query ? 'No pages match.' : 'No pages visited yet.'}
-        </p>
+        <EmptyState
+          title={query ? 'No pages match' : 'No pages visited yet'}
+          description={
+            query
+              ? 'Try a different search.'
+              : 'Pages this tab visits are listed here, newest first.'
+          }
+        />
       ) : (
-        <ul className="br-ui-history-list" aria-label="history">
+        <List className="br-ui-panel-list" aria-label="history">
           {visits.map((v) => (
-            <li key={`${v.timestamp}-${v.url}`}>
-              <button
-                type="button"
-                className="br-ui-history-row"
-                onClick={() => go(v.url)}
-                title={v.url}
-              >
-                <Globe size={16} aria-hidden className="br-ui-history-icon" />
-                <span className="br-ui-history-text">
-                  <span className="br-ui-history-title">
-                    {v.title || v.url}
-                  </span>
-                  <span className="br-ui-history-url">{v.url}</span>
-                </span>
-                <span className="br-ui-history-time">
-                  {formatMtime(Math.floor(v.timestamp / 1000))}
-                </span>
-              </button>
-            </li>
+            <ListItem
+              key={`${v.timestamp}-${v.url}`}
+              onClick={() => go(v.url)}
+              title={v.url}
+              leading={<Globe size={16} aria-hidden />}
+              label={v.title || v.url}
+              description={<span className="br-ui-mono">{v.url}</span>}
+              trailing={<span className="br-ui-mono br-ui-num">{formatAgo(v.timestamp)}</span>}
+            />
           ))}
-        </ul>
+        </List>
       )}
     </div>
   )

@@ -1,5 +1,5 @@
 /**
- * The Functions page (`#/ext/functions`): a navigation sidebar of every
+ * The Functions page (page `functions`): a navigation sidebar of every
  * function on the bus — each row led by the `ƒ` tile, grouped by the worker
  * that registered it — and a workspace that is always present: a hero when
  * nothing is selected, the function document (breadcrumb, identity head,
@@ -30,6 +30,7 @@ import {
   Badge,
   Button,
   EmptyState,
+  Eyebrow,
   type Host,
   JsonHighlight,
   type PageCommandsApi,
@@ -38,7 +39,11 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
+  SearchField,
+  StatusDot,
+  uiClasses,
 } from '@iii-dev/console-ui'
+import { SquareFunction } from 'lucide-react'
 import {
   type MutableRefObject,
   useCallback,
@@ -47,7 +52,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { ActivityFeed, formatDuration } from './ActivityFeed'
+import { ActivityFeed, agoLabel, formatDuration } from './ActivityFeed'
 import { nextCronRun, untilLabel } from './cron'
 import {
   type FunctionDetail,
@@ -61,7 +66,7 @@ import {
   useResource,
 } from './engine'
 import { InvokePanel } from './InvokePanel'
-import { agoLabel, LastCallMeta, useLiveActivity } from './live'
+import { LastCallMeta, useLiveActivity } from './live'
 import { SchemaTable } from './SchemaTable'
 import { pretty } from './schema'
 import { cronExpression, familyOf, summarize } from './trigger-kinds'
@@ -84,7 +89,6 @@ import {
   IdentityHead,
   LiveDot,
   Note,
-  SearchField,
   SideCount,
   useGroupToggle,
 } from './widgets'
@@ -243,7 +247,7 @@ export function FunctionsPage({
       hasSelection={selected !== null}
       header={
         <PageHeader
-          icon={<span aria-hidden>ƒ</span>}
+          icon={<SquareFunction />}
           title="Functions"
           description={
             <span className="console-catalog-header-desc">
@@ -271,10 +275,13 @@ export function FunctionsPage({
       sideTop={
         <div className="console-catalog-search-row">
           <SearchField
+            ref={searchInputRef}
+            name="catalog-search"
+            className="console-catalog-search"
             value={search}
             onChange={setSearch}
             placeholder="search functions…"
-            inputRef={searchInputRef}
+            aria-label="search functions"
           />
           <Button
             variant="pill"
@@ -646,7 +653,7 @@ function FunctionContext({
             className="console-catalog-context-activity"
             onClick={onShowActivity}
           >
-            <span className="dot" data-ok={lastCall.ok} />
+            <StatusDot tone={lastCall.ok ? 'ok' : 'alert'} />
             <span className="activity-copy">
               <span>{agoLabel(lastCall.atMs, Date.now())}</span>
               <span>{lastCall.ok ? 'successful call' : 'failed call'}</span>
@@ -686,19 +693,19 @@ function FunctionOverview({ detail }: { detail: FunctionDetail }) {
 
   return (
     <div className="console-catalog-overview">
-      <span className="console-catalog-field-label">Input schema</span>
+      <Eyebrow className="console-catalog-field-label">Input schema</Eyebrow>
       <SchemaTable
         schema={detail.request_schema}
         empty="This function registered no input schema."
       />
-      <span className="console-catalog-field-label">Output schema</span>
+      <Eyebrow className="console-catalog-field-label">Output schema</Eyebrow>
       <SchemaTable
         schema={detail.response_schema}
         empty="This function registered no output schema."
       />
       {hasMetadata ? (
         <>
-          <span className="console-catalog-field-label">Metadata</span>
+          <Eyebrow className="console-catalog-field-label">Metadata</Eyebrow>
           <JsonHighlight
             code={pretty(detail.metadata)}
             className="console-catalog-json"
@@ -748,7 +755,10 @@ function FunctionTriggers({ detail }: { detail: FunctionDetail }) {
             <div className="copy">
               <div className="line1">
                 <span className="name">{summarize(binding)}</span>
-                <span className="console-catalog-tag" data-tone={spec.tone}>
+                <span
+                  className={`${uiClasses.eyebrow} console-catalog-tag`}
+                  data-tone={spec.tone}
+                >
                   {spec.label}
                 </span>
               </div>

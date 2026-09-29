@@ -142,7 +142,7 @@ describe('summarizeFileChanges', () => {
       status: 'updated' as const,
     }
     expect(diffPanelRequest(row)).toEqual({
-      pageId: 'shell',
+      pageId: 'ide',
       context: {
         type: 'change-diff',
         changeId: 'snapshot-1',

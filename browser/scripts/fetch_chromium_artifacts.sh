@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 worker_dir=$(cd "$script_dir/.." && pwd)
-manifest="$worker_dir/oracle/manifest.json"
+manifest="$worker_dir/artifacts/manifest.json"
 cache_dir=${SCRAPLING_CHROMIUM_ARTIFACT_DIR:-"$worker_dir/target/scrapling-chromium"}
 mode=${1:-fetch}
 target=${2:-}

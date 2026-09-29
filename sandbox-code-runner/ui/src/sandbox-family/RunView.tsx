@@ -6,12 +6,13 @@
  * fleet page.
  */
 
-import { CodeHighlight } from '@iii-dev/console-ui'
+import { Badge, CodeHighlight, TerminalCommandLine } from '@iii-dev/console-ui'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
+import { ChevronRight } from 'lucide-react'
 import { useState } from 'react'
-import { AnsiOutput } from './ansi'
 import { exitReason, langFromRunLang } from './format'
 import { type RunRequest, type RunResponse, runRequestSchema, runResponseSchema, safeParseResponse } from './parsers'
-import { Chip, cx, ExitReasonPill, FooterPill, SandboxIdChip, Terminal } from './shared'
+import { Chip, cx, ExitReasonPill, SandboxIdChip, Streams, Terminal } from './shared'
 
 interface RunViewProps {
   input: unknown
@@ -31,7 +32,7 @@ export function RunView({ input, output, running }: RunViewProps) {
       footer={respData ? <RunFooter resp={respData} /> : null}
     >
       <CodePreview req={req.data} />
-      <AnsiOutput stdout={respData?.stdout} stderr={respData?.stderr} />
+      <Streams stdout={respData?.stdout} stderr={respData?.stderr} />
     </Terminal>
   )
 }
@@ -40,15 +41,12 @@ export function RunPreview({ input }: { input: unknown }) {
   const req = runRequestSchema.safeParse(input)
   if (!req.success) return null
   return (
-    <div className="cr-fam-card cr-fam-preview">
-      <div className="cr-fam-term-head">
-        <span className="cr-fam-cmd">
-          <span className="cr-fam-prompt">$</span> {`run ${req.data.lang} /tmp/run.${extFor(req.data.lang)}`}
-        </span>
-        <span className="cr-fam-chips-end">
-          <RunChips req={req.data} resp={null} />
-        </span>
-      </div>
+    <div className="cr-fam-card">
+      <TerminalCommandLine
+        command={`run ${req.data.lang} /tmp/run.${extFor(req.data.lang)}`}
+        chips={<RunChips req={req.data} resp={null} />}
+        className="cr-fam-term-head"
+      />
     </div>
   )
 }
@@ -60,10 +58,8 @@ function CodePreview({ req }: { req: RunRequest }) {
   return (
     <div className="cr-fam-src">
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="cr-fam-src-toggle">
-        <span aria-hidden className={cx('cr-fam-caret', open && 'open')}>
-          ▸
-        </span>
-        source
+        <ChevronRight size={16} aria-hidden className={cx('cr-fam-caret', open && 'open')} />
+        <span className={uiClasses.eyebrow}>source</span>
         <span className="cr-fam-src-meta">
           · /tmp/run.{extFor(req.lang)} · {lineCount} {lineCount === 1 ? 'line' : 'lines'}
         </span>
@@ -92,12 +88,8 @@ function RunFooter({ resp }: { resp: RunResponse }) {
   return (
     <>
       <ExitReasonPill reason={exitReason(resp)} />
-      <FooterPill>{`${resp.duration_ms}ms`}</FooterPill>
-      {resp.sandbox_id ? (
-        <FooterPill tone="warn">kept alive</FooterPill>
-      ) : (
-        <FooterPill tone="default">auto-stopped</FooterPill>
-      )}
+      <Badge>{`${resp.duration_ms}ms`}</Badge>
+      {resp.sandbox_id ? <Badge variant="warn">kept alive</Badge> : <Badge>auto-stopped</Badge>}
     </>
   )
 }

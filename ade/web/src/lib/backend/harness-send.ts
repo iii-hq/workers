@@ -210,6 +210,8 @@ export interface HarnessStatusReport {
   queued?: HarnessQueuedMessage[]
   result?: unknown
   result_error?: string | null
+  /** The last generate step's context accounting (verbose only). */
+  context?: { total: number; usable: number; free: number }
 }
 
 export interface HarnessStopResponse {

@@ -5,7 +5,7 @@
  * still see what the recognizer heard before it lands in the composer.
  */
 
-import type { Host, SessionTurnSummaryProps, SessionTurnSummaryRegistration } from '@iii-dev/console-ui'
+import { type Host, type SessionTurnSummaryProps, type SessionTurnSummaryRegistration, StatusDot } from '@iii-dev/console-ui'
 import type { DictationController } from '../lib/dictation'
 import { useDictation } from '../lib/dictation'
 
@@ -22,7 +22,7 @@ export function createVoiceLiveSummary(_host: Host, controller: DictationControl
     const idle = state.status === 'starting' ? 'starting…' : 'listening'
     return (
       <output className="voice-live" aria-live="polite">
-        <span className="voice-chip-dot" aria-hidden="true" />
+        <StatusDot tone="accent" pulse />
         <span className="voice-live-text">
           {settledShown || state.partial ? (
             <>

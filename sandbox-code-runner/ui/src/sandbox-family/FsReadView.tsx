@@ -5,6 +5,7 @@
  */
 
 import { CodeHighlight } from '@iii-dev/console-ui'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
 import { formatBytes, formatMode, formatMtime, inferLangFromPath, truncateMiddle } from './format'
 import { fsReadRequestSchema, fsReadResponseSchema, safeParseResponse, streamChannelRefSchema } from './parsers'
 import { Chip, SandboxIdChip } from './shared'
@@ -27,7 +28,7 @@ export function FsReadView({ input, output }: FsReadViewProps) {
     <div className="cr-fam-card">
       <div className="cr-fam-chips-row">
         <SandboxIdChip sandboxId={req.data.sandbox_id} />
-        <span className="cr-fam-file-k">file</span>
+        <span className={uiClasses.eyebrow}>file</span>
         <code className="cr-fam-file">{req.data.path}</code>
       </div>
 

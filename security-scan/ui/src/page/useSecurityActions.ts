@@ -1,6 +1,6 @@
 import type { Host } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useEffect, useId, useMemo, useSyncExternalStore } from 'react'
-import { errText } from './errors.js'
 import {
   createSecurityActionsStore,
   securityActionKey,
@@ -49,7 +49,7 @@ export function useSecurityActions(host: Host): SecurityActionsLive {
         bindingId: instanceId,
         requestAction: requestFindingAction,
         readAction: readFindingAction,
-        errorText: errText,
+        errorText: errorMessage,
       }),
     [host, instanceId],
   )

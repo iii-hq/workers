@@ -277,7 +277,7 @@ class TestCargoLockSelfVersion:
     def test_read_cargo_package_name(self, tmp_path):
         m = tmp_path / "Cargo.toml"
         m.write_text('[package]\nname = "harness"\nversion = "1.0.6"\n')
-        assert _lib.read_cargo_package_name(m) == "harness"
+        assert _lib.read_package_name(m) == "harness"
 
     def test_read_name_ignores_dependency_sections(self, tmp_path):
         m = tmp_path / "Cargo.toml"
@@ -285,12 +285,12 @@ class TestCargoLockSelfVersion:
             '[package]\nname = "harness"\nversion = "1.0.6"\n\n'
             '[dependencies]\nname = "not-this"\n'
         )
-        assert _lib.read_cargo_package_name(m) == "harness"
+        assert _lib.read_package_name(m) == "harness"
 
     def test_sync_updates_only_self_entry(self, tmp_path):
         lock = tmp_path / "Cargo.lock"
         lock.write_text(self.LOCK)
-        changed = _lib.sync_cargo_lock_self_version(lock, "harness", "1.0.6")
+        changed = _lib.sync_lock_self_version(lock, "harness", "1.0.6")
         assert changed is True
         body = lock.read_text()
         assert 'name = "harness"\nversion = "1.0.6"' in body
@@ -300,11 +300,60 @@ class TestCargoLockSelfVersion:
         lock = tmp_path / "Cargo.lock"
         lock.write_text(self.LOCK.replace('"1.0.4"', '"1.0.6"'))
         before = lock.read_text()
-        assert _lib.sync_cargo_lock_self_version(lock, "harness", "1.0.6") is False
+        assert _lib.sync_lock_self_version(lock, "harness", "1.0.6") is False
         assert lock.read_text() == before
 
     def test_sync_raises_when_package_absent(self, tmp_path):
         lock = tmp_path / "Cargo.lock"
         lock.write_text(self.LOCK)
         with pytest.raises(ValueError, match="not found"):
-            _lib.sync_cargo_lock_self_version(lock, "ghost", "9.9.9")
+            _lib.sync_lock_self_version(lock, "ghost", "9.9.9")
+
+    def test_read_python_project_name(self, tmp_path):
+        m = tmp_path / "pyproject.toml"
+        m.write_text('[build-system]\nrequires = ["hatchling"]\n\n[project]\nname = "hermes"\nversion = "0.1.0"\n')
+        assert _lib.read_package_name(m) == "hermes"
+
+    def test_sync_versions_updates_path_dependencies_but_never_registry_namesakes(self, tmp_path):
+        # A dependent worker locks its path dependency's version too; a
+        # crates.io package that happens to share a name must keep its pin.
+        lock = tmp_path / "Cargo.lock"
+        lock.write_text(
+            'version = 4\n\n'
+            '[[package]]\nname = "eval"\nversion = "0.2.2"\ndependencies = [\n "harness",\n]\n\n'
+            '[[package]]\nname = "harness"\nversion = "1.8.8-rc.3"\n\n'
+            '[[package]]\nname = "http"\nversion = "1.3.1"\n'
+            'source = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "abc"\n'
+        )
+        found = _lib.sync_lock_versions(lock, {"harness": "1.8.36", "http": "0.21.14", "ghost": "1.0.0"})
+        assert found == {"harness"}
+        body = lock.read_text()
+        assert 'name = "harness"\nversion = "1.8.36"' in body
+        assert 'name = "http"\nversion = "1.3.1"' in body
+        assert 'name = "eval"\nversion = "0.2.2"' in body
+
+    def test_sync_versions_updates_uv_editable_root(self, tmp_path):
+        lock = tmp_path / "uv.lock"
+        lock.write_text(
+            'version = 1\nrevision = 3\n\n'
+            '[[package]]\nname = "hermes"\nversion = "0.1.7rc4"\nsource = { editable = "." }\n'
+            'dependencies = [\n    { name = "iii-sdk" },\n]\n\n'
+            '[[package]]\nname = "iii-sdk"\nversion = "0.22.0"\nsource = { registry = "https://pypi.org/simple" }\n'
+        )
+        assert _lib.sync_lock_versions(lock, {"hermes": "0.1.9", "iii-sdk": "9.9.9"}) == {"hermes"}
+        body = lock.read_text()
+        assert 'name = "hermes"\nversion = "0.1.9"' in body
+        assert 'name = "iii-sdk"\nversion = "0.22.0"' in body
+
+
+class TestPep440Version:
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [("1.2.3", "1.2.3"), ("1.2.3-rc.4", "1.2.3rc4"), ("1.2.3-alpha", "1.2.3a0"), ("1.2.3-beta", "1.2.3b0")],
+    )
+    def test_normal_form(self, version, expected):
+        assert _lib.pep440_version(version) == expected
+
+    def test_experimental_has_no_python_spelling(self):
+        with pytest.raises(ValueError, match="PEP 440"):
+            _lib.pep440_version("1.2.3-experimental")

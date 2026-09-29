@@ -42,6 +42,44 @@ import { createTeardownRenderer } from './teardown'
 // Hoisted above these imports by vitest, so every renderer module above
 // resolves the stub, never the real package's throwing JS entry.
 vi.mock('@iii-dev/console-ui', () => ({
+  Badge: ({ children, variant }: { children?: React.ReactNode; variant?: string }) => (
+    <span data-stub="badge" data-variant={variant ?? 'default'}>
+      {children}
+    </span>
+  ),
+  Chip: ({ children, tone }: { children?: React.ReactNode; tone?: string }) => (
+    <span data-stub="chip" data-tone={tone}>
+      {children}
+    </span>
+  ),
+  StatusPanel: ({
+    headline,
+    detail,
+    variant,
+  }: {
+    headline?: React.ReactNode
+    detail?: React.ReactNode
+    variant?: string
+  }) => (
+    <div data-stub="status-panel" data-variant={variant}>
+      {headline}
+      {detail}
+    </div>
+  ),
+  TerminalStream: ({
+    label,
+    text,
+    tone,
+  }: {
+    label: string
+    text: string
+    tone?: string
+  }) =>
+    text.length === 0 ? null : (
+      <pre data-stub="terminal-stream" data-label={label} data-tone={tone}>
+        {text}
+      </pre>
+    ),
   Tooltip: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   TooltipTrigger: ({ children }: { children?: React.ReactNode }) => (
     <>{children}</>

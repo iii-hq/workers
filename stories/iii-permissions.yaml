@@ -1,0 +1,25 @@
+# Agent permissions for the stories worker.
+version: 1
+
+rules:
+  # Console asset delivery, the static file server behind /ui-files and the
+  # configuration reload sink are engine plumbing, never agent-callable.
+  - '!stories::ui-content'
+  - '!stories::ui-file'
+  - '!stories::on-config-change'
+  # Reads, comparisons and renders are safe to allow by default. Builds of a
+  # line run git and the project's own Vite inside data/stories; they are
+  # also allowed because a review loop cannot work without them.
+  - stories::workspaces
+  - stories::components::list
+  - stories::components::get
+  - stories::tree::fs
+  - stories::lines
+  - stories::builds::create
+  - stories::builds::get
+  - stories::compare
+  - stories::diff::file
+  - stories::screenshot
+  - stories::diff
+  - stories::tree
+  - stories::history

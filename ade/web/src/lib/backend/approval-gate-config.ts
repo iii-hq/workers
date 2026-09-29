@@ -3,15 +3,15 @@
  * `approval-gate` configuration entry (single source — no localStorage).
  */
 
+import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import type { HarnessFunctionPolicy } from '@/lib/backend/harness-send'
+import { getIiiClient } from '@/lib/iii-client'
 import {
   getConfiguration,
   type JsonValue,
   setConfiguration,
 } from '@/pages/Configuration/tabs/WorkersTab/api'
-
-export const APPROVAL_GATE_CONFIG_ID = 'approval-gate'
 
 export interface ApprovalGateConfigView {
   default_mode: PermissionMode
@@ -24,10 +24,12 @@ interface StructuredRule {
   modes?: string[]
 }
 
+/** Accept only the three supported policy modes before applying stored deployment defaults. */
 function isPermissionMode(v: unknown): v is PermissionMode {
   return v === 'manual' || v === 'auto' || v === 'full'
 }
 
+/** Normalize missing or malformed rule collections without treating an object as a rule list. */
 function asRulesArray(value: JsonValue | undefined): JsonValue[] {
   return Array.isArray(value) ? value : []
 }
@@ -58,6 +60,8 @@ export function deriveFunctionPolicy(
   const deny = new Set<string>([
     'approval::*',
     'configuration::register',
+    // Atomic register/seed twin — same schema/seed power under a new name.
+    'configuration::ensure',
     'shell::workspace::*',
   ])
   for (const entry of rules) {
@@ -78,8 +82,10 @@ export function deriveFunctionPolicy(
   }
 }
 
+/** Load policy defaults from the addressed approval-gate instance, never a global legacy ID. */
 export async function loadApprovalGateConfig(): Promise<ApprovalGateConfigView> {
-  const raw = await getConfiguration(APPROVAL_GATE_CONFIG_ID)
+  const id = await resolveConfigurationId(await getIiiClient(), 'approval-gate')
+  const raw = await getConfiguration(id)
   const obj =
     raw && typeof raw === 'object' && !Array.isArray(raw)
       ? (raw as Record<string, JsonValue>)
@@ -93,6 +99,7 @@ export async function loadApprovalGateConfig(): Promise<ApprovalGateConfigView> 
   }
 }
 
+/** Replace only auto-exclusive allow rules, preserving manual, shared-mode and deny policies. */
 function withoutAutoSeedRules(rules: JsonValue[]): JsonValue[] {
   return rules.filter((entry) => {
     if (typeof entry === 'string') return true
@@ -108,8 +115,12 @@ export async function saveApprovalGateDefaults(
   defaultMode: PermissionMode,
   allowlist: string[],
 ): Promise<ApprovalGateConfigView> {
-  const current = await loadApprovalGateConfig()
-  const baseRules = withoutAutoSeedRules(current.rules)
+  const id = await resolveConfigurationId(await getIiiClient(), 'approval-gate')
+  const raw = await getConfiguration(id)
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('Approval gate configuration is not an object')
+  }
+  const baseRules = withoutAutoSeedRules(asRulesArray(raw.rules))
   const seedRules: JsonValue[] = allowlist.map((function_id) => ({
     function: function_id,
     action: 'allow',
@@ -117,16 +128,18 @@ export async function saveApprovalGateDefaults(
   }))
   const nextRules = [...baseRules, ...seedRules]
   const payload = {
+    ...raw,
     default_mode: defaultMode,
     rules: nextRules,
   }
-  await setConfiguration({ id: APPROVAL_GATE_CONFIG_ID, value: payload })
+  await setConfiguration({ id, value: payload })
   return {
     default_mode: defaultMode,
     rules: nextRules,
   }
 }
 
+/** Derive UI defaults and the function-policy floor from the addressed gate's stored rules. */
 export async function loadApprovalGateDefaults(): Promise<{
   defaultMode: PermissionMode
   allowlist: string[]

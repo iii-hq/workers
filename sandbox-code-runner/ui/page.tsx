@@ -12,7 +12,7 @@
  *   teardown)
  * - src/sandbox-family/           — the sandbox::* daemon family cards
  *   (formerly first-party in the console)
- * - src/page/                     — the sandbox fleet page (#/ext/sandbox)
+ * - src/page/                     — the sandbox fleet page (page `sandbox`)
  *   and the session chip
  * - src/lib/shared.tsx            — the frame the op cards share
  *
@@ -25,9 +25,11 @@ import type { Host } from '@iii-dev/console-ui'
 import { createSandboxCodeRunnerRenderers } from './src/function-trigger-message'
 import { createSandboxSessionChip, SandboxPage } from './src/page'
 import { registerSandboxPalette } from './src/page/palette'
+import { bindSandboxHost } from './src/lib/selection'
 import { createSandboxFamilyRenderer } from './src/sandbox-family'
 
 export default function setup(host: Host) {
+  bindSandboxHost(host)
   registerSandboxPalette(host)
 
   const removers = [

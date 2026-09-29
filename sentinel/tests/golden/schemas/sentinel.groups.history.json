@@ -1,0 +1,151 @@
+{
+  "description": "Every move a group has made, newest first: what changed it, why, and whether it came from the pipeline, from an agent or from a person.",
+  "function_id": "sentinel::groups::history",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "group_id": {
+        "type": "string"
+      },
+      "limit": {
+        "default": null,
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "offset": {
+        "default": null,
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "group_id"
+    ],
+    "title": "GroupHistoryRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "GroupChangeReasonV1": {
+        "description": "Why a group changed, for the event siblings subscribe to.",
+        "enum": [
+          "regression",
+          "ignore_expired",
+          "resolved",
+          "ignored",
+          "diagnosed",
+          "reopened",
+          "investigating"
+        ],
+        "type": "string"
+      },
+      "GroupStatusV1": {
+        "description": "The lifecycle of a group. `resolved` and `ignored` are human decisions; `regressed` is the one the ingest makes on its own, and the reason the worker exists.",
+        "oneOf": [
+          {
+            "enum": [
+              "new",
+              "diagnosed",
+              "resolved",
+              "ignored"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass of an investigation is running.",
+            "enum": [
+              "investigating"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence after a resolve.",
+            "enum": [
+              "regressed"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "GroupTransitionV1": {
+        "additionalProperties": false,
+        "description": "One recorded move of a group, for the History tab.",
+        "properties": {
+          "actor": {
+            "description": "A role rather than a person: `ingest`, `agent`, `investigation` or `console`. The console hands this worker no user identity, and a worker uuid here would read as one.",
+            "type": "string"
+          },
+          "at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "from_status": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GroupStatusV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Absent on the row that records the group's own beginning."
+          },
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GroupChangeReasonV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "to_status": {
+            "$ref": "#/definitions/GroupStatusV1"
+          }
+        },
+        "required": [
+          "actor",
+          "at_ms",
+          "id",
+          "to_status"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "total": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "transitions": {
+        "description": "Newest first.",
+        "items": {
+          "$ref": "#/definitions/GroupTransitionV1"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "total",
+      "transitions"
+    ],
+    "title": "GroupHistoryResponseV1",
+    "type": "object"
+  }
+}

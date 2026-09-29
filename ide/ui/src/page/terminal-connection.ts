@@ -1,5 +1,5 @@
 import type { Host } from '@iii-dev/console-ui'
-import { errorMessage } from '../lib/format'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import type { LocalTerminalLease } from './terminal-leases'
 import type {
   OutputListener,

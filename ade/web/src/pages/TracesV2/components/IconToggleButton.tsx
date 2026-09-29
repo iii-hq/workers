@@ -31,10 +31,10 @@ export function IconToggleButton({
           aria-label={label}
           aria-pressed={active}
           className={cn(
-            'inline-flex items-center justify-center w-7 h-7 border transition-colors',
+            'inline-flex items-center justify-center w-7 h-7 rounded-sm transition-colors',
             active
-              ? 'bg-ink text-bg border-ink'
-              : 'bg-transparent text-ink-faint border-transparent hover:text-ink hover:bg-surface-hover',
+              ? 'bg-ink text-bg'
+              : 'bg-transparent text-ink-faint hover:text-ink hover:bg-surface-hover',
           )}
         >
           {children}

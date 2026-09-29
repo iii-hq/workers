@@ -16,21 +16,34 @@
  */
 
 import {
+  Badge,
   Button,
-  Input,
+  Chip as UiChip,
+  Eyebrow,
   PageBody,
   PageMain,
   PageShell,
   PageSidebar,
+  Skeleton,
+  StatusDot,
+  StatusPanel,
   uiClasses,
 } from '@iii-dev/console-ui'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import {
-  Fragment,
-  type ReactNode,
-  type Ref,
-  useCallback,
-  useState,
-} from 'react'
+  ArrowLeft,
+  ArrowRight,
+  ChevronRight,
+  Clock,
+  Database,
+  FileText,
+  Globe,
+  Layers,
+  Waves,
+  Webhook,
+  Zap,
+} from 'lucide-react'
+import { Fragment, type ReactNode, useCallback, useState } from 'react'
 import type { Family, Tone } from './trigger-kinds'
 
 /**
@@ -118,67 +131,6 @@ export function CatalogShell({
   )
 }
 
-function SearchGlassIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" className="icon">
-      <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.5" />
-      <path
-        d="M10.5 10.5L14 14"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
-/** The sidebar search box: leading magnifier, esc/× to clear. */
-export function SearchField({
-  value,
-  onChange,
-  placeholder,
-  inputRef,
-}: {
-  value: string
-  onChange: (next: string) => void
-  placeholder: string
-  /** Lets the page command palette focus this field on `/`. */
-  inputRef?: Ref<HTMLInputElement>
-}) {
-  return (
-    <div className="console-catalog-search">
-      <SearchGlassIcon />
-      <Input
-        ref={inputRef}
-        name="catalog-search"
-        value={value}
-        onChange={onChange}
-        preserveCase
-        placeholder={placeholder}
-        aria-label={placeholder}
-        className="console-catalog-search-input"
-        data-autofocus=""
-        onKeyDown={(e) => {
-          if (e.key === 'Escape' && value) {
-            e.stopPropagation()
-            onChange('')
-          }
-        }}
-      />
-      {value ? (
-        <button
-          type="button"
-          className="clear"
-          aria-label="clear search"
-          onClick={() => onChange('')}
-        >
-          ×
-        </button>
-      ) : null}
-    </div>
-  )
-}
-
 /** The quiet count line under the search box. */
 export function SideCount({ children }: { children: ReactNode }) {
   return (
@@ -245,7 +197,7 @@ export function StatTile({
 }) {
   return (
     <div className="console-catalog-tile">
-      <span className="label">{label}</span>
+      <Eyebrow>{label}</Eyebrow>
       <span className="value" data-tone={tone}>
         {value}
       </span>
@@ -267,7 +219,7 @@ export function LiveDot() {
       role="status"
       aria-label="catalog updates live"
     >
-      <span className="dot" />
+      <StatusDot tone="ok" />
       live
     </span>
   )
@@ -283,24 +235,10 @@ export function CopyButton({
   label?: string
   title?: string
 }) {
-  const [copied, setCopied] = useState(false)
+  const { state, copy } = useCopyFlash(value, 2000)
   return (
-    <Button
-      variant="pill"
-      size="sm"
-      type="button"
-      title={title}
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(value)
-        } catch {
-          return
-        }
-        setCopied(true)
-        window.setTimeout(() => setCopied(false), 2000)
-      }}
-    >
-      {copied ? 'copied' : label}
+    <Button variant="pill" size="sm" type="button" title={title} onClick={copy}>
+      {state === 'copied' ? 'copied' : label}
     </Button>
   )
 }
@@ -348,7 +286,10 @@ export function GroupHeader({
     <>
       <span className="group-label-line">
         {toneLabel ? (
-          <span className="console-catalog-tag" data-tone={tone}>
+          <span
+            className={`${uiClasses.eyebrow} console-catalog-tag`}
+            data-tone={tone}
+          >
             {toneLabel}
           </span>
         ) : null}
@@ -381,7 +322,7 @@ export function GroupHeader({
         {content}
         {!onSelect && collapsible ? (
           <span className="chevron" data-open={open} aria-hidden>
-            ▸
+            <ChevronRight className="iii-ui-icon" />
           </span>
         ) : null}
       </button>
@@ -394,7 +335,7 @@ export function GroupHeader({
           aria-label={`${open ? 'collapse' : 'expand'} ${label}`}
         >
           <span className="chevron" data-open={open} aria-hidden>
-            ▸
+            <ChevronRight className="iii-ui-icon" />
           </span>
         </button>
       ) : null}
@@ -463,53 +404,14 @@ export function FnGlyph({ size }: { size?: 'lg' | 'hero' }) {
 }
 
 const FAMILY_ICONS: Record<Family, ReactNode> = {
-  http: (
-    <>
-      <circle cx="8" cy="8" r="6.25" />
-      <path d="M1.75 8h12.5" />
-      <ellipse cx="8" cy="8" rx="2.75" ry="6.25" />
-    </>
-  ),
-  cron: (
-    <>
-      <circle cx="8" cy="8" r="6.25" />
-      <path d="M8 4.5V8l2.4 1.5" />
-    </>
-  ),
-  queue: (
-    <>
-      <path d="M8 2l6 3-6 3-6-3z" />
-      <path d="M2 8l6 3 6-3" />
-      <path d="M2 11l6 3 6-3" />
-    </>
-  ),
-  state: (
-    <>
-      <ellipse cx="8" cy="4" rx="6" ry="2.25" />
-      <path d="M2 4v8c0 1.25 2.7 2.25 6 2.25s6-1 6-2.25V4" />
-      <path d="M2 8c0 1.25 2.7 2.25 6 2.25S14 9.25 14 8" />
-    </>
-  ),
-  stream: (
-    <>
-      <path d="M1.5 5.5c1.1-1.3 2.2-1.3 3.25 0s2.2 1.3 3.25 0 2.2-1.3 3.25 0 2.2 1.3 3.25 0" />
-      <path d="M1.5 10.5c1.1-1.3 2.2-1.3 3.25 0s2.2 1.3 3.25 0 2.2-1.3 3.25 0 2.2 1.3 3.25 0" />
-    </>
-  ),
-  hook: (
-    <>
-      <path d="M6.5 9.5l3-3" />
-      <path d="M5.25 6.75L3.5 8.5a2.5 2.5 0 003.5 3.5l1.75-1.75" />
-      <path d="M10.75 9.25l1.75-1.75a2.5 2.5 0 00-3.5-3.5L7.25 5.75" />
-    </>
-  ),
-  asset: (
-    <>
-      <path d="M4 1.75h5L12.25 5v9.25H4z" />
-      <path d="M9 1.75V5h3.25" />
-    </>
-  ),
-  other: <path d="M8.75 1.5L3.5 9H7l-.75 5.5L11.5 7H8z" />,
+  http: <Globe />,
+  cron: <Clock />,
+  queue: <Layers />,
+  state: <Database />,
+  stream: <Waves />,
+  hook: <Webhook />,
+  asset: <FileText />,
+  other: <Zap />,
 }
 
 /** The family tile that marks a trigger: globe, clock, layers, waves… */
@@ -529,17 +431,7 @@ export function FamilyGlyph({
       data-size={size}
       aria-hidden
     >
-      <svg
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        {FAMILY_ICONS[family]}
-      </svg>
+      {FAMILY_ICONS[family]}
     </span>
   )
 }
@@ -569,7 +461,7 @@ export function Hero({
       <div className="inner">
         {glyph}
         <div className="copy">
-          {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
+          {eyebrow ? <Eyebrow>{eyebrow}</Eyebrow> : null}
           <h2 className="title">{title}</h2>
           <p className="body">{body}</p>
         </div>
@@ -677,9 +569,7 @@ export function ContextItem({
         {meta ? <span className="context-item-meta">{meta}</span> : null}
       </span>
       {onClick ? (
-        <span className="context-item-arrow" aria-hidden>
-          →
-        </span>
+        <ArrowRight className="iii-ui-icon context-item-arrow" aria-hidden />
       ) : null}
     </>
   )
@@ -718,7 +608,7 @@ export function Crumb({
         onClick={onBack}
         aria-label="back to the list"
       >
-        ←
+        <ArrowLeft className="iii-ui-icon" />
       </button>
       {segments.map((segment, i) => (
         <Fragment key={`${i}-${segment}`}>
@@ -758,7 +648,7 @@ export function IdentityHead({
       <div className="ident-copy">
         <div className="ident-title-line">
           <h2 className="ident-title">{title}</h2>
-          {status ? <span className="ident-status">{status}</span> : null}
+          {status ? <Badge variant="ok">{status}</Badge> : null}
         </div>
         {description ? <p className="ident-desc">{description}</p> : null}
         {chips ? <div className="ident-chips">{chips}</div> : null}
@@ -803,19 +693,20 @@ export function ErrorNote({
   onRetry?: () => void
 }) {
   return (
-    <div className="console-catalog-error" role="alert">
-      <div className="error-copy">
-        <span className="error-title">{title}</span>
-        <span className="error-detail">
-          {call} · {message}
-        </span>
-      </div>
-      {onRetry ? (
-        <Button variant="pill" size="sm" type="button" onClick={onRetry}>
-          retry
-        </Button>
-      ) : null}
-    </div>
+    <StatusPanel
+      variant="alert"
+      role="alert"
+      className="console-catalog-error"
+      headline={title}
+      detail={`${call} · ${message}`}
+      action={
+        onRetry ? (
+          <Button variant="pill" size="sm" type="button" onClick={onRetry}>
+            retry
+          </Button>
+        ) : undefined
+      }
+    />
   )
 }
 
@@ -825,9 +716,9 @@ export function CatalogListSkeleton({ label }: { label: string }) {
     <div className="console-catalog-skeleton" role="status" aria-label={label}>
       {[0, 1, 2].map((group) => (
         <div className="skeleton-group" key={group}>
-          <span className="skeleton-heading" />
-          <span className="skeleton-row" />
-          <span className="skeleton-row short" />
+          <Skeleton className="skeleton-heading" />
+          <Skeleton className="skeleton-row" />
+          <Skeleton className="skeleton-row short" />
         </div>
       ))}
     </div>
@@ -835,19 +726,19 @@ export function CatalogListSkeleton({ label }: { label: string }) {
 }
 
 /** Key/value chips for a trigger config, ids, counts. */
-export function Chip({
-  k,
-  v,
-  tone,
-}: {
-  k: string
-  v: ReactNode
-  tone?: string
-}) {
+const CHIP_TONES = {
+  accent: 'accent',
+  ok: 'success',
+  warn: 'warning',
+  alert: 'danger',
+  ink: undefined,
+} as const
+
+export function Chip({ k, v, tone }: { k: string; v: ReactNode; tone?: Tone }) {
   return (
-    <span className={`${uiClasses.chip} console-catalog-chip`} data-tone={tone}>
+    <UiChip className="console-catalog-chip" tone={tone && CHIP_TONES[tone]}>
       <span className="k">{k}</span>
       {v}
-    </span>
+    </UiChip>
   )
 }

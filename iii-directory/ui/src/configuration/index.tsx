@@ -20,16 +20,21 @@ import {
   SettingsList,
   SettingsRow,
   SettingsSection,
+  StatusPanel,
   Switch,
 } from '@iii-dev/console-ui'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   booleanWithDefault,
   FUNCTION_SEARCH_MODE_OPTIONS,
   type FunctionSearchMode,
   functionSearchModeWithDefault,
+  JUDGE_QUESTION_OPTIONS,
+  type JudgeQuestion,
+  judgeQuestionWithDefault,
   semanticModeNeedsModel,
   withFunctionSearchMode,
+  withoutRetiredKeys,
 } from './model'
 
 type JsonObject = { [key: string]: JsonValue }
@@ -69,6 +74,11 @@ const INLINE_ERROR_POINTERS = new Set([
   '/hint_min_workers',
   '/registry_search',
   '/function_search_mode',
+  '/function_search_judge_timeout_ms',
+  '/function_search_judge_min_relevance',
+  '/function_search_judge_side_lane_min_relevance',
+  '/function_search_judge_question',
+  '/function_search_judge_choice_min_probability',
   '/function_search_model_path',
   '/function_search_model_download',
 ])
@@ -79,7 +89,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
     ([pointer]) => !INLINE_ERROR_POINTERS.has(pointer),
   )
 
-  const commit = (next: JsonObject) => props.onChange(next)
+  const commit = (next: JsonObject) => props.onChange(withoutRetiredKeys(next))
 
   const setString = (field: string, raw: string) => {
     const next = { ...value }
@@ -250,7 +260,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
 
       <SettingsSection
         title="Function search"
-        description="Choose how installed function contracts are ranked. Mode changes apply without restarting iii-directory."
+        description="Choose how function contracts are ranked. Mode changes and judge options apply without restarting iii-directory."
       >
         <SettingsList>
           <SearchModeField
@@ -259,11 +269,64 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
             onChange={setFunctionSearchMode}
             errors={props.errors}
           />
+          <NumberField
+            field="function_search_judge_timeout_ms"
+            label="Judge timeout (ms)"
+            placeholder="3000"
+            hint="1–30000 ms for all judge requests in one search, excluding Hybrid fallback and registry requests. A search that misses it, or a judge that is not running or fails, falls back to Hybrid (Lexical without the model); a valid empty result stays empty. Local judges take longer: with laya or SemIf as the judge's provider, about 6000 ms keeps the slowest searches judged. The provider is chosen in the judge worker settings; its model and credentials live in the provider's worker (judge-typesafe, judge-semif, judge-laya)."
+            min={1}
+            max={30000}
+            step={1}
+            value={value.function_search_judge_timeout_ms}
+            onChange={setNumber}
+            errors={props.errors}
+          />
+          <NumberField
+            field="function_search_judge_min_relevance"
+            label="Judge minimum relevance"
+            placeholder="0.5"
+            hint="Finite value from 0 to 1, inclusive. Higher values admit fewer functions. The default 0.5 is a starting point for calibration."
+            max={1}
+            step="any"
+            inputMode="decimal"
+            value={value.function_search_judge_min_relevance}
+            onChange={setNumber}
+            errors={props.errors}
+          />
+          <NumberField
+            field="function_search_judge_side_lane_min_relevance"
+            label="Judge minimum relevance for skills and triggers"
+            placeholder="0.3"
+            hint="Finite value from 0 to 1, inclusive, for the installed-skills and registered-triggers sections. Those documents score lower than functions for the same capability, so the default 0.3 sits under the function floor."
+            max={1}
+            step="any"
+            inputMode="decimal"
+            value={value.function_search_judge_side_lane_min_relevance}
+            onChange={setNumber}
+            errors={props.errors}
+          />
+          <JudgeQuestionField
+            value={judgeQuestionWithDefault(value.function_search_judge_question)}
+            onChange={(question) => commit({ ...value, function_search_judge_question: question })}
+            errors={props.errors}
+          />
+          <NumberField
+            field="function_search_judge_choice_min_probability"
+            label="Choice minimum probability"
+            placeholder="0.1"
+            hint="With one choice per capability (and in a tournament's final round), the best function is always kept and every other one needs this probability. Measured: 0.05–0.1 kept a correct function in every test search with both JEV and SemIf."
+            max={1}
+            step="any"
+            inputMode="decimal"
+            value={value.function_search_judge_choice_min_probability}
+            onChange={setNumber}
+            errors={props.errors}
+          />
           <TextField
             field="function_search_model_path"
             label="Semantic model directory"
             placeholder="not set — e.g. ~/.cache/iii/all-MiniLM-L6-v2-<revision>"
-            hint="Directory holding the pinned MiniLM bundle (default under ~/.cache/iii). Changing this path requires a worker restart."
+            hint="Directory holding the pinned MiniLM bundle for Hybrid and the judge's fallback (default under ~/.cache/iii). If unavailable, fallback uses Lexical. Changing this path requires a worker restart."
             value={asString(value.function_search_model_path)}
             onChange={setString}
             errors={props.errors}
@@ -271,7 +334,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
           <CheckField
             field="function_search_model_download"
             label="Download the model on first run"
-            hint="When a semantic mode is on and the bundle is missing at startup, fetch the pinned files from Hugging Face once, each verified by length and SHA-256. Turn off for air-gapped stacks."
+            hint="When Hybrid or Judge is on and the bundle is missing at startup, fetch the pinned files from Hugging Face once, each verified by length and SHA-256. Turn off for air-gapped stacks."
             checked={booleanWithDefault(value.function_search_model_download, true)}
             onChange={setBool}
             errors={props.errors}
@@ -305,18 +368,25 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
       </SettingsSection>
 
       {props.errors && props.errors.size > 0 ? (
-        <div className="dir-ui-form-errors" role="alert">
-          <div>
-            {props.errors.size === 1
-              ? 'There is 1 configuration error. Review the highlighted setting.'
-              : `There are ${props.errors.size} configuration errors. Review the highlighted settings.`}
-          </div>
-          {unassociatedErrors.map(([pointer, message]) => (
-            <div key={pointer || message}>
-              {pointer ? `${pointer}: ` : ''}
-              {message}
-            </div>
-          ))}
+        <div role="alert">
+          <StatusPanel
+            variant="alert"
+            headline={
+              props.errors.size === 1
+                ? 'There is 1 configuration error. Review the highlighted setting.'
+                : `There are ${props.errors.size} configuration errors. Review the highlighted settings.`
+            }
+            detail={
+              unassociatedErrors.length > 0
+                ? unassociatedErrors.map(([pointer, message]) => (
+                    <div key={pointer || message}>
+                      {pointer ? `${pointer}: ` : ''}
+                      {message}
+                    </div>
+                  ))
+                : undefined
+            }
+          />
         </div>
       ) : null}
     </div>
@@ -388,6 +458,7 @@ function TextField({
           id={presentation.id}
           name={field}
           className="dir-ui-config-control"
+          type="text"
           value={value}
           placeholder={placeholder}
           spellCheck={false}
@@ -407,6 +478,10 @@ function NumberField({
   label,
   placeholder,
   hint,
+  min = 0,
+  max,
+  step,
+  inputMode = 'numeric',
   value,
   onChange,
   errors,
@@ -415,11 +490,19 @@ function NumberField({
   label: string
   placeholder: string
   hint?: string
+  min?: number
+  max?: number
+  step?: number | 'any'
+  inputMode?: 'numeric' | 'decimal'
   value: JsonValue | undefined
   onChange: (field: string, raw: string) => void
   errors?: ConfigFormProps['errors']
 }) {
   const presentation = fieldPresentation(field, hint, errors)
+  // Keep intermediate text (e.g. 0.10) until commit; converting each
+  // keystroke to a number drops zeros before the next digit arrives.
+  const [draft, setDraft] = useState<string | null>(null)
+  useEffect(() => setDraft(null), [value])
   return (
     <SettingsRow
       data-field={field}
@@ -432,14 +515,24 @@ function NumberField({
           name={field}
           className="dir-ui-config-control dir-ui-config-number"
           type="number"
-          min={0}
-          inputMode="numeric"
-          value={typeof value === 'number' ? String(value) : ''}
+          min={min}
+          max={max}
+          step={step}
+          inputMode={inputMode}
+          value={draft ?? (typeof value === 'number' ? String(value) : '')}
           placeholder={placeholder}
           aria-label={label}
           aria-invalid={presentation.invalid || undefined}
           aria-describedby={presentation.describedBy}
-          onChange={(next) => onChange(field, next)}
+          onChange={setDraft}
+          onBlur={() => {
+            if (draft === null) return
+            onChange(field, draft)
+            setDraft(null)
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') event.currentTarget.blur()
+          }}
         />
       }
     />
@@ -458,7 +551,7 @@ function SearchModeField({
   errors?: ConfigFormProps['errors']
 }) {
   const field = 'function_search_mode'
-  const hint = 'Hybrid (default) fuses BM25 with the local semantic model. Lexical returns BM25 rankings.'
+  const hint = 'Judge (default) ranks with the judge worker whenever it is running and otherwise behaves as Hybrid. Hybrid fuses BM25 with the local semantic model. Lexical uses BM25.'
   const presentation = fieldPresentation(field, hint, errors)
   const needsModel = semanticModeNeedsModel(value, modelPath)
   const noticeId = needsModel ? `${presentation.id}-model-notice` : undefined
@@ -499,6 +592,45 @@ function SearchModeField({
           aria-describedby={describedBy(presentation.describedBy, noticeId)}
           sheetTitle="Function search mode"
           sheetDescription="Choose the ranking lane used by directory::search_functions."
+          onChange={onChange}
+        />
+      }
+    />
+  )
+}
+
+function JudgeQuestionField({
+  value,
+  onChange,
+  errors,
+}: {
+  value: JudgeQuestion
+  onChange: (question: JudgeQuestion) => void
+  errors?: ConfigFormProps['errors']
+}) {
+  const field = 'function_search_judge_question'
+  const hint =
+    'How the judge is asked about each capability. Choice asks one question over the 16-function Hybrid shortlist and lets the functions compete (16× fewer questions than yes/no). A judge that advertises a context window under 4096 tokens (laya) is handled automatically under Choice: it plays a tournament over the whole catalog, with compact options (function id and the first eight words of its description), because the shortlist\'s near-duplicates confuse it. SemIf and hosted judges (JEV) keep the shortlist. Tournament skips the shortlist for any judge: compact rounds over the whole catalog (groups of 128 with three survivors each; 16 with one winner each for small-window judges; never more than the judge’s advertised option limit), then a final Choice over the survivors with their full descriptions; it needs no local semantic model.'
+  const presentation = fieldPresentation(field, hint, errors)
+  return (
+    <SettingsRow
+      data-field={field}
+      label={<FieldLabel field={field} htmlFor={presentation.id} label="Judge question" />}
+      description={presentation.description}
+      meta={presentation.meta}
+      control={
+        <Select<JudgeQuestion>
+          id={presentation.id}
+          name={field}
+          data-field={field}
+          className="dir-ui-config-control dir-ui-config-select"
+          value={value}
+          options={[...JUDGE_QUESTION_OPTIONS]}
+          aria-label="Judge question"
+          aria-invalid={presentation.invalid || undefined}
+          aria-describedby={presentation.describedBy}
+          sheetTitle="Judge question"
+          sheetDescription="Choose how directory::search_functions asks the judge."
           onChange={onChange}
         />
       }

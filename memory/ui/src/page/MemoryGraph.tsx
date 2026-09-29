@@ -1,6 +1,6 @@
+import { Badge, Button, Card, EmptyState, Input } from '@iii-dev/console-ui'
+import { Pin, PinOff, Trash2, X } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
-import { Badge, Button, EmptyState, Input } from '@iii-dev/console-ui'
-import { Pin, PinOff, Trash2, X } from './icons'
 import type { MemoryItem } from './memory-data'
 
 /**
@@ -22,7 +22,7 @@ import type { MemoryItem } from './memory-data'
  * list; storage stays flat.
  *
  * Ported verbatim from the console page: only the component imports
- * (`@iii-dev/console-ui` + inline icons) and the styling (scoped CSS +
+ * (`@iii-dev/console-ui` + lucide icons) and the styling (scoped CSS +
  * `var(--color-*)` SVG fills instead of Tailwind utilities) changed.
  */
 
@@ -377,6 +377,7 @@ export function MemoryGraph({
       </div>
 
       <div className="mem-ui-graph-canvas">
+        {/* the graph canvas itself, not an icon. lint-allow no-inline-svg */}
         <svg
           ref={svgRef}
           viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
@@ -553,10 +554,7 @@ export function MemoryGraph({
                           ? 'var(--color-ink)'
                           : 'var(--color-ink-faint)'
                       }
-                      style={{
-                        fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                        textTransform: 'lowercase',
-                      }}
+                      style={monoText}
                     >
                       {label}
                     </text>
@@ -645,10 +643,7 @@ export function MemoryGraph({
                 textAnchor="middle"
                 fontSize={11}
                 fill="var(--color-accent)"
-                style={{
-                  fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                  textTransform: 'lowercase',
-                }}
+                style={monoText}
                 paintOrder="stroke"
                 stroke="var(--color-bg, #111110)"
                 strokeWidth={4}
@@ -673,7 +668,7 @@ export function MemoryGraph({
         </div>
 
         {selected ? (
-          <div className="mem-ui-card">
+          <Card className="mem-ui-card">
             <div className="mem-ui-card-head">
               <p className="mem-ui-card-text">{selected.text}</p>
               <Button
@@ -701,7 +696,6 @@ export function MemoryGraph({
                 size="sm"
                 onClick={() => onPin(selected)}
                 disabled={busy}
-                className="mem-ui-gap1"
               >
                 {selected.pinned ? (
                   <>
@@ -721,12 +715,11 @@ export function MemoryGraph({
                   setSelectedId(null)
                 }}
                 disabled={busy}
-                className="mem-ui-gap1"
               >
                 <Trash2 size={16} aria-hidden /> delete
               </Button>
             </div>
-          </div>
+          </Card>
         ) : null}
       </div>
     </div>

@@ -1,6 +1,8 @@
 import { AlertCircle, CheckCircle2, Copy } from 'lucide-react'
 import { useMemo } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { eyebrowClassName } from '@/components/ui/Eyebrow'
+import { cn } from '@/lib/utils'
 import { redactValue } from '../lib/redactAttributes'
 import type { VisualizationSpan } from '../lib/traceTransform'
 import { useCopyToClipboard } from '../lib/traceUtils'
@@ -88,7 +90,7 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
           </span>
           <div className="flex-1 min-w-0">
             {displayType && (
-              <div className="font-mono text-[13px] font-semibold text-alert mb-1 lowercase">
+              <div className="font-mono text-[13px] font-semibold text-alert mb-1">
                 {displayType}
               </div>
             )}
@@ -98,8 +100,8 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
               </div>
             )}
             {!displayType && !displayMessage && (
-              <div className="font-mono text-[13px] text-ink-faint lowercase">
-                error status with no additional details
+              <div className="font-mono text-[13px] text-ink-faint">
+                Error status with no additional details
               </div>
             )}
           </div>
@@ -110,13 +112,14 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
       {displayStack && (
         <div>
           <div className="flex items-center justify-between mb-2">
-            <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-              stack trace
-            </span>
+            <span className="iii-ui-eyebrow">stack trace</span>
             <button
               type="button"
               onClick={copyStackTrace}
-              className="flex items-center gap-1.5 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint hover:text-ink hover:bg-surface-hover rounded-xs transition-colors"
+              className={cn(
+                eyebrowClassName,
+                'flex items-center gap-1.5 px-2 py-1 hover:text-ink hover:bg-surface-hover rounded-xs transition-colors',
+              )}
             >
               {copiedKey === 'stackTrace' ? (
                 <span className="text-accent">Copied</span>
@@ -155,11 +158,11 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
 
       {!displayMessage && !displayType && !displayStack && (
         <div className="rounded-md bg-surface p-4 text-center">
-          <p className="font-mono text-[13px] text-ink-faint lowercase">
-            no additional error details
+          <p className="font-mono text-[13px] text-ink-faint">
+            No additional error details
           </p>
-          <p className="font-mono text-[11px] text-ink-ghost mt-1 lowercase">
-            the span is marked as error but no error attributes were recorded
+          <p className="font-mono text-[11px] text-ink-ghost mt-1">
+            The span is marked as error but no error attributes were recorded
           </p>
         </div>
       )}

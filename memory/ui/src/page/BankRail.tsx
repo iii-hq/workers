@@ -5,9 +5,16 @@
  * `memory_bank`. In the narrow drill-in flow this list is the first pane.
  */
 
-import { Button, Input } from '@iii-dev/console-ui'
+import {
+  Button,
+  EmptyState,
+  Input,
+  List,
+  ListItem,
+  Skeleton,
+} from '@iii-dev/console-ui'
+import { Plus } from 'lucide-react'
 import { useState } from 'react'
-import { Plus } from './icons'
 import type { MemoryBank } from './memory-data'
 
 interface BankRailProps {
@@ -46,41 +53,31 @@ export function BankRail({
               [70, 90],
             ].map(([a, b]) => (
               <div key={`${a}-${b}`} className="mem-ui-skel-row">
-                <span className={`bar w${a}`} />
-                <span className={`bar w${b}`} />
+                <Skeleton className="mem-ui-skel" style={{ width: `${a}%` }} />
+                <Skeleton className="mem-ui-skel" style={{ width: `${b}%` }} />
               </div>
             ))}
           </div>
         ) : banks.length === 0 ? (
-          <div className="mem-ui-rail-empty">
-            <p>No banks yet.</p>
-            <p className="dim">
-              Create one below, or just chat: the default bank materializes when
-              the first memory is saved.
-            </p>
-          </div>
+          <EmptyState
+            compact
+            title="No banks yet."
+            description="Create one below, or just chat: the default bank materializes when the first memory is saved."
+          />
         ) : (
-          <ul className="mem-ui-nav-list">
+          <List aria-label="banks">
             {banks.map((bank, index) => (
-              <li key={bank.name}>
-                <button
-                  type="button"
-                  className={`mem-ui-nav-row${selected === bank.name ? ' active' : ''}`}
-                  aria-current={selected === bank.name ? 'true' : undefined}
-                  data-autofocus={
-                    autofocusFirst && index === 0 ? '' : undefined
-                  }
-                  onClick={() => onSelect(bank.name)}
-                >
-                  <span className="name">{bank.name}</span>
-                  <span className="fine">
-                    {bank.memories} memories · {bank.pinned} pinned ·{' '}
-                    {bank.rules} rules
-                  </span>
-                </button>
-              </li>
+              <ListItem
+                key={bank.name}
+                selected={selected === bank.name}
+                aria-current={selected === bank.name ? 'true' : undefined}
+                data-autofocus={autofocusFirst && index === 0 ? '' : undefined}
+                onClick={() => onSelect(bank.name)}
+                label={bank.name}
+                description={`${bank.memories} memories · ${bank.pinned} pinned · ${bank.rules} rules`}
+              />
             ))}
-          </ul>
+          </List>
         )}
       </div>
       <form

@@ -1,6 +1,6 @@
 import { Button, StatusDot } from '@iii-dev/console-ui'
 import { type KeyboardEvent, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Layers } from './icons'
+import { Layers } from 'lucide-react'
 import { type Box, layoutTopology, related, TOPO, type TopologyContainer, type TopologyInput } from './topology-layout'
 
 interface TopologyProps {
@@ -328,7 +328,7 @@ export function Topology({ input, selected, onSelect }: TopologyProps) {
     <div className="cu-topo-stack">
       <div className="cu-topo-engine cu-topo-engine-static">
         <span className="cu-topo-title">
-          <Layers />
+          <Layers size={16} />
           engine
         </span>
         <span className="cu-mono cu-topo-sub">
@@ -371,6 +371,7 @@ export function Topology({ input, selected, onSelect }: TopologyProps) {
           style={{ width: bounds.width, height: bounds.height }}
           data-dragging={dragging ? '' : undefined}
         >
+          {/* diagram edge overlay, not an icon. lint-allow no-inline-svg */}
           <svg aria-hidden="true" className="cu-topo-svg" width={bounds.width} height={bounds.height}>
             <defs>
               <marker
@@ -421,7 +422,7 @@ export function Topology({ input, selected, onSelect }: TopologyProps) {
             {...dragProps(ENGINE)}
           >
             <span className="cu-topo-title">
-              <Layers />
+              <Layers size={16} />
               engine
             </span>
             <span className="cu-mono cu-topo-sub">

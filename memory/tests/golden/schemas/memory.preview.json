@@ -1,5 +1,5 @@
 {
-  "description": "Preview the memory injection for a hypothetical chat message: the exact system-prompt memory section (rules, budgets, truncation markers), the memories the turn would be handed (post ambient floor and token budget), and the appended message verbatim. Runs the pre-generate hook's own code.",
+  "description": "Preview the memory injection for a hypothetical chat message: the exact system-prompt memory section a new session gets (rules, budgets, truncation markers; running sessions receive changes as an appended update), the memories the turn would be handed (post ambient floor and token budget), and the appended message verbatim. Runs the pre-generate hook's own code.",
   "function_id": "memory::preview",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

@@ -1,7 +1,9 @@
 //! Effective per-request config: credential + url + max_tokens.
 //! Precedence for max_tokens: router-resolved effective budget
 //! (`ProviderStreamInput.max_output_tokens`) → the operator's configured
-//! `max_tokens` (from resolve) → the worker default.
+//! `max_tokens` (from resolve) → none. With neither, the output-token
+//! parameter is omitted from the request and the model's own maximum
+//! applies (OpenAI treats the parameter as optional).
 use llm_router::types::credential::Credential;
 use llm_router::types::router::ProviderResolveResponse;
 
@@ -35,7 +37,8 @@ impl ApiMode {
 pub struct OpenaiConfig {
     pub credential_value: String,
     pub model: String,
-    pub max_tokens: u64,
+    /// `None` = no cap: the wire parameter is omitted.
+    pub max_tokens: Option<u64>,
     pub api_url: String,
     pub api_mode: ApiMode,
 }
@@ -106,9 +109,7 @@ pub fn config_from_resolve(
     Ok(OpenaiConfig {
         credential_value,
         model: model.to_string(),
-        max_tokens: effective_max_tokens
-            .or(resolved.max_tokens)
-            .unwrap_or(DEFAULT_MAX_TOKENS),
+        max_tokens: effective_max_tokens.or(resolved.max_tokens),
         api_url,
         api_mode,
     })
@@ -224,14 +225,15 @@ mod tests {
     }
 
     #[test]
-    fn max_tokens_precedence_effective_then_configured_then_default() {
+    fn max_tokens_precedence_effective_then_configured_then_uncapped() {
         let key = Some(Credential::ApiKey { key: "sk".into() });
         let cfg = config_from_resolve("m", Some(1000), &resolved(key.clone(), Some(2000))).unwrap();
-        assert_eq!(cfg.max_tokens, 1000);
+        assert_eq!(cfg.max_tokens, Some(1000));
         let cfg = config_from_resolve("m", None, &resolved(key.clone(), Some(2000))).unwrap();
-        assert_eq!(cfg.max_tokens, 2000);
+        assert_eq!(cfg.max_tokens, Some(2000));
+        // Nothing requested or configured: no cap, the parameter is omitted.
         let cfg = config_from_resolve("m", None, &resolved(key, None)).unwrap();
-        assert_eq!(cfg.max_tokens, DEFAULT_MAX_TOKENS);
+        assert_eq!(cfg.max_tokens, None);
     }
 
     #[test]

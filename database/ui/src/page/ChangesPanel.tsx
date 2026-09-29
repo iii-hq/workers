@@ -18,12 +18,12 @@ import {
   EmptyState,
   type Host,
   StatusDot,
+  Toolbar,
 } from '@iii-dev/console-ui'
+import { formatRelative } from '@iii-dev/console-ui/format'
+import { History, RefreshCw } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { History, RefreshCw } from './icons'
 import { type RowChange, useRowChanges } from './useRowChanges'
-
-const HistoryIcon = (p: { className?: string }) => <History size={28} {...p} />
 
 /** How long a row keeps its arrival highlight. */
 const FRESH_MS = 4000
@@ -33,6 +33,12 @@ const OP_LABEL: Record<string, string> = {
   update: 'Update',
   delete: 'Delete',
   other: 'Other',
+}
+
+/** Insert and delete carry their status tone; update stays neutral. */
+const OP_VARIANT: Record<string, 'ok' | 'alert'> = {
+  insert: 'ok',
+  delete: 'alert',
 }
 
 /**
@@ -77,7 +83,7 @@ export function ChangesPanel({
   if (!table) {
     return (
       <EmptyState
-        icon={HistoryIcon}
+        icon={History}
         title="No table selected"
         description="Pick a table in the tree to follow the writes landing in it."
       />
@@ -87,7 +93,7 @@ export function ChangesPanel({
   if (isView) {
     return (
       <EmptyState
-        icon={HistoryIcon}
+        icon={History}
         title={`${table} is a view`}
         description="Changes are reported against the table a statement writes to, so a view never reports any of its own. Select one of the tables it reads from to follow the writes behind it."
       />
@@ -97,7 +103,7 @@ export function ChangesPanel({
   if (feed.status === 'unsupported') {
     return (
       <EmptyState
-        icon={HistoryIcon}
+        icon={History}
         title="This worker does not announce row changes"
         description="Run `iii worker update database` to follow writes as they commit."
       />
@@ -106,7 +112,24 @@ export function ChangesPanel({
 
   return (
     <div className="db-changes">
-      <div className="db-changes-bar db-toolbar">
+      <Toolbar
+        aria-label="row changes"
+        end={
+          feed.pending > 0 && onRefresh ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                feed.acknowledge()
+                onRefresh()
+              }}
+            >
+              <RefreshCw size={16} aria-hidden />
+              Reload rows · {feed.pending}
+            </Button>
+          ) : undefined
+        }
+      >
         <FreshnessBadge
           status={feed.status}
           lastAt={feed.lastAt}
@@ -114,27 +137,13 @@ export function ChangesPanel({
           onToggle={() => setCapOpen((v) => !v)}
         />
         <span className="db-changes-target">{table}</span>
-        <div className="db-toolbar-spacer" />
-        {feed.pending > 0 && onRefresh ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              feed.acknowledge()
-              onRefresh()
-            }}
-          >
-            <RefreshCw size={16} aria-hidden />
-            Reload rows · {feed.pending}
-          </Button>
-        ) : null}
-      </div>
+      </Toolbar>
 
       {capOpen ? <p className="db-changes-capnote">{CAPTURE_NOTE}</p> : null}
 
       {feed.changes.length === 0 ? (
         <EmptyState
-          icon={HistoryIcon}
+          icon={History}
           title="Nothing yet"
           description={`Writes to ${table} appear here as they commit. What counts as a write depends on this connection's capture mode — the "Following" indicator above explains it.`}
         />
@@ -156,14 +165,16 @@ export function ChangesPanel({
 }
 
 function ChangeRow({ change }: { change: RowChange }) {
-  const age = Date.now() - change.seen
-  const fresh = age < FRESH_MS
+  const fresh = Date.now() - change.seen < FRESH_MS
   const rows = change.affected_rows
   return (
     <li className={`db-change${fresh ? ' fresh' : ''}`}>
-      <span className={`db-change-op op-${change.op}`}>
+      <Badge
+        variant={OP_VARIANT[change.op] ?? 'default'}
+        className="db-change-op"
+      >
         {OP_LABEL[change.op] ?? change.op}
-      </span>
+      </Badge>
       <span className="db-change-rows">
         {rows} {rows === 1 ? 'row' : 'rows'}
       </span>
@@ -174,7 +185,7 @@ function ChangeRow({ change }: { change: RowChange }) {
         </Badge>
       ) : null}
       <span className="db-change-at" title={new Date(change.at).toISOString()}>
-        {relative(age)}
+        {formatRelative(change.seen)}
       </span>
     </li>
   )
@@ -213,20 +224,8 @@ function FreshnessBadge({
       <StatusDot tone={bound ? 'accent' : 'ink'} pulse={bound && recent} />
       <span>{bound ? 'Following' : 'Not following'}</span>
       {lastAt != null ? (
-        <span className="db-freshness-at">
-          · Last {relative(Date.now() - lastAt)}
-        </span>
+        <span className="db-freshness-at">· Last {formatRelative(lastAt)}</span>
       ) : null}
     </button>
   )
-}
-
-function relative(ms: number): string {
-  if (ms < 1000) return 'Just now'
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s ago`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  return `${h}h ago`
 }

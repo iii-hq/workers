@@ -28,6 +28,7 @@ function conversation(
 const CONVERSATIONS: Conversation[] = [
   conversation({
     id: 'launch',
+    workingDir: '/home/me/harness',
     title: 'Harness launch',
     updatedAt: NOW - 2 * MIN,
     status: 'working',
@@ -40,6 +41,7 @@ const CONVERSATIONS: Conversation[] = [
   }),
   conversation({
     id: 'post-launch',
+    workingDir: '/home/me/harness',
     title: 'Harness post launch',
     updatedAt: NOW - 25 * MIN,
     agentProfile: {
@@ -51,6 +53,7 @@ const CONVERSATIONS: Conversation[] = [
   }),
   conversation({
     id: 'eval',
+    workingDir: '/home/me/harness',
     title: 'Harness eval',
     updatedAt: NOW - 3 * HOUR,
     status: 'error',
@@ -59,6 +62,7 @@ const CONVERSATIONS: Conversation[] = [
   }),
   conversation({
     id: 'console',
+    workingDir: '/home/me/workers/ade',
     title: 'Console UX revamp',
     updatedAt: NOW - 5 * HOUR,
     agentProfile: {
@@ -70,6 +74,7 @@ const CONVERSATIONS: Conversation[] = [
   }),
   conversation({
     id: 'documents',
+    workingDir: '/home/me/docs',
     title: 'Documents',
     updatedAt: NOW - 8 * HOUR,
     agentProfile: { id: 'p-docs', name: 'Docs', icon: 'docs', color: 'purple' },
@@ -104,6 +109,29 @@ const CONVERSATIONS: Conversation[] = [
     id: 'registry',
     title: 'Workers registry',
     updatedAt: NOW - 2 * DAY,
+  }),
+  /* Machine-made sessions: hidden by the default Type filter (User), shown
+     with a mono tag once the filter admits their kind. */
+  conversation({
+    id: 'e2e-sandbox',
+    workingDir: '/home/me/harness-e2e',
+    title: 'Shell coder sandbox',
+    kind: 'e2e',
+    updatedAt: NOW - 3 * HOUR,
+  }),
+  conversation({
+    id: 'e2e-sandbox-probe',
+    title: 'Probe runner',
+    parentId: 'e2e-sandbox',
+    createdAt: NOW - 3 * HOUR,
+    updatedAt: NOW - 3 * HOUR,
+    spawnedBy: 'agent',
+  }),
+  conversation({
+    id: 'nightly',
+    title: 'Nightly changelog digest',
+    kind: 'automation',
+    updatedAt: NOW - 9 * HOUR,
   }),
   conversation({
     id: 'debts',

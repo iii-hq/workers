@@ -4,13 +4,13 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `shell/page.js` (`console:script`) — the shell explorer page
-//!   (#/ext/shell: file tree / git / search sidebar beside the shared
+//! - `ide/page.js` (`console:script`) — the shell explorer page
+//!   (page `ide`: file tree / git / search sidebar beside the shared
 //!   Monaco editor and FileDiff pane), plus the `shell::*`
 //!   function-trigger renderer its `setup(host)` registers (moved out of
 //!   the console SPA, the iii-directory precedent).
-//! - `shell/styles.css` (`console:style`) — the stylesheet, every rule
-//!   scoped under `[data-iii-ui="shell"]`.
+//! - `ide/styles.css` (`console:style`) — the stylesheet, every rule
+//!   scoped under `[data-iii-ui="ide"]`.
 //!
 //! The registration machinery (content function `shell::ui-content`, one
 //! Message-path trigger per asset, `III_SHELL_UI_WATCH` hot-reload
@@ -32,15 +32,15 @@
 use iii_console_ui::ConsoleUi;
 use iii_sdk::IIIClient;
 
-pub const PAGE_PATH: &str = "shell/page.js";
-pub const STYLES_PATH: &str = "shell/styles.css";
+pub const PAGE_PATH: &str = "ide/page.js";
+pub const STYLES_PATH: &str = "ide/styles.css";
 
 /// Built by `build.rs` (esbuild over `ui/`).
 const PAGE_JS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/page.js"));
 const STYLES_CSS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/styles.css"));
 
 fn console_ui() -> ConsoleUi {
-    ConsoleUi::new("shell")
+    ConsoleUi::new("ide")
         .script(PAGE_PATH, PAGE_JS)
         .style(STYLES_PATH, STYLES_CSS)
 }
@@ -74,10 +74,10 @@ mod tests {
     #[test]
     fn embedded_styles_are_scoped() {
         // esbuild prints the attribute selector unquoted
-        // ([data-iii-ui=shell]).
+        // ([data-iii-ui=ide]).
         assert!(
-            STYLES_CSS.contains(r#"[data-iii-ui="shell"]"#)
-                || STYLES_CSS.contains("[data-iii-ui=shell]"),
+            STYLES_CSS.contains(r#"[data-iii-ui="ide"]"#)
+                || STYLES_CSS.contains("[data-iii-ui=ide]"),
             "built styles.css must be scoped under the worker's data-iii-ui attribute"
         );
     }

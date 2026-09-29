@@ -49,6 +49,10 @@ rules:
   # safe read-only introspection. Mutations stay denied.
   - '!configuration::set'
   - '!configuration::register'
+  # configuration::ensure is the atomic register/seed twin (same schema/seed
+  # mutation power under a new name); deny it too so an agent cannot bypass the
+  # register deny above.
+  - '!configuration::ensure'
   - '!directory::pre-generate'
   - '!directory::on-functions-change'
   - '!directory::hint-preview'
@@ -124,15 +128,18 @@ rules:
   # change cannot inadvertently re-open the injection path.
   - '!storage::on-config-change'
   - '!database::on-config-change'
-  - '!editor::on-config-change'
+  - '!judge::on-config-change'
+  - '!judge-semif::on-config-change'
+  - '!judge-semif::on-judge-config-change'
+  - '!judge-decider::on-config-change'
+  - '!judge-decider::on-judge-config-change'
+  - '!judge-laya::on-config-change'
+  - '!judge-laya::on-judge-config-change'
+  - '!directory::on-judge-config-change'
+  - '!judge-typesafe::on-config-change'
   - '!session::on-config-change'
   # (coder::on-config-change retired: the code surface folded into the shell
   # worker, whose shell::on-config-change is already denied above.)
-  # editor's file-change observer: a harness post-trigger hook target, fired
-  # engine-side (bypassing this gate) after a shell/coder write. Calling it
-  # directly would let an agent forge an `editor::changed` event — path, cause
-  # and patch are taken from the payload — into every subscribed console tab.
-  - '!editor::on-file-change'
   # harness: deny-by-default for in-run agents (harness.md § Agent exposure).
   # send/run let a model start arbitrary turns outside any max_turns guard;
   # turn is the internal loop step; function::trigger/resolve forge call ids
@@ -157,6 +164,12 @@ rules:
   - '!kanban::on-config-change'
   - '!kanban::ticket::delete'
   - '!kanban::ticket::restore'
+  # stories: console asset delivery, the /ui-files content function and the
+  # configuration reload sink are engine plumbing. Reads, comparisons,
+  # renders and line builds are allowlisted below.
+  - '!stories::ui-content'
+  - '!stories::ui-file'
+  - '!stories::on-config-change'
   # eval: durable orchestration internals are trigger/queue targets only.
   # Starting, cancelling, and deleting evaluations remain approval-gated by
   # the default. Status/result are read-only and the exact evaluator is pure.
@@ -169,6 +182,20 @@ rules:
   - '!security-scan::execute'
   - '!security-scan::on-turn-completed'
   - '!security-scan::on-schedule'
+  # sentinel: trigger and queue targets only. The console drives grouping
+  # through the read surface; the investigation session gets the four
+  # functions below and nothing else.
+  - '!sentinel::ingest'
+  - '!sentinel::on-trace-activity'
+  - '!sentinel::on-log'
+  - '!sentinel::on-turn-completed'
+  - '!sentinel::on-schedule'
+  - '!sentinel::on-config-change'
+  - '!sentinel::ui-content'
+  - 'sentinel::evidence::get'
+  - 'sentinel::trace::get'
+  - 'sentinel::logs::list'
+  - 'sentinel::diagnosis::record'
   # The shaping hop for a trigger bound to an ordinary function: the engine
   # fires it, agents never call it. Agents name their real target in
   # engine::register_trigger's `function_id`, which is checked against the
@@ -232,6 +259,11 @@ rules:
   # github: internal hot-reload hook — invoked only by the engine's
   # configuration:updated trigger dispatch, never agent-callable.
   - '!github::on-config-change'
+  # Webhook ingress, queue consumers, and tunnel lifecycle callbacks are
+  # trusted engine plumbing, never direct agent calls. Starting/stopping a
+  # watch or acquiring/releasing a public tunnel stays approval-gated.
+  - '!github::webhooks::*'
+  - '!quick-tunnel::on-config-change'
   # openwiki: internal trigger targets. cron::refresh-due is the per-wiki cron
   # target; on-turn-started/completed are harness trigger-bridge targets whose
   # direct call could forge generation progress. The hot-reload hook follows
@@ -264,13 +296,12 @@ rules:
   - '!code-runner::on-config-change'
 
   # The guidance-knob configuration entries (web/workflow/fp/
-  # sandbox-code-runner/scrapling): internal hot-reload hooks, same pattern
+  # sandbox-code-runner): internal hot-reload hooks, same pattern
   # as the other on-config-change denies.
   - '!web::on-config-change'
   - '!workflow::on-config-change'
   - '!fp::on-config-change'
   - '!sandbox-code-runner::on-config-change'
-  - '!scrapling::on-config-change'
 
   # opengantry: bus-internal registration hooks; agents must not call them.
   # gantry::verify and gantry::middleware stay at needs_approval (not listed).
@@ -344,27 +375,21 @@ rules:
   - kanban::comment::list
   - kanban::activity::list
   - kanban::agent::list
-  # editor: the reading half. editor::diff is pure (two strings in, a patch
-  # out — no I/O at all); the rest read through the shell worker, so they reach
-  # nothing shell::fs::read and shell::exec could not already reach.
-  # editor::open is allowed even though it records a buffer: recording what an
-  # agent read is the point of the shared workspace, and gating the only read
-  # path would make the worker unusable.
-  # Left at the needs_approval default on purpose: editor::save, ::create,
-  # ::delete and ::move write to disk; the editor::git write surface
-  # (commit / sync / stash / undo-commit) rewrites history or talks to a
-  # remote; editor::workspace::open repoints the workspace for every surface
-  # at once; editor::buffers::close discards someone else's tab.
-  - editor::diff
-  - editor::open
-  - editor::tree
-  - editor::find
-  - editor::search
-  - editor::workspace::get
-  - editor::buffers::list
-  - editor::git::status
-  - editor::git::hunks
-  - editor::git::show
+  # stories: reads, comparisons and renders, plus building a line (git plus
+  # the project's own Vite inside data/stories) — see stories/skills/.
+  - stories::workspaces
+  - stories::lines
+  - stories::components::list
+  - stories::components::get
+  - stories::tree::fs
+  - stories::builds::create
+  - stories::builds::get
+  - stories::compare
+  - stories::diff::file
+  - stories::screenshot
+  - stories::tree
+  - stories::diff
+  - stories::history
   # vscode: the Console page starts a loopback-only VS Code Server per folder.
   # Stop/delete remain approval-gated; the config-reload callback and the
   # Console asset function are bus-internal.
@@ -442,6 +467,11 @@ rules:
   - github::pr::view
   - github::pr::diff
   - github::pr::checks
+  - github::pr::watch-status
+  # Read-only webhook prerequisite checklist; enable-http-listener and
+  # enable-webhooks change configuration and keep needs_approval.
+  - github::setup::webhooks-status
+  - quick-tunnel::status
   - github::issue::list
   - github::issue::view
   - github::repo::view

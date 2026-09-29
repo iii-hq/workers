@@ -2,8 +2,22 @@ import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
-vi.mock('../HoverTip', () => ({
-  HoverTip: ({ children }: { children: ReactNode }) => children,
+// The real components are supplied by the Console import map, not Node.
+vi.mock('@iii-dev/console-ui', () => ({
+  Tooltip: ({ children }: { children: ReactNode }) => children,
+  Toolbar: ({ children, end }: { children: ReactNode; end?: ReactNode }) => (
+    <div role="toolbar">
+      {children}
+      {end}
+    </div>
+  ),
+  StatusBar: ({ children, end }: { children: ReactNode; end?: ReactNode }) => (
+    <div>
+      {children}
+      {end}
+    </div>
+  ),
+  useConfirm: () => ({ confirm: async () => true, dialog: null }),
 }))
 
 import {

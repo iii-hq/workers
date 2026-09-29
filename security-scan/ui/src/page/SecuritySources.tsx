@@ -1,6 +1,6 @@
-import { Badge, Button } from '@iii-dev/console-ui'
+import { Badge, Button, Eyebrow, SegmentedControl, StatusPanel, uiClasses } from '@iii-dev/console-ui'
+import { RefreshCw } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { RefreshIcon } from './icons'
 import {
   alertMatchLabel,
   buildSecuritySourceSummary,
@@ -121,12 +121,12 @@ function GitHubAlertsTable({ alerts }: { alerts: GitHubAlertView[] }) {
         <caption>Open alerts in the collected GitHub security snapshot</caption>
         <thead>
           <tr>
-            <th scope="col">severity</th>
-            <th scope="col">source</th>
-            <th scope="col">alert</th>
-            <th scope="col">lifecycle</th>
-            <th scope="col">scope</th>
-            <th scope="col">match</th>
+            <th scope="col" className={uiClasses.eyebrow}>severity</th>
+            <th scope="col" className={uiClasses.eyebrow}>source</th>
+            <th scope="col" className={uiClasses.eyebrow}>alert</th>
+            <th scope="col" className={uiClasses.eyebrow}>lifecycle</th>
+            <th scope="col" className={uiClasses.eyebrow}>scope</th>
+            <th scope="col" className={uiClasses.eyebrow}>match</th>
           </tr>
         </thead>
         <tbody>
@@ -165,11 +165,11 @@ function GitHubAlertsList({ alerts }: { alerts: GitHubAlertView[] }) {
           </strong>
           <dl>
             <div>
-              <dt>scope</dt>
+              <dt className={uiClasses.eyebrow}>scope</dt>
               <dd>{alert.scope}</dd>
             </div>
             <div>
-              <dt>match</dt>
+              <dt className={uiClasses.eyebrow}>match</dt>
               <dd>{alert.match}</dd>
             </div>
           </dl>
@@ -208,15 +208,15 @@ function GitHubSourceCard({
       </p>
       <dl>
         <div>
-          <dt>scope</dt>
+          <dt className={uiClasses.eyebrow}>scope</dt>
           <dd>{reconciliationScopeLabel(source.scope, targetSha)}</dd>
         </div>
         <div>
-          <dt>snapshot time</dt>
+          <dt className={uiClasses.eyebrow}>snapshot time</dt>
           <dd>{source.collected_at == null ? 'Not collected' : formatTimestamp(source.collected_at)}</dd>
         </div>
         <div>
-          <dt>source health</dt>
+          <dt className={uiClasses.eyebrow}>source health</dt>
           <dd>
             {source.health.status.replace('_', ' ')}
             {healthTool}
@@ -225,7 +225,7 @@ function GitHubSourceCard({
         {source.source === 'code_scanning' ? (
           <>
             <div>
-              <dt>analysis commit</dt>
+              <dt className={uiClasses.eyebrow}>analysis commit</dt>
               <dd>
                 {healthCommit ? (
                   <>
@@ -246,7 +246,7 @@ function GitHubSourceCard({
               </dd>
             </div>
             <div>
-              <dt>analysis observed</dt>
+              <dt className={uiClasses.eyebrow}>analysis observed</dt>
               <dd>
                 {source.health.observed_at ? (
                   <time dateTime={source.health.observed_at}>{source.health.observed_at}</time>
@@ -345,21 +345,21 @@ export function SecuritySources({
       : `${stateCopy.label}. ${visibleAlerts.length} alerts shown.`
 
   return (
-    <section className="security-scan-ui-sources" aria-labelledby="security-scan-sources-title">
+    <section className={`${uiClasses.panel} security-scan-ui-sources`} aria-labelledby="security-scan-sources-title">
       <div className="security-scan-ui-sources-head">
         <div>
-          <span className="security-scan-ui-section-label">source reconciliation</span>
+          <Eyebrow>source reconciliation</Eyebrow>
           <h3 id="security-scan-sources-title">Security sources</h3>
         </div>
         <Button variant="ghost" size="sm" onClick={onRefresh} disabled={loading || refreshing || loadingMore}>
-          <RefreshIcon size={16} className={refreshing ? 'is-spinning' : undefined} />
+          <RefreshCw size={16} className={refreshing ? uiClasses.spin : undefined} />
           {refreshing ? 'refreshing' : stateCopy.action}
         </Button>
       </div>
 
       <div className="security-scan-ui-source-counts">
         <section>
-          <span>Harness review</span>
+          <Eyebrow>Harness review</Eyebrow>
           <strong>{summary.harness}</strong>
           <p>
             {reconciliation?.harness.status === 'not_available'
@@ -372,7 +372,7 @@ export function SecuritySources({
           </p>
         </section>
         <section data-state={collectionState}>
-          <span>GitHub snapshot</span>
+          <Eyebrow>GitHub snapshot</Eyebrow>
           <strong>{summary.github}</strong>
           <p>
             {stateCopy.label}. {stateCopy.detail}
@@ -384,15 +384,15 @@ export function SecuritySources({
 
       <dl className="security-scan-ui-source-facts">
         <div>
-          <dt>latest GitHub snapshot</dt>
+          <dt className={uiClasses.eyebrow}>latest GitHub snapshot</dt>
           <dd>{latestSnapshotAt == null ? 'Not collected' : formatTimestamp(latestSnapshotAt)}</dd>
         </div>
         <div>
-          <dt>source completeness</dt>
+          <dt className={uiClasses.eyebrow}>source completeness</dt>
           <dd>{stateCopy.label}</dd>
         </div>
         <div>
-          <dt>cross-source matching</dt>
+          <dt className={uiClasses.eyebrow}>cross-source matching</dt>
           <dd>{matchingLabel}</dd>
         </div>
       </dl>
@@ -410,7 +410,15 @@ export function SecuritySources({
         </div>
       ) : null}
 
-      {error ? <p className="security-scan-ui-source-error">{error}</p> : null}
+      {error ? (
+        <StatusPanel
+          variant="alert"
+          role="alert"
+          className="security-scan-ui-source-error"
+          headline="failed to load security sources"
+          detail={error}
+        />
+      ) : null}
 
       <div className="security-scan-ui-source-alerts-head">
         <div>
@@ -419,18 +427,17 @@ export function SecuritySources({
             {count.count == null ? 'count unavailable' : `${sourceCountLabel(count.count, count.complete)} open`}
           </span>
         </div>
-        <fieldset className="security-scan-ui-source-filters" aria-label="Filter GitHub alerts by source">
-          {GITHUB_ALERT_FILTERS.map((option) => (
-            <button
-              type="button"
-              key={option.id}
-              aria-pressed={filter === option.id}
-              onClick={() => setFilter(option.id as GitHubAlertFilter)}
-            >
-              {option.label}
-            </button>
-          ))}
-        </fieldset>
+        <SegmentedControl<GitHubAlertFilter>
+          variant="radio"
+          value={filter}
+          onChange={setFilter}
+          options={GITHUB_ALERT_FILTERS.map((option) => ({
+            value: option.id as GitHubAlertFilter,
+            label: option.label,
+            icon: false,
+          }))}
+          aria-label="Filter GitHub alerts by source"
+        />
       </div>
 
       {visibleAlerts.length === 0 ? (

@@ -16,7 +16,9 @@ import {
   DialogTitle,
   type Host,
   Select,
+  StatusPanel,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useEffect, useState } from 'react'
 import { parseExecResult } from './exec'
 import type { ExecRecord } from './records'
@@ -123,16 +125,14 @@ export function RunCodeDialog({
         )
         onClose()
       })
-      .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : String(err)),
-      )
+      .catch((err: unknown) => setError(errorMessage(err)))
       .finally(() => setBusy(false))
   }
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && !busy && onClose()}>
       {!open ? null : (
-        <DialogContent className="cr-page-dialog cr-page-run-dialog">
+        <DialogContent className="cr-page-dialog">
           <DialogTitle>run code</DialogTitle>
           <DialogDescription>
             sandbox-code-runner::run — a fresh throwaway sandbox unless you
@@ -185,9 +185,7 @@ export function RunCodeDialog({
             />
           </div>
           {error ? (
-            <div className="cr-page-inline-error" role="alert">
-              {error}
-            </div>
+            <StatusPanel variant="alert" role="alert" headline={error} />
           ) : null}
           <div className="cr-page-dialog-actions">
             <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>

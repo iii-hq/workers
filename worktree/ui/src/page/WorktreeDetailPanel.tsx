@@ -1,7 +1,7 @@
-import { StatusDot } from '@iii-dev/console-ui'
+import { Eyebrow, IconButton, StatusDot } from '@iii-dev/console-ui'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { Check, ChevronLeft, Copy, GitMerge, X } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useCallback, useState } from 'react'
-import { Check, ChevronLeft, Copy, GitMerge, X } from './icons'
 import {
   cn,
   integrationLabel,
@@ -18,8 +18,7 @@ import {
  * when the list call computed one. Wide layouts show it as a fixed-width
  * sidebar column beside the graph with the standard ✕; the narrow
  * drill-in flow fills the pane with it and offers ← back instead (both
- * deselect — the graph owns the selection). Ported from the console page;
- * Tailwind utilities became scoped `wt-ui-*` classes (see styles.css).
+ * deselect — the graph owns the selection).
  */
 
 interface WorktreeDetailPanelProps {
@@ -32,7 +31,7 @@ interface WorktreeDetailPanelProps {
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="wt-ui-row">
-      <span className="wt-ui-row-label">{label}</span>
+      <Eyebrow>{label}</Eyebrow>
       <span className="wt-ui-row-value">{children}</span>
     </div>
   )
@@ -48,20 +47,8 @@ export function WorktreeDetailPanel({
   narrow = false,
   onClose,
 }: WorktreeDetailPanelProps) {
-  const [copied, setCopied] = useState(false)
-  const copyPath = useCallback(() => {
-    if (typeof navigator === 'undefined' || !navigator.clipboard) return
-    navigator.clipboard.writeText(worktree.path).then(
-      () => {
-        setCopied(true)
-        window.setTimeout(() => setCopied(false), 1200)
-      },
-      () => {
-        // Clipboard write can reject (permissions, insecure context); the
-        // copy affordance simply no-ops rather than surfacing an error.
-      },
-    )
-  }, [worktree.path])
+  const { state: copyState, copy: copyPath } = useCopyFlash(worktree.path, 1200)
+  const copied = copyState === 'copied'
 
   const tone = lifecycleTone(worktree.lifecycle)
   const { dirty, ahead } = worktreeIndicators(worktree.status)
@@ -76,29 +63,17 @@ export function WorktreeDetailPanel({
     >
       <header className="wt-ui-detail-head">
         {narrow ? (
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="back to the graph"
-            title="back to the graph"
-            className="wt-ui-back"
-          >
+          <IconButton label="back to the graph" onClick={onClose}>
             <ChevronLeft size={16} aria-hidden />
-          </button>
+          </IconButton>
         ) : null}
         <span className="wt-ui-detail-title" title={worktree.branch}>
           {worktree.branch}
         </span>
         {!narrow ? (
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="close details"
-            title="close details"
-            className="wt-ui-detail-close"
-          >
+          <IconButton label="close details" onClick={onClose}>
             <X size={16} aria-hidden />
-          </button>
+          </IconButton>
         ) : null}
       </header>
 
@@ -113,11 +88,10 @@ export function WorktreeDetailPanel({
         <Row label="path">
           <span className="wt-ui-path">
             <span className="wt-ui-path-val">{worktree.path}</span>
-            <button
-              type="button"
+            <IconButton
+              label="copy worktree path"
+              tooltip={copied ? 'copied' : 'copy path'}
               onClick={copyPath}
-              aria-label="copy worktree path"
-              title={copied ? 'copied' : 'copy path'}
               className="wt-ui-copy"
             >
               {copied ? (
@@ -125,7 +99,7 @@ export function WorktreeDetailPanel({
               ) : (
                 <Copy size={16} aria-hidden />
               )}
-            </button>
+            </IconButton>
           </span>
         </Row>
         <Row label="repository">{worktree.repo_path}</Row>
@@ -161,7 +135,7 @@ export function WorktreeDetailPanel({
 
         {status ? (
           <div className="wt-ui-status">
-            <span className="wt-ui-row-label">status</span>
+            <Eyebrow>status</Eyebrow>
             <dl className="wt-ui-status-grid">
               <StatusEntry
                 label="clean"

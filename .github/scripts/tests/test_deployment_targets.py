@@ -8,6 +8,7 @@ import deployment_targets
 def test_binary_default_is_the_complete_release_matrix() -> None:
     assert deployment_targets.normalize_targets(None, deploy="binary") == [
         "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
         "x86_64-unknown-linux-gnu",
         "x86_64-unknown-linux-musl",
         "aarch64-unknown-linux-gnu",
@@ -30,7 +31,7 @@ def test_retired_triples_are_rejected_rather_than_ignored() -> None:
     Silently narrowing the published set would ship fewer binaries than the
     entry promises, and nothing downstream would notice.
     """
-    for retired in ("i686-pc-windows-msvc", "x86_64-apple-darwin"):
+    for retired in ("i686-pc-windows-msvc",):
         with pytest.raises(ValueError, match="unknown release target"):
             deployment_targets.normalize_targets(retired)
 
@@ -40,9 +41,11 @@ def test_every_msvc_triple_is_accepted_and_ordered_last() -> None:
         "aarch64-pc-windows-msvc",
         "x86_64-unknown-linux-gnu",
         "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
         "x86_64-pc-windows-msvc",
     ]) == [
         "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
         "x86_64-unknown-linux-gnu",
         "x86_64-pc-windows-msvc",
         "aarch64-pc-windows-msvc",
@@ -53,3 +56,12 @@ def test_explicit_subsets_are_canonicalized_and_non_binary_has_one_build() -> No
     assert deployment_targets.normalize_targets(
         ["aarch64-unknown-linux-gnu", "aarch64-apple-darwin"], deploy="binary"
     ) == ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu"]
+
+
+def test_intel_macos_uses_an_explicit_native_hosted_runner() -> None:
+    target = "x86_64-apple-darwin"
+    assert deployment_targets.normalize_targets(target) == [target]
+    assert deployment_targets.TARGET_RUNNERS[target] == "macos-15-intel"
+    assert deployment_targets.TARGET_LARGER_RUNNERS[target] == "macos-15-intel"
+    assert set(deployment_targets.DEFAULT_TARGETS) == set(deployment_targets.TARGET_RUNNERS)
+    assert set(deployment_targets.DEFAULT_TARGETS) == set(deployment_targets.TARGET_LARGER_RUNNERS)

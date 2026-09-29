@@ -1,5 +1,6 @@
 import type { MenuOption } from '@lexical/react/LexicalTypeaheadMenuPlugin'
 import { type ReactNode, useLayoutEffect, useRef } from 'react'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { cn } from '@/lib/utils'
 
 /**
@@ -114,9 +115,9 @@ export function FlipMenu<T extends MenuOption>({
       className="flex w-[300px] max-h-[min(50vh,352px)] flex-col overflow-hidden rounded-md bg-panel-raised shadow-floating"
     >
       {header ? (
-        <div className="shrink-0 bg-paper-2 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">
+        <Eyebrow as="div" size="lg" className="shrink-0 bg-paper-2 px-3 py-1">
           {header}
-        </div>
+        </Eyebrow>
       ) : null}
       {/* div+role over ul/li because keyboard navigation is driven by Lexical's
           typeahead controller (arrow keys, enter, escape), not by Tab. The
@@ -149,7 +150,7 @@ export function FlipMenu<T extends MenuOption>({
         })}
       </div>
       {footer ? (
-        <div className="shrink-0 border-t border-rule-2 px-3 py-1 font-mono text-[10px] text-ink-ghost">
+        <div className="shrink-0 border-t border-rule-2 px-3 py-1 font-mono text-[11px] text-ink-ghost">
           {footer}
         </div>
       ) : null}

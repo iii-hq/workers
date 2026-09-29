@@ -2,7 +2,7 @@
    renders. Ported from the console's sandbox/ErrorView.tsx when the shell
    function-trigger family moved into this worker's injected UI. */
 
-import { Badge } from '@iii-dev/console-ui'
+import { Badge, Eyebrow, TerminalStream } from '@iii-dev/console-ui'
 import { z } from 'zod'
 import type {
   DispatchDenial,
@@ -10,7 +10,6 @@ import type {
   ErrorWire,
   InvocationError,
 } from './error-display'
-import { AnsiOutput } from './terminal'
 
 /** S200 exec-timeout errors smuggle the buffered streams in `fix`. */
 const execStreamsSchema = z.object({
@@ -32,18 +31,14 @@ function WireErrorView({ error }: { error: ErrorWire }) {
   const streams = execStreamsFromFix(error)
   return (
     <div className="shui-card">
-      <div className="shui-slab warn">
-        <div className="shui-row gap8">
+      <div className="shui-slab" data-tone="warn">
+        <div className="shui-row">
           <Badge variant="warn">{error.code}</Badge>
-          <span className="shui-err-label">{error.type}</span>
-          {retryable ? (
-            <Badge variant="accent" className="shui-pill-flat">
-              retryable
-            </Badge>
-          ) : null}
+          <Eyebrow>{error.type}</Eyebrow>
+          {retryable ? <Badge variant="accent">retryable</Badge> : null}
         </div>
 
-        <pre className="shui-pre out">
+        <pre className="shui-pre">
           <code>{error.message}</code>
         </pre>
 
@@ -64,7 +59,8 @@ function WireErrorView({ error }: { error: ErrorWire }) {
 
         {streams ? (
           <div className="shui-streams">
-            <AnsiOutput stdout={streams.stdout} stderr={streams.stderr} />
+            <TerminalStream label="stdout" text={streams.stdout} ansi />
+            <TerminalStream label="stderr" text={streams.stderr} tone="err" ansi />
           </div>
         ) : null}
       </div>
@@ -81,20 +77,19 @@ function InvocationErrorView({ error }: { error: InvocationError }) {
 
   return (
     <div className="shui-card">
-      <div className="shui-slab warn">
-        <div className="shui-row gap8">
+      <div className="shui-slab" data-tone="warn">
+        <div className="shui-row">
           <Badge variant="warn">{badge}</Badge>
-          <span className="shui-err-label">{error.title}</span>
+          <Eyebrow>{error.title}</Eyebrow>
         </div>
 
         {error.functionId ? (
           <div className="shui-note plain">
-            <span className="shui-err-label">function</span>{' '}
-            <code className="t-ink">{error.functionId}</code>
+            <Eyebrow>function</Eyebrow> <code className="t-ink">{error.functionId}</code>
           </div>
         ) : null}
 
-        <pre className="shui-pre out">
+        <pre className="shui-pre">
           <code>{error.message}</code>
         </pre>
 
@@ -116,16 +111,15 @@ function DispatchDeniedView({ denial }: { denial: DispatchDenial }) {
   const fn = denial.functionId
   return (
     <div className="shui-card">
-      <div className="shui-slab warn">
-        <div className="shui-row gap8">
+      <div className="shui-slab" data-tone="warn">
+        <div className="shui-row">
           <Badge variant="warn">denied</Badge>
-          <span className="shui-err-label">dispatch policy</span>
+          <Eyebrow>dispatch policy</Eyebrow>
         </div>
 
         {fn ? (
           <div className="shui-note plain">
-            <span className="shui-err-label">blocked</span>{' '}
-            <code className="t-ink">{fn}</code>
+            <Eyebrow>blocked</Eyebrow> <code className="t-ink">{fn}</code>
           </div>
         ) : null}
 

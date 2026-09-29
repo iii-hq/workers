@@ -8,7 +8,8 @@ This worker used to be called `shell`. Only its identity changed, so nothing tha
 
 - worker name, binary, Cargo package and registry entry: `shell` → `ide` (`iii trigger compose::add worker=ide`, `npx skills add iii-hq/workers --skill ide`)
 - source directory: `shell/` → `ide/`; dependents pin `ide` in their `iii.worker.yaml`
-- unchanged on purpose: the `shell::*` function ids (`shell::exec`, `shell::fs::*`, `shell::pty::*`, …), `coder::*`, the `shell::changed` trigger type, the `shell` configuration entry, the `data/shell/` data directory and the `#/ext/shell` console page
+- renamed with it (2026-09-17): the console page id, the UI asset scope (`ide/page.js`, `data-iii-ui="ide"`) and the configuration entry are `ide`; a stored `shell` configuration value is carried over to `ide` once on boot
+- unchanged on purpose: the `shell::*` function ids (`shell::exec`, `shell::fs::*`, `shell::pty::*`, …), `coder::*`, the `shell::changed` trigger type and the `data/shell/` data directory
 
 ## Install
 
@@ -153,7 +154,7 @@ The example runs on the host. The same payload retargets at a microVM with `targ
 | `shell::list` | Enumerate current jobs as lightweight summaries; argv, stdout, and stderr are redacted. |
 | `shell::kill` | Terminate a running background job by `job_id`. Sandbox jobs cannot be hard-killed: the record flips to `killed` but the in-VM process runs until its `timeout_ms` (or `sandbox::stop`). |
 | `shell::config-status` | *(operator/automation only — not agent-callable)* Report the last hot-reload outcome: `last_outcome` (`applied`/`rejected`), `last_error`, and `rejected_reloads` (count since boot). A rejected outcome or non-zero count means a stored config was refused and shell is enforcing an older policy than the central store. Takes no arguments. |
-| `shell::fs::ls` | List a directory's entries with structured metadata. |
+| `shell::fs::ls` | List a directory's entries with structured metadata, sorted by name and paginated: `page` (1-based, default 1), `page_size` (default 500, max 2000); the response carries `total`, `page`, `page_size`, `has_more`. |
 | `shell::fs::stat` | Read one path's metadata (size, mode, symlink flag). |
 | `shell::fs::mkdir` | Create a directory, optionally with missing parents. Returns `{ created, path, already_existed }`. |
 | `shell::fs::rm` | Remove a file or directory, optionally recursive. Returns `{ removed, path, was_present }`. |
@@ -293,7 +294,7 @@ They differ in ergonomics, and each operation has a twin:
 | create | `coder::create-file` — batched inline text | `shell::fs::write` — inline or streamed, modes |
 | edit | `coder::update-file` — line ops + regex, post-apply echoes | `shell::fs::sed` — regex replace across files |
 | delete | `coder::delete-file` — batched, per-entry errors | `shell::fs::rm` — single path |
-| list | `coder::list-folder` / `coder::tree` — paginated, noise-filtered | `shell::fs::ls` — single directory |
+| list | `coder::list-folder` / `coder::tree` — paginated, noise-filtered | `shell::fs::ls` — single directory, paginated |
 | move | `coder::move` — batched, cross-root copy+delete | `shell::fs::mv` — single path |
 | search | `coder::search` — budgeted, context lines | `shell::fs::grep` — raw matches |
 | introspect | `coder::info` — mode, roots, caps, globs | `shell::fs::stat` — one path's metadata |

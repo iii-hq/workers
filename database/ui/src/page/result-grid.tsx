@@ -12,15 +12,17 @@
  * swaps Tailwind utilities for the page's scoped classes + design tokens.
  */
 
+import { Button, StatusBar } from '@iii-dev/console-ui'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { ArrowDown, ArrowUp, Check, KeyRound, Link2, X } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
-import { useCopyFeedback } from './cells'
+import { cellText } from '../lib/grid-cursor'
 import {
   type ColumnMeta,
   type ForeignKeyRef,
   type TableSort,
   typeCategory,
 } from './db-data'
-import { ArrowDown, ArrowUp, Check, KeyRound, Link2, X } from './icons'
 import type { GridKeyboard } from './useGridKeyboard'
 import type { TableViewControls } from './useTableView'
 
@@ -132,6 +134,37 @@ function CellValue({
   return <span className={cls}>{text}</span>
 }
 
+/** A cell that copies itself on click; the flash is per cell, so each owns
+ *  a hook. Null copies as the literal `NULL`, the way the inspector does. */
+function CopyCell({
+  value,
+  children,
+}: {
+  value: unknown
+  children: React.ReactNode
+}) {
+  const { state, copy } = useCopyFlash(
+    value == null ? 'NULL' : cellText(value),
+    1200,
+  )
+  return (
+    <button
+      type="button"
+      className="copycell"
+      onClick={() => copy()}
+      title="click to copy"
+    >
+      {state === 'copied' ? (
+        <span className="db-copied">
+          <Check size={16} /> Copied
+        </span>
+      ) : (
+        children
+      )}
+    </button>
+  )
+}
+
 function nextSort(current: TableSort | null | undefined, column: string) {
   if (!current || current.column !== column) {
     return { column, dir: 'asc' as const }
@@ -164,7 +197,6 @@ export function ResultGrid({
     startX: number
     startWidth: number
   } | null>(null)
-  const { copied, copy } = useCopyFeedback()
   const allCols = resolveColumns(columns, rows)
   const cols = useMemo(() => {
     if (!view) return allCols
@@ -404,16 +436,10 @@ export function ResultGrid({
                   {cols.map((col, c) => {
                     const category = typeCategory(col.type)
                     const isNum = category === 'numeric'
-                    const key = `${i}:${col.name}`
                     const value = row[col.name]
-                    const content =
-                      copied === key ? (
-                        <span className="db-copied">
-                          <Check size={16} /> Copied
-                        </span>
-                      ) : (
-                        <CellValue value={value} category={category} />
-                      )
+                    const content = (
+                      <CellValue value={value} category={category} />
+                    )
                     const fk = foreignKeys?.[col.name]
                     const focused = keyboard?.isFocused(i, c) ?? false
                     const cls = [isNum ? 'num' : '', focused ? 'cursor' : '']
@@ -464,14 +490,7 @@ export function ResultGrid({
                         ) : onRowClick || keyboard ? (
                           content
                         ) : (
-                          <button
-                            type="button"
-                            className="copycell"
-                            onClick={() => copy(key, value)}
-                            title="click to copy"
-                          >
-                            {content}
-                          </button>
+                          <CopyCell value={value}>{content}</CopyCell>
                         )}
                       </td>
                     )
@@ -483,29 +502,29 @@ export function ResultGrid({
         </table>
       </div>
       {hideFooter ? null : (
-        <div className="db-grid-foot">
+        <StatusBar className="db-grid-foot">
           <span>
             {total} row{total === 1 ? '' : 's'}
           </span>
           {clamped ? (
-            <button
-              type="button"
-              className="db-linkish"
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => setExpanded(true)}
             >
               show all · {rows.length} rows
-            </button>
+            </Button>
           ) : null}
           {expanded && rows.length > CLAMP_ROWS ? (
-            <button
-              type="button"
-              className="db-linkish"
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => setExpanded(false)}
             >
               collapse
-            </button>
+            </Button>
           ) : null}
-        </div>
+        </StatusBar>
       )}
     </div>
   )

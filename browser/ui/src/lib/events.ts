@@ -1,11 +1,11 @@
 import type { Host } from '@iii-dev/console-ui'
-import { useEffect, useId, useRef, useState } from 'react'
-import { BROWSER_LIFECYCLE_TRIGGERS } from './browser'
+import { useEffect, useId, useRef } from 'react'
 
 /**
- * Browser-local bindings to the browser worker's custom trigger types
- * (lifecycle, per-tab console/network/frame events), on the injected-UI
- * `host` surface. Each binding
+ * Browser-local bindings to the browser worker's per-tab trigger types
+ * (console/network/frame/handoff events) on the injected-UI `host` surface;
+ * the session-list lifecycle feed goes through the shared `useWorkerLive`
+ * (see page/useBrowserSessionsLive). Each binding
  * is `host.iii.on(fnId)` plus `host.iii.registerTrigger` targeting
  * `<fnId>::<browserId>` (the SDK registers the handler under the same
  * namespaced id, so they match). The handler base ids carry the `iii::`
@@ -16,105 +16,32 @@ import { BROWSER_LIFECYCLE_TRIGGERS } from './browser'
  * injected UI's subscriptions die and revive with the page script.
  */
 
-const LIFECYCLE_FN = 'iii::browser-ui::lifecycle'
-
-export interface UseBrowserLifecycleEventsOptions {
-  host: Host
-  /** Only subscribe while the page is live. */
-  enabled: boolean
-  onEvent: () => void
-}
-
-export interface BrowserLifecycleSubscription {
-  /**
-   * True once all three trigger bindings registered. While false (worker
-   * absent, SDK failure) callers fall back to polling.
-   */
-  bound: boolean
-}
-
-/**
- * Page-scoped feed of the session lifecycle trigger types
- * (session-started / session-stopped / navigated), for surfaces that re-read
- * the session list on any change.
- */
-export function useBrowserLifecycleEvents(
-  opts: UseBrowserLifecycleEventsOptions,
-): BrowserLifecycleSubscription {
-  const { host, enabled } = opts
-  const onEventRef = useRef(opts.onEvent)
-  onEventRef.current = opts.onEvent
-
-  const instanceId = useId().replace(/[^a-zA-Z0-9]/g, '')
-  const [bound, setBound] = useState(false)
-
-  useEffect(() => {
-    if (!enabled) {
-      setBound(false)
-      return
-    }
-    const offs: Array<() => void> = []
-    let registered = 0
-    for (const triggerType of BROWSER_LIFECYCLE_TRIGGERS) {
-      const suffix = triggerType.replace(/[^a-zA-Z0-9]/g, '-')
-      const localFnId = `${LIFECYCLE_FN}::${suffix}::${instanceId}`
-      try {
-        offs.push(
-          host.iii.on(localFnId, () => {
-            onEventRef.current()
-          }),
-        )
-        offs.push(
-          host.iii.registerTrigger({
-            type: triggerType,
-            function_id: `${localFnId}::${host.iii.browserId}`,
-            config: {},
-          }),
-        )
-        registered += 1
-      } catch {
-        // Worker absent or trigger type unregistered; drop the binding.
-      }
-    }
-    setBound(registered === BROWSER_LIFECYCLE_TRIGGERS.length)
-
-    return () => {
-      setBound(false)
-      for (const off of offs) off()
-    }
-  }, [host, enabled, instanceId])
-
-  return { bound }
-}
-
-export interface UseBrowserSessionEventOptions {
+export interface UseBrowserEventOptions {
   host: Host
   enabled: boolean
-  /** Trigger type to bind (e.g. `browser::console-event`). */
+  /** Trigger type to bind (e.g. `browser::session-started`). */
   triggerType: string
-  /** Session the binding filters to (worker-side `session_id` filter). */
-  sessionId: string | null
   /** Base id for this binding's browser-local handler. */
   fnId: string
+  /** Session to filter to (worker-side `session_id` filter); omit for every session. */
+  sessionId?: string | null
   onEvent: (payload: unknown) => void
 }
 
 /**
- * One session-filtered binding to a browser trigger type (console-event,
- * network-event, or picked). Rebinds when the session changes and
- * unregisters on unmount.
+ * One binding to a browser trigger type, optionally filtered to a session.
+ * Rebinds when the session changes and unregisters on unmount.
  */
-export function useBrowserSessionEvent(
-  opts: UseBrowserSessionEventOptions,
-): void {
-  const { host, enabled, triggerType, sessionId, fnId } = opts
+export function useBrowserEvent(opts: UseBrowserEventOptions): void {
+  const { host, enabled, triggerType, fnId } = opts
+  const sessionId = opts.sessionId ?? null
   const onEventRef = useRef(opts.onEvent)
   onEventRef.current = opts.onEvent
 
   const instanceId = useId().replace(/[^a-zA-Z0-9]/g, '')
 
   useEffect(() => {
-    if (!enabled || !sessionId) return
+    if (!enabled) return
     const offs: Array<() => void> = []
     const localFnId = `${fnId}::${instanceId}`
     try {
@@ -127,7 +54,7 @@ export function useBrowserSessionEvent(
         host.iii.registerTrigger({
           type: triggerType,
           function_id: `${localFnId}::${host.iii.browserId}`,
-          config: { session_id: sessionId },
+          config: sessionId ? { session_id: sessionId } : {},
         }),
       )
     } catch {
@@ -138,4 +65,19 @@ export function useBrowserSessionEvent(
       for (const off of offs) off()
     }
   }, [host, enabled, triggerType, sessionId, fnId, instanceId])
+}
+
+export interface UseBrowserSessionEventOptions extends UseBrowserEventOptions {
+  /** Session the binding filters to (worker-side `session_id` filter). */
+  sessionId: string | null
+}
+
+/**
+ * One session-filtered binding to a browser trigger type (console-event,
+ * network-event, or picked). Nothing is bound without a session.
+ */
+export function useBrowserSessionEvent(
+  opts: UseBrowserSessionEventOptions,
+): void {
+  useBrowserEvent({ ...opts, enabled: opts.enabled && !!opts.sessionId })
 }

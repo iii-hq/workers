@@ -721,6 +721,7 @@ export function TraceTimeline({
               RULER_FRACTIONS.map((f) => (
                 <div
                   key={f}
+                  /* diagram micro: ruler tick labels */
                   className={cn(
                     'absolute bottom-0.5 font-mono text-[10px] text-ink-ghost tabular-nums whitespace-nowrap',
                     f === 1 ? '-translate-x-full pr-1' : 'pl-1',
@@ -847,7 +848,8 @@ export function TraceTimeline({
                       {spillLabel && (
                         <span
                           aria-hidden
-                          className="timeline-glide pointer-events-none absolute overflow-hidden font-mono text-[10px] leading-none lowercase whitespace-nowrap text-ellipsis text-ink-faint"
+                          /* diagram micro: bar spill label */
+                          className="timeline-glide pointer-events-none absolute overflow-hidden font-mono text-[10px] leading-none whitespace-nowrap text-ellipsis text-ink-faint"
                           style={{
                             left: spillLeft,
                             top: top + BAR_HEIGHT / 2 - 5,

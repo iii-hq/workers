@@ -1,3 +1,4 @@
+import { formatRelative } from '@iii-dev/console-ui/format'
 import type { ExtensionIii } from '@iii-dev/console-ui'
 import { z } from 'zod'
 
@@ -78,6 +79,7 @@ const doctorIssueSchema = z.object({
 })
 const doctorSchema = z.object({
   ok: z.boolean().optional(),
+  engine: z.string().optional(),
   chromium_path: z.string().nullable().optional(),
   chromium_version: z.string().nullable().optional(),
   headless_default: z.boolean().optional(),
@@ -364,16 +366,12 @@ export function browserSessionIdFromCall(
   )
 }
 
-/** Human-readable message from anything a bus call can reject with: Error
- * instances, or the engine's plain `{ code, message }` error objects (which
- * String() would render as [object Object]). */
-export function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message
-  if (typeof err === 'object' && err !== null) {
-    const msg = (err as { message?: unknown }).message
-    if (typeof msg === 'string' && msg.length > 0) return msg
-  }
-  return String(err)
+export { errorMessage } from '@iii-dev/console-ui/format'
+
+/** `3m ago` / `just now` for a unix-seconds or millisecond timestamp. */
+export function formatAgo(input: number): string {
+  const rel = formatRelative(input)
+  return rel === '' ? '—' : rel === 'just now' ? rel : `${rel} ago`
 }
 
 /** 24-hour clock for a console/network entry timestamp. Shared by the live
@@ -454,11 +452,14 @@ export async function listBrowserSessions(
 
 export async function startBrowserSession(
   iii: ExtensionIii,
-  options: { url?: string; incognito?: boolean } = {},
+  options: { url?: string; incognito?: boolean; preview?: boolean } = {},
 ): Promise<BrowserSessionStart | null> {
   const res = await iii.trigger<unknown>(BROWSER_SESSIONS_START_FUNCTION_ID, {
     ...(options.url ? { url: options.url } : {}),
     ...(options.incognito ? { incognito: true } : {}),
+    // A tab a surface opens on purpose (the page's new-tab button, "Open
+    // in browser") is shown by that surface: no console pops a preview.
+    ...(options.preview === false ? { preview: false } : {}),
   })
   const parsed = sessionStartSchema.safeParse(res)
   return parsed.success ? parsed.data : null
@@ -615,18 +616,24 @@ export type BrowserFrame = z.infer<typeof frameSchema>
 export async function startBrowserScreencast(
   iii: ExtensionIii,
   sessionId: string,
+  /** A corner thumbnail: streams, but never blocks a pane's auto-fit. */
+  preview = false,
 ): Promise<void> {
   await iii.trigger(BROWSER_SCREENCAST_START_FUNCTION_ID, {
     session_id: sessionId,
+    ...(preview ? { preview: true } : {}),
   })
 }
 
 export async function stopBrowserScreencast(
   iii: ExtensionIii,
   sessionId: string,
+  /** A corner thumbnail: streams, but never blocks a pane's auto-fit. */
+  preview = false,
 ): Promise<void> {
   await iii.trigger(BROWSER_SCREENCAST_STOP_FUNCTION_ID, {
     session_id: sessionId,
+    ...(preview ? { preview: true } : {}),
   })
 }
 

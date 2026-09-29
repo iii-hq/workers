@@ -47,7 +47,7 @@ import {
   ShieldCheck,
   Square,
   X,
-} from './icons'
+} from 'lucide-react'
 import { Topology } from './Topology'
 import type { TopologyInput } from './topology-layout'
 
@@ -1269,7 +1269,7 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
               {unavailable ? 'daemon unreachable' : refreshing ? 'refreshing' : 'live'}
             </span>
             <Button variant="ghost" size="sm" disabled={refreshing} onClick={() => void refresh()}>
-              <RefreshCw className={refreshing ? 'cu-spin' : undefined} />
+              <RefreshCw className={refreshing ? uiClasses.spin : undefined} />
               refresh
             </Button>
           </>

@@ -1,0 +1,503 @@
+{
+  "description": "Read one investigation and every diagnosis it recorded, newest first.",
+  "function_id": "sentinel::investigations::get",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "investigation_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "investigation_id"
+    ],
+    "title": "InvestigationGetRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "ConfidenceV1": {
+        "enum": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "type": "string"
+      },
+      "DiagnosisCategoryV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "bug",
+              "configuration",
+              "dependency",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Real, but it went away on its own: a timeout, a restart, a race.",
+            "enum": [
+              "transient"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The failure is the designed behaviour of the code.",
+            "enum": [
+              "expected"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "DiagnosisEvidenceV1": {
+        "additionalProperties": false,
+        "description": "One thing the agent is pointing at, and why it matters.",
+        "properties": {
+          "excerpt": {
+            "description": "At most 400 characters of the thing itself.",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/EvidenceKindV1"
+          },
+          "line": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "Relative to the repository root, for `code`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "span_id": {
+            "description": "The span this points at, for `trace`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "why": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "excerpt",
+          "kind",
+          "why"
+        ],
+        "type": "object"
+      },
+      "DiagnosisRecordV1": {
+        "additionalProperties": false,
+        "description": "A recorded diagnosis with its provenance.",
+        "properties": {
+          "created_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "diagnosis": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/DiagnosisV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "investigation_id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "raw_result": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/definitions/DiagnosisSourceV1"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid": {
+            "description": "False when the stored payload no longer parses as a `DiagnosisV1` — the raw text is kept so nothing is lost silently.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "created_ms",
+          "group_id",
+          "id",
+          "investigation_id",
+          "model",
+          "session_id",
+          "source",
+          "valid"
+        ],
+        "type": "object"
+      },
+      "DiagnosisSourceV1": {
+        "oneOf": [
+          {
+            "description": "Recorded while the automatic first pass was running.",
+            "enum": [
+              "first_pass"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Recorded later, in the conversation.",
+            "enum": [
+              "conversation"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "DiagnosisV1": {
+        "additionalProperties": false,
+        "description": "What an investigation concluded. Written by the agent, never by this worker, and kept verbatim: a later version supersedes it without erasing it, so the same failure diagnosed twice can be compared.",
+        "properties": {
+          "category": {
+            "$ref": "#/definitions/DiagnosisCategoryV1"
+          },
+          "confidence": {
+            "$ref": "#/definitions/ConfidenceV1"
+          },
+          "missing_evidence": {
+            "description": "What would have raised the confidence. An honest `low` with this filled in is a better answer than a guess.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "proposed_fix": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ProposedFixV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "related_groups": {
+            "description": "Groups the agent believes share this cause. A suggestion the console shows; nothing is merged on the strength of it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reproduction": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "root_cause": {
+            "$ref": "#/definitions/RootCauseV1"
+          },
+          "summary": {
+            "description": "One to three sentences, written for a person.",
+            "type": "string"
+          },
+          "version_note": {
+            "description": "Drift between the checkout that was read and the version that failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "category",
+          "confidence",
+          "root_cause",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "EvidenceKindV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "trace",
+              "log"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A place in the repository, as a path relative to its root.",
+            "enum": [
+              "code"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InvestigationModeV1": {
+        "description": "How an investigation was opened.",
+        "oneOf": [
+          {
+            "description": "A first pass runs automatically, then the conversation continues.",
+            "enum": [
+              "assisted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The session is created with the evidence and nothing runs until a person speaks.",
+            "enum": [
+              "chat"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InvestigationStatusV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass is in flight.",
+            "enum": [
+              "running"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass ended.",
+            "enum": [
+              "completed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A chat-mode session: no first pass ever ran, the conversation is the investigation.",
+            "enum": [
+              "open"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InvestigationSummaryV1": {
+        "additionalProperties": false,
+        "properties": {
+          "checkout_ref": {
+            "description": "The commit the mapped checkout was on when the pass started.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "created_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "duration_ms": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_ms": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "first_pass_turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "investigated_version": {
+            "description": "The worker version the investigated occurrence ran on.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/definitions/InvestigationModeV1"
+          },
+          "model": {
+            "type": "string"
+          },
+          "occurrence_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "description": "The harness session. The console opens this beside the page.",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/InvestigationStatusV1"
+          },
+          "turns": {
+            "description": "Observed after the fact, and informative only: this worker imposes no ceiling on an investigation.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "created_ms",
+          "group_id",
+          "id",
+          "mode",
+          "model",
+          "occurrence_id",
+          "session_id",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ProposedFixV1": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "risk": {
+            "$ref": "#/definitions/RiskV1"
+          },
+          "steps": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "description",
+          "files",
+          "risk",
+          "steps"
+        ],
+        "type": "object"
+      },
+      "RiskV1": {
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "type": "string"
+      },
+      "RootCauseV1": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/definitions/DiagnosisEvidenceV1"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "description",
+          "evidence"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "diagnoses": {
+        "description": "Newest first.",
+        "items": {
+          "$ref": "#/definitions/DiagnosisRecordV1"
+        },
+        "type": "array"
+      },
+      "investigation": {
+        "$ref": "#/definitions/InvestigationSummaryV1"
+      }
+    },
+    "required": [
+      "diagnoses",
+      "investigation"
+    ],
+    "title": "InvestigationGetResponseV1",
+    "type": "object"
+  }
+}

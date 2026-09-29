@@ -69,6 +69,9 @@ Worker-side environment variables:
 | Variable | Default | Meaning |
 |---|---|---|
 | `PROVIDER_ANTHROPIC_CACHE` | enabled | `0`/`false` disables automatic prompt-cache markers |
+| `PROVIDER_ANTHROPIC_CACHE_TTL` | `1h` | TTL of the shared-prefix markers on the sectioned path; `5m` restores the default cache |
+| `PROVIDER_ANTHROPIC_PREFIX_MISMATCH` | `drop_block` | `thinking.block_binding.prefix_mismatch_behavior` sent (with the `thinking-binding-controls-2026-08-01` beta) on every thinking request: `drop_block` drops a replayed thinking block whose prefix was edited, `error` returns the 400 instead, `off` (also `0`/`false`/`none`) sends neither the field nor the beta (for gateways that reject it). Case-insensitive; any other value logs one warning and uses `drop_block`. **On accounts created before 2026-08-31, sending the field is what turns enforcement on**: after a prefix edit, replayed thinking blocks that sit after the edited element and were minted before the edit (every such block, for a `system`/`tools` edit), which still reached the model without the field, are now dropped on every later request; blocks before the edited element and blocks minted after the edit survive; `off` restores the old behaviour. Dropped blocks become one `anthropic dropped replayed thinking blocks: […]` warning on the message and a worker-log `warn` with the session id and model when the list arrives (aborted and errored responses included; grep the reason, e.g. `prefix_binding_mismatch`) |
+| `PROVIDER_ANTHROPIC_CAPTURE_DIR` | unset | Debug only, absolute path (a relative one logs one warning and captures nothing): append every request that has a session id to `<dir>/<session id>.jsonl` (bytes outside `[a-z0-9.-]`, `_` and uppercase included, written as `_xx` hex; the body plus `anthropic-beta`; auth headers are never written; on Unix the dir it creates is `0700` and each file `0600`). **The files hold user content, tool output, and images**: keep them out of the repo and delete them after use |
 | `III_WS_URL` | `ws://127.0.0.1:49134` | engine WebSocket to attach to when `--url` is not set |
 
 The binary also takes the standard worker CLI flags: `--url` (engine
@@ -78,17 +81,37 @@ from the `llm-router` configuration entry).
 
 Prompt caching needs no setup: markers go on the system prompt, the tools
 tail, and the last stable assistant turn whenever the prefix is big enough
-to be worth a cache write.
+to be worth a cache write. When the router forwards `system_sections`, the
+`system` field becomes one text block per section and the marker moves to the
+block flagged `cache_boundary` (the frozen agent-profile prefix) whatever its
+size — Anthropic applies its per-model token minimum over the whole prefix,
+tools included, and silently skips a short one — so the per-session tail
+after it no longer invalidates the shared entry. At most two system blocks are marked, keeping
+the total at Anthropic's four. On that sectioned path the boundary block (and
+the tools marker ahead of it) use the 1-hour cache (`ttl: "1h"`, 2x base on
+the one write, reads unchanged) so a profile stays warm across sessions up to
+an hour apart; the per-turn messages anchor keeps the 5-minute default, which
+also satisfies the longer-before-shorter TTL rule. `PROVIDER_ANTHROPIC_CACHE_TTL=5m`
+goes back to 5 minutes everywhere.
 
 ## Models
 
-The catalog slice is live `GET /v1/models` merged with a curated capability
-snapshot — context windows, output ceilings, thinking budgets, pricing
-(USD per MTok). Live ids the snapshot doesn't know get conservative
-defaults; curated aliases the API doesn't enumerate are kept, so the catalog
-has no cold hole before first discovery. The snapshot lives in
-[`src/curated.rs`](src/curated.rs) — update it against models.dev when
-Anthropic ships new models; discovery only supplies bare ids.
+The catalog slice is **live** `GET /v1/models`: model ids, display names,
+context windows, output ceilings, and the capability flags (adaptive
+thinking, `xhigh` effort, vision) all come from the API on every refresh, so
+a newly shipped model (Opus 5.5, Sonnet 5, Fable 5.1, …) appears in the
+picker as soon as the API lists it — no code or SDK change required. Rows the
+API marks as thinking-capable but *not* adaptive-capable (the pre-4.6
+generation) are dropped because this provider only implements adaptive
+thinking; the haiku family is the exception and stays with thinking gated off.
+
+The API does not publish pricing, so that is the one hand-maintained table:
+[`src/curated.rs`](src/curated.rs), USD per MTok keyed by base model id
+(date suffixes stripped). A model missing there still routes and shows up;
+it only loses cost enrichment, and the harness refuses `max_cost_usd`
+budgets on it. Update the table against
+[platform.claude.com/docs/en/about-claude/pricing](https://platform.claude.com/docs/en/about-claude/pricing)
+when Anthropic ships or reprices a model.
 
 ## Notes
 

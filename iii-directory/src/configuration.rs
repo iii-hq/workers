@@ -23,7 +23,7 @@ use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
-use crate::config::{SharedConfig, SkillsConfig, Topology};
+use crate::config::{FunctionSearchMode, SharedConfig, SkillsConfig, Topology};
 use crate::functions::registry::RegistryCache;
 use crate::functions::skills::RegisteredWorkersCache;
 
@@ -69,6 +69,9 @@ pub struct SharedState {
     /// Live `directory::pre-generate` hook binding, reconciled with the
     /// `inject_hint` knob on every reload.
     pub hint_binding: crate::hook::HintBindingState,
+    pub search: crate::functions::search::Deps,
+    /// Keep each reload's config snapshot and semantic activation together.
+    apply_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SharedState {
@@ -79,6 +82,7 @@ impl SharedState {
         registered_cache: Arc<RegisteredWorkersCache>,
         boot_topology: Topology,
         hint_binding: crate::hook::HintBindingState,
+        search: crate::functions::search::Deps,
     ) -> Self {
         Self {
             config,
@@ -87,13 +91,18 @@ impl SharedState {
             registered_cache,
             boot_topology,
             hint_binding,
+            search,
+            apply_lock: Arc::default(),
         }
     }
 }
 
-/// Register the `iii-directory` configuration schema with the configuration
-/// worker. When `seed` is present, its value is installed as `initial_value`.
-/// Otherwise, built-in defaults are seeded only when no stored value exists.
+/// Register the `iii-directory` configuration schema. The candidate
+/// `initial_value` (the `--config` seed, else built-in defaults) is forwarded
+/// unconditionally to `configuration::ensure`, which installs it atomically
+/// ONLY against an absent/null entry — a stored value (console Settings,
+/// `configuration::set`) is preserved without a client-side
+/// read-then-register race.
 pub async fn register_config(iii: &IIIClient, seed: Option<&SkillsConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": config_id(),
@@ -101,18 +110,28 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&SkillsConfig>) -> Re
         "description": "Skills and agent-skills folders, workers-registry URL, download timeouts, \
                         skill-visibility filters, and the function-search knobs \
                         (inject_hint, hint_min_workers, registry_search, function_search_mode, \
-                        function_search_model_path) for the \
+                        function_search_model_path, function_search_judge_timeout_ms, \
+                        function_search_judge_min_relevance, \
+                        function_search_judge_side_lane_min_relevance, \
+                        function_search_judge_question, \
+                        function_search_judge_choice_min_probability) for the \
                         iii-directory worker.",
         "schema": SkillsConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
-    if let Some(seed) = seed {
-        payload["initial_value"] = seed.to_json();
-    } else if should_seed_default_value(iii).await? {
-        payload["initial_value"] = SkillsConfig::default().to_json();
-    }
-    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
-    Ok(())
+    // The candidate (seed, else the built-in default) is forwarded
+    // unconditionally: `configuration::ensure` installs it atomically ONLY
+    // against an absent/null entry, so a stored operator/Compose override is
+    // preserved without a client-side read-then-register race.
+    payload["initial_value"] = initial_value(seed);
+    ensure_configuration(iii, payload).await
+}
+
+/// The `initial_value` candidate for `configuration::ensure`: the `--config`
+/// seed, else the built-in defaults. Always forwarded; the engine installs it
+/// only when nothing is stored yet, so runtime edits survive atomically.
+fn initial_value(seed: Option<&SkillsConfig>) -> Value {
+    seed.map_or_else(|| SkillsConfig::default().to_json(), SkillsConfig::to_json)
 }
 
 /// Read the live `iii-directory` configuration (env-expanded by the
@@ -126,12 +145,12 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<SkillsConfig, String> {
     SkillsConfig::from_json(&value)
 }
 
-async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
-    match try_get_config_value(iii).await? {
-        None => Ok(true),
-        Some(value) if value.is_null() => Ok(true),
-        Some(_) => Ok(false),
-    }
+/// Initialize atomically when supported, otherwise use the warned legacy path.
+async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
+    iii_config_client::initialization::ensure_with(payload, |function, payload| {
+        trigger_configuration_with_retry(iii, function, payload)
+    })
+    .await
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
@@ -149,7 +168,7 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.contains("NOT_FOUND") => Ok(None),
+        Err(e) if is_not_found(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -158,10 +177,25 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
 /// shared cache TTL, and clear both caches so a repointed `registry_url`
 /// takes effect immediately and stale entries from the old registry drop.
 pub async fn apply_config(state: &SharedState, cfg: SkillsConfig) {
+    let _apply = state.apply_lock.lock().await;
+    let activate_semantic = cfg.function_search_mode != FunctionSearchMode::Lexical
+        && state.config.load().function_search_mode == FunctionSearchMode::Lexical;
+    state
+        .search
+        .semantic
+        .set_enabled(cfg.function_search_mode != FunctionSearchMode::Lexical);
     state
         .cache_ttl_ms
         .store(cfg.registry_cache_ttl_ms, Ordering::Relaxed);
     state.config.store(Arc::new(cfg));
+    if activate_semantic {
+        // A mode change may leave the catalog fingerprint unchanged. Rebuild
+        // explicitly instead of waiting for a functions-available event.
+        // Hold the catalog lock until rebuild records its desired fingerprint,
+        // so a newer refresh cannot be superseded by this snapshot.
+        let tools = state.search.catalog.read().await;
+        state.search.semantic.rebuild(tools.clone());
+    }
     state.registry_cache.clear().await;
     state.registered_cache.invalidate().await;
 }
@@ -239,9 +273,11 @@ async fn on_config_change(iii: &IIIClient, state: &SharedState) {
         return;
     }
     let inject_hint = cfg.inject_hint;
+    let model_path = cfg.resolved_function_search_model_path();
     crate::config::warn_if_search_mode_lacks_model(
         cfg.function_search_mode,
-        cfg.resolved_function_search_model_path()
+        model_path.is_some(),
+        model_path
             .as_deref()
             .is_some_and(crate::functions::search_semantic::bundle_complete),
     );
@@ -274,6 +310,10 @@ async fn trigger_configuration_with_retry(
             Ok(v) => return Ok(v),
             Err(e) => {
                 last_err = e.to_string();
+                if matches!(&e, iii_sdk::errors::Error::Remote { code, .. } if code == "function_not_found" || code == "NOT_FOUND")
+                {
+                    return Err(last_err);
+                }
                 if attempt < CONFIG_RETRIES {
                     tracing::warn!(
                         function_id,
@@ -289,4 +329,57 @@ async fn trigger_configuration_with_retry(
     Err(format!(
         "{function_id} failed after {CONFIG_RETRIES} attempts: {last_err}"
     ))
+}
+
+/// `true` only when the error carries the configuration worker's standalone
+/// `NOT_FOUND` entry code, identified by the outermost `remote error (<code>)` envelope code rather than a substring or token scan of the message, so
+/// a compound code such as `RESOURCE_NOT_FOUND`/`STATEMENT_NOT_FOUND` or the
+/// engine's lowercase missing-FUNCTION code `function_not_found` still
+/// propagates as a failure instead of being read as "nothing stored yet".
+fn is_not_found(error: &str) -> bool {
+    // Anchor on the SDK's own rendering instead of scanning the whole string:
+    // a remote failure prints as `remote error ({code}): {message}`, and this
+    // worker wraps a retried get as
+    // `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel
+    // exactly that one wrapper (never a foreign one or a different attempt
+    // count) and then require the NOT_FOUND envelope at the very start, so a
+    // NOT_FOUND code buried in an unrelated message, a nested envelope, or a
+    // different wrapper stays a real failure and propagates.
+    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
+    const _: () = assert!(CONFIG_RETRIES == 3);
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "NOT_FOUND"
+        || raw == "remote error (NOT_FOUND):"
+        || raw.starts_with("remote error (NOT_FOUND): ")
+}
+
+#[cfg(test)]
+mod tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/config-client/tests/support/is_not_found_cases.rs"
+    ));
+
+    /// The missing-entry classifier only seeds on the configuration worker's
+    /// standalone `NOT_FOUND` envelope; every unrelated failure or compound
+    /// code propagates instead of clobbering a stored value with a default.
+    #[test]
+    fn is_not_found_matches_only_the_envelope_code() {
+        assert_missing_entry_contract(super::is_not_found);
+    }
+
+    use super::*;
+
+    #[test]
+    fn candidate_initial_value_is_seed_else_default() {
+        let seed = SkillsConfig {
+            function_search_mode: FunctionSearchMode::Lexical,
+            ..SkillsConfig::default()
+        };
+        // The candidate is always the seed (else the built-in default); the
+        // engine's `configuration::ensure` decides seed-vs-preserve, not this.
+        assert_eq!(initial_value(Some(&seed)), seed.to_json());
+        assert_eq!(initial_value(None), SkillsConfig::default().to_json());
+    }
 }

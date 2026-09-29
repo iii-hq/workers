@@ -1,6 +1,6 @@
-import { Button, type Host, Input, Select } from '@iii-dev/console-ui'
+import { Button, Eyebrow, type Host, Input, Select, uiClasses } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useEffect, useMemo, useState } from 'react'
-import { errText } from './errors.js'
 import { FOLLOW_CHAT, modelPickerOptions, requestedModel, selectionIsStale } from './model-picker.js'
 import {
   type CatalogModel,
@@ -171,7 +171,7 @@ export function ScanRequestForm({
       setTargetSha('')
       onStarted(result.run_id)
     } catch (caught) {
-      setError(errText(caught))
+      setError(errorMessage(caught))
     } finally {
       setPending(false)
     }
@@ -186,10 +186,12 @@ export function ScanRequestForm({
       }}
     >
       <div className="security-scan-ui-filter-head">
-        <span>new scan</span>
+        <Eyebrow>new scan</Eyebrow>
       </div>
       <div className="security-scan-ui-filter">
-        <label htmlFor="security-scan-new-repository">repository</label>
+        <label htmlFor="security-scan-new-repository" className={uiClasses.eyebrow}>
+          repository
+        </label>
         {repositories.length > 0 ? (
           <Select
             value={repository || repositories[0]}
@@ -203,19 +205,19 @@ export function ScanRequestForm({
             value={repository}
             onChange={setRepository}
             placeholder="allowlisted repository id"
-            preserveCase
             spellCheck={false}
           />
         )}
       </div>
       <div className="security-scan-ui-filter">
-        <label htmlFor="security-scan-new-sha">commit SHA</label>
+        <label htmlFor="security-scan-new-sha" className={uiClasses.eyebrow}>
+          commit SHA
+        </label>
         <Input
           id="security-scan-new-sha"
           value={targetSha}
           onChange={setTargetSha}
           placeholder="blank = entire repo analysis"
-          preserveCase
           spellCheck={false}
         />
         <p className="security-scan-ui-new-run-hint">
@@ -225,7 +227,9 @@ export function ScanRequestForm({
         </p>
       </div>
       <div className="security-scan-ui-filter">
-        <span id="security-scan-new-mode-label">mode</span>
+        <span id="security-scan-new-mode-label" className={uiClasses.eyebrow}>
+          mode
+        </span>
         <Select
           value={mode}
           options={SCAN_MODE_OPTIONS}
@@ -234,7 +238,9 @@ export function ScanRequestForm({
         />
       </div>
       <div className="security-scan-ui-filter">
-        <span id="security-scan-new-model-label">analysis model</span>
+        <span id="security-scan-new-model-label" className={uiClasses.eyebrow}>
+          analysis model
+        </span>
         {catalog.length > 0 ? (
           <Select
             value={selectedModel}

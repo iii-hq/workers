@@ -4,23 +4,27 @@
  * This is the one fire path that does not go over the bus: an http trigger
  * fires when the http worker receives a request, so the honest test is an
  * actual request to the port that worker listens on. The base URL comes from
- * the worker's own configuration entry (`configuration::get id=iii-http`),
+ * the worker's own configuration entry, resolved via `http::configuration-id`,
  * never a guess, and the panel says plainly when it cannot be read.
  */
 
 import {
   Button,
   CodeEditor,
+  Eyebrow,
   type Host,
   Input,
   JsonHighlight,
   Select,
+  StatusPanel,
 } from '@iii-dev/console-ui'
+import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useState } from 'react'
-import { errorMessage, useResource } from './engine'
+import { useResource } from './engine'
 import { pretty } from './schema'
 import type { HttpBinding } from './trigger-kinds'
-import { Chip, ErrorNote, Note } from './widgets'
+import { Chip, CopyButton, ErrorNote, Note } from './widgets'
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'] as const
 const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH'])
@@ -40,22 +44,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * loaded from.
  */
 async function readEndpoint(host: Host): Promise<HttpEndpoint> {
-  // `http` is the current worker; `iii-http` is its deprecated predecessor.
-  // Whichever entry exists with a port wins, current name first.
-  let value: Record<string, unknown> | null = null
-  for (const id of ['http', 'iii-http']) {
-    try {
-      const entry = await host.iii.trigger('configuration::get', { id })
-      const candidate =
-        isRecord(entry) && isRecord(entry.value) ? entry.value : null
-      if (candidate && typeof candidate.port === 'number') {
-        value = candidate
-        break
-      }
-    } catch {
-      // Entry absent under this id; try the next.
-    }
-  }
+  const id = await resolveConfigurationId(host.iii, 'http')
+  const entry = await host.iii.trigger('configuration::get', { id })
+  const value = isRecord(entry) && isRecord(entry.value) ? entry.value : null
   if (!value) throw new Error('no http worker configuration with a port found')
   const port = value.port
   if (typeof port !== 'number') throw new Error('http config carries no port')
@@ -219,13 +210,7 @@ export function HttpTester({
       <div className="console-catalog-endpoint">
         <span className="method">{method}</span>
         <code>{url}</code>
-        <Button
-          variant="pill"
-          size="sm"
-          onClick={() => url && navigator.clipboard.writeText(url)}
-        >
-          copy
-        </Button>
+        <CopyButton value={url ?? ''} />
       </div>
 
       <div className="console-catalog-field-row">
@@ -241,7 +226,7 @@ export function HttpTester({
 
       {binding.params.length > 0 ? (
         <div className="console-catalog-fields">
-          <span className="console-catalog-field-label">Path parameters</span>
+          <Eyebrow className="console-catalog-field-label">Path parameters</Eyebrow>
           {binding.params.map((name) => (
             <div key={name} className="console-catalog-field-row">
               <label htmlFor={`param-${name}`} className="console-catalog-key">
@@ -262,7 +247,7 @@ export function HttpTester({
       ) : null}
 
       <div className="console-catalog-fields">
-        <span className="console-catalog-field-label">
+        <Eyebrow className="console-catalog-field-label">
           query parameters
           <Button
             variant="pill"
@@ -277,7 +262,7 @@ export function HttpTester({
           >
             add
           </Button>
-        </span>
+        </Eyebrow>
         {query.length === 0 ? (
           <span className="console-catalog-hint">None</span>
         ) : (
@@ -352,7 +337,7 @@ export function HttpTester({
       </div>
 
       {outcome?.error ? (
-        <div className="console-catalog-error">{outcome.error}</div>
+        <StatusPanel variant="alert" headline={outcome.error} />
       ) : null}
       {outcome?.location ? (
         <div className="console-catalog-field-row">

@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use crate::api;
 use crate::cli;
 use crate::configuration::ConfigCell;
+use crate::session_link;
 use crate::state::{list_sessions, load_session, mark_error};
 use types::{
     extract_create_prompt, ApiRequest, PrReviewStatusRequest, PrReviewTriggerRequest, RunRequest,
@@ -84,9 +85,10 @@ fn register_run(iii: &IIIClient, cell: &ConfigCell) {
         }))
         .description(
             "Run one Devin CLI turn and wait for the result. Accepts `prompt` or a `messages` \
-             array; streams raw CLI stdout onto devin::events, terminal AgentEvent frames onto \
-             agent::events, and returns {session_id, devin_session_id, url, result, stop_reason, \
-             is_error}.",
+             array; records the turn as a session-manager session (listed in the console, \
+             nested under `parent_session_id` when given), streams raw CLI stdout onto \
+             devin::events, terminal AgentEvent frames onto agent::events, and returns \
+             {session_id, devin_session_id, url, result, stop_reason, is_error}.",
         ),
     );
 }
@@ -125,6 +127,8 @@ fn register_start(iii: &IIIClient, cell: &ConfigCell) {
                         Err(e) => {
                             tracing::error!(session_id = %bg_id, error = %e, "devin::start task panicked");
                             mark_error(&bg_iii, &bg_id).await;
+                            session_link::mark_error(&bg_iii, &bg_id, "devin::start task panicked")
+                                .await;
                         }
                     }
                 });
@@ -137,8 +141,9 @@ fn register_start(iii: &IIIClient, cell: &ConfigCell) {
             "properties": { "session_id": { "type": "string" }, "started": { "type": "boolean" } },
         }))
         .description(
-            "Start a Devin CLI turn and return immediately; watch devin::events / agent::events \
-             (group_id = session_id) for progress and turn_end.",
+            "Start a Devin CLI turn and return immediately; follow the session-manager session \
+             (session::messages, session_id) or devin::events / agent::events (group_id = \
+             session_id) for progress and turn_end.",
         ),
     );
 }

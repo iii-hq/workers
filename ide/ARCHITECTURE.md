@@ -29,7 +29,7 @@ iii -c ./config.yaml
 
 The worker ships UI into any running console (SOP:
 `workers/docs/sops/injectable-console-ui.md`): the shell explorer page
-(`#/ext/shell` — files/git/search sidebar beside the console's shared Monaco
+(page `ide` — files/git/search sidebar beside the console's shared Monaco
 editor and `FileDiff`) and the `shell::*` function-trigger renderers (moved
 out of the console SPA; the console's `first-party/shell` family is gone).
 The explorer acts through the worker's own functions: `coder::tree/read-file/

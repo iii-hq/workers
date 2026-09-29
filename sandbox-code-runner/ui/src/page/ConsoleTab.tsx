@@ -12,9 +12,25 @@
  * sandbox stopped.
  */
 
-import { Button, type Host, Input } from '@iii-dev/console-ui'
+import {
+  AnsiText,
+  Badge,
+  Button,
+  Chip,
+  type Host,
+  Input,
+  StatusPanel,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TerminalStream,
+} from '@iii-dev/console-ui'
+import { errorMessage, formatDuration } from '@iii-dev/console-ui/format'
+import { ChevronRight } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { AnsiText } from '../sandbox-family/ansi'
 import {
   buildExecPayload,
   buildShellBgPayload,
@@ -28,8 +44,6 @@ import {
   SHELL_KILL_FN,
   SHELL_STATUS_FN,
 } from './exec'
-import { formatMs } from './format'
-import { ChevronIcon } from './icons'
 import { parsePsOutput, type PsProcess } from './ps'
 import type { ExecRecord, ExecRecords } from './records'
 import { isFunctionNotFound, type SandboxSummary } from './store'
@@ -81,9 +95,9 @@ function RecordCard({
         <code className="cr-page-record-cmd" title={record.cmd}>
           {record.cmd}
         </code>
-        <span className={`cr-page-exit-pill ${pill.tone}`}>{pill.label}</span>
+        <Badge variant={pill.tone}>{pill.label}</Badge>
         {record.duration_ms !== null ? (
-          <span className="cr-page-record-dur">{formatMs(record.duration_ms)}</span>
+          <span className="cr-page-record-dur">{formatDuration(record.duration_ms)}</span>
         ) : null}
         {copyCommand ? (
           <CopyButton
@@ -93,25 +107,19 @@ function RecordCard({
         ) : null}
       </header>
       <div className="cr-page-record-chips">
-        {record.source === 'probe' ? <span className="cr-page-chip">probe</span> : null}
-        {record.source === 'run' ? <span className="cr-page-chip">run code</span> : null}
-        {record.shell && !record.detached ? (
-          <span className="cr-page-chip">sh -c</span>
-        ) : null}
+        {record.source === 'probe' ? <Chip>probe</Chip> : null}
+        {record.source === 'run' ? <Chip>run code</Chip> : null}
+        {record.shell && !record.detached ? <Chip>sh -c</Chip> : null}
         {record.source === 'job' && record.job_id ? (
-          <span className="cr-page-chip" title={record.job_id}>
-            job {record.job_id.slice(0, 8)}…
-          </span>
+          <Chip title={record.job_id}>job {record.job_id.slice(0, 8)}…</Chip>
         ) : null}
         {record.job_state ? (
-          <span
-            className={`cr-page-chip${record.job_state === 'running' ? ' cr-page-chip-live' : ''}`}
-          >
+          <Chip tone={record.job_state === 'running' ? 'accent' : 'neutral'}>
             {record.job_state}
-          </span>
+          </Chip>
         ) : null}
         {record.detached && record.source !== 'job' ? (
-          <span className="cr-page-chip">setsid · detached</span>
+          <Chip>setsid · detached</Chip>
         ) : null}
         {jobLive ? (
           <span className="cr-page-job-actions">
@@ -134,38 +142,26 @@ function RecordCard({
           </span>
         ) : null}
         {record.workdir ? (
-          <span className="cr-page-chip" title={record.workdir}>
+          <Chip title={record.workdir} className="cr-page-chip-path">
             wd {record.workdir}
-          </span>
+          </Chip>
         ) : null}
         {record.timeout_ms !== undefined ? (
-          <span className="cr-page-chip">timeout {formatMs(record.timeout_ms)}</span>
+          <Chip>timeout {formatDuration(record.timeout_ms)}</Chip>
         ) : null}
         {record.env && Object.keys(record.env).length > 0 ? (
-          <span className="cr-page-chip">
-            {Object.keys(record.env).length} env
-          </span>
+          <Chip>{Object.keys(record.env).length} env</Chip>
         ) : null}
       </div>
       {record.error ? (
-        <div className="cr-page-inline-error">{record.error}</div>
+        <StatusPanel variant="alert" className="cr-page-record-error" headline={record.error} />
       ) : (
         <>
           {record.stdout ? (
-            <div className="cr-page-stream out">
-              <div className="cr-page-stream-label">stdout</div>
-              <pre className="cr-page-stream-body">
-                <AnsiText text={record.stdout} />
-              </pre>
-            </div>
+            <TerminalStream label="stdout" text={record.stdout} ansi className="cr-page-stream" />
           ) : null}
           {record.stderr ? (
-            <div className="cr-page-stream err">
-              <div className="cr-page-stream-label">stderr</div>
-              <pre className="cr-page-stream-body">
-                <AnsiText text={record.stderr} />
-              </pre>
-            </div>
+            <TerminalStream label="stderr" text={record.stderr} tone="err" ansi className="cr-page-stream" />
           ) : null}
           {!record.stdout && !record.stderr ? (
             <div className="cr-page-faint cr-page-no-output">no output</div>
@@ -222,9 +218,7 @@ function ProcessesSection({
     setError(null)
     setConfirmPid(null)
     runPs()
-      .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : String(err)),
-      )
+      .catch((err: unknown) => setError(errorMessage(err)))
       .finally(() => setBusy(false))
   }
 
@@ -235,9 +229,7 @@ function ProcessesSection({
     setConfirmPid(null)
     exec(['kill', '-TERM', String(pid)])
       .then(runPs)
-      .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : String(err)),
-      )
+      .catch((err: unknown) => setError(errorMessage(err)))
       .finally(() => setBusy(false))
   }
 
@@ -259,7 +251,7 @@ function ProcessesSection({
           onClick={() => onToggle(!open)}
           aria-expanded={open}
         >
-          <ChevronIcon className={open ? 'cr-page-chev open' : 'cr-page-chev'} aria-hidden />
+          <ChevronRight size={16} className={open ? 'cr-page-chev open' : 'cr-page-chev'} aria-hidden />
           processes
         </button>
         {open ? (
@@ -277,29 +269,27 @@ function ProcessesSection({
       {open ? (
         <>
           {error ? (
-            <div className="cr-page-inline-error" role="alert">
-              ps failed: {error}
-            </div>
+            <StatusPanel variant="alert" role="alert" headline="ps failed" detail={error} />
           ) : rows !== null ? (
             rows.length === 0 ? (
               <div className="cr-page-faint">no processes reported</div>
             ) : (
-              <table className="cr-page-ps-table">
-                <thead>
-                  <tr>
-                    <th>pid</th>
-                    <th>command</th>
-                    <th aria-label="actions" />
-                  </tr>
-                </thead>
-                <tbody>
+              <Table density="compact" className="cr-page-ps-table">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>pid</TableHead>
+                    <TableHead>command</TableHead>
+                    <TableHead aria-label="actions" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {rows.map((proc) => (
-                    <tr key={proc.pid}>
-                      <td className="cr-page-ps-pid">{proc.pid}</td>
-                      <td className="cr-page-ps-cmd">
+                    <TableRow key={proc.pid}>
+                      <TableCell className="cr-page-ps-pid">{proc.pid}</TableCell>
+                      <TableCell className="cr-page-ps-cmd">
                         <code title={proc.cmd}>{proc.cmd}</code>
-                      </td>
-                      <td className="cr-page-ps-act">
+                      </TableCell>
+                      <TableCell className="cr-page-ps-act">
                         {proc.pid === 1 ? (
                           // No kill for PID 1: it is the VM's init
                           // (`sleep infinity` in the preset images) —
@@ -341,11 +331,11 @@ function ProcessesSection({
                             kill
                           </button>
                         )}
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             )
           ) : raw !== null ? (
             // The header did not parse — show what ps actually said.
@@ -449,7 +439,7 @@ export function ConsoleTab({
           })
         })
         .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err)
+          const message = errorMessage(err)
           if (isFunctionNotFound(message)) {
             fellBack.current = true
             runDirectExec(base, payload, requested)
@@ -498,7 +488,7 @@ export function ConsoleTab({
           exit_code: null,
           timed_out: false,
           duration_ms: null,
-          error: err instanceof Error ? err.message : String(err),
+          error: errorMessage(err),
         })
       })
       .finally(() => setRunning(false))
@@ -520,7 +510,7 @@ export function ConsoleTab({
       })
       .catch((err: unknown) => {
         timeline.update(record.id, {
-          error: err instanceof Error ? err.message : String(err),
+          error: errorMessage(err),
         })
       })
   }
@@ -534,7 +524,7 @@ export function ConsoleTab({
       .then(() => patchJob(record))
       .catch((err: unknown) => {
         timeline.update(record.id, {
-          error: err instanceof Error ? err.message : String(err),
+          error: errorMessage(err),
         })
       })
   }
@@ -569,9 +559,11 @@ export function ConsoleTab({
   return (
     <div className="cr-page-console">
       {sandbox.stopped ? (
-        <div className="cr-page-banner warn" role="status">
-          sandbox ended — exec is gone; the timeline below is history.
-        </div>
+        <StatusPanel
+          variant="warn"
+          role="status"
+          headline="sandbox ended — exec is gone; the timeline below is history."
+        />
       ) : (
         <div className="cr-page-composer">
           <div className="cr-page-composer-line">
@@ -674,10 +666,12 @@ export function ConsoleTab({
             <span className="cr-page-faint">probes use 1 exec slot</span>
           </div>
           {slotsFull ? (
-            <div className="cr-page-banner warn" role="status">
-              all {EXEC_SLOTS} exec slots are busy — the composer re-enables
-              the moment one frees (fleet events keep this live).
-            </div>
+            <StatusPanel
+              variant="warn"
+              role="status"
+              headline={`all ${EXEC_SLOTS} exec slots are busy`}
+              detail="the composer re-enables the moment one frees (fleet events keep this live)."
+            />
           ) : null}
         </div>
       )}

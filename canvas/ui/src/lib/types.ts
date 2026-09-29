@@ -78,16 +78,3 @@ export const CANVAS_FUNCTION_IDS = [
 ] as const
 
 export type CanvasFunctionId = (typeof CANVAS_FUNCTION_IDS)[number]
-
-/**
- * A function result reaches the console wrapped by the harness as
- * `{ content: [...], details: <the real response> }`, not as the response
- * itself. The console has its own unwrap, but injected assets can only import
- * from `@iii-dev/console-ui`, so the same two-line rule lives here.
- */
-export function unwrapEnvelope(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
-  const obj = value as Record<string, unknown>
-  if (Array.isArray(obj.content) && 'details' in obj) return obj.details
-  return value
-}

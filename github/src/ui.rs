@@ -4,7 +4,7 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `github/page.js` (`console:script`) — the `#/ext/github` page: a live
+//! - `github/page.js` (`console:script`) — the `github` page: a live
 //!   ACTIVITY feed of what the agent does with the github worker. It binds a
 //!   tab-scoped `github::called` trigger (the type the worker registers in
 //!   `events.rs`) and renders each call — function id, arg echo, ok/error,

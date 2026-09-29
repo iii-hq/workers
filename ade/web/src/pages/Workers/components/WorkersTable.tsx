@@ -120,11 +120,11 @@ function WorkersTableBody({
   return (
     <div
       className={cn(
-        '-mx-4 -my-2 overflow-x-auto whitespace-nowrap sm:-mx-6 lg:-mx-8',
+        '-mx-4 -my-2 overflow-x-auto whitespace-nowrap @2xl:-mx-6 @5xl:-mx-8',
         className,
       )}
     >
-      <div className="inline-block min-w-full px-4 py-2 align-middle sm:px-6 lg:px-8">
+      <div className="inline-block min-w-full px-4 py-2 align-middle @2xl:px-6 @5xl:px-8">
         <table className="w-full">
           <thead>
             <tr className="border-b border-rule-2">
@@ -271,7 +271,7 @@ function WorkerTableRow({
       size="sm"
       disabled={!row.stopEnabled || stopping || !onStop}
       onClick={() => onStop?.(row.name)}
-      className="text-alert border-alert/40 hover:bg-alert/10 hover:text-alert disabled:opacity-40"
+      className="text-alert hover:bg-alert-muted hover:text-alert disabled:opacity-40"
     >
       {stopping ? 'stopping…' : 'stop'}
     </Button>
@@ -298,9 +298,7 @@ function WorkerTableRow({
         tone={STATUS_STYLE[row.status].tone}
         pulse={row.status === 'connected' || row.status === 'starting'}
       />
-      <span className="font-mono text-[13px] text-ink lowercase">
-        {row.name}
-      </span>
+      <span className="font-mono text-[13px] text-ink">{row.name}</span>
       {pendingAction ? (
         <Badge
           variant={STATUS_STYLE[row.status].badge}
@@ -346,7 +344,7 @@ function WorkerTableRow({
             </p>
           ) : null}
         </td>
-        <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint lowercase">
+        <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint">
           {formatCell(row.runtime)}
         </td>
         <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint tabular-nums">
@@ -363,7 +361,7 @@ function WorkerTableRow({
             {MANAGEMENT_LABEL[row.managementKind]}
           </Badge>
         </td>
-        <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint lowercase">
+        <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint">
           {formatCell(row.tag)}
         </td>
         <td className="py-2.5 text-right">
@@ -388,7 +386,7 @@ function WorkerTableRow({
 
 function WorkersTableSkeleton({ className }: { className?: string }) {
   return (
-    <div className={cn('space-y-2 px-4 sm:px-6 lg:px-8', className)}>
+    <div className={cn('space-y-2 px-4 @2xl:px-6 @5xl:px-8', className)}>
       {[0, 1, 2, 3].map((i) => (
         <Skeleton key={i} className="h-10 w-full" />
       ))}

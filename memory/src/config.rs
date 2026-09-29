@@ -30,14 +30,18 @@ pub struct WorkerConfig {
     #[serde(default = "default_bank")]
     pub default_bank: String,
 
-    /// Inject the bank's markdown rules into the system prompt on every
-    /// turn (`harness::hook::pre-generate`).
+    /// Inject the bank's markdown rules into the system prompt
+    /// (`harness::hook::pre-generate`). The section is rendered on a
+    /// session's first step and sent verbatim after that; a later change
+    /// (this flag included) reaches running sessions as one appended update
+    /// message, never as a system-prompt edit.
     #[serde(default = "default_true")]
     pub inject_rules: bool,
 
     /// Recall memories against the latest user message and append them as
-    /// one bounded message on every turn. Appending (rather than mutating
-    /// the system prompt) keeps the provider prompt cache warm.
+    /// one bounded message on each turn's first step (the persisted copy
+    /// rides its later steps). Appending (rather than mutating the system
+    /// prompt) keeps the provider prompt cache warm.
     #[serde(default = "default_true")]
     pub inject_memories: bool,
 

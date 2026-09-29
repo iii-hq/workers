@@ -107,7 +107,7 @@ The worker follows the same base surface as the grok, codex, claude-code, and op
 
 To list all Devin cloud sessions org-wide, use `devin::api {method: GET, path: sessions}` (v1) or `{path: organizations/{org_id}/sessions}` (v3); `devin::sessions::list` is scoped to the runs this worker made, matching the family convention.
 
-`devin::run` / `devin::start` accept either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`), the same input contract as the claude-code and grok workers, so the acp worker can drive it with `--brain-fn devin::run`.
+`devin::run` / `devin::start` accept either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`), the same input contract as the claude-code and grok workers, so the acp worker can drive it with `--brain-fn devin::run`. Pass `parent_session_id` to nest the run under the session that delegated it in the console, the same link a harness sub-agent carries.
 
 Because the CLI agent runs locally with the iii runtime context, a plain question makes Devin discover and operate your engine on its own, no commands spelled out:
 
@@ -133,7 +133,9 @@ Or ask it to map the whole engine by capability area, and it groups what it find
 
 ### Streams and observability
 
-`devin::run` mirrors every stdout line from the CLI verbatim onto `devin::events` (group_id = session_id) and emits a terminal AgentEvent frame onto `agent::events`, so the iii console renders a Devin CLI turn like any other agent worker. The cloud functions return their JSON directly and do not stream; poll `devin::session::get` for progress, or bind a `cron` trigger to poll on a schedule instead of looping.
+`devin::run` records every turn as a `session-manager` session under its `session_id`, writing the same records a harness turn does: `session::ensure` (title from the prompt and `{ agent: "devin" }` metadata; a run with `parent_session_id` carries it and nests under that parent, a run without one is created as an `automation` session rather than a human chat), the user prompt, an assistant entry streamed with the CLI output as it prints, a `custom` `error` entry when the run fails, and the session status (`working`, then `done`, `done` + `stopped` after `devin::stop`, or `error` with the cause). The run therefore appears in the console's session list and transcript like a harness session, and can be replayed after it ends with `session::messages`. The `--print` CLI output is plain text, so tool calls appear inside that text, not as separate function rows.
+
+It also mirrors every stdout line verbatim onto `devin::events` (group_id = session_id) and emits a terminal AgentEvent frame onto `agent::events`. Recording is on by default and switched off with `session_recording: false` (config, or per turn). Both the session and the streams are best-effort: when `session-manager` or the stream worker (`stream::set`) is not installed, the worker logs that once, skips those writes, re-checks once a minute, and the run itself is unaffected. The cloud functions return their JSON directly and do not stream; poll `devin::session::get` for progress, or bind a `cron` trigger to poll on a schedule instead of looping.
 
 Every `devin::*` call is a traced invocation on the engine with no extra instrumentation: the input payload, output, duration, and ok/error land in the console's trace explorer, including the `iii trigger` calls a `devin::run` agent makes on its own.
 
@@ -153,15 +155,20 @@ cli_extra_args: ["--permission-mode", "dangerous"]  # before `--print --`; dange
 events_stream: agent::events                  # AgentEvent frames
 raw_events_stream: devin::events              # verbatim CLI stdout
 iii_context: true                             # prepend iii runtime context to a CLI prompt
+session_recording: true                       # record each CLI turn as a console session
 ```
 
 `api_key` and `org_id` are referenced as `${DEVIN_API_KEY}` and `${DEVIN_ORG_ID}` and expanded from the environment on load (an unset var becomes empty), so neither secret lives in the repo. An empty `api_key` disables the API surface while the CLI surface still works if the local `devin` binary is authenticated. `org_id` selects the API shape: empty uses the flat v1 session paths (personal tokens), set uses the v3 org-scoped paths (service keys) and becomes the required path segment for pr-review.
 
 `iii_context` defaults on: a `devin::run` turn is prepended with the iii runtime context so the local agent discovers and calls engine functions through the `iii` CLI (turn it off per turn with `iii_context: false`). `cli_extra_args` defaults to `--permission-mode dangerous`, which is the only devin CLI mode that auto-approves command execution, so a headless run can actually run `iii trigger` against the engine; the local agent then auto-approves all tools, so drop to `accept-edits` or `auto` to restrict it.
 
+`session_recording` defaults on: each `devin::run` / `devin::start` turn is recorded as a `session-manager` session (see Streams and observability). Set it to `false` to keep Devin runs out of the console entirely, or override one turn with the `session_recording` payload field.
+
 ## Dependent workers
 
 - `configuration` (required): holds the API key, base URL, and stream names; hot-reloads changes.
+- `session-manager` (optional): records each `devin::run` turn as a console session and transcript. Without it runs still work, unrecorded.
+- `iii-stream` (optional): carries the `devin::events` / `agent::events` frames. Without it the frames are skipped.
 - `cron` (optional): schedule `devin::session::create` or poll `devin::session::get` without a polling loop.
 - `harness` (optional): fan multiple Devin runs out as sub-agents with `harness::spawn`.
 
@@ -174,6 +181,7 @@ iii_context: true                             # prepend iii runtime context to a
 | Devin | iii |
 | --- | --- |
 | one local `devin --print -- <prompt>` turn (SWE-1.6 agent) | `devin::run` invocation |
+| one `devin::run` session (prompt, output, status) | `session-manager` session, listed in the console |
 | every CLI stdout line, verbatim | `devin::events` stream frame |
 | a Devin cloud session | `devin::session::create` / `::get` / `::message` |
 | a Devin PR review | `devin::pr-review::trigger` / `::status` |

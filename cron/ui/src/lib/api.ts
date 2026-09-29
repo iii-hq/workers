@@ -59,21 +59,6 @@ function jsonRecord(value: string | undefined): Record<string, unknown> {
   }
 }
 
-export function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message
-  if (isRecord(error)) {
-    for (const key of ['message', 'error', 'reason', 'detail']) {
-      const candidate = error[key]
-      if (typeof candidate === 'string' && candidate.trim()) return candidate
-    }
-  }
-  try {
-    return JSON.stringify(error) ?? String(error)
-  } catch {
-    return String(error)
-  }
-}
-
 async function listSessionCronTasks(host: Host, sessionId: string): Promise<SessionCronTask[]> {
   const response = await host.iii.trigger('harness::triggers::list', {
     session_id: sessionId,

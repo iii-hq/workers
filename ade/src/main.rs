@@ -4,8 +4,10 @@
 //!   1. Parse CLI / load the optional YAML seed (with fallback to defaults).
 //!   2. Connect to the iii engine over WebSocket via the SDK.
 //!   3. Register the Console configuration schema and fetch its authoritative
-//!      `http_port` (falling back to the local seed if unavailable).
-//!   4. Register `console::status` against the engine.
+//!      `http_port` and `data_dir` (falling back to the local seed if
+//!      unavailable); point the workspace store at `<data_dir>/workspace.json`
+//!      and move a legacy `workspace` section out of the configuration entry.
+//!   4. Register `console::status` and the `console::workspace::*` functions.
 //!   5. Bind the HTTP server on `http_port` and serve `/`, `/assets/*`,
 //!      and `/ws` (WebSocket proxy back to the engine).
 //!   6. Subscribe to configuration changes so port edits rebind live.
@@ -19,6 +21,7 @@ use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 
+use ade::workspace_store::WorkspaceStore;
 use ade::{config, configuration, functions, manifest, server, ui, ui_assets};
 
 #[derive(Parser, Debug)]
@@ -116,26 +119,42 @@ async fn main() -> Result<()> {
     // Match the HTTP worker's configuration lifecycle: local config is only a
     // first-registration seed/fallback; a stored value is authoritative and is
     // fetched before binding the listener.
-    if let Err(error) = configuration::register_console_config(&iii, cfg.http_port).await {
+    if let Err(error) =
+        configuration::register_console_config(&iii, cfg.http_port, &cfg.data_dir).await
+    {
         tracing::warn!(
             %error,
-            "console configuration registration failed; continuing with the local port seed"
+            "console configuration registration failed; continuing with the local seed"
         );
     }
-    let runtime_config = match configuration::fetch_runtime_config(&iii, cfg.http_port).await {
-        Ok(config) => config,
-        Err(error) => {
-            tracing::warn!(
-                %error,
-                "console configuration fetch failed; continuing with the local port seed"
-            );
-            configuration::RuntimeConfig::fallback(cfg.http_port)
-        }
-    };
+    let runtime_config =
+        match configuration::fetch_runtime_config(&iii, cfg.http_port, &cfg.data_dir).await {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "console configuration fetch failed; continuing with the local seed"
+                );
+                configuration::RuntimeConfig::fallback(cfg.http_port, &cfg.data_dir)
+            }
+        };
     cfg.http_port = runtime_config.http_port;
+    cfg.data_dir = runtime_config.data_dir.clone();
+
+    // Ephemeral per-instance state (the workspace tabs/panes layout) lives
+    // under `data_dir`, never in the committed configuration YAML. Entries
+    // written by older Console versions still carry it: move it over once.
+    let workspace = Arc::new(WorkspaceStore::new(runtime_config.resolved_data_dir()));
+    if let Err(error) = configuration::migrate_legacy_workspace(&iii, &workspace).await {
+        tracing::warn!(
+            %error,
+            "legacy workspace migration failed; the configuration entry keeps its `workspace` section"
+        );
+    }
 
     tracing::info!(
         http_port = cfg.http_port,
+        data_dir = %workspace.dir().await.display(),
         engine_url = %redact_url(&engine_url),
         "starting ade worker"
     );
@@ -153,7 +172,13 @@ async fn main() -> Result<()> {
         (None, None)
     };
 
-    functions::register_all(&iii, port.clone(), &engine_url, ui.clone());
+    functions::register_all(
+        &iii,
+        port.clone(),
+        &engine_url,
+        ui.clone(),
+        workspace.clone(),
+    );
 
     // The console's own injected UI — live port + injectable-UI controls for
     // the `console` configuration entry. Same mechanism as any worker's.
@@ -181,6 +206,7 @@ async fn main() -> Result<()> {
         state.clone(),
         server_handle.control.clone(),
         ui_control.clone(),
+        workspace.clone(),
         apply_lock.clone(),
     ) {
         tracing::warn!(
@@ -196,6 +222,7 @@ async fn main() -> Result<()> {
             &state,
             &server_handle.control,
             ui_control.as_ref(),
+            &workspace,
             &apply_lock,
         )
         .await;

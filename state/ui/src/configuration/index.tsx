@@ -18,6 +18,7 @@ import {
   SettingsList,
   SettingsRow,
   SettingsSection,
+  StatusPanel,
   Switch,
 } from '@iii-dev/console-ui'
 import { useEffect, useRef } from 'react'
@@ -316,14 +317,17 @@ export function StateConfigForm(props: ConfigFormProps) {
       </SettingsSection>
 
       {props.errors && props.errors.size > 0 ? (
-        <div className="state-ui-error" role="alert">
-          {[...props.errors.entries()].map(([pointer, message]) => (
+        <StatusPanel
+          variant="alert"
+          role="alert"
+          headline="The configuration has errors."
+          detail={[...props.errors.entries()].map(([pointer, message]) => (
             <div id={configurationErrorId(pointer)} key={pointer || message}>
               {pointer ? `${pointer}: ` : ''}
               {message}
             </div>
           ))}
-        </div>
+        />
       ) : null}
     </div>
   )

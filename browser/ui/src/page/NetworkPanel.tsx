@@ -1,4 +1,12 @@
-import { type Host, Input } from '@iii-dev/console-ui'
+import {
+  Button,
+  EmptyState,
+  type Host,
+  SearchField,
+  SegmentedControl,
+  StatusPanel,
+  Toolbar,
+} from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
 import {
   BROWSER_NETWORK_EVENT_TRIGGER,
@@ -99,47 +107,62 @@ export function NetworkPanel({ host, sessionId, enabled }: NetworkPanelProps) {
 
   return (
     <div className="br-ui-panel">
-      <div className="br-ui-panel-head">
-        <span className="br-ui-devtools-context">{sessionId}</span>
-        <span className="br-ui-devtools-separator" aria-hidden />
-        <Input
+      <Toolbar
+        aria-label="network filters"
+        end={
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setEntries([])
+              setDropped(0)
+            }}
+          >
+            Clear
+          </Button>
+        }
+      >
+        <span className="br-ui-panel-context">{sessionId}</span>
+        <SearchField
           name="network-filter"
           value={pattern}
           onChange={setPattern}
-          preserveCase
           placeholder="filter requests"
           aria-label="filter network requests"
           className="br-ui-filter-input"
         />
-        <button
-          type="button"
-          onClick={() => setFailedOnly((v) => !v)}
-          aria-pressed={failedOnly}
-          className={cn('br-ui-toggle', failedOnly && 'is-on')}
-        >
-          Failed only
-        </button>
+        <SegmentedControl<'all' | 'failed'>
+          variant="radio"
+          value={failedOnly ? 'failed' : 'all'}
+          onChange={(next) => setFailedOnly(next === 'failed')}
+          options={[
+            { value: 'all', label: 'All', icon: false },
+            { value: 'failed', label: 'Failed only', icon: false },
+          ]}
+          aria-label="request filter"
+        />
         <span className="br-ui-panel-count">
           {entries.length} {entries.length === 1 ? 'request' : 'requests'}
         </span>
         {dropped > 0 ? (
           <span className="br-ui-panel-note">{dropped} older requests dropped from the buffer</span>
         ) : null}
-        <button
-          type="button"
-          className="br-ui-devtools-action"
-          onClick={() => {
-            setEntries([])
-            setDropped(0)
-          }}
-        >
-          Clear
-        </button>
-      </div>
+      </Toolbar>
       {error ? (
-        <p className="br-ui-panel-err">{error}</p>
+        <div className="br-ui-panel-body">
+          <StatusPanel variant="alert" headline="Network read failed" detail={error} />
+        </div>
       ) : entries.length === 0 ? (
-        <p className="br-ui-panel-empty">{failedOnly ? 'No failed requests.' : 'No requests yet.'}</p>
+        <div className="br-ui-panel-body">
+          <EmptyState
+            title={failedOnly ? 'No failed requests' : 'No requests yet'}
+            description={
+              failedOnly
+                ? 'Every request so far succeeded.'
+                : 'Requests the page makes appear here as they happen.'
+            }
+          />
+        </div>
       ) : (
         <div className="br-ui-network-table">
           <div className="br-ui-nhead" aria-hidden>

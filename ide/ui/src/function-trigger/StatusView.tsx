@@ -1,5 +1,6 @@
-import { formatAgeSecs, pillForExit, truncateMiddle } from '../lib/format'
-import { AnsiOutput, Chip, FooterPill, Terminal } from '../lib/terminal'
+import { Badge } from '@iii-dev/console-ui'
+import { formatDuration } from '@iii-dev/console-ui/format'
+import { pillForExit, truncateMiddle } from '../lib/format'
 import {
   formatArgv,
   formatEpochMs,
@@ -12,17 +13,12 @@ import {
   shellStatusRequestSchema,
   shellStatusResponseSchema,
 } from './parsers'
+import { items, kv, StreamBody, TerminalCard } from './shared'
 
 interface ShellStatusViewProps {
   input: unknown
   output: unknown
   running?: boolean
-}
-
-/** `1234` → `"1234ms"`; ≥ 10 s humanize via `formatAgeSecs` so
-    long-lived jobs read as `2m`/`3h` instead of raw millis. */
-function formatDurationMs(ms: number): string {
-  return ms < 10_000 ? `${ms}ms` : formatAgeSecs(Math.floor(ms / 1000))
 }
 
 /**
@@ -43,33 +39,24 @@ export function ShellStatusView({
 
   if (!resp) {
     // The status call itself is in flight (or output is missing):
-    // chips-only header, `running` drives the executing shimmer.
-    return (
-      <Terminal
-        running={running}
-        chips={<Chip label="job">{truncateMiddle(req.data.job_id, 18)}</Chip>}
-      />
-    )
+    // items-only header, `running` drives the executing shimmer.
+    return <TerminalCard running={running} items={[kv('job', truncateMiddle(req.data.job_id, 18))]} />
   }
 
   const job = resp.job
   return (
-    <Terminal
+    <TerminalCard
       command={formatArgv(job.argv)}
       running={running}
-      chips={
-        <>
-          <Chip label="job">{truncateMiddle(job.id, 18)}</Chip>
-          <Chip label="started">{formatEpochMs(job.started_at_ms)}</Chip>
-          {job.finished_at_ms != null ? (
-            <Chip label="finished">{formatEpochMs(job.finished_at_ms)}</Chip>
-          ) : null}
-        </>
-      }
+      items={items(
+        kv('job', truncateMiddle(job.id, 18)),
+        kv('started', formatEpochMs(job.started_at_ms)),
+        job.finished_at_ms != null ? kv('finished', formatEpochMs(job.finished_at_ms)) : null,
+      )}
       footer={<StatusFooter job={job} />}
     >
-      <AnsiOutput stdout={job.stdout} stderr={job.stderr} />
-    </Terminal>
+      <StreamBody stdout={job.stdout} stderr={job.stderr} />
+    </TerminalCard>
   )
 }
 
@@ -79,23 +66,15 @@ function StatusFooter({ job }: { job: JobRecord }) {
   const duration = jobDurationMs(job)
   return (
     <>
-      <FooterPill tone={status.tone}>{status.label}</FooterPill>
+      <Badge variant={status.tone}>{status.label}</Badge>
       {/* exit_code is null by definition while running — "no exit"/warn
          would be misleading there, so the pill is terminal-only. */}
-      {job.status !== 'running' ? (
-        <FooterPill tone={exit.tone}>{exit.label}</FooterPill>
-      ) : null}
+      {job.status !== 'running' ? <Badge variant={exit.tone}>{exit.label}</Badge> : null}
       {/* No live-ticking duration for running jobs (no re-render
-         source); the `started` chip's relative time covers it. */}
-      {duration != null ? (
-        <FooterPill>{formatDurationMs(duration)}</FooterPill>
-      ) : null}
-      {job.stdout_truncated ? (
-        <FooterPill tone="warn">stdout truncated</FooterPill>
-      ) : null}
-      {job.stderr_truncated ? (
-        <FooterPill tone="warn">stderr truncated</FooterPill>
-      ) : null}
+         source); the `started` item's relative time covers it. */}
+      {duration != null ? <Badge>{formatDuration(duration)}</Badge> : null}
+      {job.stdout_truncated ? <Badge variant="warn">stdout truncated</Badge> : null}
+      {job.stderr_truncated ? <Badge variant="warn">stderr truncated</Badge> : null}
     </>
   )
 }

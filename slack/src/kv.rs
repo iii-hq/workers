@@ -31,6 +31,14 @@ fn thread_key(team: Option<&str>, channel: &str, thread_ts: &str) -> String {
     format!("{}:{}:{}", team.unwrap_or("-"), channel, thread_ts)
 }
 
+/// The session id a new thread gets: known before its first
+/// `harness::send`, so the first turn's system prompt already names it and
+/// every later turn renders the same prompt. Deterministic, so a retried
+/// first mention lands in the same session.
+pub fn new_thread_session_id(team: Option<&str>, channel: &str, thread_ts: &str) -> String {
+    format!("slack-{}-{channel}-{thread_ts}", team.unwrap_or("none"))
+}
+
 pub async fn thread_session(
     deps: &Deps,
     team: Option<&str>,

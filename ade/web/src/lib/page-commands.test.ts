@@ -18,7 +18,7 @@ describe('page commands', () => {
   it('namespaces ids by page and removes exactly what it registered', () => {
     const off = registerPageCommands(
       {
-        pageId: 'shell',
+        pageId: 'ide',
         source: 'page',
         paneId: 'pane-1',
         commands: [
@@ -37,8 +37,8 @@ describe('page commands', () => {
       'mac',
     )
     expect(getPageCommands().map((entry) => entry.key)).toEqual([
-      'shell.open',
-      'shell.find',
+      'ide.open',
+      'ide.find',
       'database.query',
     ])
     off()
@@ -51,7 +51,7 @@ describe('page commands', () => {
   it('keeps keys for a mounted page only, never for a worker-level row', () => {
     registerPageCommands(
       {
-        pageId: 'shell',
+        pageId: 'ide',
         source: 'worker',
         commands: [
           { id: 'open', title: 'Open file', shortcut: 'Ctrl+P', run: noop },
@@ -61,7 +61,7 @@ describe('page commands', () => {
     )
     registerPageCommands(
       {
-        pageId: 'shell',
+        pageId: 'ide',
         source: 'page',
         paneId: 'pane-1',
         commands: [
@@ -74,7 +74,7 @@ describe('page commands', () => {
     expect(worker.bindings).toEqual([])
     expect(page.bindings).toEqual(['Ctrl+P'])
     expect(paneCommands('pane-1').map((entry) => entry.key)).toEqual([
-      'shell.open',
+      'ide.open',
     ])
     expect(paneCommands('pane-2')).toEqual([])
   })
@@ -82,7 +82,7 @@ describe('page commands', () => {
   it('refuses bare keys, the palette chord and browser keys, keeps the rest', () => {
     registerPageCommands(
       {
-        pageId: 'shell',
+        pageId: 'ide',
         source: 'page',
         paneId: 'pane-1',
         commands: [

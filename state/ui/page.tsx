@@ -8,7 +8,7 @@
  * `setup(host)` composes the worker's three console contributions, one
  * module each:
  *
- * - src/page/                    — the state-manager page (#/ext/state-manager):
+ * - src/page/                    — the state-manager page (page `state-manager`):
  *                                  scopes × keys columns over a Monaco JSON
  *                                  value editor, drill-in flow when narrow
  * - src/configuration/           — custom form for the `state` configuration entry

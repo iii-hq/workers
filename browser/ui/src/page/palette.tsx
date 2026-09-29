@@ -10,8 +10,7 @@
  */
 
 import type { Host } from '@iii-dev/console-ui'
-import { listBrowserSessions } from '../lib/browser'
-import { formatMtime } from '../lib/format'
+import { formatAgo, listBrowserSessions } from '../lib/browser'
 import { listAnnotationSets } from './annotations-store'
 
 const SESSION_ROWS = 30
@@ -63,7 +62,7 @@ export function registerBrowserPalette(host: Host): void {
         .map((set) => ({
           id: set.key,
           title: `Annotations on ${set.subject}`,
-          detail: `${set.count} ${set.count === 1 ? 'mark' : 'marks'} · ${formatMtime(Math.floor(set.capturedAt / 1000))}`,
+          detail: `${set.count} ${set.count === 1 ? 'mark' : 'marks'} · ${formatAgo(set.capturedAt)}`,
           keywords: ['annotations', 'saved'],
           run: () =>
             host.panels?.open({

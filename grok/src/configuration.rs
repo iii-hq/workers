@@ -44,9 +44,8 @@ const CONFIG_FN_ID: &str = "grok::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 
-/// Register the `grok` configuration schema. When `seed` is present its value
-/// is installed as `initial_value`; otherwise the built-in default is seeded
-/// only when no stored value exists yet.
+/// Register the schema. The optional seed or built-in default is installed
+/// only when no stored value exists; live configuration always takes precedence.
 pub async fn register_config(iii: &IIIClient, seed: Option<&Config>) -> Result<(), String> {
     let mut payload = json!({
         "id": config_id(),
@@ -55,13 +54,11 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&Config>) -> Result<(
         "schema": Config::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
-    if let Some(seed) = seed {
-        payload["initial_value"] = seed.to_json();
-    } else if should_seed_default(iii).await? {
-        payload["initial_value"] = Config::default().to_json();
-    }
-    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
-    Ok(())
+    // A seed initializes an absent entry; it never replaces a Compose override.
+    payload["initial_value"] = seed
+        .map(|value| value.to_json())
+        .unwrap_or_else(|| Config::default().to_json());
+    ensure_configuration(iii, payload).await
 }
 
 /// Read the live `grok` configuration; built-in default when none stored.
@@ -75,11 +72,15 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<Config, String> {
     }
 }
 
-async fn should_seed_default(iii: &IIIClient) -> Result<bool, String> {
-    Ok(matches!(
-        try_get_value(iii).await?,
-        None | Some(Value::Null)
-    ))
+#[path = "../../crates/config-client/src/initialization.rs"]
+mod initialization;
+
+/// Initialize atomically when supported, otherwise use the warned legacy path.
+async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
+    initialization::ensure_with(payload, |function, payload| {
+        trigger_configuration_with_retry(iii, function, payload)
+    })
+    .await
 }
 
 /// `Ok(None)` when the entry does not exist (`NOT_FOUND`).
@@ -88,7 +89,7 @@ async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.contains("NOT_FOUND") => Ok(None),
+        Err(e) if is_not_found(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -154,6 +155,29 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) {
     }
 }
 
+/// `true` only when the error carries the configuration worker's standalone
+/// `NOT_FOUND` entry code, identified by the outermost `remote error (<code>)` envelope code rather than a substring or token scan of the message, so
+/// a compound code such as `RESOURCE_NOT_FOUND`/`STATEMENT_NOT_FOUND` or the
+/// engine's lowercase missing-FUNCTION code `function_not_found` still
+/// propagates as a failure instead of being read as "nothing stored yet".
+fn is_not_found(error: &str) -> bool {
+    // Anchor on the SDK's own rendering instead of scanning the whole string:
+    // a remote failure prints as `remote error ({code}): {message}`, and this
+    // worker wraps a retried get as
+    // `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel
+    // exactly that one wrapper (never a foreign one or a different attempt
+    // count) and then require the NOT_FOUND envelope at the very start, so a
+    // NOT_FOUND code buried in an unrelated message, a nested envelope, or a
+    // different wrapper stays a real failure and propagates.
+    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
+    const _: () = assert!(CONFIG_RETRIES == 3);
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "NOT_FOUND"
+        || raw == "remote error (NOT_FOUND):"
+        || raw.starts_with("remote error (NOT_FOUND): ")
+}
+
 async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
@@ -176,6 +200,10 @@ async fn trigger_configuration_with_retry(
             Ok(v) => return Ok(v),
             Err(e) => {
                 last_err = e.to_string();
+                if matches!(&e, iii_sdk::errors::Error::Remote { code, .. } if code == "function_not_found" || code == "NOT_FOUND")
+                {
+                    return Err(last_err);
+                }
                 if attempt < CONFIG_RETRIES {
                     // Exponential backoff: 250ms, 500ms, 1000ms, …
                     let backoff = 250u64 << (attempt - 1);
@@ -187,4 +215,20 @@ async fn trigger_configuration_with_retry(
     Err(format!(
         "{function_id} failed after {CONFIG_RETRIES} attempts: {last_err}"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/config-client/tests/support/is_not_found_cases.rs"
+    ));
+
+    /// The missing-entry classifier only seeds on the configuration worker's
+    /// standalone `NOT_FOUND` envelope; every unrelated failure or compound
+    /// code propagates instead of clobbering a stored value with a default.
+    #[test]
+    fn is_not_found_matches_only_the_envelope_code() {
+        assert_missing_entry_contract(super::is_not_found);
+    }
 }

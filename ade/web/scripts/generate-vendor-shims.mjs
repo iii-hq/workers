@@ -38,6 +38,9 @@ const SHIMS = [
     global: 'JsxRuntime',
     specifier: 'react/jsx-runtime',
   },
+  // The icon set: workers keep `lucide-react` external and share the
+  // console's copy instead of bundling their own icons.
+  { file: 'lucide-react.js', global: 'Lucide', specifier: 'lucide-react' },
 ]
 
 const HEADER = (specifier) =>
@@ -109,10 +112,12 @@ async function validateShim(file, content) {
       ReactDOM: {},
       ReactDOMClient: {},
       JsxRuntime: {},
+      Lucide: {},
       api: {
         iii: {},
         components: {},
         useTheme() {},
+        useConfirm() {},
         tokens: [],
         uiClasses: {},
       },
@@ -165,6 +170,7 @@ const consoleUi =
   `export const iii = api.iii\n` +
   `export const components = api.components\n` +
   `export const useTheme = api.useTheme\n` +
+  `export const useConfirm = api.useConfirm\n` +
   `export const tokens = api.tokens\n` +
   `export const uiClasses = api.uiClasses\n` +
   `export const {\n  ${componentNames.join(',\n  ')},\n} = api.components\n` +

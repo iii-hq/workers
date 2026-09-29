@@ -25,8 +25,20 @@
  * ordinary response with its own message in `stderr`.
  */
 
-import { Tooltip, TooltipContent, TooltipTrigger } from '@iii-dev/console-ui'
-import { useCallback, useState } from 'react'
+import {
+  Badge,
+  Chip,
+  Eyebrow,
+  MetaRow,
+  StatusPanel,
+  TerminalStream,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@iii-dev/console-ui'
+import { formatDuration, unwrapEnvelope } from '@iii-dev/console-ui/format'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { useState } from 'react'
 
 /* --- payload helpers -------------------------------------------------- */
 
@@ -34,14 +46,6 @@ import { useCallback, useState } from 'react'
 export function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
   return value as Record<string, unknown>
-}
-
-/** `{ content: [...], details }` harness result envelope → details. */
-export function unwrapEnvelope(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
-  const obj = value as Record<string, unknown>
-  if (Array.isArray(obj.content) && 'details' in obj) return obj.details
-  return value
 }
 
 export function isErrorOutput(value: unknown): boolean {
@@ -144,47 +148,13 @@ export function redactRuntimeIdsDeep(value: unknown, seen: WeakSet<object> = new
   return out
 }
 
-async function copyText(text: string): Promise<boolean> {
-  try {
-    // Undefined outside a secure context (plain http:// over a LAN).
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-      return true
-    }
-  } catch {
-    /* fall through to the textarea path */
-  }
-  const ta = document.createElement('textarea')
-  ta.value = text
-  ta.style.position = 'fixed'
-  ta.style.opacity = '0'
-  document.body.appendChild(ta)
-  try {
-    ta.select()
-    return document.execCommand('copy')
-  } catch {
-    return false
-  } finally {
-    // finally, not the success path: a throwing select/execCommand must not
-    // leave one orphaned textarea in <body> per failed copy.
-    document.body.removeChild(ta)
-  }
-}
-
 /**
  * The truncated runtime-id chip. The full id is a capability, so it is only
  * ever handed over on an explicit click (copied to the clipboard), never
  * printed into the feed.
  */
 export function RuntimeChip({ runtimeId }: { runtimeId: string }) {
-  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
-
-  const copy = useCallback(() => {
-    void copyText(runtimeId).then((ok) => {
-      setState(ok ? 'copied' : 'failed')
-      window.setTimeout(() => setState('idle'), 1400)
-    })
-  }, [runtimeId])
+  const { state, copy } = useCopyFlash(runtimeId, 1400)
 
   return (
     <Tooltip>
@@ -197,7 +167,7 @@ export function RuntimeChip({ runtimeId }: { runtimeId: string }) {
           // aloud, which is exactly the exposure the truncation prevents.
           aria-label="copy the full runtime id"
         >
-          <span className="k">runtime </span>
+          <span className="cr-ui-k">runtime </span>
           {truncateRuntimeId(runtimeId)}
           {state === 'idle' ? null : (
             <span className="cr-ui-rt-flash">{state === 'copied' ? ' copied' : ' copy failed'}</span>
@@ -234,11 +204,11 @@ export function CardShell({
 }) {
   return (
     <div className="cr-ui-msg">
-      <div className="cr-ui-msg-head">
-        <span className={`cr-ui-pill${running ? ' quiet' : ''}`}>{op}</span>
+      <MetaRow className="cr-ui-msg-head">
+        <Badge variant={running ? 'default' : 'accent'}>{op}</Badge>
         {chips}
-        <span className="cr-ui-msg-tag">{tag}</span>
-      </div>
+        <Eyebrow className="cr-ui-msg-tag">{tag}</Eyebrow>
+      </MetaRow>
       {children}
     </div>
   )
@@ -246,41 +216,17 @@ export function CardShell({
 
 /* --- terminal streams --------------------------------------------------- */
 
-/** Lines of a stream shown before it collapses behind a toggle. */
-const STREAM_CLAMP_LINES = 12
-/** …and a character ceiling, for the one 400 KB line a minifier emits. */
-const STREAM_CLAMP_CHARS = 2000
-
 /**
- * `stdout` / `stderr` as terminal output: monospace, whitespace preserved,
- * clamped so a chatty script cannot flood the chat (the CSS caps the height
- * and scrolls; this caps what is in the DOM at all). `null` for an empty
- * string — the caller decides what "no output" should say, if anything.
+ * `stdout` / `stderr` as terminal output — the shared `TerminalStream`
+ * (clamped, scrolls within itself, `null` for an empty string) over text
+ * that has been through `redactRuntimeIds` first.
  *
  * `tone="err"` tints the stream, and nothing more: stderr on a non-zero exit
  * is the user's own traceback or runtime message, not a system error.
  */
 export function Stream({ label, text, tone = 'out' }: { label: string; text: string; tone?: 'out' | 'err' }) {
-  const [expanded, setExpanded] = useState(false)
   if (text.length === 0) return null
-
-  const safe = redactRuntimeIds(text)
-  const lines = safe.split('\n')
-  const long = lines.length > STREAM_CLAMP_LINES || safe.length > STREAM_CLAMP_CHARS
-  const collapsed = long && !expanded
-  const shown = collapsed ? lines.slice(0, STREAM_CLAMP_LINES).join('\n').slice(0, STREAM_CLAMP_CHARS) : safe
-
-  return (
-    <div className={`cr-ui-stream ${tone}`}>
-      <div className="cr-ui-stream-label">{label}</div>
-      <pre className="cr-ui-stream-body">{shown}</pre>
-      {long ? (
-        <button type="button" className="cr-ui-toggle" onClick={() => setExpanded((v) => !v)}>
-          {collapsed ? `expand · ${lines.length} lines, ${safe.length} chars` : 'collapse'}
-        </button>
-      ) : null}
-    </div>
-  )
+  return <TerminalStream className="cr-ui-stream" label={label} text={redactRuntimeIds(text)} tone={tone} />
 }
 
 /* --- completion value --------------------------------------------------- */
@@ -330,7 +276,9 @@ export function ResultValue({
 
   return (
     <div className="cr-ui-section">
-      <div className="cr-ui-section-label">result</div>
+      <Eyebrow as="div" className="cr-ui-section-label">
+        result
+      </Eyebrow>
       {isNull ? (
         <div className="cr-ui-result-null">
           null — the code returned nothing
@@ -386,11 +334,9 @@ export function ExitStatus({
 
   return (
     <div className="cr-ui-exit">
-      <span className={`cr-ui-exit-code${ok ? ' ok' : ' failed'}`}>
-        {exitCode === undefined ? 'exit ?' : `exit ${exitCode}`}
-      </span>
+      <Badge variant={ok ? 'ok' : 'warn'}>{exitCode === undefined ? 'exit ?' : `exit ${exitCode}`}</Badge>
       <span className="cr-ui-exit-note">{note}</span>
-      {durationMs === undefined ? null : <span className="cr-ui-exit-dur">{durationMs}ms</span>}
+      {durationMs === undefined ? null : <span className="cr-ui-exit-dur">{formatDuration(durationMs)}</span>}
     </div>
   )
 }
@@ -409,9 +355,9 @@ export function RegisteredIds({ ids }: { ids: readonly string[] }) {
   return (
     <div className="cr-ui-ids">
       {ids.map((id) => (
-        <span className="cr-ui-id" key={id}>
+        <Chip className="cr-ui-id" key={id}>
           {redactRuntimeIds(id)}
-        </span>
+        </Chip>
       ))}
     </div>
   )
@@ -423,10 +369,10 @@ export function RegisteredIds({ ids }: { ids: readonly string[] }) {
 export function TimeoutChip({ ms }: { ms?: number }) {
   if (ms === undefined) return null
   return (
-    <span className="cr-ui-chip">
-      <span className="k">timeout </span>
+    <Chip>
+      <span className="cr-ui-k">timeout </span>
       {ms}ms
-    </span>
+    </Chip>
   )
 }
 
@@ -471,7 +417,7 @@ export function errorInfo(output: unknown): { message: string } | undefined {
 export function ErrorCard({ op, runtimeId, message }: { op: string; runtimeId?: string; message: string }) {
   return (
     <CardShell op={op} chips={runtimeId ? <RuntimeChip runtimeId={runtimeId} /> : null}>
-      <div className="cr-ui-msg-note cr-ui-alert">{redactRuntimeIds(message)}</div>
+      <StatusPanel variant="alert" className="cr-ui-msg-panel" headline={redactRuntimeIds(message)} />
     </CardShell>
   )
 }
@@ -531,11 +477,12 @@ export function deniedInfo(output: unknown): DenialInfo | undefined {
 export function DeniedCard({ op, reason, deniedBy }: { op: string; reason: string; deniedBy?: string }) {
   return (
     <CardShell op={op}>
-      <div className="cr-ui-msg-note cr-ui-warn">
-        · denied at the gate — this never ran
-        {deniedBy ? ` · denied by ${deniedBy}` : ''}
-      </div>
-      <div className="cr-ui-msg-note">{redactRuntimeIds(reason)}</div>
+      <StatusPanel
+        variant="warn"
+        className="cr-ui-msg-panel"
+        headline={`denied at the gate — this never ran${deniedBy ? ` · denied by ${deniedBy}` : ''}`}
+        detail={redactRuntimeIds(reason)}
+      />
     </CardShell>
   )
 }

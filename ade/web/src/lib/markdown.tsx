@@ -1,9 +1,17 @@
 import type { Element, Root, RootContent, Text } from 'hast'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import { type ComponentPropsWithoutRef, type ReactNode, useId, useState } from 'react'
+import ReactMarkdown, {
+  type Components,
+  defaultUrlTransform,
+} from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { FileMentionPill } from '@/components/chat/lexical/FileMentionNode'
 import { FunctionMentionPill } from '@/components/chat/lexical/FunctionMentionNode'
 import { SlashCommandPill } from '@/components/chat/lexical/SlashCommandNode'
+import {
+  MermaidDiagram,
+  MermaidStreamingContext,
+} from '@/components/ui/MermaidDiagram'
 import {
   Table,
   TableBody,
@@ -16,7 +24,12 @@ import {
   TableRow,
   TableViewport,
 } from '@/components/ui/Table'
-import { parseFileMentionInner } from '@/lib/file-mention-token'
+import {
+  type FileMentionRef,
+  parseFileMentionInner,
+} from '@/lib/file-mention-token'
+import { useOpenMessageFile } from '@/lib/file-navigation'
+import { markdownFileLinkError, parseMarkdownFileLink } from '@/lib/markdown-file-link'
 import { SKILL_PREFIX, SKILL_TOKEN_SOURCE } from '@/lib/slash-commands'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
@@ -24,6 +37,7 @@ import { cn } from '@/lib/utils'
 interface MarkdownProps {
   children: string
   className?: string
+  streaming?: boolean
 }
 
 /* Matches `@fn(<id>)` (id excludes whitespace and `)`), `#file(<path>)`
@@ -42,16 +56,18 @@ const MENTION_RE = new RegExp(
    contains `@fn(<id>)`, `#file(<path>)` or `/skill:<id>` into a mix of
    leftover text + a marker `span` element carrying the mention payload. The
    actual pill rendering happens in the `span` component override below.
-   Code / pre subtrees are skipped so literal mentions inside fenced blocks
-   stay verbatim. */
+   Code / pre subtrees stay verbatim; anchors are skipped to avoid nesting
+   interactive mentions inside links. */
+/** Transform prose mentions into pills while leaving literal code and link labels intact. */
 function rehypeFnMention() {
   return (tree: Root) => walk(tree)
 }
 
+/** Rewrite mention text without creating nested interactive elements or modifying code blocks. */
 function walk(node: Root | Element): void {
   if (
     node.type === 'element' &&
-    (node.tagName === 'code' || node.tagName === 'pre')
+    (node.tagName === 'code' || node.tagName === 'pre' || node.tagName === 'a')
   ) {
     return
   }
@@ -74,10 +90,11 @@ function walk(node: Root | Element): void {
    depending on how it was parsed. Normalize both shapes to a single check.
    (Typed `unknown` on purpose: current @types/hast declares only the array
    shape, but the string shape still occurs at runtime.) */
-function hasLanguageJson(node: Element): boolean {
+function hasLanguage(node: Element, language: string): boolean {
   const cls: unknown = node.properties?.className
-  if (Array.isArray(cls)) return cls.includes('language-json')
-  if (typeof cls === 'string') return cls.split(/\s+/).includes('language-json')
+  const expected = `language-${language}`
+  if (Array.isArray(cls)) return cls.includes(expected)
+  if (typeof cls === 'string') return cls.split(/\s+/).includes(expected)
   return false
 }
 
@@ -121,6 +138,90 @@ function splitMention(value: string): Array<Text | Element> {
   return out
 }
 
+const linkClassName =
+  'text-ink underline decoration-rule decoration-1 underline-offset-2 hover:text-accent hover:decoration-accent transition-colors'
+
+/** Open a validated local reference and announce recoverable failures beside its label. */
+function FileReferenceButton({
+  reference,
+  problem,
+  className,
+  children,
+  title,
+}: {
+  reference?: FileMentionRef | null
+  problem?: string | null
+  className?: string
+  children: ReactNode
+  title: string
+}) {
+  const openFile = useOpenMessageFile()
+  const [error, setError] = useState<string | null>(null)
+  const id = useId()
+  return (
+    <>
+      <button
+        type="button"
+        className={className}
+        title={title}
+        aria-describedby={error ? id : undefined}
+        onClick={async () => {
+          setError(null)
+          try {
+            if (problem) throw new Error(problem)
+            if (reference) await openFile?.(reference)
+          } catch (cause) {
+            setError(cause instanceof Error ? cause.message : 'Could not open this file. Try again.')
+          }
+        }}
+      >
+        {children}
+      </button>
+      {error ? <span id={id} role="alert" className="ml-2 break-words text-[12px] text-alert">{error}</span> : null}
+    </>
+  )
+}
+
+/** Route local file destinations to the originating chat's IDE; preserve ordinary web links. */
+function MarkdownLink({ href, className, children, title }: ComponentPropsWithoutRef<'a'>) {
+  const openFile = useOpenMessageFile()
+  const ref = href ? parseMarkdownFileLink(href) : null
+  const problem = href ? markdownFileLinkError(href) : null
+  if (openFile && (ref || problem)) {
+    return (
+      <FileReferenceButton
+        reference={ref}
+        problem={problem}
+        className={cn(linkClassName, 'cursor-pointer text-left break-words focus-visible:outline-2 focus-visible:outline-rule-focus', className)}
+        title={ref ? `open ${ref.path}${ref.range ? `:${ref.range.from}-${ref.range.to}` : ''} in the IDE (current file on disk)` : (problem ?? '')}
+      >
+        {children}
+      </FileReferenceButton>
+    )
+  }
+  return (
+    <a href={href} className={cn(linkClassName, className)} title={title} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  )
+}
+
+/** Make transcript file mentions actionable without turning folder pills into file opens. */
+function MarkdownFileMention({ path, range }: FileMentionRef) {
+  const openFile = useOpenMessageFile()
+  const pill = <FileMentionPill path={path} range={range} />
+  if (!openFile || path.endsWith('/')) return pill
+  return (
+    <FileReferenceButton
+      reference={{ path, range }}
+      className="inline-flex align-middle cursor-pointer rounded-xs hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-rule-focus"
+      title={`open ${path} in the IDE (current file on disk)`}
+    >
+      {pill}
+    </FileReferenceButton>
+  )
+}
+
 const components: Components = {
   h1: ({ className, ...rest }) => (
     <h1
@@ -152,7 +253,7 @@ const components: Components = {
   h4: ({ className, ...rest }) => (
     <h4
       className={cn(
-        'font-mono text-[13px] font-semibold uppercase tracking-[0.06em] text-ink-faint mt-4 mb-2 first:mt-0',
+        'font-mono text-[13px] font-semibold text-ink-faint mt-4 mb-2 first:mt-0',
         className,
       )}
       {...rest}
@@ -203,17 +304,7 @@ const components: Components = {
       {...rest}
     />
   ),
-  a: ({ className, ...rest }) => (
-    <a
-      className={cn(
-        'text-ink underline decoration-rule decoration-1 underline-offset-2 hover:text-accent hover:decoration-accent transition-colors',
-        className,
-      )}
-      target="_blank"
-      rel="noopener noreferrer"
-      {...rest}
-    />
-  ),
+  a: MarkdownLink,
   strong: ({ className, ...rest }) => (
     <strong className={cn('font-semibold text-ink', className)} {...rest} />
   ),
@@ -245,25 +336,29 @@ const components: Components = {
     )
   },
   pre: ({ node, className, children, ...rest }) => {
-    /* Detect a JSON fenced block (`<pre><code class="language-json">`) and
-       route it to the Prism-driven highlighter. We read the raw text out of
-       the hast tree directly instead of leaning on the rendered `code`
-       output so the highlighter gets the unmodified source. */
+    // Read the unmodified source from hast, before code/mention rendering.
     const codeChild = node?.children?.[0]
     if (
       codeChild &&
       codeChild.type === 'element' &&
-      codeChild.tagName === 'code' &&
-      hasLanguageJson(codeChild)
+      codeChild.tagName === 'code'
     ) {
-      const text = codeChild.children?.[0]
-      const source = text && text.type === 'text' ? text.value : ''
-      return (
-        <JsonHighlight
-          code={source.replace(/\n$/, '')}
-          className="rounded-md border border-rule-2 my-4"
-        />
-      )
+      const source = codeChild.children
+        .filter((child) => child.type === 'text')
+        .map((child) => child.value)
+        .join('')
+        .replace(/\n$/, '')
+      if (hasLanguage(codeChild, 'mermaid')) {
+        return <MermaidDiagram source={source} />
+      }
+      if (hasLanguage(codeChild, 'json')) {
+        return (
+          <JsonHighlight
+            code={source}
+            className="rounded-md border border-rule-2 my-4"
+          />
+        )
+      }
     }
     return (
       <pre
@@ -298,7 +393,7 @@ const components: Components = {
         return <SlashCommandPill command={`${SKILL_PREFIX}${payload}`} />
       }
       const ref = parseFileMentionInner(payload)
-      return <FileMentionPill path={ref.path} range={ref.range} />
+      return <MarkdownFileMention path={ref.path} range={ref.range} />
     }
     return (
       <span className={className} {...rest}>
@@ -330,16 +425,28 @@ const components: Components = {
   ),
 }
 
-export function Markdown({ children, className }: MarkdownProps) {
+/** Render sanitized Markdown, routing local references through the enclosing chat when available. */
+export function Markdown({
+  children,
+  className,
+  streaming = false,
+}: MarkdownProps) {
   return (
-    <div className={cn('text-ink', className)}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeFnMention]}
-        components={components}
-      >
-        {children}
-      </ReactMarkdown>
-    </div>
+    <MermaidStreamingContext.Provider value={streaming}>
+      <div className={cn('text-ink', className)}>
+        <ReactMarkdown
+          urlTransform={(url, key) =>
+            key === 'href' && (parseMarkdownFileLink(url) || markdownFileLinkError(url))
+              ? url
+              : defaultUrlTransform(url)
+          }
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeFnMention]}
+          components={components}
+        >
+          {children}
+        </ReactMarkdown>
+      </div>
+    </MermaidStreamingContext.Provider>
   )
 }

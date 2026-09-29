@@ -73,6 +73,11 @@ fn catalog_lists_all_functions_in_registration_order() {
             "github::search::code",
             "github::exec",
             "github::api",
+            "github::pr::watch",
+            "github::pr::unwatch",
+            "github::pr::watch-status",
+            "github::pr::event-detail",
+            "github::pr::recover",
         ]
     );
 }
@@ -128,4 +133,19 @@ fn schemas_carry_field_descriptions() {
             spec.function_id
         );
     }
+}
+
+#[test]
+fn pr_event_trigger_schemas_match_goldens() {
+    let config =
+        serde_json::to_string_pretty(&schemars::schema_for!(github::webhooks::EventFilter))
+            .unwrap()
+            + "\n";
+    let event = serde_json::to_string_pretty(&schemars::schema_for!(
+        github::webhooks::notifications::NotificationEvent
+    ))
+    .unwrap()
+        + "\n";
+    support::check_golden("schemas/github.pr.event.config.json", &config).unwrap();
+    support::check_golden("schemas/github.pr.event.payload.json", &event).unwrap();
 }

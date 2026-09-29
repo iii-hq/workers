@@ -24,7 +24,7 @@ function isEmpty(v: unknown): boolean {
 export function SubmitResultView({ input, running }: SubmitResultViewProps) {
   return (
     <div className="border-t border-rule-2 bg-bg">
-      <div className="bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+      <div className="bg-paper-2 px-3 py-1.5 border-b border-rule-2 iii-ui-eyebrow">
         {running ? 'submitting result…' : 'submitted result'}
       </div>
       {isEmpty(input) ? (

@@ -1,5 +1,5 @@
 /**
- * The Triggers page (`#/ext/triggers`): the same sidebar + workspace shell
+ * The Triggers page (page `triggers`): the same sidebar + workspace shell
  * as the functions page. The sidebar lists every trigger type with its live
  * bindings indented beneath it, each row led by the family's glyph (globe,
  * clock, layers…); the workspace is always present — a hero when nothing is
@@ -32,7 +32,9 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
+  SearchField,
 } from '@iii-dev/console-ui'
+import { Zap } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { describeCron, nextCronRun, untilLabel } from './cron'
 import {
@@ -82,7 +84,6 @@ import {
   IdentityHead,
   LiveDot,
   Note,
-  SearchField,
   SideCount,
   StatTile,
   useGroupToggle,
@@ -95,21 +96,6 @@ type Selection =
 interface TypeGroup {
   type: TriggerTypeSummary
   bindings: RegisteredTrigger[]
-}
-
-function BoltIcon() {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M8.75 1.5L3.5 9H7l-.75 5.5L11.5 7H8z" />
-    </svg>
-  )
 }
 
 export function TriggersPage({
@@ -315,7 +301,7 @@ export function TriggersPage({
       hasSelection={selected !== null}
       header={
         <PageHeader
-          icon={<BoltIcon />}
+          icon={<Zap />}
           title="Triggers"
           description={
             <span className="console-catalog-header-desc">
@@ -344,10 +330,13 @@ export function TriggersPage({
         <>
           <div className="console-catalog-search-row">
             <SearchField
+              ref={searchInputRef}
+              name="catalog-search"
+              className="console-catalog-search"
               value={search}
               onChange={setSearch}
               placeholder="search triggers…"
-              inputRef={searchInputRef}
+              aria-label="search triggers"
             />
             <Button
               variant="pill"

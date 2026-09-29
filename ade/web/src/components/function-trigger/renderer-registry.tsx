@@ -23,10 +23,6 @@ import {
   HarnessToolView,
 } from '@/components/chat/harness'
 import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
-import {
-  ScraplingFunctionIdLabel,
-  ScraplingToolView,
-} from '@/components/chat/scrapling'
 import { StateFunctionIdLabel, StateToolView } from '@/components/chat/state'
 import { WebFunctionIdLabel, WebToolView } from '@/components/chat/web'
 import { WorkerFunctionIdLabel, WorkerToolView } from '@/components/chat/worker'
@@ -89,14 +85,6 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
     tryRenderRunning: CoderToolView.tryRenderRunning,
     tryRenderPreview: CoderToolView.tryRenderPreview,
     FunctionIdLabel: CoderFunctionIdLabel,
-  },
-  {
-    id: 'first-party/scrapling',
-    isMatch: ScraplingToolView.isScraplingFunction,
-    tryRender: ScraplingToolView.tryRender,
-    tryRenderRunning: ScraplingToolView.tryRenderRunning,
-    tryRenderPreview: ScraplingToolView.tryRenderPreview,
-    FunctionIdLabel: ScraplingFunctionIdLabel,
   },
   // shell::* rendering is no longer first-party: the shell worker ships
   // it as injected UI (ide/ui/src/function-trigger).

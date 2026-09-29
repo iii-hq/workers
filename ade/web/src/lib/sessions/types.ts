@@ -74,12 +74,20 @@ export type AgentMessage =
       timestamp: number
     }
 
+/** `SessionMeta.kind`: who the session is for. Fixed at creation. */
+export type SessionKind = 'user' | 'automation' | 'e2e'
+
 export type SessionMeta = {
   session_id: string
   title: string
   description: string
   status: SessionStatus
   status_reason?: string
+  /**
+   * Who the session is for. Absent from a session-manager that predates
+   * kinds — read it as `user`.
+   */
+  kind?: SessionKind
   /** App-defined; console keys coexist with harness linkage/presentation. */
   metadata?: Record<string, unknown>
   forked_from?: string

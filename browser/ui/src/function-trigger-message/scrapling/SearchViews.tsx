@@ -1,5 +1,18 @@
-import { JsonHighlight } from '@iii-dev/console-ui'
-import { Chip, FilterChip, MetaRow, StatusPill } from '../../lib/shared'
+import {
+  Badge,
+  Chip,
+  EmptyState,
+  JsonHighlight,
+  MetaRow,
+  Table,
+  TableBody,
+  TableCell,
+  TableRow,
+  TableViewport,
+} from '@iii-dev/console-ui'
+import uiClasses from '@iii-dev/console-ui/ui-classes'
+import { cn } from '../../lib/cn'
+import { FilterChip } from '../../lib/shared'
 import {
   describeRequestSchema,
   describeResponseSchema,
@@ -21,7 +34,7 @@ function SectionShell({ children }: { children: React.ReactNode }) {
 
 function RunningNote({ label }: { label: string }) {
   return (
-    <div className="br-ui-scrape-running">
+    <div className="br-ui-more">
       · {label}
     </div>
   )
@@ -90,7 +103,7 @@ export function ElementsView({
     return (
       <SectionShell>
         <MetaRow>
-          <StatusPill label="searching…" variant="default" />
+          <Badge variant="default">searching…</Badge>
           {chips}
         </MetaRow>
         <RunningNote label="scanning DOM…" />
@@ -104,20 +117,18 @@ export function ElementsView({
   return (
     <SectionShell>
       <MetaRow>
-        <StatusPill
-          label={
+        <Badge variant={res.count ? 'accent' : 'warn'}>{
             res.count === 0
               ? 'no match'
               : `${res.count} element${res.count === 1 ? '' : 's'}`
-          }
-          variant={res.count ? 'accent' : 'warn'}
-        />
+          }</Badge>
         {chips}
       </MetaRow>
       {res.count === 0 ? (
-        <div className="br-ui-scrape-empty">
-          · no elements matched
-        </div>
+        <EmptyState
+          title="No elements matched"
+          description="Try a broader tag, attribute, or text filter."
+        />
       ) : (
         <>
           {shown.map((el, i) => (
@@ -125,7 +136,7 @@ export function ElementsView({
             <ElementRow key={`${i}:${el.css ?? ''}`} el={el} />
           ))}
           {res.items.length > MAX_ROWS ? (
-            <div className="br-ui-scrape-more">
+            <div className="br-ui-more">
               +{res.items.length - MAX_ROWS} more
             </div>
           ) : null}
@@ -137,15 +148,15 @@ export function ElementsView({
 
 function ElementRow({ el }: { el: ScrapedElement }) {
   return (
-    <div className="br-ui-scrape-element-row">
+    <div className="br-ui-row br-ui-col">
       <div className="br-ui-scrape-element-main">
         {el.tag ? (
-          <span className="br-ui-scrape-element-tag">{el.tag}</span>
+          <span className="br-ui-accent">{el.tag}</span>
         ) : null}
-        <span className="br-ui-scrape-row-main">{el.text || '—'}</span>
+        <span className="br-ui-break">{el.text || '—'}</span>
       </div>
       {el.css ? (
-        <div className="br-ui-scrape-selector-value">
+        <div className="br-ui-faint br-ui-break">
           {el.css}
         </div>
       ) : null}
@@ -174,7 +185,7 @@ export function DescribeView({
     return (
       <SectionShell>
         <MetaRow>
-          <StatusPill label="describing…" variant="default" />
+          <Badge variant="default">describing…</Badge>
           {chips}
         </MetaRow>
         <RunningNote label="locating element…" />
@@ -188,12 +199,10 @@ export function DescribeView({
     return (
       <SectionShell>
         <MetaRow>
-          <StatusPill label="no match" variant="warn" />
+          <Badge variant="warn">no match</Badge>
           {chips}
         </MetaRow>
-        <div className="br-ui-scrape-empty">
-          · element not found
-        </div>
+        <EmptyState title="Element not found" description="Nothing matched the query." />
       </SectionShell>
     )
   }
@@ -213,29 +222,29 @@ export function DescribeView({
   return (
     <SectionShell>
       <MetaRow>
-        <StatusPill label={el.tag ?? 'element'} variant="accent" />
+        <Badge variant="accent">{el.tag ?? 'element'}</Badge>
         {chips}
       </MetaRow>
       {el.text ? (
-        <div className="br-ui-scrape-description">
+        <div className="br-ui-text">
           {el.text}
         </div>
       ) : null}
-      <div className="br-ui-scrape-table-wrap">
-        <table className="br-ui-scrape-table">
-          <tbody>
+      <TableViewport className="br-ui-table">
+        <Table density="compact">
+          <TableBody>
             {rows.map(([k, v]) => (
-              <tr key={k}>
-                <td className="br-ui-scrape-table-key">{k}</td>
-                <td className="br-ui-scrape-table-value">{v}</td>
-              </tr>
+              <TableRow key={k}>
+                <TableCell className="br-ui-faint br-ui-td-name">{k}</TableCell>
+                <TableCell className="br-ui-break">{v}</TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </TableBody>
+        </Table>
+      </TableViewport>
       {el.attrs && Object.keys(el.attrs).length > 0 ? (
         <div>
-          <div className="br-ui-scrape-label is-separated">
+          <div className={cn('br-ui-scrape-label', 'is-separated', uiClasses.eyebrow)}>
             attributes · {Object.keys(el.attrs).length}
           </div>
           <JsonHighlight code={JSON.stringify(el.attrs, null, 2)} wrap />

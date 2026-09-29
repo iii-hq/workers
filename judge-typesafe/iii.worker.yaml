@@ -1,0 +1,17 @@
+iii: v1
+name: judge-typesafe
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: judge-typesafe
+tags: [evaluation, noul, choice, score, typesafe, relevance]
+description: TypeSafe evaluation (judge-typesafe::evaluate), model listing (judge-typesafe::models::list) and caller-scoped cancellation (judge-typesafe::cancel), with typed usage, provider errors, per-call retries and worker-owned credentials.
+config:
+  api_key: null
+  model: jev-latest
+  max_request_bytes: 8388608
+  max_response_bytes: 8388608
+  max_timeout_ms: 300000
+dependencies:
+  configuration: "latest"

@@ -20,11 +20,16 @@ describe('configuration worker integration', () => {
     expect(rt.iii_context).toBe(true);
   });
 
-  it('registerClaudeConfig registers the schema with the seed as initial_value', async () => {
+  it('registerClaudeConfig ensures the schema with the seed as initial_value (no preliminary get)', async () => {
     const fake = fakeIii();
     const cfg = await loadConfig('/nonexistent/config.yaml');
     await registerClaudeConfig(fake.iii, cfg);
-    const reg = fake.calls.find((c) => c.function_id === 'configuration::register');
+    // Atomic init: no read-then-register. Initialization must not issue a
+    // preliminary configuration::get to decide whether to seed, and must not
+    // touch the legacy configuration::register mutator.
+    expect(fake.calls.some((c) => c.function_id === 'configuration::get')).toBe(false);
+    expect(fake.calls.some((c) => c.function_id === 'configuration::register')).toBe(false);
+    const reg = fake.calls.find((c) => c.function_id === 'configuration::ensure');
     expect(reg).toBeDefined();
     expect(reg?.namespace).toBe('default');
     const payload = reg?.payload as {

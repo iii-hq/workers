@@ -633,10 +633,11 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
         fs_ls,
         fs::LsRequest,
         fs::LsResponse,
-        "List the files and subdirectories of a directory on the filesystem. Errors return \
-         { code, message }; common: S210 bad path, \
-         S211 not found or not accessible, S212 not a directory, S215 jail escape. For \
-         paginated or recursive listings prefer coder::list-folder / coder::tree."
+        "List the files and subdirectories of a directory on the filesystem, sorted by name \
+         and paginated: `page` (1-based, default 1) and `page_size` (default 500, max 2000); \
+         `has_more: true` means request the next page. Errors return { code, message }; \
+         common: S210 bad path, S211 not found or not accessible, S212 not a directory, \
+         S215 jail escape. For recursive listings prefer coder::tree."
     );
     fs_fn!("shell::fs::stat", fs_stat, fs::StatRequest, fs::StatResponse,
         "Stat one file or directory: its type, size, mode, and mtime (paths jail-relative \

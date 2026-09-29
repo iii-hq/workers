@@ -51,6 +51,10 @@ import {
   worktreeIndicators,
 } from '@/lib/worktrees'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 /**
  * Per-session working-directory picker, project-switcher style.
  *
@@ -136,6 +140,7 @@ function withProject(
   ].sort((a, b) => b.last_used_at - a.last_used_at)
 }
 
+/** Recent-project entry with selection, inline renaming, and optional removal. */
 function ProjectRow({
   project,
   selected,
@@ -215,7 +220,7 @@ function ProjectRow({
   return (
     <div
       className={cn(
-        'group flex items-center gap-1 rounded-md pr-1 hover:bg-surface-hover',
+        'group flex min-w-0 items-center gap-1 rounded-md pr-1 hover:bg-surface-hover',
         selected && 'bg-surface-selected',
       )}
     >
@@ -295,6 +300,7 @@ export {
   WORKSPACE_VALIDATE_FUNCTION_ID,
 }
 
+/** Select a validated directory from recent projects, folders, or managed worktrees. */
 export function DirectoryPicker({
   value,
   onChange,
@@ -668,6 +674,13 @@ export function DirectoryPicker({
       basename(value))
     : emptyLabel
 
+  const validationError = error ? (
+    <div className="mb-2 flex items-start gap-2 rounded-md bg-warn-muted px-3 py-2 font-sans text-base text-warn md:text-[11px]">
+      <AlertCircle className="size-4 shrink-0" aria-hidden />
+      <span className="min-w-0 [overflow-wrap:anywhere]">{error}</span>
+    </div>
+  ) : null
+
   if (locked && !embedded) {
     return (
       <span
@@ -687,7 +700,7 @@ export function DirectoryPicker({
     <div
       className={cn(
         embedded
-          ? 'flex h-full min-h-0 w-full flex-col'
+          ? 'flex h-full min-h-0 min-w-0 w-full flex-col'
           : 'relative inline-flex min-w-0',
         className,
       )}
@@ -799,22 +812,15 @@ export function DirectoryPicker({
           />
         </div>
 
-        {/* validation/error (shown in the projects view; browse has its own) */}
-        {view !== 'browse' && error ? (
-          <div className="mx-4 mb-2 flex items-start gap-2 rounded-md bg-warn-muted px-3 py-2 font-sans text-base text-warn md:mx-0 md:text-[11px]">
-            <AlertCircle className="size-4 shrink-0" aria-hidden />
-            <span>{error}</span>
-          </div>
-        ) : null}
-
         {/* body */}
         {view === 'worktrees' ? (
           <div
             className={cn(
-              'space-y-1 overflow-y-auto px-4 pb-2 md:px-0',
-              embedded ? 'min-h-0 flex-1' : 'max-h-[220px]',
+              'min-w-0 space-y-1 overflow-x-hidden overflow-y-auto overscroll-contain px-4 pb-2 md:px-0',
+              embedded || mobileSheet ? 'min-h-0 flex-1' : 'max-h-[220px]',
             )}
           >
+            {validationError}
             {wtLoading ? (
               <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
                 Loading worktrees…
@@ -822,7 +828,9 @@ export function DirectoryPicker({
             ) : wtError ? (
               <div className="flex items-start gap-2 rounded-md bg-warn-muted px-3 py-3 font-sans text-base text-warn md:text-[11px]">
                 <AlertCircle className="size-4 shrink-0" aria-hidden />
-                <span>{wtError}</span>
+                <span className="min-w-0 [overflow-wrap:anywhere]">
+                  {wtError}
+                </span>
               </div>
             ) : filteredWorktrees.length > 0 ? (
               filteredWorktrees.map((wt) => {
@@ -851,7 +859,7 @@ export function DirectoryPicker({
                     />
                     <span className="flex min-w-0 flex-1 items-center gap-1.5 font-sans text-base md:text-[12px]">
                       <span className="truncate text-ink">{wt.branch}</span>
-                      <span className="shrink-0 rounded-sm bg-surface px-1.5 py-0.5 font-mono text-[10px] text-ink-ghost tabular-nums">
+                      <span className="shrink-0 rounded-sm bg-surface px-1.5 py-0.5 font-mono text-[11px] text-ink-ghost tabular-nums">
                         {shortWorktreeId(wt.worktree_id)}
                       </span>
                       {dirty ? (
@@ -864,14 +872,14 @@ export function DirectoryPicker({
                       ) : null}
                       {ahead > 0 ? (
                         <span
-                          className="shrink-0 text-[10px] text-ink-faint tabular-nums"
+                          className="shrink-0 text-[11px] text-ink-faint tabular-nums"
                           title={`${ahead} commit(s) ahead of base`}
                         >
                           +{ahead}
                         </span>
                       ) : null}
                     </span>
-                    <span className="flex shrink-0 items-center gap-1.5 font-sans text-sm md:text-[10px]">
+                    <span className="flex shrink-0 items-center gap-1.5 font-sans text-sm md:text-[11px]">
                       {wt.session_id ? (
                         <span
                           className="max-w-[80px] truncate text-ink-ghost"
@@ -909,16 +917,17 @@ export function DirectoryPicker({
         ) : view === 'projects' ? (
           <div
             className={cn(
-              'space-y-1 overflow-y-auto px-4 pb-2 md:px-0',
-              embedded ? 'min-h-0 flex-1' : 'max-h-[220px]',
+              'min-w-0 space-y-1 overflow-x-hidden overflow-y-auto overscroll-contain px-4 pb-2 md:px-0',
+              embedded || mobileSheet ? 'min-h-0 flex-1' : 'max-h-[220px]',
             )}
           >
+            {validationError}
             {isAbsPath(query) ? (
               <button
                 type="button"
                 disabled={validating !== null}
                 onClick={() => void validateAndSelect(query)}
-                className="flex min-h-14 w-full items-center gap-3 rounded-md bg-accent-muted px-3 py-2.5 text-left font-sans text-base text-accent hover:bg-surface-selected focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-9 md:gap-2 md:py-1.5 md:text-[12px]"
+                className="flex min-h-14 w-full items-center gap-3 rounded-md bg-surface-selected px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-9 md:gap-2 md:py-1.5 md:text-[12px]"
               >
                 <CornerDownLeft className="size-4 shrink-0" aria-hidden />
                 <span className="truncate font-mono">Use {query.trim()}</span>
@@ -1006,9 +1015,14 @@ export function DirectoryPicker({
             </div>
           </div>
         ) : (
-          <div className={cn(embedded && 'flex min-h-0 flex-1 flex-col')}>
+          <div
+            className={cn(
+              'min-w-0',
+              (embedded || mobileSheet) && 'flex min-h-0 flex-1 flex-col',
+            )}
+          >
             {/* browse header */}
-            <div className="mx-4 mb-2 flex min-h-14 shrink-0 items-center justify-between gap-2 rounded-md bg-surface p-1 md:mx-0 md:mb-1 md:min-h-9">
+            <div className="mx-4 mb-2 flex min-h-14 min-w-0 shrink-0 flex-col items-stretch gap-2 rounded-md bg-surface p-1 md:mx-0 md:mb-1 md:min-h-9 md:flex-row md:items-center md:justify-between">
               <div className="flex min-w-0 flex-1 items-center gap-1 font-sans text-base text-ink-faint md:text-[11px]">
                 <button
                   type="button"
@@ -1040,7 +1054,7 @@ export function DirectoryPicker({
                   type="button"
                   disabled={validating !== null}
                   onClick={() => void validateAndSelect(path)}
-                  className="inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-sm bg-accent py-2 pr-3 pl-2 font-sans text-base font-medium whitespace-nowrap text-accent-fg hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus disabled:opacity-50 md:min-h-7 md:py-1 md:text-[11px]"
+                  className="inline-flex min-h-12 shrink-0 items-center justify-center gap-1.5 rounded-sm bg-accent py-2 pr-3 pl-2 font-sans text-base font-medium whitespace-nowrap text-accent-fg hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus disabled:opacity-50 md:min-h-7 md:py-1 md:text-[11px]"
                 >
                   <Check className="size-4 shrink-0" aria-hidden />
                   Use folder
@@ -1050,15 +1064,15 @@ export function DirectoryPicker({
 
             <div
               className={cn(
-                'space-y-1 overflow-y-auto px-4 pb-2 md:px-0',
-                embedded ? 'min-h-0 flex-1' : 'max-h-[220px]',
+                'min-w-0 space-y-1 overflow-x-hidden overflow-y-auto overscroll-contain px-4 pb-2 md:px-0',
+                embedded || mobileSheet ? 'min-h-0 flex-1' : 'max-h-[220px]',
               )}
             >
               {isAbsPath(query) ? (
                 <button
                   type="button"
                   onClick={() => void jumpTo(query)}
-                  className="flex min-h-14 w-full items-center gap-3 rounded-md bg-accent-muted px-3 py-2.5 text-left font-sans text-base text-accent hover:bg-surface-selected focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-[12px]"
+                  className="flex min-h-14 w-full items-center gap-3 rounded-md bg-surface-selected px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-[12px]"
                 >
                   <CornerDownLeft className="size-4 shrink-0" aria-hidden />
                   <span className="truncate font-mono">
@@ -1074,7 +1088,9 @@ export function DirectoryPicker({
               ) : error ? (
                 <div className="flex items-start gap-2 rounded-md bg-warn-muted px-3 py-3 font-sans text-base text-warn md:text-[11px]">
                   <AlertCircle className="size-4 shrink-0" aria-hidden />
-                  <span>{error}</span>
+                  <span className="min-w-0 [overflow-wrap:anywhere]">
+                    {error}
+                  </span>
                 </div>
               ) : path === null ? (
                 // roots list (only when multiple roots)
@@ -1122,6 +1138,7 @@ export function DirectoryPicker({
   )
 }
 
+/** Host picker content inline, in a mobile sheet, or in a desktop popover. */
 function DirectoryPickerSurface({
   open,
   embedded,
@@ -1145,7 +1162,7 @@ function DirectoryPickerSurface({
       <div
         role="group"
         aria-label="select working directory"
-        className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent"
+        className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent"
       >
         {children}
       </div>
@@ -1158,8 +1175,9 @@ function DirectoryPickerSurface({
         <BottomSheetContent
           heading="Projects"
           closeLabel="Close project picker"
+          className="h-[min(36rem,calc(100dvh-1.5rem))]"
         >
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {children}
           </div>
         </BottomSheetContent>

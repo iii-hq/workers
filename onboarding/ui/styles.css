@@ -1,0 +1,225 @@
+/* Onboarding: the spotlight box (it lives in `document.body`, so spotlight.ts
+   stamps the scope on it) and the tour layouts the shared recipes do not
+   cover. Everything else is `uiClasses` and the shared components. */
+
+/* ------------------------------------------------------------------ box --- */
+
+[data-iii-ui='onboarding'].onboarding-spotlight {
+  position: fixed;
+  top: 0;
+  left: 0;
+  /* Under the console's overlay band. Dropdowns, dialogs, the palette and
+     tooltips are all `z-50`, and the mobile sheet's scrim is `z-40`: a box
+     drawn over those frames the wrong thing — the operator sees a ring on top
+     of the menu they just opened. Above page chrome, below anything that
+     opens. */
+  z-index: 30;
+  pointer-events: none;
+  border: 2px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  /* Ring only. A full-screen scrim was tried and dropped: it dims the
+     console the operator is being taught, including this page. */
+  box-shadow: 0 0 0 1px var(--color-accent-border);
+  opacity: 0;
+  transition:
+    translate var(--motion-duration-panel) var(--motion-ease-enter),
+    width var(--motion-duration-panel) var(--motion-ease-enter),
+    height var(--motion-duration-panel) var(--motion-ease-enter),
+    opacity var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+[data-iii-ui='onboarding'].onboarding-spotlight[data-visible='true'] {
+  opacity: 1;
+}
+
+/* ---------------------------------------------------------------- page --- */
+
+[data-iii-ui='onboarding'] .ob-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Centred column: narrow beside a chat, not stranded on one edge as a tab. */
+[data-iii-ui='onboarding'] .ob-column {
+  display: flex;
+  width: 100%;
+  max-width: 48rem;
+  flex-direction: column;
+  gap: 1rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+[data-iii-ui='onboarding'] .ob-skeleton {
+  display: block;
+  height: 2.75rem;
+}
+
+[data-iii-ui='onboarding'] .ob-progress {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+/* How far along the tour is. */
+[data-iii-ui='onboarding'] .ob-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+[data-iii-ui='onboarding'] .ob-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-ok);
+  transition: width var(--motion-duration-panel) var(--motion-ease-enter);
+}
+
+[data-iii-ui='onboarding'] .ob-count {
+  flex: 0 0 auto;
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------- rows --- */
+
+[data-iii-ui='onboarding'] .ob-steps,
+[data-iii-ui='onboarding'] .ob-conditions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui='onboarding'] .ob-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='onboarding'] .ob-conditions {
+  padding: 0 1rem 1rem 2.75rem;
+}
+
+/* The current step is the card's neutral `data-selected`; unreached ones
+   sit flat. */
+[data-iii-ui='onboarding'] .ob-step[data-state='pending'] {
+  background: var(--color-panel);
+}
+
+[data-iii-ui='onboarding'] .ob-dot[data-state='pending'] {
+  opacity: 0.4;
+}
+
+[data-iii-ui='onboarding'] .ob-index {
+  flex: 0 0 auto;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui='onboarding'] .ob-caret {
+  color: var(--color-ink-faint);
+  transition: rotate var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+[data-iii-ui='onboarding'] .ob-caret[data-open] {
+  rotate: 90deg;
+}
+
+/* The open step (or condition) under its row: mounted on open, so the
+   shared `motionPanel` entrance plays. */
+[data-iii-ui='onboarding'] .ob-open {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0 1rem 1rem 2.75rem;
+}
+
+[data-iii-ui='onboarding'] .ob-body,
+[data-iii-ui='onboarding'] .ob-note {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+[data-iii-ui='onboarding'] .ob-note {
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+}
+
+[data-iii-ui='onboarding'] .ob-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='onboarding'] .ob-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='onboarding'] .ob-start {
+  align-self: flex-start;
+}
+
+[data-iii-ui='onboarding'] .ob-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='onboarding'] .ob-grow {
+  flex: 1;
+  min-width: 0;
+}
+
+/* A trigger type or binding: a machine value inline. */
+[data-iii-ui='onboarding'] .ob-code {
+  flex: 0 0 auto;
+  padding: 0.125rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-panel);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+/* A payload or a command to copy. */
+[data-iii-ui='onboarding'] .ob-pre {
+  margin: 0;
+  padding: 0.75rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  max-height: 18rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: all;
+}
+
+/* The step's button once its panel is up: it stops being `Open traces` and
+   becomes `Continue`. Same place, different job, so it changes colour. */
+[data-iii-ui='onboarding'] .ob-continue {
+  background: var(--color-ok);
+  border-color: var(--color-ok);
+  /* `--color-ok` is a deep green in the light theme and a bright mint in the
+     dark one; the panel tone is the readable ink on it in both. */
+  color: var(--color-panel);
+}
+
+[data-iii-ui='onboarding'] .ob-continue:hover {
+  background: color-mix(in srgb, var(--color-ok) 85%, black);
+  border-color: color-mix(in srgb, var(--color-ok) 85%, black);
+}

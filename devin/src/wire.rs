@@ -44,6 +44,9 @@ pub struct AssistantMessage {
     pub role: &'static str,
     pub content: Vec<ContentBlock>,
     pub stop_reason: String,
+    /// The agent worker that produced the turn. Distinct from `provider`, so a
+    /// transcript reader can tell a Devin turn from any other agent's.
+    pub agent: &'static str,
     pub model: String,
     pub provider: &'static str,
     pub timestamp: u64,
@@ -62,6 +65,7 @@ pub fn assistant_message(content: Vec<ContentBlock>, model: &str, stop_reason: &
         role: "assistant",
         content,
         stop_reason: stop_reason.to_string(),
+        agent: "devin",
         model: model.to_string(),
         provider: "devin",
         timestamp: now_ms(),

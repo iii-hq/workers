@@ -1,4 +1,5 @@
-import { Button, EmptyState, IconButton, PageSidebar } from '@iii-dev/console-ui'
+import { Button, EmptyState, Eyebrow, IconButton, PageSidebar, uiClasses } from '@iii-dev/console-ui'
+import { Plus, RefreshCw } from 'lucide-react'
 import { formatDate, StatusBadge, shortId } from '../components'
 import type { EvalSummary } from '../types'
 
@@ -27,7 +28,7 @@ export function History({ side, evaluations, selectedId, loading, onSelect, onNe
       className="eval-ui-history"
       header={
         <div className="eval-ui-history-head">
-          <span>recent evaluations</span>
+          <Eyebrow>recent evaluations</Eyebrow>
           <Button variant="pill" size="sm" onClick={onRefresh} disabled={loading}>
             refresh
           </Button>
@@ -36,7 +37,7 @@ export function History({ side, evaluations, selectedId, loading, onSelect, onNe
       collapsedActions={
         <>
           <IconButton label="new evaluation" tooltipSide={tooltipSide} onClick={onNew}>
-            <PlusIcon />
+            <Plus className={uiClasses.icon} aria-hidden />
           </IconButton>
           <IconButton
             label="refresh evaluation history"
@@ -44,7 +45,7 @@ export function History({ side, evaluations, selectedId, loading, onSelect, onNe
             onClick={onRefresh}
             disabled={loading}
           >
-            <RefreshIcon />
+            <RefreshCw className={uiClasses.icon} aria-hidden />
           </IconButton>
         </>
       }
@@ -92,43 +93,5 @@ export function History({ side, evaluations, selectedId, loading, onSelect, onNe
         </div>
       </div>
     </PageSidebar>
-  )
-}
-
-function PlusIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      aria-hidden
-    >
-      <title>new evaluation</title>
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  )
-}
-
-function RefreshIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <title>refresh evaluation history</title>
-      <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5" />
-      <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 5v-5h-5" />
-    </svg>
   )
 }

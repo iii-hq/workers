@@ -17,10 +17,13 @@ pub const MAX_RETRY_MAX: u32 = 10;
 pub struct RouterSettings {
     pub default_provider: Option<String>,
     pub routing_heuristics: Vec<Heuristic>,
-    pub stream_timeout_ms: u64, // total budget for provider::<id>::stream (spec: 300s)
+    pub stream_timeout_ms: u64, // total budget for provider::<id>::stream (600s)
     pub idle_timeout_ms: u64,   // max gap between frames, ping included (spec: 120s)
     pub retry_max: u32,         // further attempts after the first (spec: 2)
-    pub output_token_max: u64,  // soft cap (spec: 32_000)
+    /// Optional router-wide soft cap on output tokens. `None` (the default)
+    /// imposes no cap: a request without an explicit budget is forwarded
+    /// with the model's own output ceiling, so providers run unlimited.
+    pub output_token_max: Option<u64>,
 }
 
 impl Default for RouterSettings {
@@ -28,10 +31,10 @@ impl Default for RouterSettings {
         RouterSettings {
             default_provider: None,
             routing_heuristics: vec![],
-            stream_timeout_ms: 300_000,
+            stream_timeout_ms: 600_000,
             idle_timeout_ms: 120_000,
             retry_max: 2,
-            output_token_max: 32_000,
+            output_token_max: None,
         }
     }
 }
@@ -73,7 +76,11 @@ pub fn parse_settings(entry_value: &Value) -> RouterSettings {
         out.stream_timeout_ms = pos_u64(s.get("stream_timeout_ms"), out.stream_timeout_ms);
         out.idle_timeout_ms = pos_u64(s.get("idle_timeout_ms"), out.idle_timeout_ms);
         out.retry_max = bounded_u32(s.get("retry_max"), out.retry_max, MAX_RETRY_MAX);
-        out.output_token_max = pos_u64(s.get("output_token_max"), out.output_token_max);
+        // Absent, null or 0 all mean "no cap".
+        out.output_token_max = s
+            .get("output_token_max")
+            .and_then(Value::as_u64)
+            .filter(|v| *v > 0);
     }
     out
 }
@@ -123,6 +130,27 @@ mod tests {
         assert_eq!(
             parsed.idle_timeout_ms,
             RouterSettings::default().idle_timeout_ms
+        );
+    }
+
+    #[test]
+    fn output_token_max_is_uncapped_unless_set() {
+        assert_eq!(RouterSettings::default().output_token_max, None);
+        assert_eq!(
+            parse_settings(&json!({ "settings": {} })).output_token_max,
+            None
+        );
+        assert_eq!(
+            parse_settings(&json!({ "settings": { "output_token_max": null } })).output_token_max,
+            None
+        );
+        assert_eq!(
+            parse_settings(&json!({ "settings": { "output_token_max": 0 } })).output_token_max,
+            None
+        );
+        assert_eq!(
+            parse_settings(&json!({ "settings": { "output_token_max": 32000 } })).output_token_max,
+            Some(32_000)
         );
     }
 

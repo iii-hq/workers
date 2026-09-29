@@ -118,6 +118,22 @@ result = answer["value"]
 
 ## What this cannot do
 
+The in-process Node and Python bus bridges refuse `state::claim-namespace`,
+`harness::state::*`, `provider-openai-codex::state::*`, and
+`provider::openai-codex::{login,auth}::*`. The checks apply before dispatch,
+including queued/fire-and-forget calls and trigger-registration targets.
+Trigger bindings cannot target another trigger registration, which would
+otherwise install an unchecked second binding. Ordinary bus calls keep their
+existing behavior and authority; these checks are not a general sandbox for
+arbitrary code or for other workers' capabilities.
+
+`sandbox-code-runner` has a different boundary: its microVM guests connect
+directly to the engine using the real SDK. They do not pass through these host
+bridges. A check on that runner's generated `iii` global could restrict normal
+helper calls, but guests could bypass it by importing the SDK or opening a raw
+engine connection. Such connections remain trusted under the existing engine
+model; this change does not claim to restrict them.
+
 Read this before choosing between the two workers.
 
 | | `code-runner` | `sandbox-code-runner` |

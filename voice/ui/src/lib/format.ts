@@ -1,26 +1,12 @@
 /**
  * Small pure formatting/encoding helpers shared across the chip, turn
- * summary and page: error-to-string, seconds, bytes and duration
- * formatting, text truncation, and
- * PCM16→base64 encoding.
+ * summary and page: seconds and duration formatting, text truncation,
+ * and PCM16→base64 encoding. Errors and bytes come from
+ * `@iii-dev/console-ui/format`.
  */
-
-export function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message
-  if (typeof err === 'string') return err
-  if (err && typeof err === 'object' && 'message' in err && typeof err.message === 'string') return err.message
-  return 'unknown error'
-}
 
 export function formatSeconds(value: number | undefined): string {
   return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(2) : '—'
-}
-
-export function formatBytes(bytes: number): string {
-  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`
-  if (bytes >= 1_000_000) return `${Math.round(bytes / 1_000_000)} MB`
-  if (bytes >= 1_000) return `${Math.round(bytes / 1_000)} KB`
-  return `${bytes} B`
 }
 
 export function formatDuration(secs: number): string {

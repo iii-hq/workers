@@ -4,14 +4,23 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit && node build.mjs"
+    "build": "tsc --noEmit && node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "pnpm dlx @biomejs/biome@2.4.10 ci .",
+    "test": "vitest run"
   },
   "dependencies": {
     "@iii-dev/console-ui": "workspace:*"
   },
   "devDependencies": {
-    "@types/react": "^19.2.14",
-    "esbuild": "^0.25.0",
-    "typescript": "^5.9.2"
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "esbuild": "catalog:",
+    "jsdom": "^30.0.1",
+    "lucide-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

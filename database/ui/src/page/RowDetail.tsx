@@ -1,56 +1,29 @@
 /**
  * Inspector for one selected row: every column with its full (untruncated)
  * value, JSON pretty-printed, one copy button per field. Complements the
- * grid, which truncates long values to keep rows scannable.
+ * grid, which truncates long values to keep rows scannable. Rendered inside
+ * the inspector's tabbed slot, so the container and the close button belong
+ * to the parent.
  */
 
-import { Button, JsonHighlight } from '@iii-dev/console-ui'
-import { useCopyFeedback } from './cells'
+import { IconButton, JsonHighlight } from '@iii-dev/console-ui'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { Check, Copy, KeyRound } from 'lucide-react'
+import { cellText } from '../lib/grid-cursor'
 import type { ColumnInfo } from './db-data'
-import { Check, Copy, KeyRound, X } from './icons'
 
 interface RowDetailProps {
-  table: string
   row: Record<string, unknown>
   columns: ColumnInfo[]
-  onClose: () => void
-  /**
-   * Rendered inside the shared tabbed slot rather than as its own panel: the
-   * container and the close button belong to the parent then, and repeating
-   * them would nest two headers.
-   */
-  embedded?: boolean
 }
 
-export function RowDetail({
-  table,
-  row,
-  columns,
-  onClose,
-  embedded,
-}: RowDetailProps) {
-  const { copied, copy } = useCopyFeedback()
+export function RowDetail({ row, columns }: RowDetailProps) {
   const names =
     columns.length > 0 ? columns.map((c) => c.name) : Object.keys(row)
   const byName = new Map(columns.map((c) => [c.name, c]))
 
-  const Wrapper = embedded ? 'div' : 'aside'
-
   return (
-    <Wrapper className={embedded ? 'db-rowdetail-body' : 'db-rowdetail'}>
-      {embedded ? null : (
-        <div className="db-rowdetail-head">
-          <span className="cap">Row · {table}</span>
-          <Button
-            variant="icon"
-            size="icon"
-            onClick={onClose}
-            aria-label="close row detail"
-          >
-            <X size={16} />
-          </Button>
-        </div>
-      )}
+    <div className="db-rowdetail-body">
       {names.map((name) => {
         const col = byName.get(name)
         const value = row[name]
@@ -66,26 +39,21 @@ export function RowDetail({
               {col?.type ? (
                 <span className="db-field-type">{col.type}</span>
               ) : null}
-              <button
-                type="button"
-                className={`db-field-copy${copied === name ? ' copied' : ''}`}
-                onClick={() => copy(name, value)}
-                aria-label={`copy ${name}`}
-              >
-                {copied === name ? <Check size={16} /> : <Copy size={16} />}
-              </button>
+              <FieldCopy name={name} value={value} />
             </div>
             <div className="db-field-value">
               {value === null || value === undefined ? (
-                <span className="null">NULL</span>
+                <span className="db-cell-null">NULL</span>
               ) : isJson ? (
                 <JsonHighlight code={JSON.stringify(value, null, 2)} />
               ) : typeof value === 'boolean' ? (
-                <span className={value ? 'bool-true' : 'bool-false'}>
+                <span
+                  className={value ? 'db-cell-bool-true' : 'db-cell-bool-false'}
+                >
                   {String(value)}
                 </span>
               ) : (
-                <span className="plain">{String(value)}</span>
+                <span className="db-cell-str">{String(value)}</span>
               )}
             </div>
             {col?.fkTarget ? (
@@ -94,6 +62,19 @@ export function RowDetail({
           </div>
         )
       })}
-    </Wrapper>
+    </div>
+  )
+}
+
+/** One field's copy affordance; the flash is per field, so each owns a hook. */
+function FieldCopy({ name, value }: { name: string; value: unknown }) {
+  const { state, copy } = useCopyFlash(
+    value == null ? 'NULL' : cellText(value),
+    1200,
+  )
+  return (
+    <IconButton label={`copy ${name}`} onClick={() => copy()}>
+      {state === 'copied' ? <Check size={16} /> : <Copy size={16} />}
+    </IconButton>
   )
 }

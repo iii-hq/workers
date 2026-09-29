@@ -21,11 +21,7 @@ export function Chip({ label, children, className }: ChipProps) {
         className,
       )}
     >
-      {label ? (
-        <span className="text-ink-faint uppercase tracking-[0.06em]">
-          {label}
-        </span>
-      ) : null}
+      {label ? <span className="iii-ui-eyebrow">{label}</span> : null}
       <span className="tabular-nums">{children}</span>
     </span>
   )

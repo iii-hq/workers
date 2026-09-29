@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import * as Lucide from 'lucide-react'
 import * as React from 'react'
 import { StrictMode } from 'react'
 import * as JsxRuntime from 'react/jsx-runtime'
@@ -6,6 +7,7 @@ import * as ReactDOM from 'react-dom'
 import * as ReactDOMClient from 'react-dom/client'
 import { createRoot } from 'react-dom/client'
 import { TooltipProvider } from '@/components/ui/Tooltip'
+import { routeFromHash, standaloneRouteFromHash } from '@/hooks/use-hash-route'
 import { buildConsoleApi } from '@/lib/console-api'
 import { installRandomUUIDPolyfill } from '@/lib/crypto-polyfill'
 import { getIiiClient } from '@/lib/iii-client'
@@ -13,6 +15,7 @@ import { registerServiceWorker } from '@/lib/register-service-worker'
 import { setUiAssetsStatus } from '@/lib/ui-slots'
 import { App } from './App'
 import './index.css'
+import { Standalone } from './Standalone'
 
 // Back-fills crypto.randomUUID on insecure origins (http://<LAN-IP>) —
 // iii-browser-sdk ≤ 0.21.6 calls it bare on every invocation. The module
@@ -35,6 +38,9 @@ const bootGlobal: NonNullable<Window['__III_CONSOLE__']> = {
   ReactDOM,
   ReactDOMClient,
   JsxRuntime,
+  // The whole icon set, so `lucide-react` can stay external in worker
+  // builds too (/vendor/lucide-react.js).
+  Lucide,
   api: null,
 }
 window.__III_CONSOLE__ = bootGlobal
@@ -66,6 +72,21 @@ registerServiceWorker()
 const root = document.getElementById('root')
 if (!root) throw new Error('missing #root container')
 
+// `#/worker/<scope>` and `#/traces` boot the standalone shell — one surface,
+// no workspace — instead of the app. The two never share a document:
+// crossing that line by hash reloads into the other. Settings are the one
+// hash both shells own (`#/configuration…` opens the overlay in place).
+const standalone = standaloneRouteFromHash(window.location.hash) !== null
+window.addEventListener('hashchange', () => {
+  const hash = window.location.hash
+  const now = standaloneRouteFromHash(hash) !== null
+  const crosses = standalone
+    ? !now && routeFromHash(hash) !== 'configuration'
+    : now
+  if (crosses) window.location.reload()
+})
+const Root = standalone ? Standalone : App
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -80,7 +101,7 @@ createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={150}>
-        <App injectableUiRuntime={injectableUiRuntime} />
+        <Root injectableUiRuntime={injectableUiRuntime} />
       </TooltipProvider>
     </QueryClientProvider>
   </StrictMode>,

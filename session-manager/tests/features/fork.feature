@@ -167,6 +167,113 @@ Feature: session::fork — copy history up to an entry into a new session
     Then the response field "entry.revision" is 0
     And the response field "entry.message.content.0.text" is "rev1"
 
+  # Prevents: a fork of a compacted session carrying the SOURCE's
+  # tail_start_entry_id, which no entry of the fork has — the next turn
+  # would re-send history the summary already replaced.
+  Scenario: fork rewrites the compaction anchor to the copied entry's id
+    Given I call "session::append" with:
+      """
+      { "session_id": "s_001", "custom": { "custom_type": "compaction",
+        "data": { "summary": "s", "tail_start_entry_id": "e_002", "tokens_before": 7 } } }
+      """
+    When I call "session::fork" with:
+      """
+      { "session_id": "s_001", "entry_id": "e_004" }
+      """
+    Then the call succeeds
+    When I call "session::messages" with:
+      """
+      { "session_id": "s_002", "include_custom": true }
+      """
+    Then the response field "messages" has length 4
+    And the response field "messages.3.custom.custom_type" is "compaction"
+    And the response field "messages.3.custom.data.tail_start_entry_id" is "e_006"
+    And the response field "messages.3.custom.data.summary" is "s"
+
+  # Prevents: a record that names an entry LATER on the path (ids are
+  # caller-supplied) keeping the source id because the map was still being
+  # built when the record was copied.
+  Scenario: fork rewrites an anchor that names a later entry on the path
+    Given I call "session::append" with:
+      """
+      { "session_id": "s_001", "custom": { "custom_type": "compaction",
+        "data": { "summary": "s", "tail_start_entry_id": "e_next" } } }
+      """
+    And I call "session::append" with:
+      """
+      { "session_id": "s_001", "entry_id": "e_next",
+        "message": { "role": "user", "content": [{ "type": "text", "text": "later" }], "timestamp": 0 } }
+      """
+    When I call "session::fork" with:
+      """
+      { "session_id": "s_001", "entry_id": "e_next" }
+      """
+    And I call "session::messages" with:
+      """
+      { "session_id": "s_002", "include_custom": true }
+      """
+    Then the response field "messages" has length 5
+    And the response field "messages.4.entry_id" is "e_009"
+    And the response field "messages.3.custom.data.tail_start_entry_id" is "e_009"
+
+  # Prevents: an anchor that is not on the copied path being rewritten to
+  # null, which readers take as "everything before this entry was summarised".
+  Scenario: an unknown compaction anchor is copied unchanged
+    Given I call "session::append" with:
+      """
+      { "session_id": "s_001", "custom": { "custom_type": "compaction",
+        "data": { "summary": "s", "tail_start_entry_id": "e_999" } } }
+      """
+    When I call "session::fork" with:
+      """
+      { "session_id": "s_001", "entry_id": "e_004" }
+      """
+    And I call "session::messages" with:
+      """
+      { "session_id": "s_002", "include_custom": true }
+      """
+    Then the response field "messages.3.custom.data.tail_start_entry_id" is "e_999"
+
+  # Prevents: a fork carrying the SOURCE's ids in a harness message_order
+  # record — the order would no longer apply, and the fork's next request
+  # would show the moved message where the model never saw it.
+  Scenario: fork rewrites a message order's anchor and moved ids
+    Given I call "session::append" with:
+      """
+      { "session_id": "s_001", "custom": { "custom_type": "message_order",
+        "data": { "after": "e_002", "moved": ["e_003", "e_999"] } } }
+      """
+    When I call "session::fork" with:
+      """
+      { "session_id": "s_001", "entry_id": "e_004" }
+      """
+    Then the call succeeds
+    When I call "session::messages" with:
+      """
+      { "session_id": "s_002", "include_custom": true }
+      """
+    Then the response field "messages.3.custom.custom_type" is "message_order"
+    And the response field "messages.3.custom.data.after" is "e_006"
+    And the response field "messages.3.custom.data.moved.0" is "e_007"
+    And the response field "messages.3.custom.data.moved.1" is "e_999"
+
+  # Prevents: a fork of a machine run reappearing as a human chat — kind
+  # travels with the copy, the way tenancy metadata does.
+  Scenario: a fork inherits the source session's kind
+    Given a session created with:
+      """
+      { "title": "e2e run", "kind": "e2e" }
+      """
+    And a user message "one" appended to "s_002"
+    When I call "session::fork" with:
+      """
+      { "session_id": "s_002", "entry_id": "e_004" }
+      """
+    Then the call succeeds
+    And the response field "session_id" is "s_003"
+    And the response field "meta.kind" is "e2e"
+    And the response field "meta.forked_from" is "s_002"
+
   # Prevents: forking from entries that don't exist or sessions that
   # don't exist.
   Scenario: fork at an unknown entry or session is rejected

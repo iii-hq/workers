@@ -20,7 +20,7 @@ Three surfaces, one worker:
    land in the composer when you stop, ready to edit before sending.
 2. **Read aloud.** Every finished turn gets a `Read aloud` action above the
    composer that speaks the last reply.
-3. **A voice page.** `#/ext/voice` shows the engine state, downloads the
+3. **A voice page.** The `voice` page shows the engine state, downloads the
    model, transcribes a WAV file with per-segment timestamps, and runs a
    dictation test.
 

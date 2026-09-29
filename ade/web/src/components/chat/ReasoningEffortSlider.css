@@ -36,6 +36,7 @@
   --effort-thumb-bg: var(--color-ink);
 }
 
+/* viewport: phone chrome — one row in the desktop popover, stacked in the phone sheet */
 @media (min-width: 640px) {
   .reasoning-effort {
     grid-template-columns: auto minmax(0, 1fr) auto;

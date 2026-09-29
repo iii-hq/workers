@@ -11,6 +11,7 @@
  */
 
 import { Badge } from '@iii-dev/console-ui'
+import uiClasses from '@iii-dev/console-ui/ui-classes'
 import { z } from 'zod'
 
 const infraErrorWireSchema = z.object({
@@ -277,14 +278,12 @@ function WireErrorView({ error }: { error: InfraErrorWire }) {
   return (
     <div className="br-ui-err">
       <div className="br-ui-err-head">
-        <Badge variant="warn" className="br-ui-err-code">
+        <Badge variant="warn">
           {error.code}
         </Badge>
-        <span className="br-ui-err-type">{error.type}</span>
+        <span className={uiClasses.eyebrow}>{error.type}</span>
         {error.retryable === true ? (
-          <Badge variant="accent" className="br-ui-pill">
-            retryable
-          </Badge>
+          <Badge variant="accent">retryable</Badge>
         ) : null}
       </div>
       <pre className="br-ui-err-msg">
@@ -316,10 +315,10 @@ function InvocationErrorView({ error }: { error: InfraInvocationError }) {
   return (
     <div className="br-ui-err">
       <div className="br-ui-err-head">
-        <Badge variant="warn" className="br-ui-err-code">
+        <Badge variant="warn">
           {badge}
         </Badge>
-        <span className="br-ui-err-type">{error.title}</span>
+        <span className={uiClasses.eyebrow}>{error.title}</span>
       </div>
       {error.functionId ? (
         <div className="br-ui-err-note">
@@ -343,10 +342,10 @@ function DispatchDeniedView({ denial }: { denial: InfraDispatchDenial }) {
   return (
     <div className="br-ui-err">
       <div className="br-ui-err-head">
-        <Badge variant="warn" className="br-ui-err-code">
+        <Badge variant="warn">
           denied
         </Badge>
-        <span className="br-ui-err-type">Dispatch policy</span>
+        <span className={uiClasses.eyebrow}>Dispatch policy</span>
       </div>
       {fn ? (
         <div className="br-ui-err-note">

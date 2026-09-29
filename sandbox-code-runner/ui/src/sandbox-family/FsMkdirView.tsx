@@ -1,5 +1,6 @@
 /** `sandbox::fs::mkdir` — created vs already-exists. */
 
+import { Plus } from 'lucide-react'
 import { fsMkdirRequestSchema, fsMkdirResponseSchema, safeParseResponse } from './parsers'
 import { Chip, SandboxIdChip } from './shared'
 
@@ -19,7 +20,8 @@ export function FsMkdirView({ input, output }: FsMkdirViewProps) {
     <div className="cr-fam-card">
       <div className="cr-fam-slab">
         <div className="cr-fam-line">
-          <span className={created ? 'cr-fam-accent' : 'faint'}>{created ? '+ created ' : '· exists '}</span>
+          {created ? <Plus size={16} aria-hidden className="cr-fam-accent" /> : null}
+          <span className={created ? 'cr-fam-accent' : 'faint'}>{created ? 'created' : '· exists'}</span>
           <span>{req.data.path}</span>
         </div>
         <div className="cr-fam-chips">

@@ -61,25 +61,25 @@ export function MemoryChip({ memory }: MemoryChipProps) {
         onClick={() => void toggle()}
         title="what the memory worker fed this reply — click for the exact memories"
         className={cn(
-          'font-mono text-[10px] lowercase px-1.5 py-0.5 border transition-colors',
+          'font-mono text-[11px] rounded-sm px-1.5 py-0.5 transition-colors',
           open
-            ? 'border-edge bg-surface-selected text-ink'
-            : 'border-rule text-ink-faint hover:border-ink hover:text-ink',
+            ? 'bg-surface-selected text-ink'
+            : 'bg-surface text-ink-faint hover:bg-surface-hover hover:text-ink',
         )}
       >
-        memory: {memory.bank} · {parts.join(' · ')}
+        Memory: {memory.bank} · {parts.join(' · ')}
         {memory.semantic ? ' · semantic' : ''}
         {memory.truncated ? ' · truncated' : ''}
       </button>
       {open ? (
         <span className="mt-1 flex flex-col gap-1 border border-rule-2 bg-panel px-2 py-1.5 max-w-md">
           {loading ? (
-            <span className="font-mono text-[10px] lowercase text-ink-ghost">
-              loading memories…
+            <span className="font-mono text-[11px] text-ink-ghost">
+              Loading memories…
             </span>
           ) : loadError ? (
-            <span className="font-mono text-[10px] lowercase text-alert">
-              could not load memories — click to retry
+            <span className="font-mono text-[11px] text-alert">
+              Could not load memories — click to retry
             </span>
           ) : memories && memories.length > 0 ? (
             memories.map((memory) => (
@@ -94,10 +94,10 @@ export function MemoryChip({ memory }: MemoryChipProps) {
               </span>
             ))
           ) : (
-            <span className="font-mono text-[10px] lowercase text-ink-ghost">
+            <span className="font-mono text-[11px] text-ink-ghost">
               {memory.memoryIds.length === 0
-                ? 'only rules fed this turn (always-injected markdown)'
-                : 'memories no longer available (superseded or bank changed)'}
+                ? 'Only rules fed this turn (always-injected markdown)'
+                : 'Memories no longer available (superseded or bank changed)'}
             </span>
           )}
         </span>

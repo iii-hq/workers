@@ -6,6 +6,7 @@
 //! worker needs no changes. What differs is documented in the README: no
 //! network, therefore no npm/pip, and no `/dev/kvm` requirement.
 
+mod agent_dispatch;
 pub mod config;
 pub mod configuration;
 pub mod error;

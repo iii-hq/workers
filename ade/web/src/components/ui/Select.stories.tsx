@@ -47,7 +47,7 @@ const LONG_OPTIONS = [
 
 function Hint({ children }: { children: React.ReactNode }) {
   return (
-    <p className="mt-2 font-mono text-[12px] leading-relaxed text-ink-faint lowercase">
+    <p className="mt-2 font-mono text-[12px] leading-relaxed text-ink-faint">
       {children}
     </p>
   )

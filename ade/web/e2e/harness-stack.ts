@@ -293,6 +293,7 @@ export const test = base.extend<FixtureValues>({
 
 export { expect }
 
+/** Open and hydrate a session by its label, avoiding nested row action buttons. */
 export async function openSession(
   page: Page,
   stack: HarnessStack,
@@ -307,7 +308,8 @@ export async function openSession(
     name: `open ${stack.ready.session.title}`,
     exact: true,
   })
-  await session.click()
+  // Coarse-pointer actions can occupy the row center; target its title instead.
+  await session.getByText(stack.ready.session.title, { exact: true }).click()
   await expect(session).toHaveAttribute('aria-current', 'page')
   await expect(
     page.locator(`[data-chat-session-id="${stack.ready.session.id}"]`),

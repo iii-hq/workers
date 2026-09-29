@@ -307,13 +307,13 @@ function Tristate({ state, onClick, 'aria-label': label }: TristateProps) {
         onClick()
       }}
       className={cn(
-        'shrink-0 size-4 border flex items-center justify-center',
-        'border-rule hover:border-ink transition-colors',
-        state === 'checked' && 'bg-ink border-ink text-bg',
-        state === 'mixed' && 'bg-ink-ghost border-ink-ghost text-bg',
+        'shrink-0 size-4 rounded-sm flex items-center justify-center transition-colors',
+        state === 'unchecked' && 'bg-surface hover:bg-surface-hover',
+        state === 'checked' && 'bg-ink text-bg',
+        state === 'mixed' && 'bg-ink-ghost text-bg',
       )}
     >
-      <span aria-hidden className="text-[10px] leading-none">
+      <span aria-hidden className="text-[11px] leading-none">
         {state === 'checked' ? '✓' : state === 'mixed' ? '–' : ''}
       </span>
     </button>
@@ -364,14 +364,14 @@ function DestructiveConfirm({
           <button
             type="button"
             onClick={onCancel}
-            className="font-mono text-[12px] px-3 py-1 border border-rule text-ink-faint hover:text-ink hover:border-ink transition-colors"
+            className="font-mono text-[12px] px-3 py-1 rounded-sm bg-surface text-ink-faint hover:bg-surface-hover hover:text-ink transition-colors"
           >
             cancel
           </button>
           <button
             type="button"
             onClick={() => functionId && onConfirm(functionId)}
-            className="font-mono text-[12px] px-3 py-1 border border-alert bg-alert text-bg hover:bg-bg hover:text-alert transition-colors"
+            className="font-mono text-[12px] px-3 py-1 rounded-sm bg-alert text-bg hover:bg-alert/90 transition-colors"
           >
             allow {functionId}
           </button>

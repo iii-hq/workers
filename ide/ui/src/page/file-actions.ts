@@ -51,12 +51,3 @@ export async function duplicateFile(host: Host, root: string, rel: string, to: s
   const result = await coderWriteFile(host, joinPath(root, to), out.content ?? '', out.mode ?? null)
   if (!result.success) throw new Error(result.error?.message ?? `could not write ${to}`)
 }
-
-export async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text)
-    return true
-  } catch {
-    return false
-  }
-}

@@ -20,7 +20,12 @@ import type {
 } from '@/lib/attachments/store'
 import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
-import type { SessionMeta, SessionStatus, TranscriptItem } from './types'
+import type {
+  SessionKind,
+  SessionMeta,
+  SessionStatus,
+  TranscriptItem,
+} from './types'
 
 /** `session::messages` hard cap per page. */
 const MESSAGES_PAGE_LIMIT = 500
@@ -41,7 +46,11 @@ export async function listSessions(): Promise<SessionMeta[]> {
   const resp = await client.trigger<{
     sessions?: SessionMeta[]
     next_cursor?: string | null
-  }>('session::list', { limit: LIST_PAGE_LIMIT, order: 'updated_desc' })
+  }>(
+    'session::list',
+    { limit: LIST_PAGE_LIMIT, order: 'updated_desc' },
+    { timeoutMs: 10_000 },
+  )
   return resp?.sessions ?? []
 }
 
@@ -52,6 +61,7 @@ export async function getSession(
   const resp = await client.trigger<{ meta: SessionMeta } | null>(
     'session::get',
     { session_id: sessionId },
+    { timeoutMs: 10_000 },
   )
   return resp?.meta ?? null
 }
@@ -64,6 +74,8 @@ export async function ensureSession(input: {
   session_id: string
   title?: string
   metadata?: Record<string, unknown>
+  /** Applied on creation only; the store defaults it to `user`. */
+  kind?: SessionKind
 }): Promise<{ meta: SessionMeta; created: boolean }> {
   const client = await getIiiClient()
   return client.trigger('session::ensure', input)

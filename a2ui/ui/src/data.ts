@@ -9,7 +9,7 @@ import type {
   SurfaceReceipt,
   SurfaceTemplate,
 } from './types'
-import { unwrapEnvelope } from './types'
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 
 async function call<T>(
   host: Host,

@@ -57,9 +57,8 @@ const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 
-/// Register the `harness` configuration schema. When `seed` is present its
-/// value is installed as `initial_value`; otherwise the built-in default is
-/// seeded only when nothing is stored yet (safe to call every boot).
+/// Register the schema. The optional seed or built-in default is installed
+/// only when no stored value exists; live configuration always takes precedence.
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     discard_legacy_harness_config_if_needed(iii).await?;
     drop_stored_provider_identity_prompt_if_needed(iii).await?;
@@ -74,15 +73,26 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "schema": WorkerConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
-    if let Some(seed) = seed {
-        payload["initial_value"] = seed.to_json();
-    } else if should_seed_default_value(iii).await? {
-        payload["initial_value"] = WorkerConfig::default().to_json();
-    }
-    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
-    Ok(())
+    // The candidate (seed, else the built-in default) is forwarded
+    // unconditionally: `configuration::ensure` installs it atomically ONLY
+    // against an absent/null entry, so a stored operator/Compose override is
+    // preserved without a client-side read-then-register race.
+    payload["initial_value"] = seed
+        .map(|value| value.to_json())
+        .unwrap_or_else(|| WorkerConfig::default().to_json());
+    ensure_configuration(iii, payload).await
 }
 
+#[path = "../../crates/config-client/src/initialization.rs"]
+mod initialization;
+
+/// Initialization only; intentional configuration migrations remain unchanged.
+async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
+    initialization::ensure_with(payload, |function, payload| {
+        trigger_configuration_with_retry(iii, function, payload)
+    })
+    .await
+}
 /// Read the live `harness` configuration (env-expanded by the configuration
 /// worker — `from_json` does NOT re-expand).
 pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
@@ -94,12 +104,29 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
     WorkerConfig::from_json(&value)
 }
 
-async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
-    match try_get_config_value(iii, false).await? {
-        None => Ok(true),
-        Some(value) if value.is_null() => Ok(true),
-        Some(_) => Ok(false),
-    }
+/// `true` for the one error that is a definitive answer rather than a
+/// failure: the configuration worker's uppercase `NOT_FOUND` entry code.
+/// Matched case-SENSITIVELY — the engine's missing-function code is the
+/// lowercase `function_not_found` and a backend lookup failure is
+/// `statement_not_found`; those must propagate as errors instead of being
+/// read as "nothing stored yet", which would seed a default over a stored
+/// operator/override value.
+fn is_not_found(error: &str) -> bool {
+    // Anchor on the SDK's own rendering instead of scanning the whole string:
+    // a remote failure prints as `remote error ({code}): {message}`, and this
+    // worker wraps a retried get as
+    // `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel
+    // exactly that one wrapper (never a foreign one or a different attempt
+    // count) and then require the NOT_FOUND envelope at the very start, so a
+    // NOT_FOUND code buried in an unrelated message, a nested envelope, or a
+    // different wrapper stays a real failure and propagates.
+    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
+    const _: () = assert!(CONFIG_RETRIES == 3);
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "NOT_FOUND"
+        || raw == "remote error (NOT_FOUND):"
+        || raw.starts_with("remote error (NOT_FOUND): ")
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
@@ -121,7 +148,7 @@ async fn try_get_config_value(iii: &IIIClient, raw: bool) -> Result<Option<Value
     .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
+        Err(e) if is_not_found(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -439,6 +466,10 @@ async fn trigger_configuration_with_retry(
             Ok(v) => return Ok(v),
             Err(e) => {
                 last_err = e.to_string();
+                if matches!(&e, iii_sdk::errors::Error::Remote { code, .. } if code == "function_not_found" || code == "NOT_FOUND")
+                {
+                    return Err(last_err);
+                }
                 if attempt < CONFIG_RETRIES {
                     tracing::warn!(function_id, attempt, error = %last_err, "configuration RPC failed; retrying");
                     tokio::time::sleep(Duration::from_millis(
@@ -456,6 +487,43 @@ async fn trigger_configuration_with_retry(
 
 #[cfg(test)]
 mod tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/config-client/tests/support/is_not_found_cases.rs"
+    ));
+
+    /// The missing-entry classifier only seeds on the configuration worker's
+    /// standalone `NOT_FOUND` envelope; every unrelated failure or compound
+    /// code propagates instead of clobbering a stored value with a default.
+    #[test]
+    fn is_not_found_matches_only_the_envelope_code() {
+        assert_missing_entry_contract(super::is_not_found);
+    }
+
+    /// Preserve operator settings when configuration lookup fails for another reason.
+    #[test]
+    fn missing_entry_detection_does_not_mask_service_failures() {
+        assert!(super::is_not_found("NOT_FOUND"));
+        assert!(super::is_not_found(
+            "remote error (NOT_FOUND): configuration not found"
+        ));
+        assert!(super::is_not_found(
+            "configuration::get failed after 3 attempts: remote error (NOT_FOUND): missing"
+        ));
+        assert!(!super::is_not_found("function_not_found"));
+        assert!(!super::is_not_found("statement_not_found"));
+        assert!(!super::is_not_found("RESOURCE_NOT_FOUND"));
+        assert!(!super::is_not_found(
+            "remote error (ADAPTER_ERROR): NOT_FOUND"
+        ));
+        assert!(!super::is_not_found(
+            "remote error (OTHER): remote error (NOT_FOUND): nested"
+        ));
+        assert!(!super::is_not_found(
+            "configuration::get failed after 3 attempts: function_not_found"
+        ));
+    }
+
     use super::*;
 
     #[test]

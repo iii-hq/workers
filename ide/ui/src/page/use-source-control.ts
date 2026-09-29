@@ -4,7 +4,7 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { errorMessage } from '../lib/format'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { type GitComparisonEntry, gitComparison } from './git'
 import {
   gitCommit,

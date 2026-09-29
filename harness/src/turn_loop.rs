@@ -202,6 +202,23 @@ fn origin(turn_id: &str) -> Value {
 
 /// `{ turn_id }` with hook annotations merged in (audit trail — harness.md §
 /// Cautions: mutations are silent; annotations record what ran).
+/// The `description` the model gave an `agent_trigger` call (dropped by
+/// `plan_calls`): the call's stated purpose, used as reconciliation intent.
+fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'a str> {
+    content.iter().find_map(|block| match block {
+        // Only the wrapper's field: in native exposure `description` would
+        // be one of the target's own parameters.
+        ContentBlock::FunctionCall {
+            id,
+            function_id,
+            arguments,
+        } if id == call_id && function_id == policy::AGENT_TRIGGER_NAME => {
+            arguments.get("description").and_then(Value::as_str)
+        }
+        _ => None,
+    })
+}
+
 fn origin_with(turn_id: &str, annotations: &serde_json::Map<String, Value>) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("turn_id".to_string(), json!(turn_id));
@@ -525,27 +542,97 @@ async fn generate_step(
     // Load the active path (custom entries carry the compaction record).
     let entries = session.messages(&record.session_id, true).await?;
     // The previous step's watermark marks which entries arrived while that
-    // step was generating (assemble_context rotates them past the reply they
-    // interrupted — see rotate_mid_generation_users). The new watermark is
+    // step was generating (the window moves them past the reply they
+    // interrupted — see crate::window::build). The new watermark is
     // assigned only AFTER the generate is consumed: the pre-generate put_turn
     // must persist the OLD one, or a redelivered step loses the rotation
     // window and re-issues the prefill-rejected trailing-assistant shape on
     // every retry.
     let prev_watermark = record.watermark_entry_id.clone();
     let watermark = entries.last().map(|e| e.entry_id.clone());
+    // The model-facing window from the compaction anchor (crate::window::build).
+    // Step notices are deduplicated against it, so one a compaction summarized
+    // away is told again.
+    // ponytail: judged before this step's own compaction; a notice it summarizes away is re-told next step
+    let anchor = compaction_anchor(&record.session_id, &entries);
+    let window = crate::window::build(
+        &entries,
+        anchor.window_start,
+        prev_watermark.as_deref(),
+        Some(&ids::assistant_entry_id(&record.turn_id, payload.step)),
+    );
 
     // Build every deterministic model-facing input before context assembly.
+    // Everything the model is shown is append-only: the system prompt is the
+    // provider's first input item, and an edit there (or to any earlier
+    // message) invalidates the prompt-cache prefix and — on models that bind
+    // thinking to the prefix — every thinking block after it. So step notices
+    // are persisted as `model_notice` entries where they were sent and
+    // replayed there on every later step (crate::window).
+    let current_generation = functions.generation;
+    // The runtime context (session id, working directory, dispatch policy,
+    // seeded contracts) is frozen into the system prompt at the session's
+    // first step; a later change reaches the model as a notice.
+    let current_aid = runtime_context_aid(
+        &record.session_id,
+        record.options.filesystem_root(),
+        record.options.functions.as_ref(),
+        record.options.seeded_contracts.as_deref(),
+    );
+    let (runtime_aid, runtime_changed) = match crate::window::frozen_runtime_context(&entries) {
+        Some(frozen) => {
+            let notice = runtime_change_notice(
+                &frozen,
+                &current_aid,
+                crate::window::latest_notice_text(&entries, &window, RUNTIME_CONTEXT_NOTICE_KIND),
+            );
+            (frozen, notice)
+        }
+        None => {
+            session
+                .append_custom(
+                    &record.session_id,
+                    crate::window::RUNTIME_CONTEXT,
+                    json!({ "aid": current_aid }),
+                    &ids::runtime_context_entry_id(&record.turn_id, payload.step),
+                    Some(&origin(&record.turn_id)),
+                )
+                .await?;
+            (current_aid, None)
+        }
+    };
+    let (stable_prompt, assembly_system_prompt) =
+        with_runtime_context(record.options.system_prompt.clone(), &record, &runtime_aid);
     // Registry-change notice: if the function registry changed since this
     // session last acknowledged its generation, tell the model its cached
-    // contracts may be stale. First sighting stamps silently. The notice rides
-    // as a tail message, never a system-prompt mutation: the system prompt is
-    // the provider's first input item, and a one-shot append-then-remove there
-    // invalidates the whole prompt-cache prefix twice per event.
-    let current_generation = functions.generation;
-    let assembly_system_prompt =
-        with_runtime_context(record.options.system_prompt.clone(), &record);
-    let registry_notice_message =
-        registry_notice(record.functions_generation, current_generation).map(notice_message);
+    // contracts may be stale. First sighting stamps silently.
+    let registry_changed = registry_notice(
+        record.functions_generation,
+        current_generation,
+        &policy,
+        &functions,
+    );
+    // Preloaded contracts that drifted from the live registry: named per id
+    // (the frozen block is never rewritten). The same drift is told once
+    // while that notice is still in the window.
+    let preloaded_stale = preloaded_stale_notice(
+        record.options.preloaded_contracts.as_ref(),
+        &functions,
+        &policy,
+    )
+    .filter(|text| {
+        crate::window::latest_notice_text(&entries, &window, PRELOADED_STALE_NOTICE_KIND)
+            != Some(text.as_str())
+    });
+    let step_notices: Vec<(&'static str, Value)> = [
+        (REGISTRY_CHANGED_NOTICE_KIND, registry_changed),
+        (PRELOADED_STALE_NOTICE_KIND, preloaded_stale),
+        (RUNTIME_CONTEXT_NOTICE_KIND, runtime_changed),
+    ]
+    .into_iter()
+    .filter_map(|(kind, notice)| Some((kind, notice_message(notice?))))
+    .collect();
+    let notice_prefix = ids::notice_entry_prefix(&record.turn_id, payload.step);
     record.functions_generation = Some(current_generation);
 
     // Resolve the output-contract strategy and build the invocation surface:
@@ -604,6 +691,7 @@ async fn generate_step(
         gen_system_prompt,
         gen_annotations,
         gen_messages,
+        new_notices,
         generation_input_tokens,
         generation_max_output_tokens,
     ) = loop {
@@ -611,9 +699,9 @@ async fn generate_step(
             deps,
             &session,
             &record,
-            &entries,
+            &anchor,
+            &window,
             payload.step,
-            prev_watermark.as_deref(),
             ContextAssemblyInputs {
                 system_prompt: assembly_system_prompt.clone(),
                 tools: &tools,
@@ -677,13 +765,24 @@ async fn generate_step(
                 .map(PreparedStep::Finished);
             }
         };
-        // The notice lands after the hooks ran (they must not read it as the
-        // newest user message) and before their appends (hook messages stay
-        // last, closest to the decision point).
-        let hook_appended = !appended.is_empty() || registry_notice_message.is_some();
+        // The notices land after the hooks ran (they must not read them as
+        // the newest user message) and before their appends (hook messages
+        // stay last, closest to the decision point).
+        // Hook appends are sent exactly as every later step replays them.
+        let new_notices = crate::window::unsent_notices(
+            &entries,
+            &ids::assistant_entry_id(&record.turn_id, payload.step),
+            &notice_prefix,
+            step_notices.iter().cloned().chain(
+                appended
+                    .iter()
+                    .filter_map(crate::window::replayed)
+                    .map(|m| (HOOK_NOTICE_KIND, m)),
+            ),
+        );
+        let hook_appended = !new_notices.is_empty();
         let mut gen_messages = assembled.messages.clone();
-        gen_messages.extend(registry_notice_message.iter().cloned());
-        gen_messages.extend(appended);
+        gen_messages.extend(new_notices.iter().map(|(_, m)| m.clone()));
 
         // Post-assembly invariant guard: providers reject a context where an
         // assistant function_call has no function_result. Compaction can cut a
@@ -776,6 +875,7 @@ async fn generate_step(
                 gen_system_prompt,
                 gen_annotations,
                 gen_messages,
+                new_notices,
                 final_request_tokens,
                 max_output_tokens,
             );
@@ -813,6 +913,33 @@ async fn generate_step(
             "post-assembly additions exceeded the usable budget; re-assembling with reserved headroom"
         );
     };
+
+    // Persist what this step adds to the model-facing messages before the
+    // request goes out, so every later step replays it in place.
+    // Numbered after any an earlier attempt of this step persisted.
+    let persisted = entries
+        .iter()
+        .filter(|e| e.entry_id.starts_with(&notice_prefix))
+        .count();
+    for (index, (kind, message)) in new_notices.iter().enumerate() {
+        tracing::info!(
+            session_id = %record.session_id,
+            turn_id = %record.turn_id,
+            step = record.step,
+            kind,
+            %message,
+            "notice appended to the generate request"
+        );
+        session
+            .append_custom(
+                &record.session_id,
+                crate::window::MODEL_NOTICE,
+                crate::window::notice_data(kind, message),
+                &ids::notice_entry_id(&record.turn_id, payload.step, persisted + index),
+                Some(&origin(&record.turn_id)),
+            )
+            .await?;
+    }
 
     // A stop that landed during context assembly is visible through the
     // in-process signal even though its durable write is blocked by this
@@ -879,6 +1006,45 @@ async fn generate_step(
         entry_id: assistant_id.clone(),
         turn_id: record.turn_id.clone(),
     };
+    // Cache seam (MOT-4798): when the final prompt still starts with the
+    // stable prefix, it goes out as two sections plus the prefix digest so
+    // cache-aware providers keep one entry for every session on the same
+    // profile. Context assembly (summary) and hooks only append, so the split
+    // survives them; a hook that rewrote the head, an empty prefix, or the
+    // config switch falls back to the flat string alone.
+    let split = cfg
+        .prompt_cache_sections
+        .then_some(gen_system_prompt.as_deref())
+        .flatten()
+        .and_then(|prompt| split_prompt_sections(prompt, &stable_prompt));
+    let sections_fallback = match split {
+        Some(_) => None,
+        None if !cfg.prompt_cache_sections => Some("disabled"),
+        None if stable_prompt.is_empty() => Some("no_stable_prefix"),
+        None => Some("prefix_rewritten"),
+    };
+    let surface_digest = split.map(|(stable, _)| crate::skills::fingerprint(stable));
+    let system_sections = split.map(|(stable, rest)| {
+        json!([
+            { "text": stable, "cache_boundary": true },
+            { "text": rest, "cache_boundary": false },
+        ])
+    });
+    let cache_intent = surface_digest
+        .as_ref()
+        .map(|digest| json!({ "surface_digest": digest }));
+    tracing::info!(
+        session_id = %record.session_id,
+        turn_id = %record.turn_id,
+        step = payload.step,
+        surface_digest = surface_digest.as_deref().unwrap_or("-"),
+        fallback = sections_fallback.unwrap_or("-"),
+        "prompt cache sections"
+    );
+    if let Some(snapshot) = record.context_snapshot.as_mut() {
+        snapshot.prompt_surface_digest = surface_digest.clone();
+        snapshot.prompt_sections_fallback = sections_fallback.map(str::to_string);
+    }
     let params = ChatParams {
         request_id: format!("{}:{}", record.turn_id, payload.step),
         session_id: record.session_id.clone(),
@@ -903,6 +1069,8 @@ async fn generate_step(
             .map(|_| generation_max_output_tokens),
         thinking_level: record.options.thinking_level,
         provider_options,
+        system_sections,
+        cache_intent,
     };
     record.stream_request_id = Some(params.request_id.clone());
     if record.options.skill_context.is_some() {
@@ -1302,15 +1470,20 @@ async fn finish_step(
                 continue;
             }
 
-            // Provider-degraded arguments: a stream that died or was cut by
-            // max_tokens mid-args arrives as a salvaged `"_partial": true`
-            // prefix, a raw `{"_raw": …}` evidence object (the router's
-            // degraded_arguments), or no object at all. Executing partial
-            // intent is worse than failing — the complete-looking leading
-            // fields may be missing the constraints the model was still
-            // writing.
+            // Provider-degraded arguments: a call cut by the output-token
+            // limit, or arguments that never formed one valid JSON object,
+            // arrive as a salvaged `"_partial": true` prefix, a raw
+            // `{"_raw": …}` evidence object (the router's degraded_arguments),
+            // or no object at all. Executing partial intent is worse than
+            // failing — the complete-looking leading fields may be missing
+            // the constraints the model was still writing. The stop reason
+            // tells the model which of the two it was.
             if trigger::arguments_degraded(&call.arguments) {
-                let data = trigger::truncated_arguments_result(&call.function_id, &call.arguments);
+                let data = trigger::truncated_arguments_result(
+                    &call.function_id,
+                    &call.arguments,
+                    outcome.message.stop_reason,
+                );
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 append_function_result(
                     &session,
@@ -1355,13 +1528,58 @@ async fn finish_step(
                 continue;
             }
 
+            // A call that already failed identically this turn is answered
+            // locally before any hook or approval runs: re-running it would
+            // only return the error the model has already seen.
+            let failure_key = trigger::call_digest(&call.function_id, &call.arguments);
+            if let Some(data) = failure_key.as_deref().and_then(|key| {
+                trigger::repeated_failure_result(&record.failed_calls, key, &call.function_id)
+            }) {
+                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
+                append_function_result(
+                    &session,
+                    &record,
+                    call,
+                    &data,
+                    &entry_id,
+                    &origin(&record.turn_id),
+                )
+                .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
+                mark_done(&mut record, &call.id, &entry_id);
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                continue;
+            }
+
+            // Reconcile malformed arguments against the target's schema
+            // (MOT-4847) before hooks and approvers see them, so they review
+            // what will actually run. Fail-open: `None` dispatches the
+            // model's arguments unchanged. The breaker above keys on the
+            // model's original arguments, so a repaired call that still fails
+            // the same way is still counted.
+            let reconciled = crate::reconcile::reconcile(
+                deps,
+                &cfg,
+                &call.function_id,
+                &call.arguments,
+                call_description(&outcome.message.content, &call.id),
+            )
+            .await;
+            let call_args = reconciled
+                .as_ref()
+                .map_or(&call.arguments, |r| &r.arguments);
+
             // pre_trigger chain: deny / hold / rewrite arguments. Hooks see
             // args ALREADY carrying the filesystem scope stamp so an approver
             // reviews the fs_scope the call will actually run under; the stamp is
             // re-applied after the chain so a hook rewrite can never widen it.
             let trusted_call_args = crate::filesystem_scope::inject(
                 &call.function_id,
-                call.arguments.clone(),
+                call_args.clone(),
                 filesystem_root.as_deref(),
                 &session_grants,
                 deps.hooks.filesystem_boundary(&call.function_id),
@@ -1392,11 +1610,21 @@ async fn finish_step(
                     (arguments, annotations)
                 }
                 crate::hooks::runner::PreTriggerOutcome::Deny(reason) => {
-                    let data = trigger::ResultData {
+                    let mut data = trigger::ResultData {
                         content: vec![ContentBlock::text(reason.clone())],
                         is_error: true,
                         details: json!({ "error": "hook_denied", "message": reason }),
                     };
+                    // The hook judged the repaired arguments: say so.
+                    let mut deny_annotations = serde_json::Map::new();
+                    if let Some(r) = &reconciled {
+                        crate::reconcile::note_result(
+                            &mut data,
+                            &mut deny_annotations,
+                            &r.changes,
+                            &call.function_id,
+                        );
+                    }
                     let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                     append_function_result(
                         &session,
@@ -1404,7 +1632,7 @@ async fn finish_step(
                         call,
                         &data,
                         &entry_id,
-                        &origin(&record.turn_id),
+                        &origin_with(&record.turn_id, &deny_annotations),
                     )
                     .await?;
                     trigger::apply_contract_updates_after_append(
@@ -1423,6 +1651,7 @@ async fn finish_step(
                         pending_timeout_ms: None,
                         held_by: Some(held_by),
                         held_arguments: Some(arguments),
+                        reconciled: reconciled.as_ref().map(|r| r.changes.clone()),
                         child_session_id: None,
                         child_turn_id: None,
                     };
@@ -1438,7 +1667,7 @@ async fn finish_step(
             // Guard failures skip post_trigger.
             if call.function_id == crate::functions::SPAWN_ID {
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
-                let (data, child) = match crate::subagent::spawn_from_turn(
+                let (mut data, child) = match crate::subagent::spawn_from_turn(
                     deps, &record, &call.id, &eff_args,
                 )
                 .await
@@ -1446,13 +1675,24 @@ async fn finish_step(
                     Ok(child) => (crate::subagent::spawned_result(&child), Some(child)),
                     Err(data) => (data, None),
                 };
+                let mut spawn_annotations = pre_ann;
+                crate::reconcile::settle_result(
+                    deps,
+                    &cfg,
+                    &mut data,
+                    &mut spawn_annotations,
+                    reconciled.as_ref().map(|r| r.changes.as_slice()),
+                    &call.function_id,
+                    call_args,
+                )
+                .await;
                 append_function_result(
                     &session,
                     &record,
                     call,
                     &data,
                     &entry_id,
-                    &origin(&record.turn_id),
+                    &origin_with(&record.turn_id, &spawn_annotations),
                 )
                 .await?;
                 trigger::apply_contract_updates_after_append(
@@ -1475,6 +1715,7 @@ async fn finish_step(
                         child_session_reused: child.as_ref().is_some_and(|c| c.reused),
                         held_by: None,
                         held_arguments: None,
+                        reconciled: None,
                         pending_timeout_ms: None,
                         pending_at: None,
                     },
@@ -1495,6 +1736,7 @@ async fn finish_step(
                     child_session_reused: false,
                     held_by: None,
                     held_arguments: None,
+                    reconciled: None,
                     pending_timeout_ms: None,
                     pending_at: None,
                 },
@@ -1545,6 +1787,7 @@ async fn finish_step(
                         // A post-trigger release re-invokes the target: keep
                         // the fully pre-mutated args, not the model originals.
                         held_arguments: Some(eff_args.clone()),
+                        reconciled: reconciled.as_ref().map(|r| r.changes.clone()),
                         child_session_id: None,
                         child_turn_id: None,
                     };
@@ -1556,7 +1799,7 @@ async fn finish_step(
             for (k, v) in post_ann {
                 annotations.insert(k, v);
             }
-            let (data, contract_updates) = match info_raw {
+            let (mut data, contract_updates) = match info_raw {
                 Some(raw) => trigger::prepare_info_result(
                     &call.id,
                     &eff_args,
@@ -1566,6 +1809,21 @@ async fn finish_step(
                 ),
                 None => (data, Vec::new()),
             };
+            // The breaker digests the target's own result, before the harness
+            // adds its reconciliation note or schema diagnosis.
+            if let Some(key) = &failure_key {
+                trigger::note_call_result(&mut record.failed_calls, key, &data);
+            }
+            crate::reconcile::settle_result(
+                deps,
+                &cfg,
+                &mut data,
+                &mut annotations,
+                reconciled.as_ref().map(|r| r.changes.as_slice()),
+                &call.function_id,
+                call_args,
+            )
+            .await;
             let entry_origin = origin_with(&record.turn_id, &annotations);
             let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
             append_function_result(&session, &record, call, &data, &entry_id, &entry_origin)
@@ -1944,7 +2202,7 @@ async fn finalize_completed(
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
-    let _ = session.set_status(&record.session_id, "done", None).await;
+    crate::session_status::project(session, record).await;
     deps.events
         .emit_completed(
             &record.session_id,
@@ -1959,6 +2217,13 @@ async fn finalize_completed(
             record.context_snapshot.as_ref(),
         )
         .await;
+    // An exhausted step cap is reported as its own outcome: `completed` alone
+    // would hide the one ending that looks like success and is not.
+    let outcome = match record.stop_reason.as_deref() {
+        Some("max_turns") => "max_turns",
+        _ => "completed",
+    };
+    crate::usage_report::report(deps, record, outcome, None).await;
     // Sub-agent turns resolve the parent's pending call with their result.
     if let Some(parent) = record.parent.clone() {
         crate::deferred::resolve_parent(deps, &parent, "completed", result.as_ref(), None).await;
@@ -2183,9 +2448,7 @@ async fn finalize_failed(
             Some(&origin(&record.turn_id)),
         )
         .await;
-    let _ = session
-        .set_status(&record.session_id, "error", Some(&summary))
-        .await;
+    crate::session_status::project(session, record).await;
     deps.events
         .emit_completed(
             &record.session_id,
@@ -2200,6 +2463,7 @@ async fn finalize_failed(
             record.context_snapshot.as_ref(),
         )
         .await;
+    crate::usage_report::report(deps, record, "failed", Some(failure_class(failure))).await;
     if let Some(parent) = record.parent.clone() {
         // Settle any parked parent call. Fire-and-forget spawns settled `Done`
         // at spawn time, so this usually no-ops — and that is the whole story:
@@ -2381,9 +2645,7 @@ async fn finalize_cancelled(
             Some(&origin(&record.turn_id)),
         )
         .await;
-    let _ = session
-        .set_status(&record.session_id, "done", Some("stopped"))
-        .await;
+    crate::session_status::project(session, record).await;
     deps.events
         .emit_completed(
             &record.session_id,
@@ -2398,6 +2660,7 @@ async fn finalize_cancelled(
             record.context_snapshot.as_ref(),
         )
         .await;
+    crate::usage_report::report(deps, record, "cancelled", None).await;
     if let Some(parent) = record.parent.clone() {
         crate::deferred::resolve_parent(deps, &parent, "cancelled", None, Some(reason)).await;
     }
@@ -2411,6 +2674,37 @@ async fn finalize_cancelled(
         next_step: None,
         skipped: false,
     })
+}
+
+const ENQUEUE_FAILURE: FailureInfo<'static> = FailureInfo {
+    code: "harness.enqueue_failed",
+    phase: "scheduling",
+    retryable: true,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
+};
+
+/// Finalise a freshly seeded turn whose first step could not be enqueued.
+/// The caller holds the session's delivery lock (or runs inside a finalize
+/// that does), so this does not take it. Best effort: a finalize error is
+/// logged and the orphan sweep remains the backstop.
+pub(crate) async fn fail_unenqueued_turn(
+    deps: &Deps,
+    record: &mut TurnRecord,
+    error: &HarnessError,
+) {
+    let session = deps.session().await;
+    let message = format!("could not schedule the turn: {error}");
+    if let Err(e) = finalize_failed(deps, &session, record, &message, ENQUEUE_FAILURE).await {
+        tracing::warn!(
+            session_id = %record.session_id,
+            turn_id = %record.turn_id,
+            error = %e,
+            "failed to finalize a turn whose first step could not be enqueued"
+        );
+    }
 }
 
 /// Finalise a turn as failed after an unexpected step error (harness.md §
@@ -2464,6 +2758,7 @@ fn checkpoint_pending(
             child_session_reused: false,
             held_by: info.held_by.clone(),
             held_arguments: info.held_arguments.clone(),
+            reconciled: info.reconciled.clone(),
             pending_timeout_ms: info.pending_timeout_ms,
             pending_at: Some(AgentMessage::now_ms()),
         },
@@ -2485,6 +2780,7 @@ fn mark_done(record: &mut TurnRecord, call_id: &str, entry_id: &str) {
             child_session_reused: false,
             held_by: None,
             held_arguments: None,
+            reconciled: None,
             pending_timeout_ms: None,
             pending_at: None,
         },
@@ -2630,79 +2926,32 @@ async fn has_user_after_watermark(
     Ok(false)
 }
 
-/// Build the model-ready context: read the latest compaction entry, reduce the
-/// candidate window to its tail, and call required `context::assemble`,
-/// persisting a new summary when it compacts.
+/// Build the model-ready context from the window the compaction anchor
+/// opens, and call required `context::assemble`, persisting a new summary
+/// when it compacts.
 async fn assemble_context(
     deps: &Deps,
     session: &SessionClient,
     record: &TurnRecord,
-    entries: &[LoadedEntry],
+    anchor: &CompactionAnchor,
+    window: &crate::window::Window,
     step: u64,
-    prev_watermark: Option<&str>,
     inputs: ContextAssemblyInputs<'_>,
 ) -> Result<Assembled, HarnessError> {
-    // Latest compaction custom entry on the path (if any).
-    let mut previous_summary: Option<String> = None;
-    let mut tail_start: Option<String> = None;
-    for entry in entries {
-        if let Some(custom) = &entry.custom {
-            if custom.custom_type == "compaction" {
-                previous_summary = custom
-                    .data
-                    .get("summary")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                tail_start = custom
-                    .data
-                    .get("tail_start_entry_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-            }
-        }
+    if let Some(order) = &window.new_order {
+        // Persisted before the request goes out, so every later step keeps
+        // the moved messages where this one shows them (append-only prefix).
+        session
+            .append_custom(
+                &record.session_id,
+                crate::window::MESSAGE_ORDER,
+                order.to_data(),
+                &ids::order_entry_id(&record.turn_id, step),
+                Some(&origin(&record.turn_id)),
+            )
+            .await?;
     }
-
-    // Candidate window: message entries from tail_start onward (compaction
-    // entries themselves are never sent to the model). `file` attachment
-    // references are stripped from this MODEL-BOUND copy here, at the head of
-    // the model-facing pipeline: neither `context::assemble` nor `router::chat`
-    // ever sees one (the console also sends the `<attached-file …>` text
-    // expansion, so the model loses nothing). The persisted entries keep them.
-    let mut started = tail_start.is_none();
-    let mut candidate: Vec<(String, AgentMessage)> = Vec::new();
-    // Index (into `candidate`) of the first entry appended after the previous
-    // step's watermark — i.e. while that step was generating.
-    let mut first_new: Option<usize> = None;
-    let mut past_prev_watermark = false;
-    for entry in entries {
-        if let Some(ts) = &tail_start {
-            if &entry.entry_id == ts {
-                started = true;
-            }
-        }
-        if started {
-            if let Some(msg) = &entry.message {
-                if !matches!(msg, AgentMessage::Custom(_)) {
-                    if past_prev_watermark && first_new.is_none() {
-                        first_new = Some(candidate.len());
-                    }
-                    let mut msg = msg.clone();
-                    msg.strip_file_blocks();
-                    candidate.push((entry.entry_id.clone(), msg));
-                }
-            }
-        }
-        if prev_watermark == Some(entry.entry_id.as_str()) {
-            past_prev_watermark = true;
-        }
-    }
-
-    // Rotation happens on the FINAL assembled values (below), never on
-    // `candidate`: compaction bookkeeping maps tail_start_index into
-    // `candidate` as a log-order cursor, and rotating first would persist a
-    // tail_start_entry_id that silently drops the rotated user message from
-    // every future window.
-    let new_suffix_len = first_new.map(|i| candidate.len() - i).unwrap_or(0);
+    let candidate = &window.candidate;
 
     let candidate_values: Vec<Value> = candidate
         .iter()
@@ -2722,11 +2971,15 @@ async fn assemble_context(
         .map(|prompt| {
             std::collections::BTreeMap::from([("skills".to_string(), prompt.to_string())])
         }),
-        previous_summary,
+        previous_summary: anchor.summary.clone(),
         lease_key: record.session_id.clone(),
         thinking_level: record.options.thinking_level,
         tools: inputs.tools.to_vec(),
         request_overhead_tokens: inputs.request_overhead_tokens,
+        // Pruning rewrites results the model already reasoned over; on a
+        // model that binds thinking to the prefix that drops the reasoning
+        // of every later step. Compaction still bounds the window.
+        allow_prune: crate::window::binds_thinking(&record.options.model).then_some(false),
     };
 
     let out = match context.assemble(params).await {
@@ -2781,23 +3034,104 @@ async fn assemble_context(
         }
     }
 
-    let mut messages: Vec<Value> = out
+    // The snapshot's "compacted" means the context carries a summary: this
+    // step's compaction, or the anchor an earlier one (the console's
+    // `/compact`, a previous turn) left on the path.
+    let (summarized, summarized_head_tokens) = if out.applied.compacted {
+        (true, out.applied.summarized_head_tokens)
+    } else {
+        (anchor.summary.is_some(), anchor.summarized_head_tokens)
+    };
+
+    let messages: Vec<Value> = out
         .messages
         .iter()
         .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
         .collect();
-    rotate_mid_generation_users(&mut messages, new_suffix_len);
-    // Rotation only reorders; the estimator is an order-independent
-    // per-message sum, so assemble's count still describes this list.
     Ok(Assembled {
         system_prompt: Some(out.system_prompt),
         messages,
         usable: out.usable,
         token_count: out.token_count,
         effective_max_output_tokens: out.effective_max_output_tokens,
-        applied: out.applied,
+        summarized,
+        summarized_head_tokens,
         breakdown: out.breakdown,
     })
+}
+
+/// The latest `compaction` custom entry on the path, resolved to where the
+/// model-facing window opens.
+#[derive(Debug, Default, PartialEq)]
+struct CompactionAnchor {
+    /// The persisted summary, passed back as `previous_summary`.
+    summary: Option<String>,
+    /// Index into the path of the first entry the window keeps.
+    window_start: usize,
+    /// Size of the history the summary replaced (display only).
+    summarized_head_tokens: Option<u64>,
+}
+
+/// Resolve the window from the latest compaction entry:
+/// - never compacted: the whole path;
+/// - `tail_start_entry_id` on the path: that entry onward;
+/// - `tail_start_entry_id` null: everything before the entry was summarised
+///   (`context::compact` with `tail_turns: 0`), so the window opens after it;
+/// - `tail_start_entry_id` not on the path (a hand-written entry, a session
+///   forked before `session::fork` rewrote the anchor): the whole path, since
+///   re-sending summarised history beats an empty context;
+/// - a record without a summary, or whose boundary is missing or not a
+///   string: the whole path too — only an explicit JSON `null` opens the
+///   window after the record.
+fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnchor {
+    let latest = entries.iter().enumerate().rev().find_map(|(index, entry)| {
+        let custom = entry.custom.as_ref()?;
+        (custom.custom_type == "compaction").then_some((index, &custom.data))
+    });
+    let Some((index, data)) = latest else {
+        return CompactionAnchor::default();
+    };
+    let summary = data
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let window_start = match (&summary, data.get("tail_start_entry_id")) {
+        (None, _) => {
+            tracing::warn!(
+                session_id,
+                "compaction record carries no summary; sending the whole path"
+            );
+            0
+        }
+        (Some(_), Some(Value::Null)) => index + 1,
+        (Some(_), Some(Value::String(tail))) => entries
+            .iter()
+            .position(|entry| &entry.entry_id == tail)
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    session_id,
+                    tail_start_entry_id = tail,
+                    "compaction boundary is not on the active path; sending the whole path"
+                );
+                0
+            }),
+        (Some(_), _) => {
+            tracing::warn!(
+                session_id,
+                "compaction record has no usable boundary; sending the whole path"
+            );
+            0
+        }
+    };
+    CompactionAnchor {
+        summary,
+        window_start,
+        // The console's entry carries only `tokens_before` (the head size).
+        summarized_head_tokens: data
+            .get("summarized_head_tokens")
+            .or_else(|| data.get("tokens_before"))
+            .and_then(Value::as_u64),
+    }
 }
 
 fn is_context_overflow_error(error: &str) -> bool {
@@ -2840,9 +3174,11 @@ fn build_context_snapshot(
             overhead: request_overhead_tokens,
             hook_guidance: final_request_tokens.saturating_sub(assembled.token_count),
         },
-        compacted: assembled.applied.compacted,
-        summarized_head_tokens: assembled.applied.summarized_head_tokens,
+        compacted: assembled.summarized,
+        summarized_head_tokens: assembled.summarized_head_tokens,
         usage: None,
+        prompt_surface_digest: None,
+        prompt_sections_fallback: None,
         timestamp: AgentMessage::now_ms(),
     }
 }
@@ -2868,43 +3204,49 @@ fn estimated_prompt_categories(
 /// are AIDs only — the real scoping control plane stamps `fs_scope` onto each
 /// call (`filesystem_scope::inject`) and the policy stays fail-closed at
 /// dispatch.
-fn compose_system_prompt(base: Option<&str>, skills: Option<&str>, runtime: &str) -> String {
-    [
-        base.filter(|value| !value.is_empty()),
-        skills,
-        Some(runtime),
-    ]
-    .into_iter()
-    .flatten()
-    .map(|section| section.trim_end_matches('\n'))
-    .collect::<Vec<_>>()
-    .join("\n\n")
+fn compose_system_prompt(
+    base: Option<&str>,
+    skills: Option<&str>,
+    runtime: Option<&str>,
+) -> String {
+    [base.filter(|value| !value.is_empty()), skills, runtime]
+        .into_iter()
+        .flatten()
+        .map(|section| section.trim_end_matches('\n'))
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
-fn with_runtime_context(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
-    let aid = runtime_context_aid(
-        &record.session_id,
-        record.options.filesystem_root(),
-        record.options.functions.as_ref(),
-    );
+/// The step's system prompt split at the cache seam: the STABLE prefix (the
+/// frozen profile/identity prompt + the frozen skills index — the same bytes
+/// for every session on the same profile) and the full prompt with the
+/// per-session runtime aid after it. The full prompt is exactly
+/// `stable + "\n\n" + aid`, which is what lets the router request carry both
+/// the flat string and the sections (MOT-4798).
+fn with_runtime_context(
+    system_prompt: Option<String>,
+    record: &TurnRecord,
+    aid: &str,
+) -> (String, Option<String>) {
     let baseline = record
         .options
         .skill_context
         .as_ref()
         .and_then(|context| context.baseline.as_deref());
-    Some(compose_system_prompt(
-        system_prompt.as_deref(),
-        baseline,
-        &aid,
-    ))
+    let stable = compose_system_prompt(system_prompt.as_deref(), baseline, None);
+    let full = compose_system_prompt(system_prompt.as_deref(), baseline, Some(aid));
+    (stable, Some(full))
 }
 
 /// The deterministic session context appended to every model-facing prompt.
 /// Kept separate so read-only previews use the same construction as a turn.
+/// A spawned child's seeded `<preloaded_functions>` block closes it: after the
+/// cache seam, so it never forks the stable prefix sessions share.
 pub(crate) fn runtime_context_aid(
     session_id: &str,
     filesystem_root: Option<&str>,
     functions: Option<&FunctionPolicy>,
+    seeded_contracts: Option<&str>,
 ) -> String {
     let mut lines = vec![format!("Your session id is {session_id}.")];
     if let Some(dir) = filesystem_root {
@@ -2913,7 +3255,25 @@ pub(crate) fn runtime_context_aid(
     if let Some(aid) = policy_aid(functions) {
         lines.push(aid);
     }
-    lines.join("\n")
+    let aid = lines.join("\n");
+    match seeded_contracts {
+        Some(block) => format!("{aid}\n\n{block}"),
+        None => aid,
+    }
+}
+
+const RUNTIME_CONTEXT_CHANGED_NOTICE: &str = "NOTE: the session context changed since the system prompt was written. It now reads as follows and replaces the session context there:";
+
+/// The notice for a runtime context that moved off what the model last saw:
+/// the latest runtime-context notice still in the window, else the frozen
+/// aid. `None` when nothing changed.
+// ponytail: a working-dir-only change re-sends the seeded block in the notice
+fn runtime_change_notice(frozen: &str, current: &str, latest: Option<&str>) -> Option<String> {
+    let text = format!("{RUNTIME_CONTEXT_CHANGED_NOTICE}\n{current}");
+    match latest {
+        Some(latest) => (latest != text).then_some(text),
+        None => (frozen != current).then_some(text),
+    }
 }
 
 /// The dispatch-policy aid line for a narrowed turn, `None` when the surface
@@ -2964,9 +3324,11 @@ struct Assembled {
     token_count: u64,
     /// Model/output ceiling resolved by context-manager for this request.
     effective_max_output_tokens: u64,
-    /// What context-manager did to fit the window (compaction and its
-    /// bookkeeping), carried whole for the snapshot.
-    applied: crate::clients::context::Applied,
+    /// The context carries a conversation summary (compacted this step or
+    /// anchored on an earlier compaction) and the size of the head it
+    /// replaced, for the snapshot.
+    summarized: bool,
+    summarized_head_tokens: Option<u64>,
     breakdown: Option<crate::clients::context::AssembleBreakdown>,
 }
 
@@ -2974,51 +3336,6 @@ struct ContextAssemblyInputs<'a> {
     system_prompt: Option<String>,
     tools: &'a [AgentFunction],
     request_overhead_tokens: u64,
-}
-
-/// A user entry appended while a step was generating (or assembling — the
-/// compaction/hook window) lands BEFORE that step's assistant entry in the
-/// durable log. The steering check then re-generates, but the assembled list
-/// would END with the assistant message: a prefill request Anthropic rejects
-/// ("This model does not support assistant message prefill. The conversation
-/// must end with a user message."), wedging the turn on every retry. Present
-/// mid-generation arrivals AFTER the reply they interrupted — semantically
-/// exact: the model answered without seeing them. Runs on the FINAL assembled
-/// values so compaction bookkeeping stays in log order; `new_suffix_len` is
-/// how many trailing messages arrived after the previous step's watermark
-/// (only user messages inside that suffix rotate). The window is clamped off
-/// the opening message so the context always still starts with the user turn.
-/// The durable transcript is untouched.
-fn rotate_mid_generation_users(messages: &mut Vec<Value>, new_suffix_len: usize) {
-    if new_suffix_len == 0 || messages.len() < 2 {
-        return;
-    }
-    let last = messages.len() - 1;
-    let tail = &messages[last];
-    let trailing_callless_assistant = tail.get("role").and_then(Value::as_str) == Some("assistant")
-        && !tail
-            .get("content")
-            .and_then(Value::as_array)
-            .map(|blocks| {
-                blocks
-                    .iter()
-                    .any(|b| b.get("type").and_then(Value::as_str) == Some("function_call"))
-            })
-            .unwrap_or(false);
-    if !trailing_callless_assistant {
-        return;
-    }
-    let window_start = messages.len().saturating_sub(new_suffix_len).max(1);
-    let mut moved: Vec<Value> = Vec::new();
-    let mut i = window_start;
-    while i < messages.len() - 1 {
-        if messages[i].get("role").and_then(Value::as_str) == Some("user") {
-            moved.push(messages.remove(i));
-        } else {
-            i += 1;
-        }
-    }
-    messages.extend(moved);
 }
 
 /// Patch an ASSEMBLED message list whose assistant `function_call` blocks lack
@@ -3038,6 +3355,19 @@ fn final_request_unchanged(
     assembled_system_prompt: &Option<String>,
 ) -> bool {
     !hook_appended && patched == 0 && gen_system_prompt == assembled_system_prompt
+}
+
+/// Split the final model-facing prompt at the cache seam: `Some((stable,
+/// rest))` when it still starts with the stable prefix followed by the
+/// "\n\n" join (context assembly and hook injections only append after it),
+/// `None` when the prefix is empty or a hook rewrote it — the request then
+/// goes out as the flat string only and shares no cache entry.
+fn split_prompt_sections<'a>(final_prompt: &'a str, stable: &'a str) -> Option<(&'a str, &'a str)> {
+    if stable.is_empty() {
+        return None;
+    }
+    let rest = final_prompt.strip_prefix(stable)?.strip_prefix("\n\n")?;
+    Some((stable, rest))
 }
 
 /// The reservation fold for the one-shot re-assembly: everything the final
@@ -3149,13 +3479,35 @@ fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
     patched
 }
 
+const REGISTRY_CHANGED_NOTICE_KIND: &str = "registry-changed";
+const PRELOADED_STALE_NOTICE_KIND: &str = "preloaded-stale";
+const RUNTIME_CONTEXT_NOTICE_KIND: &str = "runtime-context";
+const HOOK_NOTICE_KIND: &str = "hook";
+
 /// The single-line notice delivered as a tail message when the registry
 /// changed under a session that had already acknowledged an earlier generation.
-const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale — re-fetch the contracts you rely on (engine::functions::info) before calling those functions again.";
+const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale.";
 
-/// Wrap the notice as an ephemeral tail user message for the generate request.
-/// `timestamp` is mandatory — the router's message types have no serde default
-/// for it — and never reaches the provider wire.
+/// How either notice tells the model to re-check contracts: name
+/// `engine::functions::info` only when this session can actually call it —
+/// permitted AND present (public or internal); permission alone is not
+/// availability.
+fn refetch_hint(
+    policy: &CompiledPolicy,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+) -> &'static str {
+    if crate::agents::effective_contract("engine::functions::info", policy, snapshot).is_some() {
+        "Re-fetch the contracts you rely on with engine::functions::info before calling them."
+    } else {
+        "This session cannot re-fetch contracts; if you need one that changed, say so rather \
+         than guessing its schema."
+    }
+}
+
+/// Wrap the notice as a user message for the generate request (persisted as
+/// a `model_notice` entry and replayed in place). `timestamp` is mandatory —
+/// the router's message types have no serde default for it — and never
+/// reaches the provider wire.
 fn notice_message(text: String) -> Value {
     json!({
         "role": "user",
@@ -3168,11 +3520,82 @@ fn notice_message(text: String) -> Value {
 /// matches the live generation, or is being stamped for the first time; `Some`
 /// only when the registry changed under a session that acknowledged an earlier
 /// generation. The caller stamps `functions_generation = current` regardless.
-pub(crate) fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<String> {
+pub(crate) fn registry_notice(
+    record_gen: Option<u64>,
+    current: u64,
+    policy: &CompiledPolicy,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+) -> Option<String> {
     match record_gen {
-        Some(g) if g != current => Some(REGISTRY_CHANGED_NOTICE.to_string()),
+        Some(g) if g != current => Some(format!(
+            "{REGISTRY_CHANGED_NOTICE} {}",
+            refetch_hint(policy, snapshot)
+        )),
         _ => None,
     }
+}
+
+/// Name the profile's preloaded contracts that no longer match the live
+/// registry. The frozen `<preloaded_functions>` block in the prompt is never
+/// rewritten (it is the shared cache prefix), so the correction rides as an
+/// appended notice, told again whenever it changes or a compaction
+/// summarized the last one away. Ids whose live descriptor carries no schema
+/// (`parameters: None`) are not judged.
+pub(crate) fn preloaded_stale_notice(
+    frozen: Option<&std::collections::BTreeMap<String, Option<String>>>,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+    policy: &CompiledPolicy,
+) -> Option<String> {
+    let frozen = frozen?;
+    let (mut changed, mut removed, mut available, mut denied) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (id, digest) in frozen {
+        if !policy.allows(id) {
+            if digest.is_some() {
+                denied.push(id.as_str());
+            }
+            continue;
+        }
+        let descriptor = crate::agents::effective_contract(id, policy, snapshot);
+        match (digest, descriptor) {
+            (Some(_), None) => removed.push(id.as_str()),
+            (Some(frozen_digest), Some(d)) if d.request_schema.is_some() => {
+                if crate::agents::digest_of(&d) != *frozen_digest {
+                    changed.push(id.as_str());
+                }
+            }
+            (None, Some(d)) if d.request_schema.is_some() => available.push(id.as_str()),
+            _ => {}
+        }
+    }
+    if changed.is_empty() && removed.is_empty() && available.is_empty() && denied.is_empty() {
+        return None;
+    }
+    let list = |ids: &[&str]| {
+        ids.iter()
+            .map(|id| format!("`{id}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut parts = Vec::new();
+    if !changed.is_empty() {
+        parts.push(format!("changed: {}", list(&changed)));
+    }
+    if !removed.is_empty() {
+        parts.push(format!("no longer registered: {}", list(&removed)));
+    }
+    if !available.is_empty() {
+        parts.push(format!("now available: {}", list(&available)));
+    }
+    if !denied.is_empty() {
+        parts.push(format!("not permitted in this session: {}", list(&denied)));
+    }
+    Some(format!(
+        "NOTE: preloaded function contracts in your instructions are out of date — {}. \
+         {} Do not call removed or denied functions.",
+        parts.join("; "),
+        refetch_hint(policy, snapshot)
+    ))
 }
 
 /// The concrete tool schemas this turn's dispatch policy allows: one per
@@ -3266,15 +3689,123 @@ impl Clone for SessionStreamSink {
 
 #[cfg(test)]
 mod tests {
+    fn snap(live: &[crate::clients::FunctionDescriptor]) -> crate::discovery::FunctionsSnapshot {
+        crate::discovery::snapshot_of(live.to_vec())
+    }
+
     use std::sync::Arc;
 
     use async_trait::async_trait;
     use tokio::sync::Mutex;
 
     use super::{
-        cancel_requested, concrete_allowed_tools, count_model_visible,
+        call_description, cancel_requested, concrete_allowed_tools, count_model_visible,
         retryable_function_result_append_error, transient_resume_allowed, turn_step_matches,
     };
+
+    #[test]
+    fn compaction_anchor_resolves_where_the_window_opens() {
+        use super::{compaction_anchor, CompactionAnchor, LoadedEntry};
+        use serde_json::{json, Value};
+        let msg = |id: &str| -> LoadedEntry {
+            serde_json::from_value(json!({ "entry_id": id, "message": {
+                "role": "user", "content": [{ "type": "text", "text": id }], "timestamp": 1
+            }}))
+            .unwrap()
+        };
+        let compaction = |id: &str, summary: &str, tail: Value| -> LoadedEntry {
+            serde_json::from_value(json!({ "entry_id": id, "custom": {
+                "custom_type": "compaction",
+                "data": { "summary": summary, "tail_start_entry_id": tail, "tokens_before": 7 }
+            }}))
+            .unwrap()
+        };
+        let start = |path: &[LoadedEntry]| compaction_anchor("s", path).window_start;
+
+        // Never compacted: the whole path, no summary.
+        assert_eq!(
+            compaction_anchor("s", &[msg("u1"), msg("u2")]),
+            CompactionAnchor::default()
+        );
+        // Boundary on the path; the LATEST compaction wins.
+        let path = [
+            msg("u1"),
+            compaction("c1", "old", json!("u1")),
+            msg("u2"),
+            compaction("c2", "new", json!("u2")),
+            msg("u3"),
+        ];
+        assert_eq!(
+            compaction_anchor("s", &path),
+            CompactionAnchor {
+                summary: Some("new".into()),
+                window_start: 2,
+                summarized_head_tokens: Some(7),
+            }
+        );
+        // Null boundary: everything before the entry was summarised.
+        assert_eq!(
+            start(&[msg("u1"), compaction("c1", "s", Value::Null), msg("u2")]),
+            2
+        );
+        // Boundary off the path (a hand-written entry): the whole path, never
+        // an empty window that would drop the current user message.
+        assert_eq!(
+            start(&[msg("u1"), compaction("c1", "s", json!("gone")), msg("u2")]),
+            0
+        );
+        // Only an explicit null is the after-record boundary: a missing or
+        // non-string field, or a record without a summary, is the whole path.
+        let raw = |data: Value| -> LoadedEntry {
+            serde_json::from_value(json!({ "entry_id": "c1", "custom": {
+                "custom_type": "compaction", "data": data
+            }}))
+            .unwrap()
+        };
+        assert_eq!(
+            start(&[msg("u1"), raw(json!({ "summary": "s" })), msg("u2")]),
+            0
+        );
+        assert_eq!(
+            start(&[
+                msg("u1"),
+                raw(json!({ "summary": "s", "tail_start_entry_id": 7 })),
+                msg("u2")
+            ]),
+            0
+        );
+        assert_eq!(
+            compaction_anchor(
+                "s",
+                &[
+                    msg("u1"),
+                    raw(json!({ "tail_start_entry_id": null })),
+                    msg("u2")
+                ]
+            ),
+            CompactionAnchor::default()
+        );
+    }
+
+    #[test]
+    fn call_description_reads_only_the_agent_trigger_wrapper() {
+        let blocks = vec![
+            ContentBlock::FunctionCall {
+                id: "c1".into(),
+                function_id: "agent_trigger".into(),
+                arguments: serde_json::json!({ "function": "x::y", "description": "look up" }),
+            },
+            ContentBlock::FunctionCall {
+                id: "c2".into(),
+                function_id: "directory::skills::create".into(),
+                arguments: serde_json::json!({ "name": "s", "description": "a skill that…" }),
+            },
+        ];
+
+        assert_eq!(call_description(&blocks, "c1"), Some("look up"));
+        assert_eq!(call_description(&blocks, "c2"), None);
+        assert_eq!(call_description(&blocks, "c3"), None);
+    }
     use crate::clients::router::ChatError;
     use crate::error::HarnessError;
     use crate::types::content::ContentBlock;
@@ -3587,17 +4118,188 @@ mod tests {
     #[test]
     fn skill_baseline_sits_between_identity_and_runtime_guidance() {
         assert_eq!(
-            super::compose_system_prompt(Some("identity"), Some("skill index"), "runtime"),
+            super::compose_system_prompt(Some("identity"), Some("skill index"), Some("runtime")),
             "identity\n\nskill index\n\nruntime"
         );
         assert_eq!(
-            super::compose_system_prompt(Some("identity\n"), None, "runtime"),
+            super::compose_system_prompt(Some("identity\n"), None, Some("runtime")),
             "identity\n\nruntime"
         );
         assert_eq!(
-            super::compose_system_prompt(None, None, "runtime"),
+            super::compose_system_prompt(None, None, Some("runtime")),
             "runtime"
         );
+        // The stable prefix is the same composition minus the runtime aid.
+        assert_eq!(
+            super::compose_system_prompt(Some("identity"), Some("skill index"), None),
+            "identity\n\nskill index"
+        );
+    }
+
+    /// Prevents: a child's seeded contracts forking the stable prefix every
+    /// default-identity session shares (MOT-4851) — they ride after the seam.
+    #[test]
+    fn seeded_contracts_ride_after_the_cache_seam() {
+        let record = |seeded: Option<&str>| -> crate::types::turn::TurnRecord {
+            serde_json::from_value(serde_json::json!({
+                "turn_id": "t_1", "session_id": "s_1", "status": "running",
+                "step": 0, "turn_count": 0, "depth": 1,
+                "options": { "model": "m", "max_turns": 16, "seeded_contracts": seeded },
+                "created_at": 1, "updated_at": 1
+            }))
+            .unwrap()
+        };
+        let block = "<preloaded_functions>\n### `state::get`\n</preloaded_functions>";
+        let aid = |seeded: Option<&str>| super::runtime_context_aid("s_1", None, None, seeded);
+        let (plain_stable, plain_full) =
+            super::with_runtime_context(Some("identity".into()), &record(None), &aid(None));
+        let (stable, full) = super::with_runtime_context(
+            Some("identity".into()),
+            &record(Some(block)),
+            &aid(Some(block)),
+        );
+        let full = full.unwrap();
+
+        assert_eq!(stable, plain_stable);
+        assert!(!plain_full.unwrap().contains("preloaded_functions"));
+        let (head, rest) = super::split_prompt_sections(&full, &stable).unwrap();
+        assert_eq!(head, "identity");
+        assert!(rest.starts_with("Your session id is s_1."));
+        assert!(rest.ends_with(&format!("\n\n{block}")));
+    }
+
+    /// Prevents: a runtime context that changed after it was frozen into the
+    /// system prompt (a re-seeded contract block included) never reaching the
+    /// model, or reaching it again on every step (MOT-4845).
+    #[test]
+    fn runtime_change_notice_carries_the_whole_changed_aid_once() {
+        let aid = |seeded: Option<&str>| super::runtime_context_aid("s_1", None, None, seeded);
+        let frozen = aid(None);
+        assert_eq!(super::runtime_change_notice(&frozen, &frozen, None), None);
+
+        let block = "<preloaded_functions>\n### `state::get`\n</preloaded_functions>";
+        let changed = aid(Some(block));
+        let notice = super::runtime_change_notice(&frozen, &changed, None).expect("seeded change");
+        assert!(notice.ends_with(&changed));
+        // Already told: the persisted notice stands.
+        assert_eq!(
+            super::runtime_change_notice(&frozen, &changed, Some(&notice)),
+            None
+        );
+        // Back to the frozen aid after that notice: told again.
+        let back = super::runtime_change_notice(&frozen, &frozen, Some(&notice)).expect("reverted");
+        assert!(back.ends_with(&frozen));
+        assert!(!back.contains("preloaded_functions"));
+    }
+
+    #[test]
+    fn split_prompt_sections_rejoins_byte_exact_or_bails() {
+        let stable = "identity\n\nskill index";
+        let full = format!("{stable}\n\nYour session id is s_1.\n\n# Conversation summary\n\nold");
+        let (head, rest) = super::split_prompt_sections(&full, stable).unwrap();
+        assert_eq!(format!("{head}\n\n{rest}"), full);
+        assert!(rest.starts_with("Your session id"));
+        // A hook that rewrote the head, an empty prefix, or no join after the
+        // prefix: no sections.
+        assert!(super::split_prompt_sections("rewritten\n\nruntime", stable).is_none());
+        assert!(super::split_prompt_sections("runtime", "").is_none());
+        assert!(super::split_prompt_sections(stable, stable).is_none());
+    }
+
+    #[test]
+    fn authorized_virtual_controls_are_not_removed_by_public_catalog() {
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec![
+                    "engine::register_trigger".into(),
+                    "engine::unregister_trigger".into(),
+                ],
+                deny: vec![],
+                expose: crate::types::turn::ExposeMode::Native,
+            }));
+        let public_catalog = crate::discovery::snapshot_of(vec![]);
+        let tools = concrete_allowed_tools(&policy, &public_catalog.functions, &[]);
+        assert_eq!(tools.len(), 2, "both controls are effectively offered");
+        let frozen = tools
+            .iter()
+            .map(|tool| {
+                (
+                    tool.name.clone(),
+                    Some(crate::agents::contract_digest(
+                        &tool.name,
+                        Some(&tool.description),
+                        Some(tool.parameters.clone()),
+                    )),
+                )
+            })
+            .collect();
+        let notice = super::preloaded_stale_notice(Some(&frozen), &public_catalog, &policy);
+        assert!(
+            notice.is_none(),
+            "authorized effective contracts must not be removed by the public catalog: {notice:?}"
+        );
+    }
+
+    #[test]
+    fn preloaded_stale_notice_names_changed_removed_and_now_available_only() {
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*".into()],
+                ..Default::default()
+            }));
+        use crate::clients::FunctionDescriptor;
+        let schema =
+            serde_json::json!({ "type": "object", "properties": { "k": { "type": "string" } } });
+        let descriptor =
+            |id: &str, desc: &str, params: Option<serde_json::Value>| FunctionDescriptor {
+                function_id: id.into(),
+                description: Some(desc.into()),
+                parameters: params,
+            };
+        let digest = |id: &str, desc: &str| {
+            Some(crate::agents::contract_digest(
+                id,
+                Some(desc),
+                Some(schema.clone()),
+            ))
+        };
+        let frozen = std::collections::BTreeMap::from([
+            ("same::fn".to_string(), digest("same::fn", "unchanged")),
+            ("changed::fn".to_string(), digest("changed::fn", "old text")),
+            ("gone::fn".to_string(), digest("gone::fn", "was here")),
+            (
+                "unjudged::fn".to_string(),
+                digest("unjudged::fn", "no live schema"),
+            ),
+            ("late::fn".to_string(), None),
+            ("still_missing::fn".to_string(), None),
+        ]);
+        let live = vec![
+            descriptor("same::fn", "unchanged", Some(schema.clone())),
+            descriptor("changed::fn", "new text", Some(schema.clone())),
+            descriptor("unjudged::fn", "different but unhydrated", None),
+            descriptor("late::fn", "now registered", Some(schema.clone())),
+            descriptor("unrelated::fn", "never preloaded", Some(schema.clone())),
+        ];
+        let mut snapshot = snap(&live);
+        snapshot
+            .internal_ids
+            .insert("engine::functions::info".to_string());
+        let notice = super::preloaded_stale_notice(Some(&frozen), &snapshot, &policy).unwrap();
+        assert_eq!(
+            notice,
+            "NOTE: preloaded function contracts in your instructions are out of date — \
+             changed: `changed::fn`; no longer registered: `gone::fn`; now available: `late::fn`. \
+             Re-fetch the contracts you rely on with engine::functions::info before calling them. \
+             Do not call removed or denied functions."
+        );
+        // Nothing frozen, or nothing drifted: no notice.
+        assert!(super::preloaded_stale_notice(None, &snapshot, &policy).is_none());
+        let steady = std::collections::BTreeMap::from([(
+            "same::fn".to_string(),
+            digest("same::fn", "unchanged"),
+        )]);
+        assert!(super::preloaded_stale_notice(Some(&steady), &snapshot, &policy).is_none());
     }
 
     #[test]
@@ -3837,12 +4539,24 @@ mod tests {
 
     #[test]
     fn registry_notice_stamps_silently_then_fires_on_mismatch() {
+        let all = crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let mut with_info = snap(&[]);
+        with_info
+            .internal_ids
+            .insert("engine::functions::info".to_string());
         // First sighting (None): stamp, no notice.
-        assert!(super::registry_notice(None, 7).is_none());
+        assert!(super::registry_notice(None, 7, &all, &with_info).is_none());
         // Acknowledged generation still current: no notice.
-        assert!(super::registry_notice(Some(7), 7).is_none());
-        // Registry moved on: notice fires.
-        assert!(super::registry_notice(Some(6), 7).is_some());
+        assert!(super::registry_notice(Some(7), 7, &all, &with_info).is_none());
+        // Registry moved on: notice fires, with the same re-fetch rule as the
+        // preloaded-stale notice.
+        let notice = super::registry_notice(Some(6), 7, &all, &with_info).unwrap();
+        assert!(notice.contains("with engine::functions::info"), "{notice}");
+        let blind = super::registry_notice(Some(6), 7, &all, &snap(&[])).unwrap();
+        assert!(blind.contains("cannot re-fetch"), "{blind}");
     }
 
     #[test]
@@ -3988,117 +4702,6 @@ mod tests {
         assert_eq!(preserved, Some(serde_json::json!("first partial")));
     }
 
-    mod rotate_mid_generation_users {
-        use super::super::rotate_mid_generation_users;
-        use serde_json::{json, Value};
-
-        fn user(tag: &str) -> Value {
-            json!({"role": "user", "content": [{"type": "text", "text": tag}]})
-        }
-        fn assistant(tag: &str) -> Value {
-            json!({"role": "assistant", "content": [{"type": "text", "text": tag}]})
-        }
-        fn assistant_call(tag: &str) -> Value {
-            json!({"role": "assistant", "content": [
-                {"type": "text", "text": tag},
-                {"type": "function_call", "id": "t1", "function_id": "f", "arguments": {}},
-            ]})
-        }
-        fn result(tag: &str) -> Value {
-            json!({"role": "function_result", "function_call_id": "t1", "function_id": "f",
-                   "content": [{"type": "text", "text": tag}]})
-        }
-        fn tags(msgs: &[Value]) -> Vec<&str> {
-            msgs.iter()
-                .map(|m| {
-                    m["content"][0]["text"]
-                        .as_str()
-                        .or_else(|| m["content"].as_str())
-                        .unwrap_or("?")
-                })
-                .collect()
-        }
-
-        #[test]
-        fn mid_generation_notification_rotates_past_the_reply() {
-            // The live prefill-400 repro: notification appended during
-            // generation/assembly sits before the assistant entry; the
-            // re-generate must end with the notification, not the assistant.
-            let mut m = vec![
-                user("task"),
-                assistant("a1"),
-                user("notif"),
-                assistant("a2"),
-            ];
-            rotate_mid_generation_users(&mut m, 2);
-            assert_eq!(tags(&m), vec!["task", "a1", "a2", "notif"]);
-        }
-
-        #[test]
-        fn opening_message_never_moves() {
-            // Suffix covering the whole list (first generate, or compaction
-            // cut into the suffix): the window clamps off the opener so the
-            // context still starts with a user turn.
-            let mut m = vec![user("task"), user("notif"), assistant("a1")];
-            rotate_mid_generation_users(&mut m, 3);
-            assert_eq!(tags(&m), vec!["task", "a1", "notif"]);
-        }
-
-        #[test]
-        fn empty_suffix_is_a_noop() {
-            let mut m = vec![user("task"), assistant("a1")];
-            rotate_mid_generation_users(&mut m, 0);
-            assert_eq!(tags(&m), vec!["task", "a1"]);
-        }
-
-        #[test]
-        fn trailing_assistant_with_calls_is_left_for_the_result_path() {
-            // Calls pending → results follow → the wire never ends assistant.
-            let mut m = vec![user("task"), user("notif"), assistant_call("a1")];
-            rotate_mid_generation_users(&mut m, 2);
-            assert_eq!(tags(&m), vec!["task", "notif", "a1"]);
-        }
-
-        #[test]
-        fn results_in_the_new_suffix_stay_in_place() {
-            // Result and notification both landed after the watermark; only
-            // the user message rotates, pairing stays intact.
-            let mut m = vec![
-                user("task"),
-                assistant_call("a1"),
-                result("r1"),
-                user("notif"),
-                assistant("a2"),
-            ];
-            rotate_mid_generation_users(&mut m, 3);
-            assert_eq!(tags(&m), vec!["task", "a1", "r1", "a2", "notif"]);
-        }
-
-        #[test]
-        fn trailing_user_is_a_noop() {
-            let mut m = vec![user("task"), assistant("a1"), user("steer")];
-            rotate_mid_generation_users(&mut m, 2);
-            assert_eq!(tags(&m), vec!["task", "a1", "steer"]);
-        }
-
-        #[test]
-        fn redelivered_step_with_stale_empty_assistant_still_rotates() {
-            // The verifier's retry schedule: attempt 1 appended its empty
-            // assistant entry then died before generating; the retry's
-            // suffix covers [notif, empty-assistant]. The notification must
-            // still rotate past the trailing (empty, call-less) assistant.
-            let mut m = vec![
-                user("task"),
-                assistant("a1"),
-                user("notif"),
-                json!({"role": "assistant", "content": []}),
-            ];
-            rotate_mid_generation_users(&mut m, 2);
-            assert_eq!(m[3]["role"], "user");
-            assert_eq!(m[3]["content"][0]["text"], "notif");
-        }
-    }
-
     #[test]
     fn patch_orphaned_calls_injects_elided_results_adjacent_to_the_call() {
         use serde_json::json;
@@ -4194,5 +4797,171 @@ mod tests {
     fn no_signal_does_not_cancel() {
         assert!(!cancel_requested(false, false, StopReason::End));
         assert!(!cancel_requested(false, false, StopReason::FunctionCall));
+    }
+
+    #[test]
+    fn effective_notice_matrix_keeps_true_drift_and_rejects_prefix_exceptions() {
+        use crate::{
+            agents::{contract_digest, effective_contract},
+            clients::FunctionDescriptor,
+            policy::CompiledPolicy,
+            types::turn::FunctionPolicy,
+        };
+        let all = CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let desc = |id: &str, schema| FunctionDescriptor {
+            function_id: id.into(),
+            description: Some("real internal".into()),
+            parameters: schema,
+        };
+        let schema = serde_json::json!({"type":"object"});
+        let mut with_info = snap(&[]);
+        with_info
+            .internal_ids
+            .insert("engine::functions::info".to_string());
+        for id in [
+            "engine::functions::info",
+            "engine::arbitrary",
+            "common::action",
+        ] {
+            let live = vec![desc(id, Some(schema.clone()))];
+            let frozen = std::collections::BTreeMap::from([(
+                id.to_string(),
+                Some(contract_digest(
+                    id,
+                    Some("real internal"),
+                    Some(schema.clone()),
+                )),
+            )]);
+            assert!(super::preloaded_stale_notice(Some(&frozen), &snap(&live), &all).is_none());
+            let removed = super::preloaded_stale_notice(Some(&frozen), &snap(&[]), &all).unwrap();
+            assert!(removed.contains(&format!("no longer registered: `{id}`")));
+            assert!(
+                !removed.contains("with engine::functions::info"),
+                "permitted but absent introspection is not recommended: {removed}"
+            );
+            if id != "engine::functions::info" {
+                let removed =
+                    super::preloaded_stale_notice(Some(&frozen), &with_info, &all).unwrap();
+                assert!(
+                    removed.contains("with engine::functions::info"),
+                    "permitted and present introspection is named: {removed}"
+                );
+            }
+            let mut internal_only = snap(&[]);
+            internal_only.internal_ids.insert(id.to_string());
+            assert!(
+                super::preloaded_stale_notice(Some(&frozen), &internal_only, &all).is_none(),
+                "an id the registry knows but the public inventory hides is present, not \
+                 removed (its schema is not judged: see effective_contract)"
+            );
+            let changed = super::preloaded_stale_notice(
+                Some(&frozen),
+                &snap(&[desc(id, Some(serde_json::json!({"type":"string"})))]),
+                &all,
+            )
+            .unwrap();
+            assert!(changed.contains(&format!("changed: `{id}`")));
+            for schema in [None, Some(serde_json::Value::Null)] {
+                assert!(
+                    super::preloaded_stale_notice(Some(&frozen), &snap(&[desc(id, schema)]), &all)
+                        .is_none(),
+                    "no schema is unjudged"
+                );
+            }
+            let missing = std::collections::BTreeMap::from([(id.to_string(), None)]);
+            assert!(
+                super::preloaded_stale_notice(Some(&missing), &snap(&live), &all)
+                    .unwrap()
+                    .contains("now available")
+            );
+            assert!(super::preloaded_stale_notice(
+                Some(&missing),
+                &snap(&live),
+                &CompiledPolicy::from(None)
+            )
+            .is_none());
+        }
+        for id in ["engine::register_trigger", "engine::unregister_trigger"] {
+            let effective = effective_contract(id, &all, &snap(&[])).unwrap();
+            let frozen = std::collections::BTreeMap::from([(
+                id.to_string(),
+                Some(contract_digest(
+                    id,
+                    effective.description.as_deref(),
+                    effective.request_schema.clone(),
+                )),
+            )]);
+            assert!(
+                super::preloaded_stale_notice(
+                    Some(&frozen),
+                    &snap(&[desc(id, Some(schema.clone()))]),
+                    &all
+                )
+                .is_none(),
+                "virtual beats native"
+            );
+            let legacy = std::collections::BTreeMap::from([(
+                id.to_string(),
+                Some(contract_digest(id, Some("native"), Some(schema.clone()))),
+            )]);
+            let changed = super::preloaded_stale_notice(Some(&legacy), &snap(&[]), &all).unwrap();
+            assert!(changed.contains("changed:"));
+            assert!(!changed.contains("no longer registered"));
+            let missing = std::collections::BTreeMap::from([(id.to_string(), None)]);
+            assert!(
+                super::preloaded_stale_notice(Some(&missing), &snap(&[]), &all)
+                    .unwrap()
+                    .contains("now available")
+            );
+            let denied = CompiledPolicy::from(Some(&FunctionPolicy {
+                allow: vec!["*".into()],
+                deny: vec![id.into(), "engine::functions::info".into()],
+                ..Default::default()
+            }));
+            assert!(super::preloaded_stale_notice(Some(&missing), &with_info, &denied).is_none());
+            let notice = super::preloaded_stale_notice(Some(&frozen), &with_info, &denied).unwrap();
+            assert!(notice.contains("not permitted in this session"));
+            assert!(
+                !notice.contains("engine::functions::info"),
+                "present but denied introspection is not recommended: {notice}"
+            );
+        }
+    }
+
+    #[test]
+    fn unchanged_contract_is_not_changed_even_when_compaction_is_not_idempotent() {
+        use crate::{agents, clients::FunctionDescriptor, policy::CompiledPolicy};
+        // compact_schema keeps `definitions.A` on the first pass (referenced
+        // twice, once from unreachable `B`) and inlines it on the second.
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "a": { "$ref": "#/definitions/A" } },
+            "definitions": {
+                "A": { "type": "string" },
+                "B": { "type": "array", "items": { "$ref": "#/definitions/A" } }
+            }
+        });
+        let id = "x::fn";
+        let live = snap(&[FunctionDescriptor {
+            function_id: id.into(),
+            description: Some("d".into()),
+            parameters: Some(schema.clone()),
+        }]);
+        let all = CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let once = agents::effective_contract(id, &all, &live).unwrap();
+        let frozen_digest = agents::contract_digest(id, Some("d"), Some(schema));
+        assert_ne!(
+            agents::contract_digest(id, Some("d"), once.request_schema.clone()),
+            frozen_digest,
+            "fixture must be non-idempotent under compaction to guard anything"
+        );
+        let frozen = std::collections::BTreeMap::from([(id.to_string(), Some(frozen_digest))]);
+        assert!(super::preloaded_stale_notice(Some(&frozen), &live, &all).is_none());
     }
 }

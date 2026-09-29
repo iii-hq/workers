@@ -78,8 +78,9 @@ export interface GraphLayout {
   columns: number
 }
 
-/** Number of lane colors the palette cycles through (see styles.css --gh-g0..7). */
-export const GRAPH_COLORS = 8
+/** Number of lane colors the palette cycles through: the six --color-glyph-*
+ *  tones (see styles.css .gh-ui-lane-c0..5). */
+export const GRAPH_COLORS = 6
 
 interface RawEdge {
   fromRow: number

@@ -8,7 +8,8 @@
 //! deliver → notify hop wakes it. The stack runs the real `database` worker
 //! (see `stack/config.rs`); the probe's `executeBatch` creates the table and
 //! inserts the row, and only the INSERT emits (row events are op-classified,
-//! not CDC).
+//! not CDC). The INSERT's `RETURNING` rows ride the wake as parseable JSON —
+//! the row-data path MOT-4778 bounds structurally instead of cutting.
 //!
 //! Same standing + `max_fires: 1` shape as INT-006, for the same reason: the
 //! probe boundary needs a terminal first turn.
@@ -72,7 +73,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             "db": "primary",
             "statements": [
                 "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT)",
-                "INSERT INTO items (name) VALUES ('widget')"
+                "INSERT INTO items (name) VALUES ('widget') RETURNING id, name"
             ]
         }),
     )
@@ -172,6 +173,16 @@ pub(super) fn scenario() -> ScenarioFixture {
         anyhow::ensure!(
             notification.contains("affected_rows"),
             "the wake must carry the row event: {notification}"
+        );
+        // The writer's RETURNING rows ride the wake, and the wake is JSON the
+        // model can parse — never a fragment cut mid-structure.
+        let json = &notification[notification
+            .find('{')
+            .ok_or_else(|| anyhow::anyhow!("no JSON in wake: {notification}"))?..];
+        let event: Value = serde_json::from_str(json)?;
+        anyhow::ensure!(
+            event["returning"][0]["name"] == "widget",
+            "RETURNING rows must ride the wake: {notification}"
         );
 
         let retired = run.transcript.iter().any(|item| {

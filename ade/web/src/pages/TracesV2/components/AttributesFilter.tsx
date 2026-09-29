@@ -85,8 +85,8 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
   return (
     <div className="space-y-2">
       {draft.length === 0 ? (
-        <div className="font-mono text-[12px] text-ink-faint italic lowercase">
-          filter by span attributes (e.g. http.request.method = post)
+        <div className="font-mono text-[12px] text-ink-faint italic">
+          Filter by span attributes (e.g. http.request.method = post)
         </div>
       ) : (
         <div className="space-y-2">
@@ -101,7 +101,7 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
                 value={key}
                 onChange={(e) => handleKeyChange(id, e.target.value)}
                 onKeyDown={handleKeyDown}
-                className="flex-1 bg-transparent border-none font-mono text-[12px] text-ink placeholder:text-ink-faint focus:outline-none lowercase"
+                className="flex-1 bg-transparent border-none font-mono text-[12px] text-ink placeholder:text-ink-faint focus:outline-none"
               />
               <span className="text-ink-faint font-mono text-[12px]">=</span>
               <input
@@ -110,7 +110,7 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
                 value={val}
                 onChange={(e) => handleValueChange(id, e.target.value)}
                 onKeyDown={handleKeyDown}
-                className="flex-1 bg-transparent border-none font-mono text-[12px] text-ink placeholder:text-ink-faint focus:outline-none lowercase"
+                className="flex-1 bg-transparent border-none font-mono text-[12px] text-ink placeholder:text-ink-faint focus:outline-none"
               />
               <button
                 type="button"
@@ -153,7 +153,7 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
                 key={attr}
                 type="button"
                 onClick={() => handleSuggestionClick(attr)}
-                className="flex items-center gap-1 px-1.5 py-0.5 rounded-xs font-mono text-[10px] text-ink-faint bg-surface border border-rule-2 hover:border-rule hover:text-ink transition-colors lowercase"
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded-xs font-mono text-[11px] text-ink-faint bg-surface hover:bg-surface-hover hover:text-ink transition-colors"
                 title={`add ${attr}`}
               >
                 <Tag className="size-4" />

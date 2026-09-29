@@ -8,13 +8,13 @@
    menu carries the usual close verbs plus copy path, reveal and compare.
    The terminal, when docked in the editor area, is one more tab. */
 
+import { Tooltip } from '@iii-dev/console-ui'
 import { GitCompareArrows, SquareTerminal, X } from 'lucide-react'
 import { useCallback, useEffect, useRef } from 'react'
 import { anchorFromEvent, type ContextMenuItem, useContextMenu } from './ContextMenu'
 import { diffSourceLabel } from './diff-source'
 import { FileTypeIcon } from './file-type-icon'
 import type { GitFileStatus } from './git'
-import { HoverTip } from './HoverTip'
 import { basename } from './paths'
 import type { OpenTab, TabsState } from './tabs'
 
@@ -168,7 +168,7 @@ export function EditorTabs({
               <span className="label">{name}</span>
               {chip ? <span className="shui-etab-chip">{chip}</span> : null}
             </button>
-            <HoverTip label={dirty ? `Close ${name} (unsaved changes)` : `Close ${name}`}>
+            <Tooltip label={dirty ? `Close ${name} (unsaved changes)` : `Close ${name}`}>
               <button
                 type="button"
                 className="close"
@@ -181,7 +181,7 @@ export function EditorTabs({
                 {dirty ? <span className="shui-dirty" aria-hidden /> : null}
                 <X aria-hidden className="shui-x-icon" />
               </button>
-            </HoverTip>
+            </Tooltip>
           </div>
         )
       })}
@@ -191,11 +191,11 @@ export function EditorTabs({
             <SquareTerminal aria-hidden className="shui-etab-icon" />
             <span className="label">{terminal.title}</span>
           </button>
-          <HoverTip label="Close terminal">
+          <Tooltip label="Close terminal">
             <button type="button" className="close" aria-label="Close terminal" onClick={terminal.onClose}>
               <X aria-hidden className="shui-x-icon" />
             </button>
-          </HoverTip>
+          </Tooltip>
         </div>
       ) : null}
       {menu.element}

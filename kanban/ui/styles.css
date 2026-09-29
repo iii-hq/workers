@@ -797,13 +797,6 @@
   text-overflow: ellipsis;
 }
 
-[data-iii-ui="kanban"] .kanban-chat-line__status {
-  margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--color-ink-ghost);
-}
-
 [data-iii-ui="kanban"] .kanban-chat-table {
   max-width: 100%;
 }
@@ -840,7 +833,7 @@
   }
 }
 
-/* 16 px text in phone fields keeps mobile browsers from zooming on focus. */
+/* Phone chrome: 16px fields stop mobile browsers zooming on focus, a viewport trait. lint-allow viewport-media */
 @media (max-width: 640px) {
   [data-iii-ui="kanban"] .kanban-composer__input,
   [data-iii-ui="kanban"] .kanban-field__textarea {

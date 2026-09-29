@@ -256,7 +256,7 @@ def validate_artifact(
     if kind not in ARTIFACT_KINDS:
         fail(f"workers.{worker}.artifact.kind is unsupported")
     allowed_fields = {
-        "rust-binary": {"kind", "toolchain", "binary", "targets", "windows_exception", "frontends"},
+        "rust-binary": {"kind", "toolchain", "binary", "targets", "windows_exception", "frontends", "companions"},
         "javascript-bundle": {
             "kind", "workspace_root", "runtime", "package_manager", "lockfile",
             "install_command", "build_command", "include",
@@ -309,6 +309,22 @@ def validate_artifact(
             fail(f"workers.{worker}.artifact.toolchain must contain only name and version")
         if toolchain.get("name") != "rust" or not isinstance(toolchain.get("version"), str):
             fail(f"workers.{worker}.artifact.toolchain must pin a Rust version")
+        # Files the binary loads at runtime from its own directory (shared
+        # libraries, plugin modules): glob patterns over the release directory.
+        companions = artifact.get("companions")
+        if companions is not None and (
+            not isinstance(companions, list)
+            or not companions
+            or any(
+                not isinstance(pattern, str)
+                or not pattern
+                or "/" in pattern
+                or "\\" in pattern
+                or ".." in pattern
+                for pattern in companions
+            )
+        ):
+            fail(f"workers.{worker}.artifact.companions must be file-name glob patterns")
         frontends = artifact.get("frontends", [])
         if not isinstance(frontends, list):
             fail(f"workers.{worker}.artifact.frontends must be an array")

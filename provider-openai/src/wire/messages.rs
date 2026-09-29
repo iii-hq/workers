@@ -4,6 +4,7 @@
 use crate::wire::names::encode_tool_name;
 use llm_router::types::content::ContentBlock;
 use llm_router::types::messages::{AgentMessage, FunctionResultMessage};
+use llm_router::types::router::PromptSection;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
@@ -305,6 +306,37 @@ fn upsert_responses_output(out: &mut Vec<Value>, row: Value) {
         Some(index) => out[index] = row,
         None => out.push(row),
     }
+}
+
+/// Sectioned variant for GPT-5.6 and later: one developer message per
+/// section, and `prompt_cache_breakpoint: explicit` on the `input_text` block
+/// of every section flagged `cache_boundary`. On those models a cache lookup
+/// only happens at message-level boundaries (explicit breakpoints, the
+/// implicit breakpoint on the latest eligible message, up to 20 earlier
+/// eligible message endings, the end of the initial developer block) — a
+/// single system message that ends with per-session text never matches
+/// across sessions, so the frozen profile prefix gets its own boundary. Implicit caching stays on (no
+/// `prompt_cache_options.mode`), so the growing history still caches per
+/// conversation; at most three explicit marks, leaving the implicit slot.
+pub fn to_responses_input_sections(
+    messages: &[AgentMessage],
+    sections: &[PromptSection],
+) -> Vec<Value> {
+    let mut marked = 0usize;
+    let mut out: Vec<Value> = sections
+        .iter()
+        .filter(|section| !section.text.is_empty())
+        .map(|section| {
+            let mut block = json!({ "type": "input_text", "text": section.text });
+            if section.cache_boundary && marked < 3 {
+                block["prompt_cache_breakpoint"] = json!({ "mode": "explicit" });
+                marked += 1;
+            }
+            json!({ "role": "developer", "content": [block] })
+        })
+        .collect();
+    out.extend(to_responses_input(messages, ""));
+    out
 }
 
 /// Build a stateless Responses `input` item array. Function calls and results

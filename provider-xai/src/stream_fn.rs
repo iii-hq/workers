@@ -22,8 +22,21 @@ use llm_router::provider_scaffold::cache::derive_affinity_id;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
-use llm_router::types::router::{ProviderStreamInput, ProviderStreamOutput};
+use llm_router::types::router::{PromptCacheIntent, ProviderStreamInput, ProviderStreamOutput};
 use tokio::sync::{mpsc, watch};
+
+/// Body cache key for the Responses path: the shared profile surface when the
+/// router named one (every session on the same frozen prefix lands on one
+/// cache shard), else the session affinity. The `x-grok-conv-id` header
+/// always stays the session.
+fn resolve_prompt_cache_key(
+    cache_intent: Option<&PromptCacheIntent>,
+    affinity_id: Option<&str>,
+) -> Option<String> {
+    cache_intent
+        .and_then(|intent| derive_affinity_id(&intent.surface_digest))
+        .or_else(|| affinity_id.map(str::to_string))
+}
 
 pub fn make_stream(
     iii: IIIClient,
@@ -147,6 +160,8 @@ async fn run_stream_call(
         }
     };
     let affinity_id = input.session_id.as_deref().and_then(derive_affinity_id);
+    let prompt_cache_key =
+        resolve_prompt_cache_key(input.cache_intent.as_ref(), affinity_id.as_deref());
     let has_client_functions = input.tools.as_ref().is_some_and(|tools| !tools.is_empty());
 
     // Agent Tools are a server-tool-only path. Client function calls retain
@@ -172,7 +187,7 @@ async fn run_stream_call(
             &input.messages,
             &tool_types,
             cfg.max_tokens,
-            affinity_id.as_deref(),
+            prompt_cache_key.as_deref(),
         );
         let headers = build_headers(&cfg, None);
         // Aborted while we were setting up — never start the upstream request.
@@ -262,6 +277,22 @@ async fn run_stream_call(
 mod tests {
     use super::*;
     use crate::config::{ToolSource, WorkerConfig};
+
+    #[test]
+    fn responses_cache_key_prefers_the_shared_surface_over_the_session() {
+        let intent = PromptCacheIntent {
+            surface_digest: "sha256:abc".into(),
+        };
+        assert_eq!(
+            resolve_prompt_cache_key(Some(&intent), Some("session-uuid")),
+            derive_affinity_id("sha256:abc")
+        );
+        assert_eq!(
+            resolve_prompt_cache_key(None, Some("session-uuid")).as_deref(),
+            Some("session-uuid")
+        );
+        assert_eq!(resolve_prompt_cache_key(None, None), None);
+    }
 
     #[test]
     fn client_functions_force_chat_while_server_tool_only_calls_use_responses() {

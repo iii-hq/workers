@@ -15,8 +15,11 @@ import {
   CodeEditor,
   type CodeEditorHandle,
   type Host,
+  IconButton,
   StatusPanel,
+  uiClasses,
 } from '@iii-dev/console-ui'
+import { CircleAlert, History, Play, X } from 'lucide-react'
 import {
   forwardRef,
   useCallback,
@@ -34,7 +37,6 @@ import {
   isReadOnlySql,
   runAdhocSql,
 } from './db-data'
-import { AlertCircle, History, Play, X } from './icons'
 import { PlanTree } from './PlanTree'
 import { ResultGrid } from './result-grid'
 
@@ -305,7 +307,12 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
               }}
             />
           </div>
-          <div className="db-sql-actions" ref={actionsRef}>
+          <div
+            className={`${uiClasses.toolbar} db-bar`}
+            role="toolbar"
+            aria-label="sql actions"
+            ref={actionsRef}
+          >
             <Button
               variant="ghost"
               size="sm"
@@ -397,9 +404,8 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
                   >
                     {entry}
                   </button>
-                  <button
-                    type="button"
-                    className="db-icon-btn"
+                  <IconButton
+                    label="remove from history"
                     onClick={() =>
                       setHistory((cur) => {
                         const updated = cur.filter((s) => s !== entry)
@@ -407,10 +413,9 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
                         return updated
                       })
                     }
-                    aria-label="remove from history"
                   >
                     <X size={16} />
-                  </button>
+                  </IconButton>
                 </div>
               ))}
             </div>
@@ -421,7 +426,7 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
             <div className="db-pad">
               <StatusPanel
                 variant="alert"
-                icon={<AlertCircle size={18} />}
+                icon={<CircleAlert size={18} />}
                 headline="Query failed"
                 detail={error}
               />
@@ -446,7 +451,9 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
               />
             )
           ) : (
-            <p className={`db-sql-placeholder${running ? ' db-pulse' : ''}`}>
+            <p
+              className={`db-sql-placeholder${running ? ` ${uiClasses.pulse}` : ''}`}
+            >
               {running ? (
                 'running…'
               ) : starterSql ? (

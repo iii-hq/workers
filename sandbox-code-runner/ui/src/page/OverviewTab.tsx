@@ -6,7 +6,10 @@
  * note.
  */
 
-import { Badge, Button, type Host } from '@iii-dev/console-ui'
+import { Badge, Button, type Host, StatusPanel } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
+import { ArrowRight } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { formatTriggerCommand } from './exec'
 import {
@@ -90,9 +93,7 @@ export function OverviewTab({
         setConfirmStop(false)
         onStopped()
       })
-      .catch((err: unknown) =>
-        setStopError(err instanceof Error ? err.message : String(err)),
-      )
+      .catch((err: unknown) => setStopError(errorMessage(err)))
       .finally(() => setStopping(false))
   }
 
@@ -102,6 +103,7 @@ export function OverviewTab({
   })
 
   const state = sandboxState(sandbox)
+  const stateVariant = state === 'running' ? 'ok' : state === 'busy' ? 'warn' : 'default'
   const reapBase = sandbox.stopped ? null : deriveReapInSecs(sandbox)
   const reapLeft =
     reapBase === null ? null : reapCountdownSecs(reapBase, snapshotAt, clock)
@@ -109,18 +111,18 @@ export function OverviewTab({
   return (
     <div className="cr-page-overview">
       <dl className="cr-page-identity">
-        <dt>sandbox id</dt>
+        <dt className={uiClasses.eyebrow}>sandbox id</dt>
         <dd className="cr-page-identity-id">
           <code>{sandbox.sandbox_id}</code>
           <CopyButton text={sandbox.sandbox_id} title="copy the sandbox id" />
         </dd>
 
-        <dt>state</dt>
+        <dt className={uiClasses.eyebrow}>state</dt>
         <dd>
-          <span className={`cr-page-state-pill ${state}`}>{state}</span>
+          <Badge variant={stateVariant}>{state}</Badge>
         </dd>
 
-        <dt>image</dt>
+        <dt className={uiClasses.eyebrow}>image</dt>
         <dd className="cr-page-identity-image">
           <code>{sandbox.image || '—'}</code>
           {catalogImage ? (
@@ -135,27 +137,27 @@ export function OverviewTab({
           ) : null}
         </dd>
 
-        <dt>age</dt>
+        <dt className={uiClasses.eyebrow}>age</dt>
         <dd>{formatAgeSecs(displayAgeSecs(sandbox.age_secs, snapshotAt, clock))}</dd>
 
-        <dt>exec slots</dt>
+        <dt className={uiClasses.eyebrow}>exec slots</dt>
         <dd>
           <SlotsMeter free={sandbox.exec_slots_free} />
         </dd>
 
         {/* sandbox::list does not carry these yet — say so instead of
             guessing (an omitted row reads as "no network", which is a claim). */}
-        <dt>network</dt>
+        <dt className={uiClasses.eyebrow}>network</dt>
         <dd className="cr-page-faint">not reported by sandbox::list</dd>
 
         {reapLeft === null ? (
           <>
-            <dt>idle timeout</dt>
+            <dt className={uiClasses.eyebrow}>idle timeout</dt>
             <dd className="cr-page-faint">not reported by sandbox::list</dd>
           </>
         ) : (
           <>
-            <dt>idle deadline</dt>
+            <dt className={uiClasses.eyebrow}>idle deadline</dt>
             <dd className={reapLeft < REAP_WARN_SECS ? 'cr-page-reap-warn' : undefined}>
               {reapLeft <= 0
                 ? 'reaping…'
@@ -167,10 +169,10 @@ export function OverviewTab({
 
       <div className="cr-page-actions">
         <Button variant="ghost" size="sm" onClick={onGoConsole} disabled={sandbox.stopped}>
-          exec →
+          exec <ArrowRight size={16} aria-hidden />
         </Button>
         <Button variant="ghost" size="sm" onClick={onGoFiles} disabled={sandbox.stopped}>
-          files →
+          files <ArrowRight size={16} aria-hidden />
         </Button>
         <CopyButton
           text={createCommand}
@@ -206,9 +208,7 @@ export function OverviewTab({
         )}
       </div>
       {stopError ? (
-        <div className="cr-page-inline-error" role="alert">
-          stop failed: {stopError}
-        </div>
+        <StatusPanel variant="alert" role="alert" headline="stop failed" detail={stopError} />
       ) : null}
 
       <p className="cr-page-limit-note">

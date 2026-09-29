@@ -15,7 +15,9 @@ import {
   DialogTitle,
   type Host,
   JsonHighlight,
+  StatusPanel,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useEffect, useRef, useState } from 'react'
 
 export function InvokeDialog({
@@ -53,7 +55,7 @@ export function InvokeDialog({
     try {
       parsed = payload.trim() === '' ? {} : JSON.parse(payload)
     } catch (err) {
-      setParseError(err instanceof Error ? err.message : String(err))
+      setParseError(errorMessage(err))
       return
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -75,8 +77,7 @@ export function InvokeDialog({
           setResult(JSON.stringify(value, null, 2) ?? 'null')
       })
       .catch((err: unknown) => {
-        if (gen === generation.current)
-          setCallError(err instanceof Error ? err.message : String(err))
+        if (gen === generation.current) setCallError(errorMessage(err))
       })
       .finally(() => {
         if (gen === generation.current) setBusy(false)
@@ -103,9 +104,12 @@ export function InvokeDialog({
             />
           </div>
           {parseError ? (
-            <div className="cr-page-inline-error" role="alert">
-              payload is not valid JSON: {parseError}
-            </div>
+            <StatusPanel
+              variant="alert"
+              role="alert"
+              headline="payload is not valid JSON"
+              detail={parseError}
+            />
           ) : null}
           <div className="cr-page-dialog-actions">
             <Button variant="ghost" size="sm" onClick={onClose}>
@@ -116,9 +120,7 @@ export function InvokeDialog({
             </Button>
           </div>
           {callError ? (
-            <div className="cr-page-errcard" role="alert">
-              <div className="cr-page-errcard-msg">{callError}</div>
-            </div>
+            <StatusPanel variant="alert" role="alert" headline={callError} />
           ) : null}
           {result !== null ? (
             <JsonHighlight code={result} className="cr-page-invoke-result" />

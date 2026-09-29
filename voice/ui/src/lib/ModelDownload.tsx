@@ -1,7 +1,7 @@
 import { Button, Chip } from '@iii-dev/console-ui'
+import { formatBytes } from '@iii-dev/console-ui/format'
+import { Download } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { formatBytes } from './format'
-import { DownloadIcon } from './icons'
 import { percent } from './progress'
 import type { ModelInfo, ModelProgressEvent } from './types'
 
@@ -36,7 +36,7 @@ export function ModelDownload({
           {canDownload ? (
             <Button variant="primary" size="sm" disabled={disabled} onClick={onDownload}
               aria-label={`Download ${model.name}`}>
-              <DownloadIcon />
+              <Download />
               Download {formatBytes(model.size_bytes)}
             </Button>
           ) : null}

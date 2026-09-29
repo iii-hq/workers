@@ -51,10 +51,19 @@ pub struct PartialState {
     /// Anthropic wire `index` → active block slot.
     block_slots: Vec<Option<BlockSlot>>,
     usage: Usage,
+    /// Part of `usage.cache_write` written with the 1-hour TTL; priced
+    /// separately because it bills at 2x input (curated.rs).
+    cache_write_1h: u64,
     stop_reason: StopReason,
     native_stop_reason: Option<String>,
     error_message: Option<String>,
     warnings: Vec<String>,
+    /// `input_transformations` entries (thinking blocks the API dropped or
+    /// let through on a prefix-binding check), verbatim; the latest array wins.
+    pub input_transformations: Vec<Value>,
+    /// A non-empty array arrived that differs from the one it replaced; the
+    /// upstream loop logs it and clears the flag, so a re-send logs nothing.
+    pub transformations_unlogged: bool,
     pub saw_message_stop: bool,
 }
 
@@ -68,12 +77,29 @@ impl PartialState {
             block_order: Vec::new(),
             block_slots: Vec::new(),
             usage: Usage::default(),
+            cache_write_1h: 0,
             stop_reason: StopReason::End,
             native_stop_reason: None,
             error_message: None,
             warnings,
+            input_transformations: Vec::new(),
+            transformations_unlogged: false,
             saw_message_stop: false,
         }
+    }
+}
+
+/// Greppable prefix of the one warning line built from `input_transformations`.
+const DROPPED_THINKING_WARNING: &str = "anthropic dropped replayed thinking blocks: ";
+
+/// A present array replaces the current one: after a mid-stream fallback the
+/// final `message_delta` re-sends the full list for the serving model.
+fn take_transformations(v: Option<&Value>, state: &mut PartialState) {
+    if let Some(a) = v.and_then(Value::as_array) {
+        if !a.is_empty() && *a != state.input_transformations {
+            state.transformations_unlogged = true;
+        }
+        state.input_transformations = a.clone();
     }
 }
 
@@ -170,6 +196,15 @@ impl StreamEndView for PartialState {
 }
 
 pub fn build_partial(state: &PartialState, model: &str) -> AssistantMessage {
+    // Composed here, not pushed at parse time, so a re-sent array never
+    // yields two lines and error/truncation frames carry it too.
+    let mut warnings = state.warnings.clone();
+    if !state.input_transformations.is_empty() {
+        warnings.push(format!(
+            "{DROPPED_THINKING_WARNING}{}",
+            Value::Array(state.input_transformations.clone())
+        ));
+    }
     AssistantMessage {
         role: AssistantRoleTag::Assistant,
         content: build_content(state),
@@ -177,11 +212,7 @@ pub fn build_partial(state: &PartialState, model: &str) -> AssistantMessage {
         native_stop_reason: state.native_stop_reason.clone(),
         error_message: state.error_message.clone(),
         error_kind: None,
-        warnings: if state.warnings.is_empty() {
-            None
-        } else {
-            Some(state.warnings.clone())
-        },
+        warnings: (!warnings.is_empty()).then_some(warnings),
         usage: Some(state.usage.clone()),
         model: model.to_string(),
         provider: PROVIDER_ID.to_string(),
@@ -215,6 +246,21 @@ pub fn merge_usage(raw: &Value, into: &mut Usage) {
     if let Some(v) = num("cache_creation_input_tokens") {
         into.cache_write = Some(v);
     }
+}
+
+/// [`merge_usage`] plus the 1-hour cache-write split: when the payload
+/// reports `cache_creation.ephemeral_1h_input_tokens`, the provider prices
+/// the usage itself (the router keeps a provider-reported `cost_usd`).
+fn fold_usage(raw: &Value, state: &mut PartialState, model: &str) {
+    merge_usage(raw, &mut state.usage);
+    if let Some(v) = raw
+        .pointer("/cache_creation/ephemeral_1h_input_tokens")
+        .and_then(Value::as_u64)
+    {
+        state.cache_write_1h = v;
+    }
+    state.usage.cost_usd =
+        crate::curated::cost_with_1h_cache_writes(model, &state.usage, state.cache_write_1h);
 }
 
 /// Build a terminal error frame outside the SSE flow (fetch/HTTP failures).
@@ -274,8 +320,9 @@ pub fn handle_sse_event(
     let mut events = Vec::new();
     match event_type {
         "message_start" => {
+            take_transformations(parsed.pointer("/message/input_transformations"), state);
             if let Some(u) = parsed.pointer("/message/usage") {
-                merge_usage(u, &mut state.usage);
+                fold_usage(u, state, model);
                 // spec: usage SHOULD be emitted as soon as it is known
                 events.push(AssistantMessageEvent::Usage {
                     usage: state.usage.clone(),
@@ -438,12 +485,13 @@ pub fn handle_sse_event(
             }
         }
         "message_delta" => {
+            take_transformations(parsed.get("input_transformations"), state);
             if let Some(sr) = parsed.pointer("/delta/stop_reason").and_then(Value::as_str) {
                 state.stop_reason = map_stop_reason(sr);
                 state.native_stop_reason = Some(sr.to_string());
             }
             if let Some(u) = parsed.get("usage") {
-                merge_usage(u, &mut state.usage);
+                fold_usage(u, state, model);
                 events.push(AssistantMessageEvent::Usage {
                     usage: state.usage.clone(),
                 });
@@ -521,6 +569,53 @@ mod tests {
             ),
             "the End snapshot must carry the cumulative block text"
         );
+    }
+
+    const DROP_A: &str = r#"{"type":"thinking_dropped","path":"messages.1.content.0","reason":"prefix_binding_mismatch"}"#;
+    const DROP_B: &str = r#"{"type":"thinking_dropped","path":"messages.3.content.0","reason":"model_binding_mismatch"}"#;
+
+    fn start_with(transformations: &str) -> String {
+        format!(
+            r#"data: {{"type":"message_start","message":{{"usage":{{"input_tokens":3}},"input_transformations":{transformations}}}}}"#
+        )
+    }
+
+    /// The warning lines that carry `input_transformations`, parsed back.
+    fn dropped(state: &PartialState) -> Vec<Value> {
+        build_partial(state, "claude-test")
+            .warnings
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|w| w.strip_prefix(DROPPED_THINKING_WARNING))
+            .map(|json| serde_json::from_str(json).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn empty_input_transformations_add_no_warning() {
+        let (state, _) = run(&[&start_with("[]"), "data: {\"type\":\"message_stop\"}"]);
+        assert_eq!(build_partial(&state, "claude-test").warnings, None);
+    }
+
+    #[test]
+    fn message_delta_input_transformations_replace_message_start() {
+        let (state, _) = run(&[
+            &start_with(&format!("[{DROP_A}]")),
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}",
+        ]);
+        let a: Value = serde_json::from_str(&format!("[{DROP_A}]")).unwrap();
+        assert_eq!(dropped(&state), [a], "a delta without the key keeps A");
+        let warnings = build_partial(&state, "claude-test").warnings.unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+
+        let (state, _) = run(&[
+            &start_with(&format!("[{DROP_A}]")),
+            &format!(
+                r#"data: {{"type":"message_delta","delta":{{"stop_reason":"end_turn"}},"input_transformations":[{DROP_B}]}}"#
+            ),
+        ]);
+        let b: Value = serde_json::from_str(&format!("[{DROP_B}]")).unwrap();
+        assert_eq!(dropped(&state), [b], "one line, carrying B and not A");
     }
 
     #[test]
@@ -701,6 +796,31 @@ mod tests {
         assert_eq!(usage.cache_read, Some(11));
         assert_eq!(usage.cache_write, Some(13));
         assert_eq!(usage.output, Some(17));
+    }
+
+    #[test]
+    fn one_hour_cache_writes_are_priced_by_the_provider() {
+        let start = r#"data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0,"cache_read_input_tokens":1000,"cache_creation_input_tokens":1100,"cache_creation":{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":1000}}}}"#;
+        let delta = r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20}}"#;
+        let mut state = PartialState::new(vec![]);
+        let usage_of = |events: Vec<AssistantMessageEvent>| match events.as_slice() {
+            [AssistantMessageEvent::Usage { usage }] => usage.clone(),
+            other => panic!("expected one usage frame, got {other:?}"),
+        };
+
+        let first = usage_of(handle_sse_event(start, &mut state, "claude-opus-5-5"));
+        let last = usage_of(handle_sse_event(delta, &mut state, "claude-opus-5-5"));
+
+        // 10*4 + 1000*0.20 + 100*5 (5m) + 1000*8 (1h), then + 20*20 output; per MTok.
+        assert_eq!(first.cache_write, Some(1_100));
+        assert!((first.cost_usd.unwrap() - 8_740e-6).abs() < 1e-12);
+        assert!((last.cost_usd.unwrap() - 9_140e-6).abs() < 1e-12);
+        assert_eq!(build_partial(&state, "claude-opus-5-5").usage, Some(last));
+        // Without 1h writes (or a price) the router prices the usage as before.
+        let (_, events) = run(&[start]);
+        assert!(
+            matches!(&events[0], AssistantMessageEvent::Usage { usage } if usage.cost_usd.is_none())
+        );
     }
 
     #[test]

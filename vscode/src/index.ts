@@ -297,7 +297,7 @@ if (uiWatchEnabled) {
 try {
   await registerVscodeConfig(iii, holder.current);
 } catch (err) {
-  console.warn(`configuration::register failed; continuing with the seed: ${String(err)}`);
+  console.warn(`configuration initialization failed; continuing with the seed: ${String(err)}`);
 }
 
 await bindConfigTrigger(iii, async () => {

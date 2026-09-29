@@ -46,6 +46,34 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+/// Empty user request. Ignore transport metadata such as `_caller_worker_id`,
+/// which the engine adds to routed calls; no payload field selects the entry.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ConfigurationIdentityRequest {}
+
+/// Only the entry ID is exposed; configuration values and secrets stay in the service.
+#[derive(Debug, Serialize, JsonSchema)]
+struct ConfigurationIdentityResponse {
+    id: String,
+}
+
+/// Let consumers resolve the entry through the worker they actually address,
+/// not a global form-family search or a reimplementation of Compose's hash.
+/// The function inherits the worker's namespace; configuration RPCs still go
+/// to `default`. `id` must be the same process-stable ID used at registration.
+pub fn register_configuration_identity(iii: &IIIClient, worker: &str, id: &'static str) {
+    iii.register_function(
+        format!("{worker}::configuration-id"),
+        RegisterFunction::new(move |_request: ConfigurationIdentityRequest| {
+            Ok::<_, Error>(ConfigurationIdentityResponse { id: id.to_string() })
+        })
+        .description(
+            "Returns this worker instance's effective configuration entry ID, without its value.",
+        )
+        .metadata(serde_json::json!({ "internal": true })),
+    );
+}
+
 const WATCH_POLL: Duration = Duration::from_millis(1000);
 /// Console-enforced ceiling on `config.path` length.
 const MAX_PATH_LEN: usize = 512;
@@ -460,6 +488,20 @@ fn spawn_watcher(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The identity RPC accepts engine metadata without making its entry ID caller-controlled.
+    #[test]
+    fn configuration_identity_accepts_engine_caller_metadata() {
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({
+                "_caller_worker_id": "00000000-0000-4000-8000-000000000002"
+            }),
+        ] {
+            serde_json::from_value::<ConfigurationIdentityRequest>(payload)
+                .expect("routed identity requests accept engine metadata");
+        }
+    }
 
     fn two_assets() -> ConsoleUi {
         ConsoleUi::new("demo")

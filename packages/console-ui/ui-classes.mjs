@@ -23,6 +23,7 @@ export const uiClasses = Object.freeze({
   treeItemTrailing: 'iii-ui-tree-item__trailing',
   treeItemMeta: 'iii-ui-tree-item__meta',
   treeItemAction: 'iii-ui-tree-item__action',
+  treeItemActions: 'iii-ui-tree-item__actions',
   card: 'iii-ui-card',
   cardHeader: 'iii-ui-card__header',
   cardBody: 'iii-ui-card__body',
@@ -55,6 +56,11 @@ export const uiClasses = Object.freeze({
   fieldLabel: 'iii-ui-field__label',
   fieldDescription: 'iii-ui-field__description',
   fieldError: 'iii-ui-field__error',
+  checkbox: 'iii-ui-checkbox',
+  checkboxControl: 'iii-ui-checkbox__control',
+  checkboxInput: 'iii-ui-checkbox__input',
+  checkboxMark: 'iii-ui-checkbox__mark',
+  checkboxLabel: 'iii-ui-checkbox__label',
   switch: 'iii-ui-switch',
   switchInput: 'iii-ui-switch__input',
   switchThumb: 'iii-ui-switch__thumb',
@@ -75,6 +81,12 @@ export const uiClasses = Object.freeze({
   motionControl: 'iii-ui-motion-control',
   motionPanel: 'iii-ui-motion-panel',
   motionOverlay: 'iii-ui-motion-overlay',
+  eyebrow: 'iii-ui-eyebrow',
+  toolbar: 'iii-ui-toolbar',
+  toolbarEnd: 'iii-ui-toolbar__end',
+  statusbar: 'iii-ui-statusbar',
+  spin: 'iii-ui-spin',
+  pulse: 'iii-ui-pulse',
 })
 
 export const uiClassNames = Object.freeze(Object.values(uiClasses))

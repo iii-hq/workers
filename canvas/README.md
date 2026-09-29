@@ -28,7 +28,7 @@ exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 | Worker | Why |
 |---|---|
 | [`state`](https://github.com/iii-hq/workers/tree/main/state) | Required. Every canvas record lives in its `canvas` scope; the worker holds nothing in process memory, so a restart loses nothing. |
-| [`console`](https://github.com/iii-hq/workers/tree/main/ade) | Optional. Renders the `#/ext/canvas` page and draws `canvas::*` calls as live diagrams in chat. |
+| [`console`](https://github.com/iii-hq/workers/tree/main/ade) | Optional. Renders the `canvas` page and draws `canvas::*` calls as live diagrams in chat. |
 
 ## Quickstart
 
@@ -112,7 +112,7 @@ as text through `canvas::update`.
 
 ## Console page
 
-The page at `#/ext/canvas` lists every stored canvas and opens each one for
+The `canvas` page lists every stored canvas and opens each one for
 editing: mermaid source beside its live rendering, a freeform scene on a
 drawable whiteboard. The page streams: records live in the state worker's
 `canvas` scope, so an agent-side create pops into the sidebar (and opens,

@@ -57,13 +57,13 @@ export function UnregisterTriggerView({
           <FilterChip label="type" value={request.trigger_type} />
         ) : null}
         <Chip>
-          <span className="tracking-[0.06em] text-ink-faint uppercase">id</span>
+          <span className="iii-ui-eyebrow">id</span>
           <span className="ml-1 text-ink" title={request.id}>
             {shortenId(request.id)}
           </span>
         </Chip>
       </MetaRow>
-      <div className="border-l-2 border-l-warn px-3 py-2 font-mono text-[11px] text-ink-faint">
+      <div className="bg-warn-muted px-3 py-2 font-mono text-[11px] text-ink-faint">
         {response?.removed === true
           ? 'This binding was explicitly removed and will not fire again.'
           : response?.removed === false
@@ -80,7 +80,7 @@ function RawValue({ label, value }: { label: string; value: unknown }) {
   const json = JSON.stringify(value, null, 2) ?? String(value)
   return (
     <div className="border-t border-rule-2 bg-bg">
-      <div className="border-b border-rule-2 bg-paper-2 px-3 py-1.5 font-mono text-[11px] tracking-[0.06em] text-ink-faint uppercase">
+      <div className="border-b border-rule-2 bg-paper-2 px-3 py-1.5 iii-ui-eyebrow">
         {label}
       </div>
       <JsonHighlight code={json} wrap />

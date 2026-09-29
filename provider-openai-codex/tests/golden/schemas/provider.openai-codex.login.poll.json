@@ -1,0 +1,67 @@
+{
+  "description": "Read a device login attempt's status without exposing OAuth tokens.",
+  "function_id": "provider::openai-codex::login::poll",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "login_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "login_id"
+    ],
+    "title": "LoginIdRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "LoginStatus": {
+        "enum": [
+          "pending",
+          "ok",
+          "expired",
+          "canceled",
+          "error"
+        ],
+        "type": "string"
+      },
+      "SessionError": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "error": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/SessionError"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "status": {
+        "$ref": "#/definitions/LoginStatus"
+      }
+    },
+    "required": [
+      "status"
+    ],
+    "title": "LoginPollResponse",
+    "type": "object"
+  }
+}

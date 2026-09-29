@@ -89,13 +89,11 @@ export function WorkerBreakdown({ data }: WorkerBreakdownProps) {
       >
         <ChevronRight
           className={cn(
-            'size-4 text-ink-faint transition-transform duration-150',
+            'size-4 text-ink-faint transition-transform duration-[var(--motion-duration-control)]',
             isExpanded && 'rotate-90',
           )}
         />
-        <span className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
-          workers
-        </span>
+        <span className="iii-ui-eyebrow">workers</span>
 
         <div className="flex items-center gap-3 ml-auto font-mono text-[11px] text-ink-faint tabular-nums">
           <span>
@@ -123,7 +121,7 @@ export function WorkerBreakdown({ data }: WorkerBreakdownProps) {
                   className="w-2 h-2 flex-shrink-0"
                   style={{ backgroundColor: worker.color }}
                 />
-                <span className="font-mono text-[12px] text-ink truncate flex-1 lowercase">
+                <span className="font-mono text-[12px] text-ink truncate flex-1">
                   {worker.name}
                 </span>
                 <span className="font-mono text-[11px] text-ink-faint tabular-nums">
@@ -140,7 +138,7 @@ export function WorkerBreakdown({ data }: WorkerBreakdownProps) {
               </div>
               <div className="h-1 rounded-full bg-surface overflow-hidden ml-4">
                 <div
-                  className="h-full transition-all duration-300"
+                  className="h-full transition-all duration-[var(--motion-duration-panel)]"
                   style={{
                     width: `${Math.max(2, worker.percentage)}%`,
                     backgroundColor: worker.color,

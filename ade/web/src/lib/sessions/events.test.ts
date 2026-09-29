@@ -78,3 +78,38 @@ describe('subscribeSessionTranscript', () => {
     }
   })
 })
+
+describe('transcript setup rollback', () => {
+  it.each([1, 2])(
+    'releases partial registrations when trigger %s fails',
+    (failedTrigger) => {
+      const handlerCleanups: Array<ReturnType<typeof vi.fn>> = []
+      const offTrigger = vi.fn()
+      let registrations = 0
+      const client = {
+        browserId: 'rollback-browser',
+        on: vi.fn(() => {
+          const off = vi.fn()
+          handlerCleanups.push(off)
+          return off
+        }),
+        registerTrigger: vi.fn(() => {
+          registrations += 1
+          if (registrations === failedTrigger) {
+            throw new Error('registration failed')
+          }
+          return offTrigger
+        }),
+      } as unknown as Parameters<typeof subscribeSessionTranscript>[0]
+      expect(() =>
+        subscribeSessionTranscript(client, 'session-a', {
+          onMessageAdded: vi.fn(),
+          onMessageUpdated: vi.fn(),
+        }),
+      ).toThrow('registration failed')
+      expect(handlerCleanups).toHaveLength(failedTrigger)
+      for (const off of handlerCleanups) expect(off).toHaveBeenCalledOnce()
+      expect(offTrigger).toHaveBeenCalledTimes(failedTrigger - 1)
+    },
+  )
+})

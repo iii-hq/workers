@@ -16,6 +16,7 @@ export interface UiClasses {
   readonly treeItemTrailing: 'iii-ui-tree-item__trailing'
   readonly treeItemMeta: 'iii-ui-tree-item__meta'
   readonly treeItemAction: 'iii-ui-tree-item__action'
+  readonly treeItemActions: 'iii-ui-tree-item__actions'
   readonly card: 'iii-ui-card'
   readonly cardHeader: 'iii-ui-card__header'
   readonly cardBody: 'iii-ui-card__body'
@@ -48,6 +49,11 @@ export interface UiClasses {
   readonly fieldLabel: 'iii-ui-field__label'
   readonly fieldDescription: 'iii-ui-field__description'
   readonly fieldError: 'iii-ui-field__error'
+  readonly checkbox: 'iii-ui-checkbox'
+  readonly checkboxControl: 'iii-ui-checkbox__control'
+  readonly checkboxInput: 'iii-ui-checkbox__input'
+  readonly checkboxMark: 'iii-ui-checkbox__mark'
+  readonly checkboxLabel: 'iii-ui-checkbox__label'
   readonly switch: 'iii-ui-switch'
   readonly switchInput: 'iii-ui-switch__input'
   readonly switchThumb: 'iii-ui-switch__thumb'
@@ -68,6 +74,12 @@ export interface UiClasses {
   readonly motionControl: 'iii-ui-motion-control'
   readonly motionPanel: 'iii-ui-motion-panel'
   readonly motionOverlay: 'iii-ui-motion-overlay'
+  readonly eyebrow: 'iii-ui-eyebrow'
+  readonly toolbar: 'iii-ui-toolbar'
+  readonly toolbarEnd: 'iii-ui-toolbar__end'
+  readonly statusbar: 'iii-ui-statusbar'
+  readonly spin: 'iii-ui-spin'
+  readonly pulse: 'iii-ui-pulse'
 }
 
 export declare const uiClasses: UiClasses

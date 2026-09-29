@@ -35,7 +35,11 @@ mod tests {
             STYLES_CSS.contains(r#"[data-iii-ui=\"a2ui\"]"#)
                 || STYLES_CSS.contains("[data-iii-ui=a2ui]")
         );
-        assert!(STYLES_CSS.contains("container-type: inline-size"));
+        // buildWorkerUi minifies release assets: no space after the colon.
+        assert!(
+            STYLES_CSS.contains("container-type:inline-size")
+                || STYLES_CSS.contains("container-type: inline-size")
+        );
         assert!(STYLES_CSS.contains("@container a2ui-page"));
         assert!(STYLES_CSS.contains(".a2ui-mobile-switcher"));
         assert!(PAGE_JS.len() < ASSET_CAP_BYTES);

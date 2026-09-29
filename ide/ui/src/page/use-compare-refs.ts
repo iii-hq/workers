@@ -4,7 +4,7 @@
 
 import type { Host, SelectorGroup } from '@iii-dev/console-ui'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { errorMessage } from '../lib/format'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { gitRecentCommits, gitRefs } from './git'
 import { gitTags } from './git-actions'
 

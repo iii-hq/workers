@@ -1,0 +1,30 @@
+{
+  "description": "Cancel a pending device login. Does not disconnect the current account.",
+  "function_id": "provider::openai-codex::login::cancel",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "login_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "login_id"
+    ],
+    "title": "LoginIdRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "Ack",
+    "type": "object"
+  }
+}

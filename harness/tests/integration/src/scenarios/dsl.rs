@@ -497,6 +497,14 @@ impl ControlledFunction {
         self
     }
 
+    pub(super) fn returns_error(mut self, text: &str) -> Self {
+        self.target.response = json!({
+            "content": [{ "type": "text", "text": text }],
+            "is_error": true
+        });
+        self
+    }
+
     pub(super) fn hold_response(mut self) -> Self {
         self.target.hold_response = true;
         self

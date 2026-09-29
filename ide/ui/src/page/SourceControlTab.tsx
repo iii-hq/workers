@@ -4,9 +4,11 @@
    stage / unstage). Clicking a row opens that file's diff for its side —
    index against HEAD for staged rows, worktree against index otherwise. */
 
-import { ConfirmDialog, IconButton } from '@iii-dev/console-ui'
-import { Check, GitBranch, Minus, Plus, RefreshCw, Undo2 } from 'lucide-react'
+import { Button, ConfirmDialog, EmptyState, IconButton } from '@iii-dev/console-ui'
+import { Check, FolderTree, GitBranch, List, Minus, Plus, RefreshCw, Undo2 } from 'lucide-react'
 import { useState } from 'react'
+import { ChangeEntries } from './ChangeEntries'
+import { opensFileDirectly, readScmViewMode, writeScmViewMode } from './scm-view'
 import { FileTypeIcon } from './file-type-icon'
 import type { GitComparisonEntry } from './git'
 import { statusLetter, statusTitle } from './git-actions'
@@ -24,9 +26,18 @@ interface SourceControlTabProps {
   onOpenFile: (path: string) => void
 }
 
-type PendingDiscard = { kind: 'one'; entry: GitComparisonEntry } | { kind: 'all'; entries: readonly GitComparisonEntry[] }
+type PendingDiscard =
+  | { kind: 'one'; entry: GitComparisonEntry }
+  | { kind: 'all'; entries: readonly GitComparisonEntry[] }
+  | { kind: 'folder'; name: string; entries: readonly GitComparisonEntry[] }
 
 export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, onOpenFile }: SourceControlTabProps) {
+  const [viewMode, setViewMode] = useState(readScmViewMode)
+  const toggleViewMode = () => {
+    const next = viewMode === 'list' ? 'tree' : 'list'
+    setViewMode(next)
+    writeScmViewMode(next)
+  }
   const [message, setMessage] = useState('')
   const [stagedOpen, setStagedOpen] = useState(true)
   const [changesOpen, setChangesOpen] = useState(true)
@@ -60,13 +71,20 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
           ) : undefined
         }
         actions={
-          <IconButton label="Refresh" onClick={scm.reload} disabled={scm.busy}>
-            <RefreshCw aria-hidden />
-          </IconButton>
+          <>
+            <IconButton label={viewMode === 'list' ? 'View as Tree' : 'View as List'} onClick={toggleViewMode}>
+              {viewMode === 'list' ? <FolderTree aria-hidden /> : <List aria-hidden />}
+            </IconButton>
+            <IconButton label="Refresh" onClick={scm.reload} disabled={scm.busy}>
+              <RefreshCw aria-hidden />
+            </IconButton>
+          </>
         }
       />
       {scm.phase === 'not-a-repo' ? (
-        <div className="shui-side-note">This folder is not inside a Git repository.</div>
+        <div className="shui-side-empty">
+          <EmptyState title="No repository" description="This folder is not inside a Git repository." />
+        </div>
       ) : scm.phase === 'error' ? (
         <div className="shui-side-note warn">{scm.error}</div>
       ) : scm.phase === 'loading' || scm.phase === 'idle' ? (
@@ -94,15 +112,16 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
                 }
               }}
             />
-            <button
+            <Button
               type="submit"
-              className="shui-scm-commit-btn"
+              variant="primary"
+              size="sm"
               disabled={scm.busy || message.trim() === '' || scm.staged.length === 0}
               title={scm.staged.length === 0 ? 'stage changes first' : 'commit staged changes'}
             >
               <Check aria-hidden />
               Commit
-            </button>
+            </Button>
           </form>
           {scm.note ? (
             <div className={`shui-scm-note${scm.note.includes('failed') ? ' warn' : ''}`} role="status">
@@ -122,13 +141,19 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
                   </IconButton>
                 }
               >
-                {scm.staged.map((entry) => (
+                <ChangeEntries entries={scm.staged} mode={viewMode} renderDirectoryActions={(entries, directory) => (
+                  <IconButton label={`Unstage changes in ${directory.name}`} disabled={scm.busy} onClick={() => void scm.unstage(entries.map((entry) => entry.path))}>
+                    <Minus aria-hidden />
+                  </IconButton>
+                )} renderEntry={(entry, depth) => (
                   <ChangeRow
                     key={`staged:${entry.path}`}
                     entry={entry}
+                    depth={depth}
+                    showDirectory={viewMode === 'list'}
                     active={activeSide === 'staged' && activePath === entry.path}
                     busy={scm.busy}
-                    onOpen={(pin) => onOpenChange('staged', entry.path, pin)}
+                    onOpen={(pin) => (opensFileDirectly(entry) ? onOpenFile(entry.path) : onOpenChange('staged', entry.path, pin))}
                     onOpenFile={entry.status === 'deleted' ? undefined : () => onOpenFile(entry.path)}
                     actions={
                       <IconButton label="Unstage changes" disabled={scm.busy} onClick={() => void scm.unstage([entry.path])}>
@@ -136,7 +161,7 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
                       </IconButton>
                     }
                   />
-                ))}
+                )} />
               </ViewSection>
             ) : null}
             <ViewSection
@@ -162,13 +187,24 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
               {scm.unstaged.length === 0 ? (
                 <div className="shui-scm-empty">{scm.staged.length === 0 ? 'No changes' : 'No unstaged changes'}</div>
               ) : (
-                scm.unstaged.map((entry) => (
+                <ChangeEntries entries={scm.unstaged} mode={viewMode} renderDirectoryActions={(entries, directory) => (
+                  <>
+                    <IconButton label={`Discard changes in ${directory.name}`} disabled={scm.busy} onClick={() => setPending({ kind: 'folder', name: directory.name, entries })}>
+                      <Undo2 aria-hidden />
+                    </IconButton>
+                    <IconButton label={`Stage changes in ${directory.name}`} disabled={scm.busy} onClick={() => void scm.stage(entries.map((entry) => entry.path))}>
+                      <Plus aria-hidden />
+                    </IconButton>
+                  </>
+                )} renderEntry={(entry, depth) => (
                   <ChangeRow
                     key={`unstaged:${entry.path}`}
                     entry={entry}
+                    depth={depth}
+                    showDirectory={viewMode === 'list'}
                     active={activeSide === 'unstaged' && activePath === entry.path}
                     busy={scm.busy}
-                    onOpen={(pin) => onOpenChange('unstaged', entry.path, pin)}
+                    onOpen={(pin) => (opensFileDirectly(entry) ? onOpenFile(entry.path) : onOpenChange('unstaged', entry.path, pin))}
                     onOpenFile={entry.status === 'deleted' ? undefined : () => onOpenFile(entry.path)}
                     actions={
                       <>
@@ -181,7 +217,7 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
                       </>
                     }
                   />
-                ))
+                )} />
               )}
             </ViewSection>
           </div>
@@ -192,7 +228,13 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
         onOpenChange={(open) => {
           if (!open) setPending(null)
         }}
-        title={pending?.kind === 'one' ? `Discard changes in ${basename(pending.entry.path)}?` : `Discard all ${pendingCount} changes?`}
+        title={
+          pending?.kind === 'one'
+            ? `Discard changes in ${basename(pending.entry.path)}?`
+            : pending?.kind === 'folder'
+              ? `Discard ${pendingCount} ${pendingCount === 1 ? 'change' : 'changes'} in ${pending.name}?`
+              : `Discard all ${pendingCount} changes?`
+        }
         description="Working-tree changes are lost; untracked files are deleted. This cannot be undone."
         details={pending === null ? undefined : pending.kind === 'one' ? [pending.entry.path] : pending.entries.slice(0, 8).map((entry) => entry.path)}
         confirmLabel="Discard"
@@ -210,6 +252,8 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
 
 function ChangeRow({
   entry,
+  depth,
+  showDirectory,
   active,
   busy,
   onOpen,
@@ -217,6 +261,8 @@ function ChangeRow({
   actions,
 }: {
   entry: GitComparisonEntry
+  depth: number
+  showDirectory: boolean
   active: boolean
   busy: boolean
   onOpen: (pin: boolean) => void
@@ -230,6 +276,7 @@ function ChangeRow({
       <button
         type="button"
         className="shui-scm-row-main"
+        style={{ paddingLeft: 20 + depth * 14 }}
         onClick={() => onOpen(false)}
         onDoubleClick={() => onOpen(true)}
         title={entry.path}
@@ -237,7 +284,7 @@ function ChangeRow({
       >
         <FileTypeIcon path={entry.path} className="file-icon" />
         <span className="name">{name}</span>
-        {dir ? <span className="dir">{dir}</span> : null}
+        {showDirectory && dir ? <span className="dir">{dir}</span> : null}
         {entry.renameFrom ? <span className="dir">from {entry.renameFrom}</span> : null}
       </button>
       <span className="shui-scm-row-actions">

@@ -191,10 +191,21 @@ async fn main() -> Result<()> {
         let deps = deps.clone();
         tokio::spawn(async move { harness::bindings::gc::run(&deps).await });
     }
+    // Sessions the store still reports `working` after a restart (a terminal
+    // projection lost while the session-manager was down): re-derive their
+    // status from the turn record. Non-blocking.
+    {
+        let deps = deps.clone();
+        tokio::spawn(async move { harness::session_status::sweep(&deps).await });
+    }
     // Wake-expiry sweep: a wake whose lifecycle deadline passes unfired must
     // wake its owner with the news — this loop is what turns `expires_at`
     // into that notice instead of a session parked forever.
     tokio::spawn(harness::bindings::expiry::run_loop(deps.clone()));
+    // Orphaned-turn recovery: a `Running` turn whose step never reached the
+    // queue (enqueue failed during an outage) is re-enqueued so it resumes
+    // or observes its stop instead of wedging the session.
+    tokio::spawn(harness::inflight::run_loop(deps.clone()));
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("harness shutting down");

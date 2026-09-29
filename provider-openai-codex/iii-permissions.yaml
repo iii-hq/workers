@@ -9,3 +9,8 @@ rules:
   - '!provider::openai-codex::refresh_models'
   - '!provider::openai-codex::on_router_ready'
   - '!provider::openai-codex::count_tokens'
+  # provider::openai-codex::image::generate and image::read are deliberately
+  # NOT listed: images have no router front door, the calls bypass no
+  # accounting, and agents need them directly (generate saves to
+  # data/provider-openai-codex/images/, read is how an agent looks at a saved
+  # picture when it must).

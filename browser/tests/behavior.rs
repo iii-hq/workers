@@ -32,7 +32,7 @@ fn behavior_fixtures_match_reference() {
     files.sort();
     assert!(
         !files.is_empty(),
-        "no behavior fixtures found — run gen_goldens.py behavior"
+        "no behavior fixtures found — tests/golden/behavior/ is missing"
     );
     for file in files {
         let fixture: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();

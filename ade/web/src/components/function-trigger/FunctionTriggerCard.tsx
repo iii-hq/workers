@@ -30,6 +30,7 @@ import {
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
+import { eyebrowClassName } from '@/components/ui/Eyebrow'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
@@ -39,6 +40,10 @@ import { formatCallDuration } from '@/lib/format-call-duration'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import type { FunctionTriggerMessage as FunctionTriggerMessageType } from '@/types/chat'
+
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 /**
  * FunctionTriggerCard — the canonical rendering of one iii function trigger:
@@ -55,6 +60,12 @@ import type { FunctionTriggerMessage as FunctionTriggerMessageType } from '@/typ
 interface FunctionTriggerCardProps {
   message: FunctionTriggerMessageType
   defaultOpen?: boolean
+  /**
+   * Hydrate historical arguments/results when an unloaded card opens. May
+   * resolve to whether the read succeeded; `false` swaps the skeleton for a
+   * retry row instead of leaving the card loading forever.
+   */
+  onLoadDetails?: () => Promise<boolean> | undefined
   /**
    * Approve handler. May be sync or async; the component shows a
    * `submitting…` state while the promise resolves and a red error row
@@ -228,9 +239,7 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
 function FunctionIdentityRow({ functionId }: { functionId: string }) {
   return (
     <div className="flex min-w-0 items-center gap-2 border-b border-rule-2 bg-paper-2 px-3 py-1.5">
-      <span className="shrink-0 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-        function
-      </span>
+      <span className="shrink-0 iii-ui-eyebrow">function</span>
       <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
         <span className="text-accent italic font-semibold">ƒ</span>{' '}
         <FunctionIdLabel functionId={functionId} />
@@ -540,6 +549,7 @@ function argsPreview(input: unknown): string | null {
 export function FunctionTriggerCard({
   message,
   defaultOpen,
+  onLoadDetails,
   onApprove,
   onDeny,
   onAlwaysAllow,
@@ -552,7 +562,7 @@ export function FunctionTriggerCard({
   // A placeholder from a paged transcript read: the header knows the function
   // and the description, the arguments and result are still on the server.
   // No renderer is consulted — there is nothing to render yet — and the body
-  // is a skeleton until the group fetches the whole entry.
+  // is a skeleton until the caller fetches the whole entry.
   const unloaded = !!message.unloaded && !pending && !running
   // Registry-dispatched custom panes: injected renderers first, then the
   // first-party families, then the JSON fallback below. First non-null
@@ -584,6 +594,37 @@ export function FunctionTriggerCard({
       : undefined
   const filesystemAccess = pending ? message.filesystemAccess : undefined
   const [open, setOpen] = useState(!!defaultOpen || pending)
+  const [loadFailed, setLoadFailed] = useState(false)
+  // Once per open, not per parent render (the parent hands over a fresh
+  // callback each render) and not per id: a hydration that lands the call
+  // but not its result re-derives the block id, and that is not a retry.
+  // Closing the card clears the latch, so reopening is a retry; so is the
+  // failure row's button. The same path hydrates default-open cards too.
+  // The latch is the request itself, so only the read this open is still
+  // waiting on may report its failure.
+  const requestedDetailsRef = useRef<symbol | null>(null)
+  const loadDetails = () => {
+    if (!onLoadDetails) return
+    const request = Symbol('load-details')
+    requestedDetailsRef.current = request
+    setLoadFailed(false)
+    Promise.resolve(onLoadDetails())
+      .catch(() => false)
+      .then((ok) => {
+        if (ok === false && requestedDetailsRef.current === request)
+          setLoadFailed(true)
+      })
+  }
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `loadDetails` reads the current callback; the latch decides whether it runs.
+  useEffect(() => {
+    if (!open || !unloaded) {
+      requestedDetailsRef.current = null
+      setLoadFailed(false)
+      return
+    }
+    if (requestedDetailsRef.current) return
+    loadDetails()
+  }, [open, unloaded, onLoadDetails])
   // Closed calls read as a lightweight activity list. Opening one restores
   // the full raised function-call surface with the existing panes and
   // controls. Pending approvals remain surfaces because they require action.
@@ -851,6 +892,7 @@ export function FunctionTriggerCard({
         ) : null}
         <button
           type="button"
+          data-message-action="toggle-caret"
           aria-hidden="true"
           tabIndex={-1}
           onClick={() => setOpen((v) => !v)}
@@ -864,7 +906,7 @@ export function FunctionTriggerCard({
           {expandedSurface ? (
             <span
               className={cn(
-                'inline-block shrink-0 text-ink-ghost transition-transform duration-150',
+                'inline-block shrink-0 text-ink-ghost transition-transform duration-[var(--motion-duration-control)]',
                 open && 'rotate-90',
               )}
             >
@@ -881,17 +923,35 @@ export function FunctionTriggerCard({
           {description ? (
             <FunctionIdentityRow functionId={message.functionId} />
           ) : null}
-          <div
-            role="status"
-            className="flex flex-col gap-2 px-3 py-3"
-            data-function-trigger-skeleton=""
-            aria-busy="true"
-            aria-label="loading call details"
-          >
-            <Skeleton className="h-3 w-2/3" />
-            <Skeleton className="h-3 w-1/2" />
-            <Skeleton className="h-3 w-5/6" />
-          </div>
+          {loadFailed ? (
+            <div
+              role="alert"
+              className="flex items-center gap-2 px-3 py-3 font-mono text-[12px] text-warn"
+              data-function-trigger-load-failed=""
+            >
+              <span>could not load call details</span>
+              <button
+                type="button"
+                data-message-action="retry-load"
+                onClick={loadDetails}
+                className="cursor-pointer underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                retry
+              </button>
+            </div>
+          ) : (
+            <div
+              role="status"
+              className="flex flex-col gap-2 px-3 py-3"
+              data-function-trigger-skeleton=""
+              aria-busy="true"
+              aria-label="loading call details"
+            >
+              <Skeleton className="h-3 w-2/3" />
+              <Skeleton className="h-3 w-1/2" />
+              <Skeleton className="h-3 w-5/6" />
+            </div>
+          )}
         </div>
       ) : open ? (
         <div className="border-t border-rule-2">
@@ -909,7 +969,10 @@ export function FunctionTriggerCard({
                 type="button"
                 aria-expanded={showRawDetails}
                 onClick={() => setShowRawDetails((value) => !value)}
-                className="w-full cursor-pointer px-3 py-2 text-left font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+                className={cn(
+                  eyebrowClassName,
+                  'w-full cursor-pointer px-3 py-2 text-left hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent',
+                )}
               >
                 {showRawDetails ? 'hide' : 'show'} raw request and response
               </button>
@@ -1088,7 +1151,7 @@ function PaneShell({
       className={cn(bordered && 'border-t border-rule-2')}
       data-function-pane={label}
     >
-      <div className="flex items-center gap-2 bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+      <div className="flex items-center gap-2 bg-paper-2 px-3 py-1.5 border-b border-rule-2 iii-ui-eyebrow">
         <span className="min-w-0 flex-1 truncate">
           {label}
           {(hints ?? []).map((hint) => (
@@ -1127,9 +1190,9 @@ function PaneShell({
           type="button"
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
-          className="w-full border-t border-rule-2 bg-paper-2 px-3 py-1 text-center font-mono text-[11px] lowercase text-ink-faint hover:text-ink transition-colors"
+          className="w-full border-t border-rule-2 bg-paper-2 px-3 py-1 text-center font-mono text-[11px] text-ink-faint hover:text-ink transition-colors"
         >
-          {expanded ? '▴ collapse' : `▾ show all · ${lineCount} lines`}
+          {expanded ? '▴ Collapse' : `▾ Show all · ${lineCount} lines`}
         </button>
       ) : null}
     </div>
@@ -1144,7 +1207,7 @@ function PaneShell({
 function StreamingArgsPane({ text }: { text: string }) {
   return (
     <div data-function-pane="request">
-      <div className="bg-paper-2 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+      <div className="bg-paper-2 px-3 py-1.5 iii-ui-eyebrow">
         request
         <span className="text-ink-ghost normal-case tracking-normal">
           {' '}
@@ -1221,7 +1284,7 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
         className={cn(bordered && 'border-t border-rule-2')}
         data-function-pane={label}
       >
-        <div className="bg-paper-2 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+        <div className="bg-paper-2 px-3 py-1.5 iii-ui-eyebrow">
           {label}
           <span className="text-ink-ghost normal-case tracking-normal">
             {' '}
@@ -1269,7 +1332,7 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
         )}
         {detailsJson ? (
           <>
-            <div className="bg-paper-2 px-3 py-1.5 border-y border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+            <div className="bg-paper-2 px-3 py-1.5 border-y border-rule-2 iii-ui-eyebrow">
               details
             </div>
             <JsonHighlight code={detailsJson} />

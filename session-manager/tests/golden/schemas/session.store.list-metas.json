@@ -53,6 +53,15 @@
         ],
         "type": "object"
       },
+      "SessionKind": {
+        "description": "Who a session is for. `user` (the default) is a human-facing chat — what the console lists by default; `automation` is a machine-driven run; `e2e` is a session created by an end-to-end suite (harness-e2e). Consumers filter on it (`session::list` `kinds`); the store never changes behaviour on it.",
+        "enum": [
+          "user",
+          "automation",
+          "e2e"
+        ],
+        "type": "string"
+      },
       "SessionMeta": {
         "description": "A session's metadata record.",
         "properties": {
@@ -87,6 +96,15 @@
               "string",
               "null"
             ]
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/SessionKind"
+              }
+            ],
+            "default": "user",
+            "description": "Who the session is for (`user` by default, `automation`, `e2e`). Fixed at creation — `session::set-meta` never changes it. Records written before this field existed read back as `user`."
           },
           "message_count": {
             "description": "Number of `kind: \"message\"` entries (custom entries are bookkeeping and not counted).",

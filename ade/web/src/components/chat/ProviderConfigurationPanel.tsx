@@ -23,6 +23,10 @@ import {
 import { providerForModel } from './model-picker-presentation'
 import { ProviderSettingsForm } from './ProviderSettingsForm'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 const ROUTER_CONFIGURATION_ID = 'llm-router'
 
 type JsonObject = { [key: string]: JsonValue }

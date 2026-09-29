@@ -900,6 +900,78 @@ describe('entrySegments', () => {
     })
   })
 
+  it('renders a model_notice as a quiet notice with the text collapsed', () => {
+    const live = entrySegments({
+      entry_id: 'e_t1_notice_0',
+      custom: {
+        custom_type: 'model_notice',
+        data: {
+          text: 'Functions changed: fs::read added.',
+          kind: 'registry-changed',
+        },
+      },
+    })
+    const readBack = entrySegments({
+      entry_id: 'e_t1_notice_0',
+      message: {
+        role: 'custom',
+        custom_type: 'model_notice',
+        content: [],
+        details: {
+          text: 'Functions changed: fs::read added.',
+          kind: 'registry-changed',
+        },
+        timestamp: 7,
+      },
+    })
+    for (const [notice] of [live, readBack]) {
+      expect(notice).toMatchObject({
+        id: 'e_t1_notice_0',
+        role: 'system',
+        kind: 'notice',
+        tone: 'info',
+        content: 'Note to the model — registry changed',
+        technicalDetails: { detail: 'Functions changed: fs::read added.' },
+      })
+    }
+    expect(readBack[0]?.createdAt).toBe(7)
+    const [plain] = entrySegments({
+      entry_id: 'e-n',
+      custom: { custom_type: 'model_notice', data: { text: 'hi' } },
+    })
+    expect(plain).toMatchObject({ content: 'Note to the model' })
+    expect(
+      entrySegments({
+        entry_id: 'e-empty',
+        custom: { custom_type: 'model_notice', data: {} },
+      }),
+    ).toEqual([])
+  })
+
+  it('never renders harness bookkeeping custom entries', () => {
+    for (const custom_type of ['message_order', 'runtime_context']) {
+      expect(
+        entrySegments({
+          entry_id: `e-${custom_type}`,
+          custom: { custom_type, data: { order: ['e1'] } },
+        }),
+      ).toEqual([])
+      // Read-backs would otherwise fall back to their display text.
+      expect(
+        entrySegments({
+          entry_id: `e-${custom_type}`,
+          message: {
+            role: 'custom',
+            custom_type,
+            content: [],
+            display: 'bookkeeping',
+            timestamp: 1,
+          },
+        }),
+      ).toEqual([])
+    }
+  })
+
   it('maps harness error/notice custom entries to visible system notices', () => {
     const [err] = entrySegments({
       entry_id: 'e_t1_error',
@@ -1751,6 +1823,43 @@ describe('elided placeholders', () => {
       unloaded: false,
       output: { content: [{ type: 'text', text: 'ok' }], details: {} },
     })
+  })
+
+  /* Two overlapping range reads (a card open racing "show all") can land a
+     result before its call's arguments when the read carrying the call fails.
+     The row keeps the output but stays a placeholder until the call lands. */
+  it('keeps a placeholder unloaded when only its result lands', () => {
+    const page = transcriptToMessages([
+      elidedCall('e_a1', [{ id: 'fc_1', functionId: 'shell::run' }]),
+      elidedResult('e_r1', 'fc_1'),
+    ])
+    const resultOnly = applyEntryUpsert(page, resultItem('e_r1', 'fc_1', 'ok'))
+    expect(resultOnly[0]).toMatchObject({
+      unloaded: true,
+      output: { content: [{ type: 'text', text: 'ok' }], details: {} },
+    })
+    expect((resultOnly[0] as FunctionTriggerMessage).input).toBeUndefined()
+
+    const whole = applyEntryUpsert(
+      resultOnly,
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'shell::run',
+            arguments: { command: 'ls' },
+          },
+        ],
+        'function_call',
+      ),
+    )
+    expect(whole[0]).toMatchObject({
+      input: { command: 'ls' },
+      output: { content: [{ type: 'text', text: 'ok' }], details: {} },
+    })
+    expect((whole[0] as FunctionTriggerMessage).unloaded).toBeFalsy()
   })
 
   /* A reconnect re-reads the tail, which elides a run the window already

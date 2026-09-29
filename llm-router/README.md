@@ -35,7 +35,7 @@ const res = await iii.trigger('router::chat', {
   writer_ref: writerRef, // direction "write"
   model: 'claude-sonnet-4',
   messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }], timestamp: Date.now() }],
-}, { timeout_ms: 320_000 }); // outer timeout ≥ the router's 300s stream budget
+}, { timeout_ms: 620_000 }); // outer timeout ≥ the router's 600s stream budget
 // res: { ok, provider, model, stop_reason, usage }
 ```
 
@@ -99,6 +99,20 @@ capable, `provider::<id>::refresh_models` (model discovery),
 `provider::<id>::embed` (embeddings), and the speech pair
 `provider::<id>::transcribe` / `provider::<id>::speak`.
 
+`router::chat` accepts an optional structured prompt next to the flat
+`system_prompt`: `system_sections` (ordered `{text, cache_boundary}` blocks)
+and `cache_intent` (`{surface_digest}`, the caller's `sha256:` identity for
+the text before the boundary). A sections-only request is flattened into
+`system_prompt` (sections joined with `\n\n`); when both are sent they must
+agree byte for byte or the request is rejected as `invalid_request`. Both are
+forwarded verbatim to `provider::<id>::stream` alongside the flat string, so a
+provider that knows nothing about sections keeps reading `system_prompt`.
+Cache-aware providers put their prefix marker on the boundary block
+(Anthropic, Claude Code) or derive a shared `prompt_cache_key` from the digest
+(OpenAI, Codex) so every session on the same frozen prefix lands on one cache
+entry. The digest is a routing hint, never evidence of a hit — read
+`usage.cache_read` for that.
+
 ## Configuration
 
 All operator configuration lives in the engine's `llm-router` configuration
@@ -120,7 +134,7 @@ entry at boot and keeps an in-memory snapshot synchronized by the
   },
   "routing_heuristics": [{ "pattern": "^gpt-", "provider": "openai" }],
   "settings": {
-    "stream_timeout_ms": 300000,
+    "stream_timeout_ms": 600000,
     "idle_timeout_ms": 120000,
     "retry_max": 2,
     "output_token_max": 32000
@@ -130,10 +144,10 @@ entry at boot and keeps an in-memory snapshot synchronized by the
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `stream_timeout_ms` | `300000` | Hard budget for one streamed turn. |
+| `stream_timeout_ms` | `600000` | Hard budget for one streamed turn. |
 | `idle_timeout_ms` | `120000` | Max silence between provider frames before the attempt is cut. |
 | `retry_max` | `2` | Retries per turn for retryable failures before the first forwarded frame (`0`–`10`). |
-| `output_token_max` | `32000` | Ceiling on `max_output_tokens` forwarded to providers. |
+| `output_token_max` | unset | Optional ceiling on `max_output_tokens`. Unset forwards each model's own output ceiling, so providers run without an artificial limit; set it only to cap spend. |
 
 Pasting a key into a provider's slice is the whole onboarding flow: the
 router diffs the changed slice, debounces ~2 s, and kicks that provider's

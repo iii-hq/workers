@@ -29,7 +29,14 @@
  * through is a non-record `input` — see `tryRenderPreview`.
  */
 
-import type { FunctionTriggerMessage, FunctionTriggerRenderer, Host } from '@iii-dev/console-ui'
+import {
+  Chip,
+  type FunctionTriggerMessage,
+  type FunctionTriggerRenderer,
+  type Host,
+  uiClasses,
+} from '@iii-dev/console-ui'
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 import { useState } from 'react'
 import {
   asRecord,
@@ -41,7 +48,6 @@ import {
   RegisteredIds,
   RuntimeChip,
   redactRuntimeIds,
-  unwrapEnvelope,
 } from '../lib/shared'
 
 const FUNCTION_ID = 'code-runner::teardown'
@@ -70,10 +76,10 @@ function TargetChip({ target }: { target?: Target }) {
   if (!target) return null
   if (target.kind === 'runtime') return <RuntimeChip runtimeId={target.id} />
   return (
-    <span className="cr-ui-chip">
-      <span className="k">namespace </span>
+    <Chip>
+      <span className="cr-ui-k">namespace </span>
       {redactRuntimeIds(target.name)}
-    </span>
+    </Chip>
   )
 }
 
@@ -143,7 +149,7 @@ function RunningView({ message }: { message: FunctionTriggerMessage }) {
   // capability in full.
   return (
     <CardShell op="teardown" running chips={<TargetChip target={targetOf(message.input)} />}>
-      <div className="cr-ui-msg-note pulse">· tearing down…</div>
+      <div className={`cr-ui-msg-note ${uiClasses.pulse}`}>· tearing down…</div>
     </CardShell>
   )
 }

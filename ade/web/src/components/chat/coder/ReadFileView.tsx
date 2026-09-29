@@ -194,7 +194,7 @@ function MetaChips({ entry }: { entry: ReadEntryModel }) {
       ) : null}
       {result.is_utf8 === false ? (
         // Binary bytes were replaced with U+FFFD in the returned content.
-        <Chip label="utf8" className="border-warn text-warn">
+        <Chip label="utf8" className="bg-warn-muted text-warn">
           lossy
         </Chip>
       ) : null}
@@ -251,7 +251,7 @@ function StatBody({ result }: { result: ReadEntryResult }) {
       {result.is_utf8 != null ? (
         <Chip
           label="utf8"
-          className={result.is_utf8 ? undefined : 'border-warn text-warn'}
+          className={result.is_utf8 ? undefined : 'bg-warn-muted text-warn'}
         >
           {result.is_utf8 ? 'lossless' : 'lossy'}
         </Chip>
@@ -325,9 +325,7 @@ function SingleRead({
   return (
     <div className="border-t border-rule-2 bg-bg">
       <div className="bg-paper-2 border-b border-rule-2 px-3 py-2 flex flex-wrap items-center gap-1.5">
-        <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-          file
-        </span>
+        <span className="iii-ui-eyebrow">file</span>
         <code className="font-mono text-[12px] text-ink">
           {entry.requested.path}
         </code>

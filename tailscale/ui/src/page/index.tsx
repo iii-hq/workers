@@ -34,7 +34,9 @@ import {
   uiClasses,
 } from '@iii-dev/console-ui'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
-import { Activity, Check, Copy, ExternalLink, Globe, Laptop, QrCode, Radio, RefreshCw, Send, Sliders, Square, User } from './icons'
+import { errorMessage, formatBytes } from '@iii-dev/console-ui/format'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { Activity, Check, Copy, ExternalLink, Globe, Laptop, QrCode, Radio, RefreshCw, Send, SlidersHorizontal as Sliders, Square, User } from 'lucide-react'
 
 type Props = PageRenderProps & { host: Host }
 
@@ -182,32 +184,8 @@ function backendStateLabel(state: string | null | undefined): string {
   return BACKEND_STATE_LABEL[state] ?? state
 }
 
-function describe(cause: unknown): string {
-  const text = (() => {
-    if (cause instanceof Error) return cause.message
-    if (cause && typeof cause === 'object') {
-      const message = (cause as { message?: unknown }).message
-      if (typeof message === 'string') return message
-      try {
-        return JSON.stringify(cause)
-      } catch {
-        return String(cause)
-      }
-    }
-    return String(cause)
-  })()
-  return text.replace(/^handler error:\s*/i, '')
-}
-
 function qrDataUrl(svg: string) {
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
-}
-
-function bytes(n: number) {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
 function yesNo(value: boolean | null | undefined) {
@@ -277,7 +255,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
       setUpdatedAt(Date.now())
       setError(null)
     } catch (cause) {
-      setError(describe(cause))
+      setError(errorMessage(cause))
     } finally {
       setRefreshing(false)
     }
@@ -311,7 +289,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
         if (message) setNotice(message)
         await refresh()
       } catch (cause) {
-        setError(describe(cause))
+        setError(errorMessage(cause))
       } finally {
         setBusy(false)
       }
@@ -355,7 +333,6 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   const [path, setPath] = useState('/')
   const [target, setTarget] = useState('')
   const [confirming, setConfirming] = useState(false)
-  const [copied, setCopied] = useState(false)
   const [stoppingRoute, setStoppingRoute] = useState<string | null>(null)
 
   useEffect(() => {
@@ -417,17 +394,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
     if (route) void stopRoute(route)
   }, [share, status, stopRoute])
 
-  const copyLink = useCallback(async () => {
-    if (!share) return
-    try {
-      await navigator.clipboard.writeText(share.url)
-    } catch (cause) {
-      setError(describe(cause))
-      return
-    }
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1600)
-  }, [share])
+  const { state: copyState, copy: copyLink } = useCopyFlash(share?.url ?? '', 1600)
 
   const openLink = useCallback(() => {
     if (share) window.open(share.url, '_blank', 'noopener')
@@ -448,7 +415,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
         setPeers(result.peers)
         setHiddenIngress(result.hidden_ingress_count)
       } catch (cause) {
-        setError(describe(cause))
+        setError(errorMessage(cause))
       }
     },
     [trigger, includeIngress],
@@ -471,7 +438,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
         const result = await trigger<Ping>('tailscale::ping', { target: peer.dns_name || peer.tailscale_ips[0], count: 3 })
         setPings((prev) => ({ ...prev, [peer.id]: result }))
       } catch (cause) {
-        setPings((prev) => ({ ...prev, [peer.id]: describe(cause) }))
+        setPings((prev) => ({ ...prev, [peer.id]: errorMessage(cause) }))
       }
     },
     [trigger],
@@ -493,7 +460,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
       setExitNodes(nextExit)
       setExitChoice(nextExit.current ?? '')
     } catch (cause) {
-      setError(describe(cause))
+      setError(errorMessage(cause))
     }
   }, [trigger])
 
@@ -542,7 +509,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
       setHostnameDraft(next.hostname ?? '')
       setRoutesDraft(next.advertise_routes.join(', '))
     } catch (cause) {
-      setError(describe(cause))
+      setError(errorMessage(cause))
     }
   }, [trigger])
 
@@ -577,7 +544,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
       setDns(nextDns)
       if (!certDomain && nextDns.cert_domains[0]) setCertDomain(nextDns.cert_domains[0])
     } catch (cause) {
-      setError(describe(cause))
+      setError(errorMessage(cause))
     }
   }, [trigger, dns, certDomain])
 
@@ -638,7 +605,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
       setLock(nextLock)
       setVersion(nextVersion)
     } catch (cause) {
-      setError(describe(cause))
+      setError(errorMessage(cause))
     }
   }, [trigger])
 
@@ -786,7 +753,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
                           disabled={stoppingRoute !== null}
                           onClick={() => void stopRoute(route)}
                         >
-                          <Square className={stoppingRoute === key ? 'ts-spin' : undefined} />
+                          <Square size={16} className={stoppingRoute === key ? uiClasses.spin : undefined} />
                         </IconButton>
                       </TableCell>
                     </TableRow>
@@ -925,7 +892,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
                 className="ts-link-card"
                 title={
                   <>
-                    <QrCode />
+                    <QrCode size={16} />
                     {!share ? 'Link' : authorizationRequired ? 'Public link not available yet' : 'Open on another device'}
                   </>
                 }
@@ -973,14 +940,14 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
                       <span className="ts-mono">{share.target}</span>.
                     </p>
                     <div className="ts-actions">
-                      <IconButton label={copied ? 'Copied' : 'Copy link'} variant="ghost" onClick={() => void copyLink()}>
-                        {copied ? <Check /> : <Copy />}
+                      <IconButton label={copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy link'} variant="ghost" onClick={() => void copyLink()}>
+                        {copyState === 'copied' ? <Check size={16} /> : <Copy size={16} />}
                       </IconButton>
                       <IconButton label="Open link in a browser tab" variant="ghost" onClick={openLink}>
-                        <ExternalLink />
+                        <ExternalLink size={16} />
                       </IconButton>
                       <IconButton label="Stop route" variant="ghost" disabled={busy} onClick={stopShare}>
-                        <Square />
+                        <Square size={16} />
                       </IconButton>
                     </div>
                   </div>
@@ -1005,7 +972,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
                   </Button>
                 )}
                 <IconButton label="Reload devices" variant="ghost" onClick={() => void loadPeers()}>
-                  <RefreshCw />
+                  <RefreshCw size={16} />
                 </IconButton>
               </div>
             }
@@ -1076,11 +1043,11 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
                                         : '–'}
                             </TableCell>
                             <TableCell className="ts-mono">
-                              ↓ {bytes(peer.rx_bytes)} ↑ {bytes(peer.tx_bytes)}
+                              ↓ {formatBytes(peer.rx_bytes)} ↑ {formatBytes(peer.tx_bytes)}
                             </TableCell>
                             <TableCell className="ts-row-actions">
                               <IconButton label={`Ping ${peer.hostname}`} variant="ghost" disabled={!peer.online || ping === 'pending'} onClick={() => void pingPeer(peer)}>
-                                <Activity className={ping === 'pending' ? 'ts-spin' : undefined} />
+                                <Activity size={16} className={ping === 'pending' ? uiClasses.spin : undefined} />
                               </IconButton>
                             </TableCell>
                           </TableRow>
@@ -1121,7 +1088,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
                 title="DNS"
                 actions={
                   <IconButton label="Reload DNS status" variant="ghost" onClick={() => void loadNetwork()}>
-                    <RefreshCw />
+                    <RefreshCw size={16} />
                   </IconButton>
                 }
               >
@@ -1223,7 +1190,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
             title="Preferences"
             actions={
               <IconButton label="Reload preferences" variant="ghost" onClick={() => void loadPrefs()}>
-                <RefreshCw />
+                <RefreshCw size={16} />
               </IconButton>
             }
           >
@@ -1278,13 +1245,13 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
               <SectionCard
                 title={
                   <>
-                    <Send />
+                    <Send size={16} />
                     Send a file (Taildrop)
                   </>
                 }
                 actions={
                   <IconButton label="Reload targets" variant="ghost" onClick={() => void loadFiles()}>
-                    <RefreshCw />
+                    <RefreshCw size={16} />
                   </IconButton>
                 }
               >
@@ -1348,7 +1315,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
               title="Accounts"
               actions={
                 <IconButton label="Reload accounts" variant="ghost" onClick={() => void loadAccount()}>
-                  <RefreshCw />
+                  <RefreshCw size={16} />
                 </IconButton>
               }
             >
@@ -1430,14 +1397,14 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   return (
     <PageShell className="ts-shell">
       <PageHeader
-        icon={<Globe />}
+        icon={<Globe size={16} />}
         title="Tailscale"
         description={status?.dns_name ? <span className="ts-mono">{status.dns_name}</span> : 'Your tailnet from the ADE'}
         actions={
           <>
             {updatedLabel && <span className="ts-updated">{refreshing ? 'refreshing…' : updatedLabel}</span>}
             <IconButton label="Refresh status" variant="ghost" disabled={refreshing} onClick={() => void refresh()}>
-              <RefreshCw className={refreshing ? 'ts-spin' : undefined} />
+              <RefreshCw size={16} className={refreshing ? uiClasses.spin : undefined} />
             </IconButton>
           </>
         }

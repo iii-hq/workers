@@ -1,5 +1,5 @@
 import { useId, useState } from 'react'
-import { Select } from '@iii-dev/console-ui'
+import { Input, Select } from '@iii-dev/console-ui'
 import { filterPiperVoices, piperLanguages } from './piper-languages'
 import { ModelDownload } from './ModelDownload'
 import { modelOptions } from './models'
@@ -16,8 +16,8 @@ export function PiperLanguageFilter({ models, value, onChange, disabled = false 
   const matches = filterPiperVoices(models, value, uiLocale())
   return <div className="voice-piper-language">
     <label className="voice-strong" htmlFor={id}>What language do you speak?</label>
-    <input id={id} type="text" className="voice-language-input" list={`${id}-languages`}
-      value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}
+    <Input id={id} className="voice-language-input" list={`${id}-languages`}
+      value={value} disabled={disabled} onChange={onChange}
       placeholder="e.g. português, English, español, pt-BR…" autoComplete="off"
       aria-describedby={`${id}-help`} />
     <datalist id={`${id}-languages`}>

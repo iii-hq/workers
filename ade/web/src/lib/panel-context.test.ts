@@ -11,11 +11,11 @@ beforeEach(resetPanelContextForTests)
 describe('panel context bridge', () => {
   it('stores context before notifying the workspace', () => {
     const listener = vi.fn((event) => {
-      expect(getPanelContext('shell')).toBe(event)
+      expect(getPanelContext('ide')).toBe(event)
     })
     const off = subscribePanelOpen(listener)
     const event = requestPanelOpen({
-      pageId: 'shell',
+      pageId: 'ide',
       context: { type: 'file', path: '/repo/a.ts' },
     })
 
@@ -25,9 +25,9 @@ describe('panel context bridge', () => {
   })
 
   it('emits a fresh event for repeated context', () => {
-    const first = requestPanelOpen({ pageId: 'shell', context: null })
-    const second = requestPanelOpen({ pageId: 'shell', context: null })
+    const first = requestPanelOpen({ pageId: 'ide', context: null })
+    const second = requestPanelOpen({ pageId: 'ide', context: null })
     expect(second.id).toBe(first.id + 1)
-    expect(getPanelContext('shell')).toBe(second)
+    expect(getPanelContext('ide')).toBe(second)
   })
 })

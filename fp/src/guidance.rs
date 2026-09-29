@@ -76,7 +76,7 @@ start with a producing function (a fetch, a state::get) or seed a leading transf
 payload's `value`. You receive per-step sizes and a preview — never the value itself:
 
     fp::pipe { through: [
-      { function: "scrapling::fetch",
+      { function: "browser::fetch",
         payload:  { url: "https://…", format: "markdown", main_content_only: true } },
       { function: "fp::get",  payload: { path: "/content" } },
       { function: "fp::take", payload: { n: 20000 } },

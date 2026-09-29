@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use crate::case::{CredentialMode, ProtocolFamily, ProviderCase};
 use crate::protocol::{auth_response, happy_sse, quota_response, truncated_sse};
-use crate::runtime::{call, test_init_options, Engine};
+use crate::runtime::{call, provider_init_options, test_init_options, Engine};
 use crate::stub::{CapturedRequest, StubResponse, StubUpstream};
 
 const API_KEY: &str = "provider-contract-api-key";
@@ -68,7 +68,11 @@ async fn register_fake_vault(engine_url: &str, mode: CredentialMode) -> Option<I
     Some(vault)
 }
 
-async fn configure(router: &IIIClient, case: ProviderCase, endpoint: &str) -> anyhow::Result<()> {
+pub(crate) async fn configure(
+    router: &IIIClient,
+    case: ProviderCase,
+    endpoint: &str,
+) -> anyhow::Result<()> {
     let slice = match case.credential {
         CredentialMode::ApiKey => json!({ "api_key": API_KEY, "api_url": endpoint }),
         CredentialMode::ClaudeOauth | CredentialMode::CodexOauth => {
@@ -95,7 +99,7 @@ async fn configure(router: &IIIClient, case: ProviderCase, endpoint: &str) -> an
     Ok(())
 }
 
-async fn wait_for_provider(router: &IIIClient, provider: &str) -> anyhow::Result<Value> {
+pub(crate) async fn wait_for_provider(router: &IIIClient, provider: &str) -> anyhow::Result<Value> {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let list = call(router, "router::provider::list", json!({})).await?;
@@ -112,7 +116,7 @@ async fn wait_for_provider(router: &IIIClient, provider: &str) -> anyhow::Result
     }
 }
 
-async fn wait_for_registration_token(
+pub(crate) async fn wait_for_registration_token(
     provider: &IIIClient,
     provider_id: &str,
 ) -> anyhow::Result<()> {
@@ -131,7 +135,7 @@ async fn wait_for_registration_token(
             return Ok(());
         }
         if Instant::now() >= deadline {
-            bail!("registration token was not persisted: {token}");
+            bail!("registration token was not persisted for {provider_id}");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -173,12 +177,12 @@ async fn wait_for_discovered_models(router: &IIIClient, case: ProviderCase) -> a
     }
 }
 
-struct ChatResult {
-    response: Value,
-    frames: Vec<Value>,
+pub(crate) struct ChatResult {
+    pub(crate) response: Value,
+    pub(crate) frames: Vec<Value>,
 }
 
-async fn chat(
+pub(crate) async fn chat(
     engine_url: &str,
     case: ProviderCase,
     model: &str,
@@ -256,7 +260,11 @@ pub(crate) async fn run_contract(case: ProviderCase) -> anyhow::Result<()> {
         .context("register router")?;
     configure(&router, case, &stub.endpoint(case.generation_path)).await?;
     let vault = register_fake_vault(&engine.url, case.credential).await;
-    let provider = register_worker(&engine.url, test_init_options());
+    let provider = register_worker(&engine.url, provider_init_options(case.id));
+    #[cfg(feature = "provider-openai-codex")]
+    if case.id == "openai-codex" {
+        crate::runtime::wait_for_codex_state(&provider).await?;
+    }
     (case.register)(provider.clone()).await?;
 
     let listed = wait_for_provider(&router, case.id).await?;

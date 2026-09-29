@@ -10,7 +10,7 @@ into five surfaces (all MCP-agnostic):
 | **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, type, function_id, disable_model_invocation, description, bytes, modified_at }` per row), a single-skill reader `directory::skills::get { id }` returning `{ id, title, type, function_id, disable_model_invocation, path, body, modified_at }` (the full body instead of the list teaser), and `directory::skills::index` which renders a short per-worker overview document (one `## <title>` + first paragraph + `read more` link per `type: index` skill). Authored by `create`, edited by `update`, removed by `delete`. `title` prefers the YAML frontmatter `title:` (then `name:`) over the body H1; `type` is lifted from frontmatter `type:` (e.g. `index`, `how-to`, `reference`) and serialised as `null` when absent. System-installed agent skills under the read-only `agents_skills_folder` are served too (see [On-disk layout](#on-disk-layout)). | Orientation: "when and why to use my worker's tools" |
 | **System prompts** (`directory::system-prompts::*`) | Identity prompts listed by `list`, read by `get`, authored by `create`, edited by `update`, and removed by `delete`. The list response keeps its `prompts` field name. Stored under any `system-prompts/` path segment; `create` writes `<skills_folder>/system-prompts/<name>.md`. | What the chat's system-prompt picker offers as an identity prompt (enrich or replace) |
 | **Agent Profiles** (`directory::agents::*`) | Reusable session identities whose file body is the system prompt, with display `name`, emoji `logo`, preloaded `skills` and `functions` (bodies and contracts the harness freezes into every session's prompt), and optional `model` + `reasoning_effort` in required frontmatter. `list` rows carry the display/configuration metadata and `get` adds `system_prompt` and `unknown_skills`. Stored as direct `<agents_folder>/<id>.md` files. See [Agent profile storage](../docs/architecture/agent-profile-storage.md). | A named identity selected with `harness::send { options: { agent } }` |
-| **Search** (`directory::search_functions`) | One to six external capabilities → compact function-id candidates (installed, plus registry workers under `installable`), with a conditional pre-generate hint pointing agents at it. | "Which functions do I call for this task?" |
+| **Search** (`directory::search_functions`) | One to six external capabilities → compact function-id candidates (installed, plus registry workers under `installable`), with a conditional pre-generate hint pointing agents at it. The response also carries `skills` (installed how-to documents) and `triggers` (registered bindings that already fire, schedule, or hook a function, minus ephemeral console listeners), ranked in the same mode as the functions; `search_mode` reports the mode that actually ranked. | "Which functions do I call for this task?" |
 | **Registry** (`directory::registry::*`) | HTTP proxy over `api.workers.iii.dev` with `workers::{list,info}`. Rows share the core `name` / `description` / `version` fields with the engine's `engine::workers::list` and add publication metadata (`type`, `config`, `supported_targets`, `total_downloads`, `dependencies`, optional `image`). `workers::list` is cursor-paginated with a server-authored page size. | "What's published in the public registry?" |
 
 Engine introspection (functions / triggers / registered triggers /
@@ -142,6 +142,8 @@ local_skills_folder: skills/iii        # project-scoped overrides (whole-namespa
 agents_folder: agents                  # direct <id>.md agent profiles
 agents_skills_folder: .agents/skills   # READ-ONLY agent skills, with the same relative-path base
 auto_download: true                   # subscribe to worker-add + run the boot reconcile
+# function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-<revision> # pinned Hybrid bundle; null disables it
+function_search_model_download: true   # download the pinned bundle at boot in Hybrid mode
 
 # TUNABLE — hot-reload live on `configuration:updated`.
 registry_url: https://api.workers.iii.dev   # workers registry base URL
@@ -151,6 +153,12 @@ filter_unregistered: true                    # hide skills whose namespace isn't
 inject_hint: false                           # bind the directory::pre-generate search-hint hook (off: the harness identity prompt already teaches directory-first discovery)
 hint_min_workers: 2                          # minimum surface width before the hint fires (0 = always)
 registry_search: true                        # include installable registry workers in every search
+function_search_mode: judge                  # lexical | hybrid | judge (default)
+function_search_judge_timeout_ms: 3000        # integer 1..30000; shared judge deadline per public search
+function_search_judge_min_relevance: 0.5      # finite 0..1 inclusive; noul floor (initial calibration value)
+function_search_judge_side_lane_min_relevance: 0.3 # finite 0..1 inclusive; noul floor for the skills and triggers sections
+function_search_judge_question: choice       # choice (default: one question per capability) | noul (one yes/no per shortlisted document) | tournament (whole catalog: compact rounds, then a final choice; no Hybrid shortlist)
+function_search_judge_choice_min_probability: 0.1 # finite 0..1 inclusive; with choice, the floor for all but the best document
 ```
 
 The writable `skills_folder` and `agents_folder` roots are created when needed.
@@ -172,8 +180,13 @@ On `configuration::set` (or an external edit to the persisted file), the worker
 re-fetches the authoritative value. Tunable changes apply in place and the
 registry caches are cleared so a repointed `registry_url` takes effect
 immediately. Topology changes (`skills_folder` / `local_skills_folder` /
-`agents_folder` / `agents_skills_folder` / `auto_download`) are refused with a "restart
+`agents_folder` / `agents_skills_folder` / `auto_download` /
+`function_search_model_path` / `function_search_model_download`) are refused with a "restart
 required" log; the previous configuration is kept until the worker restarts.
+
+`function_search_mode` and all `function_search_judge_*` options hot-reload.
+Judge credentials and the model name are the `judge-typesafe` worker's
+settings, not this worker's.
 
 The writable `skills_folder`, `local_skills_folder`, and `agents_folder` are
 watch roots, and the watcher creates each one at boot if it is missing.
@@ -250,12 +263,30 @@ agents_folder/                 # ← where agents::create writes
   frontend-design.md           # ← `extends: iii` builds on the bundled base
 ```
 
-Two base agent profiles ship inside the worker binary: `iii` (the harness
-default identity, verbatim) and `iii-minimal` (the minimal directory-first
-identity — the same text as the bundled system prompt of that name). Each is
-always listed (`builtin: true`), a local `agents_folder/<id>.md` shadows it,
-`update` on it copy-on-writes that local file, and deleting the file falls
-back to the bundled copy. No file is ever seeded on disk.
+Three agent profiles ship inside the worker binary:
+
+- `default` — shown as **Default** in the chat's new-session gallery: the
+  minimal directory-first identity (the same text as the bundled
+  `iii-minimal` system prompt), with a composer example. New sessions in the
+  ADE start on it.
+- `iii` — the harness default identity, verbatim. `hidden: true` keeps it
+  out of the gallery; it stays a valid `extends` parent and runs by id.
+- `iii-minimal` — the previous id of `default`, kept as a hidden alias
+  (`extends: default`, no body of its own) so existing `extends:
+  iii-minimal` chains, saved sessions, and explicit invocations resolve to
+  the same identity. New profiles should use `extends: default`.
+
+Each is always listed (`builtin: true`), a local `agents_folder/<id>.md`
+shadows it, `update` on it copy-on-writes that local file, and deleting the
+file falls back to the bundled copy. No file is ever seeded on disk.
+
+An optional `composer_placeholder:` frontmatter string is the example request
+the chat shows in an EMPTY composer while that profile is selected. It is
+presentation only — never sent, never added to the prompt — and
+profile-local: it does not inherit through `extends`, so a child without its
+own example gets the chat's generic hint. Whitespace collapses to single
+spaces, blank means absent, and more than 200 characters is rejected like any
+other invalid frontmatter.
 
 A second, READ-ONLY root — `agents_skills_folder` (default `.agents/skills`
 under the same Compose or standalone base) — serves agent skills. It is
@@ -412,8 +443,8 @@ other adapter.
 
 | Function ID | Description |
 |---|---|
-| `directory::agents::list` | Metadata-only listing of every agent profile — fs-backed plus the bundled `iii` / `iii-minimal` bases (`builtin: true` until a local file shadows one): `{ id, name, description, logo, skill_count, model, reasoning_effort, icon, color, extends, modified_at }` per row, `skill_count`/`model`/`reasoning_effort` resolved through `extends` (`skill_count: null` = every skill; `model: null` = the send decides). A row whose chain does not resolve carries `inheritance_error`. |
-| `directory::agents::get` | Fetch one agent profile by `{ id }`: the RESOLVED `system_prompt` (each ancestor's body root-first, then this file's body), `skills` + `unknown_skills` (filter entries matching no visible skill — warnings), `model` (`null` = the send decides), provider-native `reasoning_effort`, display `icon`/`color`, `extends`, `builtin`, `modified_at`, and `inheritance_error` when the chain does not resolve (own file served meanwhile). Pass `raw: true` to additionally get this profile's FULL on-disk file as `raw`. |
+| `directory::agents::list` | Metadata-only listing of every agent profile — fs-backed plus the bundled `default` / `iii` / `iii-minimal` profiles (`builtin: true` until a local file shadows one): `{ id, name, description, logo, skill_count, model, reasoning_effort, icon, color, extends, hidden, composer_placeholder, modified_at }` per row (`hidden` and `composer_placeholder` omitted when unset; `composer_placeholder` never inherits), `skill_count`/`model`/`reasoning_effort` resolved through `extends` (`skill_count: null` = every skill; `model: null` = the send decides). A row whose chain does not resolve carries `inheritance_error`. |
+| `directory::agents::get` | Fetch one agent profile by `{ id }`: the RESOLVED `system_prompt` (each ancestor's body root-first, then this file's body), `skills` + `unknown_skills` (filter entries matching no visible skill — warnings), `model` (`null` = the send decides), provider-native `reasoning_effort`, display `icon`/`color`, `extends`, `hidden`, the profile's own `composer_placeholder` (omitted when unset), `builtin`, `modified_at`, and `inheritance_error` when the chain does not resolve (own file served meanwhile). Pass `raw: true` to additionally get this profile's FULL on-disk file as `raw`. |
 | `directory::agents::update` | Overwrite one EXISTING agent profile file with new full-file content: `{ id, content }`. Same rules the scanner enforces (required frontmatter with non-empty `name`, emoji-only `logo`; the body — the system prompt — may be empty); the id stays the file stem. Updating a bundled profile creates the local file that shadows it. Atomic write; fans out `directory::agents::on-change` with `op: "update"`. |
 | `directory::agents::create` | Create a NEW agent profile at `<agents_folder>/<id>.md` from full-file content: `{ id, content }`. Refuses an `id` that already exists in the configured agent-profile root, and a target path that already exists on disk even if the scanner would skip it; creating a bundled id shadows the bundled copy. Atomic write; fans out `directory::agents::on-change` with `op: "create"`. Returns `{ id, name, description, logo, bytes, modified_at }`. |
 | `directory::agents::delete` | Permanently remove one EXISTING agent profile file by `{ id }`. Resolves against the same configured root as `list`/`get`, fans out `directory::agents::on-change` with `op: "delete"`, and returns `{ id }`. Deleting the local shadow of a bundled profile falls back to the bundled copy; a bundled profile with no local file has nothing to delete (`D414`). Sessions already using the profile are unaffected; profiles extending it stop resolving until fixed. |
@@ -461,9 +492,11 @@ There is **no** `directory::skills::register` — see
 
 ## Function search & pre-generate hint
 
-One-shot function search over the live engine catalog (hybrid by default:
-BM25 fused with the local MiniLM model, reranked; `function_search_mode:
-lexical` for BM25 only), absorbed from the former `discovery` worker. It returns only compact `{ function_id,
+One-shot function search over the live engine catalog. `judge` (the default)
+ranks through the optional `judge` worker when it is registered and answers,
+and otherwise behaves as `hybrid` (BM25 fused with the local MiniLM model,
+reranked); `lexical` is BM25 only. Absorbed from the former `discovery` worker,
+it returns only compact `{ function_id,
 description }` candidates, grouped by worker in rank order. The model chooses
 the candidates it needs, then fetches their contracts in one
 `engine::functions::info { function_ids: [...] }` call instead of walking the
@@ -471,12 +504,12 @@ catalog with `engine::functions::list`.
 
 | Function | Kind | What it does |
 |---|---|---|
-| `directory::search_functions` | public | `{ capabilities }` → `{ guidance, workers[], installable[]?, latency_ms }`: hybrid rank over the live engine catalog in batches of six capabilities (12 candidates per batch across at most max(6, 2 × capabilities) workers, up to 3 batches) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of non-empty unmet external capability searches (one to six is the norm); entries past the 18th are not searched and are named in `guidance`. Requests to summarize provided text/content are ignored. |
+| `directory::search_functions` | public | `{ capabilities }` → `{ guidance, workers[], installable[]?, skills[]?, triggers[]?, search_mode, latency_ms }`: rank with the configured mode over the live engine catalog in batches of six capabilities (12 candidates per batch across at most max(6, 2 × capabilities) workers, up to 3 batches) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of non-empty unmet external capability searches (one to six is the norm); entries past the 18th are not searched and are named in `guidance`. Requests to summarize provided text/content are ignored. |
 | `directory::pre-generate` | internal hook | Injects the conditional search hint into a harness generation (at most once per turn). |
 | `directory::on-functions-change` | internal | Refreshes the search catalog on the engine's functions-available push. |
 | `directory::hint-preview` | internal | The exact hint text per exposure mode, for the configuration UI. |
 
-Ranking pipeline:
+Lexical/Hybrid ranking pipeline:
 
 1. **Corpus**: the live engine catalog (boot snapshot + push refresh),
    slimmed to name + first description sentence + argument names. `engine::`
@@ -502,8 +535,8 @@ Ranking pipeline:
    queries plus informative-term retries (all concurrent; every listed worker
    is a candidate — the registry is team-authored). Candidates merge
    round-robin across search variants; their API references are pooled and
-   ranked per capability with BM25 fused with the MiniLM dense lane (same
-   0.30 admission floor as the installed catalog), so a capability sharing no
+   ranked per capability with the configured mode. Hybrid fuses BM25 with the
+   MiniLM dense lane (same 0.30 admission floor as the installed catalog), so a capability sharing no
    vocabulary with a contract ("retrieve web news articles" → `web::fetch`)
    still surfaces. Returns up to 2 workers / 6 candidates per batch of six
    capabilities (so up to 6 workers / 18 candidates across three batches; a
@@ -511,6 +544,177 @@ Ranking pipeline:
    that WOULD match if installed, with `compose::add` guidance.
 6. **Session memory** (keyed by caller-supplied OTel baggage, fail-open):
    repeat queries omit candidates already delivered.
+
+### Judge mode
+
+Function relevance is judged by the [`judge`](../judge) worker
+(`judge::evaluate`), which forwards to its configured provider
+([`judge-typesafe`](../judge-typesafe) by default). Both are optional: this
+worker does not declare them as dependencies, because Compose turns a
+dependency into a `start_after` edge and stops the directory whenever the
+judge exits. The Harness and dev-template stacks do not run them. Install the
+hub with `iii trigger compose::add worker=judge` (it brings `judge-typesafe`)
+and set the TypeSafe key and model in the **judge-typesafe** settings. This
+worker holds no credentials.
+
+`judge` is the default mode for new installs. It ranks through the judge
+only while `judge::evaluate` is in the live function catalog and answers.
+**Whenever the judge is unavailable the search uses Hybrid** (then Lexical if
+the local model is not ready), for functions, installable workers, skills and
+triggers alike:
+
+- `judge::evaluate` is not registered: no call is made at all.
+- the hub has no provider (`provider_unavailable`), or the provider has no
+  API key (`missing_key`): logged once at info.
+- a provider error, transport failure or invalid reply: logged once as a
+  warning.
+- the judge deadline runs out: that lane alone uses Hybrid.
+
+After an unavailable or failing judge (the second and third cases), every
+search skips it for 30 seconds and uses Hybrid, so a missing key costs one
+fast round trip per 30 s rather than one per search. A key added to
+judge-typesafe, or a judge that comes back, is used within 30 seconds. A
+missed deadline does not pause the judge.
+
+An install that already stored `function_search_mode: hybrid` keeps it: the
+stored configuration wins over the new default. Set `judge` with
+`configuration::set` (or the console form) to opt in.
+
+```yaml
+function_search_mode: judge
+function_search_judge_timeout_ms: 3000
+function_search_judge_min_relevance: 0.5
+function_search_judge_side_lane_min_relevance: 0.3
+function_search_judge_question: choice
+function_search_judge_choice_min_probability: 0.1
+```
+
+These fields apply without a restart. The timeout is an integer from 1 to
+30000 ms and relevance a finite number from 0 to 1 inclusive. YAML seeds and
+JSON configuration updates use the same validation. The relevance floors were
+calibrated against `jev-1.13.0`; judge-typesafe defaults to the `jev-latest`
+alias, so pin its model if you rely on the floors.
+
+The judge scores a shortlist per capability, not the whole catalog. A corpus
+of at most 16 documents goes whole, so the judge still finds functions whose
+wording shares nothing with the capability. A larger one is cut to the top 16
+of raw BM25 fused with the raw MiniLM ranking (when the index is ready). Each
+capability is one evaluation, and all capabilities of a lane (functions,
+registry pool, skills or triggers) travel in one `judge::evaluate` call, so
+the provider answers them together with one model, and cancels the rest when
+one fails. Requests carry normalized capabilities, function IDs, short
+descriptions and parameter names; no conversation history or argument values.
+Exact eligible IDs, internal-function exclusions, session deduplication and
+result limits stay local.
+
+`function_search_judge_question` sets how each capability's shortlist is
+asked. `choice` (the default) asks one multiple-choice question per capability
+whose options are the shortlisted documents: 16× fewer questions, and the
+documents compete. The best document is always kept and every other needs
+`function_search_judge_choice_min_probability` (the relevance floors do not
+apply). `noul` asks one yes/no question per document and admits each by the
+relevance floors. Local judges need `choice` to fit the deadline: judge-semif answers a
+capability in about 0.3 s on a GPU, where the Noul shortlist of every lane
+takes it past 30 s. On 22 English capabilities over the 16-document
+shortlist, `choice` with 0.1 kept a correct function in every search for both
+`jev-1.13.0` (precision 0.98, 1.2 functions per capability) and judge-semif
+(precision 0.87, 1.5 functions). Providers register their `judge-<provider>::*`
+functions as internal, so search results show only the hub's `judge::*`.
+
+With `choice`, a judge whose models advertise a context window under 4096
+tokens (`context_window` in `judge::models::list`, re-read when the judge
+hub's configuration changes and at least once a minute)
+gets compact options instead of the full description objects: each option is
+keyed by the function id and reads the first eight words of its description,
+and the state names the capability plainly (`{"capability": …}`). laya (512 tokens) shares about 190 of them among
+the sixteen options, so the objects cut the function ids themselves: live, it
+found the expected function in 13/22 searches with objects and 17/22 compact.
+SemIf (16384) and judges that advertise no window keep the objects.
+
+`tournament` skips the Hybrid shortlist, following TypeSafe's skill-suggestion
+pattern (skim everything cheaply, then read the few in detail). The whole
+function catalog, sorted by id, is skimmed in rounds of compact Choices (the
+function id and the first eight words of its description) over groups of up to
+128, or 16 for a judge that advertises a context window under 4096 tokens, and
+never more than the judge's advertised `max_options` (SemIf: 16); each group's
+three best go on (only the winner, for a small-window judge, whose final Choice
+degrades with more options) until 16 or fewer remain, and those get one final
+Choice with their full descriptions, admitted like `choice`. A 260-function
+catalog takes one round of three groups, then the final Choice over nine. It
+needs no local semantic model. Live through `directory::search_functions` over
+22 English capabilities (RX 6900 XT), hit / top-1 / precision and median search
+time: JEV 22 / 22 / 1.00 at 2.2 s, SemIf 22 / 22 / 0.90 at 6.1 s, decider 22 /
+21 / 0.88 at 3.7 s, laya 20 / 19 / 0.80 at 2.2 s; the former winner-only rounds
+of 16 gave JEV 22 / 22 / 0.98, decider 21 / 21 / 0.81 at 9.1 s, and timed SemIf
+out at 10 s. The installed functions and the registry pools play it; skills and
+triggers keep their shortlists. With `choice` (the default), a judge that
+advertises a context window under 4096 tokens gets a tournament automatically;
+SemIf and hosted judges keep `choice`.
+
+`function_search_model_path: null` is valid in judge mode and makes the Hybrid
+fallback BM25-only, without the local-model warning. With a configured path,
+the worker keeps an installed MiniLM bundle and its catalog index current,
+downloads a missing bundle at boot like Hybrid does, and uses the index both
+for the shortlist and for the fallback.
+
+Registry discovery still starts with the registry API's lexical search. The
+judge evaluates a shortlist of the returned contract pool and **cannot recover
+workers that upstream search did not return**. Installable results remain
+suggestions until installation.
+
+Every response carries `search_mode` — the mode that actually ranked the
+results (`judge`, `hybrid` or `lexical`), which can be lower than the
+configured mode when the judge was unavailable or paused, or the local model
+is not loaded yet. The console's search card shows it as the card's badge. A
+search whose lanes partly fell back reports the highest tier any lane reached.
+
+Every mode also ranks the installed skill documents (the rows
+`directory::skills::list` serves, minus `disable_model_invocation` ones) against
+the same capabilities and lists the matches under `skills` as
+`{ id, title, description }`, at most six per call round-robin across the
+capabilities, with a guidance note to read them through
+`directory::skills::get { id }`. Each skill's id and a trimmed
+`title: description` (300 bytes) form the document. The judge judges them with
+a how-to question under the same deadline as the functions; Lexical ranks them
+with BM25 and Hybrid fuses in the dense lane, the same ad-hoc document ranking
+the `installable` section uses, and that local ranking also serves whenever the
+judge fails. "Installed" is read off the live function catalog: a worker with
+no registered functions contributes no skills. The registered-trigger section
+(under `triggers`) is ranked the same way in every mode.
+
+A valid response with no functions at or above the relevance threshold stays
+empty. Judge failures instead trigger **Judge → Hybrid → Lexical** fallback.
+Hybrid uses the existing local ranking policy; if the model is disabled,
+missing, not yet indexed for the current catalog, or fails, Lexical serves the
+results. A registry HTTP failure still omits the installable section.
+
+The judge deadline is shared by every judge call of one public search.
+Capability batches run concurrently, and each batch's registry lookup runs in
+parallel with its installed-function judge call; the registry judge call then
+gets what is left of the deadline and, if nothing is, the pool is ranked
+locally. Local Hybrid fallback runs outside the budget. Evaluations are split
+at local byte limits (48 KiB per evaluation, 16 KiB for state plus the largest
+question); these guards are not token counts. Retries are the provider's
+policy (judge-typesafe retries 408/429/5xx within the deadline); the 30-second
+pause keeps a failing provider from being retried on every search. The hub's
+returned usage (`stats`) is logged per lane at debug level.
+
+Switch to `lexical` at any time to use BM25 only. Switching from `lexical` to
+`hybrid` or `judge` prepares the local index from the current catalog. If the
+MiniLM bundle is missing, both use lexical fallback; the boot-time download and
+changes to the local model path require a worker restart.
+
+**Upgrading from the in-worker `jev` mode:** the stored value
+`function_search_mode: jev` no longer parses, and the worker refuses to boot on
+it. While the old worker still runs, its schema only accepts
+`lexical`/`hybrid`/`jev`, so before upgrading set the mode to `hybrid` (or
+remove the key) with `configuration::set`, then set `judge` once the new worker
+is up. The removed keys `function_search_jev_api_key` and
+`function_search_jev_model` are ignored, and the console form drops every
+`function_search_jev_*` key on its next save; the remaining settings are read
+under their `function_search_judge_*` names only.
+
+### Pre-generate hint
 
 The pre-generate hook appends one `<discovery_assist>` block pointing the
 model at `search_functions`, telling it to derive capabilities from the goal

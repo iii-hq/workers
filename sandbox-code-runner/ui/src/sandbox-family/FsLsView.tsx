@@ -4,6 +4,8 @@
  * carry a small text glyph instead (`▸` dir, `↪` symlink, `·` file).
  */
 
+import { Table, TableBody, TableCell, TableRow } from '@iii-dev/console-ui'
+import { File, Folder, Link2 } from 'lucide-react'
 import { formatBytes, formatMode, formatMtime } from './format'
 import { type FsEntry, fsLsRequestSchema, fsLsResponseSchema, safeParseResponse } from './parsers'
 import { Chip, SandboxIdChip } from './shared'
@@ -36,29 +38,27 @@ export function FsLsView({ input, output }: FsLsViewProps) {
   )
 }
 
-function entryGlyph(e: FsEntry): string {
-  if (e.is_symlink) return '↪'
-  if (e.is_dir) return '▸'
-  return '·'
+function EntryGlyph({ entry }: { entry: FsEntry }) {
+  const Icon = entry.is_symlink ? Link2 : entry.is_dir ? Folder : File
+  return <Icon size={16} aria-hidden />
 }
 
-/** Directory-listing table — both wires speak `FsEntry`. */
 function FsEntriesTable({ entries }: { entries: FsEntry[] }) {
   return (
-    <table className="cr-fam-table plain">
-      <tbody>
+    <Table density="compact" inset>
+      <TableBody>
         {entries.map((e) => (
-          <tr key={`${e.name}:${e.size}:${e.mtime}`}>
-            <td className="glyph" aria-hidden>
-              {entryGlyph(e)}
-            </td>
-            <td>{e.name}</td>
-            <td className="faint num right">{e.is_dir ? '—' : formatBytes(e.size)}</td>
-            <td className="faint num">{`${e.is_dir ? 'd' : '-'}${formatMode(e.mode)}`}</td>
-            <td className="faint">{formatMtime(e.mtime)}</td>
-          </tr>
+          <TableRow key={`${e.name}:${e.size}:${e.mtime}`}>
+            <TableCell className="glyph">
+              <EntryGlyph entry={e} />
+            </TableCell>
+            <TableCell>{e.name}</TableCell>
+            <TableCell className="faint num right">{e.is_dir ? '—' : formatBytes(e.size)}</TableCell>
+            <TableCell className="faint num">{`${e.is_dir ? 'd' : '-'}${formatMode(e.mode)}`}</TableCell>
+            <TableCell className="faint">{formatMtime(e.mtime)}</TableCell>
+          </TableRow>
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   )
 }

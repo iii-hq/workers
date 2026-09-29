@@ -3,7 +3,7 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `computer/page.js` (`console:script`) — the `#/ext/computer` page
+//! - `computer/page.js` (`console:script`) — the `computer` page
 //!   (session rail, screencast-fed live desktop that forwards clicks, scroll
 //!   and typing back as `computer::act`) AND the function-trigger renderer for
 //!   every `computer::*` call in chat and the traces span tab.

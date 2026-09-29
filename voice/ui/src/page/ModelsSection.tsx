@@ -6,10 +6,10 @@
  */
 
 import { Button, Chip, ConfirmDialog, EmptyState, type Host, StatusDot } from '@iii-dev/console-ui'
+import { Check, Mic, Trash2, Volume2 } from 'lucide-react'
 import { useState } from 'react'
 import { modelsDownload, modelsRemove } from '../lib/client'
 import { patchConfig } from '../lib/config'
-import { CheckIcon, MicIcon, SpeakerIcon, TrashIcon } from '../lib/icons'
 import { ModelDownload } from '../lib/ModelDownload'
 import { modelUseLabel, splitModelsByPurpose, useModelConfig } from '../lib/models'
 import { PiperLanguageFilter } from '../lib/PiperVoicePicker'
@@ -123,7 +123,7 @@ export function ModelsSection({
                           <Button variant={m.installed ? 'primary' : 'ghost'} size="sm"
                             className="voice-model-use" aria-label={`${modelUseLabel(m)}: ${m.name}`}
                             disabled={busy !== null || downloading} onClick={() => pickModel(m)}>
-                            <CheckIcon />
+                            <Check />
                             {modelUseLabel(m)}
                           </Button>
                         ) : null}
@@ -131,7 +131,7 @@ export function ModelsSection({
                           <Button variant="ghost" size="sm" className="voice-model-remove"
                             aria-label={`Remove ${m.name}`} disabled={busy !== null || downloading}
                             onClick={() => setRemoving(m)}>
-                            <TrashIcon />
+                            <Trash2 />
                             Remove
                           </Button>
                         ) : null}
@@ -147,7 +147,7 @@ export function ModelsSection({
   return (
     <>
       <SectionCard
-        title={<span className="voice-fact-line"><MicIcon />Listening models · Speech to text</span>}
+        title={<span className="voice-fact-line"><Mic size={16} />Listening models · Speech to text</span>}
         actions={installedCount(listening)}
       >
         <p className="voice-note">
@@ -163,12 +163,12 @@ export function ModelsSection({
         </p>
         {!models ? <LoadingRows rows={2} /> : listening.length > 0
           ? renderModels(listening, 'Listening models')
-          : <EmptyState icon={MicIcon} title="No listening models available"
+          : <EmptyState icon={Mic} title="No listening models available"
               description="The worker did not return any local speech-to-text models." />}
       </SectionCard>
 
       <SectionCard
-        title={<span className="voice-fact-line"><SpeakerIcon />Reading models · Text to speech</span>}
+        title={<span className="voice-fact-line"><Volume2 size={16} />Reading models · Text to speech</span>}
         actions={installedCount(reading)}
       >
         <p className="voice-note">
@@ -184,7 +184,7 @@ export function ModelsSection({
         </p> : null}
         {!models ? <LoadingRows rows={2} /> : visibleReading.length > 0
           ? renderModels(visibleReading, 'Reading models')
-          : <EmptyState icon={SpeakerIcon}
+          : <EmptyState icon={Volume2}
               title={piperLanguage.trim() ? 'No reading voices match this language' : 'No reading voices downloaded'}
               description={piperLanguage.trim()
                 ? 'Try another language name or locale code. Your listening models are unaffected.'

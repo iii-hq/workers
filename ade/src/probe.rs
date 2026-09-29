@@ -191,39 +191,52 @@ pub async fn probe_handler(
     .into_response()
 }
 
-/// Read the HTTP worker's `host`/`port` from its configuration entry, in the
-/// console's own namespace, and build its base URL. Mirrors the panel's
-/// former client-side resolution; `http` is the current worker id and
-/// `iii-http` its deprecated predecessor.
+/// Resolve the HTTP worker in the requested project namespace, then read its
+/// assigned entry from the configuration service in `default`. Never probe a
+/// different project's server by falling back to a global legacy entry.
 async fn resolve_http_base(
     iii: &iii_sdk::IIIClient,
     namespace: Option<&str>,
 ) -> Result<String, String> {
-    // The HTTP worker's config lives in the console's operating namespace;
-    // fall back to "default" when the console runs without one.
-    let namespace = namespace.unwrap_or("default");
-    for id in ["http", "iii-http"] {
-        let request = TriggerRequest {
-            function_id: "configuration::get".to_string(),
-            payload: json!({ "id": id }),
-            action: None,
-            timeout_ms: Some(5000),
-        }
-        .namespace(namespace);
-        let Ok(entry) = iii.trigger(request).await else {
-            continue;
-        };
-        let value = entry.get("value").unwrap_or(&Value::Null);
-        let Some(port) = value.get("port").and_then(Value::as_u64) else {
-            continue;
-        };
-        let host = value
-            .get("host")
-            .and_then(Value::as_str)
-            .unwrap_or("127.0.0.1");
-        return Ok(format!("http://{}:{port}", normalize_host(host)));
-    }
-    Err("no http worker configuration with a port found".to_string())
+    let identity = iii
+        .trigger(
+            TriggerRequest {
+                function_id: "http::configuration-id".to_string(),
+                payload: json!({}),
+                action: None,
+                timeout_ms: Some(5000),
+            }
+            .namespace(namespace.unwrap_or("default")),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let id = identity
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .ok_or("HTTP worker returned an invalid configuration identity")?;
+    let entry = iii
+        .trigger(
+            TriggerRequest {
+                function_id: "configuration::get".to_string(),
+                payload: json!({ "id": id }),
+                action: None,
+                timeout_ms: Some(5000),
+            }
+            .namespace("default"),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let value = entry.get("value").unwrap_or(&Value::Null);
+    let port = value
+        .get("port")
+        .and_then(Value::as_u64)
+        .ok_or("HTTP worker configuration carries no port")?;
+    let host = value
+        .get("host")
+        .and_then(Value::as_str)
+        .unwrap_or("127.0.0.1");
+    Ok(format!("http://{}:{port}", normalize_host(host)))
 }
 
 #[cfg(test)]

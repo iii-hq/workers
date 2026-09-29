@@ -22,11 +22,13 @@
  * through is a non-record `input` — see `tryRenderPreview`.
  */
 
-import type {
-  FunctionTriggerMessage,
-  FunctionTriggerRenderer,
-  Host,
+import {
+  Chip,
+  type FunctionTriggerMessage,
+  type FunctionTriggerRenderer,
+  type Host,
 } from '@iii-dev/console-ui'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
 import { useState } from 'react'
 import {
   asRecord,
@@ -69,10 +71,10 @@ function TargetChip({ target }: { target?: Target }) {
   if (!target) return null
   if (target.kind === 'runtime') return <RuntimeChip runtimeId={target.id} />
   return (
-    <span className="cr-ui-chip">
-      <span className="k">namespace </span>
+    <Chip>
+      <span className={uiClasses.eyebrow}>namespace</span>
       {redactRuntimeIds(target.name)}
-    </span>
+    </Chip>
   )
 }
 
@@ -146,7 +148,7 @@ function RunningView({ message }: { message: FunctionTriggerMessage }) {
   // prints the capability in full.
   return (
     <CardShell op="teardown" running chips={<TargetChip target={targetOf(message.input)} />}>
-      <div className="cr-ui-msg-note pulse">· tearing down…</div>
+      <div className={`cr-ui-msg-note ${uiClasses.pulse}`}>· tearing down…</div>
     </CardShell>
   )
 }

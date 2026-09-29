@@ -84,9 +84,7 @@ export function ModelsListView({
             className="border-b border-rule-2 last:border-b-0"
           >
             <div className="flex items-baseline gap-2 px-3 py-1.5 bg-paper-2 border-b border-rule-2">
-              <span className="font-mono text-[11px] text-ink-faint uppercase tracking-[0.06em]">
-                {provider}
-              </span>
+              <span className="iii-ui-eyebrow">{provider}</span>
               <span className="font-mono text-[11px] text-ink-ghost tabular-nums">
                 {models.length}
               </span>
@@ -173,9 +171,7 @@ function RequestFilters({
 function FilterChip({ label, value }: { label: string; value: ReactNode }) {
   return (
     <Chip>
-      <span className="text-ink-faint uppercase tracking-[0.06em]">
-        {label}
-      </span>
+      <span className="iii-ui-eyebrow">{label}</span>
       <span className="ml-1 text-ink">{value}</span>
     </Chip>
   )

@@ -34,7 +34,7 @@ export function ProviderIcon({ iconSvg, label, className }: ProviderIconProps) {
       aria-hidden
       data-provider-icon="initial"
       className={cn(
-        'flex size-4 shrink-0 items-center justify-center rounded-xs bg-surface-selected font-sans text-[10px] font-semibold leading-none text-ink-faint',
+        'flex size-4 shrink-0 items-center justify-center rounded-xs bg-surface-selected font-sans text-[11px] font-semibold leading-none text-ink-faint',
         className,
       )}
     >

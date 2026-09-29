@@ -59,6 +59,11 @@ pub struct Config {
     /// parity; the context is most useful when the CLI can reach the engine.
     /// Turn it off per turn with `iii_context: false` or globally here.
     pub iii_context: bool,
+    /// Record each `devin::run` / `devin::start` turn as a `session-manager`
+    /// session (prompt, streamed output, failure notice, status) so it is
+    /// listed in the console. Best-effort: skipped when session-manager is not
+    /// installed. Defaults on; override per turn with `session_recording`.
+    pub session_recording: bool,
 }
 
 impl Default for Config {
@@ -73,6 +78,7 @@ impl Default for Config {
             events_stream: "agent::events".to_string(),
             raw_events_stream: "devin::events".to_string(),
             iii_context: true,
+            session_recording: true,
         }
     }
 }

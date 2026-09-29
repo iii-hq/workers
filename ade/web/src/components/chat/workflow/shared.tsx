@@ -1,4 +1,5 @@
 import { Chip, StatusPill } from '@/components/chat/sandbox/shared'
+import { eyebrowClassName } from '@/components/ui/Eyebrow'
 import { cn } from '@/lib/utils'
 import {
   consumedDeps,
@@ -63,7 +64,7 @@ export function NodeStateDot({ state }: { state: NodeState }) {
 export function RunIdRow({ runId }: { runId: string }) {
   return (
     <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[11px] text-ink-faint break-all">
-      <span className="text-[10px] mr-1">Run</span>
+      <span className="text-[11px] mr-1">Run</span>
       <span className="text-ink select-all">{runId}</span>
     </div>
   )
@@ -90,9 +91,7 @@ export function DagSummary({ def, states }: DagSummaryProps) {
   return (
     <div className="border-b border-rule-2">
       <div className="flex items-center gap-2 px-3 py-1.5 bg-paper-2 border-b border-rule-2">
-        <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
-          dag
-        </span>
+        <span className="iii-ui-eyebrow">dag</span>
         <span className="font-mono text-[11px] text-ink-faint">
           {entries.length} {entries.length === 1 ? 'node' : 'nodes'}
         </span>
@@ -121,7 +120,7 @@ export function DagSummary({ def, states }: DagSummaryProps) {
                     {id}
                   </span>
                   {id === outputId ? (
-                    <Chip className="text-accent border-accent/40">Output</Chip>
+                    <Chip className="bg-accent-muted text-accent">Output</Chip>
                   ) : null}
                   {join ? <Chip className="text-accent">Join</Chip> : null}
                   {node.fanout ? <Chip>Fan-out</Chip> : null}
@@ -227,14 +226,7 @@ export function ResultPane({
   return (
     <div className="border-b border-rule-2">
       <div className="px-3 pt-2 pb-1 bg-paper-2 border-b border-rule-2">
-        <span
-          className={cn(
-            'font-mono text-[10px] uppercase tracking-[0.06em]',
-            labelTone,
-          )}
-        >
-          {label}
-        </span>
+        <span className={cn(eyebrowClassName, labelTone)}>{label}</span>
       </div>
       <pre className="max-h-80 overflow-auto px-3 py-2 font-mono text-[12px] leading-[1.55] text-ink whitespace-pre-wrap break-words">
         {text}

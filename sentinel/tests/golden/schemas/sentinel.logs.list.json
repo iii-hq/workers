@@ -1,0 +1,72 @@
+{
+  "description": "Read logs from the live engine through the redactor, for an investigation.",
+  "function_id": "sentinel::logs::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "level": {
+        "default": null,
+        "description": "`error`, `warn`, `info`, … Matched by the engine.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "limit": {
+        "default": null,
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "service_name": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "since_ms": {
+        "default": null,
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "trace_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "LogsListRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "logs": {
+        "items": true,
+        "type": "array"
+      },
+      "redactions": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "logs",
+      "redactions"
+    ],
+    "title": "LogsListResponseV1",
+    "type": "object"
+  }
+}

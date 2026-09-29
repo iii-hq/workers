@@ -1,4 +1,5 @@
 import { MetaRow, StatusPill } from '@/components/chat/sandbox/shared'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import {
   nodeResultRequestSchema,
   nodeResultResponseSchema,
@@ -39,9 +40,7 @@ export function NodeResultView({
         </span>
       </MetaRow>
       <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[11px] text-ink-faint break-all">
-        <span className="uppercase tracking-[0.06em] text-[10px] mr-1">
-          run
-        </span>
+        <Eyebrow className="mr-1">run</Eyebrow>
         <span className="text-ink select-all">{req.run_id}</span>
       </div>
       {running ? (

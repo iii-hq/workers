@@ -1,4 +1,113 @@
+/* provider::openai-codex::image::* chat cards — the saved picture, its
+   facts, and the path an agent hands to the next process. */
+[data-iii-ui='provider-openai-codex'] .oai-image-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+  font-family: var(--font-sans, sans-serif);
+  color: var(--color-ink);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 96px;
+  max-height: 360px;
+  overflow: hidden;
+  background: var(--color-surface, var(--color-panel));
+  border-radius: 6px;
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-img {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-skeleton {
+  display: block;
+  width: 100%;
+  height: 220px;
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-missing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 20px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-facts > span + span::before {
+  content: '·';
+  margin-right: 10px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-path {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-path-text {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  line-height: 1.55;
+  word-break: break-all;
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-path-dir {
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-path-name {
+  color: var(--color-ink);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-revised {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-fn-ns {
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-fn-op {
+  font-weight: 500;
+  color: var(--color-ink);
+}
+
 [data-iii-ui='provider-openai-codex'] .codex-provider-form {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -10,7 +119,7 @@
   color: var(--color-ink);
   background: var(--color-surface, var(--color-panel));
   border: 1px solid var(--color-edge, var(--color-rule));
-  border-radius: 8px;
+  border-radius: 6px;
 }
 
 [data-iii-ui='provider-openai-codex'] .codex-provider-card h3 {
@@ -46,7 +155,7 @@
   color: var(--color-ink);
   background: var(--color-panel-raised, var(--color-bg));
   border: 1px solid var(--color-edge, var(--color-rule));
-  border-radius: 2px;
+  border-radius: 6px;
 }
 
 [data-iii-ui='provider-openai-codex'] .codex-provider-status,
@@ -60,8 +169,6 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--color-ink-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
 }
 
 [data-iii-ui='provider-openai-codex'] .codex-provider-dot {
@@ -69,7 +176,7 @@
   height: 8px;
   flex: 0 0 auto;
   background: var(--color-ink-ghost);
-  border-radius: 999px;
+  border-radius: 9999px;
 }
 
 [data-iii-ui='provider-openai-codex'] .codex-provider-dot[data-active='true'] {
@@ -79,9 +186,51 @@
 [data-iii-ui='provider-openai-codex'] .codex-provider-action {
   flex-wrap: wrap;
   justify-content: space-between;
+  margin-top: 12px;
 }
 
-@media (min-width: 640px) {
+[data-iii-ui='provider-openai-codex'] .codex-provider-login {
+  margin: 16px 0;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-login ol {
+  list-style: decimal;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-action:empty {
+  display: none;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-login .codex-provider-code {
+  font-size: 18px;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-card a {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-card a:hover {
+  color: var(--color-accent, var(--color-ink));
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-card a:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 3px;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-account {
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-help {
+  margin-top: 16px;
+}
+
+@container (min-width: 640px) {
   [data-iii-ui='provider-openai-codex'] .codex-provider-card h3 {
     font-size: 14px;
   }

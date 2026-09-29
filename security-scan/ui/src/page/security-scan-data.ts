@@ -1,4 +1,5 @@
 import type { Host } from '@iii-dev/console-ui'
+import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import { withRpcTimeout } from './rpc-timeout.js'
 import { assertCompleteGithubSourceSet } from './security-dashboard.js'
 import { analysisConversationFromSession } from './view-state.js'
@@ -555,10 +556,14 @@ export interface ScanFormDefaults {
   analysisModel: string | null
 }
 
+/** Read this scanner instance's defaults, retaining safe form defaults if discovery fails. */
 export async function loadScanFormDefaults(host: Host): Promise<ScanFormDefaults> {
   try {
     const response = record(
-      await withRpcTimeout(host.iii.trigger('configuration::get', { id: 'security-scan' }), 'configuration::get'),
+      await withRpcTimeout(
+        host.iii.trigger('configuration::get', { id: await resolveConfigurationId(host.iii, 'security-scan') }),
+        'configuration::get',
+      ),
       'configuration::get response',
     )
     if (response.value == null) return { repositories: [], analysisModel: null }
@@ -933,19 +938,4 @@ export function openAnalysisConversation(host: Host, sessionId: string): boolean
   if (!id || typeof select !== 'function') return false
   select(id)
   return true
-}
-
-export function formatRelativeTime(timestamp: number, now = Date.now()): string {
-  const elapsed = Math.max(0, now - timestamp)
-  const minutes = Math.floor(elapsed / 60_000)
-  if (minutes < 1) return 'now'
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  if (days < 14) return `${days}d ago`
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-  }).format(new Date(timestamp))
 }

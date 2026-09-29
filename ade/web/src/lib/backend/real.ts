@@ -61,6 +61,7 @@ import type {
   ChatBackend,
   ChatStreamOptions,
   CompactResult,
+  ContextUsageReport,
   QueuedMessagePreview,
   StreamEvent,
 } from './types'
@@ -78,7 +79,13 @@ interface RunParams {
  */
 export const FALLBACK_FUNCTION_POLICY: HarnessFunctionPolicy = {
   allow: ['*'],
-  deny: ['approval::*', 'configuration::register', 'shell::workspace::*'],
+  deny: [
+    'approval::*',
+    'configuration::register',
+    // Atomic register/seed twin — same schema/seed power under a new name.
+    'configuration::ensure',
+    'shell::workspace::*',
+  ],
   expose: 'agent_trigger',
 }
 
@@ -115,12 +122,17 @@ export function toThinkingLevel(
   }
 }
 
-/** Exact model-native effort, routed only to the selected provider. */
+/**
+ * Exact model-native effort, routed only to the selected provider. `default`
+ * sends `{}`: the harness keeps a session's prior effort when a send names
+ * none, so choosing Default must reset explicitly.
+ */
 export function toProviderOptions(
   provider: string,
   effort: ChatStreamOptions['thinkingLevel'],
 ): Record<string, unknown> | undefined {
-  if (!effort || effort === 'default') return undefined
+  if (!effort) return undefined
+  if (effort === 'default') return {}
   return { [provider]: { reasoning_effort: effort } }
 }
 
@@ -485,6 +497,26 @@ async function realListQueued(
   }))
 }
 
+/**
+ * `harness::status` → `context`: what the last request actually cost, the
+ * input budget it was fit into, and what was left, from the harness's own
+ * accounting. `null` before the first generate (or without a turn record).
+ */
+async function realContextUsage(
+  sessionId: string,
+): Promise<ContextUsageReport | null> {
+  const client = await getIiiClient()
+  const status = await getTurnStatus(client, sessionId).catch(() => null)
+  const context = status?.context
+  if (!context) return null
+  const { total, usable, free } = context
+  return typeof total === 'number' &&
+    typeof usable === 'number' &&
+    typeof free === 'number'
+    ? { total, usable, free }
+    : null
+}
+
 /** `harness::unqueue` — pull a still-parked message back out of the queue. */
 async function realRemoveQueued(
   sessionId: string,
@@ -676,7 +708,7 @@ async function realCompactSession(
     // image block whose bytes were left out; ask for the full transcript.
     const items = await fetchTranscript(sessionId, { includeImageData: true })
     const anchor = latestCompactionAnchor(items)
-    const window = compactionWindow(items, anchor?.tailStartEntryId ?? null)
+    const window = compactionWindow(items, anchor)
     if (window.length === 0) return { status: 'empty' }
     const messages = window.map((entry) => entry.message)
     const guidance = instructions?.trim()
@@ -722,7 +754,8 @@ async function realCompactSession(
           : null
       // Persist the marker the same shape the harness writes, so it renders
       // (session::message-added → conversations layer) and the next turn's
-      // assemble reads `summary` + `tail_start_entry_id` to anchor.
+      // assemble reads `summary` + `tail_start_entry_id` to anchor. A failed
+      // append is a failed compaction: nothing would anchor on the summary.
       await appendCustomEntry({
         session_id: sessionId,
         custom_type: COMPACTION_CUSTOM_TYPE,
@@ -732,10 +765,6 @@ async function realCompactSession(
           tokens_before: resp.tokens_before,
           timestamp: Date.now(),
         },
-      }).catch((err) => {
-        if (import.meta.env.DEV) {
-          console.warn('[real-backend] persist compaction entry failed', err)
-        }
       })
       return {
         status: 'ok',
@@ -771,6 +800,7 @@ export const realBackend: ChatBackend = {
   stream: realStream,
   queueMessage: realQueueMessage,
   listQueued: realListQueued,
+  contextUsage: realContextUsage,
   removeQueued: realRemoveQueued,
   editQueued: realEditQueued,
   onQueuedMessage: realOnQueuedMessage,

@@ -65,7 +65,8 @@ const BAR_LABEL_STYLE: CSSProperties = {
 export function BarLabel({ text, color }: { text: string; color: string }) {
   return (
     <span
-      className="min-w-0 flex-1 overflow-hidden font-mono text-[10px] leading-none lowercase whitespace-nowrap text-ellipsis"
+      /* diagram micro: the label inside a span bar */
+      className="min-w-0 flex-1 overflow-hidden font-mono text-[10px] leading-none whitespace-nowrap text-ellipsis"
       style={{ ...BAR_LABEL_STYLE, color }}
     >
       {LRM}

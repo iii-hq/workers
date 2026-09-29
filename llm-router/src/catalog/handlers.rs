@@ -78,6 +78,9 @@ pub fn make_models_budget(
                 return Ok(None);
             };
             let config = snapshot(&config);
+            // The model is known here, so an uncapped router resolves to the
+            // model's own ceiling: that is both what `router::chat` forwards
+            // and what context assembly must reserve for output.
             let effective_max_output_tokens = resolve_max_output_tokens(
                 req.max_output_tokens,
                 config
@@ -92,7 +95,8 @@ pub fn make_models_budget(
                     .and_then(|defaults| defaults.max_tokens)
                     .unwrap_or(8192),
                 config.settings().output_token_max,
-            );
+            )
+            .unwrap_or(model.max_output_tokens);
             Ok(Some(ModelBudgetResponse {
                 model,
                 effective_max_output_tokens,

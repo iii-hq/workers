@@ -7,7 +7,7 @@
 
 import { Button } from '@iii-dev/console-ui'
 import { useState } from 'react'
-import { Download } from './icons'
+import { Download } from 'lucide-react'
 
 export interface ExportOptions {
   format: 'svg' | 'png'

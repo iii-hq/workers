@@ -3,6 +3,7 @@ import { ErrorDisplayView } from '../lib/errors'
 import { FileChangesCard } from './FileChangesCard'
 import { diffPanelRequest, isFileChangesResponse, summarizeFileChanges } from './file-changes'
 import { parseShellErrorDisplay, unwrapEnvelope } from './parsers'
+import { FunctionIdLabel } from './shared'
 
 const CREATE_ID = 'coder::create-file'
 const UPDATE_ID = 'coder::update-file'
@@ -35,19 +36,9 @@ function render(host: Host, message: FunctionTriggerMessage): React.ReactNode | 
   return null
 }
 
-function FunctionIdLabel({ functionId }: { functionId: string }) {
-  const tail = functionId.startsWith('coder::') ? functionId.slice('coder::'.length) : functionId
-  return (
-    <>
-      <span style={{ color: 'var(--color-ink-faint)' }}>coder::</span>
-      <span style={{ color: 'var(--color-ink)', fontWeight: 500 }}>{tail}</span>
-    </>
-  )
-}
-
 export function createFileChangesRenderer(host: Host): FunctionTriggerRenderer {
   return {
-    id: 'shell/page.js#file-changes',
+    id: 'ide/page.js#file-changes',
     isMatch: (functionId) => FILE_CHANGE_IDS.has(functionId),
     tryRender: (message) => render(host, message),
     tryRenderRunning: (message) => render(host, message),

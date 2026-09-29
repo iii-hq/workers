@@ -6,7 +6,8 @@
 //! refreshes leave the last known router catalog untouched.
 use crate::config::{build_backend_config, CodexBackendConfig};
 use crate::request::{build_backend_headers, CODEX_COMPAT_VERSION};
-use crate::{auth, router_client, state as registration_state, PROVIDER_ID};
+use crate::session::AuthManager;
+use crate::{router_client, state as registration_state, PROVIDER_ID};
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
@@ -29,6 +30,31 @@ pub const MODELS_REFRESH_INTERVAL: Duration = Duration::from_secs(3 * 60);
 /// conservative router metadata rather than a request parameter.
 const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 128_000;
 const DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
+/// GPT-6 Astra's full context window; the backend may expose its 272K pricing
+/// threshold as `context_window` instead of the model's actual limit.
+const GPT_6_ASTRA_CONTEXT_WINDOW: u64 = 1_050_000;
+
+/// Keep the Codex catalog aligned with the provider's curated model metadata.
+fn curated_context_window(slug: &str) -> Option<u64> {
+    if slug == "gpt-6-astra" {
+        return Some(GPT_6_ASTRA_CONTEXT_WINDOW);
+    }
+
+    let suffix = slug.strip_prefix("gpt-6-astra-")?;
+    let bytes = suffix.as_bytes();
+    if bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+    {
+        Some(GPT_6_ASTRA_CONTEXT_WINDOW)
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct CatalogRefreshState {
@@ -142,8 +168,8 @@ fn map_models(mut remote: Vec<CodexModel>) -> Vec<Model> {
                 id: format!("codex/{}", model.slug),
                 provider: PROVIDER_ID.to_string(),
                 display_name: Some(format!("{} (Codex)", model.display_name)),
-                context_window: model
-                    .context_window
+                context_window: curated_context_window(&model.slug)
+                    .or(model.context_window)
                     .or(model.max_context_window)
                     .unwrap_or(DEFAULT_CONTEXT_WINDOW),
                 max_output_tokens: model.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
@@ -187,6 +213,12 @@ async fn fetch_catalog(
         .await
         .map_err(|e| provider_error("models_body_failed", e.to_string()))?;
     if !status.is_success() {
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(provider_error(
+                "models_auth_expired",
+                "Codex rejected the current session.",
+            ));
+        }
         let text = String::from_utf8_lossy(&body);
         return Err(provider_error(
             "models_http_error",
@@ -219,6 +251,7 @@ pub async fn refresh_models(
     http: &reqwest::Client,
     refresh_state: &CatalogRefreshState,
     force_reconcile: bool,
+    auth: &Arc<AuthManager>,
 ) -> Result<usize, Error> {
     // Serialize refreshes so a slower older response cannot overwrite a newer one.
     let mut snapshot = refresh_state.snapshot.lock().await;
@@ -226,10 +259,36 @@ pub async fn refresh_models(
     let resolved = router_client::resolve(iii, token.as_deref())
         .await
         .unwrap_or_else(|_| default_resolve());
-    let credential = auth::fetch_fresh_credential(iii).await;
-    let cfg = build_backend_config(&resolved, credential.as_ref())
+    let credential = auth.resolve(None).await.map_err(|e| e.into_bus())?;
+    let cfg = build_backend_config(&resolved, credential.as_ref().map(|c| &c.value))
         .map_err(|e| provider_error("models_not_configured", e.to_string()))?;
-    let fetched = fetch_catalog(http, &cfg).await?;
+    let fetched = match fetch_catalog(http, &cfg).await {
+        Err(Error::Remote { ref code, .. }) if code == "provider/models_auth_expired" => {
+            let fresh = auth
+                .resolve(Some(&cfg.access_token))
+                .await
+                .map_err(|e| e.into_bus())?;
+            let fresh_cfg = build_backend_config(&resolved, fresh.as_ref().map(|c| &c.value))
+                .map_err(|e| provider_error("models_not_configured", e.to_string()))?;
+            if fresh_cfg.account_id != cfg.account_id {
+                return Err(provider_error(
+                    "session_changed",
+                    "Codex account changed. Check the connection again.",
+                ));
+            }
+            if fresh
+                .as_ref()
+                .is_none_or(|c| c.source != crate::session::CredentialSource::Managed)
+            {
+                return Err(provider_error(
+                    "models_auth_expired",
+                    "Codex rejected the current session. Sign in again.",
+                ));
+            }
+            fetch_catalog(http, &fresh_cfg).await?
+        }
+        result => result?,
+    };
 
     if !force_reconcile
         && fetched.etag.is_some()
@@ -251,14 +310,20 @@ pub fn make_refresh_models(
     iii: IIIClient,
     http: reqwest::Client,
     refresh_state: Arc<CatalogRefreshState>,
+    auth: Arc<AuthManager>,
 ) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, Error>>
        + Send
        + Sync
        + 'static {
     move |_req: RefreshModelsRequest| {
-        let (iii, http, refresh_state) = (iii.clone(), http.clone(), refresh_state.clone());
+        let (iii, http, refresh_state, auth) = (
+            iii.clone(),
+            http.clone(),
+            refresh_state.clone(),
+            auth.clone(),
+        );
         Box::pin(async move {
-            let count = refresh_models(&iii, &http, &refresh_state, true).await?;
+            let count = refresh_models(&iii, &http, &refresh_state, true, &auth).await?;
             Ok(RefreshModelsResponse { ok: true, count })
         })
     }
@@ -269,10 +334,11 @@ pub async fn refresh_models_periodically(
     iii: IIIClient,
     http: reqwest::Client,
     refresh_state: Arc<CatalogRefreshState>,
+    auth: Arc<AuthManager>,
 ) {
     loop {
         tokio::time::sleep(MODELS_REFRESH_INTERVAL).await;
-        match refresh_models(&iii, &http, &refresh_state, false).await {
+        match refresh_models(&iii, &http, &refresh_state, false, &auth).await {
             Ok(count) => println!("[provider-openai-codex] periodic catalog refresh: {count} models"),
             Err(e) => eprintln!(
                 "[provider-openai-codex] periodic catalog refresh failed ({e}); keeping last known catalog"
@@ -359,6 +425,14 @@ mod tests {
             hidden.is_empty(),
             "hidden Astra must not reach the router catalog"
         );
+    }
+
+    #[test]
+    fn astra_uses_the_curated_context_window() {
+        for slug in ["gpt-6-astra", "gpt-6-astra-2026-09-15"] {
+            let models = map_models(vec![model(slug, "list", 1)]);
+            assert_eq!(models[0].context_window, 1_050_000);
+        }
     }
 
     #[test]

@@ -34,17 +34,46 @@ export interface TabsTriggerProps
 export const TabsTrigger = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.Trigger>,
   TabsTriggerProps
->(({ className, icon, value, children, ...props }, ref) => (
-  <TabsPrimitive.Trigger
-    ref={ref}
-    value={value}
-    className={cn(uiClasses.tab, className)}
-    {...props}
-  >
-    <TabIconSlot icon={icon} value={value} />
-    <span className="min-w-0 truncate">{children}</span>
-  </TabsPrimitive.Trigger>
-))
+>(({ className, icon, value, children, ...props }, ref) => {
+  const innerRef = React.useRef<HTMLButtonElement | null>(null)
+  const setRefs = React.useCallback(
+    (node: HTMLButtonElement | null) => {
+      innerRef.current = node
+      if (typeof ref === 'function') ref(node)
+      else if (ref) ref.current = node
+    },
+    [ref],
+  )
+
+  // Keep the active tab in view when the list overflows horizontally
+  // (narrow panes / mobile). Only scrolls the tab list, never the page.
+  React.useEffect(() => {
+    const node = innerRef.current
+    if (!node) return
+    const list = node.parentElement
+    if (!list || list.scrollWidth <= list.clientWidth) return
+    const sync = () => {
+      if (node.getAttribute('data-state') !== 'active') return
+      node.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    }
+    sync()
+    const observer = new MutationObserver(sync)
+    observer.observe(node, { attributes: true, attributeFilter: ['data-state'] })
+    return () => observer.disconnect()
+  }, [])
+
+  return (
+    <TabsPrimitive.Trigger
+      ref={setRefs}
+      value={value}
+      className={cn(uiClasses.tab, className)}
+      {...props}
+    >
+      <TabIconSlot icon={icon} value={value} />
+      <span className="min-w-0 truncate">{children}</span>
+    </TabsPrimitive.Trigger>
+  )
+})
 TabsTrigger.displayName = 'TabsTrigger'
 
 export const TabsContent = React.forwardRef<

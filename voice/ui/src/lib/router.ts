@@ -5,7 +5,7 @@
  */
 import { useEffect, useState } from 'react'
 import { routerSpeechModels } from './client'
-import { errorMessage } from './format'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import type { ExtensionIii, RouterSpeechModel } from './types'
 
 export interface RouterModelsState {

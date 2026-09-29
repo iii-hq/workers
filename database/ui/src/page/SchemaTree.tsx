@@ -6,8 +6,16 @@
  * the cache-invalidation point.
  */
 
-import { type Host, Input, Skeleton } from '@iii-dev/console-ui'
-import { type ComponentType, useState } from 'react'
+import { Eyebrow, type Host, SearchField, Skeleton } from '@iii-dev/console-ui'
+import {
+  ChevronRight,
+  Eye,
+  KeyRound,
+  Link2,
+  type LucideIcon,
+  Table2,
+} from 'lucide-react'
+import { useState } from 'react'
 import {
   type ColumnInfo,
   commonSchema,
@@ -17,14 +25,6 @@ import {
   tableColumns,
   tableIndexes,
 } from './db-data'
-import {
-  ChevronRight,
-  Eye,
-  type IconProps,
-  KeyRound,
-  Link2,
-  Table2,
-} from './icons'
 
 interface SchemaTreeProps {
   host: Host
@@ -125,7 +125,7 @@ export function SchemaTree({
   const groups: {
     label: string
     kind: DbTable['kind']
-    icon: ComponentType<IconProps>
+    icon: LucideIcon
   }[] = [
     { label: 'Tables', kind: 'table', icon: Table2 },
     { label: 'Views', kind: 'view', icon: Eye },
@@ -134,16 +134,13 @@ export function SchemaTree({
   return (
     <div className="db-tree">
       <div className="db-tree-filter">
-        <Input
+        <SearchField
           value={query}
           onChange={setQuery}
           placeholder="Filter tables"
           aria-label="filter tables"
           data-autofocus=""
           data-db-tables-filter=""
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') setQuery('')
-          }}
         />
       </div>
       {!anyMatch && needle !== '' ? (
@@ -181,13 +178,7 @@ export function SchemaTree({
                             : `expand ${table.name} columns`
                         }
                       >
-                        <ChevronRight
-                          size={16}
-                          style={{
-                            transform: isOpen ? 'rotate(90deg)' : undefined,
-                            transition: 'transform 0.12s',
-                          }}
-                        />
+                        <ChevronRight size={16} />
                       </button>
                       <button
                         type="button"
@@ -261,7 +252,9 @@ function TableSchemaRows({
       )}
       {schema.indexes.length > 0 ? (
         <>
-          <li className="db-idx-head">Indexes</li>
+          <li className="db-idx-head">
+            <Eyebrow>Indexes</Eyebrow>
+          </li>
           {schema.indexes.map((idx) => (
             <li
               key={idx.name}

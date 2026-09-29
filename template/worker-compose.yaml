@@ -1,0 +1,232 @@
+# Local-source counterpart of harness/worker-compose.yaml, with Harness Medium profiles.
+namespace: my-project
+startup_timeout: 15m
+stop_timeout: 10s
+
+engine:
+  url: ws://127.0.0.1:${III_ENGINE_PORT:-49134}
+
+containers:
+  queue:
+    worker: path://../queue
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --bin queue
+
+  state:
+    worker: path://../state
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin state
+
+  session-manager:
+    worker: path://../session-manager
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --bin session-manager
+
+  llm-router:
+    worker: path://../llm-router
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - state
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin llm-router
+
+  provider-openai-codex:
+    worker: path://../provider-openai-codex
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - llm-router
+      - state
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin provider-openai-codex
+
+  provider-openai:
+    worker: path://../provider-openai
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - llm-router
+      - state
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --bin provider-openai
+
+  provider-anthropic:
+    worker: path://../provider-anthropic
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - llm-router
+      - state
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --bin provider-anthropic
+
+  context-manager:
+    worker: path://../context-manager
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - llm-router
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin context-manager
+
+  iii-directory:
+    worker: path://../iii-directory
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+      ORT_PREFER_DYNAMIC_LINK: "0"
+    scripts:
+      # Compose supplies III_COMPOSE_DIR even though Cargo runs in ../iii-directory.
+      run: cargo run --bin iii-directory -- --config "$III_COMPOSE_DIR/config/iii-directory.yaml"
+
+  cron:
+    worker: path://../cron
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin cron
+
+  # The sentinel's store; its default config already names the `primary`
+  # SQLite database the sentinel uses.
+  database:
+    worker: path://../database
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin database
+
+  sentinel:
+    worker: path://../sentinel
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - database
+      - queue
+      - cron
+      - session-manager
+    environment:
+      RUST_LOG: info
+      CI: "true"
+      SKIP_UI_BUILD: "${SENTINEL_SKIP_UI_BUILD:-}"
+    scripts:
+      run: cargo run --bin sentinel
+
+  ade:
+    worker: path://../ade
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin ade -- --config "$III_COMPOSE_DIR/config/console.yaml"
+
+  ide:
+    worker: path://../ide
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin ide
+
+  browser:
+    worker: path://../browser
+    config_name: browser
+    config_override:
+      scrapling:
+        allow_loopback: true # dev stack: the ADE lives on 127.0.0.1
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin browser
+
+  judge-typesafe:
+    worker: path://../judge-typesafe
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+      TYPESAFE_API_KEY: "${TYPESAFE_API_KEY:-}"
+    scripts:
+      run: cargo run --bin judge-typesafe
+
+  judge:
+    worker: path://../judge
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - judge-typesafe
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin judge
+
+  harness:
+    worker: path://../harness
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - state
+      - queue
+      - session-manager
+      - llm-router
+      - provider-openai-codex
+      - provider-openai
+      - provider-anthropic
+      - context-manager
+      - iii-directory
+      - cron
+      - database
+      - sentinel
+      - ade
+      - ide
+      - browser
+      - judge-typesafe
+      - judge
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin harness

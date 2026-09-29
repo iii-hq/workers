@@ -693,6 +693,31 @@ describe('metadataFor', () => {
     expect(restored.thinkingLevel).toBe('ultra')
   })
 
+  it('round-trips the profile composer example and omits it when absent', () => {
+    const agentProfile = {
+      id: 'default',
+      name: 'Default',
+      composerPlaceholder: 'Example: Explain this project.',
+    }
+    const metadata = metadataFor(conversation({ agentProfile }))
+    expect(metadata.agent_profile).toEqual({
+      id: 'default',
+      name: 'Default',
+      composer_placeholder: 'Example: Explain this project.',
+    })
+    const restored = mergeConversationMeta(
+      undefined,
+      sessionMeta({ metadata, message_count: 0 }),
+    )
+    expect(restored.agentProfile).toEqual(agentProfile)
+
+    // Sessions written before the field existed restore without it.
+    const legacy = metadataFor(
+      conversation({ agentProfile: { id: 'default', name: 'Default' } }),
+    )
+    expect(legacy.agent_profile).toEqual({ id: 'default', name: 'Default' })
+  })
+
   it('preserves harness linkage and appearance across whole-object writes', () => {
     const next = metadataFor(
       conversation({
@@ -871,6 +896,113 @@ describe('mergeHydratedTranscript', () => {
       opts,
     )
     expect(merged.map((m) => m.id)).toEqual(['e1:0', 'local-1:0'])
+  })
+
+  // Regression: rows the page lacks (a provisional failure card whose durable
+  // record never landed, a local `/compact` row) were appended on every
+  // re-hydration, so they jumped below all newer messages again and again.
+  it('keeps live-only rows at their window position, not at the end', () => {
+    const live = toMessages([
+      assistantItem('e1', 'a'),
+      assistantItem('e_t_x_error', 'failed'),
+      assistantItem('local-compact', '/compact'),
+      assistantItem('e2', 'b'),
+    ])
+    const merged = mergeHydratedTranscript(
+      toMessages([
+        assistantItem('e1', 'a'),
+        assistantItem('e2', 'b'),
+        assistantItem('e3', 'c'),
+      ]),
+      live,
+      [],
+      opts,
+    )
+    expect(merged.map((m) => m.id)).toEqual([
+      'e1:0',
+      'e_t_x_error:0',
+      'local-compact:0',
+      'e2:0',
+      'e3:0',
+    ])
+  })
+
+  it('places a live-only row before its successor when no earlier row is on the page', () => {
+    const merged = mergeHydratedTranscript(
+      toMessages([assistantItem('e2', 'b'), assistantItem('e3', 'c')]),
+      toMessages([assistantItem('local-1', 'note'), assistantItem('e2', 'b')]),
+      [],
+      opts,
+    )
+    expect(merged.map((m) => m.id)).toEqual(['local-1:0', 'e2:0', 'e3:0'])
+  })
+
+  // Regression: a tail page elides the inside of a run and drops thinking
+  // blocks, so a call the window holds as `e_a:2` comes back as the
+  // placeholder `e_a:1`. Matching by segment id re-appended the live card
+  // after the final answer (and left the placeholder in place).
+  it('replaces an elided page entry with the whole live rows in place', () => {
+    const callItem = (elided: boolean): TranscriptItem => ({
+      entry_id: 'e_a',
+      ...(elided ? { elided: true } : {}),
+      message: {
+        role: 'assistant',
+        content: [
+          ...(elided ? [] : [{ type: 'thinking' as const, text: 'hmm' }]),
+          { type: 'text', text: 'phase 1' },
+          {
+            type: 'function_call',
+            id: 'c1',
+            function_id: 'shell::run',
+            arguments: elided ? {} : { cmd: 'ls' },
+          },
+        ],
+        stop_reason: 'function_call',
+        model: 'm',
+        provider: 'p',
+        timestamp: 2,
+      },
+    })
+    const resultItem = (elided: boolean): TranscriptItem => ({
+      entry_id: 'e_r1',
+      ...(elided ? { elided: true } : {}),
+      message: {
+        role: 'function_result',
+        function_call_id: 'c1',
+        function_id: 'shell::run',
+        content: elided ? [] : [{ type: 'text', text: 'out' }],
+        details: null,
+        is_error: false,
+        timestamp: 3,
+      },
+    })
+    const final = assistantItem('e_b', 'final answer')
+    const live = toMessages([callItem(false), resultItem(false), final])
+    const fetched = toMessages([callItem(true), resultItem(true), final])
+
+    const merged = mergeHydratedTranscript(fetched, live, [], opts)
+    expect(merged.map((m) => `${m.id}:${m.role}`)).toEqual([
+      'e_a:0:thought',
+      'e_a:1:assistant',
+      'e_a:2:function-trigger',
+      'e_b:0:assistant',
+    ])
+    const call = merged[2]
+    expect(call.role === 'function-trigger' && call.output).toBeTruthy()
+    expect(
+      merged.some((m) => m.role === 'function-trigger' && m.unloaded),
+    ).toBe(false)
+  })
+
+  it('lets the page stand for an entry it holds whole', () => {
+    const merged = mergeHydratedTranscript(
+      toMessages([assistantItem('e1', 'page copy')]),
+      toMessages([assistantItem('e1', 'live copy')]),
+      [],
+      opts,
+    )
+    expect(merged.map((m) => m.id)).toEqual(['e1:0'])
+    expect(merged[0]).toMatchObject({ content: 'page copy' })
   })
 
   it('keeps a legacy migration unmodified when hidden durable hydration proves the session started', () => {

@@ -1,12 +1,22 @@
 //! `console::workspace::*` — open, list, and close workspace screens over
-//! the bus.
+//! the bus, plus the `get`/`set` pair the SPA persists the strip through.
 //!
-//! The workspace layout (tabs, columns, screens) is server-persisted in the
-//! `console` configuration entry and pushed to every connected browser, so a
-//! caller that writes it is showing the human something next to the
-//! conversation. These functions wrap that read-modify-write with the same
-//! placement rules the SPA uses (`web/src/lib/workspace-tabs.ts`); the shared
-//! fixture `web/src/lib/workspace-open.fixtures.json` keeps both sides honest.
+//! The workspace layout (tabs, columns, screens, active pointer) is
+//! server-persisted in `<data_dir>/workspace.json` ([`WorkspaceStore`]) and
+//! polled by every connected browser, so a caller that writes it is showing
+//! the human something next to the conversation. It is ephemeral per-instance
+//! state — deliberately NOT part of the `console` configuration entry, whose
+//! YAML is meant to be committed. These functions wrap the read-modify-write
+//! with the same placement rules the SPA uses (`web/src/lib/workspace-tabs.ts`);
+//! the shared fixture `web/src/lib/workspace-open.fixtures.json` keeps both
+//! sides honest.
+//!
+//! Document shape (the SPA reads and writes exactly this):
+//!
+//! ```json
+//! { "tabs": [ { "id", "name"?, "columns", "screens", "paneIds"?, "sizes"? } ],
+//!   "activeTabId": "tab-…", "activatedAt": 1710000000000, "activatedBy": "browser" }
+//! ```
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -17,7 +27,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-use crate::configuration::{existing_value, set_value};
+use crate::workspace_store::WorkspaceStore;
 
 pub const CHAT_SCREEN: &str = "chat";
 pub const CHAT_SESSION_SCREEN_PREFIX: &str = "chat:";
@@ -26,6 +36,8 @@ pub const ROUTED_SCREENS: [&str; 2] = ["traces", "workers"];
 pub const MAX_COLUMNS: usize = 64;
 
 const CODE_INVALID_SCREEN: &str = "WORKSPACE_INVALID_SCREEN";
+const CODE_INVALID_SIZES: &str = "WORKSPACE_INVALID_SIZES";
+const CODE_INVALID_LAYOUT: &str = "WORKSPACE_INVALID_LAYOUT";
 const CODE_UNAVAILABLE: &str = "WORKSPACE_UNAVAILABLE";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -180,7 +192,7 @@ fn parse_tab(raw: &Value) -> Option<Tab> {
 
 pub fn raw_tabs(value: &Value) -> Vec<Value> {
     value
-        .pointer("/workspace/tabs")
+        .pointer("/tabs")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default()
@@ -218,7 +230,7 @@ pub fn merge_tabs(raw: &[Value], next: &[Tab]) -> Vec<Value> {
 
 pub fn parse_active_tab_id(value: &Value) -> Option<String> {
     value
-        .pointer("/workspace/activeTabId")
+        .pointer("/activeTabId")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
         .map(str::to_string)
@@ -244,39 +256,35 @@ pub fn resolve_active<'a>(tabs: &'a [Tab], pointer: Option<&str>) -> Option<&'a 
         .or_else(|| tabs.first())
 }
 
-/// Write the layout back. `moved` says the caller changed the resolved
-/// pointer: only then is it stamped as a function activation so live browsers
-/// follow it; housekeeping writes keep whatever provenance the last writer
-/// left, exactly like the SPA's writes.
-pub fn with_workspace(value: Value, tabs: &[Value], active_tab_id: &str, moved: bool) -> Value {
-    with_workspace_at(value, tabs, active_tab_id, moved, now_ms())
+/// Write the layout back over the stored document. `moved` says the caller
+/// changed the resolved pointer: only then is it stamped as a function
+/// activation so live browsers follow it; housekeeping writes keep whatever
+/// provenance the last writer left, exactly like the SPA's writes. Keys this
+/// worker does not model are carried through untouched.
+pub fn with_layout(value: Value, tabs: &[Value], active_tab_id: &str, moved: bool) -> Value {
+    with_layout_at(value, tabs, active_tab_id, moved, now_ms())
 }
 
-pub fn with_workspace_at(
+pub fn with_layout_at(
     value: Value,
     tabs: &[Value],
     active_tab_id: &str,
     moved: bool,
     now: i64,
 ) -> Value {
-    let mut root = match value {
+    let mut layout = match value {
         Value::Object(map) => map,
         _ => Map::new(),
     };
-    let mut workspace = match root.remove("workspace") {
-        Some(Value::Object(map)) => map,
-        _ => Map::new(),
-    };
-    workspace.insert("tabs".to_string(), json!(tabs));
+    layout.insert("tabs".to_string(), json!(tabs));
     if moved {
-        workspace.insert("activeTabId".to_string(), json!(active_tab_id));
-        workspace.insert("activatedAt".to_string(), json!(now));
-        workspace.insert("activatedBy".to_string(), json!("function"));
-    } else if !workspace.contains_key("activeTabId") {
-        workspace.insert("activeTabId".to_string(), json!(active_tab_id));
+        layout.insert("activeTabId".to_string(), json!(active_tab_id));
+        layout.insert("activatedAt".to_string(), json!(now));
+        layout.insert("activatedBy".to_string(), json!("function"));
+    } else if !layout.contains_key("activeTabId") {
+        layout.insert("activeTabId".to_string(), json!(active_tab_id));
     }
-    root.insert("workspace".to_string(), Value::Object(workspace));
-    Value::Object(root)
+    Value::Object(layout)
 }
 
 fn now_ms() -> i64 {
@@ -284,6 +292,28 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Which side of the anchor column a new column lands on.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    #[default]
+    Right,
+    Left,
+}
+
+/// Where the caller wants the screen to land.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlacementRequest {
+    /// Reuse a tab already showing the screen, else place it beside
+    /// `relative_to` in the active tab, else open a fresh tab.
+    #[default]
+    Auto,
+    /// Always open a fresh tab, even when the screen is mounted elsewhere and
+    /// even when the active tab has room.
+    NewTab,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq)]
@@ -312,18 +342,36 @@ pub struct Opened {
 /// Place `screen` beside chat in `tab`: the column right after chat when it
 /// is empty, else any empty column, else a new column after chat. `None`
 /// when the tab is full.
-fn place_beside_chat(
+/// The anchor's column. `chat` matches whichever chat screen is mounted
+/// (plain or session-pinned); every other value is matched exactly.
+fn anchor_column(screens: &[Option<String>], relative_to: &str) -> Option<usize> {
+    if relative_to == CHAT_SCREEN {
+        return screens
+            .iter()
+            .position(|s| s.as_deref().is_some_and(is_chat_screen));
+    }
+    screens
+        .iter()
+        .position(|s| s.as_deref() == Some(relative_to))
+}
+
+fn place_beside(
     tab: &Tab,
     screen: &str,
+    relative_to: &str,
+    direction: Direction,
     new_pane_id: impl FnOnce() -> String,
 ) -> Option<(Tab, usize, Placement)> {
     let columns = tab.column_count();
     let mut screens = tab.normalized_screens(columns);
-    let chat_index = screens
-        .iter()
-        .position(|s| s.as_deref().is_some_and(is_chat_screen));
-    let adjacent_empty = chat_index
-        .map(|i| i + 1)
+    let anchor = anchor_column(&screens, relative_to);
+    // An empty column next to the anchor, on the asked-for side, before any
+    // other empty one: the caller said where it wants this.
+    let adjacent_empty = anchor
+        .and_then(|i| match direction {
+            Direction::Right => Some(i + 1),
+            Direction::Left => i.checked_sub(1),
+        })
         .filter(|&i| i < columns && screens[i].is_none());
     let empty = adjacent_empty.or_else(|| screens.iter().position(Option::is_none));
     if let Some(index) = empty {
@@ -337,7 +385,13 @@ fn place_beside_chat(
     if columns >= MAX_COLUMNS {
         return None;
     }
-    let insert_at = chat_index.map(|i| i + 1).unwrap_or(columns);
+    // No anchor mounted: the screen still has to go somewhere, and the end is
+    // the one place that displaces nothing.
+    let insert_at = match (anchor, direction) {
+        (Some(i), Direction::Right) => i + 1,
+        (Some(i), Direction::Left) => i,
+        (None, _) => columns,
+    };
     screens.insert(insert_at, Some(screen.to_string()));
     let mut pane_ids = tab.normalized_pane_ids(columns);
     pane_ids.insert(insert_at, new_pane_id());
@@ -356,12 +410,15 @@ fn place_beside_chat(
 }
 
 /// Stay on the active tab when it already shows the screen, else reuse the
-/// tab that does; otherwise place it beside chat in the active tab; otherwise
-/// open a fresh tab. Existing screens are never replaced.
+/// tab that does; otherwise place it beside `relative_to` in the active tab,
+/// on the `direction` side; otherwise open a fresh tab. Existing screens are
+/// never replaced.
 pub fn open_screen(
     tabs: &[Tab],
     active_tab_id: &str,
     screen: &str,
+    relative_to: &str,
+    direction: Direction,
     new_id: impl FnOnce() -> String,
     new_pane_id: impl FnOnce() -> String,
 ) -> Opened {
@@ -382,7 +439,7 @@ pub fn open_screen(
         };
     }
     if let Some((placed, column, placement)) =
-        active.and_then(|tab| place_beside_chat(tab, screen, new_pane_id))
+        active.and_then(|tab| place_beside(tab, screen, relative_to, direction, new_pane_id))
     {
         let placed_id = placed.id.clone();
         let mut next = tabs.to_vec();
@@ -401,6 +458,13 @@ pub fn open_screen(
             tabs: Some(next),
         };
     }
+    open_in_new_tab(tabs, screen, new_id)
+}
+
+/// A fresh tab carrying `screen`, appended after the ones that exist. Every
+/// screen but chat gets a chat column beside it, so a new tab is never a lone
+/// panel with no conversation next to it.
+pub fn open_in_new_tab(tabs: &[Tab], screen: &str, new_id: impl FnOnce() -> String) -> Opened {
     let (screens, column) = if is_chat_screen(screen) {
         (vec![Some(screen.to_string())], 0)
     } else {
@@ -507,6 +571,48 @@ fn validated_screen(raw: &str) -> Result<String, Error> {
     }
 }
 
+/// Column widths for a tab of `columns` columns: one positive, finite number
+/// each, normalized by their sum. Rejected rather than ignored — a list that
+/// does not match the layout is a caller bug, and silently dropping it would
+/// report success for a width that never landed.
+fn validated_sizes(sizes: &[f64], columns: usize) -> Result<Vec<f64>, Error> {
+    if sizes.len() != columns {
+        return Err(remote(
+            CODE_INVALID_SIZES,
+            format!(
+                "`sizes` must carry one width per column: got {}, the tab has {columns}",
+                sizes.len()
+            ),
+        ));
+    }
+    if sizes.iter().any(|s| !s.is_finite() || *s <= 0.0) {
+        return Err(remote(
+            CODE_INVALID_SIZES,
+            "every entry of `sizes` must be a finite number greater than zero",
+        ));
+    }
+    // Widths large enough to overflow the sum would normalize to zero, which
+    // the parser later rejects as an invalid tab.
+    let total: f64 = sizes.iter().sum();
+    if !total.is_finite() {
+        return Err(remote(
+            CODE_INVALID_SIZES,
+            "the entries of `sizes` are too large to normalize",
+        ));
+    }
+    // A finite sum is not enough: `[f64::MAX, f64::MIN_POSITIVE]` clears every
+    // check above and still divides down to `0.0`, which `is_valid_tab` later
+    // refuses — the tab would be stored and then read back as unparseable.
+    let normalized: Vec<f64> = sizes.iter().map(|s| s / total).collect();
+    if normalized.iter().any(|s| !s.is_finite() || *s <= 0.0) {
+        return Err(remote(
+            CODE_INVALID_SIZES,
+            "the entries of `sizes` are too far apart to normalize",
+        ));
+    }
+    Ok(normalized)
+}
+
 fn validated_screen_target(
     raw_screen: &str,
     raw_session_id: Option<&str>,
@@ -539,20 +645,24 @@ struct Layout {
 }
 
 impl Layout {
-    async fn store(self, iii: &IIIClient, tabs: &[Tab], active_tab_id: &str) -> Result<(), Error> {
+    async fn store(
+        self,
+        store: &WorkspaceStore,
+        tabs: &[Tab],
+        active_tab_id: &str,
+    ) -> Result<(), Error> {
         let merged = merge_tabs(&self.raw, tabs);
         let moved = active_tab_id != self.active_tab_id;
-        set_value(
-            iii,
-            with_workspace(self.value, &merged, active_tab_id, moved),
-        )
-        .await
-        .map_err(|e| remote(CODE_UNAVAILABLE, e))
+        store
+            .save(&with_layout(self.value, &merged, active_tab_id, moved))
+            .await
+            .map_err(|e| remote(CODE_UNAVAILABLE, e))
     }
 }
 
-async fn load_layout(iii: &IIIClient) -> Result<Layout, Error> {
-    let value = existing_value(iii)
+async fn load_layout(store: &WorkspaceStore) -> Result<Layout, Error> {
+    let value = store
+        .load()
         .await
         .map_err(|e| remote(CODE_UNAVAILABLE, e))?
         .unwrap_or_else(|| json!({}));
@@ -581,6 +691,10 @@ pub struct TabSummary {
     pub columns: usize,
     /// One entry per column; `null` is an empty column.
     pub screens: Vec<Option<String>>,
+    /// One fraction per column, summing to 1. Equal widths when the stored
+    /// layout has none, or has a list that does not match the column count —
+    /// the same normalization the browser renders from.
+    pub sizes: Vec<f64>,
     pub active: bool,
 }
 
@@ -600,9 +714,28 @@ pub struct OpenInput {
     /// With `screen: "chat"`, pin the panel to this conversation session.
     #[serde(default)]
     pub session_id: Option<String>,
+    /// The screen the new column lands next to, in the same vocabulary as
+    /// `screen`. Defaults to `chat`, which matches whichever chat panel is
+    /// mounted. A screen that is not mounted puts the column at the end.
+    #[serde(default)]
+    pub relative_to: Option<String>,
+    /// Which side of `relative_to` to land on: `right` (default) or `left`.
+    #[serde(default)]
+    pub direction: Option<Direction>,
+    /// Column widths for the tab AFTER this call — one positive number per
+    /// column, normalized by their sum. Applied in the same write that places
+    /// the screen, so there is no window for another writer in between. Omit
+    /// to let the console share the widths out.
+    #[serde(default)]
+    pub sizes: Option<Vec<f64>>,
     /// Make the tab holding the screen the active one (default true).
     #[serde(default)]
     pub activate: Option<bool>,
+    /// `auto` (default) reuses a tab already showing the screen; `new-tab`
+    /// always opens a fresh one. Pair `new-tab` with `activate: false` to put
+    /// a screen aside without moving the operator off the tab they are on.
+    #[serde(default)]
+    pub placement: Option<PlacementRequest>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -611,6 +744,9 @@ pub struct OpenOutput {
     pub column: usize,
     pub placement: Placement,
     pub screens: Vec<Option<String>>,
+    /// The tab's column widths as stored, whether they came from `sizes` or
+    /// from the console sharing them out.
+    pub sizes: Vec<f64>,
     pub activated: bool,
 }
 
@@ -628,15 +764,89 @@ pub struct CloseOutput {
     pub tab_ids: Vec<String>,
 }
 
-pub fn register(iii: &Arc<IIIClient>) {
-    let write_lock = Arc::new(tokio::sync::Mutex::new(()));
-    let client = iii.clone();
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct GetInput {}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct GetOutput {
+    /// The stored layout document verbatim (`tabs`, `activeTabId`,
+    /// `activatedAt`, `activatedBy`, …); `{}` when nothing was saved yet.
+    pub value: Value,
+    /// Where the document lives, for operators wondering what to delete.
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetInput {
+    /// The whole layout document; replaces what is stored.
+    pub value: Value,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SetOutput {
+    pub ok: bool,
+}
+
+pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
+    let workspace = store.clone();
+    iii.register_function(
+        "console::workspace::get",
+        RegisterFunction::new_async(move |_: GetInput| {
+            let store = workspace.clone();
+            async move {
+                let value = store
+                    .load()
+                    .await
+                    .map_err(|e| remote(CODE_UNAVAILABLE, e))?
+                    .unwrap_or_else(|| json!({}));
+                Ok::<_, Error>(GetOutput {
+                    value,
+                    path: store.path().await.display().to_string(),
+                })
+            }
+        })
+        .description(
+            "Internal: read the raw console workspace layout document the SPA renders \
+             (`<data_dir>/workspace.json`). Agents use `console::workspace::list`.",
+        )
+        .metadata(json!({ "internal": true })),
+    );
+
+    let workspace = store.clone();
+    iii.register_function(
+        "console::workspace::set",
+        RegisterFunction::new_async(move |input: SetInput| {
+            let store = workspace.clone();
+            async move {
+                if !input.value.is_object() {
+                    return Err(remote(
+                        CODE_INVALID_LAYOUT,
+                        "`value` must be the layout document (a JSON object)",
+                    ));
+                }
+                let _guard = store.lock().await;
+                store
+                    .save(&input.value)
+                    .await
+                    .map_err(|e| remote(CODE_UNAVAILABLE, e))?;
+                Ok::<_, Error>(SetOutput { ok: true })
+            }
+        })
+        .description(
+            "Internal: replace the raw console workspace layout document wholesale \
+             (the SPA's read-modify-write path). Agents use `console::workspace::open` \
+             and `close`.",
+        )
+        .metadata(json!({ "internal": true })),
+    );
+
+    let workspace = store.clone();
     iii.register_function(
         "console::workspace::list",
         RegisterFunction::new_async(move |_: ListInput| {
-            let iii = client.clone();
+            let store = workspace.clone();
             async move {
-                let layout = load_layout(&iii).await?;
+                let layout = load_layout(&store).await?;
                 let tabs = layout
                     .tabs
                     .iter()
@@ -645,6 +855,7 @@ pub fn register(iii: &Arc<IIIClient>) {
                         name: t.name.clone(),
                         columns: t.column_count(),
                         screens: t.normalized_screens(t.column_count()),
+                        sizes: t.normalized_sizes(t.column_count()),
                         active: t.id == layout.active_tab_id,
                     })
                     .collect();
@@ -655,77 +866,105 @@ pub fn register(iii: &Arc<IIIClient>) {
             }
         })
         .description(
-            "List the console workspace the human sees: every tab with its columns and \
-             screens, plus which tab is active. Screens are `chat`, `chat:<session-id>`, \
-             `traces`, `workers`, or `ext:<page>` for worker pages.",
+            "List the console workspace the human sees: every tab with its columns, \
+             screens and column widths, plus which tab is active. Screens are `chat`, \
+             `chat:<session-id>`, `traces`, `workers`, or `ext:<page>` for worker pages. \
+             Read this before passing `sizes` to `open`, so the widths you send are \
+             relative to the layout that is actually up.",
         ),
     );
 
-    let client = iii.clone();
-    let lock = write_lock.clone();
+    let workspace = store.clone();
     iii.register_function(
         "console::workspace::open",
         RegisterFunction::new_async(move |input: OpenInput| {
-            let iii = client.clone();
-            let lock = lock.clone();
+            let store = workspace.clone();
             async move {
                 let screen = validated_screen_target(&input.screen, input.session_id.as_deref())?;
+                let relative_to = match input.relative_to.as_deref() {
+                    Some(raw) => validated_screen(raw.trim())?,
+                    None => CHAT_SCREEN.to_string(),
+                };
+                let direction = input.direction.unwrap_or_default();
                 let activate = input.activate.unwrap_or(true);
-                let _guard = lock.lock().await;
-                let layout = load_layout(&iii).await?;
-                let opened = open_screen(
-                    &layout.tabs,
-                    &layout.active_tab_id,
-                    &screen,
-                    new_tab_id,
-                    new_pane_id,
-                );
+                let _guard = store.lock().await;
+                let layout = load_layout(&store).await?;
+                let opened = match input.placement.unwrap_or_default() {
+                    PlacementRequest::NewTab => open_in_new_tab(&layout.tabs, &screen, new_tab_id),
+                    PlacementRequest::Auto => open_screen(
+                        &layout.tabs,
+                        &layout.active_tab_id,
+                        &screen,
+                        &relative_to,
+                        direction,
+                        new_tab_id,
+                        new_pane_id,
+                    ),
+                };
                 let active_tab_id = if activate {
                     opened.tab_id.clone()
                 } else {
                     layout.active_tab_id.clone()
                 };
                 let pointer_moved = active_tab_id != layout.active_tab_id;
-                match opened.tabs {
-                    Some(tabs) => layout.store(&iii, &tabs, &active_tab_id).await?,
-                    None if pointer_moved => {
-                        let tabs = layout.tabs.clone();
-                        layout.store(&iii, &tabs, &active_tab_id).await?
+                // Placement and widths land in ONE store. A caller that opened
+                // first and resized second would leave a gap, and the browser
+                // writes this same entry on every divider drag.
+                let mut tabs = opened.tabs.clone().unwrap_or_else(|| layout.tabs.clone());
+                let resized = match input.sizes.as_deref() {
+                    Some(requested) => {
+                        let tab = tabs
+                            .iter_mut()
+                            .find(|t| t.id == opened.tab_id)
+                            .ok_or_else(|| remote(CODE_INVALID_SIZES, "the opened tab is gone"))?;
+                        let columns = tab.column_count();
+                        let sizes = validated_sizes(requested, columns)?;
+                        *tab = tab.with_layout(tab.normalized_screens(columns), Some(sizes), None);
+                        true
                     }
-                    None => {}
+                    None => false,
+                };
+                if opened.tabs.is_some() || resized || pointer_moved {
+                    layout.store(&store, &tabs, &active_tab_id).await?;
                 }
+                let sizes = tabs
+                    .iter()
+                    .find(|t| t.id == opened.tab_id)
+                    .map(|t| t.normalized_sizes(t.column_count()))
+                    .unwrap_or_default();
                 Ok::<_, Error>(OpenOutput {
                     tab_id: opened.tab_id,
                     column: opened.column,
                     placement: opened.placement,
                     screens: opened.screens,
+                    sizes,
                     activated: activate,
                 })
             }
         })
         .description(
             "Show a screen in the console workspace next to the conversation (reusing the tab \
-             that already shows it). Screens: `ext:shell` (files), `ext:browser`, \
+             that already shows it). Screens: `ext:ide` (files), `ext:browser`, \
              `ext:editor`, `workers`, or `{\"screen\":\"chat\",\"session_id\":\"<id>\"}` \
-             for a pinned chat.",
+             for a pinned chat. It lands right of the chat panel unless \
+             `relative_to` names another mounted screen, and `direction` picks the side \
+             (`right` or `left`).",
         ),
     );
 
-    let client = iii.clone();
-    let lock = write_lock;
+    let workspace = store;
     iii.register_function(
         "console::workspace::close",
         RegisterFunction::new_async(move |input: CloseInput| {
-            let iii = client.clone();
-            let lock = lock.clone();
+            let store = workspace.clone();
             async move {
                 let screen = validated_screen_target(&input.screen, input.session_id.as_deref())?;
-                let _guard = lock.lock().await;
-                let layout = load_layout(&iii).await?;
+                let _guard = store.lock().await;
+                let layout = load_layout(&store).await?;
                 let (tabs, tab_ids) = close_screen(&layout.tabs, &screen);
                 if !tab_ids.is_empty() {
                     let active_tab_id = layout.active_tab_id.clone();
-                    layout.store(&iii, &tabs, &active_tab_id).await?;
+                    layout.store(&store, &tabs, &active_tab_id).await?;
                 }
                 Ok::<_, Error>(CloseOutput { tab_ids })
             }
@@ -764,7 +1003,7 @@ mod tests {
             "chat:child:attempt:2",
             "traces",
             "workers",
-            "ext:shell",
+            "ext:ide",
             "ext:browser",
         ] {
             assert!(is_valid_screen(ok), "{ok}");
@@ -777,6 +1016,38 @@ mod tests {
             Some("child:attempt:2")
         );
         assert_eq!(session_id_for_chat_screen("chat"), None);
+    }
+
+    #[test]
+    fn sizes_are_normalized_and_checked_against_the_column_count() {
+        assert_eq!(
+            validated_sizes(&[3.0, 4.0, 3.0], 3).unwrap(),
+            vec![0.3, 0.4, 0.3]
+        );
+        assert_eq!(
+            validated_sizes(&[0.3, 0.4, 0.3], 3).unwrap(),
+            vec![0.3, 0.4, 0.3]
+        );
+        for bad in [vec![0.5, 0.5], vec![0.3, 0.4, 0.3, 0.1]] {
+            assert!(validated_sizes(&bad, 3).is_err(), "{bad:?}");
+        }
+        for bad in [
+            vec![0.5, 0.0, 0.5],
+            vec![0.5, -0.1, 0.6],
+            vec![0.5, f64::NAN, 0.5],
+            // Finite on their own, infinite once summed.
+            vec![f64::MAX, f64::MAX, f64::MAX],
+        ] {
+            assert!(validated_sizes(&bad, 3).is_err(), "{bad:?}");
+        }
+        // Finite sum, but the small entry divides down to zero — which
+        // `is_valid_tab` rejects, so the write must not get that far.
+        for bad in [
+            vec![f64::MAX, f64::MIN_POSITIVE],
+            vec![f64::MIN_POSITIVE, f64::MAX],
+        ] {
+            assert!(validated_sizes(&bad, 2).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
@@ -805,6 +1076,8 @@ mod tests {
                 &tabs,
                 active,
                 case["screen"].as_str().unwrap(),
+                case["relativeTo"].as_str().unwrap_or(CHAT_SCREEN),
+                serde_json::from_value(case["direction"].clone()).unwrap_or_default(),
                 fixed_id,
                 fixed_pane_id,
             );
@@ -839,9 +1112,17 @@ mod tests {
     #[test]
     fn existing_screen_leaves_the_layout_untouched() {
         let tabs = tabs_from(&json!([
-            { "id": "a", "columns": 2, "screens": ["chat", "ext:shell"] }
+            { "id": "a", "columns": 2, "screens": ["chat", "ext:ide"] }
         ]));
-        let opened = open_screen(&tabs, "a", "ext:shell", fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &tabs,
+            "a",
+            "ext:ide",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         assert_eq!(opened.placement, Placement::Existing);
         assert!(opened.tabs.is_none());
         assert_eq!(opened.column, 1);
@@ -857,14 +1138,22 @@ mod tests {
                 "paneIds": ["pane-chat", "pane-traces"]
             }
         ]));
-        let opened = open_screen(&tabs, "a", "ext:shell", fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &tabs,
+            "a",
+            "ext:ide",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         let opened_tabs = opened.tabs.unwrap();
         assert_eq!(
             opened_tabs[0].rest.get("paneIds"),
             Some(&json!(["pane-chat", "pane-new", "pane-traces"]))
         );
 
-        let (closed, touched) = close_screen(&opened_tabs, "ext:shell");
+        let (closed, touched) = close_screen(&opened_tabs, "ext:ide");
         assert_eq!(touched, vec!["a"]);
         assert_eq!(
             closed[0].rest.get("paneIds"),
@@ -891,14 +1180,22 @@ mod tests {
             sizes: None,
             rest: Map::new(),
         };
-        let opened = open_screen(&[full], "a", "ext:shell", fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &[full],
+            "a",
+            "ext:ide",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         assert_eq!(opened.placement, Placement::NewTab);
         assert_eq!(opened.tab_id, "tab-new");
         let next = opened.tabs.unwrap();
         assert_eq!(next.len(), 2);
         assert_eq!(
             next[1].screens,
-            vec![Some("chat".to_string()), Some("ext:shell".to_string())]
+            vec![Some("chat".to_string()), Some("ext:ide".to_string())]
         );
     }
 
@@ -915,7 +1212,15 @@ mod tests {
             sizes: None,
             rest: Map::new(),
         };
-        let opened = open_screen(&[full], "a", "chat:child", fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &[full],
+            "a",
+            "chat:child",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         assert_eq!(opened.placement, Placement::NewTab);
         assert_eq!(opened.column, 0);
         let next = opened.tabs.unwrap();
@@ -926,15 +1231,13 @@ mod tests {
     #[test]
     fn parse_migrates_and_filters_like_the_spa() {
         let value = json!({
-            "workspace": {
-                "activeTabId": "t1",
-                "tabs": [
-                    { "id": "t1", "columns": 2, "screens": ["chat", "configuration"], "extra": 1 },
-                    { "id": "t2", "screens": ["browser", "worktrees"] },
-                    { "id": "", "screens": ["chat"] },
-                    { "id": "t4", "screens": ["chat", "bogus"] }
-                ]
-            }
+            "activeTabId": "t1",
+            "tabs": [
+                { "id": "t1", "columns": 2, "screens": ["chat", "configuration"], "extra": 1 },
+                { "id": "t2", "screens": ["browser", "worktrees"] },
+                { "id": "", "screens": ["chat"] },
+                { "id": "t4", "screens": ["chat", "bogus"] }
+            ]
         });
         let tabs = parse_tabs(&value);
         assert_eq!(tabs.len(), 2);
@@ -959,19 +1262,35 @@ mod tests {
         ];
         let tabs: Vec<Tab> = raw.iter().filter_map(parse_tab).collect();
         assert_eq!(tabs.len(), 2);
-        let opened = open_screen(&tabs, "a", "ext:shell", fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &tabs,
+            "a",
+            "ext:ide",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         let merged = merge_tabs(&raw, &opened.tabs.unwrap());
         assert_eq!(merged.len(), 3);
-        assert_eq!(merged[0]["screens"], json!(["chat", "ext:shell"]));
+        assert_eq!(merged[0]["screens"], json!(["chat", "ext:ide"]));
         assert_eq!(merged[0]["pinned"], json!(true));
         assert_eq!(merged[1], raw[1]);
         assert_eq!(merged[2], raw[2]);
 
         let appended = merge_tabs(
             &raw,
-            &open_screen(&tabs, "c", "workers", fixed_id, fixed_pane_id)
-                .tabs
-                .unwrap(),
+            &open_screen(
+                &tabs,
+                "c",
+                "workers",
+                CHAT_SCREEN,
+                Direction::Right,
+                fixed_id,
+                fixed_pane_id,
+            )
+            .tabs
+            .unwrap(),
         );
         assert_eq!(appended.len(), 3);
         assert_eq!(appended[2]["screens"], json!(["chat", "workers", "traces"]));
@@ -980,15 +1299,59 @@ mod tests {
     }
 
     #[test]
+    fn a_new_tab_is_forced_even_when_the_screen_is_already_mounted() {
+        let tabs = tabs_from(&json!([
+            { "id": "a", "columns": 2, "screens": ["chat", "traces"] }
+        ]));
+        // `open_screen` would hand back the tab that already shows it.
+        assert_eq!(
+            open_screen(
+                &tabs,
+                "a",
+                "traces",
+                CHAT_SCREEN,
+                Direction::Right,
+                fixed_id,
+                fixed_pane_id
+            )
+            .placement,
+            Placement::Existing
+        );
+        let opened = open_in_new_tab(&tabs, "traces", fixed_id);
+        assert_eq!(opened.placement, Placement::NewTab);
+        assert_ne!(opened.tab_id, "a");
+        // Chat rides along, and the caller is told which column it landed in.
+        assert_eq!(
+            opened.screens,
+            vec![Some("chat".into()), Some("traces".into())]
+        );
+        assert_eq!(opened.column, 1);
+        // The tab it was already on is left alone.
+        let next = opened.tabs.unwrap();
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[0].screens, tabs[0].screens);
+    }
+
+    #[test]
     fn empty_layouts_never_panic() {
         assert!(resolve_active(&[], Some("x")).is_none());
-        let opened = open_screen(&[], "x", "workers", fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &[],
+            "x",
+            "workers",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         assert_eq!(opened.placement, Placement::NewTab);
         assert_eq!(opened.tabs.unwrap().len(), 1);
         let stale = open_screen(
             &default_tabs(),
             "missing",
             "workers",
+            CHAT_SCREEN,
+            Direction::Right,
             fixed_id,
             fixed_pane_id,
         );
@@ -996,53 +1359,91 @@ mod tests {
     }
 
     #[test]
-    fn with_workspace_keeps_sibling_keys() {
-        let value =
-            json!({ "traces": { "views": [] }, "workspace": { "tabs": [], "other": true } });
-        let next = with_workspace(value, &merge_tabs(&[], &default_tabs()), "tab-home", false);
-        assert_eq!(next.pointer("/traces/views"), Some(&json!([])));
-        assert_eq!(next.pointer("/workspace/other"), Some(&json!(true)));
+    fn with_layout_keeps_sibling_keys() {
+        let value = json!({ "tabs": [], "other": true });
+        let next = with_layout(value, &merge_tabs(&[], &default_tabs()), "tab-home", false);
+        assert_eq!(next.pointer("/other"), Some(&json!(true)));
+        assert_eq!(next.pointer("/activeTabId"), Some(&json!("tab-home")));
         assert_eq!(
-            next.pointer("/workspace/activeTabId"),
-            Some(&json!("tab-home"))
-        );
-        assert_eq!(
-            next.pointer("/workspace/tabs/0/screens"),
+            next.pointer("/tabs/0/screens"),
             Some(&json!(["chat", "traces"]))
         );
+        // The document is flat: no legacy `workspace` envelope is ever written.
+        assert!(next.get("workspace").is_none());
     }
 
     #[test]
     fn a_moved_pointer_is_stamped_as_a_function_activation() {
-        let value = json!({ "workspace": { "activeTabId": "tab-a", "activatedAt": 5, "activatedBy": "browser" } });
-        let next = with_workspace_at(value, &[], "tab-b", true, 99);
-        assert_eq!(next["workspace"]["activeTabId"], "tab-b");
-        assert_eq!(next["workspace"]["activatedAt"], 99);
-        assert_eq!(next["workspace"]["activatedBy"], "function");
+        let value = json!({ "activeTabId": "tab-a", "activatedAt": 5, "activatedBy": "browser" });
+        let next = with_layout_at(value, &[], "tab-b", true, 99);
+        assert_eq!(next["activeTabId"], "tab-b");
+        assert_eq!(next["activatedAt"], 99);
+        assert_eq!(next["activatedBy"], "function");
     }
 
     #[test]
     fn an_unchanged_pointer_keeps_the_previous_activation() {
-        let value = json!({ "workspace": { "activeTabId": "tab-a", "activatedAt": 5, "activatedBy": "browser" } });
-        let next = with_workspace_at(value, &[], "tab-a", false, 99);
-        assert_eq!(next["workspace"]["activeTabId"], "tab-a");
-        assert_eq!(next["workspace"]["activatedAt"], 5);
-        assert_eq!(next["workspace"]["activatedBy"], "browser");
+        let value = json!({ "activeTabId": "tab-a", "activatedAt": 5, "activatedBy": "browser" });
+        let next = with_layout_at(value, &[], "tab-a", false, 99);
+        assert_eq!(next["activeTabId"], "tab-a");
+        assert_eq!(next["activatedAt"], 5);
+        assert_eq!(next["activatedBy"], "browser");
     }
 
     #[test]
     fn a_housekeeping_write_over_a_missing_pointer_is_not_an_activation() {
-        let next = with_workspace_at(json!({}), &[], "tab-home", false, 7);
-        assert_eq!(next["workspace"]["activeTabId"], "tab-home");
-        assert!(next["workspace"].get("activatedBy").is_none());
-        assert!(next["workspace"].get("activatedAt").is_none());
+        let next = with_layout_at(json!({}), &[], "tab-home", false, 7);
+        assert_eq!(next["activeTabId"], "tab-home");
+        assert!(next.get("activatedBy").is_none());
+        assert!(next.get("activatedAt").is_none());
     }
 
     #[test]
     fn a_stale_raw_pointer_is_not_restamped_by_a_close() {
-        let value = json!({ "workspace": { "activeTabId": "gone", "activatedAt": 5, "activatedBy": "browser" } });
-        let next = with_workspace_at(value, &[], "tab-home", false, 99);
-        assert_eq!(next["workspace"]["activeTabId"], "gone");
-        assert_eq!(next["workspace"]["activatedBy"], "browser");
+        let value = json!({ "activeTabId": "gone", "activatedAt": 5, "activatedBy": "browser" });
+        let next = with_layout_at(value, &[], "tab-home", false, 99);
+        assert_eq!(next["activeTabId"], "gone");
+        assert_eq!(next["activatedBy"], "browser");
+    }
+
+    fn scratch_store(tag: &str) -> WorkspaceStore {
+        WorkspaceStore::new(std::env::temp_dir().join(format!(
+            "ade-workspace-fns-{tag}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        )))
+    }
+
+    #[tokio::test]
+    async fn load_layout_starts_from_defaults_and_store_round_trips_through_the_file() {
+        let store = scratch_store("roundtrip");
+        let layout = load_layout(&store).await.unwrap();
+        assert_eq!(layout.tabs, default_tabs());
+        assert_eq!(layout.active_tab_id, "tab-home");
+        assert!(layout.raw.is_empty());
+
+        let opened = open_screen(
+            &layout.tabs,
+            &layout.active_tab_id,
+            "ext:ide",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
+        let tabs = opened.tabs.unwrap();
+        layout.store(&store, &tabs, "tab-home").await.unwrap();
+
+        let reloaded = load_layout(&store).await.unwrap();
+        assert_eq!(reloaded.tabs, tabs);
+        assert_eq!(reloaded.active_tab_id, "tab-home");
+        let doc = store.load().await.unwrap().unwrap();
+        assert_eq!(doc["activeTabId"], "tab-home");
+        assert_eq!(
+            doc["tabs"][0]["screens"],
+            json!(["chat", "ext:ide", "traces"])
+        );
+        assert!(doc.get("workspace").is_none());
+        let _ = std::fs::remove_dir_all(store.dir().await);
     }
 }

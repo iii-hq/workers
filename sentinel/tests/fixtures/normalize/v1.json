@@ -1,0 +1,82 @@
+[
+  {
+    "note": "the canonical grouping case: two runs of the same failure differ only in their numbers",
+    "input": "compare-and-set rejected: expected version 41, found 42",
+    "expected": "compare-and-set rejected: expected version <n>, found <n>"
+  },
+  {
+    "note": "the same failure one write later must land in the same group",
+    "input": "compare-and-set rejected: expected version 7, found 8",
+    "expected": "compare-and-set rejected: expected version <n>, found <n>"
+  },
+  {
+    "note": "an HTTP status is the identity of the error, not a variable",
+    "input": "provider call failed with HTTP 429",
+    "expected": "provider call failed with HTTP 429"
+  },
+  {
+    "note": "so a different status is a different group",
+    "input": "provider call failed with HTTP 500",
+    "expected": "provider call failed with HTTP 500"
+  },
+  {
+    "note": "markers are matched case-insensitively and accept separators",
+    "input": "exited with code=17 and signal: 9 on port 49134",
+    "expected": "exited with code=17 and signal: 9 on port 49134"
+  },
+  {
+    "note": "an identity number long enough to look like a hash still survives",
+    "input": "errno 12345678 from the driver",
+    "expected": "errno 12345678 from the driver"
+  },
+  {
+    "note": "session and turn identifiers are per-run noise",
+    "input": "turn 0191f0c4-7b2a-7c3d-9e8f-1a2b3c4d5e6f failed in session 01J8M2QK9ZC3TSVX4YB7HD5NEA",
+    "expected": "turn <id> failed in session <id>"
+  },
+  {
+    "note": "a trace id, a span id and a commit are all hashes",
+    "input": "trace 3f9a1c2b4d5e6f70 span c21e9b8a7d6c5e4f at 4662b0dfeed1",
+    "expected": "trace <hex> span <hex> at <hex>"
+  },
+  {
+    "note": "absolute paths differ per machine and per checkout",
+    "input": "could not read /home/me/workspaces/workers/harness/src/turn_loop.rs",
+    "expected": "could not read <path>"
+  },
+  {
+    "note": "windows paths too",
+    "input": "could not read C:\\Users\\me\\workers\\harness\\src\\turn_loop.rs",
+    "expected": "could not read <path>"
+  },
+  {
+    "note": "a quoted value is treated as data — the documented trade-off that groups 'kanban' and 'security-scan' together",
+    "input": "page \"kanban\" is not registered",
+    "expected": "page <str> is not registered"
+  },
+  {
+    "note": "single quotes as well",
+    "input": "page 'security-scan' is not registered",
+    "expected": "page <str> is not registered"
+  },
+  {
+    "note": "decimals are one number, not two",
+    "input": "timed out after 2.5s",
+    "expected": "timed out after <n>s"
+  },
+  {
+    "note": "whitespace is collapsed and the result trimmed",
+    "input": "  redelivery   exhausted\n  after 3 attempts  ",
+    "expected": "redelivery exhausted after <n> attempts"
+  },
+  {
+    "note": "a message with nothing variable in it survives intact",
+    "input": "vector store timeout",
+    "expected": "vector store timeout"
+  },
+  {
+    "note": "an empty message stays empty rather than becoming a mask",
+    "input": "",
+    "expected": ""
+  }
+]

@@ -50,6 +50,10 @@ import {
   TimelineActivityTrail,
 } from './TimelineActivityTrail'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 /**
  * Every `role: 'system'` entry that is not a compaction marker or a trigger
  * fire. Three presentations, chosen by `kind`:
@@ -66,7 +70,7 @@ import {
  *   sentence) before what happened and what to do.
  * - everything else — a one-line operational status on the StatusPanel
  *   recipe (tinted fill, small icon, headline + detail). No stripe, no
- *   outline, no uppercase.
+ *   outline, no caps transform.
  */
 export function SystemNotice({ message }: { message: SystemMessage }) {
   if (message.kind === 'working-dir' && message.scope) {
@@ -331,8 +335,8 @@ function WorkingDirMarker({
               {/* The noun rides only where it fits: on a phone the folder
                   glyph says "working directory" and the line keeps the path. */}
               <span className="shrink-0 truncate">
-                <span className="sm:hidden">Folder </span>
-                <span className="hidden sm:inline">Working directory </span>
+                <span className="@lg:hidden">Folder </span>
+                <span className="hidden @lg:inline">Working directory </span>
                 {copy.verb}
               </span>
               {copy.path ? (

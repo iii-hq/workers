@@ -2,7 +2,9 @@
 //! in non-interactive mode (`devin [extra args] --print -- "<prompt>"`), stream
 //! its stdout verbatim onto `devin::events`, mirror a terminal AgentEvent frame
 //! onto `agent::events` so the console renders the turn like any other agent
-//! worker, and record the Devin session id it prints.
+//! worker, and record the Devin session id it prints. The turn is also written
+//! to `session-manager` (see `session_link`) so it is listed and replayable in
+//! the console like a harness session.
 //!
 //! `--print` output is plain text (not a structured event protocol), so we
 //! treat each line as text. When the CLI opens a session it prints
@@ -23,6 +25,7 @@ use crate::config::Config;
 use crate::events::emit;
 use crate::functions::types::{extract_prompt, RunRequest};
 use crate::iii_prompt::III_CONTEXT_PROMPT;
+use crate::session_link::{self, TurnLink};
 use crate::state::{load_session, save_session};
 use crate::wire::{assistant_message, now_ms, ContentBlock, SessionRecord, Status};
 
@@ -176,6 +179,21 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     });
     record.cwd = cwd.clone();
 
+    // Best-effort: None when recording is off, or session-manager is absent
+    // or failing.
+    let mut link = if req.session_recording.unwrap_or(cfg.session_recording) {
+        session_link::open(
+            &iii,
+            &session_id,
+            req.parent_session_id.as_deref(),
+            &prompt,
+            &record.model,
+        )
+        .await
+    } else {
+        None
+    };
+
     let mut command = Command::new(cfg.devin_bin());
     command
         .args(&argv)
@@ -194,11 +212,15 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
         Ok(c) => c,
         Err(e) => {
             release(&session_id).await;
+            let result = format!("failed to spawn devin CLI: {e}");
+            if let Some(link) = link {
+                link.finish(&result, "error", true).await;
+            }
             return json!({
                 "session_id": session_id,
                 "is_error": true,
                 "stop_reason": "error",
-                "result": format!("failed to spawn devin CLI: {e}")
+                "result": result
             });
         }
     };
@@ -214,7 +236,7 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     record.updated_at_ms = now_ms();
     let _ = save_session(&iii, &record).await;
 
-    let mut outcome = stream_turn(&iii, &cfg, &session_id, &mut child, &cancel).await;
+    let mut outcome = stream_turn(&iii, &cfg, &session_id, &mut child, &cancel, &mut link).await;
 
     release(&session_id).await;
 
@@ -243,6 +265,11 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     record.turns += 1;
     record.updated_at_ms = now_ms();
     let _ = save_session(&iii, &record).await;
+
+    if let Some(link) = link {
+        link.finish(&outcome.result_text, &outcome.stop_reason, outcome.is_error)
+            .await;
+    }
 
     let final_msg = assistant_message(
         vec![ContentBlock::Text {
@@ -289,6 +316,7 @@ async fn stream_turn(
     session_id: &str,
     child: &mut tokio::process::Child,
     cancel: &CancellationToken,
+    link: &mut Option<TurnLink>,
 ) -> Outcome {
     let mut outcome = Outcome {
         result_text: String::new(),
@@ -339,6 +367,10 @@ async fn stream_turn(
             outcome.result_text.push('\n');
         }
         outcome.result_text.push_str(&line);
+        // Stream the output so far into the session transcript (throttled).
+        if let Some(link) = link.as_mut() {
+            link.stream(&outcome.result_text).await;
+        }
     }
 
     let exit = child.wait().await;

@@ -34,8 +34,9 @@ stack; traces need the engine's OpenTelemetry export.
 ## When to Use
 
 - A worker must ship a console page, renderer, or configuration form — read
-  `ade/injectable-ui` first, then `ade/design-console-ui`, then the
-  design system in `ade/design-system`.
+  `ade/injectable-ui` (the delivery contract) first, then
+  `ade/design-console-ui` (responsive UX and forms), with
+  `ade/design-system` open for every visual rule and number.
 - You changed a worker's UI and must prove it is loadable: read
   `console::ui-manifest` and require an empty `warnings` array.
 - The user should watch something in the console: `console::workspace::open`
@@ -59,7 +60,9 @@ stack; traces need the engine's OpenTelemetry export.
   `engine::register_trigger`.
 - `workspace::open` reuses a tab that already shows the screen; it never
   duplicates panels. Selection of the active tab is per browser tab and only
-  follows a function-driven activation.
+  follows a function-driven activation. A page that asks for a panel of its
+  own passes `relative_to` with its own screen id, so the panel lands beside
+  the page instead of beside the chat.
 - Native console UI (`ade/web`) and worker UI change in separate pull
   requests; the shared component surface is `@iii-dev/console-ui`
   (`packages/console-ui`) and its `index.d.ts` is the only API contract.
@@ -68,8 +71,8 @@ stack; traces need the engine's OpenTelemetry export.
 
 - `console::status` — runtime knobs: `http_port`, `engine_url`, `version`; use for liveness and readiness.
 - `console::ui-manifest` — every injected asset currently loadable, with path, kind, content hash, and style-lint warnings; the authoritative check after registering UI.
-- `console::workspace::list` — the operator's workspace: tabs, columns, screens, and the active tab.
-- `console::workspace::open` — show a screen next to the conversation (`ext:<page>`, `workers`, `traces`, or a pinned `chat` by `session_id`).
+- `console::workspace::list` — the operator's workspace: tabs, columns, screens, column widths, and the active tab.
+- `console::workspace::open` — show a screen next to the conversation (`ext:<page>`, `workers`, `traces`, or a pinned `chat` by `session_id`). It lands right of the chat panel; `relative_to` names another mounted screen to sit beside and `direction` (`right`/`left`) picks the side. `sizes` sets the tab's column widths in the same write — read `workspace::list` first for the widths that are up.
 - `console::workspace::close` — remove a screen wherever it is shown; idempotent.
 - `console::working-directory::propose` — ask the operator to move the session (chat and paired shell) to a directory created or cloned elsewhere.
 - `console::ui-content` — the console's own content function for its injected catalog pages; internal.
@@ -96,13 +99,16 @@ register the content function and the two triggers directly.
 
 ## Skills shipped with this worker
 
-- `ade/injectable-ui` — the authoring contract for worker UI: project
-  layout, `setup(host)` slots, the shared component library, scoped CSS,
-  esbuild externals, Rust and Node registration, hot reload, debugging, and the
-  definition of done.
-- `ade/design-console-ui` — responsive Console UX: pane-width (not
-  viewport) breakpoints, phone drill-in flows, touch and keyboard
-  accessibility, configuration and provider forms, state integrity, and the
-  validation checklist.
+- `ade/injectable-ui` — the delivery contract for worker UI: project
+  layout, `setup(host)` and every slot, the wire contract, Rust and Node
+  registration, the shared build driver and its lint, scoped CSS, the
+  hooks/format/icon packages, hot reload, debugging, and the definition of done.
+- `ade/design-console-ui` — responsive UX and forms: archetypes, pane-width
+  (not viewport) behavior, phone drill-in and bottom sheets, state integrity,
+  configuration and provider forms, and the validation matrix.
 - `ade/design-system` — the iii Schematic design system: tokens, surface
-  ramp, typography, radius, elevation, motion, and the canonical components.
+  ramp, typography, radius, elevation, motion, the canonical components, and
+  the one numbers table the other two skills link to.
+
+The migration of the remaining worker UIs onto the shared package is tracked
+in `docs/plans/2026-09-16-worker-ui-migration.md`.

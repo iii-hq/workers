@@ -23,6 +23,9 @@ use crate::types::turn::{IdemRecord, TurnRecord};
 pub const TURN_SCOPE: &str = "harness_turn";
 pub const IDEM_SCOPE: &str = "harness_idem";
 pub const QUEUE_SCOPE: &str = "harness_queue";
+/// Per-session anonymous-usage bookkeeping (`usage_report::UsageRow`): which
+/// milestones and outcomes this session has already announced.
+pub const USAGE_SCOPE: &str = "harness_usage";
 /// One durable trigger binding per key (`bindings::Binding`). The engine-side
 /// trigger metadata holds only this key; everything the fire needs is here.
 pub const BINDING_SCOPE: &str = "harness_binding";

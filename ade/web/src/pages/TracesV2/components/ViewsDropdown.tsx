@@ -81,7 +81,7 @@ export function ViewsDropdown({
           <button
             type="button"
             className={cn(
-              'inline-flex items-center gap-2 h-8 px-2.5 rounded-sm font-mono text-[12px] lowercase transition-colors',
+              'inline-flex items-center gap-2 h-8 px-2.5 rounded-sm font-mono text-[12px] transition-colors',
               activeView
                 ? 'bg-surface-selected text-ink'
                 : 'bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover',

@@ -11,10 +11,11 @@
  */
 
 import type { Host } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useSyncExternalStore } from 'react'
 import { type CaptureHandle, startCapture } from './capture'
 import { dictationStart, dictationStop } from './client'
-import { base64FromInt16, errorMessage } from './format'
+import { base64FromInt16 } from './format'
 import type { TranscriptEvent } from './types'
 
 const LOCAL_FN = 'iii::voice-ui::transcript'

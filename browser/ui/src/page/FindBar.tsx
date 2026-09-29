@@ -5,8 +5,10 @@
  */
 
 import { IconButton, Input } from '@iii-dev/console-ui'
+import uiClasses from '@iii-dev/console-ui/ui-classes'
+import { ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 import { useEffect, useRef } from 'react'
-import { ChevronDown, ChevronUp, Search, X } from '../lib/icons'
+import { cn } from '../lib/cn'
 
 export interface FindState {
   query: string
@@ -41,8 +43,8 @@ export function FindBar({
       state.count === 0 ? 'No matches' : `${state.index} of ${state.count}`
   }
   return (
-    <search className="br-ui-findbar" aria-label="find in page">
-      <Search size={16} aria-hidden className="br-ui-findbar-icon" />
+    <search className={cn(uiClasses.toolbar, 'br-ui-findbar')} aria-label="find in page">
+      <Search size={16} aria-hidden />
       <Input
         ref={inputRef}
         value={state.query}

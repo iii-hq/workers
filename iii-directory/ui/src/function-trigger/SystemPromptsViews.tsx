@@ -1,20 +1,13 @@
-import { MarkdownPreview } from '@iii-dev/console-ui'
-import { formatRelativeTime } from '../lib/format'
+import { ActionLine, Badge, Card, EmptyState, MarkdownPreview, MetaRow } from '@iii-dev/console-ui'
+import { SquareFunction } from 'lucide-react'
+import { ago } from '../lib/format'
+import { Identity, kv, Loading, Row, Rows } from '../lib/widgets'
 import {
-  ActionLine,
-  Card,
-  EmptyRow,
-  KvChip,
-  MetaRow,
-  PulseLine,
-  StatusPill,
-} from '../lib/widgets'
-import {
+  safeParseRequest,
+  safeParseResponse,
   systemPromptsGetRequestSchema,
   systemPromptsGetResponseSchema,
   systemPromptsListResponseSchema,
-  safeParseRequest,
-  safeParseResponse,
 } from './parsers'
 
 interface ViewProps {
@@ -30,47 +23,32 @@ export function SystemPromptsListView({ output, running }: ViewProps) {
     return (
       <Card>
         <MetaRow>
-          <StatusPill label="listing…" variant="default" />
+          <Badge>listing…</Badge>
         </MetaRow>
-        <PulseLine label="scanning system prompts folder…" />
+        <Loading label="scanning system prompts folder…" />
       </Card>
     )
   }
 
   const resp = safeParseResponse(systemPromptsListResponseSchema, output)
   if (!resp) return null
-
-  const label =
-    resp.prompts.length === 0
-      ? 'no system prompts'
-      : `${resp.prompts.length} ${
-          resp.prompts.length === 1 ? 'system prompt' : 'system prompts'
-        }`
+  const n = resp.prompts.length
 
   return (
     <Card>
       <MetaRow>
-        <StatusPill
-          label={label}
-          variant={resp.prompts.length === 0 ? 'warn' : 'accent'}
-        />
+        <Badge variant={n === 0 ? 'warn' : 'accent'}>
+          {n === 0 ? 'no system prompts' : `${n} ${n === 1 ? 'system prompt' : 'system prompts'}`}
+        </Badge>
       </MetaRow>
-      {resp.prompts.length === 0 ? (
-        <EmptyRow label="no system prompts found" />
+      {n === 0 ? (
+        <EmptyState title="No system prompts" description="The system-prompts folder is empty." />
       ) : (
-        <ul className="dir-ui-list">
+        <Rows>
           {resp.prompts.map((p) => (
-            <li key={p.name} className="dir-ui-row">
-              <span className="dir-ui-id">{p.name}</span>
-              {p.description ? (
-                <div className="dir-ui-desc">{p.description}</div>
-              ) : null}
-              <span className="dir-ui-fine">
-                {formatRelativeTime(p.modified_at)}
-              </span>
-            </li>
+            <Row key={p.name} mono title={p.name} description={p.description || undefined} meta={ago(p.modified_at)} />
           ))}
-        </ul>
+        </Rows>
       )}
     </Card>
   )
@@ -84,11 +62,10 @@ export function SystemPromptsGetView({ input, output, running }: ViewProps) {
   if (running) {
     return (
       <Card>
-        <MetaRow>
-          <StatusPill label="loading…" variant="default" />
-          {req ? <KvChip label="name">{req.name}</KvChip> : null}
+        <MetaRow items={kv([['name', req?.name]])}>
+          <Badge>loading…</Badge>
         </MetaRow>
-        <PulseLine label="fetching system prompt…" />
+        <Loading label="fetching system prompt…" />
       </Card>
     )
   }
@@ -98,17 +75,11 @@ export function SystemPromptsGetView({ input, output, running }: ViewProps) {
 
   return (
     <Card>
-      <MetaRow>
-        <StatusPill label="system prompt" variant="accent" />
-        <KvChip label="modified">{formatRelativeTime(resp.modified_at)}</KvChip>
+      <MetaRow items={kv([['modified', ago(resp.modified_at)]])}>
+        <Badge variant="accent">system prompt</Badge>
       </MetaRow>
-      <ActionLine symbol="ƒ" tone="accent">
-        <div className="dir-ui-stack">
-          <span className="dir-ui-id lg">{resp.name}</span>
-          {resp.description ? (
-            <span className="dir-ui-desc">{resp.description}</span>
-          ) : null}
-        </div>
+      <ActionLine icon={<SquareFunction />}>
+        <Identity name={resp.name} description={resp.description} />
       </ActionLine>
       <MarkdownPreview markdown={resp.body} />
     </Card>

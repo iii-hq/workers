@@ -1,6 +1,6 @@
 import type { Host } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { errText } from './errors.js'
 import { shouldAutoCollectGithubSources } from './security-dashboard.js'
 import {
   readReconciliation,
@@ -83,7 +83,7 @@ export function useSecurityReconciliation(
           requestEpoch !== requestEpochRef.current
         )
           return
-        setError({ runId: requestRunId, message: errText(error) })
+        setError({ runId: requestRunId, message: errorMessage(error) })
       } finally {
         if (
           requestRunId === runIdRef.current &&
@@ -167,7 +167,7 @@ export function useSecurityReconciliation(
           requestRunId === runIdRef.current &&
           requestEpoch === requestEpochRef.current
         ) {
-          setError({ runId: requestRunId, message: errText(error) })
+          setError({ runId: requestRunId, message: errorMessage(error) })
         }
       })
       .finally(() => {

@@ -8,6 +8,7 @@ pub mod curated;
 pub mod discovery;
 pub mod embed;
 pub mod errors;
+pub mod image;
 pub mod manifest;
 pub mod reasoning;
 pub mod register;
@@ -17,6 +18,8 @@ pub mod sse;
 pub mod state;
 pub mod stream_fn;
 pub mod surface;
+#[cfg(feature = "console-ui")]
+pub mod ui;
 pub mod upstream;
 pub mod wire;
 

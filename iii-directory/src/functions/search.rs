@@ -1,9 +1,5 @@
-//! `directory::search_functions` — one-shot lexical function search — plus
-//! the engine-catalog plumbing and the per-session registries behind it.
-//!
-//! Moved from the reflex spike; only the bm25 method came along (the model
-//! consult stages measured token-equal and latency-worse — see the workers
-//! repo docs/reflex-discover-findings.md).
+//! `directory::search_functions` — lexical, local hybrid, or judge-worker
+//! function discovery, with shared catalog, registry and session policies.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -14,16 +10,24 @@ use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
+use tracing::Instrument;
 
-use crate::config::{FunctionSearchMode, SharedConfig, SkillsConfig};
+use crate::config::{FunctionSearchJudgeQuestion, FunctionSearchMode, SharedConfig, SkillsConfig};
 use crate::functions::registry::{
     self, RegistryCache, Worker, WorkerInfoInput, WorkerInfoOutput, WorkerListInput,
 };
 use crate::functions::search_index::{
     canonical_tools, compact_query, excluded_from_search, tool_fingerprint, Bm25Index, ToolSchema,
 };
+use crate::functions::search_judge::{
+    JudgeCorpus, JudgeFailure, JudgeOptions, JudgeOutcome, JudgeSearch, JUDGE_SHORTLIST,
+};
 use crate::functions::search_semantic::{weighted_rrf, SemanticSearch};
 use crate::surface::search_catalog as catalog;
+
+#[cfg(test)]
+#[path = "search_judge_integration.rs"]
+mod judge_tests;
 
 /// Timeout for one engine catalog call during a refresh.
 const CATALOG_TIMEOUT_MS: u64 = 5_000;
@@ -97,6 +101,21 @@ const MAX_SEARCH_QUERIES: usize = 6;
 /// mutex, so concurrent batches would only overlap their timeouts).
 /// Capabilities past the last batch are named in `guidance` instead.
 const MAX_SEARCH_BATCHES: usize = 3;
+/// Documents one side lane (installed skills, registered triggers) returns,
+/// round-robin across the capabilities.
+const SIDE_LANE_DOCS: usize = 6;
+/// Bytes of text one side-lane document contributes to the ranking payload.
+const SIDE_LANE_DOC_BYTES: usize = 300;
+/// Per-capability judge shortlist for side lanes: they surface at most
+/// `SIDE_LANE_DOCS` rows, so half an evaluation of candidates is plenty and
+/// keeps their calls light next to the function lane's.
+const SIDE_LANE_SHORTLIST: usize = JUDGE_SHORTLIST / 2;
+/// Console tabs register ephemeral `iii::*` listeners and `console:*` asset
+/// triggers; neither is a binding an agent can reuse.
+/// ponytail: prefix heuristic; switch to an engine-side ephemeral flag if
+/// registered-triggers::list ever carries one.
+const EPHEMERAL_TRIGGER_FUNCTION_PREFIX: &str = "iii::";
+const EPHEMERAL_TRIGGER_TYPE_PREFIX: &str = "console:";
 /// Registry list queries per search: each capability, then informative
 /// terms one by one — the registry's pg_trgm similarity misses long
 /// natural-language queries that a single term ("email") hits. All
@@ -130,6 +149,13 @@ pub struct Deps {
     pub sessions: Arc<std::sync::Mutex<SessionRegistry>>,
     pub registry_cache: RegistryCache,
     pub semantic: SemanticSearch,
+    pub judge: JudgeSearch,
+    /// Registered-workers cache shared with `directory::skills::*`, so the
+    /// skill search sees exactly the set `directory::skills::list`
+    /// serves. `None` (tests, benchmarks) falls back to the live function
+    /// catalog's namespaces.
+    pub registered_workers: Option<Arc<crate::functions::skills::RegisteredWorkersCache>>,
+    pub iii: Option<Arc<IIIClient>>,
 }
 
 const SESSIONS_CAP: usize = 1024;
@@ -320,6 +346,15 @@ directory::skills::get { id: \"<id>\" }. Do not search for intrinsic reasoning, 
 summarization, planning, or formatting. Always write every `capabilities` entry in English, \
 even when the user writes in another language; preserve proper names, URLs, and function IDs.";
 
+const SEARCH_SKILLS_NOTE: &str = "The `skills` entries are installed how-to documents whose \
+content matches the requested capabilities: before acting on such a capability, read the \
+relevant one with directory::skills::get { \"id\": \"<id>\" } and follow it.";
+
+const SEARCH_TRIGGERS_NOTE: &str = "The `triggers` entries are registered trigger bindings \
+that already fire, schedule, or hook a function for a matching capability: inspect the bound \
+function with engine::functions::info { \"function_id\": \"<id>\" } and reuse the binding \
+instead of registering a duplicate.";
+
 const SEARCH_INSTALL_NOTE: &str = "Select from `workers` before considering `installable` \
 for unmet capabilities. An explicit installation request follows the installation workflow below \
 even when compose::add is already in `workers`. The `installable` entries are registry workers \
@@ -394,6 +429,31 @@ pub struct FunctionCandidate {
     pub description: String,
 }
 
+/// An installed skill document (a `directory::skills::list` row) whose
+/// content matches a requested capability.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, schemars::JsonSchema)]
+pub struct SkillCandidate {
+    /// Pass to `directory::skills::get { id }` to read the document.
+    pub id: String,
+    pub title: String,
+    /// First description sentence, capped at 160 bytes.
+    pub description: String,
+}
+
+/// A registered trigger binding (an `engine::registered-triggers::list`
+/// row) whose event, schedule, or hook matches a requested capability.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, schemars::JsonSchema)]
+pub struct TriggerCandidate {
+    pub id: String,
+    pub trigger_type: String,
+    /// The function the trigger runs; inspect it with `engine::functions::info`.
+    pub function_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_name: Option<String>,
+    /// The binding's configuration (cron expression, hook filters, …).
+    pub config: Value,
+}
+
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct SearchWorker {
     pub namespace: String,
@@ -435,8 +495,22 @@ pub struct SearchFunctionsResponse {
     pub workers: Vec<SearchWorker>,
     /// Matching workers from the private registry. Their functions are
     /// NOT callable until the worker is installed.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    // `default` keeps the schema honest: these sections are omitted when
+    // empty, so they must not be `required`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub installable: Vec<InstallableWorker>,
+    /// Installed skill documents matching the capabilities. Read one with
+    /// `directory::skills::get { id }` before acting on it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<SkillCandidate>,
+    /// Registered trigger bindings matching the capabilities: what already
+    /// fires, schedules, or hooks a function for them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<TriggerCandidate>,
+    /// The search mode that actually produced these results: `judge`, `hybrid`
+    /// or `lexical`. It can be lower than the configured mode when a batch
+    /// fell back (judge worker absent or failing, or no local model).
+    pub search_mode: FunctionSearchMode,
     pub latency_ms: f64,
 }
 
@@ -897,6 +971,7 @@ fn rank_registry_contracts(
     let corpus = canonical_tools(&contracts);
     let index = Bm25Index::build(&corpus);
     let rankings = fuse_admitted(lexical_rankings(&index, search_queries), dense);
+    let rankings = production_fallback_rankings(&corpus, search_queries, &rankings);
     round_robin_rankings(&rankings, budget)
         .into_iter()
         .filter_map(|id| contracts.iter().find(|tool| tool.name == id).cloned())
@@ -1065,6 +1140,7 @@ async fn installable_from_candidates(
     installed: &[ToolSchema],
     search_queries: &[String],
     candidates: &[RegistryCandidate],
+    judge: Option<(&JudgeSearch, tokio::time::Instant)>,
 ) -> Vec<InstallableWorker> {
     // Info round trips concurrently; pooling stays in candidate order
     // so first-seen contract dedupe is deterministic.
@@ -1109,8 +1185,37 @@ async fn installable_from_candidates(
             }
         }
     }
+    // Raw dense rankings seed the judge shortlist and the local fallback alike.
     let dense = registry_dense_rankings(semantic, search_queries, &pooled, -1.0).await;
-    let ranked = rank_registry_contracts(search_queries, pooled, dense, MAX_INSTALLABLE_FUNCTIONS);
+    let judged = match judge {
+        Some((judge, deadline)) => {
+            let corpus = canonical_tools(&pooled);
+            match rank_with_judge(
+                judge,
+                cfg,
+                &corpus,
+                search_queries,
+                dense.as_deref(),
+                deadline,
+            )
+            .await
+            {
+                Ok(outcome) => Some(outcome.rankings),
+                Err(error) => {
+                    tracing::debug!(%error, "judge registry lane fell back to the local ranking");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+    let ranked = match judged {
+        Some(rankings) => round_robin_rankings(&rankings, MAX_INSTALLABLE_FUNCTIONS)
+            .into_iter()
+            .filter_map(|id| pooled.iter().find(|tool| tool.name == id).cloned())
+            .collect(),
+        None => rank_registry_contracts(search_queries, pooled, dense, MAX_INSTALLABLE_FUNCTIONS),
+    };
     assemble_installable(ranked, &owners)
 }
 
@@ -1125,6 +1230,7 @@ async fn registry_installable(
     semantic: Option<&SemanticSearch>,
     installed: &[ToolSchema],
     search_queries: &[String],
+    judge: Option<(&JudgeSearch, tokio::time::Instant)>,
 ) -> Vec<InstallableWorker> {
     if search_queries.is_empty() {
         return Vec::new();
@@ -1180,11 +1286,20 @@ async fn registry_installable(
         })
         .collect();
     let candidates = round_robin_registry_candidates(&variant_lists, MAX_REGISTRY_CANDIDATES);
-    installable_from_candidates(cfg, cache, semantic, installed, search_queries, &candidates).await
+    installable_from_candidates(
+        cfg,
+        cache,
+        semantic,
+        installed,
+        search_queries,
+        &candidates,
+        judge,
+    )
+    .await
 }
 
-/// One-shot lexical search: rank the catalog with BM25 and return compact
-/// candidates for only the ranked functions — never a whole worker.
+/// Search the catalog using the configured mode and return compact candidates
+/// for only the selected functions — never a whole worker.
 pub async fn search_functions(
     deps: &Deps,
     mut request: SearchFunctionsRequest,
@@ -1211,18 +1326,90 @@ pub async fn search_functions(
     let started = Instant::now();
     let tools = deps.catalog.read().await.clone();
     let cfg = deps.config.load_full();
+    let judge = judge_deadline(&cfg, &tools, &deps.judge);
     let fingerprint = tool_fingerprint(&tools);
-    let mut selected: Vec<String> = Vec::new();
-    let mut installable: Vec<InstallableWorker> = Vec::new();
-    for batch in request.capabilities.chunks(MAX_SEARCH_QUERIES) {
-        let outcome = search_batch(deps, &cfg, &tools, &fingerprint, batch).await;
-        for function_id in outcome.selected {
-            if !selected.contains(&function_id) {
-                selected.push(function_id);
-            }
+    let function_search = async {
+        let mut selected: Vec<String> = Vec::new();
+        let mut installable: Vec<InstallableWorker> = Vec::new();
+        // The mode actually used, as the highest tier any batch reached.
+        // ponytail: a multi-batch search that partly fell back reports the
+        // best tier; split per batch only if that ambiguity ever bites.
+        let mut effective_mode = FunctionSearchMode::Lexical;
+        // Batches run concurrently so later ones get their share of the
+        // shared judge deadline; results merge in request order.
+        let mut batches = tokio::task::JoinSet::new();
+        for (position, batch) in request.capabilities.chunks(MAX_SEARCH_QUERIES).enumerate() {
+            let (deps, cfg, tools, fingerprint) = (
+                deps.clone(),
+                cfg.clone(),
+                tools.clone(),
+                fingerprint.clone(),
+            );
+            let batch = batch.to_vec();
+            // The handler's OTel context (baggage: the session's judge
+            // provider, its id) must reach the spawned batch, or its judge
+            // calls route to the hub default.
+            batches.spawn(opentelemetry::context::FutureExt::with_context(
+                async move {
+                    let outcome =
+                        search_batch(&deps, &cfg, &tools, &fingerprint, &batch, judge).await;
+                    (position, outcome)
+                }
+                .in_current_span(),
+                opentelemetry::Context::current(),
+            ));
         }
-        merge_installable(&mut installable, outcome.installable);
-    }
+        let mut outcomes = batches.join_all().await;
+        outcomes.sort_by_key(|(position, _)| *position);
+        for (_, outcome) in outcomes {
+            effective_mode = effective_mode.max(outcome.effective_mode);
+            for function_id in outcome.selected {
+                if !selected.contains(&function_id) {
+                    selected.push(function_id);
+                }
+            }
+            merge_installable(&mut installable, outcome.installable);
+        }
+        (selected, installable, effective_mode)
+    };
+    // Skills and triggers are ranked by the same mode as the functions:
+    // the judge worker judges each capability's local shortlist, and
+    // lexical/hybrid (also the judge's fallback) rank them with BM25 fused
+    // with the dense lane in hybrid. Both share the judge deadline.
+    let skill_search = async {
+        let docs = installed_skill_docs(deps, &cfg, &tools).await;
+        side_lane(
+            deps,
+            &cfg,
+            &request.capabilities,
+            judge,
+            docs,
+            JudgeCorpus::Skills,
+        )
+        .await
+    };
+    let trigger_search = async {
+        let docs = registered_trigger_docs(deps).await;
+        side_lane(
+            deps,
+            &cfg,
+            &request.capabilities,
+            judge,
+            docs,
+            JudgeCorpus::Triggers,
+        )
+        .await
+    };
+    let (
+        (mut selected, installable, search_mode),
+        (skills, skills_judged),
+        (triggers, triggers_judged),
+    ) = tokio::join!(function_search, skill_search, trigger_search);
+    let search_mode = if skills_judged || triggers_judged {
+        FunctionSearchMode::Judge
+    } else {
+        search_mode
+    };
     let batches = request.capabilities.len().div_ceil(MAX_SEARCH_QUERIES);
     let session_id = baggage_session_id();
     // Repeat queries in one session skip candidates the session already
@@ -1290,6 +1477,16 @@ unchanged — reuse the earlier result): {}.",
         guidance
     };
     let guidance = format!("{guidance} {SEARCH_LANGUAGE_GUIDANCE}");
+    let guidance = if skills.is_empty() {
+        guidance
+    } else {
+        format!("{guidance} {SEARCH_SKILLS_NOTE}")
+    };
+    let guidance = if triggers.is_empty() {
+        guidance
+    } else {
+        format!("{guidance} {SEARCH_TRIGGERS_NOTE}")
+    };
     let guidance = if dropped.is_empty() {
         guidance
     } else {
@@ -1304,8 +1501,332 @@ search again for: {}.",
         guidance,
         workers,
         installable,
+        skills,
+        triggers,
+        search_mode,
         latency_ms: started.elapsed().as_secs_f64() * 1000.0,
     })
+}
+
+/// The installed skill documents a search may recommend, as the judge
+/// carrier (`name` = skill id, `description` = trimmed `title: body`) plus
+/// the response row. Visibility follows `directory::skills::list`: the
+/// registered-workers set (cached `compose::status`) plus, as a floor, the
+/// namespaces of the live function catalog. Skills flagged
+/// `disable_model_invocation` are never candidates.
+// ponytail: rescans the skill folders on every search; cache behind
+// the skills watcher if the scan ever shows up in search latency.
+async fn installed_skill_docs(
+    deps: &Deps,
+    cfg: &SkillsConfig,
+    tools: &[ToolSchema],
+) -> Vec<(ToolSchema, SkillCandidate)> {
+    let global_root = cfg.resolved_skills_folder();
+    let local_root = cfg.local_skills_folder();
+    let agents_roots = cfg.resolved_agents_skills_roots();
+    let (merged, _skipped) = crate::fs_source::scan_skills_merged(&global_root, &local_root);
+    // Same policy as `resolve_visible_skills`: a wired daemon that cannot be
+    // reached (no cached set either) yields the unfiltered set; without a
+    // daemon (tests, benchmarks) the catalog namespaces are the floor.
+    let registered: Option<HashSet<String>> = match (&deps.registered_workers, &deps.iii) {
+        _ if !cfg.filter_unregistered => None,
+        (Some(cache), Some(iii)) => cache.get_or_fetch(iii).await,
+        _ => Some(HashSet::new()),
+    };
+    let visible = match registered {
+        Some(mut registered) => {
+            registered.extend(
+                tools
+                    .iter()
+                    .filter_map(|tool| function_namespace(&tool.name))
+                    .map(str::to_string),
+            );
+            let agents_ns: Vec<String> = agents_roots
+                .iter()
+                .flat_map(|root| crate::fs_source::agents_namespaces(root))
+                .collect();
+            crate::functions::skills::filter_to_registered(merged, &registered, &agents_ns)
+        }
+        None => merged,
+    };
+    let visible =
+        crate::fs_source::merge_agents_roots(visible, &global_root, &local_root, &agents_roots).0;
+    let siblings = crate::functions::skills::id_set(&visible);
+    visible
+        .into_iter()
+        .map(|fs| crate::functions::skills::skill_entry_from_fs(fs, &siblings))
+        .filter(|entry| !entry.disable_model_invocation)
+        .map(|entry| {
+            let document = truncate_bytes(
+                &format!("{}: {}", entry.title, entry.description),
+                SIDE_LANE_DOC_BYTES,
+            );
+            (
+                ToolSchema {
+                    name: entry.id.clone(),
+                    description: document,
+                    parameters: json!({}),
+                },
+                SkillCandidate {
+                    id: entry.id,
+                    title: entry.title,
+                    description: crate::functions::search_index::slim_description(
+                        &entry.description,
+                    ),
+                },
+            )
+        })
+        .collect()
+}
+
+fn truncate_bytes(text: &str, max_bytes: usize) -> String {
+    let mut end = text.len().min(max_bytes);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].trim_end().to_string()
+}
+
+/// One side lane: the judge worker judges each capability's shortlist of
+/// `docs` when `judge` carries its deadline; otherwise, or when the judge
+/// fails, lexical/hybrid rank them locally with BM25 fused with the dense lane
+/// in hybrid. Returns the rows of at most `SIDE_LANE_DOCS` ids round-robin
+/// across capabilities, and whether the judge ranked them. Never fails the search.
+async fn side_lane<C: Clone>(
+    deps: &Deps,
+    cfg: &SkillsConfig,
+    capabilities: &[String],
+    judge: Option<tokio::time::Instant>,
+    docs: Vec<(ToolSchema, C)>,
+    corpus: JudgeCorpus,
+) -> (Vec<C>, bool) {
+    let (documents, candidates): (Vec<ToolSchema>, Vec<C>) = docs.into_iter().unzip();
+    let queries = search_queries(capabilities);
+    let (ranked, judged) = match judge {
+        Some(deadline) if !queries.is_empty() && !documents.is_empty() => {
+            let dense = side_lane_dense(deps, cfg, &queries, &documents).await;
+            let options = judge_options(
+                cfg,
+                corpus,
+                cfg.function_search_judge_side_lane_min_relevance,
+            );
+            let lanes = judge_lanes(&queries, &documents, dense.as_deref(), SIDE_LANE_SHORTLIST);
+            match deps.judge.rank(&lanes, &options, deadline).await {
+                Ok(outcome) => (
+                    round_robin_rankings(&outcome.rankings, SIDE_LANE_DOCS),
+                    true,
+                ),
+                Err(error) => {
+                    tracing::debug!(%error, ?corpus, "judge side lane fell back to the local ranking");
+                    (rank_locally(&queries, &documents, dense), false)
+                }
+            }
+        }
+        _ => (
+            local_rank_documents(deps, cfg, capabilities, &documents).await,
+            false,
+        ),
+    };
+    let rows = ranked
+        .into_iter()
+        .filter_map(|id| documents.iter().position(|document| document.name == id))
+        .map(|position| candidates[position].clone())
+        .collect();
+    (rows, judged)
+}
+
+/// Raw dense rankings of ad-hoc side-lane documents, when MiniLM serves this mode.
+async fn side_lane_dense(
+    deps: &Deps,
+    cfg: &SkillsConfig,
+    queries: &[String],
+    documents: &[ToolSchema],
+) -> Option<Vec<Vec<(String, f64)>>> {
+    if cfg.function_search_mode == FunctionSearchMode::Lexical
+        || !deps.semantic.is_production_minilm()
+    {
+        return None;
+    }
+    registry_dense_rankings(Some(&deps.semantic), queries, documents, -1.0).await
+}
+
+/// Rank side-lane documents without the judge: BM25 per capability
+/// (with the catalog's coverage pruning), fused with the dense lane for
+/// every capability MiniLM admits in Hybrid mode. Mirrors the registry
+/// section's ad-hoc document ranking. Returns at most `SIDE_LANE_DOCS` ids
+/// round-robin across capabilities.
+async fn local_rank_documents(
+    deps: &Deps,
+    cfg: &SkillsConfig,
+    capabilities: &[String],
+    documents: &[ToolSchema],
+) -> Vec<String> {
+    let queries = search_queries(capabilities);
+    if queries.is_empty() || documents.is_empty() {
+        return Vec::new();
+    }
+    let dense = side_lane_dense(deps, cfg, &queries, documents).await;
+    rank_locally(&queries, documents, dense)
+}
+
+fn rank_locally(
+    queries: &[String],
+    documents: &[ToolSchema],
+    dense: Option<Vec<Vec<(String, f64)>>>,
+) -> Vec<String> {
+    let index = Bm25Index::build(&canonical_tools(documents));
+    let rankings = fuse_admitted(lexical_rankings(&index, queries), dense);
+    round_robin_rankings(&rankings, SIDE_LANE_DOCS)
+}
+
+/// The registered trigger bindings a search may surface, as the ranking
+/// carrier (`name` = trigger id, `description` = `type trigger runs function
+/// configured by <config keys>`) plus the response row. Ephemeral console
+/// listeners are skipped.
+async fn registered_trigger_docs(deps: &Deps) -> Vec<(ToolSchema, TriggerCandidate)> {
+    let Some(iii) = deps.iii.as_ref() else {
+        return Vec::new();
+    };
+    let listed = match iii
+        .trigger(TriggerRequest {
+            function_id: "engine::registered-triggers::list".into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(CATALOG_TIMEOUT_MS),
+        })
+        .await
+    {
+        Ok(listed) => listed,
+        Err(error) => {
+            tracing::warn!(%error, "registered-triggers list failed; omitting the triggers section");
+            return Vec::new();
+        }
+    };
+    trigger_docs(&listed)
+}
+
+/// `registered_triggers[]` rows as side-lane documents plus response rows;
+/// malformed rows and ephemeral console bindings are skipped. The document
+/// names the config KEYS only: values (webhook URLs, headers, tokens) stay
+/// in the local response row and never reach the remote ranker.
+fn trigger_docs(listed: &Value) -> Vec<(ToolSchema, TriggerCandidate)> {
+    listed
+        .get("registered_triggers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(trigger_candidate)
+        .map(|candidate| {
+            let mut keys: Vec<&str> = candidate
+                .config
+                .as_object()
+                .map(|config| config.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            keys.sort_unstable();
+            let mut document = format!(
+                "{} trigger runs {}",
+                candidate.trigger_type, candidate.function_id
+            );
+            if !keys.is_empty() {
+                document = format!("{document} configured by {}", keys.join(", "));
+            }
+            let document = truncate_bytes(&document, SIDE_LANE_DOC_BYTES);
+            (
+                ToolSchema {
+                    name: candidate.id.clone(),
+                    description: document,
+                    parameters: json!({}),
+                },
+                candidate,
+            )
+        })
+        .collect()
+}
+
+/// One `registered_triggers[]` row as a candidate; `None` for malformed rows
+/// and for ephemeral console bindings.
+fn trigger_candidate(row: &Value) -> Option<TriggerCandidate> {
+    let id = row.get("id")?.as_str()?.to_string();
+    let trigger_type = row.get("trigger_type")?.as_str()?.to_string();
+    let function_id = row.get("function_id")?.as_str()?.to_string();
+    if trigger_type.starts_with(EPHEMERAL_TRIGGER_TYPE_PREFIX)
+        || function_id.starts_with(EPHEMERAL_TRIGGER_FUNCTION_PREFIX)
+    {
+        return None;
+    }
+    Some(TriggerCandidate {
+        id,
+        trigger_type,
+        function_id,
+        worker_name: row
+            .get("worker_name")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        config: row.get("config").cloned().unwrap_or_else(|| json!({})),
+    })
+}
+
+/// The judge lane runs only when configured AND `judge::evaluate` is in the
+/// live catalog; the catalog refreshes on every registration push, so an
+/// absent judge worker costs no round trip.
+/// The judge deadline for this search, or `None` when every lane should
+/// rank locally: another mode is configured, `judge::evaluate` is not in the
+/// live catalog (refreshed on every registration push, so an absent judge
+/// costs no round trip), or a recent failure paused the judge.
+fn judge_deadline(
+    cfg: &SkillsConfig,
+    catalog: &[ToolSchema],
+    judge: &JudgeSearch,
+) -> Option<tokio::time::Instant> {
+    (cfg.function_search_mode == FunctionSearchMode::Judge
+        && judge.available()
+        && catalog
+            .iter()
+            .any(|tool| tool.name == judge_contract::FUNCTION_ID))
+    .then(|| {
+        tokio::time::Instant::now()
+            + std::time::Duration::from_millis(cfg.function_search_judge_timeout_ms)
+    })
+}
+
+/// Per capability, the documents the judge scores. A corpus of at most
+/// `depth` documents goes whole, so the judge keeps its recall on wording
+/// BM25 misses; a larger one is cut to raw BM25 fused with the raw dense
+/// ranking (when available), `depth` deep.
+fn judge_lanes(
+    queries: &[String],
+    corpus: &[ToolSchema],
+    dense: Option<&[Vec<(String, f64)>]>,
+    depth: usize,
+) -> Vec<(String, Vec<ToolSchema>)> {
+    if corpus.len() <= depth {
+        return queries
+            .iter()
+            .map(|query| (query.clone(), corpus.to_vec()))
+            .collect();
+    }
+    let index = Bm25Index::build(corpus);
+    queries
+        .iter()
+        .enumerate()
+        .map(|(position, query)| {
+            let lexical: Vec<(String, f64)> = index
+                .rank_with_matches(query)
+                .into_iter()
+                .map(|(id, score, _)| (id, score))
+                .collect();
+            let fused = match dense.and_then(|dense| dense.get(position)) {
+                Some(dense) => weighted_rrf(&lexical, dense, PRODUCTION_RETRIEVAL_WEIGHT),
+                None => lexical,
+            };
+            let documents = fused
+                .iter()
+                .filter_map(|(id, _)| corpus.iter().find(|tool| &tool.name == id).cloned())
+                .take(depth)
+                .collect();
+            (query.clone(), documents)
+        })
+        .collect()
 }
 
 /// Fold one batch's installable workers into the merged section: a worker
@@ -1336,90 +1857,268 @@ fn merge_installable(merged: &mut Vec<InstallableWorker>, batch: Vec<Installable
 struct BatchOutcome {
     selected: Vec<String>,
     installable: Vec<InstallableWorker>,
+    /// The mode that actually ranked this batch's installed candidates.
+    effective_mode: FunctionSearchMode,
 }
 
+/// Installed-lane selection with diagnostics. Not part of the search wire schema.
+#[derive(Debug, Default)]
+struct BenchmarkOutcome {
+    selected: Vec<String>,
+    /// The mode that actually ranked the installed candidates.
+    effective_mode: FunctionSearchMode,
+    rankings: Vec<Vec<(String, f64)>>,
+    hybrid_complete: bool,
+    judge_complete: bool,
+    elapsed_ms: f64,
+}
+
+/// Resolve exact eligible IDs in code, and judge each remaining capability
+/// against its local shortlist of `corpus` (canonical contracts). The same
+/// policy serves the installed catalog and registry pools; `dense` holds raw
+/// dense rankings aligned with `queries`, when MiniLM has them.
+/// The question shape from config; `noul_threshold` applies to Noul only,
+/// Choice admits by `function_search_judge_choice_min_probability`.
+fn judge_options(cfg: &SkillsConfig, corpus: JudgeCorpus, noul_threshold: f64) -> JudgeOptions {
+    let question = cfg.function_search_judge_question;
+    JudgeOptions {
+        min_relevance: match question {
+            FunctionSearchJudgeQuestion::Noul => noul_threshold,
+            FunctionSearchJudgeQuestion::Choice | FunctionSearchJudgeQuestion::Tournament => {
+                cfg.function_search_judge_choice_min_probability
+            }
+        },
+        question,
+        corpus,
+    }
+}
+
+/// `tournament`, or `choice` asked of a judge whose advertised context window
+/// is small (laya): such a judge confuses the Hybrid shortlist's near-duplicates
+/// but finds the function when the whole catalog competes in rounds
+/// (live: 20/22 against 17/22 with the shortlist).
+async fn judge_tournament(
+    judge: &JudgeSearch,
+    cfg: &SkillsConfig,
+    deadline: tokio::time::Instant,
+) -> bool {
+    match cfg.function_search_judge_question {
+        FunctionSearchJudgeQuestion::Tournament => true,
+        FunctionSearchJudgeQuestion::Choice => judge.small_window(deadline).await,
+        FunctionSearchJudgeQuestion::Noul => false,
+    }
+}
+
+async fn rank_with_judge(
+    judge: &JudgeSearch,
+    cfg: &SkillsConfig,
+    corpus: &[ToolSchema],
+    queries: &[String],
+    dense: Option<&[Vec<(String, f64)>]>,
+    deadline: tokio::time::Instant,
+) -> Result<JudgeOutcome, JudgeFailure> {
+    let mut rankings: Vec<Vec<(String, f64)>> = queries
+        .iter()
+        .map(|query| {
+            exact_function_id(query, corpus)
+                .map(|id| vec![(id, 1.0)])
+                .unwrap_or_default()
+        })
+        .collect();
+    // A tournament judges the whole catalog; the other questions its shortlist.
+    let tournament = judge_tournament(judge, cfg, deadline).await;
+    let depth = if tournament {
+        usize::MAX
+    } else {
+        JUDGE_SHORTLIST
+    };
+    let (positions, lanes): (Vec<usize>, Vec<_>) = judge_lanes(queries, corpus, dense, depth)
+        .into_iter()
+        .enumerate()
+        .filter(|(position, _)| rankings[*position].is_empty())
+        .unzip();
+    let mut options = judge_options(
+        cfg,
+        JudgeCorpus::Functions,
+        cfg.function_search_judge_min_relevance,
+    );
+    if tournament {
+        options.question = FunctionSearchJudgeQuestion::Tournament;
+    }
+    let mut outcome = judge.rank(&lanes, &options, deadline).await?;
+    for (position, lane) in positions
+        .into_iter()
+        .zip(std::mem::take(&mut outcome.rankings))
+    {
+        rankings[position] = lane;
+    }
+    outcome.rankings = rankings;
+    Ok(outcome)
+}
+
+async fn installed_search(
+    deps: &Deps,
+    cfg: &SkillsConfig,
+    tools: &[ToolSchema],
+    fingerprint: &str,
+    queries: &[String],
+    judge: Option<tokio::time::Instant>,
+) -> BenchmarkOutcome {
+    let started = Instant::now();
+    let corpus = canonical_tools(tools);
+    let index = Bm25Index::build(&corpus);
+    let lexical = lexical_rankings(&index, queries);
+    let mut result = BenchmarkOutcome {
+        rankings: production_fallback_rankings(&corpus, queries, &lexical),
+        effective_mode: FunctionSearchMode::Lexical,
+        ..BenchmarkOutcome::default()
+    };
+    if let Some(deadline) = judge {
+        // The dense lane only matters when the catalog needs a shortlist.
+        let dense = if corpus.len() > JUDGE_SHORTLIST
+            && deps.semantic.is_production_minilm()
+            && !judge_tournament(&deps.judge, cfg, deadline).await
+        {
+            deps.semantic.rank(fingerprint, queries, -1.0).await.ok()
+        } else {
+            None
+        };
+        match rank_with_judge(
+            &deps.judge,
+            cfg,
+            &corpus,
+            queries,
+            dense.as_deref(),
+            deadline,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                result.rankings = outcome.rankings;
+                result.judge_complete = true;
+                result.effective_mode = FunctionSearchMode::Judge;
+                tracing::debug!(model = %outcome.model, requests = outcome.stats.requests,
+                    questions = outcome.stats.questions, input_tokens = outcome.stats.input_tokens,
+                    output_tokens = outcome.stats.output_tokens, elapsed_ms = outcome.stats.elapsed_ms,
+                    "judge function evaluation completed");
+            }
+            Err(error) => {
+                tracing::debug!(%error, "judge function lane fell back to Hybrid");
+            }
+        }
+    }
+    if cfg.function_search_mode != FunctionSearchMode::Lexical && !result.judge_complete {
+        if deps.semantic.is_production_minilm() {
+            if let Some(outcome) =
+                production_minilm_rankings(&deps.semantic, fingerprint, tools, queries, &lexical)
+                    .await
+            {
+                result.rankings = outcome.rankings;
+                result.hybrid_complete = outcome.complete;
+                result.effective_mode = FunctionSearchMode::Hybrid;
+            }
+        }
+        tracing::debug!(complete = result.hybrid_complete, %fingerprint,
+            repository = deps.semantic.model_repository(),
+            revision = deps.semantic.model_revision(),
+            reranker_repository = deps.semantic.reranker_repository(),
+            reranker_revision = deps.semantic.reranker_revision(),
+            "production MiniLM retrieval and reranking completed");
+    }
+    result.selected = if result.judge_complete {
+        limit_search_workers(
+            round_robin_rankings(&result.rankings, MAX_SEARCH_FUNCTIONS),
+            MAX_SEARCH_WORKERS.max(2 * queries.len()),
+        )
+    } else {
+        select_preordered_ids(result.rankings.clone())
+    };
+    result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    tracing::debug!(mode = ?cfg.function_search_mode, effective_mode = ?result.effective_mode, elapsed_ms = result.elapsed_ms,
+        hybrid_complete = result.hybrid_complete, judge_complete = result.judge_complete,
+        "installed function search completed");
+    result
+}
+
+/// One batch of capabilities: the installed search and the registry lookup
+/// run concurrently, so the registry's HTTP overlaps the installed judge call.
 async fn search_batch(
     deps: &Deps,
     cfg: &SkillsConfig,
     tools: &[ToolSchema],
     fingerprint: &str,
     capabilities: &[String],
+    judge: Option<tokio::time::Instant>,
 ) -> BatchOutcome {
-    let search_queries = search_queries(capabilities);
-    let mode = cfg.function_search_mode;
-    let lexical_started = Instant::now();
-    // ponytail: index rebuilt per call (~250 slim docs, sub-ms); cache by
-    // tool_fingerprint if search latency ever matters.
-    let corpus = canonical_tools(tools);
-    let index = Bm25Index::build(&corpus);
-    let lexical = lexical_rankings(&index, &search_queries);
-    let lexical_top_ids: Vec<&str> = lexical
-        .iter()
-        .filter_map(|ranking| ranking.first().map(|(id, _)| id.as_str()))
-        .collect();
-    tracing::debug!(
-        ?mode,
-        %fingerprint,
-        elapsed_ms = lexical_started.elapsed().as_secs_f64() * 1000.0,
-        ?lexical_top_ids,
-        "lexical lane ranked"
-    );
-    let production_minilm =
-        mode == FunctionSearchMode::Hybrid && deps.semantic.is_production_minilm();
-    let production_outcome = if production_minilm {
-        let semantic_started = Instant::now();
-        let rankings = production_minilm_rankings(
-            &deps.semantic,
-            fingerprint,
-            tools,
-            &search_queries,
-            &lexical,
-        )
-        .await;
-        tracing::debug!(
-            ?mode,
-            available = rankings.is_some(),
-            complete = rankings.as_ref().is_some_and(|outcome| outcome.complete),
-            %fingerprint,
-            repository = deps.semantic.model_repository(),
-            revision = deps.semantic.model_revision(),
-            reranker_repository = deps.semantic.reranker_repository(),
-            reranker_revision = deps.semantic.reranker_revision(),
-            elapsed_ms = semantic_started.elapsed().as_secs_f64() * 1000.0,
-            "production MiniLM retrieval and reranking completed"
-        );
-        rankings
-    } else {
-        None
-    };
-    let production_rankings = production_outcome.map(|outcome| outcome.rankings);
-    let selected = match production_rankings {
-        Some(rankings) => select_preordered_ids(rankings),
-        None => select_preordered_ids(production_fallback_rankings(
-            tools,
-            &search_queries,
-            &lexical,
-        )),
-    };
-    // Installable section: every search also consults the public registry
-    // for NOT-installed workers whose functions match — behind the
-    // registry_search knob; every failure inside returns an empty section
-    // (fail-open).
-    let mut installable: Vec<InstallableWorker> = Vec::new();
-    if cfg.registry_search {
-        installable = registry_installable(
+    let queries = search_queries(capabilities);
+    let registry = async {
+        if !cfg.registry_search {
+            return Vec::new();
+        }
+        registry_installable(
             cfg,
             &deps.registry_cache,
-            production_minilm.then_some(&deps.semantic),
+            (cfg.function_search_mode != FunctionSearchMode::Lexical
+                && deps.semantic.is_production_minilm())
+            .then_some(&deps.semantic),
             tools,
-            &search_queries,
+            &queries,
+            judge.map(|deadline| (&deps.judge, deadline)),
         )
-        .await;
-    }
+        .await
+    };
+    let (installed, installable) = tokio::join!(
+        installed_search(deps, cfg, tools, fingerprint, &queries, judge),
+        registry
+    );
     BatchOutcome {
-        selected,
+        selected: installed.selected,
         installable,
+        effective_mode: installed.effective_mode,
     }
+}
+
+/// Run production installed selection with diagnostics, without registry or session suppression.
+#[cfg(test)]
+async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> BenchmarkOutcome {
+    let started = Instant::now();
+    let cfg = deps.config.load_full();
+    let tools = deps.catalog.read().await.clone();
+    let fingerprint = tool_fingerprint(&tools);
+    let judge = judge_deadline(&cfg, &tools, &deps.judge);
+    let mut total = BenchmarkOutcome {
+        hybrid_complete: cfg.function_search_mode != FunctionSearchMode::Lexical,
+        judge_complete: judge.is_some(),
+        effective_mode: FunctionSearchMode::Lexical,
+        ..BenchmarkOutcome::default()
+    };
+    for batch in capabilities
+        .chunks(MAX_SEARCH_QUERIES)
+        .take(MAX_SEARCH_BATCHES)
+    {
+        let queries = search_queries(batch);
+        let outcome = installed_search(deps, &cfg, &tools, &fingerprint, &queries, judge).await;
+        total.hybrid_complete &= outcome.hybrid_complete;
+        total.judge_complete &= outcome.judge_complete;
+        total.effective_mode = total.effective_mode.max(outcome.effective_mode);
+        for id in outcome.selected {
+            if !total.selected.contains(&id) {
+                total.selected.push(id);
+            }
+        }
+        let mut lanes = outcome.rankings.into_iter();
+        for capability in batch {
+            total.rankings.push(
+                if search_queries(std::slice::from_ref(capability)).is_empty() {
+                    Vec::new()
+                } else {
+                    lanes.next().unwrap_or_default()
+                },
+            );
+        }
+    }
+    total.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    total
 }
 
 fn listed_ids(value: &Value) -> Result<Vec<String>, String> {
@@ -1573,13 +2272,15 @@ async fn activate_catalog(
     semantic: &SemanticSearch,
     tools: Vec<ToolSchema>,
 ) -> bool {
-    let catalog_unchanged =
-        tool_fingerprint(cell.read().await.as_ref()) == tool_fingerprint(&tools);
+    let mut current = cell.write().await;
+    let catalog_unchanged = tool_fingerprint(&current) == tool_fingerprint(&tools);
     if catalog_unchanged {
         return false;
     }
     let tools = Arc::new(tools);
-    *cell.write().await = tools.clone();
+    *current = tools.clone();
+    // Publish the catalog and its desired index under the same lock. Reloads
+    // and the background bundle loader hold a read guard when rebuilding.
     semantic.rebuild(tools);
     true
 }
@@ -1692,6 +2393,140 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Deps) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn choice_becomes_a_tournament_for_small_window_judges() {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let cfg = |question| SkillsConfig {
+            function_search_judge_question: question,
+            ..SkillsConfig::default()
+        };
+        let small = JudgeSearch::default().with_window(Some(512));
+        let large = JudgeSearch::default().with_window(Some(16384));
+        let silent = JudgeSearch::default().with_window(None);
+        use FunctionSearchJudgeQuestion::{Choice, Noul, Tournament};
+        assert!(judge_tournament(&small, &cfg(Choice), deadline).await);
+        assert!(!judge_tournament(&large, &cfg(Choice), deadline).await);
+        assert!(!judge_tournament(&silent, &cfg(Choice), deadline).await);
+        assert!(!judge_tournament(&small, &cfg(Noul), deadline).await);
+        assert!(judge_tournament(&large, &cfg(Tournament), deadline).await);
+    }
+
+    #[test]
+    fn trigger_candidate_skips_console_plumbing_and_keeps_bindings() {
+        let cron = json!({
+            "id": "t-1", "trigger_type": "cron", "function_id": "harness::sweep-pending",
+            "worker_name": "harness", "config": {"expression": "0 0 0 * * *"}, "status": "active"
+        });
+        let candidate = trigger_candidate(&cron).unwrap();
+        assert_eq!(candidate.function_id, "harness::sweep-pending");
+        assert_eq!(candidate.worker_name.as_deref(), Some("harness"));
+        assert_eq!(candidate.config["expression"], "0 0 0 * * *");
+        for (trigger_type, function_id) in [
+            ("console:style", "state::ui-content"),
+            ("trace", "iii::console::trace_activity::console-1"),
+        ] {
+            let row =
+                json!({ "id": "t", "trigger_type": trigger_type, "function_id": function_id });
+            assert!(
+                trigger_candidate(&row).is_none(),
+                "{trigger_type} {function_id}"
+            );
+        }
+        assert!(trigger_candidate(&json!({ "id": "t" })).is_none());
+        let docs = trigger_docs(&json!({ "registered_triggers": [
+            cron,
+            { "id": "t", "trigger_type": "console:style", "function_id": "state::ui-content" },
+            { "id": "t" },
+            { "id": "t-2", "trigger_type": "http", "function_id": "hooks::deliver",
+              "config": { "url": "https://x.test/?token=s3cr3t", "headers": { "authorization": "Bearer s3cr3t" } } },
+            { "id": "t-3", "trigger_type": "configuration", "function_id": "directory::on-config-change" },
+        ] }));
+        let described: Vec<(&str, &str)> = docs
+            .iter()
+            .map(|(doc, _)| (doc.name.as_str(), doc.description.as_str()))
+            .collect();
+        assert_eq!(
+            described,
+            [
+                (
+                    "t-1",
+                    "cron trigger runs harness::sweep-pending configured by expression"
+                ),
+                (
+                    "t-2",
+                    "http trigger runs hooks::deliver configured by headers, url"
+                ),
+                (
+                    "t-3",
+                    "configuration trigger runs directory::on-config-change"
+                ),
+            ]
+        );
+        // Values stay in the response row only.
+        assert_eq!(
+            docs[1].1.config["headers"]["authorization"],
+            "Bearer s3cr3t"
+        );
+        assert!(trigger_docs(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn truncate_bytes_respects_char_boundaries() {
+        // "ação" is a(1) ç(2) ã(2) o(1): byte 4 falls inside "ã".
+        assert_eq!(truncate_bytes("ação", 4), "aç");
+        assert_eq!(truncate_bytes("ação", 5), "açã");
+        assert_eq!(truncate_bytes("ab ", 10), "ab");
+    }
+
+    /// The dense lane lets a paraphrase with no shared vocabulary reach the
+    /// side lanes; BM25 alone returns nothing for it. Same gate as the
+    /// real-model test in search_semantic.
+    #[cfg(minilm)]
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires III_DIRECTORY_MINILM_MODEL_PATH and the pinned ONNX runtime"]
+    async fn local_rank_documents_fuses_the_dense_lane_in_hybrid_mode() {
+        let Ok(path) = std::env::var("III_DIRECTORY_MINILM_MODEL_PATH") else {
+            return;
+        };
+        let mut deps = search_deps(Vec::new());
+        deps.semantic = SemanticSearch::new(Some(path.into()));
+        assert!(deps.semantic.is_production_minilm());
+        // The model loads on the first rebuild, not on construction.
+        deps.semantic.rebuild(Arc::new(Vec::new()));
+        let cfg = deps.config.load_full();
+        assert_ne!(cfg.function_search_mode, FunctionSearchMode::Lexical);
+        let documents = vec![
+            ToolSchema {
+                name: "cron".into(),
+                description: "Schedule recurring function execution with cron expressions".into(),
+                parameters: json!({}),
+            },
+            ToolSchema {
+                name: "harness/frontend".into(),
+                description: "Build a browser UI with the frontend SDK".into(),
+                parameters: json!({}),
+            },
+        ];
+        let queries = ["execute a job on a nightly timetable".to_string()];
+        assert!(
+            lexical_rankings(&Bm25Index::build(&canonical_tools(&documents)), &queries)[0]
+                .is_empty(),
+            "the paraphrase shares no vocabulary with the documents"
+        );
+        let ranked = tokio::time::timeout(std::time::Duration::from_secs(120), async {
+            loop {
+                let ranked = local_rank_documents(&deps, &cfg, &queries, &documents).await;
+                if !ranked.is_empty() {
+                    break ranked;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("MiniLM model load timed out");
+        assert_eq!(ranked[0], "cron");
+    }
     use crate::functions::search_index::SEARCH_FN;
     use crate::hook::ExposeKind;
 
@@ -1699,6 +2534,12 @@ mod tests {
     fn excluded_from_search_hides_claim_namespace_and_infra() {
         assert!(excluded_from_search(SEARCH_FN));
         assert!(excluded_from_search("engine::functions::list"));
+        assert!(excluded_from_search("engine::workers::register"));
+        assert!(excluded_from_search("engine::registered-triggers::list"));
+        // Capabilities of workers bundled with the engine stay searchable.
+        assert!(!excluded_from_search("engine::traces::list"));
+        assert!(!excluded_from_search("engine::logs::list"));
+        assert!(!excluded_from_search("engine::queue::enqueue"));
         assert!(excluded_from_search("state::claim-namespace"));
         assert!(
             excluded_from_search("state::on-config-change"),
@@ -1708,6 +2549,51 @@ mod tests {
         assert!(!excluded_from_search("state::set"));
         assert!(!excluded_from_search("state::claim"));
         assert!(!excluded_from_search("state::on-config"));
+    }
+
+    #[test]
+    fn judge_lanes_send_small_corpora_whole_and_cut_large_ones_per_capability() {
+        let doc = |name: &str, description: &str| ToolSchema {
+            name: name.into(),
+            description: description.into(),
+            parameters: json!({}),
+        };
+        let small = vec![
+            doc("mail::send", "Send an email."),
+            doc("state::get", "Read a value."),
+        ];
+        let lanes = judge_lanes(
+            &["dispatch correspondence".into()],
+            &small,
+            None,
+            JUDGE_SHORTLIST,
+        );
+        assert_eq!(
+            lanes[0].1, small,
+            "a corpus that fits one evaluation goes whole"
+        );
+
+        let mut large: Vec<ToolSchema> = (0..40)
+            .map(|i| doc(&format!("noise{i:02}::act"), "Unrelated filler operation."))
+            .collect();
+        large.push(doc("mail::send", "Send an email message."));
+        let queries = vec![
+            "send an email message".to_string(),
+            "read a stored value".to_string(),
+        ];
+        let dense = vec![vec![], vec![("noise07::act".to_string(), 0.9)]];
+        let lanes = judge_lanes(&queries, &large, Some(&dense), JUDGE_SHORTLIST);
+        assert_eq!(lanes.len(), 2);
+        assert!(lanes.iter().all(|(_, docs)| docs.len() <= JUDGE_SHORTLIST));
+        assert_eq!(lanes[0].0, "send an email message");
+        assert_eq!(
+            lanes[0].1[0].name, "mail::send",
+            "BM25 leads the lexical lane"
+        );
+        assert_eq!(
+            lanes[1].1[0].name, "noise07::act",
+            "the dense lane seeds its lane"
+        );
     }
 
     #[test]
@@ -1742,7 +2628,37 @@ mod tests {
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
             semantic: SemanticSearch::default(),
+            judge: JudgeSearch::default(),
+            registered_workers: None,
+            iii: None,
         }
+    }
+
+    #[tokio::test]
+    async fn local_rank_documents_ranks_relevant_docs_and_drops_the_tail() {
+        // Default SemanticSearch is not production MiniLM, so this exercises
+        // the pure BM25 (lexical) path used by the skills/triggers side lanes.
+        let deps = search_deps(Vec::new());
+        let documents = vec![
+            ToolSchema {
+                name: "cron".into(),
+                description: "Schedule recurring function execution with cron expressions".into(),
+                parameters: json!({}),
+            },
+            ToolSchema {
+                name: "harness/frontend".into(),
+                description: "Build a browser UI with the frontend SDK".into(),
+                parameters: json!({}),
+            },
+        ];
+        let ranked = local_rank_documents(
+            &deps,
+            &deps.config.load_full(),
+            &["schedule recurring cron execution".to_string()],
+            &documents,
+        )
+        .await;
+        assert_eq!(ranked, vec!["cron".to_string()]);
     }
 
     #[test]
@@ -2271,6 +3187,9 @@ mod tests {
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
             semantic: SemanticSearch::default(),
+            judge: JudgeSearch::default(),
+            registered_workers: None,
+            iii: None,
         };
         let response = search_functions(
             &deps,
@@ -2463,6 +3382,9 @@ mod tests {
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
             semantic: SemanticSearch::default(),
+            judge: JudgeSearch::default(),
+            registered_workers: None,
+            iii: None,
         };
         let response = search_functions(
             &deps,

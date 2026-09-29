@@ -20,6 +20,10 @@ import { hoverTitle } from '@/lib/keybindings/registry'
 import { cn } from '@/lib/utils'
 import { tabLabel, type WorkspaceTab } from '@/lib/workspace-tabs'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 interface TabStripProps {
   tabs: WorkspaceTab[]
   activeTabId: string
@@ -370,7 +374,8 @@ export function TabStrip({
         style={
           maskImage ? { maskImage, WebkitMaskImage: maskImage } : undefined
         }
-        className="workspace-tab-strip flex min-w-0 items-center gap-1.5 overflow-x-auto"
+        /* onboarding-tabs: tour anchor (workers/onboarding). Do not remove. */
+        className="onboarding-tabs workspace-tab-strip flex min-w-0 items-center gap-1.5 overflow-x-auto"
       >
         {tabs.map((tab, index) => {
           const active = tab.id === activeTabId
@@ -521,7 +526,9 @@ export function TabStrip({
                 active
                   ? 'bg-surface-selected text-ink'
                   : 'text-ink-faint hover:bg-surface-hover hover:text-ink',
-                dragging && !isDragged && 'transition-transform duration-150',
+                dragging &&
+                  !isDragged &&
+                  'transition-transform duration-[var(--motion-duration-control)]',
                 isDragged &&
                   'relative z-10 shadow-floating cursor-grabbing transition-none',
                 isDragged && !active && 'bg-panel-raised text-ink',

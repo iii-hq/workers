@@ -65,8 +65,8 @@ at-least-once.
 
 ## Console UI
 
-When the console worker is running, `eval` injects an **eval** page at
-`#/ext/eval-benchmarks`. The default **Sessions** tab lists visible root
+When the console worker is running, `eval` injects an **eval** page
+(`eval-benchmarks`). The default **Sessions** tab lists visible root
 sessions, accepts active sessions, and renders a live matrix grouped by
 efficiency, reliability, orchestration, and context. **Prompt experiments**
 keeps the durable prompt/system-prompt workflow for advanced use.

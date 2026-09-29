@@ -124,7 +124,3 @@ export function formatDelta(
       : `${delta.percent > 0 ? '+' : ''}${delta.percent.toFixed(1)}%`
   return `Δ ${signedAbsolute} · ${percent}`
 }
-
-export function formatDate(value: number): string {
-  return new Date(value).toLocaleString()
-}

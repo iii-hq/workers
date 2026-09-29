@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
+use crate::clients::SessionClient;
 use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::error::HarnessError;
@@ -20,8 +21,11 @@ use crate::policy;
 use crate::prompt;
 use crate::trigger::ResultData;
 use crate::types::content::ContentBlock;
+use crate::types::message::AgentMessage;
 use crate::types::model::ThinkingLevel;
-use crate::types::turn::{fs_scope_metadata, FunctionPolicy, ParentLink, TurnOptions, TurnRecord};
+use crate::types::turn::{
+    fs_scope_metadata, ExposeMode, FunctionPolicy, ParentLink, TurnOptions, TurnRecord,
+};
 
 /// The ids of a freshly-seeded child turn.
 pub struct ChildIds {
@@ -236,6 +240,114 @@ struct ChildFunctions {
     dispatch_only: Vec<String>,
 }
 
+/// Most contracts a child is seeded with — the same bound as the listing in
+/// the dispatch-policy aid (`turn_loop::policy_aid`).
+const MAX_SEEDED_CONTRACTS: usize = 30;
+
+/// Function ids whose contracts a child starts with instead of spending an
+/// `engine::functions::info` round on them (MOT-4851): its whole allow-list
+/// when that is a short, glob-free list of explicit ids, then every function
+/// id its task names verbatim. Kept only when the child may dispatch it (deny
+/// wins), it is not a discovery/skills grant, and its profile does not
+/// already preload it. `Native` exposure already ships each allowed schema as
+/// a tool, so it seeds nothing.
+fn child_contract_ids(
+    policy: Option<&FunctionPolicy>,
+    dispatch_only: &[String],
+    task: &str,
+    profile_preloaded: Option<&BTreeMap<String, Option<String>>>,
+) -> Vec<String> {
+    let Some(p) = policy.filter(|p| p.expose == ExposeMode::AgentTrigger && !p.allow.is_empty())
+    else {
+        return Vec::new();
+    };
+    let compiled = policy::CompiledPolicy::from(Some(p));
+    let work: Vec<&String> = p
+        .allow
+        .iter()
+        .filter(|id| !dispatch_only.contains(id))
+        .collect();
+    let narrowed = work.len() <= MAX_SEEDED_CONTRACTS
+        && work.iter().all(|id| !id.contains(['*', '?', '[', '{']));
+    let from_allow = work.into_iter().filter(|_| narrowed).cloned();
+    let mut ids: Vec<String> = Vec::new();
+    for id in from_allow.chain(task_function_ids(task)) {
+        let skip = ids.contains(&id)
+            || !compiled.allows(&id)
+            || policy::CHILD_DISCOVERY_ALLOW.contains(&id.as_str())
+            || policy::CHILD_SKILLS_ALLOW.contains(&id.as_str())
+            || profile_preloaded.is_some_and(|preloaded| preloaded.contains_key(&id));
+        if !skip {
+            ids.push(id);
+        }
+        if ids.len() == MAX_SEEDED_CONTRACTS {
+            break;
+        }
+    }
+    ids
+}
+
+/// Function ids named verbatim in a task: whitespace-separated tokens made of
+/// `::`-joined id segments, once the punctuation prose and markdown wrap them
+/// in (backticks, quotes, brackets, a trailing period) is trimmed. Tokens that
+/// only look like ids (`std::collections`) fall out at the registry lookup.
+fn task_function_ids(task: &str) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for token in task.split_whitespace() {
+        let id = token
+            .trim_matches(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-')));
+        let well_formed = id.contains("::")
+            && id.split("::").all(|segment| {
+                !segment.is_empty()
+                    && segment
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+            });
+        if well_formed && !ids.iter().any(|seen| seen == id) {
+            ids.push(id.to_string());
+        }
+    }
+    ids
+}
+
+/// Render a child's seeded `<preloaded_functions>` block and its digests.
+/// Only ids the public registry lists, or the intercepted session controls,
+/// are resolved — an internal-only id (a config-change handler, a console
+/// watch), a Rust path, a harness-native id or a typo is dropped without a
+/// lookup, never seeded as "pre-verified". Best effort: nothing resolvable
+/// seeds nothing.
+async fn seed_contracts(
+    deps: &Deps,
+    ids: Vec<String>,
+    policy: &crate::policy::CompiledPolicy,
+) -> (Option<String>, BTreeMap<String, Option<String>>) {
+    if ids.is_empty() {
+        return (None, BTreeMap::new());
+    }
+    let snapshot = deps.functions().await;
+    let listed: Vec<String> = ids
+        .into_iter()
+        .filter(|id| {
+            policy.allows(id)
+                && (crate::functions::subscribe::control_contract(id).is_some()
+                    || snapshot.functions.iter().any(|d| d.function_id == *id))
+        })
+        .collect();
+    if listed.is_empty() {
+        return (None, BTreeMap::new());
+    }
+    let (contracts, _, digests) = crate::agents::preload_contracts(deps, &listed, policy).await;
+    if contracts.is_empty() {
+        return (None, BTreeMap::new());
+    }
+    let block = crate::agents::render_preloaded_functions(&contracts, &[], "this sub-agent task");
+    let digests = digests
+        .into_iter()
+        .filter(|(_, digest)| digest.is_some())
+        .collect();
+    (Some(block), digests)
+}
+
 /// Which agent profile a child runs as: the one the spawn named, else the
 /// parent turn's. A spawn that names no profile continues the parent's
 /// identity — an agent running under a profile fans work out to itself, not
@@ -315,11 +427,28 @@ async fn seed_child(
     }
     let agent_id = child_agent_id(req.agent.as_deref(), parent_record, names_own_prompt);
     let inherited = agent_id.is_some() && req.agent.is_none();
+    let orchestrator = req
+        .options
+        .as_ref()
+        .and_then(|o| o.orchestrator)
+        .unwrap_or(false);
+
+    let ChildFunctions {
+        policy: functions,
+        dispatch_only,
+    } = child_functions(
+        cfg,
+        parent_record,
+        req.options.as_ref().and_then(|o| o.functions.as_ref()),
+        orchestrator,
+    );
+
+    let preload_policy = crate::policy::CompiledPolicy::from(functions.as_ref());
     // Resolve the agent profile (if any) before anything else fallible — an
     // unknown id must not leave a session behind.
     let agent = match agent_id {
         Some(id) => Some(
-            crate::agents::resolve(deps, cfg, id)
+            crate::agents::resolve(deps, cfg, id, &preload_policy)
                 .await
                 .map_err(|error| {
                     if inherited {
@@ -374,22 +503,6 @@ async fn seed_child(
     };
     let identity = identity.as_str();
 
-    let orchestrator = req
-        .options
-        .as_ref()
-        .and_then(|o| o.orchestrator)
-        .unwrap_or(false);
-
-    let ChildFunctions {
-        policy: functions,
-        dispatch_only,
-    } = child_functions(
-        cfg,
-        parent_record,
-        req.options.as_ref().and_then(|o| o.functions.as_ref()),
-        orchestrator,
-    );
-
     let depth = parent_record.map(|p| p.depth + 1).unwrap_or(0);
     let requested_turns = req
         .options
@@ -408,6 +521,27 @@ async fn seed_child(
     // invalid task or filesystem root must not leave behind an uncounted empty
     // session that a later call can reuse around the fan-out budget.
     let task = normalize_message(req.task.clone())?;
+    let task_text = match &task {
+        AgentMessage::User(user) => ContentBlock::join_text(&user.content),
+        _ => String::new(),
+    };
+    let (seeded_contracts, seeded_digests) = seed_contracts(
+        deps,
+        child_contract_ids(
+            functions.as_ref(),
+            &dispatch_only,
+            &task_text,
+            agent.as_ref().map(|a| &a.contract_digests),
+        ),
+        &preload_policy,
+    )
+    .await;
+    let mut preloaded_contracts = agent.as_ref().map(|a| a.contract_digests.clone());
+    if !seeded_digests.is_empty() {
+        preloaded_contracts
+            .get_or_insert_with(BTreeMap::new)
+            .extend(seeded_digests);
+    }
     let (entry_id, origin) = (Some(ids::spawn_entry_id()), Some(json!({ "spawn": true })));
     let (mut thinking_level, mut provider_options) = child_reasoning(
         req.options.as_ref().and_then(|o| o.thinking_level),
@@ -465,6 +599,8 @@ async fn seed_child(
         // The child's own resolved identity: the profile the spawn named, or
         // the parent's when it named none.
         agent: agent.as_ref().map(|a| a.identity.clone()),
+        preloaded_contracts,
+        seeded_contracts,
         max_validation_retries: req
             .options
             .as_ref()
@@ -488,6 +624,7 @@ async fn seed_child(
             req.parent_session_id.as_deref(),
             depth,
             display.as_ref(),
+            crate::judge::current_provider().as_deref(),
         ),
         agent.as_ref(),
     );
@@ -513,7 +650,10 @@ async fn seed_child(
             id.clone()
         }
         Some(id) => {
-            let ensured = session.ensure(id, title, linkage.as_ref()).await?;
+            let kind = parent_session_kind(&session, parent).await?;
+            let ensured = session
+                .ensure(id, title, linkage.as_ref(), kind.as_deref())
+                .await?;
             if !ensured.created {
                 // Reuse is legitimate for a parentless caller (a fork, or
                 // delivering a reaction into an existing chat). From a live
@@ -538,7 +678,12 @@ async fn seed_child(
             }
             id.clone()
         }
-        None => session.create(title, linkage.as_ref()).await?,
+        None => {
+            let kind = parent_session_kind(&session, parent).await?;
+            session
+                .create(title, linkage.as_ref(), kind.as_deref())
+                .await?
+        }
     };
 
     let previous_child = if reused {
@@ -677,13 +822,19 @@ fn normalize_display(
     }))
 }
 
+/// `judge_provider` is the spawning turn's (its baggage): a sub-agent keeps
+/// its parent's judge from then on, like it keeps the parent's model.
 fn child_session_metadata(
     parent: Option<&ParentLink>,
     display_parent_session_id: Option<&str>,
     depth: u32,
     display: Option<&SubagentDisplay>,
+    judge_provider: Option<&str>,
 ) -> Option<Value> {
     let mut metadata = serde_json::Map::new();
+    if let Some(provider) = judge_provider {
+        metadata.insert("judge_provider".into(), Value::String(provider.into()));
+    }
     if let Some(parent) = parent {
         metadata.insert(
             "parent_session_id".into(),
@@ -714,6 +865,20 @@ fn child_session_metadata(
         );
     }
     (!metadata.is_empty()).then_some(Value::Object(metadata))
+}
+
+/// The kind to stamp on a child session: the live parent's, so a machine-made
+/// run never spawns human-facing chats (an `e2e` suite's sub-agents stay
+/// `e2e`). Costs one `session::get`, and only on the paths that create a
+/// session; a parentless spawn takes session-manager's default.
+async fn parent_session_kind(
+    session: &SessionClient,
+    parent: Option<&ParentLink>,
+) -> Result<Option<String>, HarnessError> {
+    match parent {
+        Some(parent) => session.kind_of(&parent.session_id).await,
+        None => Ok(None),
+    }
 }
 
 /// The child's provider. An explicit request wins; otherwise the parent's
@@ -839,12 +1004,15 @@ mod tests {
                 agent: None,
                 max_validation_retries: 2,
                 max_transient_resumes: 1,
+                preloaded_contracts: None,
+                seeded_contracts: None,
             },
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
             functions_generation: None,
             function_contract_ledger: Default::default(),
+            failed_calls: Default::default(),
             skill_ack: None,
             skills_started: false,
             context_snapshot: None,
@@ -1044,7 +1212,7 @@ mod tests {
             function_call_id: "call_spawn".into(),
         };
         assert_eq!(
-            child_session_metadata(Some(&parent), None, 1, Some(&display("Frontend"))),
+            child_session_metadata(Some(&parent), None, 1, Some(&display("Frontend")), None),
             Some(json!({
                 "parent_session_id": "s_parent",
                 "parent_turn_id": "t_parent",
@@ -1063,7 +1231,7 @@ mod tests {
     #[test]
     fn parentless_display_still_creates_session_metadata() {
         assert_eq!(
-            child_session_metadata(None, None, 0, Some(&display("Explorer"))),
+            child_session_metadata(None, None, 0, Some(&display("Explorer")), None),
             Some(json!({
                 "subagent_display": {
                     "name": "Explorer",
@@ -1072,7 +1240,11 @@ mod tests {
                 }
             }))
         );
-        assert_eq!(child_session_metadata(None, None, 0, None), None);
+        assert_eq!(child_session_metadata(None, None, 0, None, None), None);
+        assert_eq!(
+            child_session_metadata(None, None, 0, None, Some("semif")),
+            Some(json!({ "judge_provider": "semif" }))
+        );
     }
 
     #[test]
@@ -1340,6 +1512,104 @@ mod tests {
         assert!(!compiled.allows("database::execute"));
     }
 
+    /// Prevents: the narrowed child that knows its function ids but not their
+    /// contracts, so it spends its first steps on `engine::functions::info`
+    /// (MOT-4851).
+    #[test]
+    fn a_narrowed_child_seeds_its_work_functions_but_no_discovery_grants() {
+        let cfg = WorkerConfig::default();
+        let mut parent = parent_record(None);
+        parent.options.functions = Some(broad_policy());
+        let narrow = FunctionPolicy {
+            allow: vec!["state::set".into(), "state::get".into()],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let child = child_functions(&cfg, Some(&parent), Some(&narrow), false);
+
+        let ids = child_contract_ids(child.policy.as_ref(), &child.dispatch_only, "", None);
+
+        assert_eq!(ids, ["state::set", "state::get"]);
+    }
+
+    #[test]
+    fn only_a_short_explicit_agent_trigger_allow_list_is_seeded_whole() {
+        let policy = |allow: Vec<String>, expose: ExposeMode| FunctionPolicy {
+            allow,
+            deny: vec![],
+            expose,
+        };
+        let many: Vec<String> = (0..=MAX_SEEDED_CONTRACTS)
+            .map(|i| format!("w::f{i}"))
+            .collect();
+        for p in [
+            policy(vec!["state::*".into()], ExposeMode::AgentTrigger),
+            policy(vec!["*".into()], ExposeMode::AgentTrigger),
+            policy(many, ExposeMode::AgentTrigger),
+            policy(vec![], ExposeMode::AgentTrigger),
+            policy(vec!["state::set".into()], ExposeMode::Native),
+        ] {
+            assert!(
+                child_contract_ids(Some(&p), &[], "", None).is_empty(),
+                "{p:?} seeds nothing from its allow-list"
+            );
+        }
+        assert!(child_contract_ids(None, &[], "use `state::set`", None).is_empty());
+    }
+
+    #[test]
+    fn task_named_ids_are_seeded_when_dispatchable_and_not_already_preloaded() {
+        let cfg = WorkerConfig::default();
+        let mut parent = parent_record(None);
+        parent.options.functions = Some(broad_policy());
+        // A `*` child: the allow-list seeds nothing, the task's ids do.
+        let child = child_functions(&cfg, Some(&parent), None, false);
+        let task = "Read it with `coder::read-file`, then call state::set. Mind \
+                    std::collections, engine::functions::info and harness::spawn (a leaf \
+                    cannot). state::set again.";
+        let profile = BTreeMap::from([("state::set".to_string(), Some("d".to_string()))]);
+
+        let ids = child_contract_ids(child.policy.as_ref(), &child.dispatch_only, task, None);
+        // Registry-unknown lookalikes stay until the registry lookup drops them.
+        assert_eq!(ids, ["coder::read-file", "state::set", "std::collections"]);
+
+        let ids = child_contract_ids(
+            child.policy.as_ref(),
+            &child.dispatch_only,
+            task,
+            Some(&profile),
+        );
+        assert_eq!(ids, ["coder::read-file", "std::collections"]);
+    }
+
+    #[test]
+    fn allow_list_ids_come_first_and_the_seed_is_capped() {
+        let allow: Vec<String> = (0..MAX_SEEDED_CONTRACTS - 1)
+            .map(|i| format!("w::f{i}"))
+            .collect();
+        let policy = FunctionPolicy {
+            allow: [allow.clone(), vec!["x::*".into()]].concat(),
+            deny: vec![],
+            expose: ExposeMode::AgentTrigger,
+        };
+        // The glob disqualifies the allow-list; task ids fill up to the cap.
+        let task = allow.join(" ");
+        let ids = child_contract_ids(Some(&policy), &[], &format!("{task} x::a x::b"), None);
+        assert_eq!(ids.len(), MAX_SEEDED_CONTRACTS);
+        assert_eq!(ids.last().map(String::as_str), Some("x::a"));
+    }
+
+    #[test]
+    fn task_function_ids_trims_prose_and_markdown() {
+        assert_eq!(
+            task_function_ids(
+                "Use `coder::read-file`, (state::get) and \"mario-game::game::state\". \
+                 Not coder::* nor ::bare nor a::b(c) nor plain words."
+            ),
+            ["coder::read-file", "state::get", "mario-game::game::state"]
+        );
+    }
+
     #[test]
     fn the_discovery_union_adds_nothing_redundant_dead_or_widening() {
         let cfg = WorkerConfig::default();
@@ -1552,6 +1822,7 @@ mod tests {
             model: None,
             reasoning_effort: None,
             name: name.to_string(),
+            contract_digests: Default::default(),
             icon,
             color: None,
         }
@@ -1602,5 +1873,70 @@ mod tests {
         let display = merged_display(None, Some(&long)).unwrap();
         assert_eq!(display.name.chars().count(), 48);
         assert!(normalize_display(Some(&display)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn final_leaf_policy_filters_profile_and_seed_without_granting_controls() {
+        let deps = crate::functions::subscribe::tests::disconnected_deps();
+        let cfg = WorkerConfig::default();
+        let requested = FunctionPolicy {
+            allow: vec![
+                "engine::register_trigger".into(),
+                "engine::unregister_trigger".into(),
+            ],
+            ..Default::default()
+        };
+        for orchestrator in [false, true] {
+            let child = child_functions(&cfg, None, Some(&requested), orchestrator);
+            let policy = crate::policy::CompiledPolicy::from(child.policy.as_ref());
+            let ids = vec![
+                "engine::register_trigger".into(),
+                "engine::unregister_trigger".into(),
+            ];
+            let (profile, unavailable, _) =
+                crate::agents::preload_contracts(&deps, &ids, &policy).await;
+            assert_eq!(profile.len(), if orchestrator { 2 } else { 1 });
+            assert_eq!(unavailable.is_empty(), orchestrator);
+            let (seed, digests) = seed_contracts(&deps, ids, &policy).await;
+            let seed = seed.unwrap();
+            assert!(seed.contains("### `engine::register_trigger`"));
+            assert_eq!(
+                seed.contains("### `engine::unregister_trigger`"),
+                orchestrator
+            );
+            assert_eq!(
+                digests.contains_key("engine::unregister_trigger"),
+                orchestrator
+            );
+            assert!(policy.allows("engine::functions::info"));
+            assert!(child
+                .dispatch_only
+                .contains(&"engine::functions::info".into()));
+        }
+        let denied = crate::policy::CompiledPolicy::from(None);
+        assert_eq!(
+            seed_contracts(&deps, vec!["engine::register_trigger".into()], &denied).await,
+            (None, BTreeMap::new())
+        );
+        // A task-named id only the internal inventory knows is never seeded,
+        // and costs no lookup (the disconnected engine would hang it).
+        let internal = "harness::on-functions-change";
+        crate::discovery::apply_with_internal(
+            &deps.functions,
+            vec![],
+            Some(std::collections::BTreeSet::from([internal.to_string()])),
+        )
+        .await;
+        let all = crate::policy::CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let seeded = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            seed_contracts(&deps, vec![internal.into()], &all),
+        )
+        .await
+        .expect("an internal-only id is dropped without a lookup");
+        assert_eq!(seeded, (None, BTreeMap::new()));
     }
 }

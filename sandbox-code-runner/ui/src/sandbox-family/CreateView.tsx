@@ -4,6 +4,8 @@
  * (copy + jump to the fleet page) instead of a passive code block.
  */
 
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
+import { Plus } from 'lucide-react'
 import { normaliseEnv } from './format'
 import { createRequestSchema, createResponseSchema, safeParseResponse } from './parsers'
 import { Chip, SandboxIdChip } from './shared'
@@ -24,7 +26,7 @@ export function CreateView({ input, output, running }: CreateViewProps) {
     <div className="cr-fam-card">
       <div className="cr-fam-slab accent">
         <div className="cr-fam-line">
-          <span className="cr-fam-accent">+</span>
+          <Plus size={16} aria-hidden className="cr-fam-accent" />
           <span>{running ? 'creating sandbox…' : 'created sandbox'}</span>
           {respData ? <SandboxIdChip sandboxId={respData.sandbox_id} /> : null}
         </div>
@@ -40,7 +42,7 @@ export function CreateView({ input, output, running }: CreateViewProps) {
         </div>
         {env.length > 0 ? (
           <div className="cr-fam-chips">
-            <span className="cr-fam-env-k">env</span>
+            <span className={uiClasses.eyebrow}>env</span>
             {/* Names only — values are masked so secrets never land in
                 transcripts. */}
             {env.map(([k]) => (

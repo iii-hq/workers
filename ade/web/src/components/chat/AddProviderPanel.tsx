@@ -19,6 +19,10 @@ import { fetchEngineWorkersList } from '@/pages/Workers/api/workers'
 import { formatProviderLabel } from './model-picker-presentation'
 import { ProviderIcon } from './ProviderIcon'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 /** Base id for the browser-local handler bound to the `worker` add trigger. */
 const PROVIDER_ADD_WATCH_FN = 'console::provider-add-watch'
 

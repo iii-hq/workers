@@ -11,15 +11,22 @@
  */
 
 import {
+  Button,
   EmptyState,
   type Host,
+  IconButton,
   Skeleton,
+  StatusBar,
   StatusPanel,
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
+  Toolbar,
+  uiClasses,
 } from '@iii-dev/console-ui'
+import { copyText } from '@iii-dev/console-ui/format'
+import { CircleAlert, Table2, X } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { cellText, rowAsTsv } from '../lib/grid-cursor'
 import { type FilterSpec, isComplete, PAGE_SIZE } from '../lib/rpc'
@@ -32,7 +39,6 @@ import {
   tableColumns,
 } from './db-data'
 import { FilterBar } from './FilterBar'
-import { AlertCircle, type IconProps, Table2, X } from './icons'
 import { Pagination } from './pagination'
 import { RowDetail } from './RowDetail'
 import { ResultGrid } from './result-grid'
@@ -63,8 +69,6 @@ interface TableDataPanelProps {
    */
   refreshToken?: number
 }
-
-const TableIcon = (p: IconProps) => <Table2 size={28} {...p} />
 
 /** The modifier key, written the way this keyboard has it. */
 const MOD =
@@ -155,10 +159,6 @@ export function TableDataPanel({
   const total = pageRead.data?.total ?? null
   const hasMore = pageRead.data?.has_more ?? false
 
-  const copyText = useCallback((text: string) => {
-    void navigator.clipboard?.writeText(text)
-  }, [])
-
   const keyboard = useGridKeyboard({
     rows: gridRows,
     columns: gridCols,
@@ -167,10 +167,10 @@ export function TableDataPanel({
     hasPrevPage: page > 0,
     hasNextPage: hasMore,
     onTurnPage: (delta) => setPage((p) => Math.max(0, p + delta)),
-    onCopyCell: (r, c) => copyText(cellText(gridRows[r]?.[gridCols[c]])),
+    onCopyCell: (r, c) => void copyText(cellText(gridRows[r]?.[gridCols[c]])),
     onCopyRow: (r) => {
       const row = gridRows[r]
-      if (row) copyText(rowAsTsv(row, gridCols))
+      if (row) void copyText(rowAsTsv(row, gridCols))
     },
     onActivate: (r) => setSelectedRow((cur) => (cur === r ? null : r)),
   })
@@ -200,7 +200,7 @@ export function TableDataPanel({
           <div className="db-pad">
             <StatusPanel
               variant="alert"
-              icon={<AlertCircle size={18} />}
+              icon={<CircleAlert size={18} />}
               headline="Database read failed"
               detail={pageRead.error}
             />
@@ -233,7 +233,7 @@ export function TableDataPanel({
             onChange={changeFilters}
           />
           <EmptyState
-            icon={TableIcon}
+            icon={Table2}
             title={filtering ? 'No matching rows' : 'Empty table'}
             description={
               filtering
@@ -258,7 +258,21 @@ export function TableDataPanel({
           filters={filters}
           onChange={changeFilters}
         />
-        <div className="db-data-bar db-toolbar">
+        <Toolbar
+          aria-label="table data"
+          className="db-bar db-data-bar"
+          end={
+            onOpenInSql ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onOpenInSql(table)}
+              >
+                Open in SQL
+              </Button>
+            ) : undefined
+          }
+        >
           <span className="name">{table}</span>
           <span>
             {(() => {
@@ -270,7 +284,7 @@ export function TableDataPanel({
           {/* A count is only trustworthy when it is described: "12,443 rows"
               beside three active filters reads as the table's size. The
               worker counts with the same filters applied, so say so. */}
-          <span className={total === null ? 'db-pulse' : undefined}>
+          <span className={total === null ? uiClasses.pulse : undefined}>
             {total !== null
               ? `${total.toLocaleString()} row${total === 1 ? '' : 's'}`
               : '… rows'}
@@ -284,47 +298,33 @@ export function TableDataPanel({
               : `${(total ?? rows.length).toLocaleString()} rows, page ${page + 1} of ${totalPages}`}
           </span>
           {sort ? (
-            <button
-              type="button"
-              className="db-linkish"
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => {
                 setSort(null)
                 setPage(0)
               }}
             >
               Sorted by {sort.column} {sort.dir} · Clear
-            </button>
+            </Button>
           ) : null}
           {pageRead.loading ? (
-            <span
-              className="db-pulse"
-              style={{ color: 'var(--color-ink-faint)' }}
-            >
-              Refreshing…
-            </span>
+            <span className={uiClasses.pulse}>Refreshing…</span>
           ) : null}
           {view.view.hidden.length > 0 ? (
-            <button type="button" className="db-linkish" onClick={view.showAll}>
+            <Button variant="ghost" size="sm" onClick={view.showAll}>
               {view.view.hidden.length} column
               {view.view.hidden.length === 1 ? '' : 's'} hidden · Show all
-            </button>
+            </Button>
           ) : null}
           {Object.keys(view.view.widths).length > 0 ||
           view.view.order.length > 0 ? (
-            <button type="button" className="db-linkish" onClick={view.reset}>
+            <Button variant="ghost" size="sm" onClick={view.reset}>
               Reset layout
-            </button>
+            </Button>
           ) : null}
-          {onOpenInSql ? (
-            <button
-              type="button"
-              className="db-linkish spacer"
-              onClick={() => onOpenInSql(table)}
-            >
-              Open in SQL
-            </button>
-          ) : null}
-        </div>
+        </Toolbar>
         {/* One tab stop: the grid handles arrows itself. The container only
             catches keys bubbling from the focused cell, so it is a scroll
             region rather than a control of its own. */}
@@ -359,29 +359,33 @@ export function TableDataPanel({
             hideFooter
           />
         </div>
-        <div className="db-data-foot">
+        <StatusBar
+          className="db-data-foot"
+          end={
+            <Pagination
+              currentPage={page + 1}
+              totalPages={totalPages}
+              totalItems={total ?? rows.length + page * pageSize}
+              pageSize={pageSize}
+              onPageChange={(next) => {
+                setPage(next - 1)
+                setSelectedRow(null)
+              }}
+              onPageSizeChange={(next) => {
+                setPageSize(next)
+                setPage(0)
+                setSelectedRow(null)
+              }}
+            />
+          }
+        >
           {/* Advertised nowhere else — without this line the roving-cursor
               grid reads as mouse-only. */}
           <span className="db-kbd-hint">
             Arrows move · PgUp/PgDn turn pages · {MOD}c copies a cell · {MOD}⇧c
             the row
           </span>
-          <Pagination
-            currentPage={page + 1}
-            totalPages={totalPages}
-            totalItems={total ?? rows.length + page * pageSize}
-            pageSize={pageSize}
-            onPageChange={(next) => {
-              setPage(next - 1)
-              setSelectedRow(null)
-            }}
-            onPageSizeChange={(next) => {
-              setPageSize(next)
-              setPage(0)
-              setSelectedRow(null)
-            }}
-          />
-        </div>
+        </StatusBar>
       </div>
       {/* Three views of the same selection share one slot — at 320px they
           would otherwise compete for width. */}
@@ -403,28 +407,19 @@ export function TableDataPanel({
                   Stats
                 </TabsTrigger>
               </TabsList>
-              <button
-                type="button"
-                className="db-icon-btn"
+              <IconButton
+                label="close inspector"
                 onClick={() => {
                   setSelectedRow(null)
                   keyboard.setCursor(null)
                 }}
-                aria-label="close inspector"
-                title="close inspector"
               >
                 <X size={16} />
-              </button>
+              </IconButton>
             </div>
             <TabsContent value="row">
               {detailRow ? (
-                <RowDetail
-                  table={table}
-                  row={detailRow}
-                  columns={columnInfo}
-                  onClose={() => setSelectedRow(null)}
-                  embedded
-                />
+                <RowDetail row={detailRow} columns={columnInfo} />
               ) : null}
             </TabsContent>
             <TabsContent value="cell">

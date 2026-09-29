@@ -24,6 +24,8 @@ pub struct Ctx {
     pub http: Registry,
     pub config: SharedConfig,
     pub iii: Arc<iii_sdk::IIIClient>,
+    /// The interactive tabs, so a scraping call handed a tab id can say so.
+    pub tabs: Arc<Sessions>,
 }
 
 impl Ctx {
@@ -34,6 +36,7 @@ impl Ctx {
             http: Registry::new(startup.max_sessions, startup.session_idle_timeout_s),
             config,
             iii,
+            tabs: sessions,
         }
     }
 
@@ -320,7 +323,20 @@ pub async fn op_session_close(ctx: &Ctx, payload: &Value) -> Result<Value, Strin
         .get("session_id")
         .and_then(Value::as_str)
         .ok_or("provide `session_id`")?;
-    Ok(ctx.http.close(sid).await)
+    let closed = ctx.http.close(sid).await;
+    // An interactive tab id here is a mix-up, not a no-op: the tab would stay
+    // open while `closed: false` reads like "already gone".
+    if closed["closed"] == false && ctx.tabs.tab(sid).is_some() {
+        return Err(interactive_tab_close_error(sid));
+    }
+    Ok(closed)
+}
+
+fn interactive_tab_close_error(sid: &str) -> String {
+    format!(
+        "`{sid}` is an interactive browser tab, not a scraping session; close it with \
+         browser::sessions::stop {{ \"session_id\": \"{sid}\" }}"
+    )
 }
 
 pub async fn op_session_list(ctx: &Ctx, payload: &Value) -> Result<Value, String> {

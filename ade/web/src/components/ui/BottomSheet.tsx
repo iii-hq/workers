@@ -4,6 +4,10 @@ import * as React from 'react'
 import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 export const BottomSheet = DialogPrimitive.Root
 export const BottomSheetTrigger = DialogPrimitive.Trigger
 export const BottomSheetClose = DialogPrimitive.Close
@@ -37,6 +41,7 @@ interface BottomSheetContentProps
   overlayClassName?: string
 }
 
+/** Viewport-bounded mobile dialog with in-sheet page navigation and focus recovery. */
 export const BottomSheetContent = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Content>,
   BottomSheetContentProps
@@ -192,12 +197,12 @@ export const BottomSheetContent = React.forwardRef<
             </div>
 
             <BottomSheetPageNavigationContext.Provider value={pageNavigation}>
-              <div className="relative flex min-h-0 flex-1 overflow-hidden">
+              <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
                 <div
                   data-active={activePageId === null}
                   aria-hidden={activePageId !== null}
                   inert={activePageId !== null}
-                  className="iii-ui-motion-picker-page relative flex min-h-0 flex-1 flex-col [--picker-page-offset:calc(var(--distance-base)*-1)]"
+                  className="iii-ui-motion-picker-page relative flex min-h-0 min-w-0 flex-1 flex-col [--picker-page-offset:calc(var(--distance-base)*-1)]"
                 >
                   {heading ? (
                     <div
@@ -222,7 +227,7 @@ export const BottomSheetContent = React.forwardRef<
                   data-active={activePageId !== null}
                   aria-hidden={activePageId === null}
                   inert={activePageId === null}
-                  className="iii-ui-motion-picker-page absolute inset-0 flex min-h-0 flex-col [--picker-page-offset:var(--distance-base)]"
+                  className="iii-ui-motion-picker-page absolute inset-0 flex min-h-0 min-w-0 flex-col [--picker-page-offset:var(--distance-base)]"
                 />
               </div>
             </BottomSheetPageNavigationContext.Provider>

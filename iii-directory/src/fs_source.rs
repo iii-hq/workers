@@ -473,6 +473,16 @@ pub struct FsAgent {
     /// is served (`directory::agents::*`), never at scan time: an unknown
     /// parent is a per-profile warning there, not a load failure here.
     pub extends: Option<String>,
+    /// `hidden: true` keeps the profile out of the chat's new-session
+    /// gallery; it stays listed here and runnable by id / `extends`.
+    pub hidden: bool,
+    /// Example request the chat shows in an EMPTY composer while this
+    /// profile is selected (`composer_placeholder:`). Presentation only:
+    /// never sent, never appended to the prompt, and PROFILE-LOCAL — it is
+    /// not inherited through `extends`, so a child without its own example
+    /// falls back to the UI's generic hint instead of a parent's. Plain
+    /// text, whitespace collapsed, `None` when absent or blank.
+    pub composer_placeholder: Option<String>,
     /// Empty for a profile bundled with the worker (`builtin`): the body
     /// lives in the binary, and there is no file to stat, edit in place, or
     /// delete.
@@ -507,6 +517,12 @@ pub struct AgentFrontmatter {
     /// `reasoning_effort` fall back to the parent when omitted here.
     #[serde(default)]
     pub extends: Option<String>,
+    #[serde(default)]
+    pub hidden: bool,
+    /// Optional example request for the chat's empty composer (see
+    /// [`FsAgent::composer_placeholder`]).
+    #[serde(default)]
+    pub composer_placeholder: Option<String>,
 }
 
 /// The harness `SubagentIcon` closed token set — `harness::spawn`
@@ -524,6 +540,19 @@ pub const AGENT_COLOR_TOKENS: &[&str] = &[
 
 /// Max byte length for an emoji logo (a couple of emoji with modifiers).
 pub const AGENT_LOGO_MAX_BYTES: usize = 16;
+
+/// Max length, in characters after whitespace is collapsed, of a
+/// `composer_placeholder`: one short example sentence that still reads in a
+/// narrow pane or on a phone.
+pub const AGENT_COMPOSER_PLACEHOLDER_MAX_CHARS: usize = 200;
+
+/// Collapse every whitespace run (newlines included) to one space and trim;
+/// blank means absent. The one normalization the scanner, the write paths,
+/// and the length check share.
+pub fn normalize_composer_placeholder(value: Option<&str>) -> Option<String> {
+    let collapsed = value?.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!collapsed.is_empty()).then_some(collapsed)
+}
 
 /// Parse and validate the REQUIRED agent frontmatter block. Shared by
 /// [`scan_agents`] (scan-time) and `directory::agents::create` /
@@ -571,6 +600,15 @@ pub fn parse_agent_frontmatter(content: &str) -> Result<AgentFrontmatter, String
     }
     for function_id in &fm.functions {
         validate_function_id(function_id)?;
+    }
+    if let Some(placeholder) = normalize_composer_placeholder(fm.composer_placeholder.as_deref()) {
+        let chars = placeholder.chars().count();
+        if chars > AGENT_COMPOSER_PLACEHOLDER_MAX_CHARS {
+            return Err(format!(
+                "`composer_placeholder` too long ({chars} characters; max \
+                 {AGENT_COMPOSER_PLACEHOLDER_MAX_CHARS}) — one short example request"
+            ));
+        }
     }
     Ok(fm)
 }
@@ -740,6 +778,8 @@ pub(crate) fn agent_from_frontmatter(
         icon: trimmed(fm.icon),
         color: trimmed(fm.color),
         extends: trimmed(fm.extends),
+        hidden: fm.hidden,
+        composer_placeholder: normalize_composer_placeholder(fm.composer_placeholder.as_deref()),
         abs_path,
         builtin,
     }

@@ -157,7 +157,7 @@ A worker ships console UI as assets; no console rebuild:
 * `host` = `{ iii: { trigger(fnId, payload), on, registerTrigger, browserId,
   addConnectionStateListener }, components, useTheme, path, pages, functionTriggers,
   configForms }`.
-* `host.pages.register({ id, title, render })` → a page routed at `#/ext/<id>`;
+* `host.pages.register({ id, title, render })` → a console page, opened through `host.panels.open` or `console::workspace::open`, or alone at `#/worker/<scope>/<id>`;
   `host.configForms.register(configId, Component)` overrides a worker's config form;
   `host.functionTriggers.register(renderer)` adds trigger-specific UI.
 * verify with `console::ui-manifest` (paths, hashes, style-lint warnings, per-worker

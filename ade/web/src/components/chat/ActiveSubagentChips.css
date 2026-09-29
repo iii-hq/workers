@@ -16,48 +16,29 @@
   );
 }
 
+/* Identity tints are the theme-aware glyph tokens (index.css), never raw hex. */
 .active-subagent-chip[data-color="blue"] {
-  --subagent-chip-tone: #235f9c;
+  --subagent-chip-tone: var(--color-glyph-blue);
 }
 
 .active-subagent-chip[data-color="purple"] {
-  --subagent-chip-tone: #7250a0;
+  --subagent-chip-tone: var(--color-glyph-purple);
 }
 
 .active-subagent-chip[data-color="teal"] {
-  --subagent-chip-tone: #0d746c;
+  --subagent-chip-tone: var(--color-glyph-teal);
 }
 
 .active-subagent-chip[data-color="green"] {
-  --subagent-chip-tone: var(--color-ok);
+  --subagent-chip-tone: var(--color-glyph-green);
 }
 
 .active-subagent-chip[data-color="amber"] {
-  --subagent-chip-tone: #765200;
+  --subagent-chip-tone: var(--color-glyph-amber);
 }
 
 .active-subagent-chip[data-color="rose"] {
-  --subagent-chip-tone: #b5375c;
-}
-
-[data-theme="dark"] .active-subagent-chip[data-color="blue"] {
-  --subagent-chip-tone: #79b7f2;
-}
-
-[data-theme="dark"] .active-subagent-chip[data-color="purple"] {
-  --subagent-chip-tone: #c09ae8;
-}
-
-[data-theme="dark"] .active-subagent-chip[data-color="teal"] {
-  --subagent-chip-tone: #5acac0;
-}
-
-[data-theme="dark"] .active-subagent-chip[data-color="rose"] {
-  --subagent-chip-tone: #f28ca8;
-}
-
-[data-theme="dark"] .active-subagent-chip[data-color="amber"] {
-  --subagent-chip-tone: #e8b949;
+  --subagent-chip-tone: var(--color-glyph-rose);
 }
 
 .active-subagent-chip__status {

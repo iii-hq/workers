@@ -34,6 +34,10 @@ on:
         required: false
         default: ''
 
+env:
+  # Pin the published release containing configuration::ensure, not a mutable channel.
+  III_RELEASE_TAG: 'iii/v0.24.0-rc.2'
+
 jobs:
   validate:
     name: validate harness scenarios
@@ -101,7 +105,7 @@ jobs:
           # This step never cached; the repository is already over its cache budget.
           node-version: 22
 
-      - name: Install latest iii @rc
+      - name: Install verified iii RC
         id: engine
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -198,7 +202,7 @@ jobs:
             echo "| --- | --- | --- |"
             echo "| $RUNNER_LABEL | $RUNNER_NAME | $CACHE_COHORT |"
             echo
-            echo "The iii engine is downloaded fresh from the latest @rc channel."
+            echo "The iii engine is pinned to $III_RELEASE_TAG."
             echo
             echo "| Cache | Hit | Save enabled |"
             echo "| --- | --- | --- |"

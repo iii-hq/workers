@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
-import { EmptyState, Skeleton, StatusPanel, type Host } from '@iii-dev/console-ui'
-import { createEvalApi, errorMessage } from '../api'
+import { Button, Checkbox, EmptyState, Eyebrow, SearchField, Skeleton, StatusPanel, type Host } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { createEvalApi } from '../api'
+import { formatDate } from '../components'
 import {
-  formatDate,
   formatDelta,
   formatMetricValue,
   metricGroups,
@@ -70,7 +71,7 @@ function ContextDetails({ item }: { item: SessionComparisonItem }) {
 
 function LifecycleTable({ items }: { items: SessionComparisonItem[] }) {
   return (
-    <div className="eval-ui-comparison-table eval-ui-comparison-lifecycle">
+    <div className="eval-ui-comparison-table">
       <div className="eval-ui-comparison-row header" style={gridStyle(items.length)}>
         <span>lifecycle</span>
         {items.map((item) => (
@@ -106,7 +107,7 @@ function ComparisonMatrix({ comparison }: { comparison: SessionComparisonRespons
       <LifecycleTable items={comparison.sessions} />
       {metricGroups.map((group) => (
         <section className="eval-ui-comparison-group" key={group.label}>
-          <h2>{group.label}</h2>
+          <Eyebrow as="h2">{group.label}</Eyebrow>
           <div className="eval-ui-comparison-table">
             <div className="eval-ui-comparison-row header" style={gridStyle(comparison.sessions.length)}>
               <span>metric</span>
@@ -221,9 +222,9 @@ export function SessionComparison({ host }: { host: Host }) {
           <h1>Compare sessions</h1>
           <p>Choose 2–5 visible root sessions. You decide whether they are comparable; this view only shows current facts and deltas.</p>
         </div>
-        <button className="eval-ui-button" type="button" onClick={() => void loadSessions(true)} disabled={refreshing}>
+        <Button variant="ghost" size="sm" onClick={() => void loadSessions(true)} disabled={refreshing}>
           {refreshing ? 'refreshing…' : 'refresh sessions'}
-        </button>
+        </Button>
       </div>
       <div className="eval-ui-comparison-rule">
         <strong>Live, descriptive comparison.</strong>
@@ -237,20 +238,24 @@ export function SessionComparison({ host }: { host: Host }) {
       ) : (
         <>
           <section className="eval-ui-panel eval-ui-session-picker">
-            <div className="eval-ui-panel-title">sessions · {selected.length}/5 selected</div>
-            <input className="eval-ui-input" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search title or session id" data-autofocus="" />
+            <Eyebrow as="div">sessions · {selected.length}/5 selected</Eyebrow>
+            <SearchField value={query} onChange={setQuery} aria-label="Search sessions" placeholder="Search title or session id" data-autofocus="" />
             <div className="eval-ui-session-list">
               {filteredSessions.map((session) => {
                 const checked = selected.includes(session.session_id)
                 return (
                   <div className={`eval-ui-session-option${checked ? ' selected' : ''}`} key={session.session_id}>
-                    <label>
-                      <input type="checkbox" checked={checked} onChange={() => choose(session.session_id)} />
-                      <span>
-                        <strong>{sessionLabel(session)}</strong>
-                        <small>{statusLabel(session)} · {formatDate(session.updated_at)} · {session.session_id}</small>
-                      </span>
-                    </label>
+                    <Checkbox
+                      className="eval-ui-session-choice"
+                      checked={checked}
+                      onChange={() => choose(session.session_id)}
+                      label={
+                        <>
+                          <strong>{sessionLabel(session)}</strong>
+                          <small>{statusLabel(session)} · {formatDate(session.updated_at)} · {session.session_id}</small>
+                        </>
+                      }
+                    />
                     <label className="eval-ui-baseline-choice">
                       <input type="radio" name="eval-baseline" checked={baseline === session.session_id} disabled={!checked} onChange={() => setBaseline(session.session_id)} />
                       reference
@@ -261,9 +266,9 @@ export function SessionComparison({ host }: { host: Host }) {
             </div>
             <div className="eval-ui-comparison-actions">
               <span>{selected.length < 2 ? 'Select at least two sessions.' : baseline ? 'Reference is explicit and can be changed.' : 'Choose a reference session.'}</span>
-              <button className="eval-ui-button primary" type="button" onClick={() => void compare()} disabled={selected.length < 2 || !baseline || comparing}>
+              <Button variant="primary" size="sm" onClick={() => void compare()} disabled={selected.length < 2 || !baseline || comparing}>
                 {comparing ? 'collecting…' : 'compare live metrics'}
-              </button>
+              </Button>
             </div>
           </section>
           {comparison ? <ComparisonMatrix comparison={comparison} /> : null}

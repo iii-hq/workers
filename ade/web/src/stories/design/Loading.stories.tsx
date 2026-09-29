@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { Caret } from '@/components/ui/Caret'
+import { eyebrowClassName } from '@/components/ui/Eyebrow'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 
@@ -65,7 +66,7 @@ function Card({
 }) {
   return (
     <div className="border border-rule bg-bg">
-      <div className="bg-panel px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+      <div className="bg-panel px-3 py-1.5 border-b border-rule-2 iii-ui-eyebrow">
         {label}
       </div>
       <div className="p-4">{children}</div>
@@ -84,7 +85,7 @@ type Story = StoryObj
 export const StatusDots: Story = {
   render: () => (
     <Card label="status dots">
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-3 font-mono text-[12px] text-ink-faint lowercase">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3 font-mono text-[12px] text-ink-faint">
         <span className="flex items-center gap-2">
           <StatusDot tone="accent" pulse /> live
         </span>
@@ -163,16 +164,11 @@ export const TraceWaterfall: Story = {
                   tone={tone.dot}
                   pulse={row.status === 'ok' && row.id === '2'}
                 />
-                <span className="text-ink truncate lowercase">{row.op}</span>
+                <span className="text-ink truncate">{row.op}</span>
                 <span className="text-ink-faint tabular-nums">
                   {row.durationMs}ms
                 </span>
-                <span
-                  className={cn(
-                    'text-[11px] uppercase tracking-[0.06em] font-medium',
-                    tone.label,
-                  )}
-                >
+                <span className={cn(eyebrowClassName, tone.label)}>
                   {row.status}
                 </span>
                 <div className="col-span-4 mt-1 h-1 bg-surface relative">

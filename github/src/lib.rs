@@ -10,3 +10,4 @@ pub mod events;
 pub mod functions;
 pub mod gh;
 pub mod ui;
+pub mod webhooks;

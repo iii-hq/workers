@@ -1,13 +1,22 @@
 import type { Host } from '@iii-dev/console-ui'
+import uiClasses from '@iii-dev/console-ui/ui-classes'
+import { ArrowRight, Hash } from 'lucide-react'
 import { OpenInBrowser } from '../open-in-browser'
-import { JsonHighlight } from '@iii-dev/console-ui'
 import {
   ActionLine,
+  Badge,
   Chip,
-  FilterChip,
+  EmptyState,
+  JsonHighlight,
   MetaRow,
-  StatusPill,
-} from '../../lib/shared'
+  Table,
+  TableBody,
+  TableCell,
+  TableRow,
+  TableViewport,
+} from '@iii-dev/console-ui'
+import { cn } from '../../lib/cn'
+import { FilterChip } from '../../lib/shared'
 import {
   pageResultSchema,
   type SessionSummary,
@@ -42,13 +51,13 @@ function openChips(input: unknown): React.ReactNode {
         <FilterChip label="as" value={req.impersonate} />
       ) : null}
       {req.solve_cloudflare ? (
-        <Chip className="br-ui-scrape-warning">
+        <Chip tone="warning">
           <span>cloudflare</span>
         </Chip>
       ) : null}
       {req.real_chrome ? <Chip>real chrome</Chip> : null}
       {req.headless === false ? (
-        <Chip className="br-ui-scrape-warning">
+        <Chip tone="warning">
           <span>headed</span>
         </Chip>
       ) : null}
@@ -72,10 +81,10 @@ export function SessionOpenView({
     return (
       <SectionShell>
         <MetaRow>
-          <StatusPill label="opening…" variant="default" />
+          <Badge variant="default">opening…</Badge>
           {chips}
         </MetaRow>
-        <div className="br-ui-scrape-running">
+        <div className="br-ui-more">
           · starting session…
         </div>
       </SectionShell>
@@ -86,11 +95,11 @@ export function SessionOpenView({
   return (
     <SectionShell>
       <MetaRow>
-        <StatusPill label="session open" variant="accent" />
+        <Badge variant="accent">session open</Badge>
         {chips}
       </MetaRow>
-      <ActionLine symbol="#" tone="accent">
-        <span className="br-ui-scrape-break">{res.session_id}</span>
+      <ActionLine icon={<Hash size={16} aria-hidden />} tone="accent">
+        <span className="br-ui-break">{res.session_id}</span>
       </ActionLine>
     </SectionShell>
   )
@@ -102,7 +111,7 @@ export function SessionOpenPreview({ input }: { input: unknown }) {
   return (
     <div className="br-ui-scrape-section is-preview">
       <MetaRow>
-        <StatusPill label="permission to open a session" variant="warn" />
+        <Badge variant="warn">permission to open a session</Badge>
         {openChips(input)}
       </MetaRow>
     </div>
@@ -155,15 +164,15 @@ export function SessionFetchView({
     return (
       <SectionShell>
         <MetaRow>
-          <StatusPill label="fetching…" variant="default" />
+          <Badge variant="default">fetching…</Badge>
           {node}
         </MetaRow>
         {url ? (
-          <ActionLine symbol="→" tone="ink">
-            <span className="br-ui-scrape-break">{url}</span>
+          <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
+            <span className="br-ui-break">{url}</span>
           </ActionLine>
         ) : null}
-        <div className="br-ui-scrape-running">
+        <div className="br-ui-more">
           · waiting for page…
         </div>
       </SectionShell>
@@ -176,32 +185,29 @@ export function SessionFetchView({
   return (
     <SectionShell>
       <MetaRow>
-        <StatusPill
-          label={status != null ? String(status) : 'done'}
-          variant={
+        <Badge variant={
             status != null && status >= 200 && status < 300
               ? 'accent'
               : 'default'
-          }
-        />
+          }>{status != null ? String(status) : 'done'}</Badge>
         {node}
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
-        <span className="br-ui-scrape-break">{page.url || url || ''}</span>
+      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
+        <span className="br-ui-break">{page.url || url || ''}</span>
         {host && (page.url || url) ? (
           <OpenInBrowser host={host} url={page.url || url || ''} />
         ) : null}
       </ActionLine>
       {page.extracted ? (
         <div>
-          <div className="br-ui-scrape-label">
+          <div className={cn('br-ui-scrape-label', uiClasses.eyebrow)}>
             extracted · {Object.keys(page.extracted).length}
           </div>
           <JsonHighlight code={JSON.stringify(page.extracted, null, 2)} wrap />
         </div>
       ) : null}
       {page.content != null ? (
-        <pre className="br-ui-scrape-pre is-separated">
+        <pre className="br-ui-text is-separated">
           <code>{page.content.slice(0, 2000)}</code>
         </pre>
       ) : null}
@@ -216,12 +222,12 @@ export function SessionFetchPreview({ input }: { input: unknown }) {
   return (
     <div className="br-ui-scrape-section is-preview">
       <MetaRow>
-        <StatusPill label="permission to fetch" variant="warn" />
+        <Badge variant="warn">permission to fetch</Badge>
         {node}
       </MetaRow>
       {url ? (
-        <ActionLine symbol="→" tone="ink">
-          <span className="br-ui-scrape-break">{url}</span>
+        <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
+          <span className="br-ui-break">{url}</span>
         </ActionLine>
       ) : null}
     </div>
@@ -251,10 +257,10 @@ export function SessionCloseView({
     return (
       <SectionShell>
         <MetaRow>
-          <StatusPill label="closing…" variant="default" />
+          <Badge variant="default">closing…</Badge>
           {chip}
         </MetaRow>
-        <div className="br-ui-scrape-running">· closing session…</div>
+        <div className="br-ui-more">· closing session…</div>
       </SectionShell>
     )
   }
@@ -263,10 +269,7 @@ export function SessionCloseView({
   return (
     <SectionShell>
       <MetaRow>
-        <StatusPill
-          label={res.closed ? 'closed' : 'not found'}
-          variant={res.closed ? 'accent' : 'warn'}
-        />
+        <Badge variant={res.closed ? 'accent' : 'warn'}>{res.closed ? 'closed' : 'not found'}</Badge>
         {chip}
       </MetaRow>
     </SectionShell>
@@ -279,7 +282,7 @@ export function SessionClosePreview({ input }: { input: unknown }) {
   return (
     <div className="br-ui-scrape-section is-preview">
       <MetaRow>
-        <StatusPill label="permission to close a session" variant="warn" />
+        <Badge variant="warn">permission to close a session</Badge>
         {chip}
       </MetaRow>
     </div>
@@ -302,9 +305,9 @@ export function SessionListView({
     return (
       <SectionShell>
         <MetaRow>
-          <StatusPill label="listing…" variant="default" />
+          <Badge variant="default">listing…</Badge>
         </MetaRow>
-        <div className="br-ui-scrape-running">· listing sessions…</div>
+        <div className="br-ui-more">· listing sessions…</div>
       </SectionShell>
     )
   }
@@ -313,25 +316,23 @@ export function SessionListView({
   return (
     <SectionShell>
       <MetaRow>
-        <StatusPill
-          label={`${res.sessions.length} open`}
-          variant={res.sessions.length ? 'accent' : 'default'}
-        />
+        <Badge variant={res.sessions.length ? 'accent' : 'default'}>{`${res.sessions.length} open`}</Badge>
       </MetaRow>
       {res.sessions.length === 0 ? (
-        <div className="br-ui-scrape-empty">
-          · no open sessions
-        </div>
+        <EmptyState
+          title="No open sessions"
+          description="Open one with browser::session-open."
+        />
       ) : (
-        <div className="br-ui-scrape-table-wrap">
-          <table className="br-ui-scrape-table">
-            <tbody>
+        <TableViewport className="br-ui-table">
+          <Table density="compact">
+            <TableBody>
               {res.sessions.map((s) => (
                 <SessionRow key={s.session_id} s={s} />
               ))}
-            </tbody>
-          </table>
-        </div>
+            </TableBody>
+          </Table>
+        </TableViewport>
       )}
     </SectionShell>
   )
@@ -342,7 +343,7 @@ export function SessionListPreview({ input }: { input: unknown }) {
   return (
     <div className="br-ui-scrape-section is-preview">
       <MetaRow>
-        <StatusPill label="permission to list sessions" variant="warn" />
+        <Badge variant="warn">permission to list sessions</Badge>
       </MetaRow>
     </div>
   )
@@ -350,12 +351,12 @@ export function SessionListPreview({ input }: { input: unknown }) {
 
 function SessionRow({ s }: { s: SessionSummary }) {
   return (
-    <tr>
-      <td className="br-ui-scrape-table-type">{s.type ?? 'http'}</td>
-      <td className="br-ui-scrape-table-value">{s.session_id}</td>
-      <td className="br-ui-scrape-table-meta">
+    <TableRow>
+      <TableCell className="br-ui-accent br-ui-td-name">{s.type ?? 'http'}</TableCell>
+      <TableCell className="br-ui-break">{s.session_id}</TableCell>
+      <TableCell className="br-ui-faint br-ui-num br-ui-right br-ui-nowrap">
         {typeof s.idle_s === 'number' ? `idle ${s.idle_s}s` : ''}
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   )
 }

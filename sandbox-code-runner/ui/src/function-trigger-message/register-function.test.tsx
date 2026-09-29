@@ -19,6 +19,44 @@ import { truncateRuntimeId } from '../lib/shared'
 import { createRegisterFunctionRenderer } from './register-function'
 
 vi.mock('@iii-dev/console-ui', () => ({
+  Badge: ({ children, variant }: { children?: React.ReactNode; variant?: string }) => (
+    <span data-stub="badge" data-variant={variant ?? 'default'}>
+      {children}
+    </span>
+  ),
+  Chip: ({ children, tone }: { children?: React.ReactNode; tone?: string }) => (
+    <span data-stub="chip" data-tone={tone}>
+      {children}
+    </span>
+  ),
+  StatusPanel: ({
+    headline,
+    detail,
+    variant,
+  }: {
+    headline?: React.ReactNode
+    detail?: React.ReactNode
+    variant?: string
+  }) => (
+    <div data-stub="status-panel" data-variant={variant}>
+      {headline}
+      {detail}
+    </div>
+  ),
+  TerminalStream: ({
+    label,
+    text,
+    tone,
+  }: {
+    label: string
+    text: string
+    tone?: string
+  }) =>
+    text.length === 0 ? null : (
+      <pre data-stub="terminal-stream" data-label={label} data-tone={tone}>
+        {text}
+      </pre>
+    ),
   Tooltip: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   TooltipTrigger: ({ children }: { children?: React.ReactNode }) => (
     <>{children}</>
@@ -132,7 +170,8 @@ describe('the settled card', () => {
         renderer.tryRender(msg({ output: { function_id: 'app::greet' } })),
       ) ?? ''
     expect(out).toContain('no `registered` flag')
-    expect(out).not.toContain('cr-register-function-status')
+    expect(out).not.toContain('>registered<')
+    expect(out).not.toContain('>not registered<')
   })
 
   it('flags a response that registered a different id', () => {
@@ -265,7 +304,7 @@ describe('a gate denial', () => {
     expect(out).toContain('denied at the gate')
     expect(out).toContain('never ran')
     expect(out).toContain('user')
-    expect(out).not.toContain('cr-ui-alert')
+    expect(out).not.toContain('data-variant="alert"')
   })
 
   it('never prints the args_excerpt runtime id, and shows no RuntimeChip', () => {
@@ -328,7 +367,7 @@ describe('the handler convention', () => {
       html(renderer.tryRender(msg({ input: { source: 'console.log(1)' } }))) ??
       ''
     expect(out).toContain('nothing named `handler`')
-    expect(out).not.toContain('cr-ui-alert')
+    expect(out).not.toContain('data-variant="alert"')
   })
 
   it('stays silent when it does', () => {

@@ -55,7 +55,7 @@ export function DeleteFileView({
       <div className="bg-paper-2 border-b border-rule-2 px-3 py-2 flex flex-wrap items-center gap-1.5">
         <Chip label="paths">{req.paths.length}</Chip>
         {req.recursive ? (
-          <Chip label="recursive" className="border-warn text-warn">
+          <Chip label="recursive" className="bg-warn-muted text-warn">
             true
           </Chip>
         ) : null}

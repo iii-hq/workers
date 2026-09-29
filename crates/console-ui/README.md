@@ -57,5 +57,6 @@ The builder panics on paths the console would reject (wrong extension,
 uppercase, `..` segments, duplicates) — an authoring error should fail the
 first unit test, not warn-log on a running engine.
 
-Reference adopter: `workers/state/src/ui.rs`. Full authoring guide (assets,
-builds, styling, slots): `workers/docs/sops/injectable-console-ui.md`.
+Reference adopter: `workers/state/src/ui.rs`. The Rust wiring SOP:
+`workers/docs/sops/injectable-console-ui.md`. Authoring the UI itself (assets,
+builds, styling, slots): `workers/ade/skills/injectable-ui.md`.

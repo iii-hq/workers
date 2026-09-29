@@ -27,6 +27,7 @@ import {
   DropdownMenuTrigger,
   Input,
 } from '@iii-dev/console-ui'
+import { Eye, EyeOff, Plus, X } from 'lucide-react'
 import { useState } from 'react'
 import {
   type FilterOp,
@@ -37,7 +38,6 @@ import {
   SET_OPS,
   typeCategory,
 } from '../lib/rpc'
-import { Eye, EyeOff, Plus, X } from './icons'
 
 /** The minimum a column must expose to be filterable. */
 export interface FilterColumn {
@@ -100,13 +100,9 @@ export function FilterBar({
             {active} applied
             {drafts > 0 ? ` · ${drafts} draft` : ''}
           </span>
-          <button
-            type="button"
-            className="db-filters-clear"
-            onClick={() => onChange([])}
-          >
+          <Button variant="ghost" size="sm" onClick={() => onChange([])}>
             Clear all
-          </button>
+          </Button>
         </>
       ) : null}
     </div>

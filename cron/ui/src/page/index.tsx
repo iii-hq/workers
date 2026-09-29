@@ -1,6 +1,7 @@
 import {
   Button,
   EmptyState,
+  Eyebrow,
   type Host,
   IconButton,
   Input,
@@ -11,6 +12,7 @@ import {
   type PageRenderProps,
   PageShell,
   PageSidebar,
+  SearchField,
   SegmentedControl,
   Skeleton,
   StatusPanel,
@@ -27,11 +29,13 @@ import {
   TabsTrigger,
   uiClasses,
 } from '@iii-dev/console-ui'
+import { copyText, errorMessage } from '@iii-dev/console-ui/format'
+import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
+import { ChevronLeft, Clock, Plus, RefreshCw, Sparkles, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   allowScheduleCalls,
   createSchedule,
-  errorMessage,
   type FunctionSummary,
   listAllSchedules,
   listFunctions,
@@ -103,138 +107,6 @@ function subscribe<T>(
   }
 }
 
-function ClockIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.7" />
-      <path
-        d="M12 7.5v5l3.3 2"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
-
-function RefreshIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="M19 8a7.5 7.5 0 1 0 .2 7.7M19 4v4h-4"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
-
-function SearchIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <circle
-        cx="10.8"
-        cy="10.8"
-        r="6.3"
-        stroke="currentColor"
-        strokeWidth="1.7"
-      />
-      <path
-        d="m16 16 4 4"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
-function PlusIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="M12 5v14M5 12h14"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
-function ChevronIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="m9 6 6 6-6 6"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
-
-function SparkIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      className={className}
-      aria-hidden="true"
-      fill="currentColor"
-    >
-      <path d="M8 1.5l1.2 3.4 3.3 1.2-3.3 1.2L8 10.7 6.8 7.3 3.5 6.1l3.3-1.2L8 1.5zM12.5 10l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6.6-1.6z" />
-    </svg>
-  )
-}
-
-function CloseIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="m7 7 10 10M17 7 7 17"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
 export function CronSchedulesPage({
   host,
   panelSide = 'left',
@@ -259,7 +131,7 @@ export function CronSchedulesPage({
   const [replacementTask, setReplacementTask] =
     useState<SessionCronTask | null>(null)
   const [statusFilter, setStatusFilter] = useState<Filter>('all')
-  const [narrow, setNarrow] = useState(false)
+  const { ref: layoutRef, narrow } = useContainerNarrow({ below: 760 })
   const [now, setNow] = useState(() => new Date())
   /** The schedule session a send is waiting on. `harness::send` resolves only
       when the whole turn is done, so following its answer would leave the
@@ -273,7 +145,6 @@ export function CronSchedulesPage({
   const tasksRequest = useRef(0)
   const bindingsRequest = useRef(0)
   const sendRequest = useRef(0)
-  const layoutRef = useRef<HTMLDivElement | null>(null)
   const inspectorRef = useRef<HTMLElement | null>(null)
   const lastFocus = useRef<HTMLElement | null>(null)
   const composerRef = useRef<HTMLInputElement | null>(null)
@@ -377,16 +248,6 @@ export function CronSchedulesPage({
       window.clearInterval(interval)
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [])
-
-  useEffect(() => {
-    const node = layoutRef.current
-    if (!node) return
-    const update = () => setNarrow(node.getBoundingClientRect().width <= 760)
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(node)
-    return () => observer.disconnect()
   }, [])
 
   const inspectorIdentity =
@@ -612,12 +473,11 @@ export function CronSchedulesPage({
   openConversationRef.current = openConversation
 
   const copyId = async (value: string) => {
-    try {
-      await navigator.clipboard.writeText(value)
-      setFeedback({ tone: 'success', message: 'Subscription id copied.' })
-    } catch {
-      setFeedback({ tone: 'warn', message: 'Could not reach the clipboard.' })
-    }
+    setFeedback(
+      (await copyText(value))
+        ? { tone: 'success', message: 'Subscription id copied.' }
+        : { tone: 'warn', message: 'Could not reach the clipboard.' },
+    )
   }
 
   const handleInspectorKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
@@ -787,32 +647,31 @@ export function CronSchedulesPage({
   return (
     <PageShell className="cron-ui-shell">
       <PageHeader
-        icon={<ClockIcon />}
+        icon={<Clock />}
         title="Cron"
         description="Schedules and system bindings."
         actions={
           <div className="cron-ui-header-actions">
-            <div className="cron-ui-search">
-              <SearchIcon className={uiClasses.icon} />
-              <Input
-                ref={searchRef}
-                type="search"
-                value={query}
-                onChange={setQuery}
-                placeholder="Search schedules"
-                aria-label="Search schedules"
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </div>
+            <SearchField
+              ref={searchRef}
+              className="cron-ui-search"
+              value={query}
+              onChange={setQuery}
+              placeholder="Search schedules"
+              aria-label="Search schedules"
+              autoComplete="off"
+              spellCheck={false}
+            />
             <IconButton
               label="Refresh schedules"
               onClick={() => void refreshAll()}
               disabled={tasksLoading || bindingsLoading}
             >
-              <RefreshIcon
+              <RefreshCw
                 className={
-                  loading ? `${uiClasses.icon} cron-ui-spin` : uiClasses.icon
+                  loading
+                    ? `${uiClasses.icon} ${uiClasses.spin}`
+                    : uiClasses.icon
                 }
               />
             </IconButton>
@@ -825,7 +684,7 @@ export function CronSchedulesPage({
                 openInspector({ kind: 'new' })
               }}
             >
-              <PlusIcon />
+              <Plus className={uiClasses.icon} aria-hidden />
               New schedule
             </Button>
           </div>
@@ -841,7 +700,7 @@ export function CronSchedulesPage({
             >
               <div className="cron-ui-detail-bar">
                 <Button variant="ghost" size="sm" onClick={closeInspector}>
-                  <ChevronIcon className={`${uiClasses.icon} cron-ui-back`} />
+                  <ChevronLeft className={uiClasses.icon} aria-hidden />
                   All schedules
                 </Button>
               </div>
@@ -856,8 +715,9 @@ export function CronSchedulesPage({
                   void submitNaturalTask()
                 }}
               >
-                <SparkIcon
+                <Sparkles
                   className={`${uiClasses.icon} cron-ui-composer-icon`}
+                  aria-hidden
                 />
                 <Input
                   ref={composerRef}
@@ -959,7 +819,7 @@ export function CronSchedulesPage({
                     </div>
                   ) : orderedTasks.length === 0 ? (
                     <EmptyState
-                      icon={ClockIcon}
+                      icon={Clock}
                       title={
                         tasks.length === 0
                           ? 'No schedules yet'
@@ -1058,7 +918,7 @@ export function CronSchedulesPage({
                   ) : null}
                   {orderedBindings.length === 0 ? (
                     <EmptyState
-                      icon={ClockIcon}
+                      icon={Clock}
                       title="No system bindings"
                       description="Workers that schedule their own functions appear here."
                     />
@@ -1126,15 +986,15 @@ export function CronSchedulesPage({
         {showDetail && !narrow ? (
           <PageSidebar width={380} aria-label="Schedule details">
             <div className="cron-ui-detail-bar">
-              <span className="cron-ui-detail-eyebrow">
+              <Eyebrow>
                 {inspector?.kind === 'new'
                   ? 'New schedule'
                   : inspector?.kind === 'task'
                     ? 'Schedule'
                     : 'System binding'}
-              </span>
+              </Eyebrow>
               <IconButton label="Close details" onClick={closeInspector}>
-                <CloseIcon className={uiClasses.icon} />
+                <X className={uiClasses.icon} aria-hidden />
               </IconButton>
             </div>
             {detailScroll}

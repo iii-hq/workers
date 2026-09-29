@@ -1,7 +1,7 @@
 import type { Host } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { errText } from './errors.js'
-import { createRefreshGate } from './refresh-gate.js'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { useWorkerLive } from '@iii-dev/console-ui/hooks'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   listRuns,
   type RetryResult,
@@ -16,15 +16,10 @@ import {
 } from './security-scan-data'
 import { isRepositoryScopeCurrent, isStreamLive } from './view-state.js'
 
-const DOORBELL_DEBOUNCE_MS = 160
-
-function tabIsHidden(): boolean {
-  return typeof document !== 'undefined' && document.visibilityState === 'hidden'
-}
-
-function repositoryKey(filters: RunFilters): string {
-  return filters.repository.trim()
-}
+/** The hook's handler; the runs stream below is bound to `${HANDLER_ID}::<browserId>`. */
+const HANDLER_ID = 'iii::security-scan-ui::runs'
+const RUN_STREAM = { stream_name: 'security-scan:runs', group_id: 'all' }
+const NO_RUNS: RunSummary[] = []
 
 export interface SecurityRunsLive {
   runs: RunSummary[]
@@ -44,207 +39,90 @@ export interface SecurityRunsLive {
 }
 
 interface RepositoryRunList {
-  repositoryKey: string | null
+  repositoryKey: string
   runs: RunSummary[]
 }
 
+interface DetailState {
+  runId: string | null
+  run: SecurityRun | null
+  error: string | null
+}
+
 export function useSecurityRunsLive(host: Host, filters: RunFilters, selectedId: string | null): SecurityRunsLive {
-  const activeRepositoryKey = repositoryKey(filters)
-  const [runList, setRunList] = useState<RepositoryRunList>({
-    repositoryKey: null,
-    runs: [],
+  const repositoryKey = filters.repository.trim()
+  const {
+    data,
+    loading: fetching,
+    error: listError,
+    refresh,
+    live: streamBound,
+  } = useWorkerLive<RepositoryRunList>({
+    iii: host.iii,
+    // The runs feed is a `stream` trigger; the hook binds it to its handler
+    // and polls only while the binding is missing.
+    triggers: [{ type: 'stream', config: RUN_STREAM }],
+    fetch: async () => ({
+      repositoryKey,
+      runs: await listRuns(host, { repository: repositoryKey, status: '' }),
+    }),
+    handlerId: HANDLER_ID,
   })
-  const [detail, setDetail] = useState<SecurityRun | null>(null)
-  const [detailRepositoryKey, setDetailRepositoryKey] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
-  const [streamBound, setStreamBound] = useState(false)
+
+  // The hook fetches on mount by itself; a repository scope change refetches.
+  const fetchedKeyRef = useRef(repositoryKey)
+  useEffect(() => {
+    if (fetchedKeyRef.current === repositoryKey) return
+    fetchedKeyRef.current = repositoryKey
+    refresh()
+  }, [refresh, repositoryKey])
+
   const [connectionState, setConnectionState] = useState<unknown>('disconnected')
-  const [listError, setListError] = useState<string | null>(null)
-  const [detailError, setDetailError] = useState<{
-    runId: string
-    message: string
-  } | null>(null)
-  const [reconciliationRefreshRevision, setReconciliationRefreshRevision] = useState(0)
-
-  const listLoadedRef = useRef(false)
-  const filtersRef = useRef(filters)
-  const currentRepositoryKeyRef = useRef(activeRepositoryKey)
-  const selectedIdRef = useRef(selectedId)
-  filtersRef.current = filters
-  currentRepositoryKeyRef.current = activeRepositoryKey
-  selectedIdRef.current = selectedId
-
-  const listTaskRef = useRef<() => Promise<void>>(async () => {})
-  listTaskRef.current = async () => {
-    const activeFilters = filtersRef.current
-    const requestKey = repositoryKey(activeFilters)
-    if (listLoadedRef.current) setRefreshing(true)
-    else setLoading(true)
-
-    try {
-      const next = await listRuns(host, { ...activeFilters, status: '' })
-      if (requestKey !== currentRepositoryKeyRef.current) return
-      setRunList({ repositoryKey: requestKey, runs: next })
-      setListError(null)
-      listLoadedRef.current = true
-    } catch (error) {
-      if (requestKey !== currentRepositoryKeyRef.current) return
-      setRunList((current) =>
-        current.repositoryKey === requestKey ? current : { repositoryKey: requestKey, runs: [] },
-      )
-      setListError(errText(error))
-    } finally {
-      if (requestKey === currentRepositoryKeyRef.current) {
-        setLoading(false)
-        setRefreshing(false)
-      }
-    }
-  }
-
-  const listGateRef = useRef<ReturnType<typeof createRefreshGate> | null>(null)
-  if (!listGateRef.current) {
-    listGateRef.current = createRefreshGate(() => listTaskRef.current())
-  }
-  const loadList = useCallback(() => {
-    void listGateRef.current?.request()
-  }, [])
-
-  const detailTaskRef = useRef<() => Promise<void>>(async () => {})
-  detailTaskRef.current = async () => {
-    const runId = selectedIdRef.current
-    const requestKey = currentRepositoryKeyRef.current
-    if (!runId) {
-      setDetail(null)
-      setDetailRepositoryKey(null)
-      setDetailError(null)
-      setDetailLoading(false)
-      return
-    }
-
-    setDetailLoading(true)
-    try {
-      const next = await readRun(host, runId)
-      if (runId !== selectedIdRef.current || requestKey !== currentRepositoryKeyRef.current) return
-      setDetailRepositoryKey(requestKey)
-      if (next && requestKey && next.repository !== requestKey) {
-        setDetail(null)
-        setDetailError(null)
-        return
-      }
-      setDetail(next)
-      setDetailError(next ? null : { runId, message: 'This run no longer exists.' })
-    } catch (error) {
-      if (runId !== selectedIdRef.current || requestKey !== currentRepositoryKeyRef.current) return
-      setDetailRepositoryKey(requestKey)
-      setDetailError({ runId, message: errText(error) })
-    } finally {
-      if (runId === selectedIdRef.current && requestKey === currentRepositoryKeyRef.current) {
-        setDetailLoading(false)
-      }
-    }
-  }
-
-  const detailGateRef = useRef<ReturnType<typeof createRefreshGate> | null>(null)
-  if (!detailGateRef.current) {
-    detailGateRef.current = createRefreshGate(() => detailTaskRef.current())
-  }
-  const loadDetail = useCallback(() => {
-    void detailGateRef.current?.request()
-  }, [])
-
-  const refresh = useCallback(() => {
-    if (tabIsHidden()) return
-    setReconciliationRefreshRevision((current) => current + 1)
-    loadList()
-    if (selectedIdRef.current) loadDetail()
-  }, [loadDetail, loadList])
-
-  const refreshRef = useRef(refresh)
   useEffect(() => {
-    refreshRef.current = refresh
-  }, [refresh])
-
-  useEffect(() => {
-    listLoadedRef.current = false
-    setRunList((current) => ({
-      repositoryKey: current.repositoryKey,
-      runs: [],
-    }))
-    setLoading(true)
-    setRefreshing(false)
-    setListError(null)
-    loadList()
-  }, [activeRepositoryKey, loadList])
-
-  useEffect(() => {
-    setDetail(null)
-    setDetailRepositoryKey(null)
-    setDetailError(null)
-    if (selectedId) loadDetail()
-    else setDetailLoading(false)
-  }, [activeRepositoryKey, loadDetail, selectedId])
-
-  const instanceId = useId().replace(/[^a-zA-Z0-9]/g, '')
-  useEffect(() => {
-    const localFunctionId = `iii::security-scan-ui::runs-doorbell::${instanceId}`
-    let debounceTimer: number | undefined
-    const disposers: Array<() => void> = []
-    setStreamBound(false)
-
-    const scheduleRefresh = () => {
-      if (tabIsHidden()) return
-      if (debounceTimer !== undefined) window.clearTimeout(debounceTimer)
-      debounceTimer = window.setTimeout(() => refreshRef.current(), DOORBELL_DEBOUNCE_MS)
-    }
-
-    try {
-      disposers.push(host.iii.on(localFunctionId, scheduleRefresh))
-      disposers.push(
-        host.iii.registerTrigger({
-          type: 'stream',
-          function_id: `${localFunctionId}::${host.iii.browserId}`,
-          config: { stream_name: 'security-scan:runs', group_id: 'all' },
-        }),
-      )
-      setStreamBound(true)
-    } catch {
-      for (const dispose of disposers) dispose()
-      disposers.length = 0
-      setStreamBound(false)
-    }
-
-    return () => {
-      if (debounceTimer !== undefined) window.clearTimeout(debounceTimer)
-      for (const dispose of disposers) dispose()
-    }
-  }, [host, instanceId])
-
-  useEffect(() => {
-    setConnectionState('disconnected')
     try {
       return host.iii.addConnectionStateListener((state) => {
         setConnectionState(state)
-        if (state === 'connected') refreshRef.current()
+        if (state === 'connected') refresh()
       })
     } catch {
       setConnectionState('disconnected')
-      return undefined
     }
-  }, [host])
+  }, [host, refresh])
 
+  // The selected run: re-read on selection and whenever the list arrives
+  // (stream event, poll, manual refresh).
+  const [detail, setDetail] = useState<DetailState>({ runId: null, run: null, error: null })
+  const [detailFetching, setDetailFetching] = useState(false)
   useEffect(() => {
-    if (typeof document === 'undefined') return
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') refreshRef.current()
+    if (!selectedId) return
+    let stale = false
+    setDetailFetching(true)
+    readRun(host, selectedId)
+      .then(
+        (run) => {
+          if (stale) return
+          setDetail({ runId: selectedId, run, error: run ? null : 'This run no longer exists.' })
+        },
+        (error: unknown) => {
+          if (!stale) setDetail({ runId: selectedId, run: null, error: errorMessage(error) })
+        },
+      )
+      .finally(() => {
+        if (!stale) setDetailFetching(false)
+      })
+    return () => {
+      stale = true
     }
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
-  }, [])
+  }, [data, host, selectedId])
 
-  const listScopeIsCurrent = isRepositoryScopeCurrent(activeRepositoryKey, runList.repositoryKey)
-  const allRuns = useMemo(() => (listScopeIsCurrent ? runList.runs : []), [listScopeIsCurrent, runList.runs])
+  // Every list arrival is a reconciliation refresh signal.
+  const [reconciliationRefreshRevision, setReconciliationRefreshRevision] = useState(0)
+  useEffect(() => {
+    setReconciliationRefreshRevision((current) => current + 1)
+  }, [data])
+
+  const scoped = data && isRepositoryScopeCurrent(repositoryKey, data.repositoryKey) ? data : null
+  const allRuns = scoped?.runs ?? NO_RUNS
   const runs = useMemo(
     () => (filters.status ? allRuns.filter((run) => run.status === filters.status) : allRuns),
     [allRuns, filters.status],
@@ -254,32 +132,26 @@ export function useSecurityRunsLive(host: Host, filters: RunFilters, selectedId:
     for (const run of allRuns) counts[run.status] += 1
     return counts
   }, [allRuns])
-  const live = isStreamLive(streamBound, connectionState)
-  const detailScopeIsCurrent = isRepositoryScopeCurrent(activeRepositoryKey, detailRepositoryKey)
+  const detailIsCurrent = detail.runId === selectedId
   const currentDetail =
-    detailScopeIsCurrent &&
-    listScopeIsCurrent &&
-    detail?.run_id === selectedId &&
-    (!activeRepositoryKey || detail.repository === activeRepositoryKey)
-      ? detail
-      : null
+    detailIsCurrent && detail.run && (!repositoryKey || detail.run.repository === repositoryKey) ? detail.run : null
 
   const retry = useCallback(
     async (run: RunSummary | SecurityRun) => {
-      const runId = await retryRun(host, run)
-      refreshRef.current()
-      return runId
+      const result = await retryRun(host, run)
+      refresh()
+      return result
     },
-    [host],
+    [host, refresh],
   )
 
   const requestSuggestions = useCallback(
     async (run: RunSummary | SecurityRun) => {
       const result = await requestRunMode(host, run, 'suggest')
-      refreshRef.current()
+      refresh()
       return result
     },
-    [host],
+    [host, refresh],
   )
 
   return {
@@ -287,13 +159,12 @@ export function useSecurityRunsLive(host: Host, filters: RunFilters, selectedId:
     totalRuns: allRuns.length,
     statusCounts,
     detail: currentDetail,
-    loading: loading || !listScopeIsCurrent,
-    detailLoading,
-    refreshing,
-    live,
-    listError: listScopeIsCurrent ? listError : null,
-    detailError:
-      listScopeIsCurrent && detailScopeIsCurrent && detailError?.runId === selectedId ? detailError.message : null,
+    loading: !scoped && !listError,
+    detailLoading: selectedId !== null && (detailFetching || !detailIsCurrent),
+    refreshing: fetching && scoped !== null,
+    live: isStreamLive(streamBound, connectionState),
+    listError,
+    detailError: detailIsCurrent ? detail.error : null,
     reconciliationRefreshRevision,
     refresh,
     retry,

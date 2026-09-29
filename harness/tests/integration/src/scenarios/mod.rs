@@ -4,7 +4,12 @@ mod adversarial_content_rendering;
 mod agent_identity;
 mod agent_preloaded_functions;
 mod agent_preloaded_skills;
+mod agent_shared_prompt_prefix;
+mod binding_prefix_append_only;
+mod call_argument_diagnosis;
+mod call_argument_reconciliation;
 mod child_discovery_granted;
+mod compaction_anchor;
 mod condition_failure_notice;
 mod console_streamed_text;
 mod database_row_wake;
@@ -17,9 +22,11 @@ mod function_contract_reuse;
 mod idempotency_key_collision;
 mod leaf_denied_control_plane;
 mod multi_turn_traces;
+mod oversized_function_result;
 mod provider_family_errors;
 mod provider_startup_timeout;
 mod queued_message_edit_unqueue;
+mod repeated_failed_call_breaker;
 mod reseed_parked_message;
 mod router_midstream_terminal_error;
 mod spawn_reuse_guard;
@@ -50,7 +57,10 @@ pub fn all() -> Vec<ScenarioFixture> {
         agent_identity::scenario(),
         agent_preloaded_functions::scenario(),
         agent_preloaded_skills::scenario(),
+        agent_shared_prompt_prefix::scenario(),
+        binding_prefix_append_only::scenario(),
         child_discovery_granted::scenario(),
+        compaction_anchor::scenario(),
         condition_failure_notice::scenario(),
         console_streamed_text::scenario(),
         database_row_wake::scenario(),
@@ -62,9 +72,13 @@ pub fn all() -> Vec<ScenarioFixture> {
         idempotency_key_collision::scenario(),
         leaf_denied_control_plane::scenario(),
         multi_turn_traces::scenario(),
+        oversized_function_result::scenario(),
+        call_argument_reconciliation::scenario(),
+        call_argument_diagnosis::scenario(),
         provider_startup_timeout::scenario(),
         standing_wake_delivery::scenario(),
         state_worker_sidecar::scenario(),
+        repeated_failed_call_breaker::scenario(),
         reseed_parked_message::scenario(),
         router_midstream_terminal_error::scenario(),
         spawn_reuse_guard::scenario(),
@@ -86,7 +100,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 31);
+        assert_eq!(fixtures.len(), 38);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

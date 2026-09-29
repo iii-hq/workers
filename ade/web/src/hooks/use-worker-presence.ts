@@ -130,8 +130,8 @@ export function useWorkerPresence({
     }
     let cancelled = false
     void (async () => {
-      const client = await getIiiClient()
       try {
+        const client = await getIiiClient()
         const found = await checkWorkerPresent(client, workerName)
         if (!cancelled) setPresent(found)
       } catch {

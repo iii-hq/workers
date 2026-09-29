@@ -57,16 +57,33 @@ pub async fn resolve(
         "deliver" => {
             let function_id = checkpoint.function_id.clone().unwrap_or_default();
             let entry_id = ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
+            // The resolver's payload comes straight off the wire and bypasses
+            // `normalized_result`, so it gets the same capture-time cap.
+            let mut delivered = crate::trigger::cap_result(
+                crate::trigger::ResultData {
+                    content: req
+                        .content
+                        .clone()
+                        .unwrap_or_else(|| vec![ContentBlock::text("")]),
+                    is_error: req.is_error.unwrap_or(false),
+                    details: req.details.clone().unwrap_or(Value::Null),
+                },
+                cfg.max_result_bytes,
+            );
+            // The resolver (e.g. an approver's denial) saw the repaired
+            // arguments (MOT-4847): record and note the repair.
+            let mut origin = serde_json::Map::new();
+            origin.insert("turn_id".into(), json!(record.turn_id));
+            if let Some(changes) = checkpoint.reconciled.as_deref() {
+                crate::reconcile::note_result(&mut delivered, &mut origin, changes, &function_id);
+            }
             let message = AgentMessage::FunctionResult(FunctionResultMessage {
                 role: FunctionResultRoleTag::FunctionResult,
                 function_call_id: req.function_call_id.clone(),
                 function_id,
-                content: req
-                    .content
-                    .clone()
-                    .unwrap_or_else(|| vec![ContentBlock::text("")]),
-                details: req.details.clone().unwrap_or(Value::Null),
-                is_error: req.is_error.unwrap_or(false),
+                content: delivered.content,
+                details: delivered.details,
+                is_error: delivered.is_error,
                 timestamp: AgentMessage::now_ms(),
             });
             // Idempotent on the deterministic entry id.
@@ -76,7 +93,7 @@ pub async fn resolve(
                     &message,
                     Some(&entry_id),
                     None,
-                    Some(&json!({ "turn_id": record.turn_id })),
+                    Some(&Value::Object(origin)),
                 )
                 .await?;
             apply_deferred_contract_updates_after_append(
@@ -133,11 +150,22 @@ pub async fn resolve(
                     annotations,
                 } => (arguments, annotations),
                 crate::hooks::runner::PreTriggerOutcome::Deny(reason) => {
-                    let data = crate::trigger::ResultData {
+                    let mut data = crate::trigger::ResultData {
                         content: vec![ContentBlock::text(reason.clone())],
                         is_error: true,
                         details: json!({ "error": "hook_denied", "message": reason }),
                     };
+                    // The hook judged the repaired arguments: say so.
+                    let mut origin = serde_json::Map::new();
+                    origin.insert("turn_id".into(), json!(record.turn_id));
+                    if let Some(changes) = checkpoint.reconciled.as_deref() {
+                        crate::reconcile::note_result(
+                            &mut data,
+                            &mut origin,
+                            changes,
+                            &function_id,
+                        );
+                    }
                     let entry_id =
                         ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
                     let message = AgentMessage::FunctionResult(FunctionResultMessage {
@@ -155,7 +183,7 @@ pub async fn resolve(
                             &message,
                             Some(&entry_id),
                             None,
-                            Some(&json!({ "turn_id": record.turn_id })),
+                            Some(&Value::Object(origin)),
                         )
                         .await?;
                     apply_deferred_contract_updates_after_append(
@@ -209,7 +237,7 @@ pub async fn resolve(
                 }
                 crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
 
-                let (data, child) = match crate::subagent::spawn_from_turn(
+                let (mut data, child) = match crate::subagent::spawn_from_turn(
                     deps,
                     &record,
                     &req.function_call_id,
@@ -220,6 +248,19 @@ pub async fn resolve(
                     Ok(child) => (crate::subagent::spawned_result(&child), Some(child)),
                     Err(data) => (data, None),
                 };
+                let mut origin = serde_json::Map::new();
+                origin.insert("turn_id".into(), json!(record.turn_id));
+                origin.extend(pre_annotations);
+                crate::reconcile::settle_result(
+                    deps,
+                    &cfg,
+                    &mut data,
+                    &mut origin,
+                    checkpoint.reconciled.as_deref(),
+                    &function_id,
+                    &arguments,
+                )
+                .await;
                 let entry_id =
                     ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
                 let message = AgentMessage::FunctionResult(FunctionResultMessage {
@@ -237,7 +278,7 @@ pub async fn resolve(
                         &message,
                         Some(&entry_id),
                         None,
-                        Some(&json!({ "turn_id": record.turn_id })),
+                        Some(&Value::Object(origin)),
                     )
                     .await?;
                 apply_deferred_contract_updates_after_append(
@@ -344,7 +385,7 @@ pub async fn resolve(
                     });
                 }
             };
-            let (data, contract_updates) = match info_raw {
+            let (mut data, contract_updates) = match info_raw {
                 Some(raw) => crate::trigger::prepare_info_result(
                     &req.function_call_id,
                     &arguments,
@@ -364,6 +405,23 @@ pub async fn resolve(
             for (k, v) in annotations {
                 origin.insert(k, v);
             }
+            // Repairs applied before the hold (MOT-4847) ride on the
+            // checkpoint: settle exactly as the turn loop would have. The
+            // diagnosis reads the arguments without the harness's own stamp.
+            let mut unstamped = arguments.clone();
+            if let Some(map) = unstamped.as_object_mut() {
+                map.remove(crate::filesystem_scope::FS_SCOPE_FIELD);
+            }
+            crate::reconcile::settle_result(
+                deps,
+                &cfg,
+                &mut data,
+                &mut origin,
+                checkpoint.reconciled.as_deref(),
+                &function_id,
+                &unstamped,
+            )
+            .await;
             let message = AgentMessage::FunctionResult(FunctionResultMessage {
                 role: FunctionResultRoleTag::FunctionResult,
                 function_call_id: req.function_call_id.clone(),
@@ -745,6 +803,7 @@ mod tests {
             child_session_reused: false,
             held_by: held_by.map(str::to_string),
             held_arguments: None,
+            reconciled: None,
             pending_timeout_ms: timeout_ms,
             pending_at: Some(pending_at),
         }

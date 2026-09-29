@@ -1,5 +1,6 @@
 import { Copy } from 'lucide-react'
 import { useCallback, useState } from 'react'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { cn } from '@/lib/utils'
 
@@ -37,15 +38,11 @@ export function CopyCommandButton({ text, className }: CopyCommandButtonProps) {
       )}
     >
       {copied ? (
-        <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-accent">
-          copied
-        </span>
+        <Eyebrow className="text-accent">copied</Eyebrow>
       ) : (
         <>
           <Copy className="size-4 flex-shrink-0" aria-hidden />
-          <span className="font-mono text-[10px] uppercase tracking-[0.06em]">
-            copy
-          </span>
+          <Eyebrow className="text-current">copy</Eyebrow>
         </>
       )}
     </button>

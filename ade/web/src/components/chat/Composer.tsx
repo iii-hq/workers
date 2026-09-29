@@ -1,4 +1,4 @@
-import { $createParagraphNode, $getRoot, type LexicalEditor } from 'lexical'
+import type { LexicalEditor } from 'lexical'
 import {
   ArrowUp,
   ChevronDown,
@@ -34,6 +34,7 @@ import {
 import type { FileMentionRef } from '@/lib/file-mention-token'
 import type { FileSearchFn } from '@/lib/file-search'
 import type { FunctionEntry } from '@/lib/functions'
+import { formatBinding, shortcutPlatform } from '@/lib/keybindings/bindings'
 import { cn } from '@/lib/utils'
 import type {
   Attachment,
@@ -43,17 +44,30 @@ import type {
 } from '@/types/chat'
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
+import { GENERIC_COMPOSER_PLACEHOLDER } from './agent-defaults'
 import { BankPicker } from './BankPicker'
 import { ChatSettingsSheet } from './ChatSettingsSheet'
 import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
-import { LexicalShell } from './LexicalShell'
-import { $appendComposerText } from './lexical/composer-text'
+import { LexicalShell, SEND_BINDING } from './LexicalShell'
+import { $fillComposerMarkdown } from './lexical/composer-markdown'
 import { ModelPicker } from './ModelPicker'
 import { nextHistoryTarget } from './queue-history'
 import { useFileDrop } from './use-file-drop'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 const WIDE_TOOLBAR_QUERY = '(min-width: 640px)'
+
+/** The send chord spelled for this keyboard: ⌘↵ on a Mac, ctrl+↵ elsewhere. */
+function sendShortcutLabel(): string {
+  const platform = shortcutPlatform()
+  return formatBinding(SEND_BINDING, platform).join(
+    platform === 'mac' ? '' : '+',
+  )
+}
 
 function subscribeWideToolbar(onChange: () => void): () => void {
   if (typeof window.matchMedia !== 'function') return () => {}
@@ -182,6 +196,12 @@ interface ComposerProps {
   /** Placeholder while `blocked` is true. */
   blockedPlaceholder?: string
   /**
+   * Hint while the editor is idle and empty — the selected profile's example
+   * before the first message. Only ever a placeholder: it never becomes
+   * draft text, and the editor keeps its `message composer` label.
+   */
+  idlePlaceholder?: string
+  /**
    * Put the caret in the editor on mount. The caller decides, because only it
    * knows whether focus is welcome: on a touch device it raises the on-screen
    * keyboard over the conversation, which is worse than aiming once.
@@ -226,6 +246,11 @@ interface ComposerProps {
    * `host.chat.registerComposerAction` slot), already built by the host.
    */
   composerActions?: ReactNode
+  /**
+   * Injected per-session settings rendered beside the model picker (the
+   * `host.chat.registerComposerControl` slot), already built by the host.
+   */
+  composerControls?: ReactNode
   functionEntries?: FunctionEntry[]
   /**
    * File search under `workingDir` for the `@` / `#` menus. Absent (mock
@@ -288,6 +313,7 @@ export function Composer({
   blocked,
   submitBlocked,
   blockedPlaceholder = 'chat unavailable…',
+  idlePlaceholder = GENERIC_COMPOSER_PLACEHOLDER,
   autoFocus,
   initialContent,
   initialText,
@@ -296,6 +322,7 @@ export function Composer({
   onAttachmentsChange,
   syncedAttachments,
   composerActions,
+  composerControls,
   functionEntries,
   searchFiles,
   onOpenFileMention,
@@ -345,13 +372,9 @@ export function Composer({
     if (initialContent) return initialContent
     const text = initialText
     if (!text) return undefined
-    return () => {
-      const root = $getRoot()
-      root.clear()
-      const paragraph = $createParagraphNode()
-      $appendComposerText(paragraph, text)
-      root.append(paragraph)
-    }
+    // The draft was saved as composer markdown, so its lists and code
+    // blocks come back as the blocks they were.
+    return () => $fillComposerMarkdown(text)
   }, [])
 
   // ↑/↓ browse the queued messages for editing. `browseId` is the message the
@@ -500,6 +523,11 @@ export function Composer({
   // focus request is then replayed: the editor's own listener already ran
   // against a hidden node.
   const refocusAfterUnfoldRef = useRef(false)
+  // An insert that asked to be sent. The text arrives through Lexical, so the
+  // send waits for the editor's own change to land in `textRef` — see the
+  // `onChange` below. Held in a ref because the insert and the change are two
+  // separate turns of the event loop.
+  const pendingSubmitRef = useRef(false)
   useEffect(() => {
     const unfold = () => {
       if (!collapsedRef.current) return
@@ -507,7 +535,10 @@ export function Composer({
       setFolded(false)
     }
     const offFocus = onComposerFocusRequest(unfold)
-    const offInsert = onComposerInsert(unfold)
+    const offInsert = onComposerInsert((insert) => {
+      if (insert.submit) pendingSubmitRef.current = true
+      unfold()
+    })
     return () => {
       offFocus()
       offInsert()
@@ -553,6 +584,7 @@ export function Composer({
         onClick={handleSubmit}
         disabled={submitDisabled}
         aria-label={isStreaming ? 'queue message' : 'send message'}
+        title={`${isStreaming ? 'queue message' : 'send message'} (${sendShortcutLabel()})`}
         className={cn(
           actionButtonClass,
           hasText || attachments.length > 0
@@ -569,7 +601,8 @@ export function Composer({
       ref={shell}
       data-composer-streaming={isStreaming ? 'true' : undefined}
       className={cn(
-        'composer-shell relative',
+        // onboarding-composer: tour anchor (workers/onboarding). Do not remove.
+        'onboarding-composer composer-shell relative',
         hasProjectStrip ? 'pt-8' : 'pt-0',
       )}
     >
@@ -652,6 +685,13 @@ export function Composer({
               textRef.current = text
               setHasText(text.trim().length > 0)
               if (browseIdRef.current === null) onTextChange?.(text)
+              // The editor has the inserted text now, so a send that came in
+              // with it can go. Out of band: `handleSubmit` clears the editor,
+              // which must not run inside its own change.
+              if (pendingSubmitRef.current && text.trim().length > 0) {
+                pendingSubmitRef.current = false
+                queueMicrotask(handleSubmit)
+              }
             }}
             onSubmit={handleSubmit}
             clearToken={clearToken}
@@ -662,7 +702,7 @@ export function Composer({
                   ? queueWhileStreaming
                     ? 'queue a message…'
                     : 'streaming response…'
-                  : 'send a message…'
+                  : idlePlaceholder
             }
             disabled={inputDisabled}
             autoFocus={autoFocus}
@@ -703,6 +743,7 @@ export function Composer({
             />
             <MoreHorizontal className="size-5 shrink-0" aria-hidden />
           </button>
+          {composerControls}
           <ModelPicker
             value={model}
             options={modelOptions}
@@ -749,6 +790,7 @@ export function Composer({
           </div>
 
           <div className="flex min-w-0 shrink-0 items-center gap-1.5">
+            {composerControls}
             <ModelPicker
               value={model}
               options={modelOptions}

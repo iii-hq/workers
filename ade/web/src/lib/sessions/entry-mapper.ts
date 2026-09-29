@@ -22,6 +22,10 @@
  * - Lifecycle custom entries (`error`, `recovery`, `reaction`) render durable
  *   system notices so failure state survives refresh.
  * - `custom_type: "compaction"` custom entries render the compaction marker.
+ * - `custom_type: "model_notice"` (a harness or hook notice the harness
+ *   persists and replays to the model) renders a quiet info notice with the
+ *   text behind the collapsed details; harness bookkeeping
+ *   (`message_order`, `runtime_context`) renders nothing.
  *
  * Events are at-least-once and unordered: callers keep the highest
  * `revision` per entry (see use-conversations) and treat `session::messages`
@@ -51,6 +55,11 @@ export const ERROR_CUSTOM_TYPE = 'error'
 export const NOTICE_CUSTOM_TYPE = 'notice'
 export const RECOVERY_CUSTOM_TYPE = 'recovery'
 export const REACTION_CUSTOM_TYPE = 'reaction'
+/** Harness or hook notice shown to the model (`{ text, kind? }`), replayed
+ * to it on later steps. */
+export const MODEL_NOTICE_CUSTOM_TYPE = 'model_notice'
+/** Harness bookkeeping records: never part of the chat. */
+const HIDDEN_CUSTOM_TYPES = new Set(['message_order', 'runtime_context'])
 
 /**
  * Map one typed custom record (however it arrived — `item.custom` on events,
@@ -63,7 +72,10 @@ function customSegments(
   data: unknown,
   timestamp: number,
 ): Message[] | null {
+  if (HIDDEN_CUSTOM_TYPES.has(customType)) return []
   switch (customType) {
+    case MODEL_NOTICE_CUSTOM_TYPE:
+      return modelNotice(entryId, data, timestamp)
     case COMPACTION_CUSTOM_TYPE:
       return [compactionMarker(entryId, data, timestamp)]
     case TRIGGER_FIRED_CUSTOM_TYPE:
@@ -85,6 +97,32 @@ function customSegments(
     default:
       return null
   }
+}
+
+/** One quiet line ("Note to the model — <kind>"); the note itself sits in
+ * the collapsed technical details, like a failed turn's raw reason. */
+function modelNotice(
+  entryId: string,
+  data: unknown,
+  timestamp: number,
+): SystemMessage[] {
+  const d = (data ?? {}) as { text?: unknown; kind?: unknown }
+  if (typeof d.text !== 'string' || !d.text.trim()) return []
+  const kind =
+    typeof d.kind === 'string' && d.kind.trim()
+      ? d.kind.trim().replace(/[-_]+/g, ' ')
+      : ''
+  return [
+    {
+      id: entryId,
+      role: 'system',
+      kind: 'notice',
+      tone: 'info',
+      content: kind ? `Note to the model — ${kind}` : 'Note to the model',
+      technicalDetails: { detail: d.text },
+      createdAt: timestamp,
+    },
+  ]
 }
 
 function customNotice(
@@ -1017,7 +1055,9 @@ export function applyEntryUpsert(
     // read brings the whole entry. The result's `function_id` is the real
     // target — the harness resolves `agent_trigger` before recording it —
     // so a wrapper-named placeholder learns its label here. A whole result
-    // clears the flag, since it is what the flag was waiting for.
+    // clears the flag once the arguments are here too: overlapping range
+    // reads can land the result first, and a row without its `input` is
+    // still a placeholder (the output rides along until the call lands).
     const elided = item.elided === true
     const result = item.message
     const settled: FcallPatch = {
@@ -1037,7 +1077,14 @@ export function applyEntryUpsert(
                 functionId: result.function_id,
                 unresolvedTarget: false,
               }
-      : { ...settled, output: functionResultOutput(result), unloaded: false }
+      : (row: FunctionTriggerMessage): FcallPatch =>
+          row.unloaded && row.input === undefined
+            ? { ...settled, output: functionResultOutput(result) }
+            : {
+                ...settled,
+                output: functionResultOutput(result),
+                unloaded: false,
+              }
     const { messages: patched, found } = applyFcallPatch(
       messages,
       result.function_call_id,

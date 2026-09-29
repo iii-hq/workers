@@ -8,10 +8,11 @@
  */
 
 import { IconButton } from '@iii-dev/console-ui'
+import { copyText } from '@iii-dev/console-ui/format'
+import { Mic } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DictationController } from './dictation'
 import { useDictation } from './dictation'
-import { MicIcon } from './icons'
 
 const HOLD_THRESHOLD_MS = 400
 const MESSAGE_DISPLAY_MS = 4000
@@ -109,7 +110,7 @@ export function MicButton({ pointer, className }: { pointer: MicPointer; classNa
       onPointerCancel={pointer.onPointerCancel}
       onContextMenu={(event: { preventDefault(): void }) => event.preventDefault()}
     >
-      <MicIcon />
+      <Mic />
     </IconButton>
   )
 }
@@ -123,10 +124,5 @@ export async function deliverTranscript(
     host.chat.compose({ text: `${text} ` })
     return 'composer'
   }
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch {
-    return 'failed'
-  }
-  return 'clipboard'
+  return (await copyText(text)) ? 'clipboard' : 'failed'
 }

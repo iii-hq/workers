@@ -6,6 +6,7 @@ use crate::wire::tools::functions_to_wire;
 use llm_router::provider_scaffold::cache::derive_affinity_id;
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
+use llm_router::types::router::PromptCacheIntent;
 use serde_json::{json, Value};
 
 /// Codex client version whose Responses contract this worker mirrors.
@@ -68,10 +69,13 @@ pub fn build_body(args: &BodyArgs) -> Value {
 }
 
 /// Resolve header affinity and body cache keys independently. The durable
-/// session id wins; direct router callers fall back to per-request affinity.
-/// A caller's `prompt_cache_key` override affects only the JSON body.
+/// session id wins the headers; direct router callers fall back to per-request
+/// affinity. The JSON body key is a caller's `prompt_cache_key` override, else
+/// the shared profile surface from `cache_intent`, else the affinity id —
+/// never the other way round: a shared key must not become a session header.
 pub fn resolve_cache_routing(
     provider_options: Option<&Value>,
+    cache_intent: Option<&PromptCacheIntent>,
     session_id: Option<&str>,
     resolution_key: Option<&str>,
 ) -> (Vec<(&'static str, String)>, Option<String>) {
@@ -84,6 +88,7 @@ pub fn resolve_cache_routing(
         .and_then(Value::as_str)
         .filter(|key| !key.trim().is_empty())
         .map(str::to_string)
+        .or_else(|| cache_intent.and_then(|intent| derive_affinity_id(&intent.surface_digest)))
         .or_else(|| affinity_id.clone());
     let headers = affinity_id
         .as_deref()
@@ -310,8 +315,8 @@ mod tests {
 
     #[test]
     fn cache_routing_follows_the_session_across_turns() {
-        let before = resolve_cache_routing(None, Some("s_conversation"), Some("turn_1"));
-        let after = resolve_cache_routing(None, Some("s_conversation"), Some("turn_2"));
+        let before = resolve_cache_routing(None, None, Some("s_conversation"), Some("turn_1"));
+        let after = resolve_cache_routing(None, None, Some("s_conversation"), Some("turn_2"));
         assert_eq!(before, after);
         assert_eq!(
             before.0[0].1,
@@ -325,12 +330,26 @@ mod tests {
         let provider_options = json!({ "prompt_cache_key": "shared\ncache" });
         let (headers, prompt_cache_key) = resolve_cache_routing(
             Some(&provider_options),
+            None,
             Some("s_conversation"),
             Some("turn_1"),
         );
         assert_eq!(prompt_cache_key.as_deref(), Some("shared\ncache"));
         assert_eq!(headers.len(), 3);
         assert!(headers.iter().all(|(_, value)| !value.contains('\n')));
+    }
+
+    #[test]
+    fn cache_intent_sets_body_key_but_not_headers() {
+        let intent = PromptCacheIntent {
+            surface_digest: "sha256:abc".into(),
+        };
+        let (headers, prompt_cache_key) =
+            resolve_cache_routing(None, Some(&intent), Some("s_conversation"), Some("turn_1"));
+        assert_eq!(prompt_cache_key, derive_affinity_id("sha256:abc"));
+        let session = derive_affinity_id("s_conversation").unwrap();
+        assert!(headers.iter().all(|(_, value)| *value == session));
+        assert_ne!(prompt_cache_key.as_deref(), Some(session.as_str()));
     }
 
     #[test]
@@ -344,7 +363,10 @@ mod tests {
 
     #[test]
     fn missing_routing_identity_omits_the_default_key() {
-        assert_eq!(resolve_cache_routing(None, None, None), (vec![], None));
+        assert_eq!(
+            resolve_cache_routing(None, None, None, None),
+            (vec![], None)
+        );
         let mut a = args();
         a.prompt_cache_key = None;
         let body = build_body(&a);
@@ -355,7 +377,7 @@ mod tests {
     fn invalid_override_falls_back_to_affinity_key() {
         let provider_options = json!({ "prompt_cache_key": 12345 });
         let (headers, prompt_cache_key) =
-            resolve_cache_routing(Some(&provider_options), Some("s_conversation"), None);
+            resolve_cache_routing(Some(&provider_options), None, Some("s_conversation"), None);
         assert_eq!(prompt_cache_key.as_deref(), Some(headers[0].1.as_str()));
     }
 
@@ -364,7 +386,7 @@ mod tests {
         for blank in ["", "   "] {
             let provider_options = json!({ "prompt_cache_key": blank });
             let (headers, prompt_cache_key) =
-                resolve_cache_routing(Some(&provider_options), Some("s_conversation"), None);
+                resolve_cache_routing(Some(&provider_options), None, Some("s_conversation"), None);
             assert_eq!(
                 prompt_cache_key.as_deref(),
                 Some(headers[0].1.as_str()),

@@ -256,9 +256,9 @@ describe('conversationToMarkdown — workers block', () => {
 
   it('renders (no version) when a worker has no version', () => {
     const out = conversationToMarkdown(baseConversation(), [
-      { name: 'scrapling' },
+      { name: 'browser' },
     ])
-    expect(out).toContain('- Workers:\n  - scrapling: (no version)')
+    expect(out).toContain('- Workers:\n  - browser: (no version)')
   })
 
   it('renders _(unavailable)_ when workers is null', () => {
@@ -300,7 +300,7 @@ describe('fetchWorkerVersions', () => {
       workers: [
         { id: 'w1', name: 'harness', version: '1.5.2', status: 'connected' },
         { id: 'w2', name: null, version: '0.2.4', status: 'connected' },
-        { id: 'w3', name: 'scrapling', version: null, status: 'connected' },
+        { id: 'w3', name: 'browser', version: null, status: 'connected' },
       ],
     })
     const out = await fetchWorkerVersions()
@@ -312,7 +312,7 @@ describe('fetchWorkerVersions', () => {
     expect(out).toEqual([
       { name: 'harness', version: '1.5.2' },
       { name: 'w2', version: '0.2.4' },
-      { name: 'scrapling', version: undefined },
+      { name: 'browser', version: undefined },
     ])
   })
 

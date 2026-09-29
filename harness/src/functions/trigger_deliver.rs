@@ -507,23 +507,86 @@ async fn call_target(
     (payload, outcome)
 }
 
+/// Ceiling on the rendered event inside a wake (the label prefix is extra).
+/// Fits 100 UUID primary keys — the native `database::row-changed` cap —
+/// whole; only wider rows or larger composite keys shrink.
+const WAKE_TEXT_MAX: usize = 8_000;
+
+/// What the woken owner reads. Bounded by [`WAKE_TEXT_MAX`]; the shape rules
+/// (array shedding vs. plain cut) are [`render_bounded`]'s.
 fn notification_text(binding: &Binding, event: &Value) -> String {
-    const MAX: usize = 600;
-    let rendered = match event {
+    let summary = match event {
         Value::Null => "event fired".to_string(),
-        Value::String(s) => s.clone(),
-        other => serde_json::to_string(other).unwrap_or_else(|_| "event fired".to_string()),
-    };
-    let summary = if rendered.chars().count() > MAX {
-        let mut s: String = rendered.chars().take(MAX).collect();
-        s.push_str(" …(truncated)");
-        s
-    } else {
-        rendered
+        Value::String(s) => truncate_chars(s, WAKE_TEXT_MAX),
+        other => render_bounded(other, WAKE_TEXT_MAX),
     };
     match binding_label(binding) {
         Some(label) => format!("[notification] {label}: {summary}"),
         None => format!("[notification] {summary}"),
+    }
+}
+
+/// `event` as JSON in at most `budget` chars (plus the `…(truncated)` tail on
+/// the fallback path). An object that does not fit sheds trailing elements from
+/// its top-level arrays — longest first, by a share proportional to the
+/// overshoot — until it does; each shrunk array ends in ONE marker string
+/// `"…N more entries omitted (array shortened for this notification; JSON is
+/// complete)"` — N is what the wake dropped, separate from any cap the producer
+/// applied, and the tail says out loud that nothing was cut mid-structure (a
+/// weaker model read a bare ellipsis as a broken array). The text stays valid
+/// JSON with every scalar field intact. Elements are atomic: nested arrays are never descended.
+/// Non-objects, and an object whose non-array fields alone exceed the budget,
+/// fall back to a plain char cut.
+fn render_bounded(event: &Value, budget: usize) -> String {
+    let Some(obj) = event.as_object() else {
+        return truncate_chars(&event.to_string(), budget);
+    };
+    // (key, elements kept, original length). One clone shrunk in place, so a
+    // pass costs O(rendered) whatever the producer sent.
+    let mut v = event.clone();
+    let mut keep: Vec<(&str, usize, usize)> = obj
+        .iter()
+        .filter_map(|(k, val)| {
+            let n = val.as_array()?.len();
+            Some((k.as_str(), n, n))
+        })
+        .collect();
+    // ponytail: the pass ceiling is the DoS guard — a shape the proportional
+    // step cannot converge on (thousands of one-element arrays, where the
+    // marker outgrows what it replaces) ends in the char cut instead of a long
+    // loop; real row events fit in 2–4 passes.
+    for _ in 0..32 {
+        let s = v.to_string();
+        let len = s.chars().count();
+        if len <= budget {
+            return s;
+        }
+        let Some((k, n, total)) = keep
+            .iter_mut()
+            .filter(|(_, n, _)| *n > 0)
+            .max_by_key(|(_, n, _)| *n)
+        else {
+            return truncate_chars(&s, budget);
+        };
+        // The array is only part of `len`, so this share never overshoots;
+        // div_ceil keeps every pass making progress.
+        *n -= (*n * (len - budget)).div_ceil(len);
+        if let Some(arr) = v[*k].as_array_mut() {
+            arr.truncate(*n);
+            arr.push(Value::String(format!(
+                "…{} more entries omitted (array shortened for this notification; JSON is complete)",
+                *total - *n
+            )));
+        }
+    }
+    truncate_chars(&v.to_string(), budget)
+}
+
+/// `s` cut after `max` chars with an explicit tail; unchanged when it fits.
+fn truncate_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        None => s.to_string(),
+        Some((cut, _)) => format!("{} …(truncated)", &s[..cut]),
     }
 }
 
@@ -786,11 +849,7 @@ async fn notify_condition_failure(deps: &Deps, binding: &Binding, skip: &Skip) {
 /// re-registered binding never fires for events that preceded it.
 fn condition_failure_text(binding: &Binding, skip: &Skip) -> String {
     const MAX_REASON: usize = 400;
-    let mut reason = skip.reason.clone();
-    if reason.chars().count() > MAX_REASON {
-        reason = reason.chars().take(MAX_REASON).collect();
-        reason.push_str(" …(truncated)");
-    }
+    let reason = truncate_chars(&skip.reason, MAX_REASON);
     let label = binding_label(binding)
         .map(|l| format!(" `{l}`"))
         .unwrap_or_default();
@@ -879,11 +938,211 @@ mod tests {
             fires: 0,
             created_at: 0,
         };
-        let big = json!({ "blob": "x".repeat(5000) });
+        let big = json!({ "blob": "x".repeat(20_000) });
         let text = notification_text(&b, &big);
         assert!(text.starts_with("[notification] "));
         assert!(text.contains("…(truncated)"));
-        assert!(text.chars().count() < 700);
+        assert_eq!(
+            text.chars().count(),
+            "[notification] ".len() + WAKE_TEXT_MAX + " …(truncated)".chars().count()
+        );
+    }
+
+    fn row_event(rows: usize) -> Value {
+        let returning: Vec<Value> = (0..rows)
+            .map(|i| json!({ "id": format!("550e8400-e29b-41d4-a716-{i:012}") }))
+            .collect();
+        json!({
+            "db": "primary", "table": "orders", "op": "insert",
+            "affected_rows": rows, "returning": returning, "at": 1_700_000_000_000_i64
+        })
+    }
+
+    fn wake_json(text: &str) -> Value {
+        let json = text.strip_prefix("[notification] ").expect("wake prefix");
+        serde_json::from_str(json).unwrap_or_else(|e| panic!("{e}: {json}"))
+    }
+
+    /// N out of a `"…N more entries omitted (…)"` marker.
+    fn omitted(marker: &Value) -> usize {
+        let marker = marker.as_str().expect("marker string");
+        assert!(marker.contains("more entries omitted ("), "{marker}");
+        assert!(marker.ends_with("JSON is complete)"), "{marker}");
+        marker
+            .trim_start_matches('…')
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    /// Prevents: the MOT-4778 regression — the native row-changed cap (100
+    /// keys) must ride the wake whole, or the agent never learns which rows
+    /// changed without a second lookup.
+    #[test]
+    fn notification_text_keeps_a_hundred_uuid_keys_whole() {
+        let b = wake_binding("database::row-changed");
+        let text = notification_text(&b, &row_event(100));
+        let event = wake_json(&text);
+        assert_eq!(event["returning"].as_array().unwrap().len(), 100);
+        assert!(!text.contains("omitted"), "{text}");
+    }
+
+    /// Prevents: cutting JSON mid-array. An over-long `returning` keeps its
+    /// leading rows, ends in one self-describing marker, and every scalar
+    /// survives — the text parses, and the reader knows what is missing.
+    #[test]
+    fn notification_text_shrinks_returning_to_parseable_json() {
+        let b = wake_binding("database::row-changed");
+        let text = notification_text(&b, &row_event(400));
+        assert!(text.chars().count() <= WAKE_TEXT_MAX + "[notification] ".len());
+        let event = wake_json(&text);
+        let returning = event["returning"].as_array().unwrap();
+        assert_eq!(
+            returning.len() - 1 + omitted(returning.last().unwrap()),
+            400
+        );
+        assert_eq!(event["affected_rows"], 400);
+        assert_eq!(event["table"], "orders");
+    }
+
+    #[test]
+    fn render_bounded_drops_an_element_larger_than_the_budget() {
+        let out = render_bounded(&json!({ "a": ["x".repeat(300)], "b": 1 }), 120);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["b"], 1);
+        assert_eq!(v["a"].as_array().unwrap().len(), 1);
+        assert_eq!(omitted(&v["a"][0]), 1);
+    }
+
+    #[test]
+    fn render_bounded_shrinks_the_longest_array_first() {
+        let long: Vec<u32> = (0..60).collect();
+        let short: Vec<u32> = (0..10).collect();
+        let out = render_bounded(&json!({ "long": long, "short": short }), 200);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["short"].as_array().unwrap().len(), 10, "{out}");
+        assert!(
+            v["long"].as_array().unwrap().last().unwrap().is_string(),
+            "{out}"
+        );
+        assert!(out.chars().count() <= 200, "{out}");
+    }
+
+    /// Prevents: a scalar event escaping the bound. A string event rides raw
+    /// (unquoted) when it fits and is char-cut with the explicit tail when it
+    /// does not; a null event still reads "event fired".
+    #[test]
+    fn notification_text_bounds_a_string_event_and_keeps_a_short_one_raw() {
+        let b = wake_binding("state");
+        assert_eq!(
+            notification_text(&b, &json!("plain")),
+            "[notification] plain"
+        );
+        assert_eq!(
+            notification_text(&b, &Value::Null),
+            "[notification] event fired"
+        );
+        let text = notification_text(&b, &json!("y".repeat(20_000)));
+        assert!(text.ends_with("…(truncated)"), "{text}");
+    }
+
+    /// Pins the documented fallback: only an OBJECT's top-level arrays shrink
+    /// structurally. A top-level array (or any other non-object) is a char cut
+    /// with the explicit tail, and a small scalar renders exactly. An array
+    /// with far more elements than the budget has chars still converges.
+    #[test]
+    fn render_bounded_char_cuts_a_non_object_and_converges_on_a_tiny_budget() {
+        assert_eq!(render_bounded(&json!(41.5), 100), "41.5");
+        let rows: Vec<u32> = (0..1000).collect();
+        let out = render_bounded(&json!(rows), 50);
+        assert!(out.starts_with("[0,1,2,"), "{out}");
+        assert!(
+            out.ends_with("…(truncated)") && !out.contains("omitted"),
+            "{out}"
+        );
+        // 500 elements against a 120-char budget: the marker alone is most of it.
+        let many: Vec<u32> = (0..500).collect();
+        let out = render_bounded(&json!({ "a": many }), 120);
+        let v: Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
+        assert!(
+            v["a"].as_array().unwrap().last().unwrap().is_string(),
+            "{out}"
+        );
+        assert!(out.chars().count() <= 120, "{out}");
+    }
+
+    /// Prevents: a bogus `"…0 more entries omitted"` on an empty array, and a
+    /// shrink loop that never finishes on one. An object whose arrays are
+    /// already empty but whose scalars overflow falls back to the char cut.
+    #[test]
+    fn render_bounded_leaves_an_empty_array_alone_and_falls_back_to_the_cut() {
+        let out = render_bounded(&json!({ "returning": [], "blob": "x".repeat(300) }), 100);
+        assert!(!out.contains("omitted"), "{out}");
+        assert!(out.ends_with("…(truncated)"), "{out}");
+    }
+
+    /// The marker counts what the wake dropped from the REAL length, and a
+    /// shrunk array that still overflows on its scalars falls to the char cut
+    /// with the marker already in place.
+    #[test]
+    fn render_bounded_counts_omissions_from_the_real_length() {
+        let out = render_bounded(&json!({ "a": vec![0u8; 500] }), 100);
+        let v: Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
+        let a = v["a"].as_array().unwrap();
+        assert_eq!(a.len() - 1 + omitted(a.last().unwrap()), 500, "{out}");
+
+        let out = render_bounded(
+            &json!({ "a": ["x".repeat(50)], "blob": "y".repeat(300) }),
+            100,
+        );
+        assert!(out.ends_with(" …(truncated)"), "{out}");
+        assert!(out.contains("…1 more entries omitted ("), "{out}");
+    }
+
+    /// Prevents: a `<=` → `<` regression shedding a row or appending the tail
+    /// on an event that lands exactly on the cap.
+    #[test]
+    fn truncation_is_exact_at_the_boundary() {
+        assert_eq!(truncate_chars("abc", 3), "abc");
+        assert_eq!(truncate_chars("abcd", 3), "abc …(truncated)");
+        let ev = row_event(3);
+        let exact = ev.to_string();
+        assert_eq!(render_bounded(&ev, exact.chars().count()), exact);
+        assert!(render_bounded(&ev, exact.chars().count() - 1).contains("omitted"));
+    }
+
+    /// Prevents: the wake renderer becoming a CPU amplifier on writer-shaped
+    /// input. Thousands of one-element arrays (the marker outgrows what it
+    /// replaces) and a huge array of tiny scalars both end within the pass
+    /// ceiling, bounded and — for the array — still parseable.
+    #[test]
+    fn render_bounded_stays_bounded_on_adversarial_shapes() {
+        let many: serde_json::Map<String, Value> =
+            (0..3_000).map(|i| (format!("k{i}"), json!([0]))).collect();
+        let out = render_bounded(&Value::Object(many), WAKE_TEXT_MAX);
+        assert!(out.chars().count() <= WAKE_TEXT_MAX + " …(truncated)".chars().count());
+
+        let out = render_bounded(
+            &json!({ "a": vec![0u8; 200_000], "table": "t" }),
+            WAKE_TEXT_MAX,
+        );
+        let v: Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {}", &out[..80]));
+        assert_eq!(v["table"], "t");
+        assert!(
+            out.chars().count() <= WAKE_TEXT_MAX,
+            "{}",
+            out.chars().count()
+        );
+    }
+
+    /// Budgets are in chars, not bytes: a multi-byte event never panics on a
+    /// boundary or gets a shorter cut than an ASCII one.
+    #[test]
+    fn truncate_chars_counts_chars_not_bytes() {
+        assert_eq!(truncate_chars("héllo", 5), "héllo");
+        assert_eq!(truncate_chars(&"é".repeat(10), 4), "éééé …(truncated)");
     }
 
     #[test]

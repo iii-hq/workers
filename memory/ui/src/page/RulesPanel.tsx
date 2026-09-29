@@ -1,12 +1,15 @@
 import {
+  Badge,
   Button,
   CodeEditor,
   type CodeEditorHandle,
   EmptyState,
   Input,
+  Panel,
+  PanelHeader,
 } from '@iii-dev/console-ui'
+import { Plus, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { Plus, X } from './icons'
 import type { MemoryRule } from './memory-data'
 import { useDirtyDelta } from './widgets'
 
@@ -70,13 +73,13 @@ function RuleEditor({
   }
 
   return (
-    <div className="mem-ui-rule">
-      <div className="mem-ui-rule-head">
+    <Panel>
+      <PanelHeader>
         <span className="mem-ui-rule-name">{name}.md</span>
         <div className="mem-ui-rule-actions">
           {dirty ? (
             <>
-              <span className="mem-ui-unsaved">Unsaved</span>
+              <Badge variant="warn">Unsaved</Badge>
               <Button variant="ghost" size="sm" disabled={busy} onClick={save}>
                 save
               </Button>
@@ -116,7 +119,7 @@ function RuleEditor({
             </Button>
           )}
         </div>
-      </div>
+      </PanelHeader>
       <div
         className="mem-ui-rule-editor"
         // Forwards a page-level `.focus()` (⌘K, a go-to chord, or
@@ -154,7 +157,7 @@ function RuleEditor({
           }}
         />
       </div>
-    </div>
+    </Panel>
   )
 }
 
@@ -233,7 +236,6 @@ export function RulesPanel({
             variant="ghost"
             size="sm"
             disabled={busy || (!validName && !suggestion)}
-            className="mem-ui-gap1"
           >
             <Plus size={16} aria-hidden />
             add rule

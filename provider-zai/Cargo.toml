@@ -2,7 +2,7 @@
 
 [package]
 name = "provider-zai"
-version = "0.5.7-rc.3"
+version = "0.5.13"
 edition = "2021"
 publish = false
 license = "Apache-2.0"

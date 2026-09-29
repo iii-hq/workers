@@ -1,6 +1,12 @@
 //! Integration with the builtin `configuration` worker. The `console` entry is
-//! the source of truth for the HTTP listener port as well as Console UI
-//! preferences and injectable-UI per-worker toggles.
+//! the source of truth for the HTTP listener port, the ephemeral-state
+//! `data_dir`, Console UI preferences and injectable-UI per-worker toggles.
+//!
+//! The workspace layout (tabs, panes, active tab) is deliberately NOT part of
+//! the entry: it changes on every click, and the configuration YAML is meant
+//! to be committed. It lives in `<data_dir>/workspace.json` instead
+//! ([`crate::workspace_store`]); [`migrate_legacy_workspace`] moves the
+//! `workspace` section entries written by older Console versions still carry.
 //!
 //! The local YAML/CLI port is a first-registration seed and a fallback when the
 //! configuration worker is unavailable. Once stored, `http_port` is fetched
@@ -25,6 +31,7 @@ use tokio::sync::RwLock;
 
 use crate::server::{self, AppState, ServerControlCell};
 use crate::ui_assets::UiControl;
+use crate::workspace_store::{default_data_dir, WorkspaceStore};
 
 /// Live port snapshot used by `console::status` and the rebind path.
 pub type PortCell = Arc<RwLock<u16>>;
@@ -36,15 +43,25 @@ pub type ApplyLock = Arc<tokio::sync::Mutex<()>>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
     pub http_port: u16,
+    /// Directory for ephemeral per-instance state, as configured (NOT yet
+    /// resolved — see [`RuntimeConfig::resolved_data_dir`]).
+    pub data_dir: String,
     disabled_workers: HashSet<String>,
 }
 
 impl RuntimeConfig {
-    pub fn fallback(http_port: u16) -> Self {
+    pub fn fallback(http_port: u16, data_dir: &str) -> Self {
         Self {
             http_port,
+            data_dir: data_dir.to_string(),
             disabled_workers: HashSet::new(),
         }
+    }
+
+    /// `data_dir` resolved against the Compose project directory (or the
+    /// process directory outside Compose); absolute and `~/` paths kept.
+    pub fn resolved_data_dir(&self) -> std::path::PathBuf {
+        iii_worker_paths::resolve_path(&self.data_dir)
     }
 }
 
@@ -75,11 +92,11 @@ const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 
-/// The `console` entry schema. `http_port` is strictly bounded to a TCP port;
-/// the UI-owned preference sections stay deliberately permissive so their
-/// detailed shapes can evolve without a console-worker redeploy. Only the
-/// preference envelope — `traces.views[]` entries carrying `id` and `name` —
-/// is pinned.
+/// The `console` entry schema. `http_port` is strictly bounded to a TCP port
+/// and `data_dir` to a non-empty path; the UI-owned preference sections stay
+/// deliberately permissive so their detailed shapes can evolve without a
+/// console-worker redeploy. Only the preference envelope — `traces.views[]`
+/// entries carrying `id` and `name` — is pinned.
 fn schema() -> Value {
     json!({
         "type": "object",
@@ -90,6 +107,12 @@ fn schema() -> Value {
                 "maximum": 65535,
                 "default": 3113,
                 "description": "TCP port for the ADE UI, injected assets, and /ws proxy. Changes rebind the listener live."
+            },
+            "data_dir": {
+                "type": "string",
+                "minLength": 1,
+                "default": default_data_dir(),
+                "description": "Directory for ephemeral per-instance state: the workspace tabs and panes layout (workspace.json). Relative paths resolve against the Compose project directory. Changes apply live; a new location starts from the default layout."
             },
             "traces": {
                 "type": "object",
@@ -150,9 +173,10 @@ fn schema() -> Value {
 ///   (the frontend also defaults to on when the flag is absent).
 /// - `spanFilters`: detail-view funnel defaults — hide the chatty
 ///   `harness::send` span group and the session/context bookkeeping workers.
-fn default_value(http_port: u16) -> Value {
+fn default_value(http_port: u16, data_dir: &str) -> Value {
     json!({
         "http_port": http_port,
+        "data_dir": data_dir,
         "traces": {
             "views": [{
                 "id": "view-sessions",
@@ -175,14 +199,19 @@ fn default_value(http_port: u16) -> Value {
     })
 }
 
-/// Register the `console` configuration entry. `seed_http_port` is included in
-/// `initial_value` only when no value is stored, so runtime edits survive
-/// restarts. Callers intentionally treat errors as best-effort fallbacks.
-pub async fn register_console_config(iii: &IIIClient, seed_http_port: u16) -> Result<(), String> {
+/// Register the `console` configuration entry. `seed_http_port` and
+/// `seed_data_dir` are included in `initial_value` only when no value is
+/// stored, so runtime edits survive restarts. Callers intentionally treat
+/// errors as best-effort fallbacks.
+pub async fn register_console_config(
+    iii: &IIIClient,
+    seed_http_port: u16,
+    seed_data_dir: &str,
+) -> Result<(), String> {
+    iii_console_ui::register_configuration_identity(iii, "console", config_id());
     let existing = existing_value(iii)
         .await
         .map_err(|error| format!("console configuration lookup failed: {error}"))?;
-    let seed = existing.is_none();
     // Entries created by older Console versions already contain preferences
     // but no port. Backfill the active local seed after the schema refresh so
     // the configuration form displays the listener's real value and future
@@ -199,16 +228,18 @@ pub async fn register_console_config(iii: &IIIClient, seed_http_port: u16) -> Re
     let mut payload = json!({
         "id": config_id(),
         "name": "ADE",
-        "description": "ADE server and UI settings — live HTTP port binding, \
-                        Traces V2 saved views, and per-worker injectable-UI toggles.",
+        "description": "ADE server and UI settings — live HTTP port binding, the data \\
+                        directory for the workspace layout, Traces V2 saved views, and \\
+                        per-worker injectable-UI toggles.",
         "schema": schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
-    if seed {
-        payload["initial_value"] = default_value(seed_http_port);
-    }
+    // The port seed is forwarded unconditionally: `configuration::ensure`
+    // installs it atomically ONLY against an absent/null entry, so a stored
+    // console entry is preserved without a client-side read-then-register race.
+    payload["initial_value"] = default_value(seed_http_port, seed_data_dir);
 
-    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
+    ensure_configuration(iii, payload).await?;
     if let Some(value) = backfill {
         set_value(iii, value).await?;
         tracing::info!(
@@ -221,22 +252,35 @@ pub async fn register_console_config(iii: &IIIClient, seed_http_port: u16) -> Re
     Ok(())
 }
 
+/// Initialize atomically when supported, otherwise use the warned legacy path.
+async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
+    initialization::ensure_with(payload, |function, payload| {
+        trigger_configuration_with_retry(iii, function, payload)
+    })
+    .await
+}
+
+#[path = "../../crates/config-client/src/initialization.rs"]
+mod initialization;
+
 const CONFIG_CHANGE_FN_ID: &str = "console::on-config-change";
 
 /// Fetch the runtime-owned fields from the authoritative entry. A missing
-/// `http_port` (including entries created by older Console versions) retains
-/// the supplied seed/fallback port.
+/// `http_port` or `data_dir` (including entries created by older Console
+/// versions) retains the supplied seed/fallback value.
 pub async fn fetch_runtime_config(
     iii: &IIIClient,
     fallback_http_port: u16,
+    fallback_data_dir: &str,
 ) -> Result<RuntimeConfig, String> {
     let value = existing_value(iii).await?;
-    runtime_config_from(value.as_ref(), fallback_http_port)
+    runtime_config_from(value.as_ref(), fallback_http_port, fallback_data_dir)
 }
 
 fn runtime_config_from(
     value: Option<&Value>,
     fallback_http_port: u16,
+    fallback_data_dir: &str,
 ) -> Result<RuntimeConfig, String> {
     let http_port = match value.and_then(|value| value.get("http_port")) {
         None => fallback_http_port,
@@ -251,10 +295,50 @@ fn runtime_config_from(
         }
     };
 
+    let data_dir = match value.and_then(|value| value.get("data_dir")) {
+        None | Some(Value::Null) => fallback_data_dir.to_string(),
+        Some(Value::String(dir)) if !dir.trim().is_empty() => dir.trim().to_string(),
+        Some(_) => return Err("stored `console.data_dir` must be a non-empty path".to_string()),
+    };
+
     Ok(RuntimeConfig {
         http_port,
+        data_dir,
         disabled_workers: value.map(disabled_workers_from).unwrap_or_default(),
     })
+}
+
+/// One-time move of the `workspace` section (tabs, panes, active pointer)
+/// out of the configuration entry into the workspace store. Older Console
+/// versions persisted the layout there; it is ephemeral state and the YAML is
+/// meant to be committed. The stored layout is imported only when the file
+/// does not exist yet (a file already there is the newer truth); the section
+/// is removed from the entry either way. `Ok(true)` when the entry changed.
+pub async fn migrate_legacy_workspace(
+    iii: &IIIClient,
+    workspace: &WorkspaceStore,
+) -> Result<bool, String> {
+    let Some(Value::Object(mut entry)) = existing_value(iii).await? else {
+        return Ok(false);
+    };
+    let Some(legacy) = entry.remove("workspace") else {
+        return Ok(false);
+    };
+    let imported = match legacy {
+        Value::Object(_) if !workspace.exists().await => {
+            workspace.save(&legacy).await?;
+            true
+        }
+        _ => false,
+    };
+    set_value(iii, Value::Object(entry)).await?;
+    tracing::info!(
+        id = config_id(),
+        path = %workspace.path().await.display(),
+        imported,
+        "moved the legacy workspace layout out of the console configuration entry"
+    );
+    Ok(true)
 }
 
 /// Apply the runtime UI slice fetched during boot.
@@ -275,6 +359,7 @@ pub fn register_config_trigger(
     state: AppState,
     server_control: ServerControlCell,
     ui_control: Option<UiControl>,
+    workspace: Arc<WorkspaceStore>,
     apply_lock: ApplyLock,
 ) -> Result<(), Error> {
     let iii_for_fn = iii.clone();
@@ -286,6 +371,7 @@ pub fn register_config_trigger(
             let state = state.clone();
             let server_control = server_control.clone();
             let ui_control = ui_control.clone();
+            let workspace = workspace.clone();
             let apply_lock = apply_lock.clone();
             async move {
                 apply_current_config(
@@ -294,6 +380,7 @@ pub fn register_config_trigger(
                     &state,
                     &server_control,
                     ui_control.as_ref(),
+                    &workspace,
                     &apply_lock,
                 )
                 .await;
@@ -301,8 +388,8 @@ pub fn register_config_trigger(
             }
         })
         .description(
-            "Internal: re-apply the ADE HTTP port and injectable-UI toggles \
-             when its configuration entry changes.",
+            "Internal: re-apply the ADE HTTP port, data directory and injectable-UI \\
+             toggles when its configuration entry changes.",
         )
         .metadata(json!({ "internal": true })),
     );
@@ -326,11 +413,15 @@ pub async fn apply_current_config(
     state: &AppState,
     server_control: &ServerControlCell,
     ui_control: Option<&UiControl>,
+    workspace: &WorkspaceStore,
     apply_lock: &ApplyLock,
 ) {
     let _guard = apply_lock.lock().await;
     let current_port = *port.read().await;
-    let candidate = match fetch_runtime_config(iii, current_port).await {
+    // A stored `data_dir` that is missing or invalid keeps the directory the
+    // store is currently pointed at, exactly like the port keeps its snapshot.
+    let current_data_dir = workspace.dir().await.to_string_lossy().into_owned();
+    let candidate = match fetch_runtime_config(iii, current_port, &current_data_dir).await {
         Ok(config) => config,
         Err(error) => {
             tracing::error!(%error, "console config-change fetch failed; keeping previous state");
@@ -352,6 +443,14 @@ pub async fn apply_current_config(
             old = current_port,
             new = candidate.http_port,
             "console server rebound after configuration change; old port shutting down"
+        );
+    }
+
+    let next_data_dir = candidate.resolved_data_dir();
+    if workspace.set_dir(next_data_dir.clone()).await {
+        tracing::info!(
+            data_dir = %next_data_dir.display(),
+            "console workspace store re-pointed after configuration change"
         );
     }
 
@@ -417,7 +516,7 @@ pub(crate) async fn existing_value(iii: &IIIClient) -> Result<Option<Value>, Str
         .await
     {
         Ok(resp) => Ok(resp.get("value").filter(|v| !v.is_null()).cloned()),
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
+        Err(e) if is_not_found(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -455,6 +554,10 @@ pub(crate) async fn trigger_configuration_with_retry(
             Ok(v) => return Ok(v),
             Err(e) => {
                 last_err = e.to_string();
+                if matches!(&e, iii_sdk::errors::Error::Remote { code, .. } if code == "function_not_found" || code == "NOT_FOUND")
+                {
+                    return Err(last_err);
+                }
                 if attempt < CONFIG_RETRIES {
                     tokio::time::sleep(Duration::from_millis(
                         CONFIG_RETRY_BACKOFF_MS * u64::from(attempt),
@@ -469,8 +572,44 @@ pub(crate) async fn trigger_configuration_with_retry(
     ))
 }
 
+/// `true` only when the error carries the configuration worker's standalone
+/// `NOT_FOUND` entry code, identified by the outermost `remote error (<code>)` envelope code rather than a substring or token scan of the message, so
+/// a compound code such as `RESOURCE_NOT_FOUND`/`STATEMENT_NOT_FOUND` or the
+/// engine's lowercase missing-FUNCTION code `function_not_found` still
+/// propagates as a failure instead of being read as "nothing stored yet".
+fn is_not_found(error: &str) -> bool {
+    // Anchor on the SDK's own rendering instead of scanning the whole string:
+    // a remote failure prints as `remote error ({code}): {message}`, and this
+    // worker wraps a retried get as
+    // `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel
+    // exactly that one wrapper (never a foreign one or a different attempt
+    // count) and then require the NOT_FOUND envelope at the very start, so a
+    // NOT_FOUND code buried in an unrelated message, a nested envelope, or a
+    // different wrapper stays a real failure and propagates.
+    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
+    const _: () = assert!(CONFIG_RETRIES == 3);
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "NOT_FOUND"
+        || raw == "remote error (NOT_FOUND):"
+        || raw.starts_with("remote error (NOT_FOUND): ")
+}
+
 #[cfg(test)]
 mod tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/config-client/tests/support/is_not_found_cases.rs"
+    ));
+
+    /// The missing-entry classifier only seeds on the configuration worker's
+    /// standalone `NOT_FOUND` envelope; every unrelated failure or compound
+    /// code propagates instead of clobbering a stored value with a default.
+    #[test]
+    fn is_not_found_matches_only_the_envelope_code() {
+        assert_missing_entry_contract(super::is_not_found);
+    }
+
     use super::*;
 
     #[test]
@@ -513,24 +652,84 @@ mod tests {
     }
 
     #[test]
+    fn schema_exposes_the_data_dir() {
+        let dir = &schema()["properties"]["data_dir"];
+        assert_eq!(dir["type"], "string");
+        assert_eq!(dir["minLength"], 1);
+        assert_eq!(dir["default"], "data/ade");
+        // The layout is ephemeral: it must never be pinned into the entry.
+        assert!(schema()["properties"].get("workspace").is_none());
+    }
+
+    #[test]
     fn runtime_port_uses_stored_value_or_fallback() {
         let stored = json!({
             "http_port": 9123,
             "injectableUi": { "disabledWorkers": ["state"] }
         });
-        let parsed = runtime_config_from(Some(&stored), 3113).unwrap();
+        let parsed = runtime_config_from(Some(&stored), 3113, "data/ade").unwrap();
         assert_eq!(parsed.http_port, 9123);
         assert!(parsed.disabled_workers.contains("state"));
 
         assert_eq!(
-            runtime_config_from(Some(&json!({})), 4555)
+            runtime_config_from(Some(&json!({})), 4555, "data/ade")
                 .unwrap()
                 .http_port,
             4555
         );
-        assert_eq!(runtime_config_from(None, 4666).unwrap().http_port, 4666);
-        assert!(runtime_config_from(Some(&json!({ "http_port": 70_000 })), 3113).is_err());
-        assert!(runtime_config_from(Some(&json!({ "http_port": "3113" })), 3113).is_err());
+        assert_eq!(
+            runtime_config_from(None, 4666, "data/ade")
+                .unwrap()
+                .http_port,
+            4666
+        );
+        assert!(
+            runtime_config_from(Some(&json!({ "http_port": 70_000 })), 3113, "data/ade").is_err()
+        );
+        assert!(
+            runtime_config_from(Some(&json!({ "http_port": "3113" })), 3113, "data/ade").is_err()
+        );
+    }
+
+    #[test]
+    fn runtime_data_dir_uses_stored_value_or_fallback() {
+        let stored = json!({ "http_port": 3113, "data_dir": "  /var/lib/iii/ade  " });
+        let parsed = runtime_config_from(Some(&stored), 3113, "data/ade").unwrap();
+        assert_eq!(parsed.data_dir, "/var/lib/iii/ade");
+        assert_eq!(
+            parsed.resolved_data_dir(),
+            std::path::PathBuf::from("/var/lib/iii/ade")
+        );
+
+        // Entries written before `data_dir` existed keep the seed.
+        assert_eq!(
+            runtime_config_from(Some(&json!({ "http_port": 3113 })), 3113, "data/elsewhere")
+                .unwrap()
+                .data_dir,
+            "data/elsewhere"
+        );
+        assert_eq!(
+            runtime_config_from(Some(&json!({ "data_dir": null })), 3113, "data/ade")
+                .unwrap()
+                .data_dir,
+            "data/ade"
+        );
+        assert_eq!(
+            runtime_config_from(None, 3113, "data/ade")
+                .unwrap()
+                .data_dir,
+            "data/ade"
+        );
+        for bad in [
+            json!({ "data_dir": "" }),
+            json!({ "data_dir": "   " }),
+            json!({ "data_dir": 7 }),
+        ] {
+            assert!(
+                runtime_config_from(Some(&bad), 3113, "data/ade").is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
@@ -539,7 +738,7 @@ mod tests {
         // drops spans lacking the attribute, and `iii.session.name` is only
         // stamped once a session has a title, which hid every untitled
         // session's traces from the default view.
-        let v = default_value(3113);
+        let v = default_value(3113, "data/ade");
         let view = &v["traces"]["views"][0];
         assert_eq!(view["id"], "view-sessions");
         assert_eq!(view["groupBy"], "iii.session.id");
@@ -548,8 +747,15 @@ mod tests {
     }
 
     #[test]
+    fn seed_carries_the_data_dir_and_no_workspace() {
+        let v = default_value(3113, "data/custom");
+        assert_eq!(v["data_dir"], "data/custom");
+        assert!(v.get("workspace").is_none());
+    }
+
+    #[test]
     fn seed_starts_with_no_disabled_workers() {
-        let v = default_value(3113);
+        let v = default_value(3113, "data/ade");
         assert!(disabled_workers_from(&v).is_empty());
         assert!(v["injectableUi"]["disabledWorkers"]
             .as_array()
@@ -607,7 +813,9 @@ mod tests {
     #[tokio::test]
     async fn failed_rebind_keeps_old_port_and_listener() {
         let (old_port, occupied_port) = two_free_ports();
-        let occupied = tokio::net::TcpListener::bind(("0.0.0.0", occupied_port))
+        // Reserve the exact interface rebind uses. On macOS a wildcard
+        // listener does not necessarily prevent a loopback bind to the same port.
+        let occupied = tokio::net::TcpListener::bind((server::bind_host(), occupied_port))
             .await
             .unwrap();
         let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None, None);

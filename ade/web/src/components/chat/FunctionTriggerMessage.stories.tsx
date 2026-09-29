@@ -19,7 +19,6 @@ import {
 } from '@/stories/fixtures/harness-fixtures'
 import { routerFixtures } from '@/stories/fixtures/router-fixtures'
 import { sandboxFixtures } from '@/stories/fixtures/sandbox-fixtures'
-import { scraplingFixtures } from '@/stories/fixtures/scrapling-fixtures'
 import { shellFixtures } from '@/stories/fixtures/shell-fixtures'
 import { stateFixtures } from '@/stories/fixtures/state-fixtures'
 import { webFixtures } from '@/stories/fixtures/web-fixtures'
@@ -227,7 +226,7 @@ function FamilyGallery({ fixtures }: { fixtures: readonly FTriggerType[] }) {
     <div className="grid grid-cols-1 @3xl:grid-cols-2 gap-6 @container">
       {fixtures.map((fixture) => (
         <div key={fixture.id} className="border border-rule bg-bg">
-          <div className="bg-panel px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+          <div className="bg-panel px-3 py-1.5 border-b border-rule-2 iii-ui-eyebrow">
             {fixture.functionId}
           </div>
           <div className="p-4">
@@ -435,9 +434,4 @@ export const FpFamily: Story = {
 export const StateFamily: Story = {
   name: 'state family',
   render: () => <FamilyGallery fixtures={stateFixtures} />,
-}
-
-export const ScraplingFamily: Story = {
-  name: 'scrapling family',
-  render: () => <FamilyGallery fixtures={scraplingFixtures} />,
 }

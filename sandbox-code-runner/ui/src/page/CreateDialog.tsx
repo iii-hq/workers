@@ -17,6 +17,7 @@ import {
   Input,
   Select,
 } from '@iii-dev/console-ui'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
 import { useEffect, useState } from 'react'
 import { asRecord } from '../lib/payload'
 import { parseSandboxError, type SandboxError } from './errors'
@@ -213,7 +214,7 @@ export function CreateDialog({
                 aria-label="idle timeout in seconds"
               />
             </div>
-            <div className="cr-page-field-row cr-page-network-row">
+            <div className="cr-page-field-row">
               <Select
                 value={network}
                 options={[
@@ -235,7 +236,7 @@ export function CreateDialog({
           </div>
 
           {pending ? (
-            <div className="cr-page-pending" role="status">
+            <div className={`cr-page-pending ${uiClasses.pulse}`} role="status">
               creating… {elapsed}s — {createStageNote(elapsed)}
               {phases.length > 0 ? (
                 <ol className="cr-page-create-steps">

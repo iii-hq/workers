@@ -17,7 +17,7 @@ use crate::config::ShellConfig;
 use crate::fs::host::{HostFsBackend, HostFsConfig, IiiChannelMaker};
 use crate::fs::FsBackend;
 
-pub const DEFAULT_CONFIG_ID: &str = "shell";
+pub const DEFAULT_CONFIG_ID: &str = "ide";
 
 /// The configuration entry this worker owns.
 ///
@@ -180,7 +180,7 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime,
     })
 }
 
-/// Register the `shell` configuration schema with the configuration worker.
+/// Register the `ide` configuration schema with the configuration worker.
 ///
 /// `initial_value` is taken from an explicit `--config` seed when given,
 /// otherwise from the built-in zero-config default — so the worker boots with
@@ -189,15 +189,16 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime,
 /// built-in seed is `ShellConfig::seed_default()`, a bootable permissive dev
 /// default.
 ///
-/// Seeding is gated on the stored value being absent or null:
-/// `configuration::register` REPLACES the stored value whenever
-/// `initial_value` is present (not only on first registration), so an
-/// ungated seed would let every reboot with a `--config` file clobber
-/// runtime `configuration::set` changes — the documented contract is the
-/// opposite ("the live value takes precedence once an entry exists"). The
-/// null case is a boot that previously could not seed (MOT-4252): re-seeding
-/// over it repairs the entry instead of leaving the worker in a crash loop.
+/// The candidate seed is installed atomically by `configuration::ensure`
+/// ONLY against an absent/null entry, so a stored operator/Compose value (or
+/// a runtime `configuration::set`) is preserved without a client-side
+/// read-then-register race. The `--config`/legacy candidate is only COMPUTED
+/// and validated when nothing is stored yet, but the seed decision itself is
+/// the engine's — forwarding a candidate can never clobber a stored value. The
+/// null case is a boot that previously could not seed (MOT-4252): ensure
+/// repairs it instead of leaving the worker in a crash loop.
 pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Result<(), String> {
+    iii_console_ui::register_configuration_identity(iii, "ide", config_id());
     let mut payload = json!({
         "id": config_id(),
         "name": "IDE",
@@ -206,9 +207,19 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if stored_value_absent(iii).await? {
-        let candidate = match seed {
-            Some(s) => s.clone(),
-            None => ShellConfig::seed_default(),
+        // The entry was `shell` until the worker's UI/configuration rename to
+        // `ide`: a value stored there is carried over once so the jail and
+        // denylist survive the rename. It beats a `--config` seed the way any
+        // live value beats the seed once an entry exists.
+        let legacy = if config_id() == DEFAULT_CONFIG_ID {
+            legacy_stored_value(iii).await
+        } else {
+            None
+        };
+        let candidate = match (legacy, seed) {
+            (Some(carried), _) => carried,
+            (None, Some(s)) => s.clone(),
+            (None, None) => ShellConfig::seed_default(),
         };
         // Validate with the SAME checks build_runtime uses (denylist regex
         // compile, fs-jail rule, host_roots/denylist reachability) BEFORE
@@ -223,8 +234,44 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
             ),
         }
     }
-    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
-    Ok(())
+    ensure_configuration(iii, payload).await
+}
+
+#[path = "../../crates/config-client/src/initialization.rs"]
+mod initialization;
+
+/// Initialize atomically when supported, otherwise use the warned legacy path.
+async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
+    initialization::ensure_with(payload, |function, payload| {
+        trigger_configuration_with_retry(iii, function, payload)
+    })
+    .await
+}
+
+/// The configuration entry id before the rename to `ide`.
+const LEGACY_CONFIG_ID: &str = "shell";
+
+/// The value stored under the pre-rename `shell` entry, when there is one
+/// that still parses. Read raw so `${VAR}` references carry over unexpanded.
+async fn legacy_stored_value(iii: &IIIClient) -> Option<ShellConfig> {
+    let value = match try_get_value(iii, LEGACY_CONFIG_ID, true).await {
+        Ok(Some(value)) if !value.is_null() => value,
+        Ok(_) => return None,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read the legacy `shell` configuration entry");
+            return None;
+        }
+    };
+    match ShellConfig::from_json(&value) {
+        Ok(cfg) => {
+            tracing::info!("carrying the stored `shell` configuration over to `ide`");
+            Some(cfg)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "ignoring the legacy `shell` configuration value");
+            None
+        }
+    }
 }
 
 /// True when no usable value is stored yet (entry missing or value null) —
@@ -284,6 +331,31 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     })
 }
 
+/// `true` for the one error that is a definitive answer rather than a
+/// failure: the configuration worker's uppercase `NOT_FOUND` entry code.
+/// Matched case-SENSITIVELY — the engine's missing-function code is the
+/// lowercase `function_not_found` and a backend lookup failure is
+/// `statement_not_found`; those must propagate as errors instead of being
+/// read as "nothing stored yet", which would seed a default over a stored
+/// operator/override value.
+fn is_not_found(error: &str) -> bool {
+    // Anchor on the SDK's own rendering instead of scanning the whole string:
+    // a remote failure prints as `remote error ({code}): {message}`, and this
+    // worker wraps a retried get as
+    // `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel
+    // exactly that one wrapper (never a foreign one or a different attempt
+    // count) and then require the NOT_FOUND envelope at the very start, so a
+    // NOT_FOUND code buried in an unrelated message, a nested envelope, or a
+    // different wrapper stays a real failure and propagates.
+    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
+    const _: () = assert!(CONFIG_RETRIES == 3);
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "NOT_FOUND"
+        || raw == "remote error (NOT_FOUND):"
+        || raw.starts_with("remote error (NOT_FOUND): ")
+}
+
 async fn try_get_config_value(iii: &IIIClient, raw: bool) -> Result<Option<Value>, String> {
     try_get_value(iii, config_id(), raw).await
 }
@@ -305,13 +377,14 @@ pub(crate) async fn try_get_value(
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
         // `trigger_configuration_with_retry` flattens the structured `Error` to its
-        // Display string, so we substring-match the recovered message rather
-        // than branch on `Error::Remote { code }`. The engine's missing-entry
-        // codes vary in case (`function_not_found`, `STATEMENT_NOT_FOUND`,
-        // `NOT_FOUND`), so uppercase before matching to catch them all. A
-        // false negative is non-fatal — it just propagates the raw retry error
-        // instead of the cleaner "not found", and boot fails closed either way.
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
+        // Display string, so we token-match the recovered message. Only the
+        // configuration worker's uppercase `NOT_FOUND` entry code counts as
+        // "nothing stored yet"; the engine's missing-FUNCTION code is lowercase
+        // `function_not_found` and a backend lookup failure is
+        // `statement_not_found`, so match case-SENSITIVELY — an absent or
+        // unroutable configuration worker must surface as an error, never seed a
+        // default over a stored operator/override value.
+        Err(e) if is_not_found(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -540,6 +613,10 @@ pub(crate) async fn trigger_configuration_with_retry(
             Ok(v) => return Ok(v),
             Err(e) => {
                 last_err = e.to_string();
+                if matches!(&e, iii_sdk::errors::Error::Remote { code, .. } if code == "function_not_found" || code == "NOT_FOUND")
+                {
+                    return Err(last_err);
+                }
                 if attempt < CONFIG_RETRIES {
                     tracing::warn!(function_id, attempt, error = %last_err, "configuration RPC failed; retrying");
                     tokio::time::sleep(Duration::from_millis(
@@ -557,6 +634,43 @@ pub(crate) async fn trigger_configuration_with_retry(
 
 #[cfg(test)]
 mod tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/config-client/tests/support/is_not_found_cases.rs"
+    ));
+
+    /// The missing-entry classifier only seeds on the configuration worker's
+    /// standalone `NOT_FOUND` envelope; every unrelated failure or compound
+    /// code propagates instead of clobbering a stored value with a default.
+    #[test]
+    fn is_not_found_matches_only_the_envelope_code() {
+        assert_missing_entry_contract(super::is_not_found);
+    }
+
+    /// Routing failures must not be mistaken for permission to seed the filesystem policy.
+    #[test]
+    fn missing_entry_detection_does_not_mask_service_failures() {
+        assert!(super::is_not_found("NOT_FOUND"));
+        assert!(super::is_not_found(
+            "remote error (NOT_FOUND): configuration not found"
+        ));
+        assert!(super::is_not_found(
+            "configuration::get failed after 3 attempts: remote error (NOT_FOUND): missing"
+        ));
+        assert!(!super::is_not_found("function_not_found"));
+        assert!(!super::is_not_found("statement_not_found"));
+        assert!(!super::is_not_found("RESOURCE_NOT_FOUND"));
+        assert!(!super::is_not_found(
+            "remote error (ADAPTER_ERROR): NOT_FOUND"
+        ));
+        assert!(!super::is_not_found(
+            "remote error (OTHER): remote error (NOT_FOUND): nested"
+        ));
+        assert!(!super::is_not_found(
+            "configuration::get failed after 3 attempts: function_not_found"
+        ));
+    }
+
     use super::*;
 
     #[test]

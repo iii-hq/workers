@@ -3,6 +3,7 @@
 import {
   Button,
   type ConfigFormProps,
+  EmptyState,
   type Host,
   Input,
   type JsonValue,
@@ -11,8 +12,12 @@ import {
   SettingsList,
   SettingsRow,
   SettingsSection,
+  Skeleton,
+  StatusPanel,
   Switch,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   activeTraceViewId,
@@ -67,6 +72,14 @@ function disabledWorkersOf(value: JsonValue): string[] {
 function httpPortOf(value: JsonValue): string {
   const port = asObject(value).http_port
   return typeof port === 'number' || typeof port === 'string' ? String(port) : '3113'
+}
+
+/** Mirrors the worker's `data_dir` default (`ade/src/workspace_store.rs`). */
+export const DEFAULT_DATA_DIR = 'data/ade'
+
+export function dataDirOf(value: JsonValue): string {
+  const dir = asObject(value).data_dir
+  return typeof dir === 'string' ? dir : ''
 }
 
 function viewOptions(value: JsonValue): SelectOption[] {
@@ -157,7 +170,7 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
       })
       .catch((error) => {
         if (!cancelled) {
-          setLoadError(error instanceof Error ? error.message : String(error))
+          setLoadError(errorMessage(error))
         }
       })
     return () => {
@@ -232,6 +245,23 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
                   })
                 }
                 aria-label="HTTP port"
+              />
+            }
+          />
+          <SettingsRow
+            data-field="data_dir"
+            label="Data directory"
+            description="Where this ADE keeps ephemeral per-instance state: the workspace tabs and panes layout (workspace.json). It changes on every click, so it stays out of the committed configuration."
+            meta={`Relative paths resolve against the Compose project directory. Default: ${DEFAULT_DATA_DIR}. Changes apply without restarting; a new location starts from the default layout.`}
+            control={
+              <Input
+                id="console-data-dir"
+                className="console-ui-path-input"
+                type="text"
+                value={dataDirOf(props.value)}
+                placeholder={DEFAULT_DATA_DIR}
+                onChange={(next) => props.onChange({ ...value, data_dir: next })}
+                aria-label="Data directory"
               />
             }
           />
@@ -361,17 +391,15 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
       >
         {rows === null && loadError === null ? (
           <div className="console-ui-toggle-list" aria-hidden="true">
-            <div className="console-ui-toggle-skeleton" />
-            <div className="console-ui-toggle-skeleton" />
+            <Skeleton className="console-ui-toggle-skeleton" />
+            <Skeleton className="console-ui-toggle-skeleton" />
           </div>
         ) : null}
         {loadError ? (
-          <div className="console-ui-form-error" role="alert">
-            Could not load the worker list: {loadError}
-          </div>
+          <StatusPanel variant="alert" role="alert" headline="Could not load the worker list" detail={loadError} />
         ) : null}
         {rows?.length === 0 ? (
-          <div className="console-ui-form-empty">No worker is currently registering ADE assets.</div>
+          <EmptyState compact title="No worker interfaces" description="No worker is currently registering ADE assets." />
         ) : null}
         {rows && rows.length > 0 ? (
           <SettingsList>
@@ -435,7 +463,7 @@ function StringListEditor({
                 onClick={() => onChange(values.filter((item) => item !== entry))}
                 aria-label={`Remove ${entry} from ${label}`}
               >
-                ×
+                <X className="iii-ui-icon" />
               </button>
             </li>
           ))}
@@ -465,13 +493,16 @@ function StringListEditor({
 function ConfigurationErrors({ errors }: { errors: ReadonlyMap<string, string> | undefined }) {
   if (!errors || errors.size === 0) return null
   return (
-    <div className="console-ui-form-error" role="alert">
-      {[...errors.entries()].map(([pointer, message]) => (
+    <StatusPanel
+      variant="alert"
+      role="alert"
+      headline={`${errors.size} configuration error${errors.size === 1 ? '' : 's'}`}
+      detail={[...errors.entries()].map(([pointer, message]) => (
         <div key={pointer}>
           {pointer ? `${pointer}: ` : ''}
           {message}
         </div>
       ))}
-    </div>
+    />
   )
 }

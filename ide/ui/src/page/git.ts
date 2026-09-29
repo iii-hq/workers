@@ -2,6 +2,7 @@
    worker's own `shell::exec` (argv form, so nothing is shell-tokenized),
    scoped to the browsed root via `cwd`. */
 
+import { errorMessage } from '@iii-dev/console-ui/format'
 import type { Host } from '@iii-dev/console-ui'
 import { coderReadFile, joinPath } from './coder'
 
@@ -128,10 +129,6 @@ type RepositoryState =
   | { kind: 'not-a-repo' }
   | { kind: 'error'; message: string }
   | { kind: 'ready' }
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
 
 function execFailure(out: ExecResponse, operation: string): string | null {
   if (out.timed_out) return `${operation} timed out`

@@ -4,6 +4,10 @@ import { Button } from './Button'
 import { Chip } from './Chip'
 import { Input, type InputProps } from './Input'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 export interface RawValueInputProps extends Omit<InputProps, 'className'> {
   /** Human label used by the explicit replacement action. */
   label: string

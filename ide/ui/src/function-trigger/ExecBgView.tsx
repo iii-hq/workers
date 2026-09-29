@@ -1,5 +1,6 @@
-import { FooterPill, Terminal } from '../lib/terminal'
-import { ShellExecChips, ShellExecPreviewRow } from './ExecView'
+import { Badge, Chip } from '@iii-dev/console-ui'
+import { RefreshCw } from 'lucide-react'
+import { execItems, ShellExecPreviewRow } from './ExecView'
 import { formatArgv, formatShellCommand } from './format'
 import {
   type ShellExecBgRequest,
@@ -8,7 +9,7 @@ import {
   shellExecBgRequestSchema,
   shellExecBgResponseSchema,
 } from './parsers'
-import { isSandboxTarget } from './shared'
+import { isSandboxTarget, TerminalCard } from './shared'
 
 interface ShellExecBgViewProps {
   input: unknown
@@ -26,14 +27,15 @@ export function ShellExecBgView({
   const respData =
     output != null ? safeParseResponse(shellExecBgResponseSchema, output) : null
   return (
-    <Terminal
+    <TerminalCard
       command={formatShellCommand(req.data)}
       running={running}
-      chips={<ShellExecChips req={req.data} bg />}
+      items={execItems(req.data)}
+      chips={<Chip>bg</Chip>}
       footer={respData ? <ShellExecBgFooter req={req.data} /> : null}
     >
       {respData ? <BgStartedBody req={req.data} resp={respData} /> : null}
-    </Terminal>
+    </TerminalCard>
   )
 }
 
@@ -57,9 +59,9 @@ function BgStartedBody({
 }) {
   const resolved = formatArgv(resp.argv)
   return (
-    <div className="shui-body">
+    <div className="shui-card-body">
       <div className="shui-baseline-row">
-        <span className="t-accent">↻</span>
+        <RefreshCw aria-hidden className="shui-glyph t-accent" />
         <span className="t-ink">started</span>
         <code className="shui-inline-code">{resp.job_id}</code>
       </div>
@@ -73,11 +75,11 @@ function BgStartedBody({
 function ShellExecBgFooter({ req }: { req: ShellExecBgRequest }) {
   return (
     <>
-      <FooterPill tone="accent">job started</FooterPill>
+      <Badge variant="accent">job started</Badge>
       {/* Host-targeted background jobs IGNORE timeout_ms (wire semantic);
           surface the silently-dropped knob. */}
       {!isSandboxTarget(req.target) && typeof req.timeout_ms === 'number' ? (
-        <FooterPill tone="warn">timeout_ms ignored (host bg)</FooterPill>
+        <Badge variant="warn">timeout_ms ignored (host bg)</Badge>
       ) : null}
     </>
   )

@@ -5,6 +5,10 @@ import * as React from 'react'
 import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 export interface SelectorOption<T extends string = string> {
   value: T
   label: string
@@ -311,7 +315,11 @@ export function Selector<T extends string>({
           disabled={disabled}
         />
       ) : null}
-      <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+      {/* Modal, like Radix's own Select and DropdownMenu. A modal Dialog
+          locks scrolling to its content, and this list is portalled outside
+          it: without a lock of its own on top, every wheel and touch scroll
+          over the list is cancelled and a long catalog cannot be reached. */}
+      <PopoverPrimitive.Root open={open} onOpenChange={setOpen} modal>
         <PopoverPrimitive.Trigger asChild>
           <button
             id={id}
@@ -327,7 +335,7 @@ export function Selector<T extends string>({
             className={cn(
               'iii-ui-motion-control inline-flex h-12 w-full min-w-0 items-center justify-between gap-2 rounded-sm border border-transparent bg-surface px-3 font-sans text-base text-ink hover:bg-surface-hover focus:border-rule-focus focus:outline-none disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:text-[13px]',
               open && 'border-rule-focus',
-              invalidVisual && 'border-alert',
+              invalidVisual && 'bg-alert-muted',
             )}
           >
             {triggerIcon ? (

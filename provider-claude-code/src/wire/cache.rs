@@ -2,11 +2,13 @@
 //! the tools array tail, and the last *stable* assistant turn in messages
 //! (one whose tool_uses all have downstream tool_results — an unstable
 //! anchor would be invalidated next turn).
+use llm_router::types::router::PromptSection;
 use serde_json::{json, Value};
 
 /// Below this many chars a prefix isn't worth a cache write.
 pub const CACHE_MIN_CHARS: usize = 4096;
 const CACHE_FLAG_ENV: &str = "PROVIDER_CLAUDE_CODE_CACHE";
+const CACHE_TTL_ENV: &str = "PROVIDER_CLAUDE_CODE_CACHE_TTL";
 
 /// Kill switch: unset or anything but 0/false/FALSE/False = enabled.
 pub fn cache_enabled() -> bool {
@@ -16,8 +18,27 @@ pub fn cache_enabled() -> bool {
     }
 }
 
+/// TTL for the shared-prefix markers (tools + the boundary block): unset or
+/// `1h` = the 1-hour cache (2x base on the one write, reads unchanged, so a
+/// profile stays warm across sessions an hour apart); `5m` = the default
+/// 5-minute cache. The per-turn messages anchor always stays at 5 minutes:
+/// it changes every turn, and longer TTLs must precede shorter ones.
+pub fn cache_ttl() -> Option<&'static str> {
+    match std::env::var(CACHE_TTL_ENV).as_deref() {
+        Ok("5m") => None,
+        _ => Some("1h"),
+    }
+}
+
 fn ephemeral() -> Value {
     json!({ "type": "ephemeral" })
+}
+
+fn ephemeral_ttl(ttl: Option<&str>) -> Value {
+    match ttl {
+        Some(ttl) => json!({ "type": "ephemeral", "ttl": ttl }),
+        None => ephemeral(),
+    }
 }
 
 /// The identity line the subscription OAuth backend requires as the first
@@ -43,8 +64,31 @@ pub fn build_system_field(prompt: &str, enabled: bool) -> Value {
     Value::Array(blocks)
 }
 
+/// Sectioned prompt → wire `system` array: the identity block first, then one
+/// text block per non-empty section; `cache_control` on every boundary block,
+/// so the frozen profile prefix caches on its own ahead of the per-session
+/// tail. No byte gate: Anthropic applies its per-model token minimum over the
+/// whole prefix (tools included) and silently skips a short one.
+pub fn build_system_blocks(sections: &[PromptSection], enabled: bool, ttl: Option<&str>) -> Value {
+    let mut blocks = vec![json!({ "type": "text", "text": CLAUDE_CODE_SYSTEM })];
+    let mut marked = 0usize;
+    for section in sections.iter().filter(|s| !s.text.is_empty()) {
+        let mut block = json!({ "type": "text", "text": section.text });
+        // ponytail: cap 2 so the tools and messages anchors keep the total <= 4
+        if enabled && section.cache_boundary && marked < 2 {
+            block["cache_control"] = ephemeral_ttl(ttl);
+            marked += 1;
+        }
+        blocks.push(block);
+    }
+    Value::Array(blocks)
+}
+
 /// Mark the last tool when the serialized tools array clears the minimum.
-pub fn apply_tools_cache_control(tools: &mut [Value], enabled: bool) {
+/// `ttl` rides along on the sectioned path only: tools precede the system
+/// prefix, and a 1-hour boundary block behind a 5-minute tools marker would
+/// break the longer-before-shorter rule.
+pub fn apply_tools_cache_control(tools: &mut [Value], enabled: bool, ttl: Option<&str>) {
     if !enabled || tools.is_empty() {
         return;
     }
@@ -53,7 +97,7 @@ pub fn apply_tools_cache_control(tools: &mut [Value], enabled: bool) {
         return;
     }
     if let Some(obj) = tools.last_mut().and_then(Value::as_object_mut) {
-        obj.insert("cache_control".into(), ephemeral());
+        obj.insert("cache_control".into(), ephemeral_ttl(ttl));
     }
 }
 
@@ -140,6 +184,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn system_blocks_mark_boundary_after_the_identity_block() {
+        let section = |text: &str, boundary: bool| PromptSection {
+            text: text.into(),
+            cache_boundary: boundary,
+        };
+        let long = "x".repeat(CACHE_MIN_CHARS);
+        let v = build_system_blocks(&[section(&long, true), section("dyn", false)], true, None);
+        let blocks = v.as_array().unwrap();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0]["text"], CLAUDE_CODE_SYSTEM);
+        assert!(blocks[0].get("cache_control").is_none());
+        assert_eq!(blocks[1]["cache_control"]["type"], "ephemeral");
+        assert!(blocks[2].get("cache_control").is_none());
+        // a short boundary is still marked: Anthropic applies the token
+        // minimum over the whole prefix (tools included) and skips it itself
+        assert_eq!(
+            build_system_blocks(&[section("short", true)], true, None)[1]["cache_control"]["type"],
+            "ephemeral"
+        );
+        // disabled: no marker
+        assert!(build_system_blocks(&[section(&long, true)], false, None)[1]
+            .get("cache_control")
+            .is_none());
+    }
+
+    #[test]
     fn system_field_forms() {
         // empty prompt: only the spoof block, no cache marker
         let v = build_system_field("", true);
@@ -168,7 +238,7 @@ mod tests {
     #[test]
     fn tools_marker_only_past_threshold() {
         let mut small = vec![json!({ "name": "a", "input_schema": {} })];
-        apply_tools_cache_control(&mut small, true);
+        apply_tools_cache_control(&mut small, true, None);
         assert!(small[0].get("cache_control").is_none());
 
         let big_schema = json!({ "description": "y".repeat(CACHE_MIN_CHARS) });
@@ -176,7 +246,7 @@ mod tests {
             json!({ "name": "a" }),
             json!({ "name": "b", "input_schema": big_schema }),
         ];
-        apply_tools_cache_control(&mut big, true);
+        apply_tools_cache_control(&mut big, true, None);
         assert!(
             big[0].get("cache_control").is_none(),
             "only the last tool is marked"
@@ -323,5 +393,32 @@ mod tests {
         apply_messages_cache_anchor(&mut wire, true);
         assert!(wire[0]["content"][0].get("cache_control").is_none());
         assert!(wire[0]["content"][1].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn ttl_rides_on_the_boundary_and_tools_markers_only() {
+        let long = "x".repeat(CACHE_MIN_CHARS);
+        let sections = [PromptSection {
+            text: long.clone(),
+            cache_boundary: true,
+        }];
+        let v = build_system_blocks(&sections, true, Some("1h"));
+        assert_eq!(
+            v[1]["cache_control"],
+            json!({ "type": "ephemeral", "ttl": "1h" })
+        );
+        let v = build_system_blocks(&sections, true, None);
+        assert_eq!(v[1]["cache_control"], json!({ "type": "ephemeral" }));
+        let mut big = vec![
+            json!({ "name": "a", "input_schema": { "description": "y".repeat(CACHE_MIN_CHARS) } }),
+        ];
+        apply_tools_cache_control(&mut big, true, Some("1h"));
+        assert_eq!(big[0]["cache_control"]["ttl"], "1h");
+        // the flat legacy block and the messages anchor never carry a ttl
+        assert_eq!(
+            build_system_field(&long, true)[1]["cache_control"],
+            json!({ "type": "ephemeral" })
+        );
+        assert_eq!(ephemeral_ttl(None), ephemeral());
     }
 }

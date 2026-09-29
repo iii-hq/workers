@@ -194,7 +194,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Omitting both reasoning fields on an existing session inherits the prior turn's; naming either resolves fresh (`provider_options: {}` resets to the provider default)."
           }
         },
         "type": "object"
@@ -202,6 +203,13 @@
       "SessionInit": {
         "description": "Session create/ensure options applied when this send creates the session.",
         "properties": {
+          "kind": {
+            "description": "Session kind stored on creation: `user` (default), `automation` or `e2e`. Opaque to the harness; validated by session-manager.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "metadata": true,
           "title": {
             "type": [

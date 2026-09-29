@@ -143,6 +143,13 @@ fn is_scoped_step(function_id: &str) -> bool {
 /// exposes fp::pipe while denying shell::* could launder a scope through a
 /// non-harness call; shell-side caller verification is tracked follow-up.
 fn forbidden_step(function_id: &str, approval_gate_running: bool) -> Option<&'static str> {
+    // Private accessors validate their scope, not the caller. A pipe must not
+    // turn an agent's request into a privileged read or namespace claim.
+    if function_id == "state::claim-namespace"
+        || function_id.starts_with("provider-openai-codex::state::")
+    {
+        return Some("operator-only state functions are not supported in a pipe");
+    }
     // Shell control-plane ids sit inside the scoped shell::* prefix but are
     // NOT session tools: config-status is agent-policy hard-denied (it can
     // surface operator paths) and workspace::* is console picker plumbing —
@@ -551,7 +558,7 @@ mod tests {
         let req = parse(json!({
             "preview_chars": 300,
             "through": [
-                { "function": "scrapling::fetch",
+                { "function": "browser::fetch",
                   "payload": { "url": "https://en.wikipedia.org/wiki/Circuit_breaker_design_pattern",
                                "format": "markdown", "main_content_only": true } },
                 { "function": "fp::get", "payload": { "path": "/content" } },
@@ -603,7 +610,7 @@ mod tests {
 
         // a producing first step is not ours to check
         let req = parse(json!({ "through": [
-            { "function": "scrapling::fetch", "payload": { "url": "u" } },
+            { "function": "browser::fetch", "payload": { "url": "u" } },
             { "function": "fp::uniq" },
         ]}))
         .unwrap();
@@ -614,7 +621,7 @@ mod tests {
     fn validate_checks_shape_and_forbidden_steps() {
         // fetch → get → take → set: the motivating pipeline parses, zero `into`.
         let req = parse(json!({ "through": [
-            { "function": "scrapling::fetch", "payload": { "url": "u", "format": "markdown" } },
+            { "function": "browser::fetch", "payload": { "url": "u", "format": "markdown" } },
             { "function": "fp::get", "payload": { "path": "/content" } },
             { "function": "fp::take", "payload": { "n": 20000 } },
             { "function": "state::set", "payload": { "scope": "s", "key": "k" } },
@@ -895,7 +902,7 @@ mod tests {
 
         let receipts = vec![
             StepReceipt {
-                function: "scrapling::fetch".into(),
+                function: "browser::fetch".into(),
                 chars: 184_232,
                 note: None,
             },
@@ -908,7 +915,7 @@ mod tests {
         // loop index 2 = the third step; the message is 1-based like the UI
         let msg = step_error(2, "state::set", "boom", &receipts);
         assert!(msg.contains("step 3 (state::set): boom"));
-        assert!(msg.contains("scrapling::fetch→184232ch"));
+        assert!(msg.contains("browser::fetch→184232ch"));
     }
 
     #[test]

@@ -1,6 +1,10 @@
-import type { ConsoleConfigValue } from '@/lib/console-config'
+/**
+ * Any server-held JSON object that is replaced wholesale on write — the
+ * `console` configuration entry, the workspace layout document, …
+ */
+export type SerializedValue = Record<string, unknown>
 
-export type ConfigTransform = (value: ConsoleConfigValue) => ConsoleConfigValue
+export type ConfigTransform = (value: SerializedValue) => SerializedValue
 
 interface PendingConfigWrite {
   revision: number
@@ -8,15 +12,16 @@ interface PendingConfigWrite {
 }
 
 export interface SerializedConfigWriterOptions {
-  readRemote: () => Promise<ConsoleConfigValue | null>
-  writeRemote: (value: ConsoleConfigValue) => Promise<void>
-  readCached: () => ConsoleConfigValue | null | undefined
-  publish: (value: ConsoleConfigValue) => void
+  readRemote: () => Promise<SerializedValue | null>
+  writeRemote: (value: SerializedValue) => Promise<void>
+  readCached: () => SerializedValue | null | undefined
+  publish: (value: SerializedValue) => void
   cancelReads?: () => void
 }
 
 /**
- * Serializes the console configuration's read-modify-write cycle.
+ * Serializes one document's read-modify-write cycle (the console
+ * configuration entry, the workspace layout).
  *
  * Each queued transform reads again only after the previous write has
  * settled, so it rebases on the latest remote value. When an older write
@@ -27,7 +32,7 @@ export interface SerializedConfigWriterOptions {
 export class SerializedConfigWriter {
   private readonly pending: PendingConfigWrite[] = []
   private tail: Promise<void> = Promise.resolve()
-  private optimistic: ConsoleConfigValue | undefined
+  private optimistic: SerializedValue | undefined
   private issuedRevision = 0
   private settledRevision = 0
 
@@ -35,8 +40,8 @@ export class SerializedConfigWriter {
 
   enqueue(
     transform: ConfigTransform,
-    fallback: ConsoleConfigValue = {},
-  ): ConsoleConfigValue {
+    fallback: SerializedValue = {},
+  ): SerializedValue {
     const cached = this.options.readCached()
     const base =
       this.pending.length > 0
@@ -56,7 +61,7 @@ export class SerializedConfigWriter {
   }
 
   /** Query reads crossing a local write keep the newest optimistic value. */
-  async readForQuery(): Promise<ConsoleConfigValue | null> {
+  async readForQuery(): Promise<SerializedValue | null> {
     const issuedAtStart = this.issuedRevision
     const settledAtStart = this.settledRevision
     const remote = await this.options.readRemote()
@@ -89,7 +94,7 @@ export class SerializedConfigWriter {
       )
       this.optimistic = visible
 
-      // Queries from any observer sharing ['consoleConfig'] may have started
+      // Queries from any observer sharing this document's query key may have started
       // while the write was in flight. Cancel them before publishing the
       // rebased optimistic value.
       this.options.cancelReads?.()

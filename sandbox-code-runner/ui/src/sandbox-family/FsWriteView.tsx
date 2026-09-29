@@ -1,8 +1,10 @@
 /** `sandbox::fs::write` — bytes written + how the content travelled. */
 
+import { Badge } from '@iii-dev/console-ui'
+import { Plus } from 'lucide-react'
 import { formatBytes } from './format'
 import { fsWriteRequestSchema, fsWriteResponseSchema, safeParseResponse, streamChannelRefSchema } from './parsers'
-import { Chip, FooterPill, SandboxIdChip } from './shared'
+import { Chip, SandboxIdChip } from './shared'
 
 interface FsWriteViewProps {
   input: unknown
@@ -23,7 +25,8 @@ export function FsWriteView({ input, output }: FsWriteViewProps) {
     <div className="cr-fam-card">
       <div className="cr-fam-slab">
         <div className="cr-fam-line">
-          <span className="cr-fam-accent">+ wrote</span>
+          <Plus size={16} aria-hidden className="cr-fam-accent" />
+          <span className="cr-fam-accent">wrote</span>
           <span className="num">{formatBytes(resp.bytes_written)}</span>
           <span className="faint">to</span>
           <span>{resp.path}</span>
@@ -32,8 +35,8 @@ export function FsWriteView({ input, output }: FsWriteViewProps) {
           <SandboxIdChip sandboxId={req.data.sandbox_id} />
           <Chip label="mode">{req.data.mode ?? '0644'}</Chip>
           {req.data.parents ? <Chip label="parents">true</Chip> : null}
-          {streamed ? <FooterPill tone="default">uploaded via channel</FooterPill> : null}
-          {usedB64 ? <FooterPill tone="default">base64 inline</FooterPill> : null}
+          {streamed ? <Badge>uploaded via channel</Badge> : null}
+          {usedB64 ? <Badge>base64 inline</Badge> : null}
         </div>
       </div>
     </div>

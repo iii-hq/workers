@@ -2,7 +2,8 @@
 
 import { renderWithHighlight } from './highlight'
 import { type FsMatch, fsGrepRequestSchema, fsGrepResponseSchema, safeParseResponse } from './parsers'
-import { Chip, FooterPill, SandboxIdChip } from './shared'
+import { Badge } from '@iii-dev/console-ui'
+import { Chip, SandboxIdChip } from './shared'
 
 interface FsGrepViewProps {
   input: unknown
@@ -23,10 +24,10 @@ export function FsGrepView({ input, output }: FsGrepViewProps) {
         <Chip label="path">{req.data.path}</Chip>
         <Chip label="pattern">{req.data.pattern}</Chip>
         {req.data.ignore_case ? <Chip>case-insensitive</Chip> : null}
-        <FooterPill tone={matches.length > 0 ? 'default' : 'warn'}>
+        <Badge variant={matches.length > 0 ? 'default' : 'warn'}>
           {`${matches.length} ${matches.length === 1 ? 'match' : 'matches'}`}
-        </FooterPill>
-        {truncated ? <FooterPill tone="warn">truncated</FooterPill> : null}
+        </Badge>
+        {truncated ? <Badge variant="warn">truncated</Badge> : null}
       </div>
 
       {matches.length === 0 ? (

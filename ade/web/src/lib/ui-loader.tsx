@@ -11,6 +11,7 @@
  */
 
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { hashForWorkerPage, workerRouteFromHash } from '@/hooks/use-hash-route'
 import {
   listHarnessProjects,
   recentHarnessProjectPaths,
@@ -27,10 +28,14 @@ import { registerPaletteSource } from '@/lib/palette/providers'
 import { PaneConfigurationProvider } from '@/lib/pane-configuration'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { acquireScreenWakeLock } from '@/lib/screen-wake-lock'
+import { requestThinkingLevelChange } from '@/lib/thinking-level-request'
 import { ExtensionScopeProvider } from '@/lib/ui-scope'
 import {
+  getExtPage,
   registerExtComposerAction,
+  registerExtComposerControl,
   registerExtConfigForm,
+  registerExtOverlay,
   registerExtPage,
   registerExtProviderConfigForm,
   registerExtRenderer,
@@ -42,6 +47,7 @@ import {
 import { requestWorkingDirectoryChange } from '@/lib/working-directory-request'
 import type {
   ComposerActionProps,
+  ComposerControlProps,
   ConfigFormProps,
   ConsoleApi,
   Host,
@@ -122,7 +128,7 @@ export function ScopedExtension({
 export function ExtErrorChip({ path, error }: { path: string; error: Error }) {
   return (
     <span
-      className="inline-flex items-center gap-1 border border-alert px-2 py-0.5 font-mono text-[11px] text-alert"
+      className="inline-flex items-center gap-1 rounded-sm bg-alert-muted px-2 py-0.5 font-mono text-[11px] text-alert"
       title={error.message}
     >
       extension crashed · {path}
@@ -215,7 +221,37 @@ function makeHost(
     },
     panels: {
       open(request) {
+        // The isolated `#/worker/…` shell has no workspace to place a pane
+        // in: the page on screen just receives its context, any other page
+        // opens in a new browser tab (synchronously, so the click's gesture
+        // still covers the popup).
+        const isolated = workerRouteFromHash(window.location.hash)
+        if (isolated && isolated.pageId !== request.pageId) {
+          const scope = getExtPage(request.pageId)?.scope ?? request.pageId
+          window.open(
+            hashForWorkerPage(scope, request.pageId, request.context),
+            '_blank',
+          )
+          return
+        }
         requestPanelOpen(request)
+      },
+    },
+    overlays: {
+      register(overlay) {
+        const Overlay = overlay.render
+        return track(
+          registerExtOverlay({
+            ...overlay,
+            scope,
+            path,
+            render: () => (
+              <ScopedExtension scope={scope} path={path}>
+                <Overlay />
+              </ScopedExtension>
+            ),
+          }),
+        )
       },
     },
     configForms: {
@@ -302,10 +338,28 @@ function makeHost(
           }),
         )
       },
+      registerComposerControl(control) {
+        const Control = control.render
+        return track(
+          registerExtComposerControl({
+            ...control,
+            scope,
+            path,
+            render: (props: ComposerControlProps) => (
+              <ScopedExtension scope={scope} path={path}>
+                <Control {...props} />
+              </ScopedExtension>
+            ),
+          }),
+        )
+      },
       compose(draft) {
         if (draft.files && draft.files.length > 0) attachToComposer(draft.files)
         if (draft.text) {
-          insertIntoComposer(draft.text, { inline: draft.inline === true })
+          insertIntoComposer(draft.text, {
+            inline: draft.inline === true,
+            submit: draft.submit === true,
+          })
         }
         requestComposerFocus()
       },
@@ -314,6 +368,9 @@ function makeHost(
       },
       requestWorkingDirectoryChange(request) {
         return requestWorkingDirectoryChange(request)
+      },
+      requestThinkingLevelChange(request) {
+        return requestThinkingLevelChange(request)
       },
       composerModel(conversationId) {
         return conversationAdapter.composerModel(conversationId)

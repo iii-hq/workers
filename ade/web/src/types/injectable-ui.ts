@@ -11,6 +11,7 @@
  */
 
 import type { UiClasses } from '@iii-dev/console-ui/ui-classes'
+import type { useConfirm } from '@/components/ui/ConfirmDialog'
 import type { IIIConnectionState, RegisterTriggerInput } from '@/lib/iii-client'
 import type { FunctionTriggerMessage } from '@/types/chat'
 
@@ -54,6 +55,8 @@ export interface ConsoleApi {
   components: Record<string, React.ComponentType<any>>
   /** `'light' | 'dark'`, reactive (backed by `html[data-theme]`). */
   useTheme(): 'light' | 'dark'
+  /** `window.confirm` over `ConfirmDialog`: `{ confirm, dialog }`. */
+  useConfirm: typeof useConfirm
   /** Design-token names, for documentation/tooling; styling just uses `var(--color-*)`. */
   tokens: readonly string[]
   /** Stable namespaced CSS recipes for shared visual patterns. */
@@ -221,7 +224,7 @@ export interface PaletteOpenOptions {
 }
 
 export interface PageRegistration {
-  /** kebab-case, unique per tab; convention `<worker>-<name>`. Routes at `#/ext/<id>`. */
+  /** kebab-case, unique per tab; convention `<worker>-<name>`. Opened as the `ext:<id>` screen; alone at `#/worker/<scope>/<id>`. */
   id: string
   /** Nav label. */
   title: string
@@ -479,6 +482,49 @@ export interface ComposerActionRegistration {
 }
 
 /**
+ * Props a composer control receives: the active session, its live turn
+ * state, and that session's metadata with a writer. The console persists
+ * `setMetadata` through its own session-metadata writer (drafts included:
+ * the keys land when the session is created), so the control never calls
+ * `session::set-meta` itself.
+ */
+export interface ComposerControlProps {
+  /** Active conversation id (a draft's id until its first send). */
+  sessionId: string
+  isStreaming: boolean
+  /** The session's stored metadata. */
+  metadata: Readonly<Record<string, unknown>>
+  /** Merge keys into the metadata; an `undefined` value removes the key. */
+  setMetadata(patch: Record<string, unknown>): void
+}
+
+/**
+ * A compact per-session setting rendered in the composer's footer, beside
+ * the model picker: a value that applies to the session from its next turn
+ * on, the way the model does. Duplicate `id`: last registration wins.
+ */
+export interface ComposerControlRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType<ComposerControlProps>
+}
+
+/**
+ * A floating surface the console renders above the workspace whatever page
+ * or tab is showing — a live thumbnail, a recording indicator. The
+ * component positions itself (`position: fixed`) and opts back into
+ * pointer events (the layer itself lets clicks through); it renders for as
+ * long as the script is loaded, so it decides on its own when to show
+ * something and when to render nothing. Duplicate `id`: last registration
+ * wins.
+ */
+export interface OverlayRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType
+}
+
+/**
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
  */
@@ -521,6 +567,10 @@ export interface Host {
     /** Place/reuse a registered page and deliver its worker-defined context. */
     open(request: PanelOpenRequest): void
   }
+  overlays: {
+    /** A floating surface above the workspace, alive as long as the script. */
+    register(overlay: OverlayRegistration): () => void
+  }
   configForms: {
     register(
       configurationId: string,
@@ -544,10 +594,22 @@ export interface Host {
      * last line (a `#file(path:from-to)` reference, say) instead of
      * starting a paragraph of its own.
      */
-    compose(draft: { text?: string; files?: File[]; inline?: boolean }): void
+    compose(draft: {
+      text?: string
+      files?: File[]
+      inline?: boolean
+      /**
+       * Send the draft once the text lands, rather than leaving it for the
+       * user to send. For a surface handing over a whole prompt, where the
+       * click already WAS the decision to send. Ignored by a composer that
+       * cannot send right now (streaming, blocked): the text stays a draft.
+       */
+      submit?: boolean
+    }): void
     registerSessionChip(chip: SessionChipRegistration): () => void
     registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
     registerComposerAction(action: ComposerActionRegistration): () => void
+    registerComposerControl(control: ComposerControlRegistration): () => void
     /** Jump the sidebar to this session. Feature-detect on older consoles. */
     selectConversation?(sessionId: string): void
     /**
@@ -558,6 +620,19 @@ export interface Host {
     requestWorkingDirectoryChange?(request: {
       sessionId: string
       path: string
+    }): boolean
+    /**
+     * Ask the mounted conversation to adopt a reasoning effort — one of
+     * `THINKING_LEVELS`; anything else is refused. The page cannot write this
+     * itself: the level lives on the console's conversation record and is
+     * sent from there on every turn, so a write into session metadata would
+     * never reach the next one.
+     *
+     * Returns whether a mounted conversation took it.
+     */
+    requestThinkingLevelChange?(request: {
+      sessionId: string
+      level: string
     }): boolean
     /** Live composer model for a conversation, including unsaved drafts. */
     composerModel?(conversationId?: string | null): string | null
@@ -590,6 +665,8 @@ declare global {
       ReactDOM: unknown
       ReactDOMClient: unknown
       JsxRuntime: unknown
+      /** The `lucide-react` namespace, served as /vendor/lucide-react.js. */
+      Lucide: unknown
       api: ConsoleApi | null
     }
   }

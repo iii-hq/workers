@@ -10,13 +10,14 @@
 
 import {
   Badge,
+  Toolbar,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@iii-dev/console-ui'
+import { ChevronRight, CircleAlert } from 'lucide-react'
 import { useState } from 'react'
 import type { ExplainResult, PlanNode } from '../lib/rpc'
-import { AlertCircle, ChevronRight } from './icons'
 
 interface WarningsByNode {
   [nodeId: number]: { kind: string; message: string; severity: string }[]
@@ -48,7 +49,7 @@ export function PlanTree({ plan }: { plan: ExplainResult }) {
 
   return (
     <div className="db-plan">
-      <div className="db-plan-bar">
+      <Toolbar aria-label="query plan" className="db-bar">
         <span className="db-plan-format">{plan.format}</span>
         {plan.analyzed ? (
           <Badge variant="accent">Measured</Badge>
@@ -61,7 +62,7 @@ export function PlanTree({ plan }: { plan: ExplainResult }) {
             {plan.warnings.length === 1 ? '' : 's'}
           </span>
         ) : null}
-      </div>
+      </Toolbar>
       {/* A plain nested list, not `role="tree"`. The full tree pattern needs
           roving tabindex and arrow-key traversal; claiming the role without
           them announces navigation to a screen reader that does not work.
@@ -108,7 +109,7 @@ function Node({
       : null
 
   return (
-    <li className="db-plan-li">
+    <li>
       <div
         className={`db-plan-node${worst ? ` flag-${worst}` : ''}`}
         style={{ paddingLeft: `${depth * 14 + 4}px` }}
@@ -124,7 +125,7 @@ function Node({
           {hasChildren ? <ChevronRight size={16} aria-hidden /> : null}
         </button>
 
-        <span className="db-plan-class">{node.node_class}</span>
+        <Badge>{node.node_class}</Badge>
         <span className="db-plan-label">{node.label}</span>
         {node.relation ? (
           <span className="db-plan-rel">on {node.relation}</span>
@@ -134,7 +135,7 @@ function Node({
           <Tooltip key={w.kind}>
             <TooltipTrigger asChild>
               <span className="db-plan-warn">
-                <AlertCircle size={16} aria-label={w.kind} />
+                <CircleAlert size={16} aria-label={w.kind} />
               </span>
             </TooltipTrigger>
             <TooltipContent side="top">{w.message}</TooltipContent>

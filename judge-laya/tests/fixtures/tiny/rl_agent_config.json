@@ -1,0 +1,14 @@
+{
+ "encoder": "tiny-modernbert",
+ "head_layers": 2,
+ "max_len": 128,
+ "head_max_len": 48,
+ "temperature": [
+  1.0,
+  1.0,
+  1.0
+ ],
+ "temperature_by_options": {
+  "noul:2": 0.8
+ }
+}

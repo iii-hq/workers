@@ -20,11 +20,12 @@ describe('configuration worker integration', () => {
     expect(rt.iii_context).toBe(true);
   });
 
-  it('registerPiConfig registers the schema with the seed as initial_value', async () => {
+  it('registerPiConfig atomically submits the schema and seed without a preliminary read', async () => {
     const fake = fakeIii();
     const cfg = await loadConfig('/nonexistent/config.yaml');
     await registerPiConfig(fake.iii, cfg);
-    const reg = fake.calls.find((c) => c.function_id === 'configuration::register');
+    expect(fake.calls.map((call) => call.function_id)).toEqual(['configuration::ensure']);
+    const reg = fake.calls.find((c) => c.function_id === 'configuration::ensure');
     expect(reg).toBeDefined();
     expect(reg?.namespace).toBe('default');
     const payload = reg?.payload as {

@@ -106,26 +106,83 @@ fn default_function_search_model_download() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+fn default_function_search_judge_timeout_ms() -> u64 {
+    3000
+}
+
+fn default_function_search_judge_min_relevance() -> f64 {
+    0.5
+}
+
+/// Measured on 22 English capabilities over a 16-document shortlist: every
+/// search kept a correct function at 0.05-0.1 with JEV and SemIf, while 0.15+
+/// dropped SemIf's runner-up answers.
+fn default_function_search_judge_choice_min_probability() -> f64 {
+    0.1
+}
+
+fn default_function_search_judge_side_lane_min_relevance() -> f64 {
+    0.3
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum FunctionSearchMode {
     Lexical,
-    #[default]
     Hybrid,
+    // The default: rank through the `judge` worker, falling back to Hybrid
+    // (then Lexical) whenever `judge::evaluate` is not registered. A doc
+    // comment here would turn the schema into a `oneOf`; keep it a comment.
+    #[default]
+    Judge,
 }
 
-/// `hybrid` needs a local semantic model; without a complete
-/// bundle at `function_search_model_path` every search silently runs
-/// BM25-only, which is easy to mistake for the model being active. Say so
-/// once, loudly. `model_ready` is "the path is set and the bundle verifies".
-pub fn warn_if_search_mode_lacks_model(mode: FunctionSearchMode, model_ready: bool) {
-    if mode != FunctionSearchMode::Lexical && !model_ready {
+/// How `judge` asks about a capability's shortlist.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionSearchJudgeQuestion {
+    // One Noul per shortlisted document, admitted by the min_relevance
+    // settings. A doc comment would turn the schema into a oneOf.
+    Noul,
+    // The default: one Choice per capability over its shortlist; the
+    // documents compete, the best is always kept, the others need
+    // function_search_judge_choice_min_probability. A judge that advertises
+    // a context window under 4096 tokens (laya) gets a tournament instead.
+    #[default]
+    Choice,
+    // Choice without the Hybrid shortlist: the whole function catalog is
+    // skimmed in rounds of compact Choices (function id and eight words) over
+    // groups of up to 128 whose three best go on (16 and winners only for
+    // small-window judges), and the last 16 or fewer get the final Choice
+    // with their full descriptions. Needs no local semantic model.
+    Tournament,
+}
+
+/// `hybrid`, and the Hybrid fallback `judge` uses whenever the judge worker
+/// is unavailable, need a local semantic model; without a complete bundle at
+/// `function_search_model_path` they silently run BM25-only, which is easy to
+/// mistake for the model being active. Say so once, loudly. `judge` with the
+/// path set to `null` chose a BM25 fallback on purpose and stays quiet.
+/// `model_ready` is "the path is set and the bundle verifies".
+pub fn warn_if_search_mode_lacks_model(
+    mode: FunctionSearchMode,
+    model_configured: bool,
+    model_ready: bool,
+) {
+    let needs_model = match mode {
+        FunctionSearchMode::Lexical => false,
+        FunctionSearchMode::Hybrid => true,
+        FunctionSearchMode::Judge => model_configured,
+    };
+    if needs_model && !model_ready {
         tracing::warn!(
             ?mode,
             "function_search_mode needs a local semantic model but no complete bundle is \
              available at function_search_model_path (unset, missing, or failed \
-             verification/download); directory::search_functions runs BM25-only until the \
-             bundle is in place and iii-directory restarts"
+             verification/download); Hybrid ranking in directory::search_functions runs \
+             BM25-only until the bundle is in place and iii-directory restarts"
         );
     }
 }
@@ -139,6 +196,56 @@ where
         return Err(serde::de::Error::custom(
             "function_search_model_path must not be empty",
         ));
+    }
+    Ok(value)
+}
+
+fn deserialize_judge_timeout_ms<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = u64::deserialize(deserializer)?;
+    if !(1..=30_000).contains(&value) {
+        return Err(serde::de::Error::custom(
+            "function_search_judge_timeout_ms must be between 1 and 30000",
+        ));
+    }
+    Ok(value)
+}
+
+fn deserialize_judge_min_relevance<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_unit_interval(deserializer, "function_search_judge_min_relevance")
+}
+
+fn deserialize_judge_side_lane_min_relevance<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_unit_interval(
+        deserializer,
+        "function_search_judge_side_lane_min_relevance",
+    )
+}
+
+fn deserialize_judge_choice_min_probability<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_unit_interval(deserializer, "function_search_judge_choice_min_probability")
+}
+
+fn deserialize_unit_interval<'de, D>(deserializer: D, field: &str) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = f64::deserialize(deserializer)?;
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(serde::de::Error::custom(format!(
+            "{field} must be finite and between 0 and 1"
+        )));
     }
     Ok(value)
 }
@@ -257,23 +364,80 @@ pub struct SkillsConfig {
     #[serde(default = "default_registry_search")]
     pub registry_search: bool,
 
-    /// Installed-function search lane. Hybrid (BM25 fused with the local
-    /// MiniLM model) is the default; lexical is BM25 only. Hybrid needs the bundle at
-    /// `function_search_model_path` (downloaded on first run by default) and
-    /// serves BM25 until it is ready.
+    /// Installed-function search lane. Judge (the default) ranks through the
+    /// `judge` worker when `judge::evaluate` is registered and answers; when
+    /// the judge is missing, has no provider or API key, fails, or misses the
+    /// deadline, it behaves as Hybrid (and, except on a deadline, skips the
+    /// judge for 30 s). Hybrid fuses BM25 with the local MiniLM model and
+    /// needs the bundle at `function_search_model_path` (downloaded on first
+    /// run by default), serving BM25 until it is ready. Lexical is BM25 only.
+    /// Mode changes apply without restart.
     #[serde(default)]
     pub function_search_mode: FunctionSearchMode,
 
+    /// Total judge deadline per public search call, in milliseconds (1..=30000),
+    /// shared by every judge call of the search. The registry lookup runs in
+    /// parallel with the installed-function judge call, and the registry judge
+    /// call gets what is left after it; local Hybrid fallback runs outside the
+    /// budget. Hot-reloadable.
+    #[serde(
+        default = "default_function_search_judge_timeout_ms",
+        deserialize_with = "deserialize_judge_timeout_ms"
+    )]
+    #[schemars(range(min = 1, max = 30000))]
+    pub function_search_judge_timeout_ms: u64,
+
+    /// Minimum judge relevance, finite and between 0 and 1 inclusive.
+    /// A valid empty result stays empty; errors try Hybrid, then lexical.
+    /// The default is an initial calibration value. Hot-reloadable.
+    #[serde(
+        default = "default_function_search_judge_min_relevance",
+        deserialize_with = "deserialize_judge_min_relevance"
+    )]
+    #[schemars(range(min = 0, max = 1))]
+    pub function_search_judge_min_relevance: f64,
+
+    /// Minimum judge relevance for the side lanes (installed skills and
+    /// registered triggers), finite and between 0 and 1 inclusive. Those
+    /// documents score lower than functions for the same capability, so the
+    /// default sits below `function_search_judge_min_relevance`. Hot-reloadable.
+    #[serde(
+        default = "default_function_search_judge_side_lane_min_relevance",
+        deserialize_with = "deserialize_judge_side_lane_min_relevance"
+    )]
+    #[schemars(range(min = 0, max = 1))]
+    pub function_search_judge_side_lane_min_relevance: f64,
+
+    /// `choice` (the default) asks one multiple-choice question per capability
+    /// over its shortlist: 16× fewer questions, and documents compete instead
+    /// of each being approved on its own. `noul` asks one yes/no question per
+    /// shortlisted document (up to 16 per capability) and admits them by the
+    /// min_relevance settings. Local judges (SemIf, laya) need `choice` to fit
+    /// the deadline. Hot-reloadable.
+    #[serde(default)]
+    pub function_search_judge_question: FunctionSearchJudgeQuestion,
+
+    /// With `choice`, the best document of each capability is always kept and
+    /// every other one needs at least this probability. Finite, between 0 and
+    /// 1. Applies to functions, skills and triggers. Hot-reloadable.
+    #[serde(
+        default = "default_function_search_judge_choice_min_probability",
+        deserialize_with = "deserialize_judge_choice_min_probability"
+    )]
+    #[schemars(range(min = 0, max = 1))]
+    pub function_search_judge_choice_min_probability: f64,
+
     /// Local semantic model directory: the pinned MiniLM bundle (embedding
     /// files at the root, reranker files under `reranker/`). Defaults to `~/.cache/iii/all-MiniLM-L6-v2-<revision>`;
-    /// `null` disables the semantic lane. Changing it requires a restart.
+    /// `null` disables the local Hybrid lane, including the judge's Hybrid fallback.
+    /// Changing it requires a restart.
     #[serde(
         default = "default_function_search_model_path",
         deserialize_with = "deserialize_model_path"
     )]
     pub function_search_model_path: Option<String>,
 
-    /// When a semantic mode is configured and the bundle at
+    /// When Hybrid or Judge mode is configured and the bundle at
     /// `function_search_model_path` is missing or incomplete at boot, download
     /// the pinned files from Hugging Face once, verifying every file by byte
     /// length and SHA-256 before use. Set `false` for air-gapped stacks; the
@@ -313,6 +477,13 @@ impl Default for SkillsConfig {
             hint_min_workers: default_hint_min_workers(),
             registry_search: default_registry_search(),
             function_search_mode: FunctionSearchMode::default(),
+            function_search_judge_timeout_ms: default_function_search_judge_timeout_ms(),
+            function_search_judge_min_relevance: default_function_search_judge_min_relevance(),
+            function_search_judge_side_lane_min_relevance:
+                default_function_search_judge_side_lane_min_relevance(),
+            function_search_judge_question: FunctionSearchJudgeQuestion::default(),
+            function_search_judge_choice_min_probability:
+                default_function_search_judge_choice_min_probability(),
             function_search_model_path: default_function_search_model_path(),
             function_search_model_download: default_function_search_model_download(),
         }
@@ -476,9 +647,240 @@ mod tests {
     use super::*;
 
     #[test]
+    fn judge_is_the_default_for_yaml_json_and_default() {
+        for cfg in [
+            SkillsConfig::default(),
+            SkillsConfig::from_yaml("{}").unwrap(),
+            SkillsConfig::from_json(&serde_json::json!({})).unwrap(),
+        ] {
+            let value = cfg.to_json();
+            assert_eq!(value["function_search_mode"], "judge");
+            assert_eq!(value["function_search_judge_timeout_ms"], 3000);
+            assert_eq!(value["function_search_judge_min_relevance"], 0.5);
+            assert_eq!(value["function_search_judge_side_lane_min_relevance"], 0.3);
+            assert!(value.get("function_search_jev_api_key").is_none());
+            assert!(value.get("function_search_jev_model").is_none());
+        }
+    }
+
+    #[test]
+    fn removed_jev_keys_are_ignored_but_the_jev_mode_value_is_rejected() {
+        let stale = serde_json::json!({
+            "function_search_jev_api_key": "old-secret",
+            "function_search_jev_model": "jev-1.13.0",
+            "function_search_jev_timeout_ms": 9000,
+        });
+        let cfg = SkillsConfig::from_json(&stale).unwrap();
+        assert_eq!(cfg.function_search_judge_timeout_ms, 3000);
+        assert!(!format!("{cfg:?}").contains("old-secret"));
+        let error = SkillsConfig::from_yaml("function_search_mode: jev\n").unwrap_err();
+        assert!(error.contains("jev"), "{error}");
+    }
+
+    #[test]
+    fn judge_accepts_yaml_and_json_without_a_local_model() {
+        let yaml = "function_search_mode: judge\nfunction_search_model_path: null\n";
+        let json = serde_json::json!({
+            "function_search_mode": "judge",
+            "function_search_model_path": null,
+        });
+        for cfg in [
+            SkillsConfig::from_yaml(yaml).unwrap(),
+            SkillsConfig::from_json(&json).unwrap(),
+        ] {
+            assert_eq!(cfg.to_json()["function_search_mode"], "judge");
+            assert!(cfg.function_search_model_path.is_none());
+        }
+    }
+
+    #[test]
+    fn judge_options_accept_inclusive_bounds_and_roundtrip() {
+        for (timeout, relevance) in [(1, 0.0), (30_000, 1.0), (4500, 0.725)] {
+            let value = serde_json::json!({
+                "function_search_judge_timeout_ms": timeout,
+                "function_search_judge_min_relevance": relevance,
+            });
+            for cfg in [
+                SkillsConfig::from_json(&value).unwrap(),
+                SkillsConfig::from_yaml(&serde_yaml::to_string(&value).unwrap()).unwrap(),
+            ] {
+                let serialized = cfg.to_json();
+                assert_eq!(serialized["function_search_judge_timeout_ms"], timeout);
+                assert_eq!(serialized["function_search_judge_min_relevance"], relevance);
+                assert_eq!(
+                    SkillsConfig::from_json(&serialized).unwrap().to_json(),
+                    serialized
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn judge_invalid_options_are_rejected_by_yaml_and_json_deserializers() {
+        for (field, invalid) in [
+            (
+                "function_search_judge_timeout_ms",
+                serde_json::json!([0, -1, 30001, 1.5, null, "3000"]),
+            ),
+            (
+                "function_search_judge_min_relevance",
+                serde_json::json!([-0.01, 1.01, null, "NaN", "Infinity", "0.5"]),
+            ),
+            (
+                "function_search_judge_side_lane_min_relevance",
+                serde_json::json!([-0.01, 1.01, null, "NaN", "Infinity", "0.3"]),
+            ),
+            (
+                "function_search_judge_choice_min_probability",
+                serde_json::json!([-0.01, 1.01, null, "NaN", "0.1"]),
+            ),
+            (
+                "function_search_judge_question",
+                serde_json::json!(["yes_no", "Choice", 1, null]),
+            ),
+        ] {
+            for invalid in invalid.as_array().unwrap() {
+                // Validate even when Judge is not the selected mode.
+                let value = serde_json::json!({ field: invalid });
+                let yaml = serde_yaml::to_string(&value).unwrap();
+                assert!(
+                    serde_json::from_value::<SkillsConfig>(value.clone()).is_err(),
+                    "accepted JSON {value}"
+                );
+                assert!(
+                    serde_yaml::from_str::<SkillsConfig>(&yaml).is_err(),
+                    "accepted YAML {yaml}"
+                );
+                assert!(SkillsConfig::from_json(&value).is_err());
+                assert!(SkillsConfig::from_yaml(&yaml).is_err());
+            }
+        }
+        for invalid in [".nan", ".inf", "-.inf"] {
+            let yaml = format!("function_search_judge_min_relevance: {invalid}\n");
+            assert!(SkillsConfig::from_yaml(&yaml)
+                .unwrap_err()
+                .contains("function_search_judge_min_relevance"));
+        }
+    }
+
+    #[test]
+    fn judge_question_defaults_to_choice_with_its_threshold() {
+        let defaults = SkillsConfig::default().to_json();
+        assert_eq!(defaults["function_search_judge_question"], "choice");
+        assert_eq!(
+            defaults["function_search_judge_choice_min_probability"],
+            0.1
+        );
+        let noul = SkillsConfig::from_json(&serde_json::json!({
+            "function_search_judge_question": "noul",
+            "function_search_judge_choice_min_probability": 0.05
+        }))
+        .unwrap();
+        assert_eq!(
+            noul.function_search_judge_question,
+            FunctionSearchJudgeQuestion::Noul
+        );
+        assert_eq!(noul.function_search_judge_choice_min_probability, 0.05);
+        let schema = SkillsConfig::json_schema();
+        assert_eq!(
+            schema["definitions"]["FunctionSearchJudgeQuestion"]["enum"],
+            serde_json::json!(["noul", "choice", "tournament"])
+        );
+    }
+
+    #[test]
+    fn judge_schema_exposes_options_without_credentials() {
+        let schema = SkillsConfig::json_schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert_eq!(
+            schema["definitions"]["FunctionSearchMode"]["enum"],
+            serde_json::json!(["lexical", "hybrid", "judge"])
+        );
+        assert_eq!(props["function_search_mode"]["default"], "judge");
+        assert_eq!(props["function_search_judge_timeout_ms"]["type"], "integer");
+        assert_eq!(props["function_search_judge_timeout_ms"]["default"], 3000);
+        assert_eq!(props["function_search_judge_timeout_ms"]["minimum"], 1.0);
+        assert_eq!(
+            props["function_search_judge_timeout_ms"]["maximum"],
+            30000.0
+        );
+        for (field, default) in [
+            ("function_search_judge_min_relevance", 0.5),
+            ("function_search_judge_side_lane_min_relevance", 0.3),
+        ] {
+            assert_eq!(props[field]["type"], "number", "{field}");
+            assert_eq!(props[field]["default"], default, "{field}");
+            assert_eq!(props[field]["minimum"], 0.0, "{field}");
+            assert_eq!(props[field]["maximum"], 1.0, "{field}");
+        }
+        assert_eq!(schema["example"], SkillsConfig::default().to_json());
+        assert!(!props.keys().any(|key| key.contains("jev")), "{props:?}");
+    }
+
+    #[test]
+    fn judge_mode_and_options_do_not_change_restart_topology() {
+        let base = SkillsConfig::default();
+        let tuned = SkillsConfig::from_json(&serde_json::json!({
+            "function_search_mode": "hybrid",
+            "function_search_judge_timeout_ms": 4500,
+            "function_search_judge_min_relevance": 0.725,
+            "function_search_judge_side_lane_min_relevance": 0.2,
+        }))
+        .unwrap();
+        assert_eq!(base.topology(), tuned.topology());
+        let shared = base.into_shared();
+        shared.store(Arc::new(tuned.clone()));
+        assert_eq!(shared.load_full().to_json(), tuned.to_json());
+    }
+
+    #[test]
+    fn model_backed_modes_warn_when_the_local_model_is_missing() {
+        #[derive(Clone)]
+        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        for (name, configured, ready, should_warn) in [
+            ("lexical", true, false, false),
+            ("judge", true, false, true),
+            ("judge", true, true, false),
+            // `null` path: judge chose a BM25 fallback on purpose.
+            ("judge", false, false, false),
+            ("hybrid", true, false, true),
+            ("hybrid", false, false, true),
+            ("hybrid", true, true, false),
+        ] {
+            let output = Capture(Arc::new(std::sync::Mutex::new(Vec::new())));
+            let writer = output.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_max_level(tracing::Level::WARN)
+                .with_writer(move || writer.clone())
+                .finish();
+            let mode = serde_json::from_value(serde_json::json!(name)).unwrap();
+            tracing::subscriber::with_default(subscriber, || {
+                warn_if_search_mode_lacks_model(mode, configured, ready)
+            });
+            let message = String::from_utf8(output.0.lock().unwrap().clone()).unwrap();
+            assert_eq!(
+                message.contains("needs a local semantic model"),
+                should_warn,
+                "{name}, configured={configured}, model_ready={ready}: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn defaults_from_empty_yaml() {
         let cfg: SkillsConfig = serde_yaml::from_str("{}").unwrap();
-        assert_eq!(cfg.function_search_mode, FunctionSearchMode::Hybrid);
+        assert_eq!(cfg.function_search_mode, FunctionSearchMode::Judge);
         assert_eq!(
             cfg.function_search_model_path.as_deref(),
             Some("~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf")
@@ -502,6 +904,7 @@ mod tests {
         for (name, expected) in [
             ("lexical", FunctionSearchMode::Lexical),
             ("hybrid", FunctionSearchMode::Hybrid),
+            ("judge", FunctionSearchMode::Judge),
         ] {
             let cfg = SkillsConfig::from_yaml(&format!("function_search_mode: {name}\n")).unwrap();
             assert_eq!(cfg.function_search_mode, expected);

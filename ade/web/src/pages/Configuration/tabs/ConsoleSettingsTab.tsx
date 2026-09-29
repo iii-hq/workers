@@ -38,7 +38,7 @@ import { filterAllowlistCandidates } from '@/lib/permissions/allowlist-filter'
 const HARNESS_CONFIG_HASH = hashForWorkersConfiguration('llm-router')
 // Shell's permanent `fs.host_roots` list — do NOT build a second editor for
 // it here; deep-link to the worker-owned configuration interface instead.
-const SHELL_CONFIG_HASH = hashForWorkersConfiguration('shell')
+const SHELL_CONFIG_HASH = hashForWorkersConfiguration('ide')
 
 interface ConsoleSettingsTabProps {
   theme: Theme
@@ -167,8 +167,8 @@ export function ConsoleSettingsTab({
   const [allowlistOpen, setAllowlistOpen] = useState(false)
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto flex max-w-3xl flex-col gap-8 px-4 py-6 sm:px-6 sm:py-8">
+    <div className="@container min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto flex max-w-3xl flex-col gap-8 px-4 py-6 @2xl:px-6 @2xl:py-8">
         <SettingsSection
           title="Appearance"
           description="Choose how the ADE looks in this browser."

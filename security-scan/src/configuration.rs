@@ -8,6 +8,19 @@ use serde_json::{json, Value};
 use crate::{manifest, SecurityScanError, WorkerConfig};
 
 pub const CONFIG_ID: &str = "security-scan";
+
+/// Process-stable entry identity; the form family remains CONFIG_ID.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
@@ -17,28 +30,33 @@ pub fn shipped_config() -> WorkerConfig {
         .expect("security-scan manifest config must match WorkerConfig")
 }
 
+/// Publish schema and identity, seed an empty entry, then load the authoritative scan settings.
 pub async fn register_and_fetch(iii: &IIIClient) -> Result<WorkerConfig, SecurityScanError> {
-    let initial_value = match try_get_value(iii).await? {
-        Some(value) if !value.is_null() => None,
-        _ => Some(serde_json::to_value(shipped_config()).map_err(|error| {
-            SecurityScanError::Dependency(format!("could not serialize shipped config: {error}"))
-        })?),
-    };
+    iii_console_ui::register_configuration_identity(iii, "security-scan", config_id());
 
     let schema = serde_json::to_value(schema_for!(WorkerConfig)).map_err(|error| {
         SecurityScanError::Dependency(format!("could not serialize config schema: {error}"))
     })?;
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "Security Scan",
         "description": "Operator repository allowlist and bounded read-only Harness analysis settings.",
         "schema": schema,
         "metadata": { "ui_form": CONFIG_ID },
     });
-    if let Some(initial_value) = initial_value {
-        payload["initial_value"] = initial_value;
-    }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
+    payload["initial_value"] = serde_json::to_value(shipped_config()).map_err(|error| {
+        SecurityScanError::Dependency(format!("could not serialize shipped config: {error}"))
+    })?;
+    initialization::ensure_with(payload, |function, payload| async move {
+        trigger_with_retry(iii, function, payload)
+            .await
+            .map_err(|error| match error {
+                SecurityScanError::Dependency(message) => message,
+                other => other.to_string(),
+            })
+    })
+    .await
+    .map_err(SecurityScanError::Dependency)?;
 
     let value = try_get_value(iii)
         .await?
@@ -54,6 +72,9 @@ pub async fn register_and_fetch(iii: &IIIClient) -> Result<WorkerConfig, Securit
     config.validate()?;
     Ok(config)
 }
+
+#[path = "../../crates/config-client/src/initialization.rs"]
+mod initialization;
 
 pub async fn register_and_fetch_until_ready(iii: &IIIClient) -> WorkerConfig {
     retry_until_ready(
@@ -79,8 +100,9 @@ where
     }
 }
 
+/// Missing entries may be seeded; dependency failures must propagate without writes.
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, SecurityScanError> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
+    match trigger_with_retry(iii, "configuration::get", json!({ "id": config_id() })).await {
         Ok(response) => response.get("value").cloned().map(Some).ok_or_else(|| {
             SecurityScanError::Dependency("configuration::get returned no `value` field".into())
         }),
@@ -110,6 +132,10 @@ async fn trigger_with_retry(
         {
             Ok(response) => return Ok(response),
             Err(error) => {
+                if matches!(&error, iii_sdk::errors::Error::Remote { code, .. } if code == "function_not_found" || code == "NOT_FOUND")
+                {
+                    return Err(SecurityScanError::Dependency(error.to_string()));
+                }
                 last_error = Some(error.to_string());
                 if attempt < CONFIG_RETRIES {
                     tokio::time::sleep(Duration::from_millis(
@@ -126,15 +152,63 @@ async fn trigger_with_retry(
     )))
 }
 
+/// Inspect the remote envelope code rather than words inside an unrelated failure message.
 fn is_not_found(error: &SecurityScanError) -> bool {
-    let message = error.to_string().to_ascii_uppercase();
-    message.contains("NOT_FOUND") || message.contains("NOT FOUND")
+    // Only a dependency (RPC) failure can carry the configuration worker's
+    // NOT_FOUND envelope. A local `InvalidRequest` is our own validation error
+    // and must never be read as "nothing stored yet", even if its message
+    // happens to contain the token. Match the variant first, then inspect its
+    // inner message rather than the `Display` string of the whole error.
+    match error {
+        SecurityScanError::Dependency(message) => is_missing_entry_message(message),
+        SecurityScanError::InvalidRequest(_) => false,
+    }
+}
+
+/// Anchor on the SDK's own rendering of a dependency failure: it prints as
+/// `remote error ({code}): {message}`, and this worker wraps a retried get as
+/// `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel that
+/// one wrapper (never a foreign one or a different attempt count) and then
+/// require the NOT_FOUND envelope at the very start, so a NOT_FOUND token
+/// buried in an unrelated message or wrapper still propagates as a failure.
+fn is_missing_entry_message(message: &str) -> bool {
+    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
+    const _: () = assert!(CONFIG_RETRIES == 3);
+    let raw = message.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "NOT_FOUND"
+        || raw == "remote error (NOT_FOUND):"
+        || raw.starts_with("remote error (NOT_FOUND): ")
 }
 
 #[cfg(test)]
 mod tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/config-client/tests/support/is_not_found_cases.rs"
+    ));
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Missing-entry classification runs on the stringified error: only the
+    /// configuration worker's standalone `NOT_FOUND` code inside the SDK's
+    /// `remote error (<code>)` envelope maps to an absent entry. A different
+    /// code whose message mentions NOT_FOUND, a nested envelope, and compound
+    /// codes all propagate instead of being read as "nothing stored yet".
+    #[test]
+    fn is_not_found_matches_only_the_envelope_code() {
+        // Only a dependency failure carries the envelope; the classifier reads
+        // its inner message, so the shared string contract applies to it.
+        assert_missing_entry_contract(|message| {
+            is_not_found(&SecurityScanError::Dependency(message.to_string()))
+        });
+        // A local validation error is never a missing entry, even when its
+        // message contains the envelope verbatim.
+        assert!(!is_not_found(&SecurityScanError::InvalidRequest(
+            "remote error (NOT_FOUND): not a config read".into()
+        )));
+    }
 
     #[test]
     fn shipped_config_is_idle_and_valid() {

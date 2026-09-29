@@ -19,6 +19,10 @@ import { useConfigurationValue, useSetConfiguration } from './hooks'
 import { SaveBar, type SaveStatus } from './SaveBar'
 import { wt } from './typography'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 interface WorkerEditorProps {
   entry: ConfigurationSchemaView
   onDirtyChange: (dirty: boolean) => void

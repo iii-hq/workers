@@ -178,7 +178,7 @@ export interface PaletteOpenOptions {
 }
 
 export interface PageRegistration {
-  /** kebab-case, unique per tab; convention `<worker>-<name>`. Routes at `#/ext/<id>`. */
+  /** kebab-case, unique per tab; convention `<worker>-<name>`. Opened as the `ext:<id>` screen; alone at `#/worker/<scope>/<id>`. */
   id: string
   /** Nav label. */
   title: string
@@ -414,6 +414,34 @@ export interface ComposerActionRegistration {
   render: React.ComponentType<ComposerActionProps>
 }
 
+/**
+ * Props a composer control receives: the active session, its live turn
+ * state, and that session's metadata with a writer. The console persists
+ * `setMetadata` through its own session-metadata writer (drafts included:
+ * the keys land when the session is created), so the control never calls
+ * `session::set-meta` itself.
+ */
+export interface ComposerControlProps {
+  /** Active conversation id (a draft's id until its first send). */
+  sessionId: string
+  isStreaming: boolean
+  /** The session's stored metadata. */
+  metadata: Readonly<Record<string, unknown>>
+  /** Merge keys into the metadata; an `undefined` value removes the key. */
+  setMetadata(patch: Record<string, unknown>): void
+}
+
+/**
+ * A compact per-session setting rendered in the composer's footer, beside
+ * the model picker: a value that applies to the session from its next turn
+ * on, the way the model does. Duplicate `id`: last registration wins.
+ */
+export interface ComposerControlRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType<ComposerControlProps>
+}
+
 /** Props for a worker-owned annotation detail rendered in the transcript. */
 export interface TranscriptAnnotationProps {
   version: number
@@ -425,6 +453,21 @@ export interface TranscriptAnnotationProps {
 export interface TranscriptRendererRegistration {
   id: string
   render: React.ComponentType<TranscriptAnnotationProps>
+}
+
+/**
+ * A floating surface the console renders above the workspace whatever page
+ * or tab is showing — a live thumbnail, a recording indicator. The
+ * component positions itself (`position: fixed`) and opts back into
+ * pointer events (the layer itself lets clicks through); it renders for as
+ * long as the script is loaded, so it decides on its own when to show
+ * something and when to render nothing. Duplicate `id`: last registration
+ * wins.
+ */
+export interface OverlayRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType
 }
 
 /**
@@ -484,6 +527,13 @@ export interface Host {
     /** Place/reuse a registered page and deliver its worker-defined context. */
     open(request: PanelOpenRequest): void
   }
+  /**
+   * Optional on consoles that predate floating overlays. Feature-detect with
+   * `host.overlays?.register`; without it a worker falls back to its page.
+   */
+  overlays?: {
+    register(overlay: OverlayRegistration): () => void
+  }
   configForms: {
     register(
       configurationId: string,
@@ -508,12 +558,25 @@ export interface Host {
      * drop or a paste would, and put the caret there. Files become
      * attachments. Absent on older consoles; feature-detect.
      */
-    compose?(draft: { text?: string; files?: File[]; inline?: boolean }): void
+    compose?(draft: {
+      text?: string
+      files?: File[]
+      inline?: boolean
+      /**
+       * Send the draft once the text lands, rather than leaving it for the
+       * user to send. For a surface handing over a whole prompt, where the
+       * click already WAS the decision to send. Ignored by a composer that
+       * cannot send right now (streaming, blocked): the text stays a draft.
+       */
+      submit?: boolean
+    }): void
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
     /** Optional on consoles that predate the composer toolbar slot. */
     registerComposerAction?(action: ComposerActionRegistration): () => void
+    /** Optional on consoles that predate the composer footer control slot. */
+    registerComposerControl?(control: ComposerControlRegistration): () => void
     registerTranscriptRenderer?(renderer: TranscriptRendererRegistration): () => void
     /** Optional on consoles that predate worker-driven conversation switching. */
     selectConversation?(sessionId: string): void
@@ -523,6 +586,16 @@ export interface Host {
      * a folder in a page that sits beside the chat.
      */
     requestWorkingDirectoryChange?(request: { sessionId: string; path: string }): boolean
+    /**
+     * Ask the mounted conversation to adopt a reasoning effort — `minimal`,
+     * `low`, `medium`, `high`, `xhigh`, or `default` to drop the override;
+     * anything else is refused. The page cannot write this itself: the level
+     * lives on the console's conversation record and is sent from there on
+     * every turn, so a write into session metadata would never reach the next
+     * one. Returns whether a mounted conversation took it. Absent on older
+     * consoles; feature-detect.
+     */
+    requestThinkingLevelChange?(request: { sessionId: string; level: string }): boolean
     /** Live composer model for a conversation, including unsaved drafts. */
     composerModel?(conversationId?: string | null): string | null
   }
@@ -536,6 +609,16 @@ export type SetupFn = (host: Host) => void | (() => void) | Promise<void | (() =
 export declare const iii: ExtensionIii
 export declare const components: Record<string, React.ComponentType<any>>
 export declare function useTheme(): 'light' | 'dark'
+/**
+ * `window.confirm` shaped around `ConfirmDialog`: render `dialog` once in the
+ * component, then `await confirm({ title, … })` where the native box used to
+ * be. Escape, the close control and Cancel resolve `false`; a second call
+ * while one is open cancels the first; unmounting cancels whatever is open.
+ */
+export declare function useConfirm(): {
+  confirm: (options: ConfirmOptions) => Promise<boolean>
+  dialog: React.ReactNode
+}
 /** Design-token names, for documentation/tooling; styling just uses `var(--color-*)`. */
 export declare const tokens: readonly string[]
 /** Stable namespaced CSS recipes; state is expressed through `data-*` attributes. */
@@ -591,6 +674,11 @@ export interface UiClasses {
   readonly fieldLabel: 'iii-ui-field__label'
   readonly fieldDescription: 'iii-ui-field__description'
   readonly fieldError: 'iii-ui-field__error'
+  readonly checkbox: 'iii-ui-checkbox'
+  readonly checkboxControl: 'iii-ui-checkbox__control'
+  readonly checkboxInput: 'iii-ui-checkbox__input'
+  readonly checkboxMark: 'iii-ui-checkbox__mark'
+  readonly checkboxLabel: 'iii-ui-checkbox__label'
   readonly switch: 'iii-ui-switch'
   readonly switchInput: 'iii-ui-switch__input'
   readonly switchThumb: 'iii-ui-switch__thumb'
@@ -611,6 +699,12 @@ export interface UiClasses {
   readonly motionControl: 'iii-ui-motion-control'
   readonly motionPanel: 'iii-ui-motion-panel'
   readonly motionOverlay: 'iii-ui-motion-overlay'
+  readonly eyebrow: 'iii-ui-eyebrow'
+  readonly toolbar: 'iii-ui-toolbar'
+  readonly toolbarEnd: 'iii-ui-toolbar__end'
+  readonly statusbar: 'iii-ui-statusbar'
+  readonly spin: 'iii-ui-spin'
+  readonly pulse: 'iii-ui-pulse'
 }
 
 /* ── the shared component library ───────────────────────────────────── */
@@ -752,6 +846,8 @@ export declare const Chip: React.ComponentType<ChipProps & React.RefAttributes<H
 export type TableDensity = 'comfortable' | 'compact'
 export interface TableProps extends React.TableHTMLAttributes<HTMLTableElement> {
   density?: TableDensity
+  /** Keep the first/last cell padding — for a table inside a card or panel. */
+  inset?: boolean
 }
 export declare const TableViewport: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
@@ -833,6 +929,8 @@ export interface ConfirmDialogProps {
   details?: readonly string[]
   confirmLabel?: string
   cancelLabel?: string
+  /** `danger` paints the confirm control in `alert` for destructive actions. */
+  tone?: 'default' | 'danger'
   onConfirm: () => void
   onCancel?: () => void
 }
@@ -841,6 +939,10 @@ export interface ConfirmDialogProps {
  * initial focus, Escape and the close control cancel.
  */
 export declare const ConfirmDialog: React.ComponentType<ConfirmDialogProps>
+export type ConfirmOptions = Pick<
+  ConfirmDialogProps,
+  'title' | 'description' | 'details' | 'confirmLabel' | 'cancelLabel' | 'tone'
+>
 
 /** Root is state-only; compose with `DialogTrigger`/`DialogContent`. */
 export interface DialogProps {
@@ -886,12 +988,57 @@ export interface DropdownMenuItemProps extends React.HTMLAttributes<HTMLDivEleme
 export declare const DropdownMenuItem: React.ComponentType<DropdownMenuItemProps>
 export declare const DropdownMenuLabel: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
 export declare const DropdownMenuSeparator: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export declare const DropdownMenuGroup: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export interface DropdownMenuCheckboxItemProps extends DropdownMenuItemProps {
+  checked?: boolean | 'indeterminate'
+  onCheckedChange?(checked: boolean): void
+  /** Checked-state icon (a Lucide element); defaults to a checkmark. */
+  indicator?: React.ReactNode
+}
+/** A toggle row, check in the left gutter. `onSelect={(e) => e.preventDefault()}` keeps the menu open across toggles. */
+export declare const DropdownMenuCheckboxItem: React.ComponentType<DropdownMenuCheckboxItemProps>
+export interface DropdownMenuRadioGroupProps extends React.HTMLAttributes<HTMLDivElement> {
+  value?: string
+  onValueChange?(value: string): void
+}
+export declare const DropdownMenuRadioGroup: React.ComponentType<DropdownMenuRadioGroupProps>
+export interface DropdownMenuRadioItemProps extends DropdownMenuItemProps {
+  value: string
+}
+/** A single-choice row inside `DropdownMenuRadioGroup`; the chosen one wears the check. */
+export declare const DropdownMenuRadioItem: React.ComponentType<DropdownMenuRadioItemProps>
+export interface DropdownMenuSubProps {
+  open?: boolean
+  defaultOpen?: boolean
+  onOpenChange?(open: boolean): void
+  children?: React.ReactNode
+}
+/** A nested menu: `SubTrigger` is a row (with the tree caret) that pushes into `SubContent` beside it. */
+export declare const DropdownMenuSub: React.ComponentType<DropdownMenuSubProps>
+export interface DropdownMenuSubTriggerProps extends React.HTMLAttributes<HTMLDivElement> {
+  disabled?: boolean
+}
+export declare const DropdownMenuSubTrigger: React.ComponentType<DropdownMenuSubTriggerProps>
+export interface DropdownMenuSubContentProps extends React.HTMLAttributes<HTMLDivElement> {
+  sideOffset?: number
+  alignOffset?: number
+}
+export declare const DropdownMenuSubContent: React.ComponentType<DropdownMenuSubContentProps>
 
+export interface EmptyStateAction {
+  label: string
+  onClick: () => void
+}
 export interface EmptyStateProps {
   icon?: React.ComponentType<{ className?: string }>
   title: string
   description: string
-  action?: { label: string; onClick: () => void }
+  /** The one action of a full cell. `actions` adds more (first is primary). */
+  action?: EmptyStateAction
+  actions?: readonly EmptyStateAction[]
+  /** Inside a card or a list: no cell, 13px title, tighter padding. */
+  compact?: boolean
+  className?: string
 }
 export declare const EmptyState: React.ComponentType<EmptyStateProps>
 
@@ -970,6 +1117,17 @@ export interface SwitchProps
 /** Native checkbox semantics with shared switch presentation and touch target. */
 export declare const Switch: React.ComponentType<SwitchProps & React.RefAttributes<HTMLInputElement>>
 
+export interface CheckboxProps
+  extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'children' | 'className' | 'type'> {
+  /** Classes apply to the label wrapper; native input props stay on the checkbox. */
+  className?: string
+  /** Text beside the box; otherwise pass `aria-label`. */
+  label?: React.ReactNode
+  indeterminate?: boolean
+}
+/** Native checkbox in the shared 18 px box; accent when checked, `Minus` when indeterminate. */
+export declare const Checkbox: React.ComponentType<CheckboxProps & React.RefAttributes<HTMLInputElement>>
+
 export declare const List: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
 >
@@ -985,6 +1143,12 @@ export interface ListItemProps extends React.ButtonHTMLAttributes<HTMLButtonElem
   label?: React.ReactNode
   description?: React.ReactNode
   trailing?: React.ReactNode
+  /**
+   * `div` when the row holds its own buttons — a button cannot contain
+   * buttons. Selection is then `aria-selected`; the caller owns
+   * `role`/`tabIndex`/keys.
+   */
+  as?: 'button' | 'div'
 }
 export declare const ListItem: React.ComponentType<ListItemProps & React.RefAttributes<HTMLButtonElement>>
 
@@ -1278,17 +1442,18 @@ export declare const SettingsField: React.ComponentType<
 export declare const Skeleton: React.ComponentType<React.HTMLAttributes<HTMLSpanElement>>
 
 export interface StatusDotProps extends React.HTMLAttributes<HTMLSpanElement> {
-  tone?: 'accent' | 'alert' | 'warn' | 'ink'
+  tone?: 'accent' | 'alert' | 'warn' | 'ink' | 'ok'
   pulse?: boolean
 }
 export declare const StatusDot: React.ComponentType<StatusDotProps>
 
-export interface StatusPanelProps {
+export interface StatusPanelProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: 'info' | 'success' | 'warn' | 'alert'
   icon?: React.ReactNode
   headline: React.ReactNode
   detail?: React.ReactNode
-  className?: string
+  /** Trailing slot for a retry/dismiss `Button`; never text. */
+  action?: React.ReactNode
 }
 export declare const StatusPanel: React.ComponentType<StatusPanelProps>
 
@@ -1358,12 +1523,15 @@ export interface TerminalStreamProps {
     a private stream pane in a worker asset; import this instead. */
 export declare const TerminalStream: React.ComponentType<TerminalStreamProps>
 
-/** The console app provides the Radix `TooltipProvider`; compose Root/Trigger/Content only. */
+/** The console app provides the Radix `TooltipProvider`; compose Root/Trigger/Content,
+    or pass `label` to wrap `children` as the trigger with that content. */
 export interface TooltipProps {
   open?: boolean
   defaultOpen?: boolean
   onOpenChange?(open: boolean): void
   delayDuration?: number
+  /** Shorthand: `children` become the trigger (`asChild`) and this the content. */
+  label?: React.ReactNode
   children?: React.ReactNode
 }
 export declare const Tooltip: React.ComponentType<TooltipProps>
@@ -1565,3 +1733,131 @@ export interface WordmarkProps {
 }
 /** The "iii" wordmark. */
 export declare const Wordmark: React.ComponentType<WordmarkProps>
+
+/* ── 2026-09 additions: sheets, keys, live regions, labels, strips ───── */
+
+/** Mobile bottom sheet (Radix Dialog underneath); the portal keeps the worker's `data-iii-ui` scope. */
+export declare const BottomSheet: React.ComponentType<DialogProps>
+export declare const BottomSheetTrigger: React.ComponentType<DialogTriggerProps>
+export declare const BottomSheetClose: React.ComponentType<DialogTriggerProps>
+export interface BottomSheetContentProps extends React.HTMLAttributes<HTMLDivElement> {
+  /** Optional visible heading for simple, single-page sheets. */
+  heading?: React.ReactNode
+  description?: React.ReactNode
+  closeLabel?: string
+  headerClassName?: string
+  overlayClassName?: string
+}
+export declare const BottomSheetContent: React.ComponentType<
+  BottomSheetContentProps & React.RefAttributes<HTMLDivElement>
+>
+export declare const BottomSheetTitle: React.ComponentType<
+  React.HTMLAttributes<HTMLHeadingElement> & React.RefAttributes<HTMLHeadingElement>
+>
+export declare const BottomSheetDescription: React.ComponentType<
+  React.HTMLAttributes<HTMLParagraphElement> & React.RefAttributes<HTMLParagraphElement>
+>
+
+/** One key cap (`<kbd>`); `KeyCombo` composes a chord out of them. */
+export declare const Kbd: React.ComponentType<React.HTMLAttributes<HTMLElement>>
+export interface KeyComboProps {
+  /** Stored binding, e.g. `Mod+K`, `Ctrl+G C`. */
+  binding: string
+  platform?: 'mac' | 'other'
+  className?: string
+  capClassName?: string
+  /** The last cap shows `1–9` when the chord ends in a digit. */
+  digitRange?: boolean
+}
+export declare const KeyCombo: React.ComponentType<KeyComboProps>
+
+export interface LiveAnnouncement {
+  /** Monotonic; a new value re-announces identical text. */
+  readonly seq: number
+  readonly text: string
+  readonly urgency: 'polite' | 'assertive'
+}
+export interface LiveRegionProps {
+  announcement: LiveAnnouncement | null
+}
+/** Visually hidden polite + assertive ARIA live regions. */
+export declare const LiveRegion: React.ComponentType<LiveRegionProps>
+
+export interface BreadcrumbItem {
+  /** Authored or machine text; rendered verbatim in mono. */
+  label: React.ReactNode
+  /** Navigate to this ancestor. Omit on the current (last) item. */
+  onClick?: () => void
+  /** Stable key when labels can repeat; defaults to the index. */
+  key?: string
+}
+export interface BreadcrumbProps
+  extends Omit<React.HTMLAttributes<HTMLElement>, 'children'> {
+  /** Root first, current location last. */
+  items: readonly BreadcrumbItem[]
+  /** Glyph between segments; `/` by default. */
+  separator?: React.ReactNode
+  /** Emphasise the first item (a bucket, a repository, a workspace root). */
+  emphasizeRoot?: boolean
+}
+/**
+ * Horizontal path in the mono voice: ancestors are ghost buttons that
+ * navigate, the last item is the current location (`aria-current="page"`).
+ * Overflow scrolls horizontally; the path never wraps a `Toolbar`.
+ */
+export declare const Breadcrumb: React.ComponentType<BreadcrumbProps>
+
+export interface EyebrowProps extends React.HTMLAttributes<HTMLElement> {
+  as?: 'span' | 'div' | 'p' | 'h2' | 'h3' | 'h4' | 'header' | 'dt' | 'legend'
+  /** `lg` is the section eyebrow: the same 11px, tracked 0.14em. */
+  size?: 'md' | 'lg'
+}
+/** The mono caps label (`uiClasses.eyebrow` is the same look as a class). */
+export declare const Eyebrow: React.ComponentType<EyebrowProps>
+
+export interface SearchFieldProps
+  extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'type' | 'className'> {
+  value: string
+  onChange(next: string): void
+  /** Visible label; otherwise `aria-label` is required. */
+  label?: React.ReactNode
+  /** Applies to the wrapper; every other prop (`data-*`, `aria-*`, `autoFocus`…) lands on the input. */
+  className?: string
+}
+/** Search input with a leading magnifier and a clear affordance; Escape clears. */
+export declare const SearchField: React.ComponentType<
+  SearchFieldProps & React.RefAttributes<HTMLInputElement>
+>
+
+export interface ToolbarProps extends React.HTMLAttributes<HTMLElement> {
+  /** Trailing slot, pushed to the far end. */
+  end?: React.ReactNode
+  /** Element to render: `form` for an address bar, `nav` for a rail. */
+  as?: 'div' | 'form' | 'nav' | 'header' | 'footer' | 'section'
+  /** A vertical toolbar is a 36 px wide rail; `end` sinks to the bottom. */
+  orientation?: 'horizontal' | 'vertical'
+}
+/** Secondary toolbar strip (36 px, raised). Give it an `aria-label`. */
+export declare const Toolbar: React.ComponentType<ToolbarProps>
+/** Quiet status strip (28 px, faint tabular text); same `end` slot. */
+export declare const StatusBar: React.ComponentType<ToolbarProps>
+
+export interface MetaRowItem {
+  label: React.ReactNode
+  value: React.ReactNode
+  /** Colour of the value: status inks, or `ink` (default). */
+  tone?: 'ink' | 'ok' | 'warn' | 'alert' | 'accent'
+}
+export interface MetaRowProps extends React.HTMLAttributes<HTMLDivElement> {
+  /** Label/value pairs, values in mono; free-form children (chips) follow. */
+  items?: readonly MetaRowItem[]
+}
+/** The wrapping metadata strip a function-trigger card opens with. */
+export declare const MetaRow: React.ComponentType<MetaRowProps>
+export interface ActionLineProps extends React.HTMLAttributes<HTMLDivElement> {
+  /** Leading 16 px icon (a Lucide element). */
+  icon: React.ReactNode
+  tone?: 'accent' | 'warn' | 'ink'
+}
+/** One action a card reports (`→ url`, `ƒ function`): icon in the tone, body in ink. */
+export declare const ActionLine: React.ComponentType<ActionLineProps>

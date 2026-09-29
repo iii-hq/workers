@@ -13,7 +13,7 @@ export function Kbd({ className, ...props }: HTMLAttributes<HTMLElement>) {
       className={cn(
         // `rounded` is the bare 4px step: at the system's 6px a cap this
         // small turns into a pill.
-        'inline-flex min-w-5 items-center justify-center rounded bg-surface px-1 py-px font-mono text-[0.65rem] text-ink-ghost shadow-keycap',
+        'inline-flex min-w-5 items-center justify-center rounded bg-surface px-1 py-px font-mono text-[11px] text-ink-ghost shadow-keycap',
         className,
       )}
       {...props}

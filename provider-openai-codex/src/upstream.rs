@@ -2,6 +2,7 @@
 //! The receiver dropping aborts the upstream: every send error returns,
 //! which drops the reqwest response mid-body and closes the connection.
 use crate::errors::classify;
+use crate::session::{AuthManager, CredentialSource};
 use crate::sse::{build_final, build_partial, handle_chunk, synthetic_error_event, PartialState};
 use crate::PROVIDER_ID;
 use futures::StreamExt;
@@ -11,6 +12,7 @@ use llm_router::provider_scaffold::sse_transport::{
 };
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub struct UpstreamArgs {
@@ -25,6 +27,7 @@ pub struct UpstreamArgs {
 pub fn spawn_upstream(
     client: reqwest::Client,
     args: UpstreamArgs,
+    auth: Option<Arc<AuthManager>>,
 ) -> mpsc::Receiver<AssistantMessageEvent> {
     let (tx, rx) = mpsc::channel(64);
     tokio::spawn(async move {
@@ -35,7 +38,7 @@ pub fn spawn_upstream(
         // the read timeout. This makes the module contract above immediate.
         let closed = tx.clone();
         tokio::select! {
-            _ = run_upstream(client, args, tx) => {}
+            _ = run_upstream(client, args, tx, auth) => {}
             _ = closed.closed() => {}
         }
     });
@@ -54,12 +57,13 @@ async fn run_upstream(
     client: reqwest::Client,
     args: UpstreamArgs,
     tx: mpsc::Sender<AssistantMessageEvent>,
+    auth: Option<Arc<AuthManager>>,
 ) {
     let mut req = client.post(&args.api_url);
     for (name, value) in &args.headers {
         req = req.header(*name, value);
     }
-    let resp = match req.json(&args.body).send().await {
+    let mut resp = match req.json(&args.body).send().await {
         Ok(r) => r,
         Err(e) => {
             let _ = tx
@@ -72,6 +76,74 @@ async fn run_upstream(
             return;
         }
     };
+
+    // This branch runs before Start or any content is emitted. A 401 after
+    // streaming starts is terminal and is never replayed.
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        if let Some(auth) = auth {
+            let rejected = args
+                .headers
+                .iter()
+                .find(|(k, _)| *k == "authorization")
+                .and_then(|(_, v)| v.strip_prefix("Bearer "));
+            if let Some(rejected) = rejected {
+                match auth.resolve(Some(rejected)).await {
+                    Ok(Some(fresh)) if fresh.source == CredentialSource::Managed => {
+                        let account = fresh.value.get("account_id").and_then(Value::as_str);
+                        let original_account = args
+                            .headers
+                            .iter()
+                            .find(|(k, _)| *k == "chatgpt-account-id")
+                            .map(|(_, v)| v.as_str());
+                        if account != original_account {
+                            let _ = tx
+                                .send(synthetic_error_event(
+                                    "Codex account changed. Send the request again.",
+                                    &args.model,
+                                    ErrorKind::AuthExpired,
+                                ))
+                                .await;
+                            return;
+                        }
+                        if let Some(token) = fresh.value.get("access_token").and_then(Value::as_str)
+                        {
+                            let mut retry = client.post(&args.api_url);
+                            for (name, value) in &args.headers {
+                                if *name != "authorization" {
+                                    retry = retry.header(*name, value);
+                                }
+                            }
+                            drop(resp);
+                            resp = match retry.bearer_auth(token).json(&args.body).send().await {
+                                Ok(response) => response,
+                                Err(_) => {
+                                    let _ = tx
+                                        .send(synthetic_error_event(
+                                            "Codex request failed after renewing the session.",
+                                            &args.model,
+                                            ErrorKind::Transient,
+                                        ))
+                                        .await;
+                                    return;
+                                }
+                            };
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(synthetic_error_event(
+                                &e.message,
+                                &args.model,
+                                e.error_kind(),
+                            ))
+                            .await;
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 
     let status = resp.status();
     if !status.is_success() {
@@ -214,7 +286,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn happy_stream_yields_start_through_stop_and_done() {
         let url = stub(HAPPY).await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         assert!(matches!(
             events.first(),
             Some(AssistantMessageEvent::Start { .. })
@@ -247,7 +319,7 @@ mod tests {
             "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"Incorrect API key provided.\",\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\"}}",
         )
         .await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         assert_eq!(events.len(), 1);
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
@@ -264,7 +336,7 @@ mod tests {
         // cause, not stop at the opaque "builder error".
         let mut a = args("http://127.0.0.1:1/v1/chat/completions".into());
         a.headers = vec![("authorization", "Bearer sk-bad\ninjected".into())];
-        let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), a, None)).await;
         assert_eq!(events.len(), 1);
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
@@ -285,7 +357,7 @@ mod tests {
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             format!("http://{}/v1/chat/completions", l.local_addr().unwrap())
         };
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(dead))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(dead), None)).await;
         assert_eq!(events.len(), 1);
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
@@ -301,7 +373,7 @@ mod tests {
             "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n",
         )
         .await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         match events.last() {
             Some(AssistantMessageEvent::Done { message }) => {
                 assert!(
@@ -321,7 +393,7 @@ mod tests {
         let url =
             stub("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n")
                 .await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         match events.last() {
             Some(AssistantMessageEvent::Error { error }) => {
                 assert_eq!(error.error_kind, Some(ErrorKind::Transient));
@@ -354,7 +426,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn stream_cut_inside_function_call_arguments_ends_as_one_error() {
         let url = stub(TRUNCATED_MID_ARGUMENTS).await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         let error = single_terminal_error(&events);
         assert_eq!(error.error_kind, Some(ErrorKind::Transient));
         let message = error.error_message.as_deref().unwrap_or_default();
@@ -379,7 +451,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn stream_cut_inside_an_event_frame_ends_as_one_error() {
         let url = stub(TRUNCATED_MID_FRAME).await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         let error = single_terminal_error(&events);
         assert_eq!(error.error_kind, Some(ErrorKind::Transient));
         let message = error.error_message.as_deref().unwrap_or_default();
@@ -394,7 +466,7 @@ mod tests {
         let url =
             stub("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n")
                 .await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         let error = single_terminal_error(&events);
         let message = error.error_message.as_deref().unwrap_or_default();
         assert!(message.contains("reason=empty"), "{message}");
@@ -403,7 +475,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn final_block_without_blank_line_still_completes() {
         let url = stub(FINAL_BLOCK_WITHOUT_BLANK_LINE).await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
         match events.last() {
             Some(AssistantMessageEvent::Done { message }) => {
@@ -420,7 +492,7 @@ mod tests {
         let url = stub(HAPPY).await;
         let mut a = args(url);
         a.warnings = vec!["thinking_level ignored".into()];
-        let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), a, None)).await;
         match events.last() {
             Some(AssistantMessageEvent::Done { message }) => {
                 assert_eq!(

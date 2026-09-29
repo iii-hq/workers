@@ -43,11 +43,14 @@
  */
 
 import {
+  Chip,
   CodeHighlight,
   type FunctionTriggerMessage,
   type FunctionTriggerRenderer,
   type Host,
+  TerminalStream,
 } from '@iii-dev/console-ui'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
 import { useState } from 'react'
 import {
   asRecord,
@@ -61,7 +64,6 @@ import {
   opName,
   RuntimeChip,
   redactRuntimeIds,
-  Stream,
   TimeoutChip,
   unwrapEnvelope,
 } from '../lib/shared'
@@ -115,27 +117,27 @@ function Chips({
     <>
       {runtimeId ? <RuntimeChip runtimeId={runtimeId} /> : null}
       {req.runtimeId ? (
-        <span className="cr-ui-chip">reused runtime</span>
+        <Chip>reused runtime</Chip>
       ) : req.keep ? (
-        <span
-          className="cr-ui-chip cr-run-fresh"
+        <Chip
+          tone="warning"
           title="No runtime_id, keep: true: boots a fresh VM and leaves it running — the response's runtime_id addresses it for later runs."
         >
           keeps the VM
-        </span>
+        </Chip>
       ) : (
-        <span
-          className="cr-ui-chip cr-run-fresh"
+        <Chip
+          tone="warning"
           title="No runtime_id, no keep: one-shot — boots a fresh VM, runs the code, and destroys the VM before this response is sent. Nothing persists: no files, no installed packages."
         >
           one-shot
-        </span>
+        </Chip>
       )}
       {req.lang ? (
-        <span className="cr-ui-chip">
-          <span className="k">lang </span>
+        <Chip>
+          <span className={uiClasses.eyebrow}>lang</span>
           {req.lang}
-        </span>
+        </Chip>
       ) : null}
       <NetworkChip req={req} />
       <TimeoutChip ms={req.timeoutMs} />
@@ -158,21 +160,21 @@ function NetworkChip({ req }: { req: RunRequest }) {
   if (!req.runtimeId) {
     if (!req.network) return null
     return (
-      <span
-        className="cr-ui-chip cr-run-net off"
+      <Chip
+        tone="warning"
         title="Neither a one-shot run nor keep: true can create a networked VM — sandbox::run has no network flag at all. This request will be refused; pass an explicit runtime_id for a runtime that already has network."
       >
-        <span className="k">network </span>
+        <span className={uiClasses.eyebrow}>network</span>
         refused: no runtime_id
-      </span>
+      </Chip>
     )
   }
   if (!req.network) return null
   return (
-    <span className="cr-ui-chip cr-run-net off">
-      <span className="k">network </span>
+    <Chip>
+      <span className={uiClasses.eyebrow}>network</span>
       ignored on reuse
-    </span>
+    </Chip>
   )
 }
 
@@ -215,7 +217,7 @@ function CodeSection({
 
   return (
     <div className="cr-ui-section">
-      <div className="cr-ui-section-label">
+      <div className={uiClasses.eyebrow}>
         {clipped ? 'code (excerpt)' : 'code'}
       </div>
       <div className="cr-ui-code">
@@ -253,7 +255,14 @@ function StreamOrNote({
   tone?: 'out' | 'err'
 }) {
   if (typeof value === 'string') {
-    return <Stream label={label} text={value} tone={tone} />
+    return (
+      <TerminalStream
+        label={label}
+        text={redactRuntimeIds(value)}
+        tone={tone}
+        className="cr-ui-stream"
+      />
+    )
   }
   if (value === undefined || value === null) return null
   return (
@@ -306,7 +315,7 @@ function RunningView({ message }: { message: FunctionTriggerMessage }) {
       running
       chips={<Chips req={req} runtimeId={req.runtimeId} />}
     >
-      <div className="cr-ui-msg-note pulse">· running…</div>
+      <div className={`cr-ui-msg-note ${uiClasses.pulse}`}>· running…</div>
       {req.code === undefined ? null : (
         <CodeSection code={req.code} lang={req.lang} />
       )}

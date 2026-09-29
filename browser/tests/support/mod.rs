@@ -90,19 +90,18 @@ fn diff_hint(rel: &str, expected: &str, actual: &str) -> String {
 }
 
 /// Compare against a golden that this repo does NOT write: everything under
-/// `tests/golden/schemas/browser.scrapling.*` and `tests/golden/behavior/` is
-/// produced only by `scripts/gen_goldens.py` running the reference Python
-/// implementation. There is deliberately no `UPDATE_GOLDENS` branch here — a
-/// pass has to mean "Rust agrees with Python", and a writable escape hatch
-/// would let a real divergence be papered over instead of root-caused.
-/// Regenerate with:
-///   ~/.iii/managed/scrapling/usr/local/bin/python3.12 scripts/gen_goldens.py
+/// `tests/golden/schemas/browser.scrapling.*` and `tests/golden/behavior/` was
+/// captured from the reference Python implementation while it still shipped as
+/// the standalone `scrapling` worker. That worker and its generator are gone,
+/// so these fixtures are frozen: there is deliberately no `UPDATE_GOLDENS`
+/// branch here, and a divergence is root-caused rather than papered over. A
+/// fixture only ever changes by a reviewed, hand-written edit.
 pub fn check_golden_readonly(rel: &str, actual: &str) -> Result<(), String> {
     let path = golden_root().join(rel);
     let expected = fs::read_to_string(&path).map_err(|e| {
         format!(
-            "golden {} unreadable ({e}); regenerate with \
-             ~/.iii/managed/scrapling/usr/local/bin/python3.12 scripts/gen_goldens.py",
+            "golden {} unreadable ({e}); these fixtures are frozen and \
+             committed — restore it from git rather than regenerating it",
             path.display()
         )
     })?;

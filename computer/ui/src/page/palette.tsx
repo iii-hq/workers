@@ -2,8 +2,8 @@
  * The computer worker in the command palette, before its page is even open.
  *
  * A sessions source answers any query with live desktop sessions read from
- * `computer::sessions::list` (the same read useSessionsLive bootstraps
- * from), each row opening that session in the computer page. Registered
+ * `computer::sessions::list` (the same read the page's session feed
+ * bootstraps from), each row opening that session in the computer page. Registered
  * from setup, so it exists only while the worker is connected; older
  * consoles without host.palette / host.commands simply get nothing.
  */

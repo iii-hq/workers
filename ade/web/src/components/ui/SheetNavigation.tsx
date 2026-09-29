@@ -63,7 +63,7 @@ export function SheetPage({
   contentClassName,
 }: SheetPageProps) {
   return (
-    <div className={cn('flex min-h-0 flex-1 flex-col', className)}>
+    <div className={cn('flex min-h-0 min-w-0 flex-1 flex-col', className)}>
       <div className="flex shrink-0 items-start gap-2 px-4 pb-4 pr-14">
         {onBack ? (
           <button
@@ -112,7 +112,7 @@ export function SheetPage({
       </div>
       <div
         className={cn(
-          'min-h-0 flex-1 overflow-y-auto overscroll-contain',
+          'min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain',
           contentClassName,
         )}
       >

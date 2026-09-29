@@ -29,7 +29,7 @@
 [data-iii-ui="llm-router"] .llmr-cfg-provider {
   padding: 14px;
   border: 1px solid var(--color-rule);
-  border-radius: 12px;
+  border-radius: 6px;
   background: var(--color-panel);
 }
 
@@ -68,7 +68,7 @@
 [data-iii-ui="llm-router"] .llmr-cfg-envfix {
   padding: 1px 4px;
   border: 0;
-  border-radius: 4px;
+  border-radius: 6px;
   background: transparent;
   color: var(--color-accent);
   font: 500 11.5px/1.45 var(--font-mono, ui-monospace, monospace);
@@ -76,7 +76,7 @@
 }
 
 [data-iii-ui="llm-router"] .llmr-cfg-envfix:hover {
-  background: var(--color-surface-hover, rgba(0, 0, 0, 0.08));
+  background: var(--color-surface-hover);
 }
 
 [data-iii-ui="llm-router"] .llmr-cfg-envfix:focus-visible {

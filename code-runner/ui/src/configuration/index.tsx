@@ -11,7 +11,7 @@
  * which it is, so an operator knows what to expect from the save.
  */
 
-import type { ConfigFormProps, JsonValue } from '@iii-dev/console-ui'
+import { Badge, Checkbox, type ConfigFormProps, Eyebrow, Input, type JsonValue, StatusPanel } from '@iii-dev/console-ui'
 import { useEffect, useRef } from 'react'
 
 type JsonObject = { [key: string]: JsonValue }
@@ -64,15 +64,15 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
   const numberField = (field: keyof typeof DEFAULTS, label: string, hint?: string) => (
     <div className="cr-cfg-field">
       <label htmlFor={`cr-cfg-${field}`}>{label}</label>
-      <input
+      <Input
         id={`cr-cfg-${field}`}
         data-field={field}
         className="cr-cfg-input"
         type="number"
         min={0}
         placeholder={String(DEFAULTS[field])}
-        value={typeof value[field] === 'number' ? (value[field] as number) : ''}
-        onChange={(e) => setNumber(field, e.target.value)}
+        value={typeof value[field] === 'number' ? String(value[field]) : ''}
+        onChange={(next) => setNumber(field, next)}
       />
       {hint ? <span className="hint">{hint}</span> : null}
     </div>
@@ -99,11 +99,11 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
 
   return (
     <div className="cr-cfg-form" ref={rootRef}>
-      <span className="cr-cfg-caption">custom form · shipped by the code-runner worker</span>
+      <Eyebrow>custom form · shipped by the code-runner worker</Eyebrow>
 
       <div className="cr-cfg-section">
         <span className="cr-cfg-section-title">
-          output caps <span className="cr-cfg-live">hot-applies on save</span>
+          output caps <Badge variant="accent">hot-applies on save</Badge>
         </span>
         <span className="hint">
           Oversized run echoes are what flood a session's context: over the cap, `result` becomes an omission marker
@@ -116,18 +116,15 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
 
       <div className="cr-cfg-section">
         <span className="cr-cfg-section-title">
-          agent guidance <span className="cr-cfg-live">hot-applies on save</span>
+          agent guidance <Badge variant="accent">hot-applies on save</Badge>
         </span>
-        <span className="cr-cfg-checkrow">
-          <input
-            id="cr-cfg-inject_guidance"
-            data-field="inject_guidance"
-            type="checkbox"
-            checked={value.inject_guidance !== false}
-            onChange={(e) => props.onChange({ ...value, inject_guidance: e.target.checked })}
-          />
-          <label htmlFor="cr-cfg-inject_guidance">inject code-runner usage guidance into agent system prompts</label>
-        </span>
+        <Checkbox
+          id="cr-cfg-inject_guidance"
+          data-field="inject_guidance"
+          checked={value.inject_guidance !== false}
+          onChange={(e) => props.onChange({ ...value, inject_guidance: e.target.checked })}
+          label="inject code-runner usage guidance into agent system prompts"
+        />
         <span className="hint">
           The pre-generate hook that teaches agents this worker's surface (return conventions, keep/runtime_id,
           register_function). Off, the hook answers with a no-op and agents see only the function catalog.
@@ -136,7 +133,7 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
 
       <div className="cr-cfg-section">
         <span className="cr-cfg-section-title">
-          timeouts <span className="cr-cfg-live">hot-applies on save</span>
+          timeouts <Badge variant="accent">hot-applies on save</Badge>
         </span>
         {numberField('default_timeout_ms', 'default timeout (ms, when a run omits timeout_ms)')}
         {numberField('max_timeout_ms', 'max timeout (ms, requests are clamped down to this)')}
@@ -144,7 +141,7 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
 
       <div className="cr-cfg-section">
         <span className="cr-cfg-section-title">
-          runtimes &amp; memory <span className="cr-cfg-restart">applies at next worker restart</span>
+          runtimes &amp; memory <Badge>applies at next worker restart</Badge>
         </span>
         {numberField('max_runtimes', 'max live runtimes (both engines)')}
         {numberField('idle_ttl_secs', 'idle TTL (seconds before an unused runtime is reaped)')}
@@ -155,7 +152,7 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
       <div className="cr-cfg-section">
         <span className="cr-cfg-section-title">
           scratch (node iii.files — python&apos;s /work budget is fixed by its engine){' '}
-          <span className="cr-cfg-restart">applies at next worker restart</span>
+          <Badge>applies at next worker restart</Badge>
         </span>
         {numberField(
           'scratch_mb',
@@ -165,32 +162,33 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
         {numberField('scratch_files', 'max files per scratch directory')}
         <div className="cr-cfg-field">
           <label htmlFor="cr-cfg-scratch_root">scratch root (empty = system temp directory)</label>
-          <input
+          <Input
             id="cr-cfg-scratch_root"
             data-field="scratch_root"
             className="cr-cfg-input"
             type="text"
             placeholder="/var/lib/iii/code-runner"
             value={typeof value.scratch_root === 'string' ? value.scratch_root : ''}
-            onChange={(e) => {
-              const next = { ...value }
-              if (e.target.value === '') delete next.scratch_root
-              else next.scratch_root = e.target.value
-              props.onChange(next)
+            onChange={(next) => {
+              const draft = { ...value }
+              if (next === '') delete draft.scratch_root
+              else draft.scratch_root = next
+              props.onChange(draft)
             }}
           />
         </div>
       </div>
 
       {props.errors && props.errors.size > 0 ? (
-        <div className="cr-cfg-error">
-          {[...props.errors.entries()].map(([pointer, message]) => (
+        <StatusPanel
+          variant="alert"
+          headline={[...props.errors.entries()].map(([pointer, message]) => (
             <div key={pointer}>
               {pointer ? `${pointer}: ` : ''}
               {message}
             </div>
           ))}
-        </div>
+        />
       ) : null}
     </div>
   )

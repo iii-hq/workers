@@ -2,7 +2,14 @@ import { Children, isValidElement, type ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { SkillsDownloadView } from './DownloadView'
 
-vi.mock('@iii-dev/console-ui', () => ({ Badge: () => null }))
+vi.mock('@iii-dev/console-ui', () => ({
+  ActionLine: () => null,
+  Badge: () => null,
+  Card: () => null,
+  Eyebrow: () => null,
+  MetaRow: () => null,
+  Skeleton: () => null,
+}))
 
 describe('SkillsDownloadView', () => {
   it('keeps every written file family in the download result', () => {

@@ -22,6 +22,7 @@ EXPERIMENTAL_WORKERS = {
     "canvas",
     "document",
     "eval",
+    "onboarding",
     "pdf",
     "provider-opencode-go",
     "provider-openrouter",

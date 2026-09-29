@@ -151,7 +151,7 @@ async fn main() -> Result<()> {
     let boot_topology = cfg.topology();
     let function_search_model_path = cfg.resolved_function_search_model_path();
     // MiniLM is compiled only for targets with a pinned ONNX Runtime (see
-    // build.rs); elsewhere a semantic mode serves BM25 and neither a download
+    // build.rs); elsewhere Hybrid serves BM25 and neither a download
     // nor a missing-bundle warning helps.
     let minilm_supported = cfg!(minilm);
     if !minilm_supported && cfg.function_search_mode != FunctionSearchMode::Lexical {
@@ -175,6 +175,7 @@ async fn main() -> Result<()> {
     if minilm_supported && !download_bundle {
         iii_directory::config::warn_if_search_mode_lacks_model(
             cfg.function_search_mode,
+            function_search_model_path.is_some(),
             bundle_ready,
         );
     }
@@ -204,6 +205,8 @@ async fn main() -> Result<()> {
         Arc::new(tokio::sync::RwLock::new(Arc::new(Vec::new())));
     let semantic =
         functions::search_semantic::SemanticSearch::new(function_search_model_path.clone());
+    // Keep an installed model ready for the judge's Hybrid fallback as well.
+    semantic.set_enabled(cfg_handle.load().function_search_mode != FunctionSearchMode::Lexical);
     if functions::search::refresh_catalog(&iii, &search_catalog, &semantic)
         .await
         .is_err()
@@ -216,9 +219,36 @@ async fn main() -> Result<()> {
         sessions: Arc::default(),
         registry_cache: registry_cache.clone(),
         semantic: semantic.clone(),
+        judge: functions::search_judge::JudgeSearch::new(iii.clone()),
+        registered_workers: Some(registered_cache.clone()),
+        iii: Some(iii.clone()),
     };
     functions::search::register(&iii, &search_deps);
     functions::search::bind_best_effort(&iii);
+    // The judge's context window (compact options, tournament) follows the
+    // hub's default provider: re-read it as soon as the hub's configuration
+    // changes instead of when the cache expires.
+    let judge = search_deps.judge.clone();
+    let follower = iii.clone();
+    tokio::spawn(async move {
+        match iii_config_client::follow(
+            &follower,
+            "judge",
+            "directory::on-judge-config-change",
+            "Internal: re-read the judge's context window when the judge hub's configuration changes.",
+        )
+        .await
+        {
+            Ok(mut hub) => {
+                while hub.changed().await.is_ok() {
+                    judge.forget_window();
+                }
+            }
+            Err(reason) => {
+                tracing::debug!(reason, "judge hub configuration not followed; the window cache expires on its own")
+            }
+        }
+    });
     if download_bundle {
         let root = function_search_model_path.clone().expect("checked above");
         let catalog = search_catalog.clone();
@@ -231,8 +261,8 @@ async fn main() -> Result<()> {
             match functions::search_semantic::download_bundle(&root).await {
                 Ok(()) => {
                     tracing::info!(path = %root.display(), "MiniLM search bundle ready");
-                    let tools = catalog.read().await.clone();
-                    semantic.rebuild(tools);
+                    let tools = catalog.read().await;
+                    semantic.rebuild(tools.clone());
                 }
                 Err(error) => tracing::warn!(
                     %error,
@@ -272,6 +302,7 @@ async fn main() -> Result<()> {
         registered_cache,
         boot_topology,
         hint_binding,
+        search_deps.clone(),
     );
     configuration::register_config_trigger(&iii, state)
         .context("registering configuration change trigger")?;

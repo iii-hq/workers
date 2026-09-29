@@ -25,6 +25,10 @@ import {
 } from './active-subagents'
 import './ActiveSubagentChips.css'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 export const SUBAGENT_ICON_COMPONENTS: Record<SubagentIcon, LucideIcon> = {
   agent: Bot,
   code: Code2,
@@ -130,7 +134,7 @@ export function ActiveSubagentChips({
 
       {model.omittedActive > 0 ? (
         <span
-          className="inline-flex h-7 items-center rounded-md bg-surface px-2 font-mono text-[10px] text-ink-faint"
+          className="inline-flex h-7 items-center rounded-md bg-surface px-2 font-mono text-[11px] text-ink-faint"
           title={`${model.omittedActive} more active sub-agents`}
         >
           +{model.omittedActive} active
@@ -157,7 +161,7 @@ function TerminalSummary({ summary }: { summary: TerminalSubagentSummary }) {
   return (
     <span
       aria-label={terminalSummaryLabel(summary)}
-      className="inline-flex h-7 items-center gap-2 rounded-md bg-surface px-2 font-mono text-[10px] text-ink-faint"
+      className="inline-flex h-7 items-center gap-2 rounded-md bg-surface px-2 font-mono text-[11px] text-ink-faint"
       data-subagent-terminal-summary=""
       role="status"
     >

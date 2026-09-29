@@ -94,7 +94,7 @@ test('workspace tabs stay deterministic across keys, reloads, deep links and oth
   await page.keyboard.press(`${workspaceModifier}+g`)
   await page.keyboard.press('w')
   await expect(tabs(page).filter({ hasText: 'workers' })).toHaveCount(1)
-  await page.goto(`${stack.consoleUrl}#/traces`)
+  await page.goto(`${stack.consoleUrl}#/`)
   await page.goto(`${stack.consoleUrl}#/workers`)
   await expect(tabs(page).filter({ hasText: 'workers' })).toHaveCount(1)
   await expect(tabs(page)).toHaveCount(2)

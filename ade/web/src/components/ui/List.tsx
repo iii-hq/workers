@@ -76,6 +76,12 @@ export interface ListItemProps
   label?: React.ReactNode
   description?: React.ReactNode
   trailing?: React.ReactNode
+  /**
+   * `div` when the row holds its own buttons (a download's cancel, a
+   * row's menu) — a button cannot contain buttons. Selection is then
+   * `aria-selected`; the caller owns `role`/`tabIndex`/keys.
+   */
+  as?: 'button' | 'div'
 }
 
 /**
@@ -93,16 +99,23 @@ export const ListItem = React.forwardRef<HTMLButtonElement, ListItemProps>(
       trailing,
       children,
       type = 'button',
+      as = 'button',
       ...props
     },
     ref,
   ) => (
-    <button
-      ref={ref}
-      type={type}
+    <ListItemTag
+      tag={as}
+      ref={ref as unknown as React.Ref<HTMLElement>}
+      type={as === 'button' ? type : undefined}
       data-list-item=""
       data-selected={selected || undefined}
-      aria-pressed={props['aria-pressed'] ?? selected}
+      aria-pressed={
+        as === 'button' ? (props['aria-pressed'] ?? selected) : undefined
+      }
+      aria-selected={
+        as === 'div' ? (props['aria-selected'] ?? selected) : undefined
+      }
       className={cn(uiClasses.listItem, className)}
       {...props}
     >
@@ -124,7 +137,20 @@ export const ListItem = React.forwardRef<HTMLButtonElement, ListItemProps>(
       {trailing ? (
         <span className={uiClasses.listItemMeta}>{trailing}</span>
       ) : null}
-    </button>
+    </ListItemTag>
   ),
 )
 ListItem.displayName = 'ListItem'
+
+const ListItemTag = React.forwardRef<
+  HTMLElement,
+  // biome-ignore lint/suspicious/noExplicitAny: button or div attributes
+  { tag: 'button' | 'div' } & Record<string, any>
+>(({ tag, ...props }, ref) =>
+  tag === 'div' ? (
+    <div ref={ref as React.Ref<HTMLDivElement>} {...props} />
+  ) : (
+    <button ref={ref as React.Ref<HTMLButtonElement>} {...props} />
+  ),
+)
+ListItemTag.displayName = 'ListItemTag'

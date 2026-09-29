@@ -4,19 +4,32 @@
  * `workers`, …), a worker-injected page (`ext:<page-id>`), or the chat
  * view (`chat`).
  *
- * Tabs are server-persisted in the engine's `console` configuration entry
- * under `workspace.tabs` (+ the active pointer under
- * `workspace.activeTabId`), following the same read-modify-write
- * convention as the traces saved views (`lib/tracesViews.ts`), so the
- * layout follows the engine — every browser pointing at this engine sees
- * the same tabs.
+ * Tabs are server-persisted by the console worker in
+ * `<data_dir>/workspace.json` (`lib/workspace-layout.ts`) as one flat
+ * document — `tabs` plus the active pointer `activeTabId` and its
+ * provenance — following the same read-modify-write convention as the
+ * traces saved views, so the layout follows the engine: every browser
+ * pointing at this engine sees the same tabs. It is ephemeral state and is
+ * deliberately kept out of the committed `console` configuration entry.
  */
 
-import type { View } from '@/hooks/use-hash-route'
+import {
+  routeFromHash,
+  standaloneRouteFromHash,
+  type View,
+} from '@/hooks/use-hash-route'
 import { moveItem } from '@/lib/reorder'
 
 /** `chat`, `chat:<session-id>`, a routed view, or `ext:<page-id>`. */
 export type TabScreen = string
+
+/**
+ * The persisted layout document, as stored and served by the console worker
+ * (`console::workspace::get` / `set`). Parsers below read `tabs`,
+ * `activeTabId`, `activatedAt` and `activatedBy` out of it; writers keep
+ * every other key untouched.
+ */
+export type WorkspaceLayoutDocument = Record<string, unknown>
 
 export const CHAT_SCREEN: TabScreen = 'chat'
 const CHAT_SESSION_SCREEN_PREFIX = `${CHAT_SCREEN}:`
@@ -170,16 +183,20 @@ export function withColumnAdded(
   }
 }
 
+/** Which side of the anchor column a new column lands on. */
+export type OpenDirection = 'left' | 'right'
+
 /**
  * Place `screen` in an existing empty column or insert a new column beside
- * `anchor`. Returns `null` only when the tab is full and has no empty column.
- * Existing screens are never replaced.
+ * `anchor`, on the `direction` side. Returns `null` only when the tab is full
+ * and has no empty column. Existing screens are never replaced.
  */
 export function withScreenOpenedBeside(
   tab: WorkspaceTab,
   screen: TabScreen,
   anchor: TabScreen = CHAT_SCREEN,
   makePaneId: () => string = newPaneId,
+  direction: OpenDirection = 'right',
 ): WorkspaceTab | null {
   const columns = tabColumns(tab)
   const screens: (TabScreen | null)[] = Array.from(
@@ -193,8 +210,13 @@ export function withScreenOpenedBeside(
       candidate === anchor ||
       (anchor === CHAT_SCREEN && candidate !== null && isChatScreen(candidate)),
   )
+  // An empty column next to the anchor, on the asked-for side, before any
+  // other empty one: the caller said where it wants this.
+  const besideAnchor = direction === 'right' ? anchorIndex + 1 : anchorIndex - 1
   const adjacentEmpty =
-    anchorIndex >= 0 && screens[anchorIndex + 1] === null ? anchorIndex + 1 : -1
+    anchorIndex >= 0 && besideAnchor >= 0 && screens[besideAnchor] === null
+      ? besideAnchor
+      : -1
   const emptyIndex = adjacentEmpty >= 0 ? adjacentEmpty : screens.indexOf(null)
   if (emptyIndex >= 0) {
     screens[emptyIndex] = screen
@@ -202,7 +224,14 @@ export function withScreenOpenedBeside(
   }
   if (columns >= MAX_COLUMNS) return null
 
-  const insertAt = anchorIndex >= 0 ? anchorIndex + 1 : columns
+  // No anchor mounted: the screen still has to go somewhere, and the end is
+  // the one place that displaces nothing.
+  const insertAt =
+    anchorIndex < 0
+      ? columns
+      : direction === 'right'
+        ? anchorIndex + 1
+        : anchorIndex
   screens.splice(insertAt, 0, screen)
   const paneIds = tabPaneIds(tab)
   paneIds.splice(insertAt, 0, makePaneId())
@@ -295,14 +324,16 @@ export const EXT_SCREEN_PREFIX = 'ext:'
 
 /**
  * First-party screens whose page migrated to injected UI, mapped to the
- * worker's page id (mirrors MIGRATED_ROUTES in `use-hash-route.ts`).
- * Persisted tabs saved before the migration rewrite through this map.
+ * worker's page id. Persisted tabs saved before the migration rewrite
+ * through this map.
  */
 const MIGRATED_SCREENS: Record<string, string> = {
   worktrees: 'worktree',
   memory: 'memory',
   browser: 'browser',
   github: 'github',
+  // The ide worker's page was `shell` until its UI/configuration rename.
+  'ext:shell': 'ide',
 }
 
 /** Configuration is deliberately NOT here: console settings open as an
@@ -326,22 +357,25 @@ export function screenForExtPage(pageId: string): TabScreen {
 }
 
 /**
- * The screen a routed view (+ ext page id) resolves to; `null` when the
- * view has no tab representation — configuration (an overlay page, not a
- * tab screen) and a not-yet-resolved ext route (the view and the page id
- * arrive from two hashchange listeners, so one commit can see `ext` with
- * a null id; reacting to that transient with a fallback screen used to
- * conjure duplicate tabs).
+ * The screen a routed view resolves to; `null` for configuration, an
+ * overlay page rather than a tab screen.
  */
-export function screenForView(
-  view: View,
-  extPageId: string | null,
-): TabScreen | null {
-  if (view === 'ext') {
-    return extPageId ? screenForExtPage(extPageId) : null
-  }
-  if (view === 'configuration') return null
-  return view
+export function screenForView(view: View): TabScreen | null {
+  return view === 'configuration' ? null : view
+}
+
+/**
+ * The screen a deep link names (`#/workers`), or `null` for the bare hash,
+ * settings, the standalone routes (`#/traces`, `#/worker/…` — those boot
+ * their own shell, main.tsx) and anything unknown. A deep link is a one-shot
+ * command — App opens the screen and drops the hash — never state: the tab
+ * store is the only memory of what is open.
+ */
+export function deepLinkScreen(hash: string): TabScreen | null {
+  if (hash === '' || hash === '#' || hash === '#/') return null
+  if (standaloneRouteFromHash(hash) !== null) return null
+  const view = routeFromHash(hash)
+  return view === null ? null : screenForView(view)
 }
 
 const isValidScreen = (s: unknown): s is TabScreen =>
@@ -418,13 +452,11 @@ export function resolveActiveTab(
   )
 }
 
-/** Parse `workspace.tabs` out of the raw console-config value. */
+/** Parse `tabs` out of the raw layout document. */
 export function parseWorkspaceTabs(
-  configValue: Record<string, unknown>,
+  layout: WorkspaceLayoutDocument,
 ): WorkspaceTab[] {
-  const workspace = configValue.workspace
-  if (!workspace || typeof workspace !== 'object') return []
-  const tabs = (workspace as Record<string, unknown>).tabs
+  const tabs = layout.tabs
   if (!Array.isArray(tabs)) return []
   // Migration: 'configuration' was a tab screen before it became an
   // overlay page — blank those columns instead of dropping whole tabs.
@@ -453,32 +485,27 @@ export function parseWorkspaceTabs(
   return sanitized.filter(isValidTab)
 }
 
-/** Parse `workspace.activeTabId`; `undefined` = no pointer recorded. */
+/** Parse `activeTabId`; `undefined` = no pointer recorded. */
 export function parseActiveTabId(
-  configValue: Record<string, unknown>,
+  layout: WorkspaceLayoutDocument,
 ): string | undefined {
-  const workspace = configValue.workspace
-  if (!workspace || typeof workspace !== 'object') return undefined
-  const id = (workspace as Record<string, unknown>).activeTabId
+  const id = layout.activeTabId
   return typeof id === 'string' && id.length > 0 ? id : undefined
 }
 
-function withWorkspace(
-  configValue: Record<string, unknown>,
-  patch: Record<string, unknown>,
-): Record<string, unknown> {
-  const workspace =
-    configValue.workspace && typeof configValue.workspace === 'object'
-      ? { ...(configValue.workspace as Record<string, unknown>) }
-      : {}
-  return { ...configValue, workspace: { ...workspace, ...patch } }
+/** Patch the document, keeping every key this module does not model. */
+function withLayout(
+  layout: WorkspaceLayoutDocument,
+  patch: WorkspaceLayoutDocument,
+): WorkspaceLayoutDocument {
+  return { ...layout, ...patch }
 }
 
 export function withWorkspaceTabs(
-  configValue: Record<string, unknown>,
+  layout: WorkspaceLayoutDocument,
   tabs: WorkspaceTab[],
-): Record<string, unknown> {
-  return withWorkspace(configValue, { tabs })
+): WorkspaceLayoutDocument {
+  return withLayout(layout, { tabs })
 }
 
 /** Who last moved the server pointer, and when. */
@@ -493,12 +520,12 @@ export interface Activation {
 
 /** Stamp the server pointer with who moved it and when. */
 export function withActiveTabId(
-  configValue: Record<string, unknown>,
+  layout: WorkspaceLayoutDocument,
   id: string,
   by: ActivationSource = 'browser',
   at: number = Date.now(),
-): Record<string, unknown> {
-  return withWorkspace(configValue, {
+): WorkspaceLayoutDocument {
+  return withLayout(layout, {
     activeTabId: id,
     activatedAt: at,
     activatedBy: by,
@@ -507,13 +534,12 @@ export function withActiveTabId(
 
 /** Parse the server pointer with its provenance; `undefined` = no pointer. */
 export function parseActivation(
-  configValue: Record<string, unknown>,
+  layout: WorkspaceLayoutDocument,
 ): Activation | undefined {
-  const tabId = parseActiveTabId(configValue)
+  const tabId = parseActiveTabId(layout)
   if (!tabId) return undefined
-  const workspace = configValue.workspace as Record<string, unknown>
-  const at = workspace.activatedAt
-  const by = workspace.activatedBy
+  const at = layout.activatedAt
+  const by = layout.activatedBy
   return {
     tabId,
     at: typeof at === 'number' && Number.isFinite(at) ? at : 0,
@@ -588,8 +614,8 @@ export function adjacentTabId(
 }
 
 /** Where the tabs in hand come from: `pending` until the first server
-    answer, `server` while the configuration entry is readable, `local` when
-    it is not (the localStorage copy). */
+    answer, `server` while the console worker's layout store is readable,
+    `local` when it is not (the localStorage copy). */
 export type WorkspaceLayoutSource = 'pending' | 'server' | 'local'
 
 /** A queued pre-hydration write should replay once the layout source is no
@@ -637,6 +663,8 @@ export function withWorkspaceScreenOpened(
   screen: TabScreen,
   makeTabId: () => string = newTabId,
   makePaneId: () => string = newPaneId,
+  anchor: TabScreen = CHAT_SCREEN,
+  direction: OpenDirection = 'right',
 ): OpenWorkspaceScreenResult {
   const active = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0]
   // Where you already are beats where it happens to be mounted: opening chat
@@ -653,8 +681,9 @@ export function withWorkspaceScreenOpened(
     const placed = withScreenOpenedBeside(
       active,
       screen,
-      CHAT_SCREEN,
+      anchor,
       makePaneId,
+      direction,
     )
     if (placed) {
       return {

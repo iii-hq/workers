@@ -14,18 +14,21 @@
 
 import {
   Button,
+  Checkbox,
   CodeEditor,
   Dialog,
   DialogContent,
   DialogTitle,
   type Host,
   Input,
+  StatusPanel,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { ChevronRight, Download, File, Folder } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { asRecord } from '../lib/payload'
 import { decodeBase64, parseExecResult, quoteShellArg } from './exec'
 import { basename, formatBytes } from './format'
-import { ChevronIcon, DownloadIcon, FileIcon, FolderIcon } from './icons'
 import type { SandboxSummary } from './store'
 
 interface FsEntry {
@@ -145,7 +148,7 @@ export function FilesTab({
           setTreeError(null)
         })
         .catch((err: unknown) =>
-          setTreeError(err instanceof Error ? err.message : String(err)),
+          setTreeError(errorMessage(err)),
         )
     },
     [host, sandboxId],
@@ -189,7 +192,7 @@ export function FilesTab({
           setFile({
             kind: 'error',
             path,
-            message: err instanceof Error ? err.message : String(err),
+            message: errorMessage(err),
           }),
         )
     },
@@ -227,7 +230,7 @@ export function FilesTab({
         refreshAfterOp([opA, opB].filter(Boolean))
       })
       .catch((err: unknown) =>
-        setOpError(err instanceof Error ? err.message : String(err)),
+        setOpError(errorMessage(err)),
       )
       .finally(() => setOpBusy(false))
   }
@@ -250,7 +253,7 @@ export function FilesTab({
           {
             path: '',
             line: 0,
-            content: `grep failed: ${err instanceof Error ? err.message : String(err)}`,
+            content: `grep failed: ${errorMessage(err)}`,
           },
         ]),
       )
@@ -274,7 +277,7 @@ export function FilesTab({
         setFile({
           kind: 'error',
           path: file.path,
-          message: err instanceof Error ? err.message : String(err),
+          message: errorMessage(err),
         }),
       )
       .finally(() => setSaving(false))
@@ -311,7 +314,7 @@ export function FilesTab({
         setFile({
           kind: 'error',
           path,
-          message: err instanceof Error ? err.message : String(err),
+          message: errorMessage(err),
         }),
       )
       .finally(() => setDownloading(false))
@@ -320,10 +323,13 @@ export function FilesTab({
   if (sandbox.stopped) {
     return (
       <div className="cr-page-files">
-        <div className="cr-page-banner warn" role="status">
-          sandbox ended — filesystem gone. The microVM's disk was destroyed
-          with it; nothing here can be browsed or restored.
-        </div>
+        <StatusPanel
+          variant="warn"
+          role="status"
+          className="cr-page-banner"
+          headline="sandbox ended — filesystem gone."
+          detail="The microVM's disk was destroyed with it; nothing here can be browsed or restored."
+        />
       </div>
     )
   }
@@ -357,8 +363,8 @@ export function FilesTab({
               onClick={() => toggleDir(full)}
               aria-expanded={open}
             >
-              <ChevronIcon className={open ? 'cr-page-chev open' : 'cr-page-chev'} aria-hidden />
-              <FolderIcon aria-hidden />
+              <ChevronRight size={16} className={open ? 'cr-page-chev open' : 'cr-page-chev'} aria-hidden />
+              <Folder size={16} aria-hidden />
               <span className="cr-page-tree-name">{entry.name}</span>
             </button>
             {open ? renderDir(full, depth + 1) : null}
@@ -373,7 +379,7 @@ export function FilesTab({
           style={{ paddingLeft: depth * 14 + 22 }}
           onClick={() => openFile(full)}
         >
-          <FileIcon aria-hidden />
+          <File size={16} aria-hidden />
           <span className="cr-page-tree-name">{entry.name}</span>
           <span className="cr-page-tree-size">{formatBytes(entry.size)}</span>
         </button>
@@ -393,12 +399,13 @@ export function FilesTab({
     }
     if (file.kind === 'error') {
       return (
-        <div className="cr-page-errcard" role="alert">
-          <div className="cr-page-errcard-head">
-            <code className="cr-page-errcode">{file.path}</code>
-          </div>
-          <div className="cr-page-errcard-msg">{file.message}</div>
-        </div>
+        <StatusPanel
+          variant="alert"
+          role="alert"
+          className="cr-page-viewer-error"
+          headline={<code>{file.path}</code>}
+          detail={file.message}
+        />
       )
     }
     if (file.kind === 'binary') {
@@ -418,7 +425,7 @@ export function FilesTab({
             disabled={downloading}
             title="sandbox::exec sh -c 'base64 <path>' → decoded client-side. Exec output inlines up to 1 MiB, so larger files come back truncated."
           >
-            <DownloadIcon aria-hidden />{' '}
+            <Download size={16} aria-hidden />{' '}
             {downloading ? 'downloading…' : 'download via base64 (≤ 1 MiB)'}
           </Button>
         </div>
@@ -460,7 +467,7 @@ export function FilesTab({
                 disabled={downloading}
                 title="download a byte-exact copy via base64 (≤ 1 MiB)"
               >
-                <DownloadIcon aria-hidden />
+                <Download size={16} aria-hidden />
               </Button>
             </>
           )}
@@ -514,9 +521,13 @@ export function FilesTab({
       </div>
 
       {treeError ? (
-        <div className="cr-page-inline-error" role="alert">
-          fs::ls failed: {treeError}
-        </div>
+        <StatusPanel
+          variant="alert"
+          role="alert"
+          className="cr-page-banner"
+          headline="fs::ls failed"
+          detail={treeError}
+        />
       ) : null}
 
       <div className="cr-page-files-body">
@@ -588,20 +599,15 @@ export function FilesTab({
                 />
               ) : null}
               {op === 'rm' ? (
-                <label className="cr-page-checkline">
-                  <input
-                    type="checkbox"
-                    checked={opRecursive}
-                    onChange={(e) => setOpRecursive(e.target.checked)}
-                  />
-                  recursive
-                </label>
+                <Checkbox
+                  label="recursive"
+                  checked={opRecursive}
+                  onChange={(e) => setOpRecursive(e.target.checked)}
+                />
               ) : null}
             </div>
             {opError ? (
-              <div className="cr-page-inline-error" role="alert">
-                {opError}
-              </div>
+              <StatusPanel variant="alert" role="alert" headline={opError} />
             ) : null}
             <div className="cr-page-dialog-actions">
               <Button variant="ghost" size="sm" onClick={() => setOp(null)} disabled={opBusy}>

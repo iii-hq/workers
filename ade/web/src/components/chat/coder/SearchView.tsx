@@ -121,7 +121,7 @@ function RequestChips({ req }: { req: SearchRequest }) {
       {/* Walking into .git / node_modules / target is unusual enough to
           warn-tint — results may include generated or vendored code. */}
       {req.use_default_excludes === false ? (
-        <Chip className="border-warn text-warn">Default excludes off</Chip>
+        <Chip className="bg-warn-muted text-warn">Default excludes off</Chip>
       ) : null}
       {req.search_content === false ? <Chip>Paths only</Chip> : null}
       {req.search_paths === false ? <Chip>Content only</Chip> : null}
@@ -135,7 +135,7 @@ function RequestChips({ req }: { req: SearchRequest }) {
 
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <div className="bg-paper-2 border-b border-rule-2 px-3 py-1 text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+    <div className="bg-paper-2 border-b border-rule-2 px-3 py-1 iii-ui-eyebrow">
       {children}
     </div>
   )

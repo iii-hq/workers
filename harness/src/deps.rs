@@ -27,6 +27,8 @@ pub struct Deps {
     pub hooks: HookRegistry,
     pub locks: SessionLocks,
     pub cancels: TurnCancels,
+    /// Sessions whose step executes in this process (orphan recovery).
+    pub inflight: crate::inflight::InflightSteps,
     /// Harness-owned JSON project catalog, serialized across concurrent
     /// console requests while allowing its configured file path to hot-reload.
     pub projects: ProjectStore,
@@ -53,6 +55,7 @@ impl Deps {
             hooks,
             locks: SessionLocks::new(),
             cancels: TurnCancels::new(),
+            inflight: crate::inflight::InflightSteps::new(),
             projects: ProjectStore::default(),
             trigger_handles: crate::bindings::TriggerHandles::default(),
         }

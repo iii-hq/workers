@@ -11,6 +11,7 @@ workers:
       binary: a2ui
       targets: &id001
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
@@ -50,6 +51,7 @@ workers:
       binary: iii-acp
       targets:
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
@@ -181,6 +183,7 @@ workers:
       install_command:
       - pnpm
       - install
+      - --ignore-workspace
       - --frozen-lockfile
       build_command:
       - pnpm
@@ -202,6 +205,7 @@ workers:
       binary: code-runner
       targets:
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
@@ -287,6 +291,7 @@ workers:
       binary: compose-ui
       targets:
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
@@ -408,6 +413,7 @@ workers:
       binary: context-manager
       targets:
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
@@ -594,44 +600,6 @@ workers:
         version: 1.97.1
       binary: document
       targets: *id001
-    publish: true
-  editor:
-    source:
-      path: editor
-      package_manifest: Cargo.toml
-    artifact:
-      kind: rust-binary
-      toolchain:
-        name: rust
-        version: 1.97.1
-      binary: editor
-      targets:
-      - aarch64-apple-darwin
-      - x86_64-unknown-linux-gnu
-      - x86_64-unknown-linux-musl
-      - aarch64-unknown-linux-gnu
-      - armv7-unknown-linux-gnueabihf
-      windows_exception: published releases have never included a Windows build
-      frontends:
-      - workspace_root: .
-        source_path: editor/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
     publish: true
   email:
     source:
@@ -883,6 +851,217 @@ workers:
       binary: image-resize
       targets: *id001
     publish: true
+  judge:
+    source:
+      path: judge
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: judge
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: judge/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  judge-semif:
+    source:
+      path: judge-semif
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: judge-semif
+      # llama.cpp is compiled from source (cmake + bindgen/libclang): glibc
+      # Linux and macOS only; no musl/armv7 C++ toolchains, no 4B model there.
+      targets:
+      - aarch64-apple-darwin
+      - x86_64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      windows_exception: llama.cpp is built from source with cmake and bindgen (libclang); the MSVC runners are not provisioned or verified for it yet.
+      # Linux x86_64 loads llama.cpp's backends at runtime: the shared libraries
+      # and the backend modules (per-CPU variants, Vulkan) ship beside the binary.
+      # Static targets (macOS, aarch64 Linux) match nothing here.
+      companions:
+      - libggml-base.so.0
+      - libggml.so.0
+      - libllama.so.0
+      - libggml-cpu-*.so
+      - libggml-vulkan.so
+      - '*.dll'
+      frontends:
+      - workspace_root: .
+        source_path: judge-semif/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  judge-decider:
+    source:
+      path: judge-decider
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: judge-decider
+      # llama.cpp is compiled from source (cmake + bindgen/libclang): glibc
+      # Linux and macOS only; no musl/armv7 C++ toolchains, no 4B model there.
+      targets:
+      - aarch64-apple-darwin
+      - x86_64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      windows_exception: llama.cpp is built from source with cmake and bindgen (libclang); the MSVC runners are not provisioned or verified for it yet.
+      # Linux x86_64 loads llama.cpp's backends at runtime: the shared libraries
+      # and the backend modules (per-CPU variants, Vulkan) ship beside the binary.
+      # Static targets (macOS, aarch64 Linux) match nothing here.
+      companions:
+      - libggml-base.so.0
+      - libggml.so.0
+      - libllama.so.0
+      - libggml-cpu-*.so
+      - libggml-vulkan.so
+      - '*.dll'
+      frontends:
+      - workspace_root: .
+        source_path: judge-decider/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  judge-laya:
+    source:
+      path: judge-laya
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: judge-laya
+      # The encoder runs through llama.cpp (crates/llama-runtime, compiled from
+      # source with cmake + bindgen/libclang): glibc Linux and macOS only, like
+      # judge-semif.
+      targets:
+      - aarch64-apple-darwin
+      - x86_64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      windows_exception: llama.cpp is built from source with cmake and bindgen (libclang); the MSVC runners are not provisioned or verified for it yet.
+      # Linux x86_64 loads llama.cpp's backends at runtime: the shared libraries
+      # and the backend modules (per-CPU variants, Vulkan) ship beside the binary.
+      companions:
+      - libggml-base.so.0
+      - libggml.so.0
+      - libllama.so.0
+      - libggml-cpu-*.so
+      - libggml-vulkan.so
+      - '*.dll'
+      frontends:
+      - workspace_root: .
+        source_path: judge-laya/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  judge-typesafe:
+    source:
+      path: judge-typesafe
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: judge-typesafe
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: judge-typesafe/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
   kanban:
     source:
       path: kanban
@@ -897,6 +1076,38 @@ workers:
       frontends:
       - workspace_root: .
         source_path: kanban/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  stories:
+    source:
+      path: stories
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: stories
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: stories/ui
         runtime:
           name: node
           version: 22.20.0
@@ -959,6 +1170,7 @@ workers:
       binary: lsp
       targets:
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
@@ -1020,6 +1232,34 @@ workers:
         version: 1.97.1
       binary: memory-consolidate
       targets: *id001
+    publish: true
+  onboarding:
+    source:
+      path: onboarding
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: onboarding
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: pnpm
+        version: 11.13.1
+      lockfile: pnpm-lock.yaml
+      install_command:
+      - pnpm
+      - install
+      - --frozen-lockfile
+      build_command:
+      - pnpm
+      - run
+      - build:bundle
+      include:
+      - dist/bundle/index.mjs
+      - dist/bundle/page.js
+      - dist/bundle/styles.css
+      - iii.worker.yaml
     publish: true
   opencode:
     source:
@@ -1448,6 +1688,25 @@ workers:
         - build
         outputs:
         - dist
+      - workspace_root: .
+        source_path: provider-openai/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
     publish: true
   provider-openai-codex:
     source:
@@ -1684,6 +1943,25 @@ workers:
       binary: queue
       targets: *id001
     publish: true
+  quick-tunnel:
+    source:
+      path: quick-tunnel
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: quick-tunnel
+      targets:
+      - aarch64-apple-darwin
+      - x86_64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      windows_exception: child environment and process lifecycle currently support Unix only
+    publish: true
   rbac-proxy:
     source:
       path: rbac-proxy
@@ -1739,6 +2017,7 @@ workers:
         name: rust
         version: 1.97.1
       binary: sandbox-code-runner
+      # Keep Intel macOS excluded: the microVM sandbox backend is unsupported.
       targets:
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
@@ -1767,18 +2046,6 @@ workers:
         outputs:
         - dist
     publish: true
-  scrapling:
-    source:
-      path: scrapling
-      package_manifest: pyproject.toml
-    artifact:
-      kind: oci-image
-      context: .
-      dockerfile: Dockerfile
-      platforms:
-      - linux/amd64
-      - linux/arm64
-    publish: true
   security-scan:
     source:
       path: security-scan
@@ -1793,6 +2060,38 @@ workers:
       frontends:
       - workspace_root: .
         source_path: security-scan/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  sentinel:
+    source:
+      path: sentinel
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: sentinel
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: sentinel/ui
         runtime:
           name: node
           version: 22.20.0
@@ -1835,6 +2134,7 @@ workers:
       binary: ide
       targets:
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
@@ -2175,6 +2475,7 @@ workers:
       binary: workflow
       targets:
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu

@@ -16,12 +16,26 @@
  */
 
 import {
+  Badge,
   CodeHighlight,
+  Eyebrow,
   type FunctionTriggerMessage,
   type FunctionTriggerRenderer,
   type Host,
   JsonHighlight,
+  MetaRow,
+  type MetaRowItem,
+  Table,
+  TableBody,
+  TableCell,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
+  uiClasses,
 } from '@iii-dev/console-ui'
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 import {
   DB_PREFIX,
   type DbRequest,
@@ -35,59 +49,40 @@ import {
   parseRequest,
   parseTxResp,
   shortId,
-  unwrapEnvelope,
 } from './parsers'
 
 const MAX_ROWS = 50
 
-function Chip({
-  k,
-  v,
-  tone,
-}: {
-  k?: string
-  v: string
-  tone?: 'ok' | 'alert'
-}) {
-  return (
-    <span className={`db-ui-chip${tone ? ` ${tone}` : ''}`}>
-      {k ? <span className="k">{k} </span> : null}
-      {v}
-    </span>
-  )
-}
-
-function RequestChips({ req }: { req: DbRequest }) {
-  return (
-    <>
-      {req.db ? <Chip k="db" v={req.db} /> : null}
-      {req.transactionId ? (
-        <Chip k="tx" v={shortId(req.transactionId)} />
-      ) : null}
-      {req.handleId ? <Chip k="handle" v={shortId(req.handleId)} /> : null}
-      {req.isolation ? <Chip k="isolation" v={req.isolation} /> : null}
-    </>
-  )
+/** The request's identifiers, as the card's opening metadata strip. */
+function requestItems(req: DbRequest): MetaRowItem[] {
+  const items: MetaRowItem[] = []
+  if (req.db) items.push({ label: 'db', value: req.db })
+  if (req.transactionId) {
+    items.push({ label: 'tx', value: shortId(req.transactionId) })
+  }
+  if (req.handleId) items.push({ label: 'handle', value: shortId(req.handleId) })
+  if (req.isolation) items.push({ label: 'isolation', value: req.isolation })
+  return items
 }
 
 function CardShell({
   op,
   running,
-  head,
+  items,
   children,
 }: {
   op: string
   running?: boolean
-  head?: React.ReactNode
+  items?: MetaRowItem[]
   children?: React.ReactNode
 }) {
   return (
     <div className="db-ui-msg">
       <div className="db-ui-msg-head">
-        <span className={`db-ui-pill${running ? ' quiet' : ''}`}>{op}</span>
-        {head}
-        <span className="db-ui-msg-tag">Database UI</span>
+        <Badge variant={running ? 'default' : 'accent'}>{op}</Badge>
+        <Eyebrow className="db-ui-msg-tag">Database UI</Eyebrow>
       </div>
+      {items && items.length > 0 ? <MetaRow items={items} /> : null}
       {children}
     </div>
   )
@@ -121,33 +116,37 @@ function RowsTable({
   const shown = rows.slice(0, MAX_ROWS)
   return (
     <div className="db-ui-table-wrap">
-      <table className="db-ui-table">
-        <thead>
-          <tr>
-            {columns.map((c) => (
-              <th key={c}>{c}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {shown.map((row, i) => (
-            <tr key={i}>
-              {columns.map((c) => {
-                const { text, isNull } = cellText(row[c])
-                return (
-                  <td
-                    key={c}
-                    className={isNull ? 'null' : undefined}
-                    title={text}
-                  >
-                    {text}
-                  </td>
-                )
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <TableViewport>
+        <TableFrame>
+          <Table density="compact" className="db-ui-table">
+            <TableHeader>
+              <TableRow>
+                {columns.map((c) => (
+                  <TableHead key={c}>{c}</TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {shown.map((row, i) => (
+                <TableRow key={i}>
+                  {columns.map((c) => {
+                    const { text, isNull } = cellText(row[c])
+                    return (
+                      <TableCell key={c} title={text}>
+                        {isNull ? (
+                          <span className="db-cell-null">{text}</span>
+                        ) : (
+                          text
+                        )}
+                      </TableCell>
+                    )
+                  })}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableFrame>
+      </TableViewport>
       {rows.length > MAX_ROWS ? (
         <div className="db-ui-msg-note">
           +{rows.length - MAX_ROWS} more rows
@@ -311,19 +310,14 @@ function SettledView({ message }: { message: FunctionTriggerMessage }) {
     op === 'executeBatch' || op === 'transaction'
       ? parseTxResp(details)
       : undefined
+  const items = requestItems(req)
+  if (tx?.committed === true) {
+    items.push({ label: 'outcome', value: 'committed', tone: 'ok' })
+  } else if (tx?.committed === false) {
+    items.push({ label: 'outcome', value: 'rolled back', tone: 'alert' })
+  }
   return (
-    <CardShell
-      op={op}
-      head={
-        <>
-          <RequestChips req={req} />
-          {tx?.committed === true ? <Chip v="committed" tone="ok" /> : null}
-          {tx?.committed === false ? (
-            <Chip v="rolled back" tone="alert" />
-          ) : null}
-        </>
-      }
-    >
+    <CardShell op={op} items={items}>
       {body}
     </CardShell>
   )
@@ -333,9 +327,9 @@ function RunningView({ message }: { message: FunctionTriggerMessage }) {
   const op = message.functionId.slice(DB_PREFIX.length)
   const req = parseRequest(message.input)
   return (
-    <CardShell op={op} running head={<RequestChips req={req} />}>
+    <CardShell op={op} running items={requestItems(req)}>
       <SqlBlock req={req} />
-      <div className="db-ui-msg-note pulse">Running…</div>
+      <div className={`db-ui-msg-note ${uiClasses.pulse}`}>Running…</div>
     </CardShell>
   )
 }
@@ -345,7 +339,7 @@ function Preview({ message }: { message: FunctionTriggerMessage }) {
   const op = message.functionId.slice(DB_PREFIX.length)
   const req = parseRequest(message.input)
   return (
-    <CardShell op={op} head={<RequestChips req={req} />}>
+    <CardShell op={op} items={requestItems(req)}>
       <SqlBlock req={req} />
       {req.statements ? (
         <div className="db-ui-steps">
@@ -361,6 +355,8 @@ function Preview({ message }: { message: FunctionTriggerMessage }) {
   )
 }
 
+/** The worker's own branding of its ids: faint prefix, ink name. The console
+    has no shared equivalent — its default is one plain span. */
 function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (!functionId.startsWith(DB_PREFIX)) {
     return <span style={{ color: 'var(--color-ink)' }}>{functionId}</span>

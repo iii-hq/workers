@@ -12,8 +12,8 @@
 import {
   Button,
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   FileDiff,
@@ -23,7 +23,6 @@ import {
 } from '@iii-dev/console-ui'
 import {
   Binary,
-  Check,
   CircleAlert,
   Equal,
   FileImage,
@@ -44,9 +43,9 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { Breadcrumbs } from './Breadcrumbs'
+import { diffLines, diffTotals } from './diff'
 import type { DiffContents, DiffNote } from './diff-load'
 import { type DiffSource, diffSourceLabel, diffSourceSides } from './diff-source'
-import { diffLines, diffTotals } from './diff'
 import { imageMimeFromPath } from './file-kinds'
 import { firstChangedLine, gutterLineFromPath, resolveEditorLine } from './open-line'
 import { PaneNotice } from './PaneNotice'
@@ -173,7 +172,8 @@ export function DiffTab({
   )
   const empty = totals !== null && totals.add === 0 && totals.del === 0
   // Hiding whitespace can empty a diff that is not empty; say so, with the way back.
-  const whitespaceOnly = empty && options.hideWhitespace && contents !== null && contents.oldContents !== contents.newContents
+  const whitespaceOnly =
+    empty && options.hideWhitespace && contents !== null && contents.oldContents !== contents.newContents
   return (
     <div className="shui-main-pane shui-diff-tab" data-source={source.type}>
       <div className="shui-editor-head">
@@ -279,7 +279,12 @@ export function DiffTab({
       </div>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: gutter clicks inside the diff open the editor at that line */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: the keyboard path is the "open the file" button in the header */}
-      <div ref={bodyRef} className="shui-editor-body shui-diff-body" data-keybindings-standdown="" onClick={openFromGutter}>
+      <div
+        ref={bodyRef}
+        className="shui-editor-body shui-diff-body"
+        data-keybindings-standdown=""
+        onClick={openFromGutter}
+      >
         {state.phase === 'loading' ? (
           <div className="shui-side-note">loading diff…</div>
         ) : state.phase === 'error' ? (
@@ -340,7 +345,10 @@ export function DiffTab({
                 actions={openButton}
               />
             ) : options.diffStyle === 'split' && wholeFile !== null ? (
-              <WholeFileSplit change={wholeFile} lines={wholeFile === 'deleted' ? (totals?.del ?? 0) : (totals?.add ?? 0)}>
+              <WholeFileSplit
+                change={wholeFile}
+                lines={wholeFile === 'deleted' ? (totals?.del ?? 0) : (totals?.add ?? 0)}
+              >
                 <FileDiff
                   key="whole-file"
                   oldFile={{ name: path, contents: contents.oldContents }}
@@ -402,23 +410,18 @@ function OptionRow({
   onChange: (checked: boolean) => void
 }) {
   return (
-    <DropdownMenuItem
+    <DropdownMenuCheckboxItem
       className="shui-review-option"
-      role="menuitemcheckbox"
-      aria-checked={checked}
-      onSelect={(event) => {
-        event.preventDefault()
-        onChange(!checked)
-      }}
+      checked={checked}
+      onCheckedChange={onChange}
+      /* Several toggles per visit: the menu stays open across changes. */
+      onSelect={(event) => event.preventDefault()}
     >
       <span className="menu-icon" aria-hidden>
         {icon}
       </span>
       <span>{label}</span>
-      <span className="check" aria-hidden>
-        {checked ? <Check /> : null}
-      </span>
-    </DropdownMenuItem>
+    </DropdownMenuCheckboxItem>
   )
 }
 

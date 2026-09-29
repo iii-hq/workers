@@ -67,6 +67,10 @@ import {
   readEngine,
 } from '@/lib/palette/sources'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 const FILTERS: Array<{ id: PaletteKind | 'all'; label: string }> = [
   { id: 'all', label: 'All' },
   { id: 'worker', label: 'Workers' },
@@ -540,9 +544,9 @@ export function CommandPalette({
           ) : (
             groups.map(([kind, entries]) => (
               <div key={kind}>
-                <p className="flex items-center gap-2 px-4 pt-3 pb-1 text-xs font-semibold text-ink-ghost sm:text-[0.68rem]">
+                <p className="flex items-center gap-2 px-4 pt-3 pb-1 text-xs font-semibold text-ink-ghost sm:text-[11px]">
                   <span>{KIND_LABEL[kind]}</span>
-                  <span className="rounded-full bg-surface-active px-1.5 py-px text-[0.62rem] font-normal tracking-normal tabular-nums">
+                  <span className="rounded-full bg-surface-active px-1.5 py-px text-[11px] font-normal tracking-normal tabular-nums">
                     {entries.length}
                   </span>
                   <span className="h-px flex-1 bg-edge" />
@@ -609,7 +613,7 @@ export function CommandPalette({
                           className="hidden shrink-0 sm:inline-flex"
                         />
                       ) : entry.meta ? (
-                        <span className="hidden shrink-0 rounded border border-edge px-1.5 py-0.5 font-mono text-[0.65rem] text-ink-ghost sm:block">
+                        <span className="hidden shrink-0 rounded border border-edge px-1.5 py-0.5 font-mono text-[11px] text-ink-ghost sm:block">
                           {entry.meta}
                         </span>
                       ) : null}
@@ -620,7 +624,7 @@ export function CommandPalette({
             ))
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-3 border-t border-edge px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-[0.68rem] text-ink-ghost sm:pb-2">
+        <div className="flex shrink-0 items-center gap-3 border-t border-edge px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-[11px] text-ink-ghost sm:pb-2">
           {/* Key hints are noise on a surface with no keys to press. */}
           <div className="hidden items-center gap-3 sm:flex">
             {HINTS.map((hint) => (

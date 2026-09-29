@@ -1,0 +1,678 @@
+"""Exercise the download entrypoint against local Git fixtures; no network."""
+
+from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
+from unittest import mock
+from contextlib import redirect_stdout
+import importlib.util
+import io
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+from ruamel.yaml import YAML
+
+TEMPLATE = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("sync_template", TEMPLATE / "scripts/sync_template.py")
+SYNC = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SYNC)
+
+
+class SyncTests(unittest.TestCase):
+    def setUp(self):
+        """Create independent upstream and launcher directories, both with spaces."""
+        self.temporary = tempfile.TemporaryDirectory(prefix="template-sync-test-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.upstream = self.root / "upstream repo"
+        self.upstream.mkdir()
+        self.git("init", "--quiet", "--initial-branch=main")
+        self.git("config", "user.email", "tests@example.com")
+        self.git("config", "user.name", "Template Tests")
+        self.write("agents/example.md", "# Agent\n")
+        self.write("skills/example.md", "# Skill\n")
+        self.write("worker-compose.yaml", "containers: {harness: {worker: 'package://harness'}}\n")
+        self.write("config/console.yaml", "http_port: 9999\n")
+        self.write("template.yaml", "name: Harness\n")
+        self.write("README.md", "# Upstream template\n")
+        self.write(".env", "FAKE_TEST_KEY=example\n")
+        self.write(".hidden/nested.txt", "Hidden file\n")
+        self.write(".gitignore", "*.ignored\n")
+        self.write("keep.ignored", "Still tracked upstream\n")
+        self.write(".gitattributes", "README.md export-ignore\n")
+        self.write("assets/icon.bin", b"\x00\xff\x01\x80")
+        self.write("src/file with spaces.py", "print('hello')\n")
+        self.marker = self.root / "script-was-executed"
+        self.write("setup.sh", f"#!/bin/sh\ntouch {shlex.quote(str(self.marker))}\nexit 123\n")
+        (self.upstream / "iii/harness/setup.sh").chmod(0o755)
+        self.commit()
+        self.launcher = self.root / "local template"
+        self.destination = self.launcher / "harness"
+        (self.launcher / "scripts").mkdir(parents=True)
+        shutil.copy2(TEMPLATE / "sync.sh", self.launcher / "sync.sh")
+        shutil.copyfile(TEMPLATE / ".gitignore", self.launcher / ".gitignore")
+        shutil.copyfile(TEMPLATE / "scripts/sync_template.py", self.launcher / "scripts/sync_template.py")
+        # These are deliberately not project seeds: a downloader must ignore them.
+        (self.launcher / "worker-compose.yaml").write_text("# Local baseline\n")
+        (self.launcher / "README.md").write_text("# Download tooling\n")
+
+    def git(self, *args):
+        """Run Git in the disposable upstream repository."""
+        return subprocess.check_output(["git", "-C", str(self.upstream), *args], text=True).strip()
+
+    def write(self, relative, content, template="harness"):
+        """Write any upstream bytes, without template-specific structure rules."""
+        path = self.upstream / "iii" / template / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content if isinstance(content, bytes) else content.encode())
+
+    def commit(self):
+        """Include hidden and ignored fixture files in the upstream snapshot."""
+        self.git("add", "--force", ".")
+        self.git("commit", "--quiet", "-m", "Update fixture")
+        return self.git("rev-parse", "HEAD")
+
+    def run_sync(self, *args, success=True, env=None, input_text=""):
+        """Run from outside template/ without any stopped-stack acknowledgment."""
+        result = subprocess.run(
+            [str(self.launcher / "sync.sh"), "--repo", str(self.upstream), *args],
+            cwd=self.root, text=True, capture_output=True, timeout=60, env=env,
+            input=input_text,
+        )
+        if success:
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.launcher / ".sync.lock").exists())
+        self.assertFalse(list(self.launcher.glob(".sync-stage-*")))
+        return result
+
+    def inventory(self, root):
+        """Capture contents, executable bits and symlink text without following links."""
+        result = {}
+        for path in root.rglob("*"):
+            relative = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                result[relative] = ("link", os.readlink(path))
+            elif path.is_file():
+                result[relative] = ("file", path.read_bytes(), bool(path.stat().st_mode & 0o111))
+            else:
+                result[relative] = ("directory",)
+        return result
+
+    def files(self):
+        """Capture launcher state for non-destructive assertions."""
+        return self.inventory(self.launcher)
+
+    def local_worker(self, name, manifest=None):
+        """Create a sibling source worker, as in the workers repository."""
+        source = self.launcher.parent / name
+        source.mkdir()
+        (source / "iii.worker.yaml").write_text(
+            manifest or f"name: {name}\nlanguage: rust\nbin: {name}\n",
+        )
+        (source / "Cargo.toml").write_text(f'[package]\nname = "{name}"\nversion = "0.1.0"\n')
+        return source
+
+    def test_compose_uses_local_sources_and_preserves_template_settings(self):
+        """Resolve by package name, preserve hooks, comments and remote workers."""
+        self.local_worker("harness")
+        self.local_worker("queue", "name: queue\nlanguage: rust\nbin: queue-server\n")
+        # A directory alone is not a local worker.
+        (self.root / "external").mkdir()
+        self.write("worker-compose.yaml", """\
+namespace: demo
+engine: {url: 'ws://127.0.0.1:49134'}
+containers:
+  jobs:
+    worker: package://queue # local queue
+    version: "latest"
+    scripts:
+      pre_run: echo ready
+    config_override: {worker: package://queue}
+  agent:
+    worker: 'package://harness'
+    version: "1.2.3"
+    start_after: [jobs]
+    env_file: [./.env]
+    environment: {EXAMPLE: '${EXAMPLE:-}'}
+  # Optional providers stay available for manual configuration.
+  # optional:
+  #   worker: package://queue
+  external: {worker: package://external, version: latest}
+  custom: {worker: path://./custom, scripts: {run: ./start}}
+""")
+        self.commit()
+        result = self.run_sync()
+        compose = self.destination / "worker-compose.yaml"
+        text = compose.read_text()
+        document = YAML().load(text)
+        containers = document["containers"]
+        self.assertEqual(containers["jobs"]["worker"], "path://../../queue")
+        self.assertEqual(containers["jobs"]["scripts"], {
+            "pre_run": "echo ready", "run": "cargo run --bin queue-server",
+        })
+        self.assertEqual(containers["jobs"]["config_override"]["worker"], "package://queue")
+        self.assertEqual(containers["agent"]["worker"], "path://../../harness")
+        self.assertEqual(containers["agent"]["scripts"]["run"], "cargo run --bin harness")
+        self.assertEqual(containers["agent"]["start_after"], ["jobs"])
+        self.assertEqual(containers["agent"]["env_file"], ["./.env"])
+        self.assertEqual(containers["agent"]["environment"], {"EXAMPLE": "${EXAMPLE:-}"})
+        self.assertEqual(containers["external"], {"worker": "package://external", "version": "latest"})
+        self.assertEqual(containers["custom"], {"worker": "path://./custom", "scripts": {"run": "./start"}})
+        self.assertIn("# local queue", text)
+        self.assertIn("#   worker: package://queue", text)
+        self.assertEqual(document["namespace"], "demo")
+        self.assertIn("Using local worker agent: path://../../harness", result.stdout)
+        for path in (self.upstream / "iii/harness").rglob("*"):
+            if path.is_file() and path.name != "worker-compose.yaml":
+                self.assertEqual((self.destination / path.relative_to(self.upstream / "iii/harness")).read_bytes(), path.read_bytes())
+        self.run_sync(input_text="yes\n")
+        self.assertEqual(compose.read_text(), text)
+
+    def test_local_workers_support_inline_compose_and_existing_start_commands(self):
+        """Preserve explicit run commands and use non-Rust manifest defaults."""
+        self.local_worker("harness")
+        self.local_worker("node-worker", "language: typescript\nscripts: {start: 'node index.js'}\n")
+        self.local_worker("no-start", "language: typescript\n")
+        self.write("worker-compose.yaml", """\
+containers:
+  agent: {worker: 'package://harness', scripts: {run: 'cargo run --release'}}
+  node: {worker: package://node-worker}
+  missing: {worker: package://no-start}
+  registry: {worker: 'package://example.com/harness'}
+""", template="harness-kanban")
+        self.commit()
+        self.run_sync("--template", "harness-kanban")
+        containers = YAML().load(self.launcher / "harness-kanban/worker-compose.yaml")["containers"]
+        self.assertEqual(containers["agent"]["worker"], "path://../../harness")
+        self.assertEqual(containers["agent"]["scripts"], {"run": "cargo run --release"})
+        self.assertEqual(containers["node"], {"worker": "path://../../node-worker"})
+        self.assertEqual(containers["missing"]["worker"], "package://no-start")
+        self.assertEqual(containers["registry"]["worker"], "package://example.com/harness")
+
+    def test_local_worker_preview_and_cancellation_do_not_change_destination(self):
+        """Preview reports local paths before any download is installed."""
+        self.local_worker("harness")
+        before = self.files()
+        result = self.run_sync("--dry-run")
+        self.assertIn("Would use local worker harness: path://../../harness", result.stdout)
+        self.assertEqual(self.files(), before)
+        self.run_sync()
+        before = self.files()
+        self.run_sync(input_text="no\n", success=False)
+        self.assertEqual(self.files(), before)
+
+    def test_compose_symlink_is_not_read_or_rewritten(self):
+        """Local adaptation must not read or modify an upstream symlink target."""
+        self.local_worker("harness")
+        outside = self.root / "outside-compose.yaml"
+        content = "containers: {harness: {worker: package://harness}}\n"
+        outside.write_text(content)
+        compose = self.upstream / "iii/harness/worker-compose.yaml"
+        compose.unlink()
+        compose.symlink_to(outside)
+        self.commit()
+        self.run_sync()
+        self.assertTrue((self.destination / "worker-compose.yaml").is_symlink())
+        self.assertEqual(outside.read_text(), content)
+
+    def test_invalid_compose_fails_before_install_without_printing_values(self):
+        """Do not replace a project with partially adapted or invalid YAML."""
+        self.local_worker("harness")
+        self.write("worker-compose.yaml", "containers: [\nFAKE_PRIVATE_VALUE: [\n")
+        self.commit()
+        before = self.files()
+        result = self.run_sync(success=False)
+        self.assertIn("invalid YAML", result.stderr)
+        self.assertNotIn("FAKE_PRIVATE_VALUE", result.stdout + result.stderr)
+        self.assertEqual(self.files(), before)
+
+    def test_default_download_is_verbatim_and_repeatable(self):
+        """Download every byte and executable bit, not generated local substitutes."""
+        baseline = self.files()
+        result = self.run_sync()
+        self.assertEqual(result.stdout.splitlines()[-1], "cd 'local template/harness'")
+        self.assertEqual(self.inventory(self.destination), self.inventory(self.upstream / "iii/harness"))
+        self.assertFalse(self.marker.exists())
+        self.assertFalse((self.destination / "upstream/sync.json").exists())
+        for relative, content in baseline.items():
+            self.assertEqual(self.files()[relative], content)
+        before = self.files()
+        self.assertNotIn("Do you really want to overwrite", result.stdout)
+        self.run_sync(input_text="yes\n")
+        self.assertEqual(self.files(), before)
+
+    def test_harness_kanban_download_needs_no_agents_or_skills(self):
+        """Regression: a Compose/README/env-only template is a valid download."""
+        for relative, content in {
+            "README.md": "# Kanban\n",
+            "worker-compose.yaml": "containers: {kanban: {worker: 'package://kanban'}}\n",
+            ".env": "PROVIDER_KEY=\n",
+            "template.yaml": "name: Harness + Kanban\n",
+        }.items():
+            self.write(relative, content, template="harness-kanban")
+        self.commit()
+        self.run_sync()
+        default_before = self.inventory(self.destination)
+        result = self.run_sync("--template", "harness-kanban")
+        self.assertEqual(result.stdout.splitlines()[-1], "cd 'local template/harness-kanban'")
+        self.assertEqual(
+            self.inventory(self.launcher / "harness-kanban"),
+            self.inventory(self.upstream / "iii/harness-kanban"),
+        )
+        self.assertEqual(self.inventory(self.destination), default_before)
+
+    def test_arbitrary_content_requires_no_manifest_or_compose(self):
+        """The downloader knows nothing about what makes a project runnable."""
+        self.write("anything.dat", b"\x00arbitrary", template="minimal")
+        self.commit()
+        self.run_sync("--template", "minimal")
+        self.assertEqual(self.inventory(self.launcher / "minimal"), self.inventory(self.upstream / "iii/minimal"))
+
+    def test_existing_destination_overwrites_matching_files_and_keeps_local_only(self):
+        """No manifest, edit check, force or stopped-stack flag is required."""
+        self.destination.mkdir()
+        (self.destination / "README.md").write_text("Local edit\n")
+        (self.destination / "notes.txt").write_text("Local-only work\n")
+        (self.destination / "engine.pid").write_text("123\n")
+        result = self.run_sync(input_text="yes\n")
+        self.assertIn("Back up your files before continuing.", result.stdout)
+        self.assertIn("[yes/no] (default: no)", result.stdout)
+        prompt = result.stdout.index("Do you really want to overwrite")
+        for text in ("Template: harness;", "Upstream commit:", "Downloading ", "  README.md"):
+            self.assertLess(prompt, result.stdout.index(text))
+        self.assertEqual((self.destination / "README.md").read_text(), "# Upstream template\n")
+        self.assertEqual((self.destination / "notes.txt").read_text(), "Local-only work\n")
+        self.assertEqual((self.destination / "engine.pid").read_text(), "123\n")
+        (self.destination / "config/console.yaml").write_text("Local settings\n")
+        self.write("config/console.yaml", "http_port: 4000\n")
+        (self.upstream / "iii/harness/agents/example.md").unlink()
+        self.commit()
+        self.run_sync(input_text=" Y \n")
+        self.assertEqual((self.destination / "config/console.yaml").read_text(), "http_port: 4000\n")
+        self.assertTrue((self.destination / "agents/example.md").exists())
+
+    def test_overwrite_requires_explicit_yes_and_never_bypasses_with_force(self):
+        """No, Enter, EOF and invalid input preserve edits, modes and local files."""
+        self.run_sync()
+        (self.destination / "README.md").write_text("My edited README\n")
+        (self.destination / ".env").write_text("LOCAL_SECRET=keep\n")
+        (self.destination / "notes.txt").write_text("My local work\n")
+        before = self.files()
+        for flags in ((), ("--force", "--stack-stopped")):
+            for answer in ("no\n", "n\n", "\n", "", "maybe\n"):
+                with self.subTest(flags=flags, answer=answer):
+                    result = self.run_sync(*flags, input_text=answer, success=False)
+                    self.assertIn(str(self.destination), result.stdout)
+                    self.assertIn("Back up your files", result.stdout)
+                    self.assertIn("Download cancelled. No files were changed.", result.stderr)
+                    self.assertNotIn("Template downloaded!", result.stdout)
+                    for text in ("Template: harness;", "Upstream commit:", "Downloading ", "  README.md"):
+                        self.assertNotIn(text, result.stdout)
+                    self.assertFalse(any(line.startswith("cd ") for line in result.stdout.splitlines()))
+                    self.assertEqual(self.files(), before)
+        result = self.run_sync(input_text="YES\n")
+        self.assertIn("Template downloaded!", result.stdout)
+        self.assertEqual((self.destination / "README.md").read_text(), "# Upstream template\n")
+        self.assertEqual((self.destination / ".env").read_text(), "FAKE_TEST_KEY=example\n")
+        self.assertEqual((self.destination / "notes.txt").read_text(), "My local work\n")
+
+    def test_empty_existing_named_folder_also_requires_confirmation(self):
+        """An existing directory prompts even when empty and not named harness."""
+        self.write("README.md", "# Kanban\n", template="harness-kanban")
+        self.commit()
+        destination = self.launcher / "harness-kanban"
+        destination.mkdir()
+        before = self.files()
+        result = self.run_sync("--template", "harness-kanban", input_text="no\n", success=False)
+        self.assertIn(str(destination), result.stdout)
+        self.assertEqual(self.files(), before)
+        self.run_sync("--template", "harness-kanban", input_text="yes\n")
+        self.assertEqual((destination / "README.md").read_text(), "# Kanban\n")
+        self.assertFalse(self.destination.exists())
+
+    def test_existing_folder_preview_needs_no_confirmation(self):
+        """A read-only preview neither prompts nor changes files."""
+        self.run_sync()
+        before = self.files()
+        result = self.run_sync("--dry-run")
+        self.assertNotIn("Do you really want to overwrite", result.stdout)
+        self.assertNotIn("Download cancelled", result.stderr)
+        self.assertEqual(self.files(), before)
+
+    def test_preview_and_fetch_failures_leave_destination_unchanged(self):
+        """Neither a fresh preview nor a failed download leaves partial output."""
+        before = self.files()
+        result = self.run_sync("--dry-run")
+        self.assertFalse(any(line.startswith("cd ") for line in result.stdout.splitlines()))
+        self.assertEqual(self.files(), before)
+        self.run_sync("--template", "missing", success=False)
+        self.assertEqual(self.files(), before)
+        self.run_sync()
+        self.write("README.md", "# Changed\n")
+        self.commit()
+        before = self.files()
+        self.run_sync("--dry-run")
+        self.run_sync("--ref", "missing-ref", success=False)
+        self.assertEqual(self.files(), before)
+
+    def test_explicit_ref_reproduces_older_content(self):
+        """Pinning a commit is independent of the current default branch."""
+        old = self.git("rev-parse", "HEAD")
+        self.write("README.md", "# Newer\n")
+        self.commit()
+        self.run_sync("--ref", old)
+        self.assertEqual((self.destination / "README.md").read_text(), "# Upstream template\n")
+
+    def test_symlinks_are_copied_without_following_them(self):
+        """Copy link text, including outside targets, without modifying the target."""
+        outside = self.root / "outside.txt"
+        outside.write_text("Untouched\n")
+        (self.upstream / "iii/harness/readme-link").symlink_to("README.md")
+        (self.upstream / "iii/harness/outside-link").symlink_to(outside)
+        self.commit()
+        self.run_sync()
+        self.assertEqual(self.inventory(self.destination), self.inventory(self.upstream / "iii/harness"))
+        self.assertEqual(outside.read_text(), "Untouched\n")
+        (self.destination / "README.md").unlink()
+        (self.destination / "README.md").symlink_to(outside)
+        self.run_sync(input_text="yes\n")
+        self.assertFalse((self.destination / "README.md").is_symlink())
+        self.assertEqual(outside.read_text(), "Untouched\n")
+
+    def test_local_symlink_parents_cannot_redirect_writes(self):
+        """Filesystem safeguards are not template structure or runtime checks."""
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.destination.mkdir()
+        (self.destination / "config").symlink_to(outside, target_is_directory=True)
+        before = self.files()
+        self.run_sync(success=False)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual(self.files(), before)
+        (self.destination / "config").unlink()
+        self.destination.rmdir()
+        self.destination.symlink_to(outside, target_is_directory=True)
+        self.run_sync(success=False)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_git_metadata_aliases_and_traversal_are_rejected_before_writing(self):
+        """Reject unsafe Git tree paths even on case-insensitive filesystems."""
+        stage = self.root / "unsafe-stage"
+        stage.mkdir()
+        args = SimpleNamespace(checkout=str(self.upstream), commit="HEAD", template="harness")
+        for path in (".git/config", ".GIT/hooks/post-checkout", "nested/.GiT/config", "../outside", "/outside"):
+            with self.subTest(path=path):
+                listing = f"100644 blob fake-blob\t{path}\0".encode()
+                resolved_tree = subprocess.CompletedProcess([], 0, stdout=b"fake-tree\n")
+                with mock.patch.object(SYNC.subprocess, "run", return_value=resolved_tree), \
+                        mock.patch.object(SYNC, "git", side_effect=(b"tree\n", listing)) as read:
+                    with self.assertRaisesRegex(ValueError, "Unsafe download path"):
+                        SYNC.stage_download(args, stage)
+                    self.assertEqual(read.call_count, 2)
+                self.assertEqual(list(stage.iterdir()), [])
+
+    def test_conflicting_tree_paths_are_rejected_before_any_staging(self):
+        """Preflight leaves, directories and ancestors in either tree order."""
+        stage = self.root / "collision-stage"
+        stage.mkdir()
+        args = SimpleNamespace(checkout=str(self.upstream), commit="HEAD", template="harness")
+        collisions = [
+            (("120000", "Config"), ("100644", "config/file")),
+            (("120000", "File"), ("100644", "file")),
+            (("100644", "Dir/a"), ("100644", "dir/b")),
+            (("100644", "nested/Config"), ("100644", "nested/config/file")),
+            (("100644", "same"), ("100644", "same/file")),
+            (("100644", "caf\u00e9/a"), ("100644", "cafe\u0301/b")),
+        ]
+        for pair in collisions:
+            for ordered in (pair, pair[::-1]):
+                with self.subTest(entries=ordered):
+                    # A valid entry before the collision must not be staged either.
+                    listing = b"100644 blob benign\tREADME.md\0" + b"".join(
+                        f"{mode} blob fake-blob\t{path}\0".encode() for mode, path in ordered
+                    )
+                    resolved = subprocess.CompletedProcess([], 0, stdout=b"fake-tree\n")
+                    with mock.patch.object(SYNC.subprocess, "run", return_value=resolved), \
+                            mock.patch.object(SYNC, "git", side_effect=(b"tree\n", listing)) as read:
+                        with self.assertRaisesRegex(ValueError, "Conflicting download paths"):
+                            SYNC.stage_download(args, stage)
+                        self.assertEqual(read.call_count, 2)
+                    self.assertEqual(list(stage.iterdir()), [])
+
+    def test_case_variant_symlink_tree_cannot_write_outside_before_confirmation(self):
+        """Use real Git objects, even on macOS where this tree cannot be checked out."""
+        outside = self.root / "outside"
+        outside.mkdir()
+        victim = outside / "file"
+        victim.write_text("Must remain unchanged\n")
+
+        def object_from_input(command, content):
+            return subprocess.check_output(
+                ["git", "-C", str(self.upstream), *command], input=content, text=True,
+            ).strip()
+
+        link = object_from_input(["hash-object", "-w", "--stdin"], str(outside))
+        blob = object_from_input(["hash-object", "-w", "--stdin"], "Overwrite attempt\n")
+        config = object_from_input(["mktree"], f"100644 blob {blob}\tfile\n")
+        harness = object_from_input(["mktree"], f"120000 blob {link}\tConfig\n040000 tree {config}\tconfig\n")
+        iii = object_from_input(["mktree"], f"040000 tree {harness}\tharness\n")
+        root = object_from_input(["mktree"], f"040000 tree {iii}\tiii\n")
+        commit = object_from_input(["commit-tree", root, "-p", "HEAD"], "Malicious case collision fixture\n")
+        self.destination.mkdir()
+        (self.destination / "keep.txt").write_text("Local file\n")
+        before = self.files()
+        for flags in ((), ("--dry-run",)):
+            with self.subTest(flags=flags):
+                result = self.run_sync("--ref", commit, *flags, input_text="no\n", success=False)
+                self.assertIn("Conflicting download paths", result.stderr)
+                self.assertNotIn("Do you really want to overwrite", result.stdout)
+                self.assertEqual(victim.read_text(), "Must remain unchanged\n")
+                self.assertEqual(self.files(), before)
+
+    def test_parent_swapped_after_validation_cannot_redirect_update(self):
+        """A symlink substituted after the last validation is rejected on open."""
+        self.run_sync()
+        outside = self.root / "race-outside"
+        outside.mkdir()
+        args = SimpleNamespace(root=self.launcher, checkout=str(self.upstream), commit="HEAD", template="harness", dry_run=False)
+        original_check = SYNC.check_destination
+        checks = 0
+
+        def swap_after_check(destination, paths):
+            nonlocal checks
+            original_check(destination, paths)
+            checks += 1
+            if checks == 2:
+                (destination / "config").rename(destination / "old-config")
+                (destination / "config").symlink_to(outside, target_is_directory=True)
+
+        with mock.patch.object(SYNC, "check_destination", side_effect=swap_after_check), \
+                mock.patch.object(SYNC, "confirm_overwrite", return_value=True), \
+                redirect_stdout(io.StringIO()):
+            with self.assertRaises(OSError):
+                SYNC.apply(args)
+        self.assertEqual(checks, 2)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertFalse(list(self.launcher.glob(".sync-stage-*")))
+
+    def test_parent_swapped_after_open_does_not_redirect_directory_creation(self):
+        """Pinned parents keep both mkdir and replace off a substituted symlink."""
+        stage = self.root / "race-stage"
+        (stage / "config/new").mkdir(parents=True)
+        (stage / "config/new/file.txt").write_text("Downloaded\n")
+        (self.destination / "config").mkdir(parents=True)
+        outside = self.root / "race-outside"
+        outside.mkdir()
+        real_open = SYNC.os.open
+        swapped = False
+
+        def swap_after_open(path, flags, *args, **kwargs):
+            nonlocal swapped
+            fd = real_open(path, flags, *args, **kwargs)
+            if path == "config" and not swapped:
+                swapped = True
+                (self.destination / "config").rename(self.destination / "old-config")
+                (self.destination / "config").symlink_to(outside, target_is_directory=True)
+            return fd
+
+        with mock.patch.object(SYNC.os, "open", side_effect=swap_after_open):
+            SYNC.install_download(self.destination, stage, [PurePosixPath("config/new/file.txt")], overwrite=True)
+        self.assertTrue(swapped)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual((self.destination / "old-config/new/file.txt").read_text(), "Downloaded\n")
+
+    def test_fresh_destination_appearing_after_check_is_not_overwritten(self):
+        """A competing folder creation must not bypass overwrite confirmation."""
+        stage = self.root / "race-stage"
+        stage.mkdir()
+        (stage / "README.md").write_text("Upstream\n")
+        self.destination.mkdir()
+        (self.destination / "README.md").write_text("Local\n")
+        with self.assertRaises(FileExistsError):
+            SYNC.install_download(self.destination, stage, [PurePosixPath("README.md")], overwrite=False)
+        self.assertEqual((self.destination / "README.md").read_text(), "Local\n")
+
+    def test_invalid_names_cannot_escape_or_overwrite_tooling(self):
+        """Names must select an isolated destination rather than a tool directory."""
+        before = self.files()
+        for name in ("../outside", "/tmp/outside", "iii/harness", ".", "scripts", "tests", "config", "agents", "skills", "upstream", "data", "bad name", "-harness"):
+            with self.subTest(name=name):
+                self.run_sync("--template", name, success=False)
+        self.run_sync("--template", success=False)
+        self.assertEqual(self.files(), before)
+
+    def test_legacy_flags_are_optional_noops(self):
+        """Existing invocations remain usable, but never gate the download."""
+        self.run_sync("--stack-stopped", "--force")
+        self.assertEqual(self.inventory(self.destination), self.inventory(self.upstream / "iii/harness"))
+
+    def test_downloads_and_local_changes_do_not_dirty_git(self):
+        """Ignored destinations include their own .gitignore and arbitrary local work."""
+        def local_git(*args):
+            return subprocess.check_output(["git", "-C", str(self.launcher), *args], text=True).strip()
+
+        local_git("init", "--quiet")
+        local_git("add", ".")
+        local_git("-c", "user.name=Template Tests", "-c", "user.email=tests@example.com", "commit", "--quiet", "-m", "Tooling")
+        self.run_sync()
+        (self.destination / "notes.txt").write_text("Local work\n")
+        (self.destination / ".gitignore").write_text("!*\n")
+        self.write("README.md", "# Another\n", template="another")
+        self.commit()
+        self.run_sync("--template", "another")
+        self.assertEqual(local_git("status", "--porcelain", "--untracked-files=all"), "")
+        for relative in ("harness/notes.txt", "harness/.env", "harness/worker-compose.yaml", "another/README.md"):
+            self.assertEqual(local_git("check-ignore", "--no-index", relative), relative)
+
+    def python_environment(self, interpreters):
+        """Build an isolated PATH so installed host aliases cannot mask failures."""
+        binary_dir = Path(tempfile.mkdtemp(prefix="python-bin-", dir=self.root))
+        trace = binary_dir / "calls.log"
+        for command in ("bash", "dirname", "git", "mkdir", "mktemp", "rm", "rmdir"):
+            executable = shutil.which(command)
+            self.assertIsNotNone(executable, command)
+            (binary_dir / command).symlink_to(executable)
+        for name, behavior in interpreters.items():
+            script = binary_dir / name
+            code = "#!/bin/sh\n"
+            code += f'printf \'%s %s\\n\' {shlex.quote(name)} "$1" >> {shlex.quote(str(trace))}\n'
+            if behavior == "broken":
+                code += "exit 127\n"
+            elif behavior == "old":
+                probe = "import sys; sys.version_info = (3, 10); exec(sys.argv[1])"
+                code += f'exec {shlex.quote(sys.executable)} -c {shlex.quote(probe)} "$2"\n'
+            else:
+                if behavior == "missing-yaml":
+                    code += '[ "$1" = -c ] && [ "$2" = "import ruamel.yaml" ] && exit 1\n'
+                code += f'exec {shlex.quote(sys.executable)} "$@"\n'
+            script.write_text(code)
+            script.chmod(0o755)
+        return {**os.environ, "PATH": str(binary_dir)}, trace
+
+    def test_python_command_selection_uses_the_validated_interpreter(self):
+        """Prefer a compatible interpreter, including symlinked checkout paths."""
+        launcher_alias = self.root / "launcher alias"
+        launcher_alias.symlink_to(self.launcher, target_is_directory=True)
+        self.launcher = launcher_alias
+        cases = [
+            ({"python3": "valid"}, "python3"),
+            ({"python": "valid"}, "python"),
+            ({"python3": "valid", "python": "valid"}, "python3"),
+            ({"python3": "old", "python": "valid"}, "python"),
+            ({"python3": "broken", "python": "valid"}, "python"),
+        ]
+        for interpreters, selected in cases:
+            with self.subTest(interpreters=interpreters):
+                env, trace = self.python_environment(interpreters)
+                self.run_sync("--dry-run", env=env)
+                calls = trace.read_text().splitlines()
+                self.assertIn(f"{selected} -c", calls)
+                self.assertEqual(calls[-1], f"{selected} {(self.launcher / 'scripts/sync_template.py').resolve()}")
+                if selected == "python3":
+                    self.assertFalse(any(call.startswith("python ") for call in calls))
+                self.assertFalse(self.destination.exists())
+
+    def test_missing_or_incompatible_python_fails_before_fetch(self):
+        """A clear dependency error must not modify the workspace or fetch Git."""
+        before = self.files()
+        for interpreters in ({}, {"python": "old"}, {"python3": "old", "python": "old"}):
+            with self.subTest(interpreters=interpreters):
+                env, _ = self.python_environment(interpreters)
+                result = self.run_sync("--repo", str(self.root / "nonexistent-repo"), env=env, success=False)
+                self.assertIn("Python 3.11+ is required", result.stderr)
+                self.assertIn("Neither python3 nor python", result.stderr)
+                self.assertEqual(self.files(), before)
+
+    def test_missing_yaml_and_uv_fails_before_fetch(self):
+        """A missing parser must give a usable next step without a system install."""
+        before = self.files()
+        env, _ = self.python_environment({"python3": "missing-yaml"})
+        result = self.run_sync("--repo", str(self.root / "missing-repo"), env=env, success=False)
+        self.assertIn("ruamel.yaml is required", result.stderr)
+        self.assertIn("container workflow", result.stderr)
+        self.assertEqual(self.files(), before)
+
+    def test_missing_yaml_uses_uv_with_the_selected_python(self):
+        """Use script metadata for isolated dependencies, retaining path quoting."""
+        self.local_worker("harness")
+        launcher_alias = self.root / "launcher alias"
+        launcher_alias.symlink_to(self.launcher, target_is_directory=True)
+        self.launcher = launcher_alias
+        env, _ = self.python_environment({"python3": "missing-yaml"})
+        uv = Path(env["PATH"]) / "uv"
+        arguments = uv.with_suffix(".args")
+        uv.write_text(
+            "#!/bin/sh\n"
+            f'printf \'%s\\n\' "$@" > {shlex.quote(str(arguments))}\n'
+            "shift 5\n"
+            f'exec {shlex.quote(sys.executable)} "$@"\n',
+        )
+        uv.chmod(0o755)
+        self.run_sync(env=env)
+        self.assertEqual(arguments.read_text().splitlines()[:6], [
+            "run", "--quiet", "--python", "python3", "--script",
+            str((self.launcher / "scripts/sync_template.py").resolve()),
+        ])
+        containers = YAML().load(self.destination / "worker-compose.yaml")["containers"]
+        self.assertEqual(containers["harness"]["worker"], "path://../../harness")
+
+    def test_missing_importer_reports_checkout_problem_before_fetch(self):
+        """Do not mistake a missing Python source file for a missing interpreter."""
+        (self.launcher / "scripts/sync_template.py").unlink()
+        before = self.files()
+        env, _ = self.python_environment({})
+        result = self.run_sync("--repo", str(self.root / "nonexistent-repo"), env=env, success=False)
+        self.assertIn("Sync importer is missing or unreadable", result.stderr)
+        self.assertIn("Restore template/scripts/sync_template.py", result.stderr)
+        self.assertNotIn("Python 3.11+ is required", result.stderr)
+        self.assertEqual(self.files(), before)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

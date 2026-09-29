@@ -1,31 +1,15 @@
-/*
- * The sandbox-code-runner worker's console stylesheet, shipped as its own
- * `console:style` asset (sandbox-code-runner/styles.css) — the console mounts
- * it as a <link> in document.head and link-swaps it on hot reload,
- * styles-before-scripts on boot.
- *
- * Every rule is scoped under `[data-iii-ui="sandbox-code-runner"]`, the
- * wrapper the console mounts around every injected render. No
- * :root/html/body/bare element selectors and no @font-face — injected CSS is
- * unlayered, so an unscoped rule would silently beat the console's own
- * document-wide. Colours are design tokens only, so light/dark theming is
- * free.
- *
- * Shared shell first (`cr-ui-*`, used by every card), then one section per
- * renderer (`cr-<op>-*`, used by exactly one). Anything a second renderer
- * needs moves up into the shell rather than being copied.
- *
- * `@keyframes` names are global even here, so they carry the prefix too.
- */
+/* sandbox-code-runner console stylesheet. Every rule is scoped under
+   [data-iii-ui="sandbox-code-runner"]; `cr-ui-*` is the op-card shell,
+   `cr-<op>-*` one renderer, family.css `cr-fam-*`, page.css `cr-page-*`. */
 
 @import "./src/styles/family.css";
 @import "./src/styles/page.css";
 
 /* --- card frame -------------------------------------------------------- */
 [data-iii-ui="sandbox-code-runner"] .cr-ui-msg {
-  border-top: 1px solid var(--color-rule-2);
+  border-top: 1px solid var(--color-edge);
   background: var(--color-bg);
-  font-family: var(--font-mono, ui-monospace, monospace);
+  font-family: var(--font-sans);
   color: var(--color-ink);
 }
 [data-iii-ui="sandbox-code-runner"] .cr-ui-msg-head {
@@ -35,23 +19,8 @@
   padding: 8px 12px;
   flex-wrap: wrap;
 }
-[data-iii-ui="sandbox-code-runner"] .cr-ui-pill {
-  border: 1px solid var(--color-accent);
-  color: var(--color-accent);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding: 1px 8px;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-ui-pill.quiet {
-  border-color: var(--color-rule);
-  color: var(--color-ink-faint);
-}
 [data-iii-ui="sandbox-code-runner"] .cr-ui-msg-tag {
   margin-left: auto;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
   color: var(--color-ink-ghost);
 }
 [data-iii-ui="sandbox-code-runner"] .cr-ui-msg-note {
@@ -59,110 +28,56 @@
   font-size: 12px;
   color: var(--color-ink-faint);
 }
-[data-iii-ui="sandbox-code-runner"] .cr-ui-msg-note.pulse {
-  animation: cr-ui-pulse 1.6s ease-in-out infinite;
+[data-iii-ui="sandbox-code-runner"] .cr-ui-msg-panel {
+  margin: 0 12px 10px;
 }
-@keyframes cr-ui-pulse {
-  0%, 100% { opacity: 1 }
-  50% { opacity: 0.35 }
-}
-
-/* --- chips ------------------------------------------------------------- */
-[data-iii-ui="sandbox-code-runner"] .cr-ui-chip {
-  border: 1px solid var(--color-rule);
-  color: var(--color-ink);
-  font-size: 11.5px;
-  padding: 1px 8px;
-  white-space: nowrap;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-ui-chip .k { color: var(--color-ink-ghost); }
 
 /* The runtime-id capability chip: a button, because it copies on click. */
 [data-iii-ui="sandbox-code-runner"] .cr-ui-rt {
-  border: 1px dashed var(--color-rule);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px dashed var(--color-edge);
+  border-radius: 6px;
   background: transparent;
   color: var(--color-ink);
-  font-family: inherit;
-  font-size: 11.5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
   padding: 1px 8px;
   cursor: pointer;
   white-space: nowrap;
 }
-[data-iii-ui="sandbox-code-runner"] .cr-ui-rt .k { color: var(--color-ink-ghost); }
 [data-iii-ui="sandbox-code-runner"] .cr-ui-rt:hover { border-color: var(--color-accent); }
 [data-iii-ui="sandbox-code-runner"] .cr-ui-rt:focus-visible {
-  outline: 1px solid var(--color-ring);
+  outline: 1px solid var(--color-rule-focus);
   outline-offset: 1px;
 }
 [data-iii-ui="sandbox-code-runner"] .cr-ui-rt.copied { border-color: var(--color-ok); color: var(--color-ok); }
 [data-iii-ui="sandbox-code-runner"] .cr-ui-rt.failed { border-color: var(--color-alert); color: var(--color-alert); }
-[data-iii-ui="sandbox-code-runner"] .cr-ui-rt-flash { font-size: 10.5px; letter-spacing: 0.06em; }
 
 /* --- terminal streams (stdout / stderr) -------------------------------- */
-/* Process output, not log records: no per-line level gutter, whitespace
-   preserved, and a hard height ceiling so a chatty script scrolls inside its
-   own box instead of pushing the conversation off screen. */
 [data-iii-ui="sandbox-code-runner"] .cr-ui-stream {
-  border-top: 1px solid var(--color-rule-2);
+  border-top: 1px solid var(--color-edge);
   padding: 6px 12px 8px;
-  display: flex;
-  flex-direction: column;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-ui-stream-label {
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--color-ink-ghost);
-  margin-bottom: 4px;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-ui-stream-body {
-  margin: 0;
-  font-family: inherit;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--color-ink);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 260px;
-  overflow: auto;
-}
-/* stderr is the user's own compiler/runtime message on a failed script —
-   informational, so it is tinted, not alarmed. */
-[data-iii-ui="sandbox-code-runner"] .cr-ui-stream.err .cr-ui-stream-label,
-[data-iii-ui="sandbox-code-runner"] .cr-ui-stream.err .cr-ui-stream-body {
-  color: var(--color-warn);
 }
 
 /* --- exit status -------------------------------------------------------- */
 [data-iii-ui="sandbox-code-runner"] .cr-ui-exit {
-  border-top: 1px solid var(--color-rule-2);
+  border-top: 1px solid var(--color-edge);
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   flex-wrap: wrap;
   padding: 6px 12px;
   font-size: 12px;
 }
-[data-iii-ui="sandbox-code-runner"] .cr-ui-exit-code {
-  border: 1px solid var(--color-rule);
-  font-size: 11.5px;
-  padding: 1px 8px;
-  white-space: nowrap;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-ui-exit-code.ok {
-  border-color: var(--color-ok);
-  color: var(--color-ok);
-}
-/* warn, never alert: a non-zero exit is the script failing, not the worker. */
-[data-iii-ui="sandbox-code-runner"] .cr-ui-exit-code.failed {
-  border-color: var(--color-warn);
-  color: var(--color-warn);
-}
 [data-iii-ui="sandbox-code-runner"] .cr-ui-exit-note { color: var(--color-ink-faint); }
 [data-iii-ui="sandbox-code-runner"] .cr-ui-exit-dur {
   margin-left: auto;
   color: var(--color-ink-ghost);
-  font-size: 11.5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* --- registered ids ----------------------------------------------------- */
@@ -173,37 +88,34 @@
   padding: 0 12px 10px;
 }
 [data-iii-ui="sandbox-code-runner"] .cr-ui-id {
-  border: 1px solid var(--color-rule-2);
-  background: var(--color-paper-2);
+  border-radius: 6px;
+  background: var(--color-surface);
   color: var(--color-ink);
-  font-size: 11.5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
   padding: 1px 6px;
 }
 
 /* --- renderer body slots ----------------------------------------------- */
 [data-iii-ui="sandbox-code-runner"] .cr-ui-section {
-  border-top: 1px solid var(--color-rule-2);
+  border-top: 1px solid var(--color-edge);
   padding: 8px 12px;
 }
-[data-iii-ui="sandbox-code-runner"] .cr-ui-section-label {
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--color-ink-ghost);
+[data-iii-ui="sandbox-code-runner"] .cr-ui-section > .iii-ui-eyebrow {
+  display: block;
   margin-bottom: 6px;
 }
 [data-iii-ui="sandbox-code-runner"] .cr-ui-code {
-  border: 1px solid var(--color-rule-2);
+  border-radius: 6px;
   background: var(--color-panel);
+  font-family: var(--font-code);
   font-size: 12px;
   max-height: 320px;
   overflow: auto;
 }
-[data-iii-ui="sandbox-code-runner"] .cr-ui-warn { color: var(--color-warn); }
-[data-iii-ui="sandbox-code-runner"] .cr-ui-alert { color: var(--color-alert); }
+[data-iii-ui="sandbox-code-runner"] .cr-ui-warn { color: var(--color-warn-strong); }
 
-/* The "expand · N lines" / "collapse" link. Shared by every collapsible
-   block: the streams, run's source, register_function's source. */
+/* The "expand · N lines" / "collapse" link under a collapsible source block. */
 [data-iii-ui="sandbox-code-runner"] .cr-ui-toggle {
   align-self: flex-start;
   margin-top: 4px;
@@ -217,35 +129,17 @@
   text-decoration: underline;
 }
 
-/* --- run card ------------------------------------------------------------ */
-/* A runtime the call CREATED is a resource the caller now owns and has to
-   tear down — the warn tint marks "you are holding something", not an error. */
-[data-iii-ui="sandbox-code-runner"] .cr-run-fresh {
-  border-color: var(--color-warn);
-  color: var(--color-warn);
-}
-/* `network: true` is create-time only and is what makes npm/pip installs
-   possible — it is the security-relevant field of the request, so it reads as
-   a state, not as a boolean buried in JSON. */
-[data-iii-ui="sandbox-code-runner"] .cr-run-net {
-  border-color: var(--color-accent);
-  color: var(--color-accent);
-}
-[data-iii-ui="sandbox-code-runner"] .cr-run-net.off {
-  border-color: var(--color-rule);
-  color: var(--color-ink-ghost);
-}
-
 /* --- register_function card ---------------------------------------------- */
 [data-iii-ui="sandbox-code-runner"] .cr-register-function-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
 /* A function id runs to hundreds of bytes and a description further still;
    neither may push the conversation off screen. */
 [data-iii-ui="sandbox-code-runner"] .cr-register-function-id {
+  font-family: var(--font-mono);
   font-size: 15px;
   color: var(--color-accent);
   overflow-wrap: anywhere;
@@ -261,30 +155,11 @@
   max-height: 120px;
   overflow: auto;
 }
-/* `.cr-ui-warn` alone is the same specificity as the two rules above, so
-   whichever sits later in this file would otherwise win regardless of which
-   one is more meaningful — an empty id or description would render at full
-   accent/ink-faint weight instead of the warn tint. These compound selectors
-   outrank both so the warn treatment always applies when the class is
-   actually present on the element. */
+/* Compound selectors outrank the two rules above so the warn tint wins when
+   the class is present (an empty id or description). */
 [data-iii-ui="sandbox-code-runner"] .cr-register-function-id.cr-ui-warn,
 [data-iii-ui="sandbox-code-runner"] .cr-register-function-desc.cr-ui-warn {
-  color: var(--color-warn);
-}
-[data-iii-ui="sandbox-code-runner"] .cr-register-function-status {
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  border: 1px solid var(--color-rule);
-  padding: 0 6px;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-register-function-status.live {
-  border-color: var(--color-ok);
-  color: var(--color-ok);
-}
-[data-iii-ui="sandbox-code-runner"] .cr-register-function-status.refused {
-  border-color: var(--color-warn);
-  color: var(--color-warn);
+  color: var(--color-warn-strong);
 }
 /* The namespace the id claims for its runtime — the surprise this card exists
    to spoil, so it sits under the id rather than in a chip row. */
@@ -295,13 +170,11 @@
   color: var(--color-ink-faint);
   overflow-wrap: anywhere;
 }
-/* Same specificity fight as `.cr-register-function-id`/`-desc` above: an id
-   with no namespace must read as warn, not the routine ink-faint tone. */
 [data-iii-ui="sandbox-code-runner"] .cr-register-function-ns.cr-ui-warn {
-  color: var(--color-warn);
+  color: var(--color-warn-strong);
 }
 [data-iii-ui="sandbox-code-runner"] .cr-register-function-ns code {
-  font-family: inherit;
+  font-family: var(--font-mono);
   color: var(--color-ink);
 }
 /* The highlighting is a guess (this request has no `lang`), so it is labelled
@@ -314,17 +187,12 @@
 }
 
 /* --- teardown card: ids that no longer resolve -------------------------- */
-/* Struck through, because these ids stopped resolving on the bus. Ids are
-   caller-chosen strings, so one long unbroken id must wrap inside its chip
-   rather than push the card sideways. (The count is clamped in the DOM by the
-   card itself — a runtime may hold up to 64 functions.) */
 [data-iii-ui="sandbox-code-runner"] .cr-teardown-gone .cr-ui-id {
   color: var(--color-ink-faint);
   text-decoration: line-through;
   text-decoration-color: var(--color-ink-ghost);
   overflow-wrap: anywhere;
 }
-/* The "expand · N ids" toggle sits below the chips, on the list's padding. */
 [data-iii-ui="sandbox-code-runner"] .cr-teardown-more {
   padding: 0 12px 10px;
 }
@@ -336,7 +204,7 @@
 }
 [data-iii-ui="sandbox-code-runner"] .cr-lsrt-row {
   padding: 6px 12px;
-  border-top: 1px solid var(--color-rule-2);
+  border-top: 1px solid var(--color-edge);
 }
 [data-iii-ui="sandbox-code-runner"] .cr-lsrt-row:first-child {
   border-top: 0;
@@ -350,10 +218,6 @@
 [data-iii-ui="sandbox-code-runner"] .cr-lsrt-count {
   margin-left: auto;
   color: var(--color-ink-ghost);
-  font-size: 10.5px;
+  font-size: 11px;
   white-space: nowrap;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-lsrt-gone {
-  color: var(--color-warn);
-  border-color: var(--color-warn);
 }

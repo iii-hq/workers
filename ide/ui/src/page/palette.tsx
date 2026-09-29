@@ -51,7 +51,7 @@ export function registerShellPalette(host: Host): void {
             keywords: [rel],
             run: () =>
               host.panels?.open({
-                pageId: 'shell',
+                pageId: 'ide',
                 context: { type: 'file', path: match.path },
               }),
           }
@@ -59,7 +59,7 @@ export function registerShellPalette(host: Host): void {
     },
   })
 
-  host.commands?.register('shell', [
+  host.commands?.register('ide', [
     {
       id: 'open-file',
       title: 'Open file…',
@@ -72,7 +72,7 @@ export function registerShellPalette(host: Host): void {
       title: 'Open the IDE',
       detail: 'Files, search, changes and a terminal for the working directory',
       keywords: ['terminal', 'explorer', 'files', 'ide'],
-      run: () => host.panels?.open({ pageId: 'shell', context: {} }),
+      run: () => host.panels?.open({ pageId: 'ide', context: {} }),
     },
   ])
 }
