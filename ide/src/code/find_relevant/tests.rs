@@ -102,7 +102,7 @@ async fn ask_with(
         fx.resolver.clone(),
         fx.cfg.clone(),
         req,
-        async move { Ok(window) },
+        move |_| async move { Ok(window) },
         evaluate,
     )
     .await
@@ -394,7 +394,7 @@ async fn bad_input_is_c210() {
             fx.resolver.clone(),
             fx.cfg.clone(),
             req,
-            async { Ok(None) },
+            |_| async { Ok(None) },
             judge(&log, keyword),
         )
         .await
@@ -428,4 +428,160 @@ fn files_sort_by_priority_then_score_then_path() {
     sort_files(&mut files);
     let order: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
     assert_eq!(order, ["/b", "/a", "/c", "/d"]);
+}
+
+#[tokio::test]
+async fn git_metadata_is_never_a_walk_root() {
+    let fx = fixture(
+        &[
+            (".git/config", b"url = https://user:TOKEN@host/repo\n"),
+            (".git/logs/HEAD", b"TOKEN"),
+        ],
+        |_, _| {},
+    );
+    let log = Log::default();
+    for path in [".git", ".git/logs"] {
+        let error = run(
+            fx.resolver.clone(),
+            fx.cfg.clone(),
+            FindRelevantInput {
+                path: path.into(),
+                ..input("q", 120_000)
+            },
+            |_| async { Ok(None) },
+            judge(&log, keyword),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&error, CoderError::BadInput(m) if m.contains(".git")),
+            "{error:?}"
+        );
+    }
+    assert!(log.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_preview_too_big_for_the_window_is_scored_in_chunks_keeping_the_best() {
+    // 375 lines of 80 bytes: three 12 000-byte chunks, `alpha` in the first,
+    // `needle` in the last
+    let line = |word: &str| format!("{word:<79}\n");
+    let mut source = line("alpha");
+    for i in 2..=375 {
+        source.push_str(&line(if i == 301 { "needle" } else { "filler" }));
+    }
+    let fx = fixture(&[("big.txt", source.as_bytes())], |_, _| {});
+    let log = Log::default();
+    let out = ask(
+        &fx,
+        Some(8_192),
+        judge(&log, |ev| {
+            Ok(per_item(ev, |item| {
+                let text = item.to_string();
+                if text.contains("needle") {
+                    0.9
+                } else if text.contains("alpha") {
+                    0.7
+                } else {
+                    0.1
+                }
+            }))
+        }),
+    )
+    .await;
+    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
+    assert_eq!(paths(&fx, &out), ["big.txt"]);
+    assert_eq!(out.files[0].score, 0.9);
+    assert_eq!(out.stats.judge_calls, 3);
+    assert!(log
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|sent| sent.contains("sampled source ranges")));
+}
+
+#[tokio::test]
+async fn exclude_globs_prune_folders_and_files() {
+    let fx = fixture(
+        &[
+            ("needle.rs", b"needle"),
+            ("gen/needle.rs", b"needle"),
+            ("made/deep/needle.rs", b"needle"),
+            ("notes/needle.txt", b"needle"),
+        ],
+        |_, _| {},
+    );
+    let log = Log::default();
+    let req = FindRelevantInput {
+        exclude_globs: vec!["gen/".into(), "made/**".into(), "**/*.txt".into()],
+        ..input("where is the needle?", 120_000)
+    };
+    let out = ask_with(&fx, req, None, judge(&log, keyword)).await;
+    assert_eq!(paths(&fx, &out), ["needle.rs"]);
+    let sent = log.lock().unwrap().join("\n");
+    for forbidden in ["\"gen\"", "\\\"gen", "\"made", "\\\"made", "needle.txt"] {
+        assert!(!sent.contains(forbidden), "{forbidden} reached the judge");
+    }
+}
+
+#[tokio::test]
+async fn a_judge_not_ready_is_unavailable_without_a_call() {
+    let fx = fixture(&[("needle.rs", b"needle")], |_, _| {});
+    let log = Log::default();
+    let out = run(
+        fx.resolver.clone(),
+        fx.cfg.clone(),
+        input("needle", 120_000),
+        |_| async { Err(JudgeError::Unavailable("judge provider not ready".into())) },
+        judge(&log, keyword),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.status, Status::Unavailable);
+    assert_eq!(out.reason.as_deref(), Some("judge provider not ready"));
+    assert!(log.lock().unwrap().is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unlistable_folder_makes_the_result_incomplete() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = fixture(
+        &[("needle.rs", b"needle"), ("locked/x.rs", b"x")],
+        |_, _| {},
+    );
+    let locked = fx.root.join("locked");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let listable = std::fs::read_dir(&locked).is_ok(); // root ignores modes
+    let out = ask(&fx, None, judge(&Log::default(), keyword)).await;
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if listable {
+        return;
+    }
+    assert_eq!(out.status, Status::Incomplete);
+    assert_eq!(out.issues.get("unreadable"), Some(&1));
+    assert_eq!(paths(&fx, &out), ["needle.rs"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_folder_swapped_for_a_link_after_the_walk_is_never_read() {
+    let fx = fixture(&[("src/a.rs", b"inside")], |_, _| {});
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("a.rs"), "SECRET_OUTSIDE").unwrap();
+    let tree = walk::walk(&fx.resolver, &fx.root, None, u64::MAX);
+    assert!(matches!(walk::read(&tree, "src/a.rs"), walk::Snap::Ok(_)));
+    std::fs::rename(fx.root.join("src"), fx.root.join("old")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), fx.root.join("src")).unwrap();
+    assert!(matches!(
+        walk::read(&tree, "src/a.rs"),
+        walk::Snap::Issue("changed")
+    ));
+}
+
+#[test]
+fn names_sort_like_locale_compare() {
+    let mut names = vec!["B", "a", "_x", "A", "b", "1"];
+    names.sort_by(|a, b| walk::locale_cmp(a, b));
+    assert_eq!(names, ["1", "_x", "a", "A", "b", "B"]);
 }

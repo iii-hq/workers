@@ -8,7 +8,11 @@
 //! Deviations: jevgrep's `q0, q1, …` keys are zero-padded (`q000`) so the
 //! contract's `BTreeMap` keeps jevgrep's numeric order; each boolean question
 //! is a `noul` without criteria. State object keys reach the judge in the
-//! bus's key order, not jevgrep's insertion order.
+//! bus's key order, not jevgrep's insertion order. Question order is the
+//! keys' order too: evidence asks `q*, ref*, scope*` (jevgrep `q, scope,
+//! ref`) and the file assessment asks its roles alphabetically. The keys
+//! keep jevgrep's names because the model reads them; renaming them only to
+//! sort would change the calibrated text more than the order does.
 
 // The evidence, file-assessment and test-body builders serve the selection
 // passes that follow navigation; until those land only tests reach them.

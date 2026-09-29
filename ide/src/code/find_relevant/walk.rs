@@ -17,8 +17,16 @@
 //! - the caller's `exclude_globs`.
 //!
 //! Content gates (control bytes, invalid UTF-8, a PRIVATE KEY block) run on
-//! every read: such a file is never scored, admitted or returned.
+//! every read: such a file is never scored, admitted or returned, though its
+//! name still shows in its folder's preview (as in jevgrep, which previews
+//! names only).
+//!
+//! Nothing under a `.git` directory is ever walked or read, and a read
+//! re-checks that its path still resolves, through no symlink, to the file
+//! it opened: a directory swapped for a link after the walk cannot leak
+//! bytes from outside the root.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -97,6 +105,21 @@ pub fn extname(name: &str) -> &str {
     }
 }
 
+/// jevgrep sorts with ICU `localeCompare`: case-insensitive first, lowercase
+/// before uppercase on a tie.
+// ponytail: approximation, not ICU collation (punctuation and accents order
+// differently); use an ICU collator if non-ASCII batch order ever matters.
+pub fn locale_cmp(a: &str, b: &str) -> Ordering {
+    a.to_lowercase()
+        .cmp(&b.to_lowercase())
+        .then_with(|| b.cmp(a))
+}
+
+/// jevgrep `hardExcluded`: git metadata never leaves the host.
+pub fn in_git_dir(path: &Path) -> bool {
+    path.components().any(|c| c.as_os_str() == ".git")
+}
+
 /// `dir` + `name` in the walk's root-relative form (`.` is the root).
 pub fn join(dir: &str, name: &str) -> String {
     if dir == "." {
@@ -122,6 +145,8 @@ pub struct Tree {
     pub children: HashMap<String, Vec<Entry>>,
     /// The walk stopped at [`MAX_ENTRIES`].
     pub truncated: bool,
+    /// Directories the walk could not list.
+    pub unreadable: u64,
     /// Per-file read ceiling: jevgrep's 16 MiB capped by `max_read_bytes`.
     pub max_file_bytes: u64,
 }
@@ -146,7 +171,7 @@ pub fn walk(
         .git_global(true)
         .git_exclude(true)
         .require_git(false)
-        .sort_by_file_name(|a, b| a.cmp(b));
+        .sort_by_file_name(|a, b| locale_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
     let filter_resolver = resolver.clone();
     let filter_root = root.to_path_buf();
     walker.filter_entry(move |e| {
@@ -162,7 +187,8 @@ pub fn walk(
         }
         let abs = e.path();
         let name = e.file_name().to_string_lossy();
-        if filter_resolver.is_denied(abs)
+        if name == ".git"
+            || filter_resolver.is_denied(abs)
             || filter_resolver.is_non_accessible(abs)
             || is_sensitive(&name)
             || (is_dir && DEPENDENCY_DIRECTORIES.contains(&name.as_ref()))
@@ -178,8 +204,13 @@ pub fn walk(
         {
             return false;
         }
+        // A directory also matches as `rel/`, so `gen/` and `gen/**` prune
+        // the folder itself, not just its contents.
         match (&exclude, abs.strip_prefix(&filter_root)) {
-            (Some(set), Ok(rel)) => !set.is_match(rel),
+            (Some(set), Ok(rel)) => {
+                !(set.is_match(rel)
+                    || is_dir && set.is_match(format!("{}/", rel.to_string_lossy())))
+            }
             _ => true,
         }
     });
@@ -188,10 +219,15 @@ pub fn walk(
         root: root.to_path_buf(),
         children: HashMap::from([(".".to_string(), Vec::new())]),
         truncated: false,
+        unreadable: 0,
         max_file_bytes: MAX_FILE_BYTES.min(max_read_bytes),
     };
     let mut seen = 0usize;
-    for entry in walker.build().filter_map(Result::ok) {
+    for entry in walker.build() {
+        let Ok(entry) = entry else {
+            tree.unreadable += 1;
+            continue;
+        };
         if entry.depth() == 0 {
             continue;
         }
@@ -236,8 +272,9 @@ pub enum Snap {
     Issue(&'static str),
 }
 
-/// jevgrep `readSnapshot` over the walked tree: no symlink is followed, and
-/// the content gates run on the exact bytes read.
+/// jevgrep `readSnapshot` over the walked tree: no symlink is followed, the
+/// path must still name the file read, and the content gates run on the
+/// exact bytes read.
 pub fn read(tree: &Tree, path: &str) -> Snap {
     let abs = tree.root.join(path);
     let mut file = match open_no_follow(&abs) {
@@ -245,11 +282,11 @@ pub fn read(tree: &Tree, path: &str) -> Snap {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Snap::Issue("changed"),
         Err(_) => return Snap::Issue("unreadable"),
     };
-    match file.metadata() {
-        Ok(md) if md.is_file() && md.len() <= tree.max_file_bytes => {}
-        Ok(md) if md.is_file() => return Snap::Issue("unreadable"),
+    let opened = match file.metadata() {
+        Ok(md) if md.is_file() && md.len() <= tree.max_file_bytes => md,
+        Ok(md) if md.is_file() => return Snap::Issue("resource_limit"),
         _ => return Snap::Issue("changed"),
-    }
+    };
     let mut bytes = Vec::new();
     if (&mut file)
         .take(tree.max_file_bytes + 1)
@@ -259,7 +296,10 @@ pub fn read(tree: &Tree, path: &str) -> Snap {
         return Snap::Issue("unreadable");
     }
     if bytes.len() as u64 > tree.max_file_bytes {
-        return Snap::Issue("unreadable");
+        return Snap::Issue("resource_limit");
+    }
+    if !stable(&abs, &opened) {
+        return Snap::Issue("changed");
     }
     if CONTROL.is_match(&bytes) {
         return Snap::Excluded;
@@ -276,6 +316,28 @@ pub fn read(tree: &Tree, path: &str) -> Snap {
         source,
         content_hash,
     })
+}
+
+/// jevgrep `stable`: `abs` (under the canonical root) still resolves to
+/// itself, so no ancestor became a symlink, and still names the opened
+/// file. The walk's gates were checked on this exact path, so passing this
+/// means they still hold.
+fn stable(abs: &Path, opened: &std::fs::Metadata) -> bool {
+    if std::fs::canonicalize(abs).ok().as_deref() != Some(abs) {
+        return false;
+    }
+    #[cfg(unix)]
+    let same = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::symlink_metadata(abs)
+            .is_ok_and(|now| now.dev() == opened.dev() && now.ino() == opened.ino())
+    };
+    #[cfg(not(unix))]
+    let same = {
+        let _ = opened;
+        true
+    };
+    same
 }
 
 #[cfg(unix)]
