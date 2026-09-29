@@ -198,3 +198,64 @@ export function turnIdOf(report: unknown): CurrentTurn {
 export function isOpen(view: AskView, currentTurn: CurrentTurn): boolean {
   return currentTurn === undefined || currentTurn === view.turnId
 }
+
+/**
+ * The current turn after a new status read. A turn that has moved past the
+ * asking one (another turn id, or no record) never comes back, so once the
+ * card has seen that, a later read (a failed one included) cannot reopen it.
+ */
+export function mergeTurnRead(
+  askingTurnId: string,
+  previous: CurrentTurn,
+  read: CurrentTurn,
+): CurrentTurn {
+  return previous !== undefined && previous !== askingTurnId ? previous : read
+}
+
+/**
+ * Where the card's own Send stands:
+ * - `idle`: nothing sent from this card;
+ * - `sending`: the answer went to the composer and the card is re-reading
+ *   the turn;
+ * - `unconfirmed`: the last of those reads came back with the asking turn
+ *   still current;
+ * - `failed`: `compose` threw.
+ */
+export type SendPhase = 'idle' | 'sending' | 'unconfirmed' | 'failed'
+
+/**
+ * What the card shows:
+ * - `open`: takes an answer;
+ * - `sending`: waiting for the next turn, with Send disabled so nothing goes
+ *   out twice;
+ * - `answered`: read-only;
+ * - `not-sent`: takes an answer again; the composer most likely kept the
+ *   text as a draft;
+ * - `failed`: takes an answer again; `compose` threw.
+ */
+export type AskCardState = 'open' | 'sending' | 'answered' | 'not-sent' | 'failed'
+
+/**
+ * The card's state. Only the session's turn decides `answered`: it moved
+ * past the turn that asked, or its record is gone (`isOpen`). A Send alone
+ * never does: `compose` returns nothing, and the composer drops a submit
+ * while it is blocked (no model chosen, a turn still streaming), leaving the
+ * text as a draft.
+ */
+export function askCardState(
+  view: AskView,
+  currentTurn: CurrentTurn,
+  phase: SendPhase,
+): AskCardState {
+  if (!isOpen(view, currentTurn)) return 'answered'
+  switch (phase) {
+    case 'sending':
+      return 'sending'
+    case 'unconfirmed':
+      return 'not-sent'
+    case 'failed':
+      return 'failed'
+    case 'idle':
+      return 'open'
+  }
+}

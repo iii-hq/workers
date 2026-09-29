@@ -10,6 +10,13 @@
  * formatted answer to the composer (`host.chat.compose`, submitted), which
  * starts the next turn.
  *
+ * Send is not proof of sending: `compose` returns nothing and the composer
+ * drops a submit while it is blocked, keeping the text as a draft. So after
+ * Send the card waits (Send disabled) and re-reads the turn a bounded number
+ * of times; it closes as answered only when the turn advances, and says the
+ * answer was not sent yet when the last read still shows the asking turn
+ * (see `askCardState` in lib/ask).
+ *
  * Open vs answered: the card reads the session's current turn from
  * `harness::status` on mount, when the tab becomes visible again, and when
  * focus enters an open card (so an answer typed in the composer closes it
@@ -44,42 +51,54 @@ import {
   useState,
 } from 'react'
 import {
+  askCardState,
   type AskQuestionView,
   type AskSelection,
   type AskView,
   type CurrentTurn,
   formatAnswer,
   isOpen,
+  mergeTurnRead,
   parseAsk,
+  type SendPhase,
   turnIdOf,
 } from '../lib/ask'
 
 const ASK_ID = 'harness::ask'
 const STATUS_TIMEOUT_MS = 5000
 
+/** Status re-reads after a Send, in ms after it: bounded, not polling. */
+const CONFIRM_READS_MS = [500, 1500, 3000] as const
+
 /**
- * The session's current turn id and a function to re-read it. Re-reads when
- * the tab becomes visible again; a newer read always wins over an older one
- * still in flight, and nothing lands after unmount.
+ * The session's current turn and a function to re-read it, which resolves
+ * with the turn the card now knows. Re-reads when the tab becomes visible
+ * again; a newer read always wins over an older one still in flight, a turn
+ * that moved past the asking one sticks (`mergeTurnRead`), and nothing lands
+ * after unmount.
  */
-function useCurrentTurnId(host: Host, sessionId: string) {
+function useCurrentTurnId(host: Host, sessionId: string, askingTurnId: string) {
   const [turnId, setTurnId] = useState<CurrentTurn>(undefined)
+  const known = useRef<CurrentTurn>(undefined)
   const latest = useRef(0)
 
-  const check = useCallback(() => {
+  const check = useCallback((): Promise<CurrentTurn> => {
     const request = ++latest.current
-    host.iii
+    return host.iii
       .trigger('harness::status', { session_id: sessionId }, { timeoutMs: STATUS_TIMEOUT_MS })
       .then(turnIdOf, () => undefined)
-      .then((next) => {
-        if (request === latest.current) setTurnId(next)
+      .then((read) => {
+        if (request !== latest.current) return known.current
+        known.current = mergeTurnRead(askingTurnId, known.current, read)
+        setTurnId(known.current)
+        return known.current
       })
-  }, [host, sessionId])
+  }, [host, sessionId, askingTurnId])
 
   useEffect(() => {
-    check()
+    void check()
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') check()
+      if (document.visibilityState === 'visible') void check()
     }
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
@@ -269,32 +288,69 @@ function QuestionSummary({
 }
 
 function AskCard({ host, view }: { host: Host; view: AskView }) {
-  const [currentTurnId, recheck] = useCurrentTurnId(host, view.sessionId)
+  const [currentTurnId, recheck] = useCurrentTurnId(host, view.sessionId, view.turnId)
   const [selections, setSelections] = useState<AskSelection[]>(() =>
     view.questions.map(() => ({ picked: [] })),
   )
-  const [sent, setSent] = useState<string | null>(null)
-  const [sendFailed, setSendFailed] = useState(false)
+  const [phase, setPhase] = useState<SendPhase>('idle')
   const hintId = useId()
+  const confirmation = useRef(0)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // Held from a Send until its reads run out: two submits in one task both
+  // run before React re-renders the disabled button.
+  const pending = useRef(false)
+
+  useEffect(
+    () => () => {
+      confirmation.current += 1
+      clearTimeout(timer.current)
+    },
+    [],
+  )
 
   const canCompose = typeof host.chat?.compose === 'function'
-  const answered = sent !== null || !isOpen(view, currentTurnId)
+  const state = askCardState(view, currentTurnId, phase)
+  const answered = state === 'answered'
+  const sending = state === 'sending'
   const interactive = canCompose && !answered
+  // The turn advanced while this card's own Send was pending: that Send is
+  // what went out, so the summary can show what was chosen.
+  const sentHere = answered && phase === 'sending'
   const text = formatAnswer(view, selections)
 
   const update = (index: number, next: AskSelection) =>
     setSelections((previous) => previous.map((entry, i) => (i === index ? next : entry)))
 
+  // Re-read the turn after a Send until it advances or the reads run out;
+  // nothing lands after unmount or after a newer Send.
+  const confirmSend = async () => {
+    const run = ++confirmation.current
+    const started = Date.now()
+    for (const at of CONFIRM_READS_MS) {
+      await new Promise<void>((resolve) => {
+        timer.current = setTimeout(resolve, Math.max(0, at - (Date.now() - started)))
+      })
+      if (run !== confirmation.current) return
+      const turn = await recheck()
+      if (run !== confirmation.current) return
+      if (!isOpen(view, turn)) return
+    }
+    pending.current = false
+    setPhase('unconfirmed')
+  }
+
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!interactive || text === null) return
+    if (!interactive || sending || pending.current || text === null) return
     try {
       host.chat?.compose?.({ text, submit: true })
-      setSent(text)
-      setSendFailed(false)
     } catch {
-      setSendFailed(true)
+      setPhase('failed')
+      return
     }
+    pending.current = true
+    setPhase('sending')
+    void confirmSend()
   }
 
   // Focus arriving from outside an open card re-reads the turn, so a
@@ -303,19 +359,22 @@ function AskCard({ host, view }: { host: Host; view: AskView }) {
     if (!interactive) return
     const from = event.relatedTarget
     if (from instanceof Node && event.currentTarget.contains(from)) return
-    recheck()
+    void recheck()
   }
 
   let note: string
-  if (answered) note = sent !== null ? 'Sent as your reply.' : ''
+  if (answered) note = sentHere ? 'Sent as your reply.' : ''
   else if (!canCompose) note = 'Type your answer in the chat to reply.'
-  else if (sendFailed) note = "Couldn't send. Type your answer in the chat instead."
+  else if (state === 'sending') note = 'Sending your answer…'
+  else if (state === 'not-sent') note = 'Not sent yet. Check the chat composer.'
+  else if (state === 'failed') note = "Couldn't send. Type your answer in the chat instead."
   else note = text === null ? 'Answer each question to send.' : ''
 
   return (
     <form
       className="harness-ui-ask"
       aria-label="Questions from the agent"
+      aria-busy={sending || undefined}
       noValidate
       onSubmit={submit}
       onFocus={onFocus}
@@ -332,7 +391,7 @@ function AskCard({ host, view }: { host: Host; view: AskView }) {
           <QuestionSummary
             key={`${index}:${question.header}`}
             question={question}
-            selection={sent !== null ? selections[index] : undefined}
+            selection={sentHere ? selections[index] : undefined}
           />
         ),
       )}
@@ -347,7 +406,7 @@ function AskCard({ host, view }: { host: Host; view: AskView }) {
             type="submit"
             variant="primary"
             size="sm"
-            disabled={text === null}
+            disabled={text === null || sending}
             aria-describedby={hintId}
           >
             Send

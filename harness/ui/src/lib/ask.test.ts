@@ -1,10 +1,12 @@
 import type { FunctionTriggerMessage } from '@iii-dev/console-ui'
 import { describe, expect, it } from 'vitest'
 import {
+  askCardState,
   type AskQuestionView,
   type AskView,
   formatAnswer,
   isOpen,
+  mergeTurnRead,
   parseAsk,
   turnIdOf,
 } from './ask'
@@ -307,6 +309,56 @@ describe('isOpen', () => {
 
   it('is open when the current turn is unknown (not read yet, or the read failed)', () => {
     expect(isOpen(view, undefined)).toBe(true)
+  })
+})
+
+describe('askCardState', () => {
+  // viewOf() asks in turn_7.
+  const view = viewOf(APPROACH)
+
+  it('is open before any send while the asking turn is current or unknown', () => {
+    expect(askCardState(view, 'turn_7', 'idle')).toBe('open')
+    expect(askCardState(view, undefined, 'idle')).toBe('open')
+  })
+
+  it('is sending after Send while the turn has not advanced, not answered', () => {
+    expect(askCardState(view, 'turn_7', 'sending')).toBe('sending')
+    // A failed status read proves nothing: keep waiting.
+    expect(askCardState(view, undefined, 'sending')).toBe('sending')
+  })
+
+  it('is answered once the turn advances, whatever the send phase', () => {
+    for (const phase of ['idle', 'sending', 'unconfirmed', 'failed'] as const) {
+      expect(askCardState(view, 'turn_8', phase)).toBe('answered')
+    }
+  })
+
+  it('is answered when the turn record is gone', () => {
+    expect(askCardState(view, null, 'sending')).toBe('answered')
+  })
+
+  it('is not sent when the reads ran out with the turn unchanged', () => {
+    expect(askCardState(view, 'turn_7', 'unconfirmed')).toBe('not-sent')
+    expect(askCardState(view, undefined, 'unconfirmed')).toBe('not-sent')
+  })
+
+  it('is failed when compose threw', () => {
+    expect(askCardState(view, 'turn_7', 'failed')).toBe('failed')
+  })
+})
+
+describe('mergeTurnRead', () => {
+  it('takes each read while the asking turn is current or unknown', () => {
+    expect(mergeTurnRead('turn_7', undefined, 'turn_7')).toBe('turn_7')
+    expect(mergeTurnRead('turn_7', 'turn_7', undefined)).toBeUndefined()
+    expect(mergeTurnRead('turn_7', 'turn_7', 'turn_8')).toBe('turn_8')
+    expect(mergeTurnRead('turn_7', undefined, null)).toBeNull()
+  })
+
+  it('keeps a turn that moved past the asking one: a later read cannot reopen it', () => {
+    expect(mergeTurnRead('turn_7', 'turn_8', undefined)).toBe('turn_8')
+    expect(mergeTurnRead('turn_7', 'turn_8', 'turn_7')).toBe('turn_8')
+    expect(mergeTurnRead('turn_7', null, undefined)).toBeNull()
   })
 })
 
