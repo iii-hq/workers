@@ -473,6 +473,8 @@ from a model turn, not directly`.
 - 1–4 questions per call and 2–4 options per question.
 - `header` is 1–16 characters and `question` must not be empty.
 - `label` is 1–80 characters and unique within its question.
+- `header` and `label` must not contain line breaks (the answer is one line
+  per question).
 - Limits count characters, not bytes. A value that is only whitespace counts
   as empty, and labels are compared after trimming.
 - `multi_select` defaults to `false`; `description` is optional.

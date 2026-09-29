@@ -105,7 +105,9 @@ pub fn validate(req: &AskRequest) -> Result<(), String> {
 
 fn validate_question(qi: usize, q: &AskQuestion) -> Result<(), String> {
     let at = format!("questions[{qi}]");
-    check_text(&format!("{at}.header"), &q.header, Some(MAX_HEADER_CHARS))?;
+    let header = format!("{at}.header");
+    check_text(&header, &q.header, Some(MAX_HEADER_CHARS))?;
+    check_single_line(&header, &q.header)?;
     check_text(&format!("{at}.question"), &q.question, None)?;
     let count = q.options.len();
     if !(MIN_OPTIONS..=MAX_OPTIONS).contains(&count) {
@@ -116,6 +118,7 @@ fn validate_question(qi: usize, q: &AskQuestion) -> Result<(), String> {
     for (oi, opt) in q.options.iter().enumerate() {
         let field = format!("{at}.options[{oi}].label");
         check_text(&field, &opt.label, Some(MAX_LABEL_CHARS))?;
+        check_single_line(&field, &opt.label)?;
         let label = opt.label.trim();
         if let Some(first) = q.options[..oi]
             .iter()
@@ -131,6 +134,15 @@ fn validate_question(qi: usize, q: &AskQuestion) -> Result<(), String> {
 
 /// Non-empty after trimming and, when `max` is set, at most `max` characters
 /// (chars, not bytes: `ç` is one).
+/// The card answers one line per question (`Header: Label`), so a header or
+/// label with a line break would split one answer across several lines.
+fn check_single_line(field: &str, value: &str) -> Result<(), String> {
+    if value.contains(['\r', '\n']) {
+        return Err(format!("{field} must not contain line breaks"));
+    }
+    Ok(())
+}
+
 fn check_text(field: &str, value: &str, max: Option<usize>) -> Result<(), String> {
     if value.trim().is_empty() {
         return Err(format!("{field} must not be empty"));
@@ -351,6 +363,18 @@ mod tests {
         let err = validate(&request(vec![question("  ", &["a", "b"])])).unwrap_err();
         assert!(err.contains("questions[0].header"), "{err}");
         assert!(err.contains("empty"), "{err}");
+    }
+
+    #[test]
+    fn rejects_line_breaks_in_header_and_label() {
+        for header in ["Plan\nOwner", "Plan\rOwner"] {
+            let err = validate(&request(vec![question(header, &["a", "b"])])).unwrap_err();
+            assert!(err.contains("questions[0].header"), "{err}");
+            assert!(err.contains("line break"), "{err}");
+        }
+        let err = validate(&request(vec![question("Plan", &["a", "b\nc"])])).unwrap_err();
+        assert!(err.contains("questions[0].options[1].label"), "{err}");
+        assert!(err.contains("line break"), "{err}");
     }
 
     #[test]
