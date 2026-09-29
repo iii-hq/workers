@@ -9,7 +9,11 @@ import type {
   UiAssetsPush,
 } from '../types/injectable-ui'
 import type { IiiClient } from './iii-client'
-import { getPanelContext, resetPanelContextForTests } from './panel-context'
+import {
+  getPanelContext,
+  resetPanelContextForTests,
+  subscribeScreenOpen,
+} from './panel-context'
 import {
   type ConversationAdapter,
   startUiLoader,
@@ -360,6 +364,67 @@ describe('host.panels.open in the isolated #/worker shell', () => {
 
     expect(open).not.toHaveBeenCalled()
     expect(getPanelContext('ticket')?.context).toEqual({ id: 't-1' })
+
+    harness.stop()
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('host.panels.openScreen', () => {
+  // Same window stub as above: `openScreen` reads only the location hash.
+  async function loadHost(hash: string) {
+    vi.stubGlobal('window', { location: { hash }, open: vi.fn() })
+    let captured: Parameters<SetupFn>[0] | undefined
+    const harness = createHarness({
+      importModule: vi.fn(async () => ({
+        default(host: Parameters<SetupFn>[0]) {
+          captured = host
+        },
+      })),
+    })
+    harness.emit({
+      event: 'sync',
+      assets: [{ path: 'onboarding/page.js', kind: 'script', hash: 'one' }],
+    })
+    await vi.waitFor(() => expect(captured).toBeDefined())
+    return { host: captured as Parameters<SetupFn>[0], harness }
+  }
+
+  it('hands a built-in screen and its placement to the workspace', async () => {
+    resetPanelContextForTests()
+    const opened = vi.fn()
+    subscribeScreenOpen(opened)
+    const { host, harness } = await loadHost('#/')
+
+    const request = {
+      screen: 'traces',
+      relativeTo: 'ext:onboarding',
+      direction: 'right' as const,
+      sizes: [0.3, 0.4, 0.3],
+    }
+    host.panels.openScreen(request)
+    expect(opened).toHaveBeenCalledWith(request)
+
+    expect(() => host.panels.openScreen({ screen: 'nope' })).toThrow(
+      /unknown screen/,
+    )
+    expect(() =>
+      host.panels.openScreen({ screen: 'traces', relativeTo: 'nope' }),
+    ).toThrow(/unknown relativeTo/)
+    expect(opened).toHaveBeenCalledTimes(1)
+
+    harness.stop()
+    vi.unstubAllGlobals()
+  })
+
+  it('places nothing in the isolated #/worker shell, which has no workspace', async () => {
+    resetPanelContextForTests()
+    const opened = vi.fn()
+    subscribeScreenOpen(opened)
+    const { host, harness } = await loadHost('#/worker/onboarding/tour')
+
+    host.panels.openScreen({ screen: 'traces' })
+    expect(opened).not.toHaveBeenCalled()
 
     harness.stop()
     vi.unstubAllGlobals()

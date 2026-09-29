@@ -133,6 +133,24 @@ The host reuses an existing page or places it beside chat, and delivers a
 react to repeated clicks. Context is ephemeral; fetch large bodies from the
 worker by opaque id.
 
+Any workspace screen, a built-in one like `traces` included, opens the same
+local way, placed beside a screen of your choice in the tab the operator is
+looking at, with no bus round trip:
+
+```tsx
+if (host.panels?.openScreen) {
+  host.panels.openScreen({
+    screen: 'traces',
+    relativeTo: 'ext:onboarding', // beside this page, in whichever tab shows it
+    direction: 'right',
+    sizes: [0.3, 0.4, 0.3], // the tab after placement; ignored on a mismatch
+  })
+} else {
+  // Older console: the bus call places it too, a round trip later.
+  await host.iii.trigger('console::workspace::open', { screen: 'traces' })
+}
+```
+
 Everything above is imported from the package root, which stays external in
 the build — `buildWorkerUi` (see *Building a worker UI* below) does that for
 all six import-map specifiers.

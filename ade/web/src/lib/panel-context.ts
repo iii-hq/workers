@@ -13,14 +13,17 @@ import type {
   JsonValue,
   PanelContextEvent,
   PanelOpenRequest,
+  ScreenOpenRequest,
 } from '@/types/injectable-ui'
 
 type OpenListener = (event: PanelContextEvent) => void
+type ScreenOpenListener = (request: ScreenOpenRequest) => void
 
 let nextEventId = 1
 let contexts = new Map<string, PanelContextEvent>()
 const contextListeners = new Set<() => void>()
 const openListeners = new Set<OpenListener>()
+const screenOpenListeners = new Set<ScreenOpenListener>()
 
 function emitContexts(): void {
   for (const listener of [...contextListeners]) listener()
@@ -42,6 +45,17 @@ export function requestPanelOpen(request: PanelOpenRequest): PanelContextEvent {
   emitContexts()
   for (const listener of [...openListeners]) listener(event)
   return event
+}
+
+/** Called by an injectable Host: place any workspace screen from this browser. */
+export function requestScreenOpen(request: ScreenOpenRequest): void {
+  for (const listener of [...screenOpenListeners]) listener(request)
+}
+
+/** The workspace subscribes here to place or reuse the requested screen. */
+export function subscribeScreenOpen(listener: ScreenOpenListener): () => void {
+  screenOpenListeners.add(listener)
+  return () => screenOpenListeners.delete(listener)
 }
 
 /** The workspace subscribes here to place or reuse the requested page. */
@@ -70,4 +84,5 @@ export function resetPanelContextForTests(): void {
   contexts = new Map()
   contextListeners.clear()
   openListeners.clear()
+  screenOpenListeners.clear()
 }
