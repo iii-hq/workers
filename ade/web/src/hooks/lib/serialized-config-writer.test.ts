@@ -110,4 +110,33 @@ describe('SerializedConfigWriter', () => {
     expect(cache).toMatchObject({ count: 1 })
     expect(remote).toMatchObject({ count: 1 })
   })
+
+  it('reports a failed write, after which a read shows the server copy', async () => {
+    let cache: ConsoleConfigValue = { count: 0 }
+    let failures = 0
+
+    const writer = new SerializedConfigWriter({
+      readRemote: async () => ({ count: 0 }),
+      writeRemote: async () => {
+        throw new Error('disk full')
+      },
+      readCached: () => cache,
+      publish: (value) => {
+        cache = value
+      },
+      onCommitError: () => {
+        failures += 1
+      },
+    })
+
+    cache = writer.enqueue((value) => ({
+      ...value,
+      count: numeric(value, 'count') + 1,
+    }))
+    expect(cache).toMatchObject({ count: 1 })
+    await writer.whenIdle()
+
+    expect(failures).toBe(1)
+    await expect(writer.readForQuery()).resolves.toMatchObject({ count: 0 })
+  })
 })

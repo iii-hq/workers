@@ -38,6 +38,11 @@ export function workspaceLayoutWriter(qc: QueryClient): SerializedConfigWriter {
         exact: true,
       })
     },
+    // Nothing polls the layout, so a failed write re-reads the server copy
+    // instead of leaving its optimistic value on screen.
+    onCommitError: () => {
+      void qc.invalidateQueries({ queryKey: WORKSPACE_LAYOUT_QUERY_KEY })
+    },
   })
   writers.set(qc, writer)
   return writer
