@@ -29,6 +29,10 @@ struct Store {
     codes: BTreeMap<String, String>,
     /// Fail the deletion-runner enqueue for these operation ids.
     fail_enqueue: BTreeSet<String>,
+    /// The harness's process-wide topology lock; `session::delete` records
+    /// whether it was still held while the delete RPC was in flight.
+    topology_probe: Option<Arc<tokio::sync::Mutex<()>>>,
+    topology_held_on_delete: Vec<bool>,
 }
 impl Store {
     fn state(&self, scope: &str, key: &str) -> Value {
@@ -112,6 +116,13 @@ impl Store {
                 Ok(json!({"entry_id":entry_id}))
             }
             "session::delete" => {
+                let held = self
+                    .topology_probe
+                    .as_ref()
+                    .map(|topology| topology.try_lock().is_err());
+                if let Some(held) = held {
+                    self.topology_held_on_delete.push(held);
+                }
                 if let Some(reply) = &self.delete_reply {
                     return Ok(reply.clone());
                 }
@@ -225,6 +236,7 @@ impl Stack {
             harness::events::TurnEvents::register(&iii),
             harness::hooks::HookRegistry::register(&iii),
         );
+        store.lock().unwrap().topology_probe = Some(deps.topology.clone());
         let stack = Self {
             deps,
             store,
@@ -369,6 +381,23 @@ async fn deletion_accepts_engine_caller_metadata_through_command_runner_and_stat
     let store = stack.store.lock().unwrap();
     assert!(store.sessions.contains_key("parent"));
     assert!(store.sessions.contains_key("child1"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn erase_does_not_hold_the_process_topology_lock_across_session_delete() {
+    let stack = Stack::new("running").await;
+    let accepted = stack.request("child2").await;
+    let done = stack.run(&accepted.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed);
+    let store = stack.store.lock().unwrap();
+    // One probe per erased member (grandchild1, child2). Holding the lock
+    // there would stall every send, spawn and binding in the process.
+    assert_eq!(store.topology_held_on_delete.len(), 2);
+    assert!(
+        store.topology_held_on_delete.iter().all(|held| !held),
+        "topology lock held during session::delete: {:?}",
+        store.topology_held_on_delete
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

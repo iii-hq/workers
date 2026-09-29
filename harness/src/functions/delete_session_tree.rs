@@ -600,7 +600,11 @@ async fn erase(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
         }
         let _activity = deps.turn_activity.guard(&id).await;
         let _lock = deps.locks.guard(&id).await;
-        let _topology = deps.topology.lock().await;
+        // Admission barrier only: the subtree's guards are already claimed, so
+        // any send, spawn or binding that takes the topology lock from here on
+        // is refused. Holding it across cleanup and session::delete would
+        // stall every topology writer in the process for those RPCs.
+        drop(deps.topology.lock().await);
         if let Some(record) = state::get_turn(&deps.iii, &id, timeout).await? {
             if !record.status.is_terminal() {
                 return Err(failure(format!("{id} became nonterminal; refusing erase")));

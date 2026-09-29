@@ -2198,6 +2198,27 @@ async fn turn_is_terminal(deps: &Deps, session_id: &str) -> bool {
     !crate::bindings::session_expects_wake(deps, session_id).await
 }
 
+/// After the terminal `Completed` write, a failed deletion-guard lookup must
+/// not abort the step: that would skip parent resolution and the queue drain,
+/// and a redelivered step is acked as stale. Fail closed instead, resolving
+/// the parent as cancelled exactly as for a subtree being deleted.
+fn parent_resolution_is_cancelled(
+    session_id: &str,
+    lookup: Result<Option<String>, crate::error::HarnessError>,
+) -> bool {
+    match lookup {
+        Ok(owner) => owner.is_some(),
+        Err(error) => {
+            tracing::warn!(
+                session_id,
+                %error,
+                "deletion guard lookup failed after completion; resolving the parent as cancelled"
+            );
+            true
+        }
+    }
+}
+
 async fn finalize_completed(
     deps: &Deps,
     session: &SessionClient,
@@ -2249,10 +2270,10 @@ async fn finalize_completed(
     crate::usage_report::report(deps, record, outcome, None).await;
     // Sub-agent turns resolve the parent's pending call with their result.
     if let Some(parent) = record.parent.clone() {
-        if crate::functions::delete_session_tree::guard_owner(deps, &record.session_id)
-            .await?
-            .is_some()
-        {
+        if parent_resolution_is_cancelled(
+            &record.session_id,
+            crate::functions::delete_session_tree::guard_owner(deps, &record.session_id).await,
+        ) {
             crate::deferred::resolve_parent(
                 deps,
                 &parent,
@@ -3727,6 +3748,19 @@ impl Clone for SessionStreamSink {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn completed_child_resolves_parent_as_cancelled_when_guarded_or_unknown() {
+        use super::parent_resolution_is_cancelled as cancelled;
+        assert!(!cancelled("s", Ok(None)));
+        assert!(cancelled("s", Ok(Some("delete_op".into()))));
+        assert!(cancelled(
+            "s",
+            Err(crate::error::HarnessError::Dependency(
+                "state::get harness_deletion_guard: invocation timed out".into()
+            ))
+        ));
+    }
+
     fn snap(live: &[crate::clients::FunctionDescriptor]) -> crate::discovery::FunctionsSnapshot {
         crate::discovery::snapshot_of(live.to_vec())
     }
