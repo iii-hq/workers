@@ -765,12 +765,43 @@ async fn watch_gate_passes_while_quick_tunnel_restarts_or_http_is_old() {
         "compose::status",
         Ok(json!({"containers": [{"container": "quick-tunnel", "state": "starting"}]})),
     );
-    // An http older than the webhook listener cannot be verified.
+    // An http older than the webhook listener cannot be verified. Compose
+    // confirms it is declared, so the checklist offers Update rather than Install.
     bus.reply(
         "http::configuration-id",
         Err(not_found("http::configuration-id")),
     );
+    bus.reply(
+        "compose::status",
+        Ok(json!({"containers": [{"container": "http", "state": "running"}]})),
+    );
     s.require_setup().await.unwrap();
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn missing_http_is_classified_from_compose_and_offers_install() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    bus.reply("quick-tunnel::status", Ok(ready_tunnel()));
+    bus.reply(
+        "http::configuration-id",
+        Err(not_found("http::configuration-id")),
+    );
+    bus.reply("compose::status", Ok(json!({"containers": []})));
+
+    let status = s.setup_status(setup::SetupStatusRequest {}).await.unwrap();
+    let http = status
+        .checks
+        .iter()
+        .find(|check| check.id == "http_listener")
+        .unwrap();
+    assert_eq!(http.state, setup::CheckState::Missing);
+    assert!(matches!(
+        &http.fix,
+        Some(setup::SetupFix::InstallWorker { worker, .. }) if worker == "http"
+    ));
     s.iii.shutdown_async().await;
 }
 
@@ -909,6 +940,11 @@ async fn readiness_compares_resolved_config_while_writes_keep_raw_placeholders()
         gets[0].payload["raw"], false,
         "readiness uses resolved values"
     );
+    assert_eq!(
+        gets[0].namespace.as_deref(),
+        Some("default"),
+        "configuration is shared in the default namespace"
+    );
     // Writing the listener reads raw so env placeholders survive.
     bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
     bus.reply(
@@ -931,11 +967,13 @@ async fn readiness_compares_resolved_config_while_writes_keep_raw_placeholders()
         .nth(1)
         .unwrap();
     assert_eq!(raw_get.payload["raw"], true);
+    assert_eq!(raw_get.namespace.as_deref(), Some("default"));
     let set = calls
         .iter()
         .find(|c| c.function == "configuration::set")
         .unwrap();
     assert_eq!(set.payload["value"]["port"], "${HTTP_PORT}");
+    assert_eq!(set.namespace.as_deref(), Some("default"));
     s.iii.shutdown_async().await;
 }
 

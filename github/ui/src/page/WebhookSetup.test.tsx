@@ -206,6 +206,28 @@ const updateHttpStatus = {
   ],
 } as const
 
+const installHttpStatus = {
+  enabled: false,
+  active: false,
+  ready: false,
+  restart_required: false,
+  checks: [
+    { id: 'quick_tunnel', title: 'quick-tunnel worker', state: 'ok', detail: 'Installed.' },
+    { id: 'cloudflared', title: 'cloudflared binary', state: 'ok', detail: 'Found.' },
+    {
+      id: 'http_listener',
+      title: 'http webhook listener',
+      state: 'missing',
+      detail: 'The http worker is not installed in this project.',
+      fix: {
+        kind: 'install_worker',
+        worker: 'http',
+        command: 'compose::add { worker: "http" }',
+      },
+    },
+  ],
+} as const
+
 const installQuickTunnelStatus = {
   enabled: false,
   active: false,
@@ -265,6 +287,45 @@ describe('WebhookSetup worker updates', () => {
       { timeoutMs: 60_000 },
     )
     expect(trigger.mock.calls.some(([functionId]) => functionId === 'compose::install')).toBe(false)
+
+    operation.resolve({ status: 'succeeded' })
+    await settle(550)
+    expect(
+      trigger.mock.calls.filter(([functionId]) => functionId === 'github::setup::webhooks-status'),
+    ).toHaveLength(2)
+  })
+
+  it('confirms and installs a missing http worker with compose::add', async () => {
+    const operation = deferred<{ status: string }>()
+    const trigger = vi.fn((functionId: string) => {
+      if (functionId === 'github::setup::webhooks-status') return Promise.resolve(installHttpStatus)
+      if (functionId === 'compose::add') return Promise.resolve({ changed: true })
+      if (functionId === 'compose::operation') return operation.promise
+      return Promise.reject(new Error(`Unexpected function: ${functionId}`))
+    })
+    mocks.confirm.mockResolvedValue(true)
+    const container = mountSetup(trigger as Host['iii']['trigger'])
+
+    await settle(550)
+    act(() => button(container, 'Install http').click())
+    await settle()
+
+    expect(mocks.confirm).toHaveBeenCalledWith({
+      title: 'Install the http worker?',
+      description: 'Compose will add the http worker to this project and start it.',
+      confirmLabel: 'Install http',
+    })
+    expect(button(container, 'Installing…').disabled).toBe(true)
+    expect(button(container, 'Installing…').getAttribute('aria-busy')).toBe('true')
+    expect(container.textContent).not.toContain('I have installed cloudflared')
+    expect(trigger).toHaveBeenCalledWith(
+      'compose::add',
+      expect.objectContaining({
+        workers: ['http'],
+        operation_id: expect.stringMatching(/^github-install-http-/),
+      }),
+      { timeoutMs: 60_000 },
+    )
 
     operation.resolve({ status: 'succeeded' })
     await settle(550)

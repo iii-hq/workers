@@ -275,8 +275,17 @@ export function WebhookSetup({ host }: { host: Host }) {
     [refresh],
   )
 
-  const installWorker = (worker: string) => {
-    setInstallWorkerPrompt(worker)
+  const installWorker = async (worker: string) => {
+    if (worker === 'quick-tunnel') {
+      setInstallWorkerPrompt(worker)
+      return
+    }
+    const ok = await confirm({
+      title: `Install the ${worker} worker?`,
+      description: `Compose will add the ${worker} worker to this project and start it.`,
+      confirmLabel: `Install ${worker}`,
+    })
+    if (ok) await run(`install:${worker}`, () => changeWorkerAndWait('install', worker))
   }
 
   type WorkerOperation = 'install' | 'update'
@@ -367,6 +376,7 @@ export function WebhookSetup({ host }: { host: Host }) {
             size="sm"
             variant="primary"
             disabled={busy !== null}
+            aria-busy={busy === `install:${fix.worker}`}
             onClick={() => void installWorker(fix.worker)}
           >
             {busy === `install:${fix.worker}` ? 'Installing…' : `Install ${fix.worker}`}
