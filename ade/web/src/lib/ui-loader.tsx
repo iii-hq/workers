@@ -33,6 +33,7 @@ import { ExtensionScopeProvider } from '@/lib/ui-scope'
 import {
   getExtPage,
   registerExtComposerAction,
+  registerExtComposerControl,
   registerExtConfigForm,
   registerExtOverlay,
   registerExtPage,
@@ -46,6 +47,7 @@ import {
 import { requestWorkingDirectoryChange } from '@/lib/working-directory-request'
 import type {
   ComposerActionProps,
+  ComposerControlProps,
   ConfigFormProps,
   ConsoleApi,
   Host,
@@ -331,6 +333,21 @@ function makeHost(
             render: (props: ComposerActionProps) => (
               <ScopedExtension scope={scope} path={path}>
                 <Action {...props} />
+              </ScopedExtension>
+            ),
+          }),
+        )
+      },
+      registerComposerControl(control) {
+        const Control = control.render
+        return track(
+          registerExtComposerControl({
+            ...control,
+            scope,
+            path,
+            render: (props: ComposerControlProps) => (
+              <ScopedExtension scope={scope} path={path}>
+                <Control {...props} />
               </ScopedExtension>
             ),
           }),

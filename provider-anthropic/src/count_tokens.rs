@@ -139,7 +139,7 @@ pub async fn handle(
     let mut request = http
         .post(count_tokens_url(&cfg.api_url))
         .timeout(std::time::Duration::from_secs(COUNT_TOKENS_TIMEOUT_SECS));
-    for (name, value) in build_headers(&cfg) {
+    for (name, value) in build_headers(&cfg, &body) {
         request = request.header(name, value);
     }
     let response = request

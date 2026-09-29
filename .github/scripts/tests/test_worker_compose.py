@@ -56,8 +56,8 @@ def test_rust_frontends_are_explicit_workspace_locked_builds():
         for worker in document["workers"].values()
         for frontend in worker["artifact"].get("frontends", [])
     ]
-    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 47
-    assert len(frontends) == 51
+    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 50
+    assert len(frontends) == 54
     for frontend in frontends:
         assert set(frontend) == {
             "workspace_root", "source_path", "runtime", "package_manager", "lockfile",
@@ -202,17 +202,20 @@ def test_every_rust_worker_ships_windows_or_justifies_its_absence():
             assert isinstance(exception, str) and exception.strip(), f"{slug}: silent Windows omission"
             without_windows.add(slug)
     # Audited against the Registry: every other worker published msvc binaries
-    # before the cutover, so anything joining this set is a regression.
+    # before the cutover. New Unix-only workers must declare a reviewed exception.
     assert without_windows == {
         "acp",
         "compose-ui",
         "code-runner",
         "context-manager",
         "lsp",
+        "quick-tunnel",  # New Unix-only worker; child lifecycle is not supported on Windows.
         "sandbox-code-runner",
         "ide",
-        # New worker, never published for Windows: llama.cpp from source.
+        # New workers, never published for Windows: llama.cpp from source.
         "judge-semif",
+        "judge-decider",
+        "judge-laya",
         "voice",
         "workflow",
     }

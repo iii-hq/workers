@@ -1,3 +1,10 @@
+import { imageMimeFromPath } from './file-kinds'
+
+/** An existing raster image has no text diff worth showing: its Source control row opens the file itself. */
+export function opensFileDirectly(entry: { path: string; status: string }): boolean {
+  return entry.status !== 'deleted' && imageMimeFromPath(entry.path) !== null
+}
+
 export type ScmViewMode = 'list' | 'tree'
 const STORAGE_KEY = 'iii::ide::scm-view-mode'
 

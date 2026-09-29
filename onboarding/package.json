@@ -1,6 +1,6 @@
 {
   "name": "onboarding",
-  "version": "0.1.0-experimental",
+  "version": "0.1.12",
   "private": true,
   "description": "Guided console tour: step content, progress in state, and a spotlight over the console.",
   "license": "Apache-2.0",

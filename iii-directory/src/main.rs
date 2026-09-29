@@ -225,6 +225,30 @@ async fn main() -> Result<()> {
     };
     functions::search::register(&iii, &search_deps);
     functions::search::bind_best_effort(&iii);
+    // The judge's context window (compact options, tournament) follows the
+    // hub's default provider: re-read it as soon as the hub's configuration
+    // changes instead of when the cache expires.
+    let judge = search_deps.judge.clone();
+    let follower = iii.clone();
+    tokio::spawn(async move {
+        match iii_config_client::follow(
+            &follower,
+            "judge",
+            "directory::on-judge-config-change",
+            "Internal: re-read the judge's context window when the judge hub's configuration changes.",
+        )
+        .await
+        {
+            Ok(mut hub) => {
+                while hub.changed().await.is_ok() {
+                    judge.forget_window();
+                }
+            }
+            Err(reason) => {
+                tracing::debug!(reason, "judge hub configuration not followed; the window cache expires on its own")
+            }
+        }
+    });
     if download_bundle {
         let root = function_search_model_path.clone().expect("checked above");
         let catalog = search_catalog.clone();

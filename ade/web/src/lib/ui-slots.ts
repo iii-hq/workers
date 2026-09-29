@@ -9,6 +9,7 @@
 import { useMemo, useSyncExternalStore } from 'react'
 import type {
   ComposerActionRegistration,
+  ComposerControlRegistration,
   ConfigFormLayout,
   ConfigFormProps,
   FunctionTriggerRenderer,
@@ -71,6 +72,11 @@ export interface RegisteredSessionTurnSummary
 }
 
 export interface RegisteredComposerAction extends ComposerActionRegistration {
+  scope: string
+  path: string
+}
+
+export interface RegisteredComposerControl extends ComposerControlRegistration {
   scope: string
   path: string
 }
@@ -151,6 +157,7 @@ const providerConfigFormsStore = createStore<RegisteredProviderConfigForm>()
 const sessionChipsStore = createStore<RegisteredSessionChip>()
 const sessionTurnSummariesStore = createStore<RegisteredSessionTurnSummary>()
 const composerActionsStore = createStore<RegisteredComposerAction>()
+const composerControlsStore = createStore<RegisteredComposerControl>()
 const overlaysStore = createStore<RegisteredOverlay>()
 const uiAssetsStatusStore = createValueStore<UiAssetsStatus>('unavailable')
 
@@ -254,6 +261,22 @@ export function registerExtComposerAction(
     )
   }
   return composerActionsStore.add(entry)
+}
+
+/** Duplicate control id: last registration wins in the composer footer. */
+export function registerExtComposerControl(
+  entry: RegisteredComposerControl,
+): () => void {
+  const duplicate = composerControlsStore
+    .get()
+    .find((control) => control.id === entry.id)
+  if (duplicate && duplicate.path !== entry.path) {
+    console.warn(
+      `[iii-ui] duplicate composer control id '${entry.id}' - ` +
+        `'${entry.path}' overrides '${duplicate.path}'`,
+    )
+  }
+  return composerControlsStore.add(entry)
 }
 
 /** Duplicate overlay id: last registration wins in the overlay layer. */
@@ -440,6 +463,29 @@ function dedupeComposerActions(
 /** Composer toolbar actions deduplicated by id; last registration wins. */
 export function getExtComposerActions(): readonly RegisteredComposerAction[] {
   return dedupeComposerActions(composerActionsStore.get())
+}
+
+function dedupeComposerControls(
+  controls: readonly RegisteredComposerControl[],
+): readonly RegisteredComposerControl[] {
+  const byId = new Map<string, RegisteredComposerControl>()
+  for (const control of controls) byId.set(control.id, control)
+  return [...byId.values()]
+}
+
+/** Composer footer controls deduplicated by id; last registration wins. */
+export function getExtComposerControls(): readonly RegisteredComposerControl[] {
+  return dedupeComposerControls(composerControlsStore.get())
+}
+
+/** Composer footer controls deduplicated by id; last registration wins. */
+export function useExtComposerControls(): readonly RegisteredComposerControl[] {
+  const controls = useSyncExternalStore(
+    composerControlsStore.subscribe,
+    composerControlsStore.get,
+    () => EMPTY,
+  )
+  return useMemo(() => dedupeComposerControls(controls), [controls])
 }
 
 export function useExtComposerActions(): readonly RegisteredComposerAction[] {

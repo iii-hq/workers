@@ -1,0 +1,101 @@
+{
+  "description": "Internal handler for the engine's ERROR-log trigger.",
+  "function_id": "sentinel::on-log",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "One ERROR log as the engine's `log` trigger delivers it.\n\nTyped rather than taken as a free value: the published surface is what interface capture records, and an untyped request there tells a reader nothing. Every field is optional and anything unrecognised is carried through, so a newer engine cannot break the handler.",
+    "properties": {
+      "attributes": {
+        "additionalProperties": true,
+        "default": {},
+        "type": "object"
+      },
+      "body": {
+        "default": "",
+        "type": "string"
+      },
+      "instrumentation_scope_name": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "instrumentation_scope_version": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "observed_timestamp_unix_nano": {
+        "default": 0,
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "resource": {
+        "additionalProperties": true,
+        "default": {},
+        "type": "object"
+      },
+      "service_name": {
+        "default": "",
+        "type": "string"
+      },
+      "severity_number": {
+        "default": 0,
+        "format": "int32",
+        "type": "integer"
+      },
+      "severity_text": {
+        "default": "",
+        "type": "string"
+      },
+      "span_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "timestamp_unix_nano": {
+        "default": 0,
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "trace_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "StoredLogEventV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "phantom_dropped": {
+        "description": "Ticks for this worker's own traces, dropped before the queue.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "queued": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "phantom_dropped",
+      "queued"
+    ],
+    "title": "QueuedResponseV1",
+    "type": "object"
+  }
+}

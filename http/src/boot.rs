@@ -55,12 +55,26 @@ impl BootHandle {
         self.control.lock().await.as_ref().map(|c| c.local_addr)
     }
 
-    /// Gracefully stop the running server and wait for its task to finish.
+    /// Current restricted listener address; None when disabled or shut down.
+    pub async fn current_webhook_addr(&self) -> Option<SocketAddr> {
+        let webhook = self.hot_router.webhook.as_ref()?;
+        webhook.control.lock().await.as_ref().map(|c| c.local_addr)
+    }
+
+    /// Serialize shutdown against reload, drain both listeners, and join them.
     pub async fn shutdown(self) {
-        if let Some(control) = self.control.lock().await.take() {
-            let _ = control.graceful.send(());
-            let _ = control.join.await;
-        }
+        let _guard = self.apply_lock.lock().await;
+        let normal = self.control.lock().await.take();
+        let webhook = match &self.hot_router.webhook {
+            Some(webhook) => webhook.control.lock().await.take(),
+            None => None,
+        };
+        let stop = |control| async move {
+            if let Some(control) = control {
+                server::stop_server(control).await;
+            }
+        };
+        tokio::join!(stop(normal), stop(webhook));
     }
 }
 
@@ -77,7 +91,9 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
     guard_against_builtin_http(&iii).await?;
 
     let cell = configuration::new_cell(config.normalized());
-    let apply_lock: ApplyLock = Arc::new(tokio::sync::Mutex::new(()));
+    let apply_lock: ApplyLock = Arc::new(tokio::sync::Mutex::new(
+        configuration::ReloadState::default(),
+    ));
 
     let handler = HttpTriggerHandler::new();
     let routes = handler.routes.clone();

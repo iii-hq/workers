@@ -1,5 +1,7 @@
 //! Collected data handed to scenario `verify` functions.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 use serde_json::Value;
 
@@ -217,6 +219,81 @@ impl RunEvidence {
         Ok(())
     }
 
+    /// `(request_id, what)` wherever a router request's bound prefix is not an
+    /// extension of the same session's previous request: `system_prompt`,
+    /// `system_sections`, `tools`, and every message that request carried
+    /// (minus the wire-invisible `timestamp`, and `details` unless a denied
+    /// result's, which providers serialize into the result text). Models that
+    /// bind thinking to its prefix (Opus 5.5, Fable 5.1) reject or drop on any
+    /// such edit.
+    pub fn append_only_violations(&self) -> Vec<(String, String)> {
+        let bound = |message: &Value| {
+            let mut message = message.clone();
+            if let Some(fields) = message.as_object_mut() {
+                fields.remove("timestamp");
+                let status = fields.get("details").and_then(|d| d.get("status"));
+                if status.and_then(Value::as_str) != Some("denied") {
+                    fields.remove("details");
+                }
+            }
+            message
+        };
+        let requests = self
+            .router_evidence
+            .get("calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|call| call.get("request"));
+        let mut previous: BTreeMap<&str, &Value> = BTreeMap::new();
+        let mut violations = Vec::new();
+        for request in requests {
+            let session = request["session_id"].as_str().unwrap_or_default();
+            let Some(prev) = previous.insert(session, request) else {
+                continue;
+            };
+            let id = request["request_id"].as_str().unwrap_or_default();
+            for key in ["system_prompt", "system_sections", "tools"] {
+                if prev[key] != request[key] {
+                    violations.push((id.to_string(), format!("{key} changed")));
+                }
+            }
+            let (sent, now) = (messages_of(prev), messages_of(request));
+            if let Some(i) =
+                (0..sent.len()).find(|&i| now.get(i).map(bound) != Some(bound(&sent[i])))
+            {
+                violations.push((id.to_string(), format!("messages[{i}] changed")));
+            }
+        }
+        violations
+    }
+
+    pub fn expect_append_only_requests(&self) -> anyhow::Result<()> {
+        let violations = self.append_only_violations();
+        anyhow::ensure!(
+            violations.is_empty(),
+            "bound prefix edited between requests: {violations:?}"
+        );
+        Ok(())
+    }
+
+    /// The raw router requests of every step-0 generation (`request_id` ends in
+    /// `:0`): each turn's opening call, across sessions, in arrival order.
+    pub fn step_zero_requests(&self) -> Vec<Value> {
+        self.router_evidence
+            .get("calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|call| call.get("request").cloned())
+            .filter(|request| {
+                request["request_id"]
+                    .as_str()
+                    .is_some_and(|id| id.ends_with(":0"))
+            })
+            .collect()
+    }
+
     /// Replace concrete run identities so failure text stays byte-comparable.
     pub fn scrub(&self, text: &str) -> String {
         let mut text = text.to_string();
@@ -280,6 +357,10 @@ pub fn message_text(message: &Value) -> String {
 
 fn role(message: &Value) -> Option<&str> {
     message.get("role").and_then(Value::as_str)
+}
+
+fn messages_of(request: &Value) -> &[Value] {
+    request["messages"].as_array().map_or(&[], Vec::as_slice)
 }
 
 fn replace_identity(text: &mut String, identity: &str, placeholder: &str) {
@@ -381,5 +462,43 @@ mod tests {
         assert!(!evidence.has_duplicate_messages());
         evidence.transcript.push(json!({ "entry_id": "e_1" }));
         assert!(evidence.has_duplicate_messages());
+    }
+
+    #[test]
+    fn append_only_violations_ignore_wire_invisible_fields_and_other_sessions() {
+        let request = |id: &str, session: &str, prompt: &str, messages: Value| {
+            json!({ "request": {
+                "request_id": id, "session_id": session, "system_prompt": prompt,
+                "tools": [], "messages": messages
+            } })
+        };
+        let mut evidence = base_evidence();
+        evidence.router_evidence = json!({ "calls": [
+            request("t_a:0", "s", "p", json!([{ "role": "user", "timestamp": 1 }])),
+            request("t_c:0", "child", "other", json!([])),
+            request("t_a:1", "s", "p", json!([
+                { "role": "user", "timestamp": 2 },
+                { "role": "function_result", "details": { "raw": 1 } }
+            ])),
+            request("t_a:2", "s", "p2", json!([
+                { "role": "user" },
+                { "role": "function_result", "is_error": true },
+                { "role": "function_result", "details": { "status": "denied", "reason": "a" } }
+            ])),
+            // A denied result's details reach the wire in its text.
+            request("t_a:3", "s", "p2", json!([
+                { "role": "user" },
+                { "role": "function_result", "is_error": true },
+                { "role": "function_result", "details": { "status": "denied", "reason": "b" } }
+            ])),
+        ] });
+        assert_eq!(
+            evidence.append_only_violations(),
+            [
+                ("t_a:2".to_string(), "system_prompt changed".to_string()),
+                ("t_a:2".to_string(), "messages[1] changed".to_string()),
+                ("t_a:3".to_string(), "messages[2] changed".to_string()),
+            ]
+        );
     }
 }

@@ -1,0 +1,80 @@
+[
+  {
+    "note": "the failure this exists for: a connection string inside an error message",
+    "input": "could not connect to postgres://admin:hunter2@db.internal:5432/app",
+    "expected": "could not connect to postgres://[redacted:url_credentials]@db.internal:5432/app",
+    "hits": 1
+  },
+  {
+    "note": "an upstream 401 quoting the header it sent",
+    "input": "upstream rejected Authorization: Bearer eyJhbGciOi-abc_def",
+    "expected": "upstream rejected Authorization: [redacted:bearer]",
+    "hits": 1
+  },
+  {
+    "note": "a bare JWT in a payload dump",
+    "input": "token was eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.SflKxwRJSMeKKF2QT4",
+    "expected": "token was [redacted:jwt]",
+    "hits": 1
+  },
+  {
+    "note": "provider keys by their published prefixes",
+    "input": "openai rejected sk-proj0123456789abcdef",
+    "expected": "openai rejected [redacted:api_key]",
+    "hits": 1
+  },
+  {
+    "note": "a github token",
+    "input": "clone failed for ghp_0123456789abcdefghijABCD",
+    "expected": "clone failed for [redacted:api_key]",
+    "hits": 1
+  },
+  {
+    "note": "an aws access key id",
+    "input": "signature mismatch for AKIAIOSFODNN7EXAMPLE",
+    "expected": "signature mismatch for [redacted:api_key]",
+    "hits": 1
+  },
+  {
+    "note": "a sensitive key and value in prose",
+    "input": "request body had password=hunter2",
+    "expected": "request body had [redacted:key_value]",
+    "hits": 1
+  },
+  {
+    "note": "the same pair as JSON, where the key is quoted before its colon",
+    "input": "body was {\"client_secret\": \"s3cr3t\"}",
+    "expected": "body was {[redacted:key_value]}",
+    "hits": 1
+  },
+  {
+    "note": "a private key block is taken whole, newlines included",
+    "input": "key rejected: -----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----",
+    "expected": "key rejected: [redacted:pem]",
+    "hits": 1
+  },
+  {
+    "note": "personal data is not a credential but is not ours to forward either",
+    "input": "no account for someone@example.com",
+    "expected": "no account for [redacted:email]",
+    "hits": 1
+  },
+  {
+    "note": "two secrets in one message are two rewrites",
+    "input": "tried sk-abcdefghijklmnop then ghp_0123456789abcdefghij",
+    "expected": "tried [redacted:api_key] then [redacted:api_key]",
+    "hits": 2
+  },
+  {
+    "note": "the ordinary case must cost nothing and change nothing",
+    "input": "compare-and-set rejected: expected version 41, found 42",
+    "expected": "compare-and-set rejected: expected version 41, found 42",
+    "hits": 0
+  },
+  {
+    "note": "a word that merely looks like a key keeps its value",
+    "input": "tokenizer produced 12 tokens",
+    "expected": "tokenizer produced 12 tokens",
+    "hits": 0
+  }
+]

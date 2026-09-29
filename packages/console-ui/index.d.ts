@@ -414,6 +414,34 @@ export interface ComposerActionRegistration {
   render: React.ComponentType<ComposerActionProps>
 }
 
+/**
+ * Props a composer control receives: the active session, its live turn
+ * state, and that session's metadata with a writer. The console persists
+ * `setMetadata` through its own session-metadata writer (drafts included:
+ * the keys land when the session is created), so the control never calls
+ * `session::set-meta` itself.
+ */
+export interface ComposerControlProps {
+  /** Active conversation id (a draft's id until its first send). */
+  sessionId: string
+  isStreaming: boolean
+  /** The session's stored metadata. */
+  metadata: Readonly<Record<string, unknown>>
+  /** Merge keys into the metadata; an `undefined` value removes the key. */
+  setMetadata(patch: Record<string, unknown>): void
+}
+
+/**
+ * A compact per-session setting rendered in the composer's footer, beside
+ * the model picker: a value that applies to the session from its next turn
+ * on, the way the model does. Duplicate `id`: last registration wins.
+ */
+export interface ComposerControlRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType<ComposerControlProps>
+}
+
 /** Props for a worker-owned annotation detail rendered in the transcript. */
 export interface TranscriptAnnotationProps {
   version: number
@@ -547,6 +575,8 @@ export interface Host {
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
     /** Optional on consoles that predate the composer toolbar slot. */
     registerComposerAction?(action: ComposerActionRegistration): () => void
+    /** Optional on consoles that predate the composer footer control slot. */
+    registerComposerControl?(control: ComposerControlRegistration): () => void
     registerTranscriptRenderer?(renderer: TranscriptRendererRegistration): () => void
     /** Optional on consoles that predate worker-driven conversation switching. */
     selectConversation?(sessionId: string): void

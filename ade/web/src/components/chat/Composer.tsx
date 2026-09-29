@@ -246,6 +246,11 @@ interface ComposerProps {
    * `host.chat.registerComposerAction` slot), already built by the host.
    */
   composerActions?: ReactNode
+  /**
+   * Injected per-session settings rendered beside the model picker (the
+   * `host.chat.registerComposerControl` slot), already built by the host.
+   */
+  composerControls?: ReactNode
   functionEntries?: FunctionEntry[]
   /**
    * File search under `workingDir` for the `@` / `#` menus. Absent (mock
@@ -317,6 +322,7 @@ export function Composer({
   onAttachmentsChange,
   syncedAttachments,
   composerActions,
+  composerControls,
   functionEntries,
   searchFiles,
   onOpenFileMention,
@@ -737,6 +743,7 @@ export function Composer({
             />
             <MoreHorizontal className="size-5 shrink-0" aria-hidden />
           </button>
+          {composerControls}
           <ModelPicker
             value={model}
             options={modelOptions}
@@ -783,6 +790,7 @@ export function Composer({
           </div>
 
           <div className="flex min-w-0 shrink-0 items-center gap-1.5">
+            {composerControls}
             <ModelPicker
               value={model}
               options={modelOptions}

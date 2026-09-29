@@ -28,10 +28,7 @@
 //! model wrote them (after any lossless layer-A repair).
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::Duration;
 
-use iii_sdk::protocol::TriggerRequest;
 use jsonschema::error::ValidationErrorKind;
 use jsonschema::JSONSchema;
 use schemars::JsonSchema;
@@ -42,7 +39,6 @@ use crate::config::{CallReconciliation, WorkerConfig};
 use crate::deps::Deps;
 use crate::trigger::ResultData;
 use crate::types::content::ContentBlock;
-use crate::types::message::AgentMessage;
 
 /// Validator passes; each pass can unwrap one more nesting level (a parsed
 /// object whose own fields are stringified).
@@ -52,7 +48,6 @@ const MAX_PASSES: usize = 4;
 const MAX_COERCE_VIOLATIONS: usize = 64;
 /// Longest value preview in the note shown to the model.
 const PREVIEW_CHARS: usize = 60;
-const JUDGE_FUNCTION_ID: &str = "judge::evaluate";
 /// Its results feed the contract ledger's digest, so the harness never
 /// appends to them.
 const FUNCTIONS_INFO_ID: &str = "engine::functions::info";
@@ -61,20 +56,13 @@ const JUDGE_THRESHOLD: f64 = 0.8;
 /// Budget for one reconciliation `judge::evaluate`; it runs only for calls
 /// whose arguments fail validation.
 const JUDGE_TIMEOUT_MS: u64 = 2_000;
-/// After a judge failure, skip it for this long (the directory's policy).
-const JUDGE_PAUSE_MS: i64 = 30_000;
 /// The `choice` key meaning "none of these".
 const NONE_OPTION: &str = "none";
 /// Enum values a `choice` question may list (the contract caps criteria at
 /// 255, one of which is `none`).
 const MAX_ENUM_OPTIONS: usize = 254;
-/// Longest string kept verbatim in the judge's view of the arguments.
-const MAX_JUDGE_STRING_CHARS: usize = 512;
 /// Largest evaluation sent to the judge (the directory's calibration).
 const MAX_EVALUATION_BYTES: usize = 48 * 1024;
-
-/// Epoch ms until which the judge is skipped after a failure.
-static JUDGE_PAUSED_UNTIL: AtomicI64 = AtomicI64::new(0);
 
 /// One repair applied to the arguments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -359,7 +347,13 @@ fn questions(schema: &JSONSchema, raw_schema: &Value, value: &Value) -> Vec<Ques
             }
             ValidationErrorKind::Enum { options } => {
                 // `choice` takes at most 255 options, one of which is `none`.
-                if let Some(options) = options.as_array().filter(|o| o.len() <= MAX_ENUM_OPTIONS) {
+                // A value under a secret-looking key is masked from the
+                // judge, so there is nothing to ask about it.
+                if let Some(options) = options
+                    .as_array()
+                    .filter(|o| o.len() <= MAX_ENUM_OPTIONS)
+                    .filter(|_| !path.split('/').any(crate::judge::is_secret_key))
+                {
                     enums.push(Question::Enum {
                         path,
                         value: error.instance.clone().into_owned(),
@@ -469,8 +463,9 @@ fn evaluation(
                 json!({
                     "type": "choice",
                     "instructions": format!(
-                        "The call to state.function passed {value} for `{}`, which is not one of \
+                        "The call to state.function passed {} for `{}`, which is not one of \
                          the allowed values. Which allowed value did the agent mean? {data}",
+                        crate::judge::bounded(value),
                         display_path(path)
                     ),
                     "criteria": criteria,
@@ -497,34 +492,14 @@ fn evaluation(
         "state": {
             "function": function_id,
             "description": description.unwrap_or_default(),
-            "arguments": bounded(arguments),
+            "arguments": crate::judge::bounded(arguments),
             "schema": compact,
         },
         "questions": asked,
     });
     // An oversized evaluation is the provider's rejection waiting to happen;
-    // skip the judge rather than pay the round trip and the pause.
+    // skip the judge rather than pay the round trip.
     (evaluation.to_string().len() <= MAX_EVALUATION_BYTES).then_some(evaluation)
-}
-
-/// The arguments as the judge sees them: long strings (file contents, page
-/// text) cut to a preview, so the evaluation stays small and cheap.
-fn bounded(value: &Value) -> Value {
-    match value {
-        Value::String(text) if text.chars().nth(MAX_JUDGE_STRING_CHARS).is_some() => {
-            json!(format!(
-                "{}…",
-                crate::trigger::truncate_chars(text, MAX_JUDGE_STRING_CHARS)
-            ))
-        }
-        Value::Array(values) => Value::Array(values.iter().map(bounded).collect()),
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(key, value)| (key.clone(), bounded(value)))
-                .collect(),
-        ),
-        other => other.clone(),
-    }
 }
 
 /// Apply the judge's confident answers to `arguments`. Reads the reply
@@ -650,51 +625,25 @@ async fn judge_layer(
     arguments: &Value,
     description: Option<&str>,
 ) -> Option<Reconciled> {
-    if AgentMessage::now_ms() < JUDGE_PAUSED_UNTIL.load(Ordering::Relaxed) {
-        return None;
-    }
-    // No RPC, and no question building, when the judge is not deployed:
-    // the snapshot lists it.
-    if !deps
-        .functions()
-        .await
-        .functions
-        .iter()
-        .any(|f| f.function_id == JUDGE_FUNCTION_ID)
-    {
+    // No question building when the judge is not deployed or paused.
+    if !crate::judge::available(deps).await {
         return None;
     }
     let asked = questions(compiled, schema, arguments);
     let evaluation = evaluation(function_id, description, arguments, schema, &asked)?;
-    let wait = JUDGE_TIMEOUT_MS + 1_000;
-    let call = deps.iii.trigger(TriggerRequest {
-        function_id: JUDGE_FUNCTION_ID.into(),
-        payload: json!({ "timeout_ms": JUDGE_TIMEOUT_MS, "evaluations": [evaluation] }),
-        action: None,
-        timeout_ms: Some(wait),
-    });
-    let reply = match tokio::time::timeout(Duration::from_millis(wait), call).await {
-        Ok(Ok(reply)) if reply["status"] == "ok" => reply,
-        failure => {
-            let reason = match failure {
-                Ok(Ok(reply)) => reply["code"].as_str().unwrap_or("error").to_string(),
-                Ok(Err(error)) => error.to_string(),
-                Err(_) => "timeout".to_string(),
-            };
-            // A rejected request is this code's bug, not an outage: say so
-            // and keep trying, instead of hiding it behind the pause.
-            if reason == "invalid_request" {
-                tracing::warn!(function_id, "judge rejected the reconciliation request");
-            } else {
-                tracing::debug!(function_id, %reason, "judge unavailable for call reconciliation");
-                JUDGE_PAUSED_UNTIL
-                    .store(AgentMessage::now_ms() + JUDGE_PAUSE_MS, Ordering::Relaxed);
-            }
+    let answers = match crate::judge::evaluate(deps, evaluation, JUDGE_TIMEOUT_MS).await {
+        Ok(answers) => answers,
+        // A rejected request is this code's bug, not an outage: say so.
+        Err(reason) if reason == "invalid_request" => {
+            tracing::warn!(function_id, "judge rejected the reconciliation request");
+            return None;
+        }
+        Err(reason) => {
+            tracing::debug!(function_id, %reason, "judge unavailable for call reconciliation");
             return None;
         }
     };
-    let answers = &reply["results"]["reconcile"]["answers"];
-    let judged = apply_answers(arguments, &asked, answers, JUDGE_THRESHOLD)?;
+    let judged = apply_answers(arguments, &asked, &answers, JUDGE_THRESHOLD)?;
     compiled.is_valid(&judged.arguments).then_some(judged)
 }
 
@@ -1185,9 +1134,9 @@ mod tests {
 
     #[test]
     fn bounded_cuts_long_strings_anywhere_and_keeps_the_rest() {
-        let long = "z".repeat(MAX_JUDGE_STRING_CHARS + 10);
+        let long = "z".repeat(600);
         let value = json!({ "files": [{ "path": "a", "contents": long }], "limit": 5, "ok": true });
-        let out = bounded(&value);
+        let out = crate::judge::bounded(&value);
         assert!(out["files"][0]["contents"].as_str().unwrap().ends_with('…'));
         assert_eq!(out["files"][0]["path"], "a");
         assert_eq!(out["limit"], 5);
@@ -1199,6 +1148,20 @@ mod tests {
         let options: Vec<Value> = (0..300).map(|i| json!(format!("v{i}"))).collect();
         let schema = json!({ "type": "object", "properties": { "op": { "enum": options } } });
         assert!(questions(&compile(&schema), &schema, &json!({ "op": "zzz" })).is_empty());
+    }
+
+    #[test]
+    fn a_secret_keyed_value_never_reaches_the_judge_text() {
+        let schema = json!({ "type": "object", "properties": {
+            "auth": { "enum": ["none", "bearer"] },
+            "mode": { "enum": ["fast", "safe"] },
+        }});
+        let arguments = json!({ "auth": "Bearer sk-live", "mode": { "api_key": "sk-live" } });
+        let asked = questions(&compile(&schema), &schema, &arguments);
+        // `auth` is masked, so only `mode` is asked about.
+        assert_eq!(asked.len(), 1);
+        let evaluation = evaluation("x::y", None, &arguments, &schema, &asked).unwrap();
+        assert!(!evaluation.to_string().contains("sk-live"), "{evaluation}");
     }
 
     #[test]

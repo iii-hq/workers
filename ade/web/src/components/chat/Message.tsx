@@ -8,6 +8,7 @@ import { Caret } from '@/components/ui/Caret'
 import { Chip } from '@/components/ui/Chip'
 import { Prompt } from '@/components/ui/Prompt'
 import { Card, CardBody, CardHeader } from '@/components/ui/Surface'
+import { FileMessageContext } from '@/lib/file-navigation'
 import { Markdown } from '@/lib/markdown'
 import { invocationCommand, parseSlashInvocations } from '@/lib/slash-commands'
 import { JsonHighlight } from '@/lib/syntax'
@@ -82,7 +83,17 @@ export interface SpawnTaskContext {
   appearance?: SubagentAppearance
 }
 
-export function Message({
+/** Preserve this transcript entry's identity for nested file-reference navigation. */
+export function Message(props: MessageProps) {
+  return (
+    <FileMessageContext.Provider value={props.message.id}>
+      <MessageBody {...props} />
+    </FileMessageContext.Provider>
+  )
+}
+
+/** Render a message's role-specific content within the originating entry context. */
+function MessageBody({
   message,
   onResolveApproval,
   onAlwaysAllow,

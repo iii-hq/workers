@@ -14,6 +14,10 @@ use serde_json::{json, Value};
 
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// Preserved-thinking controls: required to send `thinking.block_binding`,
+/// and makes responses carry `input_transformations` (read in sse.rs).
+pub const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
+
 pub struct BodyArgs {
     pub model: String,
     pub max_tokens: u64,
@@ -27,6 +31,9 @@ pub struct BodyArgs {
     pub thinking: Option<ThinkingConfig>,
     /// `output_config.effort` for the adaptive-thinking generation.
     pub effort: Option<&'static str>,
+    /// `thinking.block_binding.prefix_mismatch_behavior` (`None` = send neither
+    /// the field nor its beta); see `thinking::prefix_mismatch`.
+    pub prefix_mismatch: Option<&'static str>,
     pub cache_enabled: bool,
     /// TTL for the shared-prefix markers on the sectioned path (`None` = the
     /// 5-minute default); see `wire::cache::cache_ttl`.
@@ -87,6 +94,13 @@ pub fn build_body(args: &BodyArgs, warnings: &mut Vec<String>) -> Value {
     }
     if let Some(t) = &args.thinking {
         body["thinking"] = serde_json::to_value(t).expect("serializable thinking config");
+        // Opus 5.5 / Fable 5.1 bind each thinking block to the exact prefix
+        // (system, tools, earlier messages) it was produced under; an edited
+        // prefix 400s on enforced accounts. Models without the check accept
+        // the object, so it rides on every thinking request.
+        if let Some(behavior) = args.prefix_mismatch {
+            body["thinking"]["block_binding"] = json!({ "prefix_mismatch_behavior": behavior });
+        }
     }
     if let Some(effort) = args.effort {
         body["output_config"] = json!({ "effort": effort });
@@ -102,16 +116,22 @@ pub fn auth_header(auth_mode: AuthMode, credential_value: &str) -> (&'static str
     }
 }
 
-/// No beta headers: adaptive thinking interleaves natively, and incremental
-/// tool-input streaming is the GA per-tool `eager_input_streaming` flag
-/// (stamped in `wire::tools`), not the retired fine-grained-tool-streaming
-/// beta header some gateways now reject.
-pub fn build_headers(cfg: &AnthropicConfig) -> Vec<(&'static str, String)> {
-    vec![
+/// The one beta is derived from the assembled `body`: `THINKING_BINDING_BETA`
+/// exactly when it carries `thinking.block_binding` (the field without the
+/// beta is a 400), so the two never disagree. Adaptive thinking interleaves
+/// natively, and incremental tool-input streaming is the GA per-tool
+/// `eager_input_streaming` flag (stamped in `wire::tools`), not the retired
+/// fine-grained-tool-streaming beta header some gateways now reject.
+pub fn build_headers(cfg: &AnthropicConfig, body: &Value) -> Vec<(&'static str, String)> {
+    let mut headers = vec![
         auth_header(cfg.auth_mode, &cfg.credential_value),
         ("anthropic-version", ANTHROPIC_VERSION.to_string()),
         ("content-type", "application/json".to_string()),
-    ]
+    ];
+    if body.pointer("/thinking/block_binding").is_some() {
+        headers.push(("anthropic-beta", THINKING_BINDING_BETA.to_string()));
+    }
+    headers
 }
 
 #[cfg(test)]
@@ -134,6 +154,7 @@ mod tests {
             tools: vec![],
             thinking: None,
             effort: None,
+            prefix_mismatch: None,
             cache_enabled: false,
             cache_ttl: None,
         }
@@ -286,16 +307,66 @@ mod tests {
     }
 
     #[test]
+    fn block_binding_rides_inside_thinking_per_knob() {
+        for behavior in ["drop_block", "error"] {
+            let mut a = args();
+            a.thinking = Some(crate::thinking::ADAPTIVE);
+            a.prefix_mismatch = Some(behavior);
+            let body = build_body(&a, &mut Vec::new());
+            assert_eq!(body["thinking"]["type"], "adaptive");
+            assert_eq!(
+                body["thinking"]["block_binding"],
+                json!({ "prefix_mismatch_behavior": behavior })
+            );
+        }
+        // off: thinking without the field
+        let mut a = args();
+        a.thinking = Some(crate::thinking::ADAPTIVE);
+        let body = build_body(&a, &mut Vec::new());
+        assert!(body["thinking"].get("block_binding").is_none());
+        // no thinking: nowhere to put it, so no `thinking` key at all
+        let mut a = args();
+        a.prefix_mismatch = Some("drop_block");
+        assert!(build_body(&a, &mut Vec::new()).get("thinking").is_none());
+    }
+
+    fn betas<'a>(h: &'a [(&'static str, String)]) -> Vec<&'a str> {
+        h.iter()
+            .filter(|(k, _)| *k == "anthropic-beta")
+            .map(|(_, v)| v.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn binding_beta_rides_only_with_block_binding() {
+        let c = cfg(AuthMode::ApiKey);
+        let mut a = args();
+        a.thinking = Some(crate::thinking::ADAPTIVE);
+        a.prefix_mismatch = Some("drop_block");
+        let h = build_headers(&c, &build_body(&a, &mut Vec::new()));
+        assert_eq!(betas(&h), [THINKING_BINDING_BETA]);
+        // plain body, thinking with the knob off, and the count_tokens body
+        a.prefix_mismatch = None;
+        for body in [
+            build_body(&args(), &mut Vec::new()),
+            build_body(&a, &mut Vec::new()),
+            json!({}),
+        ] {
+            assert!(betas(&build_headers(&c, &body)).is_empty(), "{body}");
+        }
+    }
+
+    #[test]
     fn headers_per_auth_mode() {
-        let h = build_headers(&cfg(AuthMode::ApiKey));
+        let h = build_headers(&cfg(AuthMode::ApiKey), &json!({}));
         assert!(h.contains(&("x-api-key", "sk-test".to_string())));
         assert!(h.contains(&("anthropic-version", ANTHROPIC_VERSION.to_string())));
         // Tool-input streaming is the per-tool eager_input_streaming flag
         // (wire::tools), NOT a beta header — stale beta values get rejected
         // by some gateways.
-        assert!(!h.iter().any(|(k, _)| *k == "anthropic-beta"));
+        assert!(betas(&h).is_empty());
 
-        let h = build_headers(&cfg(AuthMode::OauthBearer));
+        let h = build_headers(&cfg(AuthMode::OauthBearer), &json!({}));
         assert!(h.contains(&("authorization", "Bearer sk-test".to_string())));
     }
 }

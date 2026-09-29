@@ -3,16 +3,14 @@ name: judge
 description: >-
   Evaluate JSON state with Noul, Choice or Score questions for ticket triage,
   classification and graded judgments through the selected judge provider
-  (TypeSafe JEV by default), list provider models, or cancel an active request
-  owned by the caller.
+  (TypeSafe JEV by default), or cancel an active request owned by the caller.
 ---
 
 # judge
 
 `judge::evaluate` evaluates supplied state with mixed Noul, Choice and Score
-questions. `judge::models::list` lists provider models using the same credentials
-and transport. `judge::cancel` signals cancellation of an identified evaluation or
-listing owned by the same caller. Each call is forwarded to `judge-<provider>`:
+questions. `judge::cancel` signals cancellation of an identified evaluation owned
+by the same caller. Each call is forwarded to `judge-<provider>`:
 the **Default provider** under Console Settings → Workers → judge (seeded from
 `JUDGE_PROVIDER`, default `typesafe`) or a top-level `provider` field selects it. Credentials and the default model live with the
 provider: for TypeSafe, configure `api_key` in the `judge-typesafe` entry under
@@ -23,7 +21,7 @@ An unregistered provider returns `code: "provider_unavailable"`.
 
 1. Read the registered contract with
    `iii trigger engine::functions::info --json '{"function_id":"judge::evaluate"}'`.
-   Use `judge::models::list` or `judge::cancel` as `function_id` for those contracts.
+   Use `judge::cancel` as `function_id` for that contract.
    For unfamiliar question/reply shapes,
    read [the mixed request and typed response examples](../reference.md#evaluate).
 2. For evaluation, supply 1–512 evaluations with unique nonblank IDs, JSON state
@@ -73,17 +71,9 @@ each answer's `type`. Choice probabilities use option IDs; Score probabilities
 and legends use zero-based index strings. Treat confidence as returned by the
 provider; it is not a caller-defined threshold or a formula to recompute.
 
-To list models, invoke `iii trigger judge::models::list --json '{}'`. This uses
-`GET /v1/models`; the default timeout is 30000 ms, with an optional smaller or
-larger `timeout_ms` within the operator ceiling, and optional `expires_at_unix_ms`.
-Both evaluation and listing accept `options` and an optional `request_id`.
-Success supplies `models` containing `name`, `description` and `release_date`,
-plus `stats`. A catalog may contain aliases without every accepted versioned ID.
-Model listing claims no inference token usage.
-
 ## Cancel an active call
 
-Start the evaluation or listing with a top-level `request_id` (≤128 printable
+Start the evaluation with a top-level `request_id` (≤128 printable
 ASCII characters, unique among the caller's active calls), then invoke
 `judge::cancel` with `{"request_id":"..."}` **from the same caller connection**:
 ownership comes from the engine's `_caller_worker_id`, and separate CLI

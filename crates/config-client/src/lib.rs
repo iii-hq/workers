@@ -314,6 +314,54 @@ where
     Ok(reload)
 }
 
+/// Follow another worker's configuration entry. Its id comes from that
+/// worker's `<worker>::configuration-id` (retried every few seconds until the
+/// worker answers, so start order does not matter); its value (`None` while
+/// the entry does not exist) is published on the returned channel and
+/// refreshed on every `configuration:updated` through `fn_id`, this worker's
+/// internal handler. `Err` when the worker answers without an id.
+pub async fn follow(
+    iii: &Arc<IIIClient>,
+    worker: &str,
+    fn_id: &'static str,
+    description: &'static str,
+) -> Result<tokio::sync::watch::Receiver<Option<Value>>, String> {
+    let identity = format!("{worker}::configuration-id");
+    let id = loop {
+        let reply = iii
+            .trigger(TriggerRequest {
+                function_id: identity.clone(),
+                payload: json!({}),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await;
+        match reply {
+            Ok(reply) => match reply.get("id").and_then(Value::as_str) {
+                Some(id) if !id.trim().is_empty() => break id.to_owned(),
+                _ => return Err(format!("{identity} answered without an id")),
+            },
+            Err(_) => tokio::time::sleep(Duration::from_secs(5)).await,
+        }
+    };
+    // One followed entry per process: its id lives as long as the binding.
+    let id: &'static str = Box::leak(id.into_boxed_str());
+    let (tx, rx) = tokio::sync::watch::channel(fetch(iii, id).await.ok().flatten());
+    let tx = Arc::new(tx);
+    let engine = iii.clone();
+    let reload = on_change(iii, id, fn_id, description, move || {
+        let (engine, tx) = (engine.clone(), tx.clone());
+        async move {
+            if let Ok(value) = fetch(&engine, id).await {
+                tx.send_replace(value);
+            }
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    reload.run().await;
+    Ok(rx)
+}
+
 #[cfg(test)]
 mod tests {
     include!(concat!(

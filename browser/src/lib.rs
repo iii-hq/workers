@@ -7,6 +7,7 @@ pub mod config;
 pub mod configuration;
 pub mod events;
 pub mod functions;
+pub mod judge;
 pub mod logging;
 pub mod manifest;
 pub mod scrapling;

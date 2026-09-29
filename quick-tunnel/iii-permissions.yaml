@@ -1,0 +1,5 @@
+# First-match-wins; unmatched mutations require approval by the harness default.
+# acquire exposes an allowlisted HTTP service publicly; release can disrupt users.
+version: 1
+rules:
+  - quick-tunnel::status

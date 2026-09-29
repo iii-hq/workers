@@ -1,17 +1,22 @@
 //! Harness integration: the `pre-generate` injection hook and the
 //! `turn-completed` extraction trigger.
 //!
-//! Injection contract (harness/src/hooks/runner.rs):
-//! - rules extend the SYSTEM PROMPT (stable per session → provider prompt
-//!   cache stays warm across turns),
-//! - recalled memories arrive as ONE APPENDED MESSAGE (they vary per turn;
-//!   appending never invalidates the cached system-prompt prefix).
+//! Injection contract (harness/src/hooks/runner.rs). The prefix a model
+//! reasoned under must never change mid-session (append-only), and every
+//! appended message is persisted into the transcript and replayed:
+//! - rules extend the SYSTEM PROMPT once, rendered on the session's first
+//!   step and then sent verbatim; a later change (rules edited, a bank
+//!   switch, memory turned off) arrives as ONE appended update message,
+//!   never as a system-prompt edit,
+//! - recalled memories arrive as ONE APPENDED MESSAGE on a turn's first
+//!   step only (the persisted copy carries them through later steps).
 //!
 //! Both handlers are registered `internal` and the harness binding is
 //! `on_error: fail_open` — a memory failure must never block or fail a
 //! turn. Handlers are idempotent: redelivered steps re-run them safely.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -39,6 +44,9 @@ pub const EXTRACTION_QUEUE: &str = "memory-extraction";
 pub struct PreGenerateInput {
     #[serde(default)]
     pub session_id: String,
+    /// Step within the turn; 0 is the step that opens it.
+    #[serde(default)]
+    pub step: u64,
     /// Turn metadata (`harness::send` options.metadata); `memory_bank`
     /// here overrides the session-level selection for this turn.
     #[serde(default)]
@@ -51,8 +59,9 @@ pub struct PreGenerateInput {
 pub struct GenerateInput {
     #[serde(default)]
     pub system_prompt: String,
-    /// Transcript messages as assembled so far (schema-free: shapes belong
-    /// to the router).
+    /// Transcript messages as assembled so far — the window this step
+    /// sends, persisted notices (earlier rules updates included) replayed
+    /// in place (schema-free: shapes belong to the router).
     #[serde(default)]
     pub messages: Value,
 }
@@ -116,43 +125,50 @@ pub async fn pre_generate(
     input: PreGenerateInput,
 ) -> Result<HookResponse, Error> {
     let cfg = deps.config().await;
-    if !cfg.inject_rules && !cfg.inject_memories {
-        return Ok(HookResponse::pass());
-    }
     if input.session_id.is_empty() {
         return Ok(HookResponse::pass());
     }
+    let mut mutations = Mutations::default();
+    let mut annotations = Map::new();
+    if !cfg.inject_rules && !cfg.inject_memories {
+        // Memory off is an empty section, told like any rules change: a
+        // section this session already froze stays in its system prompt.
+        apply_rules(&input, "", &mut mutations, &mut annotations);
+        return Ok(HookResponse {
+            decision: "continue".into(),
+            mutations: Some(mutations),
+            annotations: Some(annotations),
+        });
+    }
 
     // Turn metadata wins, then session metadata, then the default. A
-    // session-lookup failure injects nothing (scope-safe).
+    // session-lookup failure injects nothing new (scope-safe), but keeps
+    // the section this session's system prompt already carries.
     let bank_name = match select_turn_bank(input.metadata.as_ref()) {
         Some(b) => b,
         None => {
             match extract::resolve_bank(&deps.iii, &input.session_id, &cfg.default_bank).await {
                 Some(b) => b,
-                None => return Ok(HookResponse::pass()),
+                None => return Ok(keep_told_section(&input)),
             }
         }
     };
-    let store = deps.store().await;
-    let Ok(bank) = store.bank(&bank_name).await else {
-        // Unknown bank = nothing stored yet; extraction creates it later.
-        return Ok(HookResponse::pass());
-    };
-
-    let mut mutations = Mutations::default();
-    let mut annotations = Map::new();
+    let bank = deps.store().await.bank(&bank_name).await.ok();
     annotations.insert("memory_bank".into(), json!(bank_name));
 
-    // Always present (stable per session, so it never breaks the provider
-    // prompt cache): without this, models apologize that they "can't save
-    // to memory" when a user asks them to remember something — capture is
-    // ambient and needs no function call.
-    let generate = input.generate.as_ref();
-    let base = generate.map(|g| g.system_prompt.as_str()).unwrap_or("");
-    let mut section = ambient_header(&bank_name);
+    // The ambient header: without it, models apologize that they
+    // "can't save to memory" when a user asks them to remember something —
+    // capture is ambient and needs no function call. An unknown bank has
+    // nothing stored yet: with extraction on the header still goes in (the
+    // section does not change once extraction creates the bank); with it
+    // off nothing ever will, and the header's promise would be false.
+    let mut section = if bank.is_some() || cfg.extraction_enabled {
+        ambient_header(&bank_name)
+    } else {
+        String::new()
+    };
 
-    if cfg.inject_rules {
+    if let Some(bank) = bank.as_ref().filter(|_| cfg.inject_rules) {
         if let Ok(rules) = bank.list_rules() {
             if !rules.is_empty() {
                 let (rules_part, truncated) = build_rules_section(&rules, cfg.max_rule_chars);
@@ -169,9 +185,14 @@ pub async fn pre_generate(
             }
         }
     }
-    mutations.system_prompt = Some(format!("{base}{section}"));
+    apply_rules(&input, &section, &mut mutations, &mut annotations);
 
-    if cfg.inject_memories {
+    // Recall only on the step that opens the turn: the appended message is
+    // persisted and replayed on later steps, so re-recalling would stack copies.
+    if let Some(bank) = bank
+        .as_ref()
+        .filter(|_| cfg.inject_memories && input.step == 0)
+    {
         let query = last_user_text(input.generate.as_ref().map(|g| &g.messages));
         if !query.trim().is_empty() {
             // Fail-soft semantic signal; lexical-only when it misses.
@@ -199,11 +220,7 @@ pub async fn pre_generate(
                 memories_message(&bank_name, &memories, cfg.recall_budget_tokens)
             {
                 let count = ids.len();
-                mutations.append_messages.push(json!({
-                    "role": "user",
-                    "content": [{ "type": "text", "text": body }],
-                    "timestamp": now_ms() as i64,
-                }));
+                mutations.append_messages.push(user_text_message(body));
                 annotations.insert("memory_recalled".into(), json!(count));
                 // Ids (not texts) so chat surfaces can render "which memories
                 // fed this turn" chips and fetch details on demand.
@@ -212,14 +229,168 @@ pub async fn pre_generate(
         }
     }
 
-    if mutations.system_prompt.is_none() && mutations.append_messages.is_empty() {
-        return Ok(HookResponse::pass());
-    }
     Ok(HookResponse {
         decision: "continue".into(),
         mutations: Some(mutations),
         annotations: Some(annotations),
     })
+}
+
+/// A plain user-role text message for `append_messages`.
+fn user_text_message(text: String) -> Value {
+    json!({
+        "role": "user",
+        "content": [{ "type": "text", "text": text }],
+        "timestamp": now_ms() as i64,
+    })
+}
+
+/// Sessions tracked in [`TOLD_RULES`]; the least recently used is evicted
+/// past this.
+const TOLD_RULES_CAP: usize = 4_096;
+
+/// The memory section each session's system prompt froze on its first step.
+// ponytail: in-process only — a worker restart forgets it, so the next step
+// re-renders the CURRENT section into the system prompt (one mid-session
+// prompt edit for sessions whose rules changed); persist per session in
+// state if that matters.
+static TOLD_RULES: LazyLock<Mutex<HashMap<String, ToldRules>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct ToldRules {
+    /// The section first rendered into this session's system prompt (empty
+    /// when memory injected nothing then); sent verbatim on every later step.
+    system: String,
+    used_ms: u64,
+}
+
+/// Opens the appended rules update. Starts like the recall message
+/// (`<memory `), so recall queries and extraction skip it.
+const RULES_UPDATE_OPEN: &str = "<memory update=\"rules\">";
+
+/// Append-only rules delivery for one step: the session's frozen section
+/// into the system prompt (left untouched while that section is empty) and,
+/// when `section` is not what the model last saw, one update message.
+fn apply_rules(
+    input: &PreGenerateInput,
+    section: &str,
+    mutations: &mut Mutations,
+    annotations: &mut Map<String, Value>,
+) {
+    let generate = input.generate.as_ref();
+    let (frozen, update) = {
+        let mut told = TOLD_RULES.lock().unwrap_or_else(|e| e.into_inner());
+        tell_rules(
+            &mut told,
+            &input.session_id,
+            generate.map(|g| &g.messages),
+            section,
+            now_ms(),
+        )
+    };
+    if !frozen.is_empty() {
+        let base = generate.map(|g| g.system_prompt.as_str()).unwrap_or("");
+        mutations.system_prompt = Some(format!("{base}{frozen}"));
+    }
+    if let Some(update) = update {
+        mutations.append_messages.push(user_text_message(update));
+        annotations.insert("memory_rules_updated".into(), json!(true));
+    }
+}
+
+/// The session's frozen section (`section` itself on its first step) and
+/// the update to append when `section` differs from what the model last
+/// saw: the newest rules update in `messages` (the window this step sends),
+/// else the frozen section. Read from the transcript, not from what this
+/// process sent, so it is idempotent: an update lost on the way (fail-open
+/// timeout, a later hook's deny, a crash before it persisted) or compacted
+/// away is sent again, and one the window holds never is.
+fn tell_rules(
+    told: &mut HashMap<String, ToldRules>,
+    session_id: &str,
+    messages: Option<&Value>,
+    section: &str,
+    now_ms: u64,
+) -> (String, Option<String>) {
+    let frozen = match told.get_mut(session_id) {
+        Some(t) => {
+            t.used_ms = now_ms;
+            t.system.clone()
+        }
+        None => {
+            if told.len() >= TOLD_RULES_CAP {
+                if let Some(oldest) = told
+                    .iter()
+                    .min_by_key(|(_, t)| t.used_ms)
+                    .map(|(id, _)| id.clone())
+                {
+                    told.remove(&oldest);
+                }
+            }
+            told.insert(
+                session_id.to_string(),
+                ToldRules {
+                    system: section.to_string(),
+                    used_ms: now_ms,
+                },
+            );
+            section.to_string()
+        }
+    };
+    let update = rules_update_message(section);
+    let seen = match latest_rules_update(messages) {
+        Some(sent) => sent == update,
+        None => frozen == section,
+    };
+    (frozen, (!seen).then_some(update))
+}
+
+/// The newest rules update in `messages`, verbatim.
+fn latest_rules_update(messages: Option<&Value>) -> Option<String> {
+    messages?
+        .as_array()?
+        .iter()
+        .rev()
+        .filter(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+        .map(|m| crate::extract::content_text(m.get("content")))
+        .find(|text| text.trim_start().starts_with(RULES_UPDATE_OPEN))
+}
+
+/// The appended rules update: the whole current section, or a note that
+/// none applies (memory off, or an unknown bank with extraction off).
+fn rules_update_message(section: &str) -> String {
+    let section = if section.is_empty() {
+        "\nNo memory section applies now.\n"
+    } else {
+        section
+    };
+    format!(
+        "{RULES_UPDATE_OPEN}\nThe memory rules changed. This block replaces the memory \
+         section of the system prompt and any earlier update:{section}</memory>"
+    )
+}
+
+/// Degraded path: inject nothing new, but keep the system-prompt section
+/// the session already has so its prefix does not change. A pending rules
+/// update waits for the next step that resolves the bank.
+fn keep_told_section(input: &PreGenerateInput) -> HookResponse {
+    let told = TOLD_RULES.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(t) = told.get(&input.session_id).filter(|t| !t.system.is_empty()) else {
+        return HookResponse::pass();
+    };
+    let base = input
+        .generate
+        .as_ref()
+        .map(|g| g.system_prompt.as_str())
+        .unwrap_or("");
+    HookResponse {
+        decision: "continue".into(),
+        mutations: Some(Mutations {
+            system_prompt: Some(format!("{base}{}", t.system)),
+            append_messages: Vec::new(),
+        }),
+        annotations: None,
+    }
 }
 
 /// Ack fast; hand the extraction pass to the durable queue (retries +
@@ -286,12 +457,15 @@ pub async fn session_deleted(
 ) -> Result<AckResponse, Error> {
     if !input.session_id.is_empty() {
         extract::cursor_delete(&deps.iii, &input.session_id).await;
+        TOLD_RULES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&input.session_id);
     }
     Ok(AckResponse { ok: true })
 }
 
-/// The always-present opening of the injected section (stable per
-/// session, so it never breaks the provider prompt cache): tells the
+/// The always-present opening of the injected section: tells the
 /// model capture is ambient, so "remember X" gets an acknowledgment
 /// instead of a false "I cannot save to memory".
 pub(crate) fn ambient_header(bank_name: &str) -> String {
@@ -604,6 +778,173 @@ Formal."
         let generate = input.generate.unwrap();
         assert_eq!(generate.system_prompt, "You are helpful.");
         assert_eq!(last_user_text(Some(&generate.messages)), "hi");
+    }
+
+    /// The window a step sends: plain user text messages.
+    fn window(texts: &[&str]) -> Value {
+        Value::Array(
+            texts
+                .iter()
+                .map(|t| user_text_message(t.to_string()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn unchanged_rules_keep_the_system_prompt_and_append_nothing() {
+        let mut told = HashMap::new();
+        let section = "\n\n# Memory\n## a\nA\n";
+        let (first, _) = tell_rules(&mut told, "s1", None, section, 1);
+        let w = window(&["question"]);
+        let (system, update) = tell_rules(&mut told, "s1", Some(&w), section, 2);
+        assert_eq!(system, first);
+        assert!(update.is_none());
+    }
+
+    #[test]
+    fn added_rule_appends_one_update_until_the_window_holds_it() {
+        let mut told = HashMap::new();
+        let before = "\n\n# Memory\n## a\nA\n";
+        let after = "\n\n# Memory\n## a\nA\n\n## b\nB\n";
+        let (first, _) = tell_rules(&mut told, "s1", None, before, 1);
+
+        let w = window(&["question"]);
+        let (system, update) = tell_rules(&mut told, "s1", Some(&w), after, 2);
+        assert_eq!(system, first, "system prompt must stay append-only");
+        let update = update.expect("rule change appends an update");
+        assert!(
+            update.contains("## b\nB"),
+            "update carries the full current rules"
+        );
+        assert!(update.contains("## a\nA"));
+        // Starts like the recall message, so recall queries and extraction
+        // skip it.
+        assert!(update.starts_with("<memory "));
+        assert_eq!(
+            last_user_text(Some(&window(&["question", &update]))),
+            "question"
+        );
+
+        // Not delivered (re-assembly retry, fail-open timeout, a later
+        // hook's deny, a crash before it persisted): the window still lacks
+        // it, so it is sent again.
+        let (system, again) = tell_rules(&mut told, "s1", Some(&w), after, 3);
+        assert_eq!(system, first);
+        assert_eq!(again.as_deref(), Some(update.as_str()));
+
+        // Delivered: the persisted copy replays in the window.
+        let delivered = window(&["question", &update, "answer", "next"]);
+        let (system, none) = tell_rules(&mut told, "s1", Some(&delivered), after, 4);
+        assert_eq!(system, first);
+        assert!(none.is_none(), "an update is sent once, not every step");
+
+        // Compacted away: the window no longer carries it, so it is sent
+        // again (the system prompt still holds the old rules).
+        let compacted = window(&["summary of the earlier turns", "next"]);
+        let (_, resent) = tell_rules(&mut told, "s1", Some(&compacted), after, 5);
+        assert_eq!(resent.as_deref(), Some(update.as_str()));
+
+        // Another session starts fresh with the current rules.
+        let (other, update) = tell_rules(&mut told, "s2", None, after, 6);
+        assert_eq!(other, after);
+        assert!(update.is_none());
+    }
+
+    #[test]
+    fn rules_changing_back_send_an_update() {
+        let mut told = HashMap::new();
+        let a = "\n\n# Memory\n## a\nA\n";
+        let b = "\n\n# Memory\n## b\nB\n";
+        tell_rules(&mut told, "s1", None, a, 1);
+        let to_b = tell_rules(&mut told, "s1", None, b, 2).1.unwrap();
+        let w = window(&["q1", &to_b, "q2"]);
+        let (system, update) = tell_rules(&mut told, "s1", Some(&w), a, 3);
+        assert_eq!(system, a);
+        let to_a = update.expect("the model last saw B, so A is news again");
+        assert!(to_a.contains("## a\nA") && !to_a.contains("## b"));
+        let w = window(&["q1", &to_b, "q2", &to_a, "q3"]);
+        assert!(tell_rules(&mut told, "s1", Some(&w), a, 4).1.is_none());
+        // With no update left in the window, A is the frozen section.
+        assert!(tell_rules(&mut told, "s1", Some(&window(&["q4"])), a, 5)
+            .1
+            .is_none());
+    }
+
+    #[test]
+    fn memory_off_keeps_the_frozen_section_and_says_so_once() {
+        let mut told = HashMap::new();
+        let a = "\n\n# Memory\n## a\nA\n";
+        tell_rules(&mut told, "s1", None, a, 1);
+        let (system, off) = tell_rules(&mut told, "s1", None, "", 2);
+        assert_eq!(system, a, "turning memory off is not a system-prompt edit");
+        let off = off.expect("the model is told memory no longer applies");
+        assert!(off.contains("No memory section applies now."));
+        let w = window(&["q", &off]);
+        assert!(tell_rules(&mut told, "s1", Some(&w), "", 3).1.is_none());
+        // Back on: the rules arrive as an update, the prefix still A.
+        let (system, on) = tell_rules(&mut told, "s1", Some(&w), a, 4);
+        assert_eq!(system, a);
+        assert!(on.is_some_and(|u| u.contains("## a\nA")));
+
+        // A session that started with nothing freezes the empty section.
+        let (system, update) = tell_rules(&mut told, "s2", None, "", 5);
+        assert_eq!(system, "");
+        assert!(update.is_none());
+        let (system, update) = tell_rules(&mut told, "s2", None, a, 6);
+        assert_eq!(system, "", "a later section is appended, not rendered");
+        assert!(update.is_some_and(|u| u.contains("## a\nA")));
+    }
+
+    #[test]
+    fn an_empty_frozen_section_leaves_the_system_prompt_alone() {
+        let session = "s-empty-frozen";
+        let input: PreGenerateInput = serde_json::from_value(json!({
+            "session_id": session, "generate": { "system_prompt": "base" },
+        }))
+        .unwrap();
+        let (mut mutations, mut annotations) = (Mutations::default(), Map::new());
+        apply_rules(&input, "", &mut mutations, &mut annotations);
+        assert!(mutations.system_prompt.is_none());
+        assert!(mutations.append_messages.is_empty());
+        assert!(annotations.is_empty());
+        assert!(keep_told_section(&input).mutations.is_none());
+        TOLD_RULES.lock().unwrap().remove(session);
+    }
+
+    #[test]
+    fn degraded_step_keeps_the_frozen_section_and_appends_nothing() {
+        let session = "s-degraded-keep";
+        let (a, b) = ("\n\n# Memory\n## a\nA\n", "\n\n# Memory\n## b\nB\n");
+        {
+            let mut told = TOLD_RULES.lock().unwrap();
+            tell_rules(&mut told, session, None, a, 1);
+            tell_rules(&mut told, session, None, b, 2);
+        }
+        let input: PreGenerateInput = serde_json::from_value(json!({
+            "session_id": session, "step": 1,
+            "generate": { "system_prompt": "base" },
+        }))
+        .unwrap();
+        let kept = keep_told_section(&input).mutations.unwrap();
+        assert_eq!(
+            kept.system_prompt.as_deref(),
+            Some(format!("base{a}").as_str())
+        );
+        assert!(kept.append_messages.is_empty());
+        TOLD_RULES.lock().unwrap().remove(session);
+    }
+
+    #[test]
+    fn told_rules_evict_the_least_recently_used_session_at_the_cap() {
+        let mut told = HashMap::new();
+        for i in 0..TOLD_RULES_CAP as u64 {
+            tell_rules(&mut told, &format!("s{i}"), None, "x", i + 10);
+        }
+        tell_rules(&mut told, "s0", None, "x", 1_000_000); // refresh s0
+        tell_rules(&mut told, "new", None, "x", 1_000_001);
+        assert_eq!(told.len(), TOLD_RULES_CAP);
+        assert!(told.contains_key("s0"));
+        assert!(!told.contains_key("s1"), "least recently used goes first");
     }
 
     #[test]

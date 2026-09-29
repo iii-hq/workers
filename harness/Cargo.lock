@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "harness"
-version = "1.8.8-rc.3"
+version = "1.8.38"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -637,6 +637,7 @@ dependencies = [
  "iii-sdk",
  "iii-worker-paths",
  "jsonschema",
+ "judge-contract",
  "opentelemetry_sdk",
  "schemars",
  "serde",
@@ -1096,6 +1097,15 @@ dependencies = [
  "time",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "judge-contract"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

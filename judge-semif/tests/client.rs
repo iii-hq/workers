@@ -134,6 +134,31 @@ async fn shared_prefix_reuse_matches_fresh_scoring() {
 }
 
 #[tokio::test]
+async fn a_one_option_choice_answers_with_certainty() {
+    let client = tiny_client();
+    let one = request(
+        json!({"evaluations": [{"id": "e", "state": "s", "questions": {"q": {"type": "choice", "instructions": "Which?", "criteria": {"only": "the one field"}}}}]}),
+    );
+    let (_, results, _) = ok(client.evaluate(one).await);
+    match &results["e"].answers["q"] {
+        Answer::Choice {
+            choice,
+            probabilities,
+            confidence,
+        } => {
+            assert_eq!(choice, "only");
+            assert_eq!(probabilities.len(), 1);
+            assert!(
+                (probabilities["only"] - 1.0).abs() < 1e-9,
+                "{probabilities:?}"
+            );
+            assert_eq!(*confidence, 1.0);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn deadlines_model_names_and_oversized_prompts_fail_typed() {
     let client = tiny_client();
     assert_eq!(

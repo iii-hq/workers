@@ -31,6 +31,7 @@ pub async fn handle_addressed(
 
     let session = kv::thread_session(deps, team, channel, thread_ts).await;
     let is_new = session.is_none();
+    let session_id = session.unwrap_or_else(|| kv::new_thread_session_id(team, channel, thread_ts));
 
     // Build context from captured (untagged) messages, plus the full thread on
     // the first mention.
@@ -55,7 +56,7 @@ pub async fn handle_addressed(
         return Ok(());
     };
 
-    let system_prompt = build_system_prompt(&cfg, channel, thread_ts, session.as_deref());
+    let system_prompt = build_system_prompt(&cfg, channel, thread_ts, &session_id);
     let options = harness::SendOptions {
         system_prompt: Some(system_prompt),
         functions: Some(harness::FunctionsPolicy {
@@ -65,7 +66,7 @@ pub async fn handle_addressed(
     };
 
     let req = harness::SendRequest {
-        session_id: session.clone(),
+        session_id: Some(session_id),
         message,
         model: model.id.clone(),
         provider: model.provider.clone(),
@@ -186,12 +187,12 @@ fn build_system_prompt(
     cfg: &WorkerConfig,
     channel: &str,
     thread_ts: &str,
-    session_id: Option<&str>,
+    session_id: &str,
 ) -> String {
     let ctx = CHANNEL_CONTEXT
         .replace("{channel}", channel)
         .replace("{thread_ts}", thread_ts)
-        .replace("{session_id}", session_id.unwrap_or("(new)"));
+        .replace("{session_id}", session_id);
     match &cfg.system_prompt {
         Some(extra) if !extra.trim().is_empty() => format!("{ctx}\n\n{extra}"),
         _ => ctx,
@@ -267,6 +268,20 @@ mod tests {
         let msg = compose_message(&ctx, "do the thing");
         assert!(msg.contains("earlier note"));
         assert!(msg.contains("do the thing"));
+    }
+
+    #[test]
+    fn first_turn_prompt_already_names_the_thread_session() {
+        let cfg = WorkerConfig::default();
+        let id = kv::new_thread_session_id(Some("T1"), "C1", "1712345678.000100");
+        assert_eq!(id, "slack-T1-C1-1712345678.000100");
+        assert_ne!(
+            id,
+            kv::new_thread_session_id(Some("T2"), "C1", "1712345678.000100")
+        );
+        let first = build_system_prompt(&cfg, "C1", "1712345678.000100", &id);
+        assert!(first.contains(&format!("session_id: {id}")));
+        assert!(!first.contains("(new)"));
     }
 
     #[test]

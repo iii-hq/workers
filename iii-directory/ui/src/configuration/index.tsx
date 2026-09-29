@@ -273,7 +273,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
             field="function_search_judge_timeout_ms"
             label="Judge timeout (ms)"
             placeholder="3000"
-            hint="1–30000 ms for all judge requests in one search, excluding Hybrid fallback and registry requests. A judge that is not running or fails tries Hybrid, then Lexical if unavailable; a valid empty result stays empty. Credentials and the model live in the judge-typesafe worker settings."
+            hint="1–30000 ms for all judge requests in one search, excluding Hybrid fallback and registry requests. A search that misses it, or a judge that is not running or fails, falls back to Hybrid (Lexical without the model); a valid empty result stays empty. Local judges take longer: with laya or SemIf as the judge's provider, about 6000 ms keeps the slowest searches judged. The provider is chosen in the judge worker settings; its model and credentials live in the provider's worker (judge-typesafe, judge-semif, judge-laya)."
             min={1}
             max={30000}
             step={1}
@@ -314,7 +314,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
             field="function_search_judge_choice_min_probability"
             label="Choice minimum probability"
             placeholder="0.1"
-            hint="With one choice per capability, the best function is always kept and every other one needs this probability. Measured: 0.05–0.1 kept a correct function in every test search with both JEV and SemIf."
+            hint="With one choice per capability (and in a tournament's final round), the best function is always kept and every other one needs this probability. Measured: 0.05–0.1 kept a correct function in every test search with both JEV and SemIf."
             max={1}
             step="any"
             inputMode="decimal"
@@ -610,7 +610,7 @@ function JudgeQuestionField({
 }) {
   const field = 'function_search_judge_question'
   const hint =
-    'How the judge is asked about each capability\'s shortlist. One choice per capability sends 16× fewer questions and lets functions compete; local judges (SemIf, laya) need it to fit the timeout.'
+    'How the judge is asked about each capability. Choice asks one question over the 16-function Hybrid shortlist and lets the functions compete (16× fewer questions than yes/no). A judge that advertises a context window under 4096 tokens (laya) is handled automatically under Choice: it plays a tournament over the whole catalog, with compact options (function id and the first eight words of its description), because the shortlist\'s near-duplicates confuse it. SemIf and hosted judges (JEV) keep the shortlist. Tournament skips the shortlist for any judge: compact rounds over the whole catalog (groups of 128 with three survivors each; 16 with one winner each for small-window judges; never more than the judge’s advertised option limit), then a final Choice over the survivors with their full descriptions; it needs no local semantic model.'
   const presentation = fieldPresentation(field, hint, errors)
   return (
     <SettingsRow

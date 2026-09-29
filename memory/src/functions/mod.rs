@@ -79,9 +79,10 @@ pub const TAGS_DESC: &str =
 pub const PREVIEW_ID: &str = "memory::preview";
 pub const PREVIEW_DESC: &str =
     "Preview the memory injection for a hypothetical chat message: the exact system-prompt \
-     memory section (rules, budgets, truncation markers), the memories the turn would be \
-     handed (post ambient floor and token budget), and the appended message verbatim. Runs \
-     the pre-generate hook's own code.";
+     memory section a new session gets (rules, budgets, truncation markers; running sessions \
+     receive changes as an appended update), the memories the turn would be handed (post \
+     ambient floor and token budget), and the appended message verbatim. Runs the \
+     pre-generate hook's own code.";
 
 pub const RECALL_ID: &str = "memory::recall";
 pub const RECALL_DESC: &str =

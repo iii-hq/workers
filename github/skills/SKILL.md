@@ -6,6 +6,52 @@ description: >-
   plus github::exec / github::api escape hatches for everything else.
 ---
 
+# PR webhook monitoring (opt-in)
+
+For durable PR monitoring, use `github::pr::event`, NOT `github::called`.
+First arm the trigger with a caller-chosen `watch_id`, then call
+`github::pr::watch` with that same ID, `pr_url` OR `repo` + `number`, optional
+`events: [ci,comments,reviews,pr]`, `stop_on: merged|closed` (default merged),
+and mandatory future RFC3339 `expires_at`. Read `github::pr::watch-status`
+once after watch to close the initial race. Never interval-poll PRs.
+
+Inspect `status` and `health.last_error`: `preparing` is not active ingress;
+`cleanup_pending` is not successful cleanup. `unwatch` and manual `recover`
+are mutations requiring approval. Internal `github::webhooks::*` functions
+must not be called by an agent. Event callbacks must dedupe `event_id`;
+namespace and metadata are preserved, errors propagate to the durable queue.
+A single passing check is NOT aggregate CI success. Closed without merge
+remains watched until expiry when stop_on is merged.
+
+Operator setup requires persistent SQLite, queue builtin file_based (current
+Redis adapter is NOT durable), HTTP dedicated public listener, Quick Tunnel,
+cron, and gh auth with Webhooks write plus repository reads. Default enabled
+is false. See [the webhook guide](../../docs/architecture/github-webhooks.md). Quick Tunnels are not zero-loss; recovery lists
+failed deliveries and requests bounded redelivery, reconciling current state.
+Do not enable merely because a public repository can be read.
+
+## Guided webhook setup
+
+`quick-tunnel` is NOT a dependency of this worker: it is only needed for PR
+webhooks. Call `github::setup::webhooks-status` (read-only) for the checklist,
+in order:
+
+1. `quick_tunnel` — the quick-tunnel worker is installed (fix: `install_worker`,
+   `compose::add { worker: "quick-tunnel" }`; ask the user first).
+2. `cloudflared` — quick-tunnel found the cloudflared binary (fix: `open_url`,
+   Cloudflare's install page). Nothing downloads cloudflared; the user installs it.
+3. `http_listener` — the http worker's restricted webhook listener is on (fix:
+   `enable_http_listener`, `github::setup::enable-http-listener`, default port 3112).
+
+Each check is `ok`, `missing`, `blocked` (waits for an earlier one) or
+`unknown` (older worker version or transient error; never blocking).
+`github::setup::enable-webhooks { enabled: true }` is refused until every check
+is `ok` and reports `restart_required`: webhook storage opens at startup, so
+the github worker must restart. `github::pr::watch` refuses definite blockers
+with the same fix list. The console's GitHub page → Webhooks runs these steps
+with buttons; both enable functions keep needs_approval for agents.
+
+
 # github
 
 The github worker wraps the GitHub CLI (`gh`). Thirty typed functions cover
@@ -59,3 +105,43 @@ every repo-scoped call takes an explicit `repo: "owner/name"`.
   (`stdout`, `stderr`, `exit_code`, `timed_out`, truncation flags).
 - `github::api` — `{ path, method?, fields?, body?, jq?, paginate?,
   timeout_ms? }` → parsed JSON.
+
+## Actionable PR notifications (`agent_actionable`)
+
+The default `webhooks.notifications.profile` in `config.yaml` delivers only what
+needs an agent action, as one `kind: "digest"` payload per watch:
+
+- `ci.failed` items: `failure`, `timed_out`, `startup_failure`, `action_required`
+  on the current head. A failed workflow is dropped when its failed job is
+  already reported. Failures of a superseded head are dropped at delivery.
+- New comments and reviews (created/submitted, approved, changes requested,
+  unresolved threads), excluding edits, deletions, the agent's own login
+  (`ignore_self`, discovered via `GET /user`) and known bot noise.
+- `merged` / closed lifecycle, delivered immediately with anything pending.
+
+Never delivered: CI success or progress, cancelled/skipped/neutral runs, pushes,
+labels, assignments. The agent checks current CI with `github::pr::checks` when it
+acts. Every item carries `event_id`; fetch the full event with
+`github::pr::event-detail`.
+
+Timing: a digest is sent after `quiet_ms` (15s) without new items, and never
+later than `max_wait_ms` (2min) after its first item. `max_items` (30) bounds the
+payload; extra items are counted in `omitted_items`.
+
+## Watch lifetime follows its listeners
+
+A watch is kept alive by the `github::pr::event` bindings that listen to it
+(same `watch_id`, or a repo/number filter that matches it).
+
+- When the last listening binding goes away (its chat was deleted, or it
+  unregistered), the watch is marked orphaned. If no binding listens again
+  within `webhooks.orphan_grace_minutes` (default 60), maintenance stops it,
+  releases its quick-tunnel lease and deletes the repository hook once no live
+  watch remains there; the tunnel stops with its last lease. One-shot wakes are
+  unregistered right after they fire, so re-arm before the grace period ends.
+- Bindings removed while the worker was offline are reconciled against the
+  engine at most every five minutes.
+- Calling `github::pr::watch` again with the same `watch_id` and spec resumes a
+  stopped watch; completed (merged/closed) and expired watches stay terminal.
+- `expires_at` must be within `webhooks.max_watch_days` (1..=30, default 30):
+  a watch holds a quick-tunnel lease, and leases last at most 30 days.

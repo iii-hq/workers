@@ -18,6 +18,8 @@ use tokio::sync::mpsc;
 
 pub struct UpstreamArgs {
     pub api_url: String,
+    /// Router conversation identity; only correlates the log lines below.
+    pub session_id: Option<String>,
     pub model: String,
     pub body: Value,
     pub headers: Vec<(&'static str, String)>,
@@ -51,11 +53,26 @@ pub fn spawn_upstream(
 async fn drain_blocks(
     text: &mut String,
     state: &mut PartialState,
+    session_id: Option<&str>,
     model: &str,
     tx: &mpsc::Sender<AssistantMessageEvent>,
 ) -> bool {
     drain_sse_blocks(text, tx, &mut |block: &str| {
-        handle_sse_event(block, state, model)
+        let events = handle_sse_event(block, state, model);
+        // The per-session counter for binding breaks: warnings never reach
+        // the session JSONL, so the worker log is the record (grep the
+        // reason, e.g. `prefix_binding_mismatch`). Logged as the array
+        // arrives, so aborted and errored responses count too.
+        if std::mem::take(&mut state.transformations_unlogged) {
+            let entries = Value::Array(state.input_transformations.clone());
+            tracing::warn!(
+                session_id = %session_id.unwrap_or("-"),
+                model = %model,
+                %entries,
+                "anthropic dropped replayed thinking blocks"
+            );
+        }
+        events
     })
     .await
 }
@@ -98,6 +115,7 @@ async fn run_upstream(
         return;
     }
 
+    let sid = args.session_id.as_deref();
     let mut state = PartialState::new(args.warnings);
     if tx
         .send(AssistantMessageEvent::Start {
@@ -128,7 +146,7 @@ async fn run_upstream(
             }
         };
         append_utf8_chunk(&mut byte_buf, &mut text, &chunk);
-        if drain_blocks(&mut text, &mut state, &args.model, &tx).await {
+        if drain_blocks(&mut text, &mut state, sid, &args.model, &tx).await {
             return;
         }
     }
@@ -146,7 +164,7 @@ async fn run_upstream(
         TailFlush::Clean
     } else {
         let remainder = std::mem::take(&mut text);
-        if drain_blocks(&mut (remainder + "\n\n"), &mut state, &args.model, &tx).await {
+        if drain_blocks(&mut (remainder + "\n\n"), &mut state, sid, &args.model, &tx).await {
             return;
         }
         TailFlush::Clean
@@ -188,6 +206,7 @@ mod tests {
     fn args(api_url: String) -> UpstreamArgs {
         UpstreamArgs {
             api_url,
+            session_id: None,
             model: "claude-test".into(),
             body: serde_json::json!({ "stream": true }),
             headers: vec![("x-api-key", "sk-test".into())],
@@ -405,5 +424,75 @@ mod tests {
             }
             other => panic!("want done, got {other:?}"),
         }
+    }
+
+    /// A start carrying drop A, a delta re-sending A, a delta replacing it
+    /// with B, then the body closes without `message_stop`.
+    const DROPPED_THEN_CUT: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\nevent: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3},\"input_transformations\":[{\"type\":\"thinking_dropped\",\"path\":\"messages.1.content.0\",\"reason\":\"prefix_binding_mismatch\"}]}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{},\"input_transformations\":[{\"type\":\"thinking_dropped\",\"path\":\"messages.1.content.0\",\"reason\":\"prefix_binding_mismatch\"}]}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{},\"input_transformations\":[{\"type\":\"thinking_dropped\",\"path\":\"messages.3.content.0\",\"reason\":\"model_binding_mismatch\"}]}\n\n";
+
+    /// `io::Write` into a shared buffer, to read the worker log back.
+    #[derive(Clone, Default)]
+    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    // current_thread: the thread-local subscriber must see the spawned task.
+    async fn log_of(response: &'static str, sid: &str) -> String {
+        let buf = LogBuf::default();
+        let writer = buf.clone();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(move || writer.clone())
+                .with_ansi(false)
+                .finish(),
+        );
+        let mut a = args(stub(response).await);
+        a.session_id = Some(sid.into());
+        let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
+        assert!(matches!(
+            events.last(),
+            Some(AssistantMessageEvent::Error { .. })
+        ));
+        let log = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        log // edition 2021: the lock guard temp must drop before `buf`
+    }
+
+    #[tokio::test]
+    async fn dropped_thinking_logs_per_new_array_even_on_a_cut_stream() {
+        let log = log_of(DROPPED_THEN_CUT, "sess-1").await;
+        let lines: Vec<&str> = log
+            .lines()
+            .filter(|l| l.contains("anthropic dropped replayed thinking blocks"))
+            .collect();
+        // the re-sent A logs nothing; B, a different array, logs again
+        assert_eq!(lines.len(), 2, "{log}");
+        for line in &lines {
+            assert!(line.contains("session_id=sess-1"), "{line}");
+            assert!(line.contains("model=claude-test"), "{line}");
+        }
+        assert!(lines[0].contains("prefix_binding_mismatch"), "{log}");
+        assert!(lines[1].contains("model_binding_mismatch"), "{log}");
+    }
+
+    const DROPPED_THEN_ERROR: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\nevent: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3},\"input_transformations\":[{\"type\":\"thinking_dropped\",\"path\":\"messages.1.content.0\",\"reason\":\"prefix_binding_mismatch\"}]}}\n\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"boom\"}}\n\n";
+
+    /// A response cut by a mid-stream `error` frame still logs its drops:
+    /// the log fires when the array arrives, not at the normal stream end.
+    #[tokio::test]
+    async fn dropped_thinking_logs_before_a_mid_stream_error() {
+        let log = log_of(DROPPED_THEN_ERROR, "sess-2").await;
+        let lines = log
+            .lines()
+            .filter(|l| l.contains("prefix_binding_mismatch"))
+            .count();
+        assert_eq!(lines, 1, "{log}");
     }
 }

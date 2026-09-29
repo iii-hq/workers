@@ -1,6 +1,7 @@
 //! Typed judge messages shared by the `judge` hub and every `judge-<provider>`
 //! worker; no SDK, credentials, transport or retrieval policy.
 mod answers;
+pub mod confidence;
 mod encoding;
 mod options;
 mod questions;
@@ -28,6 +29,23 @@ pub fn provider_function_id(provider: &str, public_id: &str) -> String {
         public_id.trim_start_matches("judge::")
     )
 }
+/// OTel baggage key carrying the calling session's judge provider, stamped by
+/// the harness on every turn. Callers inside that turn send it as the
+/// request's `provider`; the hub falls back to it when a request names none.
+/// Caller-supplied and unauthenticated: a routing preference, never an
+/// access decision.
+pub const PROVIDER_BAGGAGE_KEY: &str = "iii.judge.provider";
+
+/// `judge-<provider>` suffixes are worker names: lowercase letters, digits and
+/// hyphens, at most 64 bytes.
+pub fn is_valid_provider(provider: &str) -> bool {
+    !provider.is_empty()
+        && provider.len() <= 64
+        && provider
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
 pub const MAX_EVALUATIONS: usize = 512;
 /// Provider-side `request_id` bound. Public ids are at most 128 bytes; the hub
 /// forwards them as `<caller length>:<caller>/<request_id>`, and rejects the
@@ -149,6 +167,15 @@ pub struct ModelCard {
     pub name: String,
     pub description: String,
     pub release_date: String,
+    /// Tokens one evaluation row can hold (question, options and state), when
+    /// the provider has a fixed window. Callers size their states from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    /// Most options one Choice question (or levels one Score) can offer,
+    /// when the provider has a fixed limit below the contract's 255. Callers
+    /// size their option groups from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_options: Option<u32>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
@@ -180,7 +207,8 @@ pub enum ErrorCode {
     Http,
     Transport,
     InvalidResponse,
-    /// The selected `judge-<provider>` worker is not registered on the engine.
+    /// The selected `judge-<provider>` worker is not registered on the engine,
+    /// or (a local provider) its model failed to load.
     ProviderUnavailable,
 }
 

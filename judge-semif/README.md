@@ -32,14 +32,21 @@ chosen device is logged at start as `selected inference device`.
 iii trigger compose::add worker=judge-semif
 ```
 
-On the first start the worker downloads the pinned GGUF (`qwen3.5-4b`:
-`bartowski/Qwen_Qwen3.5-4B-GGUF` Q4_K_M, 3.0 GB) into the hf-hub cache
-(`$HF_HOME`, default `~/.cache/huggingface`). Its functions register only once
-the model answers; until then the hub reports `provider_unavailable`.
+The functions register at start; the model loads on demand. While SemIf is
+the judge hub's **default provider** (`provider: semif` under **Settings →
+Workers → judge**) it loads at once and stays loaded. Otherwise the first call
+that names `"provider": "semif"` (or comes from a session that picked it)
+loads it, and it is released (VRAM included) after 10 minutes without calls.
+A call that cannot wait for the load answers `deadline` while the load goes on
+for the next one. The first load downloads the pinned GGUF
+(`qwen3.5-4b`: `bartowski/Qwen_Qwen3.5-4B-GGUF` Q4_K_M, 3.0 GB) into the
+hf-hub cache (`$HF_HOME`, default `~/.cache/huggingface`). To keep it loaded
+while another provider is the default, turn on **Keep every local provider
+loaded** (`preload_all`) in the judge settings. A hub build that does not
+expose `judge::configuration-id` keeps the model loaded from the start.
 Air-gapped installs set `III_SEMIF_GGUF` to a local GGUF file.
 
-Route the hub to it per call with `"provider": "semif"`, or make it the default
-under **Settings → Workers → judge**:
+Make it the hub's default, then call the hub:
 
 ```bash
 iii trigger judge::evaluate --timeout-ms 65000 --json '{
@@ -71,8 +78,11 @@ probabilities match SemIf's own llama.cpp backend to four decimals.
 | `choice` | one per criterion, `key: description` | argmax, probabilities, confidence |
 | `score` | `level i: <level>` | Σ i·p_i, probabilities, confidence, legend |
 
-`confidence` is 1 − normalized entropy of the option distribution; SemIf's
-probabilities are conditional on the offered options and uncalibrated. At most
+`confidence` is TypeSafe's (`judge_contract::confidence`, shared by the local
+providers): `(n·p_max − 1) / (n − 1)` for a choice, 1 − the expected distance
+from the likeliest level over the levels' mean distance from the middle for a
+score. SemIf's probabilities are conditional on the offered options and
+uncalibrated. At most
 16 options per question. A prompt longer than `context_tokens` answers
 `payload_too_large`: SemIf never truncates evidence.
 
@@ -119,7 +129,7 @@ scoring, as SemIf documents for its own fast paths.
 
 ## Building
 
-llama.cpp is compiled from source: `cmake`, a C++ compiler and `libclang`
+llama.cpp is compiled from source through `crates/llama-runtime`: `cmake`, a C++ compiler and `libclang`
 (for bindgen) are required; if libclang lives outside the default search path
 set `LIBCLANG_PATH` (and `BINDGEN_EXTRA_CLANG_ARGS=-I<clang>/include` when its
 builtin headers are not found). Linux x86_64 builds also need the Vulkan

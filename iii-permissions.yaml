@@ -129,6 +129,12 @@ rules:
   - '!database::on-config-change'
   - '!judge::on-config-change'
   - '!judge-semif::on-config-change'
+  - '!judge-semif::on-judge-config-change'
+  - '!judge-decider::on-config-change'
+  - '!judge-decider::on-judge-config-change'
+  - '!judge-laya::on-config-change'
+  - '!judge-laya::on-judge-config-change'
+  - '!directory::on-judge-config-change'
   - '!judge-typesafe::on-config-change'
   - '!session::on-config-change'
   # (coder::on-config-change retired: the code surface folded into the shell
@@ -175,6 +181,20 @@ rules:
   - '!security-scan::execute'
   - '!security-scan::on-turn-completed'
   - '!security-scan::on-schedule'
+  # sentinel: trigger and queue targets only. The console drives grouping
+  # through the read surface; the investigation session gets the four
+  # functions below and nothing else.
+  - '!sentinel::ingest'
+  - '!sentinel::on-trace-activity'
+  - '!sentinel::on-log'
+  - '!sentinel::on-turn-completed'
+  - '!sentinel::on-schedule'
+  - '!sentinel::on-config-change'
+  - '!sentinel::ui-content'
+  - 'sentinel::evidence::get'
+  - 'sentinel::trace::get'
+  - 'sentinel::logs::list'
+  - 'sentinel::diagnosis::record'
   # The shaping hop for a trigger bound to an ordinary function: the engine
   # fires it, agents never call it. Agents name their real target in
   # engine::register_trigger's `function_id`, which is checked against the
@@ -238,6 +258,11 @@ rules:
   # github: internal hot-reload hook — invoked only by the engine's
   # configuration:updated trigger dispatch, never agent-callable.
   - '!github::on-config-change'
+  # Webhook ingress, queue consumers, and tunnel lifecycle callbacks are
+  # trusted engine plumbing, never direct agent calls. Starting/stopping a
+  # watch or acquiring/releasing a public tunnel stays approval-gated.
+  - '!github::webhooks::*'
+  - '!quick-tunnel::on-config-change'
   # openwiki: internal trigger targets. cron::refresh-due is the per-wiki cron
   # target; on-turn-started/completed are harness trigger-bridge targets whose
   # direct call could forge generation progress. The hot-reload hook follows
@@ -441,6 +466,11 @@ rules:
   - github::pr::view
   - github::pr::diff
   - github::pr::checks
+  - github::pr::watch-status
+  # Read-only webhook prerequisite checklist; enable-http-listener and
+  # enable-webhooks change configuration and keep needs_approval.
+  - github::setup::webhooks-status
+  - quick-tunnel::status
   - github::issue::list
   - github::issue::view
   - github::repo::view

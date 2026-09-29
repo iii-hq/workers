@@ -1,0 +1,56 @@
+iii: v1
+name: sentinel
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: sentinel
+tags: [errors, monitoring, observability, incidents, diagnostics]
+description: "Error monitor for the iii engine: groups failures from trace and log telemetry by deterministic fingerprint, freezes the evidence before the in-memory store discards it, and opens assisted harness investigations that record a structured diagnosis."
+
+config:
+  enabled: true
+  sources:
+    trace:
+      enabled: true
+    log:
+      enabled: true
+      join_window_ms: 2000
+  ingest:
+    breaker_failures: 5
+    breaker_cooldown_ms: 30000
+  fingerprint:
+    identity_numbers: [HTTP, status, code, errno, exit, signal, port]
+  ignore_services: []
+  attribute_allowlist: []
+  redaction:
+    patterns: []
+  evidence:
+    max_bytes: 1048576
+    settle_delay_ms: 5000
+    message_max_bytes: 65536
+  retention:
+    evidence_per_group: 5
+    occurrences_per_group: 1000
+    buckets_days: 30
+    resolved_ttl_days: 90
+    cron: "0 0 3 * * *"
+  investigation:
+    model: ""
+  projects: []
+  service_aliases: {}
+  database: primary
+  workers_ttl_ms: 60000
+  archive:
+    bucket: ""
+
+dependencies:
+  database: "latest"
+  queue: "latest"
+  configuration: "latest"
+  cron: "latest"
+  harness: "latest"
+  session-manager: "latest"
+  ide: "latest"
+  iii-observability: "latest"
+  iii-stream: "latest"

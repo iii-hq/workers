@@ -170,7 +170,10 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                     // The hub's own surface is what callers discover; plumbing is internal.
                     let internal = matches!(
                         id,
-                        "judge::on-config-change" | "judge::ui-content" | "judge::configuration-id"
+                        "judge::on-config-change"
+                            | "judge::ui-content"
+                            | "judge::configuration-id"
+                            | "judge::models::list"
                     );
                     assert_eq!(
                         value["metadata"]["internal"].as_bool().unwrap_or(false),

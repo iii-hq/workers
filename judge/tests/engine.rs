@@ -65,7 +65,7 @@ async fn hub_forwards_to_the_provider_and_scopes_cancellation_to_the_original_ca
     Mock::given(method("GET"))
         .and(path("/v1/models"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "models":[{"name":"jev-latest","description":"Latest","release_date":"2026-09-01"}]
+            "models":[{"name":"jev-latest","description":"Latest","release_date":"2026-09-01","context_window":4096}]
         })))
         .expect(1)
         .mount(&server)
@@ -88,6 +88,8 @@ async fn hub_forwards_to_the_provider_and_scopes_cancellation_to_the_original_ca
         .await
         .unwrap();
     assert_eq!(listed["models"][0]["name"], "jev-latest", "{listed}");
+    // Optional card fields (laya publishes its window) survive the hub hop.
+    assert_eq!(listed["models"][0]["context_window"], 4096, "{listed}");
     let mut elsewhere = evaluation.clone();
     elsewhere["provider"] = json!("missing");
     let unavailable = invoke(&owner, FUNCTION_ID, elsewhere).await.unwrap();

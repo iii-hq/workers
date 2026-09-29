@@ -99,6 +99,13 @@ struct ListSessionsResponse {
     next_cursor: Option<String>,
 }
 
+/// See [`SessionClient::turn_hints`].
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TurnHints {
+    pub title: Option<String>,
+    pub judge_provider: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct SessionClient {
     iii: Arc<IIIClient>,
@@ -122,16 +129,31 @@ impl SessionClient {
             .map_err(|e| HarnessError::Dependency(format!("{function_id}: {e}")))
     }
 
-    /// Best-effort session title from `session::get` — `None` when the
-    /// session is unknown, untitled, or the call fails. Trace display
-    /// metadata must never fail or delay a step, so errors are swallowed.
-    pub async fn title(&self, session_id: &str) -> Option<String> {
-        let resp = self
+    /// Best-effort per-turn hints from one `session::get`: the title (trace
+    /// display) and the session's judge provider (`metadata.judge_provider`,
+    /// set from the console's composer). Each is `None` when unset, invalid,
+    /// or the call fails: hints must never fail or delay a step.
+    pub async fn turn_hints(&self, session_id: &str) -> TurnHints {
+        let Ok(resp) = self
             .call("session::get", json!({ "session_id": session_id }))
             .await
-            .ok()?;
-        let title = resp.get("meta")?.get("title")?.as_str()?.trim().to_string();
-        (!title.is_empty()).then_some(title)
+        else {
+            return TurnHints::default();
+        };
+        let meta = &resp["meta"];
+        let title = meta["title"]
+            .as_str()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map(str::to_string);
+        let judge_provider = meta["metadata"]["judge_provider"]
+            .as_str()
+            .filter(|provider| judge_contract::is_valid_provider(provider))
+            .map(str::to_string);
+        TurnHints {
+            title,
+            judge_provider,
+        }
     }
 
     /// Whether a durable session metadata record exists.

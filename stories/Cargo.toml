@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-stories"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Stories worker for iii — builds CSF story files from any React project with the project's own Vite, indexes components and their states per git line, compares lines, renders deterministic screenshots and DOM/React trees through the browser worker, and injects an explorer and compare page into the console"
 license = "Apache-2.0"

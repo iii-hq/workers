@@ -1,7 +1,10 @@
-//! Boot the SemIf provider: fetch the GGUF, load it, register on the bus.
+//! Boot the SemIf provider: register on the bus, then fetch and load the GGUF
+//! on first use (or at once while the judge hub selects SemIf).
 use clap::Parser;
+use iii_llama_runtime::{ModelSlot, IDLE_RELEASE};
+use iii_sdk::IIIClient;
 use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
-use judge_semif::{configuration, download, engine, register, SemifClient};
+use judge_semif::{configuration, download, engine, register, SemifClient, PROVIDER};
 use std::{path::PathBuf, sync::Arc};
 use tracing_subscriber::EnvFilter;
 
@@ -46,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
     let initial = configuration::fetch_config(&iii)
         .await
         .map_err(anyhow::Error::msg)?;
-    let model = initial.model.clone();
+    let (gguf, model) = (cli.gguf, initial.model.clone());
     let options = engine::Options {
         threads: initial.threads,
         gpu_layers: initial.gpu_layers,
@@ -54,10 +57,15 @@ async fn main() -> anyhow::Result<()> {
         parallel: initial.parallel_questions,
     };
     let config = configuration::new_cell(initial);
-    // Functions register only once the model answers: until then the hub
-    // reports provider_unavailable, which is the honest state.
-    let client = tokio::task::spawn_blocking(move || -> anyhow::Result<SemifClient> {
-        let checkpoint = match &cli.gguf {
+    #[cfg(feature = "console-ui")]
+    register::register_console_ui(&iii);
+    configuration::register_config_trigger(&iii, config.clone())?
+        .run()
+        .await;
+    // The model loads on first use, or right away while the hub selects this
+    // provider (see `serve`).
+    let slot = ModelSlot::new(move || -> anyhow::Result<SemifClient> {
+        let checkpoint = match &gguf {
             Some(path) => download::local(&model, path)?,
             None => {
                 tracing::info!(model, "fetching the SemIf GGUF from the Hugging Face Hub");
@@ -72,20 +80,48 @@ async fn main() -> anyhow::Result<()> {
         let client = SemifClient::load(&checkpoint, options)?;
         tracing::info!(device = client.device(), "selected inference device");
         Ok(client)
-    })
-    .await??;
-    register(&iii, config.clone(), client);
-    #[cfg(feature = "console-ui")]
-    register::register_console_ui(&iii);
-    configuration::register_config_trigger(&iii, config)?
-        .run()
-        .await;
-    let result = wait_for_shutdown().await;
+    });
+    register(&iii, config, slot.clone());
+    tokio::spawn(slot.clone().release_idle(IDLE_RELEASE));
+    let mut serving = tokio::spawn(serve(iii.clone(), slot));
+    let result = tokio::select! {
+        result = wait_for_shutdown() => result,
+        served = &mut serving => match served? {
+            // Pinned for good (the hub exposes no selection): serve until shutdown.
+            Ok(()) => wait_for_shutdown().await,
+            Err(error) => Err(error),
+        },
+    };
+    serving.abort();
     // shutdown_async only signals the SDK's dedicated connection thread. Join
     // it before main returns so pending telemetry can finish flushing.
     tokio::task::spawn_blocking(move || iii.shutdown()).await?;
     result
 }
+/// Keep the SemIf model loaded while the judge hub selects this provider (see
+/// `ModelSlot::follow_selection`); a hub that does not expose its
+/// configuration id pins it for good.
+async fn serve(iii: Arc<IIIClient>, slot: Arc<ModelSlot<SemifClient>>) -> anyhow::Result<()> {
+    match iii_config_client::follow(
+        &iii,
+        "judge",
+        "judge-semif::on-judge-config-change",
+        "Internal: keep the SemIf model loaded while the judge hub selects this provider.",
+    )
+    .await
+    {
+        Ok(hub) => slot.follow_selection(hub, PROVIDER).await,
+        Err(reason) => {
+            tracing::warn!(
+                reason,
+                "judge hub selection unknown; keeping the SemIf model loaded"
+            );
+            slot.pin(true);
+            Ok(())
+        }
+    }
+}
+
 #[cfg(unix)]
 async fn wait_for_shutdown() -> anyhow::Result<()> {
     use tokio::signal::unix::{signal, SignalKind};

@@ -481,7 +481,7 @@ async fn prepare(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
             .and_then(|d| d.get("name"))
             .and_then(Value::as_str)
             .map(str::to_string)
-            .or(session.title(&op.snapshot.session_id).await)
+            .or(session.turn_hints(&op.snapshot.session_id).await.title)
             .unwrap_or_else(|| op.snapshot.session_id.clone());
         // Validate the whole set before claiming descendants: overlapping
         // operations fail observably rather than erase or notify twice.

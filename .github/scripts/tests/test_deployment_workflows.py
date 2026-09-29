@@ -98,14 +98,27 @@ def test_build_captures_interface_from_prepared_bytes():
 def test_descriptor_index_is_automatic_and_bound_to_the_exact_main_commit():
     text = body("deploy-descriptor-index.yml")
     workflow = yaml.safe_load(text)
-    assert workflow[True] == {"push": {"branches": ["main"]}}
-    assert "workflow_dispatch" not in text
+    # Dispatch exists for the job-token manifest sync; without inputs it can
+    # only compile the dispatched ref's head.
+    assert workflow[True] == {"push": {"branches": ["main"]}, "workflow_dispatch": None}
+    assert "inputs." not in text
     assert "APPROVED_COMPILER_DIGEST" not in text
     assert "Verify approved compiler bytes" not in text
     assert "ref: ${{ github.sha }}" in text
     assert "--source-sha '${{ github.sha }}'" in text
     assert "--compiler-commit" not in text
     assert "name: deployment-descriptor-index-${{ github.sha }}" in text
+
+
+def test_manifest_sync_pushes_the_subject_release_control_skips_and_indexes_it():
+    text = body("sync-manifest-versions.yml")
+    workflow = yaml.safe_load(text)
+    assert workflow[True] == {"release": {"types": ["published"]}, "workflow_dispatch": None}
+    assert workflow["concurrency"]["cancel-in-progress"] is False
+    # Release Control's drift (api/src/services/drift.service.ts) matches this
+    # subject exactly; without it every sync reads as undeployed source.
+    assert "--message 'chore(release): sync package manifests to published versions'" in text
+    assert "gh workflow run deploy-descriptor-index.yml --ref main" in text
 
 
 def test_release_build_validates_rust_targets_and_oci_platforms():

@@ -11,7 +11,7 @@
 //! (`agent: lead`), so the peer's opening generation and the parent's are two
 //! independent sessions on one profile, racing like INT-026.
 
-use serde_json::{json, Value};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
@@ -111,7 +111,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         run.expect_assistant_texts(["delegated to the peer"])?;
         run.expect_no_duplicate_messages()?;
 
-        let openers = step_zero_requests(&run.router_evidence);
+        let openers = run.step_zero_requests();
         anyhow::ensure!(
             openers.len() == 2,
             "expected the parent's and the peer's opening requests, got {}",
@@ -166,23 +166,6 @@ pub(super) fn scenario() -> ScenarioFixture {
         Ok(())
     })
     .build()
-}
-
-/// The raw router requests of every step-0 generation (`request_id` ends in
-/// `:0`): each session's opening call.
-fn step_zero_requests(router_evidence: &Value) -> Vec<Value> {
-    router_evidence
-        .get("calls")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|call| call.get("request").cloned())
-        .filter(|request| {
-            request["request_id"]
-                .as_str()
-                .is_some_and(|id| id.ends_with(":0"))
-        })
-        .collect()
 }
 
 #[cfg(test)]

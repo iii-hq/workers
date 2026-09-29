@@ -18,7 +18,10 @@ builds, credentials and local tests live with each provider, for example
 - [Limits and compatibility](#limits-and-compatibility)
 - [Provider compatibility notes](#provider-compatibility-notes)
 
-The public functions are `judge::evaluate`, `judge::models::list` and `judge::cancel`.
+The public functions are `judge::evaluate` and `judge::cancel`; `judge::models::list`
+is internal: agents have no use for the catalog, so `engine::functions::list`
+shows it only with `include_internal: true`, and tools such as iii-directory
+and the Console call it by id.
 Each forwards to `judge-<provider>::evaluate`, `judge-<provider>::models::list`
 and `judge-<provider>::cancel`; provider workers register exactly those ids
 (`judge_contract::provider_function_id`) as internal functions, so
@@ -31,10 +34,11 @@ describes when an agent should invoke evaluation.
 
 The hub requires `configuration` at startup (engine **`iii/v0.24.0-rc.2`** or
 later, with `configuration::ensure`). Its entry, `judge` by default or the
-worker's `III_CONFIG_NAME`, holds one field:
+worker's `III_CONFIG_NAME`, holds two fields:
 
 ```yaml
 provider: typesafe   # judge-<provider> worker used when a request omits provider
+preload_all: false   # keep every local provider's model loaded, not only the default's
 ```
 
 Edit it under **Settings → Workers → judge** in the Console; valid changes apply
@@ -45,6 +49,18 @@ seeds the entry only when nothing is stored yet; it is `typesafe` unless set, so
 with a top-level `provider` string (lowercase letters, digits and hyphens, at
 most 64 bytes). A provider that is not registered on the engine returns
 `{"status":"error","code":"provider_unavailable"}`.
+
+Local providers (`judge-decider`, `judge-semif`, `judge-laya`) always register
+their functions and load their model on demand. The default `provider` keeps its
+model loaded; any other one loads it on the first request that names it (or
+whose session picked it) and releases it (memory and VRAM included) after 10
+minutes without calls. A load takes a few seconds from the hf-hub cache, longer
+on the first download: a request that cannot wait that long answers `deadline`
+while the load goes on for the next one, and a failed load answers
+`provider_unavailable` with its `provider_error` and `retry_after_ms` (30 s).
+`preload_all: true` keeps every local provider loaded instead, so no request
+waits; each holds its memory (on a GPU, about 6 GB for decider or SemIf and
+1.5 GB for laya). Hosted providers such as `judge-typesafe` are unaffected.
 
 Credentials, default model and execution limits belong to the provider worker.
 For TypeSafe, open **Settings → Workers → judge-typesafe** in the Console or read
@@ -198,7 +214,8 @@ Inspect `status` before reading results:
   Codes are `invalid_request`, `missing_key`, `payload_too_large`, `deadline`,
   `attempt_timeout`, `cancelled`, `http`, `transport`, `invalid_response` and
   `provider_unavailable` (the selected `judge-<provider>` worker is not
-  registered). `deadline` means the whole-call budget expired; `attempt_timeout`
+  registered, or a local provider's model failed to load). `deadline` means the
+  whole-call budget expired (a local provider may still be loading); `attempt_timeout`
   means a network attempt timed out. There are no partial `results`.
 - Any other bus invocation failure (a timed-out or disconnected hub or provider)
   is separate from this typed envelope. Handle it at the RPC boundary as a
@@ -248,7 +265,13 @@ differ from 1 by up to 0.02 to accommodate provider rounding. Duplicate answer,
 probability or legend keys, missing answers and mismatched types/IDs fail the
 whole batch. The worker returns provider scores and confidence without
 recalculating them. Choose a caller-specific decision threshold; JEV imposes
-no eligibility threshold.
+no eligibility threshold. The local providers (`judge-decider`, `judge-semif`,
+`judge-laya`) compute `confidence` from their probabilities as TypeSafe
+defines it (`judge_contract::confidence`): `(n·p_max − 1) / (n − 1)` for a
+Choice, 0 for a uniform distribution and 1 for all mass on one option; for a
+Score, 1 − the expected distance from the likeliest level over the mean
+distance of the levels from the middle of the scale. A threshold therefore
+means the same whichever provider answers.
 
 A complete, low-scoring evaluation can mean **no match**. A missing answer,
 deadline or service error cannot. Discard all partial answers when any evaluation
@@ -275,6 +298,9 @@ cost. Record the effective model and failures alongside scores when comparing ru
 
 ## List models
 
+`judge::models::list` is internal: callable by id, absent from default
+discovery.
+
 ```bash
 iii trigger judge::models::list --json '{}'
 ```
@@ -289,7 +315,11 @@ iii trigger judge::models::list --json '{"timeout_ms":5000}'
 ```
 
 Success has `status: "ok"`, a `models` array and `stats`. Each model card has
-string fields `name`, `description` and `release_date`; cards and aliases are
+string fields `name`, `description` and `release_date`, plus an optional
+`context_window` (tokens one evaluation row can hold, for providers with a
+fixed window such as `laya`) and an optional `max_options` (most options one
+Choice can offer, for providers with a fixed limit below 255, such as SemIf's
+16); cards and aliases are
 returned without filtering to locally known versions. An example reply
 (illustrative values):
 

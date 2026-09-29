@@ -1,0 +1,930 @@
+/* sentinel console page. Every selector is scoped to the host wrapper, and
+   every colour, radius and duration comes from a token — the page has to sit
+   inside the console without announcing that it came from somewhere else. */
+
+[data-iii-ui="sentinel"] .sentinel-ui-list,
+[data-iii-ui="sentinel"] .sentinel-ui-detail {
+  display: flex;
+  flex-direction: column;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-list {
+  gap: 14px;
+  padding: 16px 24px 40px;
+}
+
+/* A reading column, not a full-bleed sheet. */
+[data-iii-ui="sentinel"] .sentinel-ui-detail {
+  gap: 18px;
+  width: min(100%, 1080px);
+  margin: 0 auto;
+  padding: 22px 24px 56px;
+}
+
+/* Each section is worth its own height: a flex child shrinks before its
+   sibling overflows, which once collapsed a card to two pixels. */
+[data-iii-ui="sentinel"] .sentinel-ui-list > *,
+[data-iii-ui="sentinel"] .sentinel-ui-detail > *,
+[data-iii-ui="sentinel"] .sentinel-ui-stack > * {
+  flex: 0 0 auto;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* The one vertical scroll of the page. `PageMain` is a clipping flex
+   column, so without this everything past the fold was unreachable. */
+[data-iii-ui="sentinel"] .sentinel-ui-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-banners {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 24px 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-banners--column {
+  width: min(100%, 1080px);
+  margin: 0 auto;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-banners:empty { display: none; }
+
+/* ── shared marks ─────────────────────────────────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-dot { flex: 0 0 auto; }
+
+/* The tones are `StatusDot`'s; a quiet state has none there. */
+[data-iii-ui="sentinel"] .sentinel-ui-dot--quiet {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--color-ink-ghost);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-mono,
+[data-iii-ui="sentinel"] .sentinel-ui-number,
+[data-iii-ui="sentinel"] .sentinel-ui-when,
+[data-iii-ui="sentinel"] .sentinel-ui-quiet-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-quiet { color: var(--color-ink-faint); }
+[data-iii-ui="sentinel"] .sentinel-ui-accent { color: var(--color-accent); }
+[data-iii-ui="sentinel"] .sentinel-ui-alert { color: var(--color-alert); }
+
+[data-iii-ui="sentinel"] .sentinel-ui-quiet-mono {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-ink-ghost);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-link:hover { text-decoration: underline; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-link:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The header's description recipe, for the kicker that follows Back. */
+[data-iii-ui="sentinel"] .sentinel-ui-header-kicker {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink-ghost);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-ingested {
+  margin-right: 6px;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-menu-hint {
+  margin-left: auto;
+  padding-left: 16px;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* ── the list ─────────────────────────────────────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-worker { width: 180px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-search {
+  flex: 0 1 300px;
+  min-width: 180px;
+}
+
+/* A filter whose label is squeezed to one letter is not a filter. */
+[data-iii-ui="sentinel"] .sentinel-ui-filter {
+  flex: 1 1 120px;
+  min-width: 96px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 56px 24px;
+  color: var(--color-ink-ghost);
+  text-align: center;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-empty strong {
+  color: var(--color-ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-empty p {
+  max-width: 46ch;
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--color-surface);
+  font-size: 13px;
+}
+
+/* Every column shrinks to its content except the issue, which takes the
+   slack: `width: 1%` is the shrink-to-fit idiom for an auto-layout table. */
+[data-iii-ui="sentinel"] .sentinel-ui-groups th,
+[data-iii-ui="sentinel"] .sentinel-ui-groups td,
+[data-iii-ui="sentinel"] .sentinel-ui-occurrences th,
+[data-iii-ui="sentinel"] .sentinel-ui-occurrences td {
+  width: 1%;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-groups .sentinel-ui-grow,
+[data-iii-ui="sentinel"] .sentinel-ui-occurrences .sentinel-ui-grow {
+  width: 100%;
+  max-width: 0;
+  white-space: normal;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-groups td {
+  vertical-align: top;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-pick { padding-right: 4px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-chevron {
+  color: var(--color-ink-ghost);
+  text-align: right;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-groups .sentinel-ui-when {
+  font-size: 12px;
+}
+
+/* A regression is the one row that says somebody's fix did not hold; it
+   keeps its wash on hover, in both the wide table and the narrow list. */
+[data-iii-ui="sentinel"] tr[data-regressed="true"]:not([data-selected="true"]),
+[data-iii-ui="sentinel"] tr[data-regressed="true"]:not([data-selected="true"]):hover,
+[data-iii-ui="sentinel"] [data-regressed="true"].iii-ui-list-item:not([data-selected="true"]) {
+  background: var(--color-alert-muted);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-issue {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-issue > .sentinel-ui-dot { margin-top: 7px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-issue-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-issue-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-issue-title b { font-weight: 600; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-source {
+  margin-left: 4px;
+  vertical-align: 1px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-issue-where {
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-issue-extra {
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Twenty-four bars of CSS rather than an inline chart. */
+[data-iii-ui="sentinel"] .sentinel-ui-sparkline {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 1px;
+  width: 72px;
+  height: 18px;
+  vertical-align: middle;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-sparkline > i {
+  flex: 1 1 0;
+  min-height: 1px;
+  border-radius: 0;
+  background: var(--color-ink-ghost);
+}
+
+/* A quiet hour is the baseline, not a bar. */
+[data-iii-ui="sentinel"] .sentinel-ui-sparkline > i[data-empty="true"] {
+  background: var(--color-edge);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-sparkline > i[data-hot="true"] {
+  background: var(--color-alert);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-foot > .sentinel-ui-quiet {
+  margin-left: auto;
+  color: var(--color-ink-ghost);
+}
+
+/* ── the detail ───────────────────────────────────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-dhead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-dhead-title {
+  display: flex;
+  flex: 1 1 480px;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-dhead-title > .sentinel-ui-dot { margin-top: 12px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-dhead-copy { min-width: 0; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-dhead h2 {
+  max-width: 760px;
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.18;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-kicker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 7px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-kicker code {
+  color: var(--color-ink-ghost);
+  font: inherit;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-dhead-tools {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-dhead-badges,
+[data-iii-ui="sentinel"] .sentinel-ui-dhead-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-dhead-actions button { white-space: nowrap; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-facts > div {
+  min-width: 0;
+  padding: 10px 12px;
+  border-right: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-facts > div:last-child { border-right: 0; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-facts dd {
+  margin: 5px 0 0;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-facts dd b {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-tab-count {
+  margin-left: 6px;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 14px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-viewing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-ink-faint);
+  font-size: 13px;
+}
+
+/* The detail beside an open session, or in a narrow pane: the header
+   stacks and the facts fold to two columns. */
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] {
+  gap: 14px;
+  padding: 18px 16px 40px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-dhead {
+  flex-direction: column;
+  gap: 10px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-dhead-title { flex: 1 1 auto; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-dhead-tools {
+  align-items: stretch;
+  width: 100%;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-dhead-badges,
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-dhead-actions {
+  justify-content: flex-start;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] h2 { font-size: 20px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-facts > div:nth-child(-n + 2) {
+  border-bottom: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-facts > div:nth-child(2n) {
+  border-right: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-origin,
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-fix,
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-provenance {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-provenance > button {
+  justify-self: start;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-kv {
+  grid-template-columns: 120px minmax(0, 1fr);
+}
+
+/* The loading silhouette of the detail. */
+[data-iii-ui="sentinel"] .sentinel-ui-skeleton-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(100%, 520px);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-skeleton-head > :first-child { height: 28px; }
+[data-iii-ui="sentinel"] .sentinel-ui-skeleton-facts { height: 60px; }
+[data-iii-ui="sentinel"] .sentinel-ui-skeleton-card { height: 240px; }
+
+/* ── cards of the tabs ────────────────────────────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-card-note {
+  color: var(--color-ink-ghost);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-card-note.sentinel-ui-mono { font-size: 11px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-card-end { margin-left: auto; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-card-foot,
+[data-iii-ui="sentinel"] .sentinel-ui-foot-note {
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-card-foot { margin-top: 10px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-origin {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px 24px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-origin > pre,
+[data-iii-ui="sentinel"] .sentinel-ui-origin > .sentinel-ui-attributes,
+[data-iii-ui="sentinel"] .sentinel-ui-origin > .sentinel-ui-card-foot {
+  grid-column: 1 / -1;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-kv {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 0;
+  font-size: 12px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-kv dt,
+[data-iii-ui="sentinel"] .sentinel-ui-kv-key {
+  margin: 0;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-kv dd {
+  margin: 0;
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-exception {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 16px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-code);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-exception-key { color: var(--color-ink-ghost); }
+
+[data-iii-ui="sentinel"] .sentinel-ui-attributes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-spans,
+[data-iii-ui="sentinel"] .sentinel-ui-logs,
+[data-iii-ui="sentinel"] .sentinel-ui-history,
+[data-iii-ui="sentinel"] .sentinel-ui-versions {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-spans { gap: 2px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-span[data-origin="true"] {
+  background: var(--color-alert-muted);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-span-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-span-service { color: var(--color-ink-ghost); }
+
+[data-iii-ui="sentinel"] .sentinel-ui-span-duration {
+  margin-left: auto;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-logs {
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-logs li {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-log-level { width: 44px; flex: 0 0 auto; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-log-body {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-disclosure-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-disclosure-chevron {
+  margin-left: auto;
+  color: var(--color-ink-faint);
+  transition: transform var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-disclosure[data-state="open"] .sentinel-ui-disclosure-chevron {
+  transform: rotate(180deg);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-payloads {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+/* ── diagnosis ────────────────────────────────────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-provenance {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px 16px;
+  padding: 12px 14px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-provenance-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-provenance-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-provenance-line b { font-weight: 600; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-provenance-line.sentinel-ui-quiet { font-size: 12px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-prose {
+  max-width: 76ch;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* The console's Markdown is set for the transcript, in mono. A finding on
+   this page reads as prose, the way the design sets it. */
+[data-iii-ui="sentinel"] .sentinel-ui-prose p,
+[data-iii-ui="sentinel"] .sentinel-ui-prose ul,
+[data-iii-ui="sentinel"] .sentinel-ui-prose ol,
+[data-iii-ui="sentinel"] .sentinel-ui-prose li {
+  margin: 0 0 8px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-prose > :last-child,
+[data-iii-ui="sentinel"] .sentinel-ui-prose p:last-child { margin-bottom: 0; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-prose ol {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-cited {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 4px 12px;
+  padding: 10px 12px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-cited-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-cited-body p { margin: 0; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-missing {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--color-warn-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-missing ul { margin: 6px 0 0; padding-left: 18px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-missing p { margin: 6px 0 0; font-size: 12px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-fix {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 16px 24px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-fix-files {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-versions,
+[data-iii-ui="sentinel"] .sentinel-ui-history {
+  gap: 8px;
+  font-size: 13px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-versions li,
+[data-iii-ui="sentinel"] .sentinel-ui-history li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-versions-when { width: 96px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-history-when { width: 110px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-history b { font-weight: 500; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-history .sentinel-ui-quiet { font-size: 12px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-versions-note {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-versions-tag {
+  margin-left: auto;
+  font-size: 12px;
+}
+
+/* ── the transcript renderer and the dialogs ─────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-record {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-record-summary {
+  margin: 0;
+  font-size: 12px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-dialog {
+  width: min(600px, calc(100vw - 32px));
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* ── configuration ────────────────────────────────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-config {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Narrow panes: the list's summary chips go under the filters. */
+@container (max-width: 760px) {
+  [data-iii-ui="sentinel"] .sentinel-ui-list { padding: 12px 16px 32px; }
+
+  [data-iii-ui="sentinel"] .sentinel-ui-summary { margin-left: 0; }
+
+  [data-iii-ui="sentinel"] .sentinel-ui-search { flex: 1 1 100%; }
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-repo-label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-repo-path {
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-repo-workers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+/* Worker names as tokens, and the picker that adds one under them. */
+[data-iii-ui="sentinel"] .sentinel-ui-tokens {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-token-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-occurrence-message {
+  display: block;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

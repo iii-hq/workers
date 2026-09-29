@@ -83,6 +83,9 @@ pub struct AssembleParams {
     pub thinking_level: Option<ThinkingLevel>,
     pub tools: Vec<AgentFunction>,
     pub request_overhead_tokens: u64,
+    /// `false` keeps earlier function results as they were sent (no aged
+    /// pruning); `None` leaves context-manager's default.
+    pub allow_prune: Option<bool>,
 }
 
 pub struct CountTokensParams {
@@ -125,6 +128,9 @@ impl ContextClient {
         }
         if let Some(tl) = &params.thinking_level {
             options["thinking_level"] = serde_json::to_value(tl).unwrap_or(Value::Null);
+        }
+        if let Some(allow) = params.allow_prune {
+            options["allow_prune"] = json!(allow);
         }
         let mut payload = json!({
             "messages": params.messages,

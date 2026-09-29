@@ -846,7 +846,7 @@ dependencies = [
 
 [[package]]
 name = "judge"
-version = "0.1.0"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -856,6 +856,7 @@ dependencies = [
  "iii-sdk",
  "judge-contract",
  "judge-typesafe",
+ "opentelemetry",
  "schemars",
  "serde",
  "serde_json",
@@ -878,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "judge-typesafe"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",

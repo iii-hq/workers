@@ -708,7 +708,7 @@ async function realCompactSession(
     // image block whose bytes were left out; ask for the full transcript.
     const items = await fetchTranscript(sessionId, { includeImageData: true })
     const anchor = latestCompactionAnchor(items)
-    const window = compactionWindow(items, anchor?.tailStartEntryId ?? null)
+    const window = compactionWindow(items, anchor)
     if (window.length === 0) return { status: 'empty' }
     const messages = window.map((entry) => entry.message)
     const guidance = instructions?.trim()
@@ -754,7 +754,8 @@ async function realCompactSession(
           : null
       // Persist the marker the same shape the harness writes, so it renders
       // (session::message-added → conversations layer) and the next turn's
-      // assemble reads `summary` + `tail_start_entry_id` to anchor.
+      // assemble reads `summary` + `tail_start_entry_id` to anchor. A failed
+      // append is a failed compaction: nothing would anchor on the summary.
       await appendCustomEntry({
         session_id: sessionId,
         custom_type: COMPACTION_CUSTOM_TYPE,
@@ -764,10 +765,6 @@ async function realCompactSession(
           tokens_before: resp.tokens_before,
           timestamp: Date.now(),
         },
-      }).catch((err) => {
-        if (import.meta.env.DEV) {
-          console.warn('[real-backend] persist compaction entry failed', err)
-        }
       })
       return {
         status: 'ok',

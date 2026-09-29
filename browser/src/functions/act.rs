@@ -4,10 +4,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ActInput {
     pub session_id: String,
-    /// `click`, `hover`, `type`, `press`, `scroll`, or `drag`.
+    /// `click`, `hover`, `type`, `select`, `press`, `scroll`, or `drag`.
     pub action: String,
     /// Mouse button for `click`: `left` (default), `right`, or `middle`.
     #[serde(default)]
@@ -15,8 +15,10 @@ pub struct ActInput {
     /// Clicks in the gesture: 2 double-clicks (`click` only, default 1).
     #[serde(default)]
     pub click_count: Option<u32>,
-    /// Element ref from `browser::snapshot` (`e3`) or `browser::picked`
-    /// (`p1`). Refs die on navigation; re-snapshot after.
+    /// Element ref from `browser::elements` (`n4`), `browser::snapshot`
+    /// (`e3`), `browser::dom::read` (`d7`) or `browser::picked` (`p1`). A
+    /// click, type or select by ref is refused when the element is disabled,
+    /// hidden or covered. Refs die on navigation; re-read the page after.
     #[serde(default)]
     pub r#ref: Option<String>,
     /// Viewport x, when acting by coordinates instead of ref.
@@ -25,9 +27,14 @@ pub struct ActInput {
     /// Viewport y, when acting by coordinates instead of ref.
     #[serde(default)]
     pub y: Option<f64>,
-    /// Text to insert (`type`).
+    /// Text to insert (`type`). With a ref to an `<input>` or `<textarea>`
+    /// it replaces the current value; otherwise it is inserted at the caret.
     #[serde(default)]
     pub text: Option<String>,
+    /// Option to choose (`select`, native `<select>` only): its value or
+    /// visible label.
+    #[serde(default)]
+    pub option: Option<String>,
     /// Key name for `press`: Enter, Tab, Escape, Backspace, Delete,
     /// ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown.
     #[serde(default)]

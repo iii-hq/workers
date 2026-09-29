@@ -482,6 +482,34 @@ export interface ComposerActionRegistration {
 }
 
 /**
+ * Props a composer control receives: the active session, its live turn
+ * state, and that session's metadata with a writer. The console persists
+ * `setMetadata` through its own session-metadata writer (drafts included:
+ * the keys land when the session is created), so the control never calls
+ * `session::set-meta` itself.
+ */
+export interface ComposerControlProps {
+  /** Active conversation id (a draft's id until its first send). */
+  sessionId: string
+  isStreaming: boolean
+  /** The session's stored metadata. */
+  metadata: Readonly<Record<string, unknown>>
+  /** Merge keys into the metadata; an `undefined` value removes the key. */
+  setMetadata(patch: Record<string, unknown>): void
+}
+
+/**
+ * A compact per-session setting rendered in the composer's footer, beside
+ * the model picker: a value that applies to the session from its next turn
+ * on, the way the model does. Duplicate `id`: last registration wins.
+ */
+export interface ComposerControlRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType<ComposerControlProps>
+}
+
+/**
  * A floating surface the console renders above the workspace whatever page
  * or tab is showing — a live thumbnail, a recording indicator. The
  * component positions itself (`position: fixed`) and opts back into
@@ -581,6 +609,7 @@ export interface Host {
     registerSessionChip(chip: SessionChipRegistration): () => void
     registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
     registerComposerAction(action: ComposerActionRegistration): () => void
+    registerComposerControl(control: ComposerControlRegistration): () => void
     /** Jump the sidebar to this session. Feature-detect on older consoles. */
     selectConversation?(sessionId: string): void
     /**

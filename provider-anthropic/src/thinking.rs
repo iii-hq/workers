@@ -21,6 +21,38 @@ pub const ADAPTIVE: ThinkingConfig = ThinkingConfig {
     display: "summarized",
 };
 
+const PREFIX_MISMATCH_ENV: &str = "PROVIDER_ANTHROPIC_PREFIX_MISMATCH";
+
+/// `thinking.block_binding.prefix_mismatch_behavior`: unset = drop_block,
+/// `error` = the loud 400 arm (CI), `off` = neither field nor beta (gateways).
+/// On accounts created before 2026-08-31 the field itself opts into
+/// enforcement, so only `off` keeps their old pass-through (README).
+pub fn prefix_mismatch() -> Option<&'static str> {
+    parse_prefix_mismatch(std::env::var(PREFIX_MISMATCH_ENV).ok().as_deref())
+}
+
+/// Case-insensitive; `0`/`false`/`none` also mean off (as in `cache_enabled`).
+/// Anything else unrecognised warns once and falls back to drop_block.
+fn parse_prefix_mismatch(value: Option<&str>) -> Option<&'static str> {
+    let value = value.unwrap_or_default().to_ascii_lowercase();
+    match value.as_str() {
+        "" | "drop_block" => Some("drop_block"),
+        "error" => Some("error"),
+        "off" | "0" | "false" | "none" => None,
+        _ => {
+            static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            WARNED.get_or_init(|| {
+                tracing::warn!(
+                    %value,
+                    "{PREFIX_MISMATCH_ENV} unrecognised, using drop_block \
+                     (expected drop_block, error, or off)"
+                )
+            });
+            Some("drop_block")
+        }
+    }
+}
+
 /// thinking_level → `output_config.effort`. Minimal has no effort
 /// equivalent; low is the closest depth.
 fn effort_for(level: ThinkingLevel) -> &'static str {
@@ -176,6 +208,25 @@ mod tests {
         let built = build_thinking_config(Some(ThinkingLevel::High), None);
         assert_eq!(built.config, Some(ADAPTIVE));
         assert_eq!(built.effort, Some("high"));
+    }
+
+    #[test]
+    fn prefix_mismatch_parses_case_insensitively() {
+        for (value, want) in [
+            (None, Some("drop_block")),
+            (Some(""), Some("drop_block")),
+            (Some("DROP_BLOCK"), Some("drop_block")),
+            (Some("ERROR"), Some("error")),
+            (Some("Error"), Some("error")),
+            (Some("Off"), None),
+            (Some("0"), None),
+            (Some("FALSE"), None),
+            (Some("none"), None),
+            // unrecognised: warns once, keeps the default
+            (Some("drop-block"), Some("drop_block")),
+        ] {
+            assert_eq!(parse_prefix_mismatch(value), want, "{value:?}");
+        }
     }
 
     #[test]

@@ -1,0 +1,267 @@
+{
+  "description": "List investigations, newest first, optionally narrowed to one group or a set of states.",
+  "function_id": "sentinel::investigations::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "InvestigationStatusV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass is in flight.",
+            "enum": [
+              "running"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass ended.",
+            "enum": [
+              "completed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A chat-mode session: no first pass ever ran, the conversation is the investigation.",
+            "enum": [
+              "open"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "group_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "limit": {
+        "default": null,
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "offset": {
+        "default": null,
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "status": {
+        "default": null,
+        "items": {
+          "$ref": "#/definitions/InvestigationStatusV1"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      }
+    },
+    "title": "InvestigationsListRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "InvestigationModeV1": {
+        "description": "How an investigation was opened.",
+        "oneOf": [
+          {
+            "description": "A first pass runs automatically, then the conversation continues.",
+            "enum": [
+              "assisted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The session is created with the evidence and nothing runs until a person speaks.",
+            "enum": [
+              "chat"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InvestigationStatusV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass is in flight.",
+            "enum": [
+              "running"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass ended.",
+            "enum": [
+              "completed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A chat-mode session: no first pass ever ran, the conversation is the investigation.",
+            "enum": [
+              "open"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InvestigationSummaryV1": {
+        "additionalProperties": false,
+        "properties": {
+          "checkout_ref": {
+            "description": "The commit the mapped checkout was on when the pass started.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "created_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "duration_ms": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_ms": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "first_pass_turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "investigated_version": {
+            "description": "The worker version the investigated occurrence ran on.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/definitions/InvestigationModeV1"
+          },
+          "model": {
+            "type": "string"
+          },
+          "occurrence_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "description": "The harness session. The console opens this beside the page.",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/InvestigationStatusV1"
+          },
+          "turns": {
+            "description": "Observed after the fact, and informative only: this worker imposes no ceiling on an investigation.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "created_ms",
+          "group_id",
+          "id",
+          "mode",
+          "model",
+          "occurrence_id",
+          "session_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "investigations": {
+        "items": {
+          "$ref": "#/definitions/InvestigationSummaryV1"
+        },
+        "type": "array"
+      },
+      "total": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "investigations",
+      "total"
+    ],
+    "title": "InvestigationsListResponseV1",
+    "type": "object"
+  }
+}

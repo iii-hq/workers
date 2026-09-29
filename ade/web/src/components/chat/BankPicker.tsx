@@ -6,11 +6,14 @@ import { listBanks, type MemoryBank } from '@/lib/memory'
 /**
  * In-chat memory bank picker — the "which memory am I using" control.
  * Writing blogs? Pick the blog bank and its style rules + memories feed
- * every turn. Switch to coding and a different memory applies; contexts
- * never bleed. Selecting `auto` defers to the memory worker's configured
- * default bank. Lives next to the composer as one compact dropdown and
- * commits through session metadata (`memory_bank`), so it applies to the
- * NEXT turn immediately, mid-conversation switches included.
+ * every turn. Switch to coding and a different memory applies. Selecting
+ * `auto` defers to the memory worker's configured default bank. Lives next
+ * to the composer as one compact dropdown and commits through session
+ * metadata (`memory_bank`), so it applies to the NEXT turn immediately. A
+ * mid-conversation switch arrives as an appended override (memory never
+ * edits a running session's system prompt): the earlier bank's section and
+ * recalled memories stay visible in the transcript, so only a new
+ * conversation keeps two banks' contexts fully apart.
  */
 
 interface BankPickerProps {

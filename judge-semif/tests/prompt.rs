@@ -21,7 +21,7 @@ fn prompts_match_semif() {
 #[test]
 #[ignore]
 fn gguf_tokens_match_the_reference_tokenizer() {
-    use llama_cpp_2::{
+    use iii_llama_runtime::llama_cpp_2::{
         llama_backend::LlamaBackend,
         model::{params::LlamaModelParams, AddBos, LlamaModel},
     };

@@ -78,9 +78,36 @@ fn gh_bin_prefers_the_configured_path() {
     assert_eq!(c.gh_bin(), "/opt/homebrew/bin/gh");
 }
 
-/// 30 curated functions + exec + api. The exact ids and order are pinned in
+/// 30 curated functions + exec + api + 4 webhook monitoring operations. The exact ids and order are pinned in
 /// tests/schemas.rs; this is the cheap headcount.
 #[test]
 fn catalog_covers_the_full_surface() {
-    assert_eq!(catalog().len(), 32);
+    assert_eq!(catalog().len(), 37);
+}
+
+/// The registry publishes `iii.worker.yaml`'s `config:` block, not config.yaml.
+/// Keep them identical (minus the environment-specific token) so a registry
+/// install gets the same defaults as a source checkout.
+#[test]
+fn manifest_config_matches_config_yaml() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(root.join("iii.worker.yaml")).unwrap())
+            .unwrap();
+    let mut seed: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(root.join("config.yaml")).unwrap()).unwrap();
+    seed.as_mapping_mut().unwrap().remove("token");
+    assert_eq!(
+        manifest["config"], seed,
+        "iii.worker.yaml config: must mirror config.yaml (except token)"
+    );
+    // Both parse as a valid worker configuration.
+    let parsed: github::config::Config =
+        serde_json::from_value(serde_json::to_value(&manifest["config"]).unwrap()).unwrap();
+    assert_eq!(
+        parsed.webhooks.notifications.profile,
+        github::webhooks::notifications::NotificationProfile::AgentActionable
+    );
+    // quick-tunnel is installed on demand, never as a hard dependency.
+    assert!(manifest["dependencies"].get("quick-tunnel").is_none());
 }

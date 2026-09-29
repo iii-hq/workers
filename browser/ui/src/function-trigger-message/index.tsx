@@ -31,6 +31,7 @@ import {
   HistoryView,
   NavigateView,
   NetworkReadView,
+  RunView,
   SessionListView,
   SessionStartView,
   SessionStopView,
@@ -114,6 +115,8 @@ function renderBody(message: FunctionTriggerMessage): React.ReactNode | null {
       return <NetworkReadView input={input} output={output} />
     case 'browser::act':
       return <ActView input={input} output={output} />
+    case 'browser::run':
+      return <RunView input={input} output={output} />
     case 'browser::history':
       return <HistoryView input={input} output={output} />
     case 'browser::styles::read':

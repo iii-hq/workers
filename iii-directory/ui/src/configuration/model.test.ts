@@ -25,6 +25,7 @@ describe('function search configuration', () => {
     expect(judgeQuestionWithDefault(undefined)).toBe('choice')
     expect(judgeQuestionWithDefault('yes_no')).toBe('choice')
     expect(judgeQuestionWithDefault('noul')).toBe('noul')
+    expect(judgeQuestionWithDefault('tournament')).toBe('tournament')
   })
 
   it('uses judge when a migrated value omits or corrupts the mode', () => {

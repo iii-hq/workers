@@ -1,0 +1,41 @@
+{
+  "description": "Internal handler for the engine's error-span trigger; queues the traces worth reading.",
+  "function_id": "sentinel::on-trace-activity",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "The tick the engine's `trace` trigger delivers: ids only, coalesced.",
+    "properties": {
+      "trace_ids": {
+        "default": [],
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "title": "TraceActivityEventV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "phantom_dropped": {
+        "description": "Ticks for this worker's own traces, dropped before the queue.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "queued": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "phantom_dropped",
+      "queued"
+    ],
+    "title": "QueuedResponseV1",
+    "type": "object"
+  }
+}

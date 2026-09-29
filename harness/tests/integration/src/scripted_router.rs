@@ -450,9 +450,9 @@ async fn wait_for_gate_state(
     }
 }
 
-/// Drop the harness's ephemeral advisory tail messages from the MATCHED view
-/// of a request: iii-directory's `<discovery_assist>` hint and the harness
-/// registry-changed notice. Both ride as tail user messages whose presence
+/// Drop the harness's advisory messages from the MATCHED view of a request:
+/// iii-directory's `<discovery_assist>` hint and the harness registry-changed
+/// notice. Both first ride as tail user messages whose presence
 /// depends on the booted stack (inject_hint config, worker count, per-turn
 /// gates, registration timing while the stack settles), so no fixture can pin
 /// them deterministically — exactly as before, when they were unpinned
@@ -467,8 +467,16 @@ fn without_advisory_tail_messages(input: &Value) -> Value {
     matched
 }
 
-/// True for the hint / registry-notice user messages the harness appends per
-/// generation (never persisted to the transcript).
+/// The harness's runtime-context notice sentence (turn_loop.rs
+/// `RUNTIME_CONTEXT_CHANGED_NOTICE`), matched whole so user text that merely
+/// starts with "NOTE:" is never filtered.
+const RUNTIME_CONTEXT_NOTICE: &str = "NOTE: the session context changed since the system prompt was written. It now reads as follows and replaces the session context there:\n";
+
+/// True for the hint / registry / runtime-context notice user messages the
+/// harness appends to a generation. They are persisted as `model_notice`
+/// entries and replayed where they were first sent, so every later request
+/// carries them mid-`messages`. The runtime-context notice depends on what
+/// the caller (Console, scenario) sends per turn — policy, working directory.
 pub fn is_advisory_message(message: &Value) -> bool {
     message.get("role").and_then(Value::as_str) == Some("user")
         && message
@@ -480,6 +488,7 @@ pub fn is_advisory_message(message: &Value) -> bool {
             .is_some_and(|text| {
                 text.starts_with("<discovery_assist")
                     || text.starts_with("NOTE: the function registry changed")
+                    || text.starts_with(RUNTIME_CONTEXT_NOTICE)
             })
 }
 
@@ -768,6 +777,23 @@ mod tests {
 
     use super::*;
     use crate::types::script::{RouterDispatchV1, SchemaVersion1};
+
+    #[test]
+    fn only_the_whole_runtime_context_notice_is_advisory() {
+        let user =
+            |text: &str| json!({"role": "user", "content": [{"type": "text", "text": text}]});
+        assert!(is_advisory_message(&user(&format!(
+            "{RUNTIME_CONTEXT_NOTICE}Your session id is s_1."
+        ))));
+        assert!(!is_advisory_message(&user(
+            "NOTE: the session context changed because I moved the repo."
+        )));
+        assert!(!is_advisory_message(
+            &json!({"role": "assistant", "content": [
+                {"type": "text", "text": format!("{RUNTIME_CONTEXT_NOTICE}x")}
+            ]})
+        ));
+    }
 
     fn state() -> Arc<Mutex<State>> {
         Arc::new(Mutex::new(State {

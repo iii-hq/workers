@@ -75,7 +75,7 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                 }
             }
             if value["type"] == "registerfunction" && value["id"] == "judge-semif::evaluate" {
-                socket.send(Message::Text(json!({"type":"invokefunction","invocation_id":"00000000-0000-0000-0000-000000000009","function_id":"judge-semif::evaluate","data":{"timeout_ms":1000,"evaluations":[{"id":"ticket","state":{},"questions":{"urgent":{"type":"noul","instructions":"Is this urgent?"}}}]}}).to_string().into())).await.unwrap();
+                socket.send(Message::Text(json!({"type":"invokefunction","invocation_id":"00000000-0000-0000-0000-000000000009","function_id":"judge-semif::evaluate","data":{"timeout_ms":8000,"evaluations":[{"id":"ticket","state":{},"questions":{"urgent":{"type":"noul","instructions":"Is this urgent?"}}}]}}).to_string().into())).await.unwrap();
             }
             if value["type"] == "registerfunction" && value["id"] == "judge-semif::configuration-id"
             {
@@ -177,6 +177,9 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                         "judge-semif::on-config-change"
                             | "judge-semif::ui-content"
                             | "judge-semif::configuration-id"
+                            | "judge-semif::evaluate"
+                            | "judge-semif::models::list"
+                            | "judge-semif::cancel"
                     ) {
                         assert_eq!(value["metadata"]["internal"], true);
                     }

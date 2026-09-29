@@ -1292,13 +1292,17 @@ impl SessionService {
 
         let new_session_id = self.ids.session_id();
         let now = self.clock.now_ms();
-        let mut id_map: HashMap<String, String> = HashMap::new();
+        // Fresh ids for the whole path first, so a custom record may name any
+        // entry of the path, earlier or later, and still be remapped.
+        let id_map: HashMap<String, String> = path
+            .iter()
+            .map(|entry| (entry.id().to_string(), self.ids.entry_id()))
+            .collect();
         let mut copies = Vec::with_capacity(path.len());
         let mut message_count: u64 = 0;
 
         for entry in &path {
-            let new_id = self.ids.entry_id();
-            id_map.insert(entry.id().to_string(), new_id.clone());
+            let new_id = id_map[entry.id()].clone();
             let new_parent = entry.parent_id().map(|p| {
                 id_map
                     .get(p)
@@ -1337,7 +1341,7 @@ impl SessionService {
                     revision: 0,
                     origin: origin.clone(),
                     custom_type: custom_type.clone(),
-                    data: data.clone(),
+                    data: remap_custom_data(custom_type, data, &id_map),
                 },
             };
             copies.push(copy);
@@ -1519,6 +1523,43 @@ fn draft_response(meta: &SessionMeta) -> SetDraftResponse {
         draft: meta.draft.clone(),
         attachments: meta.draft_attachments.clone().unwrap_or_default(),
     }
+}
+
+/// Copy-on-fork rewrite of the entry ids a custom record stores: the
+/// compaction record's `tail_start_entry_id` names the first entry of the
+/// verbatim tail, and the harness's `message_order` record names the entries
+/// it moved (`moved`) and where (`after`), so each must follow its entry's
+/// fresh id. An id not on the copied path is left as it is — readers treat
+/// an unknown tail id as "whole path", while `null` means "everything before
+/// this entry was summarised".
+fn remap_custom_data(
+    custom_type: &str,
+    data: &serde_json::Value,
+    id_map: &HashMap<String, String>,
+) -> serde_json::Value {
+    let mut data = data.clone();
+    let remap = |id: &mut serde_json::Value| {
+        if let Some(new_id) = id.as_str().and_then(|old| id_map.get(old)) {
+            *id = serde_json::Value::String(new_id.clone());
+        }
+    };
+    match custom_type {
+        "compaction" => {
+            if let Some(tail) = data.get_mut("tail_start_entry_id") {
+                remap(tail);
+            }
+        }
+        "message_order" => {
+            if let Some(after) = data.get_mut("after") {
+                remap(after);
+            }
+            if let Some(moved) = data.get_mut("moved").and_then(|m| m.as_array_mut()) {
+                moved.iter_mut().for_each(remap);
+            }
+        }
+        _ => {}
+    }
+    data
 }
 
 /// Every attachment id the messages on `path` reference, in first-seen

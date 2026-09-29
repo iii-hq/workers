@@ -43,4 +43,9 @@ describe('parseShellPanelContext', () => {
     ).toBeNull()
     expect(parseShellPanelContext({ type: 'screenshot', path: '/x' })).toBeNull()
   })
+  it('accepts columns only with a valid safe line number', () => {
+    expect(parseShellPanelContext({ type: 'file', path: 'a.ts', line: 2, column: 3 })).toEqual({ type: 'file', path: 'a.ts', line: 2, column: 3 })
+    expect(parseShellPanelContext({ type: 'file', path: 'a.ts', line: 1e30, column: 3 })).toEqual({ type: 'file', path: 'a.ts' })
+    expect(parseShellPanelContext({ type: 'file', path: 'a.ts', line: 2, column: 0 })).toEqual({ type: 'file', path: 'a.ts', line: 2 })
+  })
 })

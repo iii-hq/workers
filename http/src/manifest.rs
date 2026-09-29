@@ -27,6 +27,7 @@ mod tests {
         let v = serde_json::to_value(build_manifest()).unwrap();
         assert_eq!(v["name"], env!("CARGO_PKG_NAME"));
         assert!(v["default_config"]["port"].is_number());
+        assert!(v["default_config"]["webhook_listener"].is_null());
         assert!(!v["supported_targets"].as_array().unwrap().is_empty());
     }
 }

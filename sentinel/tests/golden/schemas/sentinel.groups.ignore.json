@@ -1,0 +1,151 @@
+{
+  "description": "Ignore a group forever, for a number of further occurrences, or until the worker version changes. Occurrences keep counting either way.",
+  "function_id": "sentinel::groups::ignore",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "IgnoreRuleV1": {
+        "description": "How long an ignore lasts. Every rule keeps counting occurrences; what changes is when the group comes back to the open list.",
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "forever"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Reopens after this many further occurrences.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "kind": {
+                "enum": [
+                  "occurrences"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "count",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Reopens when the worker version changes.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "version_change"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "group_id": {
+        "type": "string"
+      },
+      "rule": {
+        "$ref": "#/definitions/IgnoreRuleV1"
+      }
+    },
+    "required": [
+      "group_id",
+      "rule"
+    ],
+    "title": "IgnoreRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "GroupChangeReasonV1": {
+        "description": "Why a group changed, for the event siblings subscribe to.",
+        "enum": [
+          "regression",
+          "ignore_expired",
+          "resolved",
+          "ignored",
+          "diagnosed",
+          "reopened",
+          "investigating"
+        ],
+        "type": "string"
+      },
+      "GroupStatusV1": {
+        "description": "The lifecycle of a group. `resolved` and `ignored` are human decisions; `regressed` is the one the ingest makes on its own, and the reason the worker exists.",
+        "oneOf": [
+          {
+            "enum": [
+              "new",
+              "diagnosed",
+              "resolved",
+              "ignored"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass of an investigation is running.",
+            "enum": [
+              "investigating"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence after a resolve.",
+            "enum": [
+              "regressed"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "The state a group was left in, and why.",
+    "properties": {
+      "group_id": {
+        "type": "string"
+      },
+      "reason": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/GroupChangeReasonV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "status": {
+        "$ref": "#/definitions/GroupStatusV1"
+      }
+    },
+    "required": [
+      "group_id",
+      "status"
+    ],
+    "title": "GroupStateResponseV1",
+    "type": "object"
+  }
+}

@@ -56,6 +56,8 @@ pub struct AppState {
     /// Live config cell, read once per request so `middleware`/`default_timeout`
     /// changes hot-reload (see [`crate::configuration`]).
     pub config: ConfigCell,
+    /// Set only by the listener, never from a request header or query parameter.
+    pub public_webhooks_only: bool,
 }
 
 /// Maximum request body size read into memory before it is streamed into the
@@ -99,7 +101,7 @@ fn request_counter() -> &'static Counter<u64> {
 
 /// Standardized error envelope, identical in shape to the engine's:
 /// `{"error": {"code", "message"}}`.
-fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
+pub(crate) fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
     (
         status,
         axum::Json(json!({ "error": { "code": code, "message": message } })),
@@ -154,7 +156,7 @@ pub async fn dynamic_handler(
 
     let matched = {
         let table = state.routes.read().await;
-        table.match_route(method.as_str(), &actual_path)
+        table.match_route_for_listener(method.as_str(), &actual_path, state.public_webhooks_only)
     };
 
     // Per-request OTEL/tracing HTTP span, mirroring the engine's iii-http
@@ -296,7 +298,7 @@ pub async fn dynamic_handler(
         // an `Allow` header listing the methods that would have matched),
         // mirroring axum's per-method routing in the engine's iii-http. A
         // path that matches no route at all stays a 404.
-        let allowed = state.routes.read().await.allowed_methods(&actual_path);
+        let allowed = state.routes.read().await.allowed_methods_for_listener(&actual_path, state.public_webhooks_only);
         if allowed.is_empty() {
             return record_status(error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "Not Found"));
         }

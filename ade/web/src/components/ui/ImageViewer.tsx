@@ -618,8 +618,11 @@ function Stage({
                 message: 'The image could not be loaded.',
               })
             }
+            // Paint transparent pixels (Mermaid SVGs, PNG diagrams) on the
+            // theme surface they were rendered for, not on the black scrim:
+            // light-theme diagrams draw dark strokes and text.
             className={cn(
-              'max-w-none shrink-0 origin-center select-none',
+              'max-w-none shrink-0 origin-center select-none bg-bg',
               phase.kind === 'ready' ? 'opacity-100' : 'opacity-0',
               animated &&
                 'transition-transform duration-(--motion-duration-control) ease-(--motion-ease-standard)',

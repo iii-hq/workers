@@ -1,0 +1,179 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EventFilter",
+  "type": "object",
+  "properties": {
+    "categories": {
+      "default": null,
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/definitions/Category"
+      },
+      "uniqueItems": true
+    },
+    "notifications": {
+      "description": "Omitted inherits webhooks.notifications; profile=all explicitly keeps the legacy stream.",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/NotificationPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "number": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "repo": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "watch_id": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "Category": {
+      "type": "string",
+      "enum": [
+        "ci",
+        "comments",
+        "reviews",
+        "pr"
+      ]
+    },
+    "NotificationPolicy": {
+      "type": "object",
+      "properties": {
+        "batch_window_ms": {
+          "description": "Durable local coalescing window. Maintenance releases due batches every 10s.",
+          "default": 10000,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "ignore_self": {
+          "description": "Drop comments/reviews authored by the authenticated gh identity, discovered automatically (GET /user) and kept in memory only.",
+          "default": false,
+          "type": "boolean"
+        },
+        "ignored_actors": {
+          "description": "Suppress comments/reviews by these logins (case-insensitive). Explicit identity avoids dropping another human using the same account unknowingly.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "max_comment_chars": {
+          "description": "Maximum comment characters in the compact payload; original stays in event-detail.",
+          "default": 2000,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "max_items": {
+          "description": "agent_actionable: items per digest; extra items are counted, not sent.",
+          "default": 30,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "max_wait_ms": {
+          "description": "agent_actionable: never hold a digest longer than this after its first item.",
+          "default": 120000,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "notify_ci_failures": {
+          "default": true,
+          "type": "boolean"
+        },
+        "notify_ci_success": {
+          "default": true,
+          "type": "boolean"
+        },
+        "notify_resolved_threads": {
+          "default": false,
+          "type": "boolean"
+        },
+        "profile": {
+          "default": "all",
+          "allOf": [
+            {
+              "$ref": "#/definitions/NotificationProfile"
+            }
+          ]
+        },
+        "quiet_ms": {
+          "description": "agent_actionable: deliver after this much silence; each new item restarts it.",
+          "default": 15000,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "success_checks": {
+          "description": "Exact selectors: check_run:<name>, workflow_run:<name>, status:<context>. Every selector must exist and pass. Empty disables aggregate success.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "suppress_bot_noise": {
+          "description": "Only known informational bot templates are suppressed; unknown reviews survive.",
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NotificationProfile": {
+      "oneOf": [
+        {
+          "description": "Backward-compatible full per-entity event stream.",
+          "type": "string",
+          "enum": [
+            "all"
+          ]
+        },
+        {
+          "description": "Compact review actions, batched CI failures and explicitly scoped success.",
+          "type": "string",
+          "enum": [
+            "review_assistant"
+          ]
+        },
+        {
+          "description": "Only what needs an agent action: CI failures on the current head, new comments/reviews from others and terminal lifecycle, coalesced into one digest per watch. CI success, progress and pushes are never delivered.",
+          "type": "string",
+          "enum": [
+            "agent_actionable"
+          ]
+        }
+      ]
+    }
+  }
+}

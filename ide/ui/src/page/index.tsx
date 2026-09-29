@@ -311,6 +311,13 @@ export function ShellExplorerPage({
     endLine?: number
     seq: number
   } | null>(null)
+  const revealSeqRef = useRef(0)
+  /** Clear only the acknowledged request; a newer navigation must remain pending. */
+  const onRevealHandled = useCallback((path: string, seq: number) => {
+    setRevealLineRequest((pending) =>
+      pending?.path === path && pending.seq === seq ? null : pending,
+    )
+  }, [])
   const historyRef = useRef<NavHistory>(EMPTY_HISTORY)
   const [historyState, setHistoryState] = useState({ back: false, forward: false })
   const navigatingRef = useRef(false)
@@ -580,13 +587,13 @@ export function ShellExplorerPage({
       showTab((s) => (options.pin ? openPinned(s, fileTarget(relPath)) : openPreview(s, fileTarget(relPath))))
       if (options.line !== undefined) {
         const line = options.line
-        setRevealLineRequest((previous) => ({
+        setRevealLineRequest({
           path: relPath,
           line,
           column: options.column,
           endLine: options.endLine,
-          seq: (previous?.seq ?? 0) + 1,
-        }))
+          seq: ++revealSeqRef.current,
+        })
       }
     },
     [showTab],
@@ -605,6 +612,7 @@ export function ShellExplorerPage({
   const dropFileCache = useCallback((path: string) => {
     objectUrlsRef.current.release(cacheRef.current.get(path)?.image)
     cacheRef.current.delete(path)
+    setRevealLineRequest((pending) => pending?.path === path ? null : pending)
   }, [])
 
   const closeTabIds = useCallback(
@@ -1183,6 +1191,7 @@ export function ShellExplorerPage({
         objectUrlsRef.current.releaseAll()
         cacheRef.current.clear()
         diffCacheRef.current.clear()
+        setRevealLineRequest(null)
         historyRef.current = EMPTY_HISTORY
         setHistoryState({ back: false, forward: false })
         // The folder being left keeps what was open in it; the one being
@@ -1359,7 +1368,7 @@ export function ShellExplorerPage({
   // below). The request is captured immediately, then applied once the root
   // has resolved — re-rooting to the file's own folder when it lives outside
   // the browsed one; the effect refires on the new root and opens it.
-  const pendingOpenRef = useRef<{ abs: string; line?: number; endLine?: number } | null>(null)
+  const pendingOpenRef = useRef<{ abs: string; line?: number; endLine?: number; column?: number } | null>(null)
   const pendingOpenCaptureSeqRef = useRef(0)
   const pendingOpenRequestSeqRef = useRef(0)
   const pendingOpenRootRequestRef = useRef<{ target: string; token: ScopedRequestToken } | null>(null)
@@ -1368,10 +1377,10 @@ export function ShellExplorerPage({
   const pendingOpenRetryTimerRef = useRef<number | null>(null)
   const [pendingOpenError, setPendingOpenError] = useState<string | null>(null)
   const [openBump, setOpenBump] = useState(0)
-  const requestOpen = useCallback((abs: string, line?: number, endLine?: number) => {
+  const requestOpen = useCallback((abs: string, line?: number, endLine?: number, column?: number) => {
     if (rootRef.current !== null) rootResolveSeqRef.current += 1
     pendingOpenCaptureSeqRef.current += 1
-    pendingOpenRef.current = { abs, line, endLine }
+    pendingOpenRef.current = { abs, line, endLine, column }
     pendingOpenRootRequestRef.current = null
     pendingOpenWaitingForRetryRef.current = false
     pendingOpenRetryRef.current = 0
@@ -1394,7 +1403,7 @@ export function ShellExplorerPage({
       pendingOpenWaitingForRetryRef.current = false
       pendingOpenRetryRef.current = 0
       setPendingOpenError(null)
-      openFileTab(pending.abs.slice(prefix.length), { pin: true, line: pending.line, endLine: pending.endLine })
+      openFileTab(pending.abs.slice(prefix.length), { pin: true, line: pending.line, endLine: pending.endLine, column: pending.column })
     } else if (pending.abs !== root) {
       const target = deepLinkRootTarget(pending.abs, workingDirRef.current)
       if (pendingOpenWaitingForRetryRef.current || pendingOpenRootRequestRef.current?.target === target) return
@@ -1461,18 +1470,18 @@ export function ShellExplorerPage({
 
   // ── panel context from other surfaces ──
   const openContextFile = useCallback(
-    (path: string, line?: number, endLine?: number): boolean => {
+    (path: string, line?: number, endLine?: number, column?: number): boolean => {
       if (root === null) return false
       setSideTab('files')
       setCollapsed(false)
       if (!path.startsWith('/')) {
-        openFileTab(path, { pin: true, line, endLine })
+        openFileTab(path, { pin: true, line, endLine, column })
         return true
       }
       // Reuse the validated deep-link pipeline for contextual panel
       // requests. It safely re-roots when the file lives outside the current
       // workspace and preserves the same retry/error behavior.
-      requestOpen(path, line, endLine)
+      requestOpen(path, line, endLine, column)
       return true
     },
     [root, openFileTab, requestOpen],
@@ -1502,7 +1511,7 @@ export function ShellExplorerPage({
     // root necessarily resolves. Leave file events unapplied until the safe
     // open pipeline can accept them.
     if (context.type === 'file') {
-      if (!openContextFile(context.path, context.line, context.endLine)) return
+      if (!openContextFile(context.path, context.line, context.endLine, context.column)) return
       appliedContextRef.current = panelContext.id
       return
     }
@@ -2194,6 +2203,7 @@ export function ShellExplorerPage({
                 createObjectUrl={objectUrlsRef.current.create}
                 wordWrap={diffOptions.wordWrap}
                 reveal={revealLineRequest?.path === activeFilePath ? revealLineRequest : null}
+                onRevealHandled={onRevealHandled}
                 goToLineSeq={goToLineSeq}
                 onSaved={afterDiskChange}
                 onDirtyChange={onDirtyChange}

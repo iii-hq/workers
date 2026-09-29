@@ -1052,6 +1052,8 @@
   }
   .shui-scm-folder:hover { background: var(--color-surface-hover); }
   .shui-scm-folder:focus-visible { outline: 1px solid var(--color-rule-focus); outline-offset: -1px; }
+  .shui-scm-folder-row .shui-scm-folder { height: 100%; min-width: 0; }
+  .shui-scm-folder-row .shui-scm-folder:hover { background: transparent; }
   .shui-timeline .shui-scm-folder {
     min-height: 24px;
     height: auto;

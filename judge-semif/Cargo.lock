@@ -906,6 +906,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-llama-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "judge-contract",
+ "llama-cpp-2",
+ "llama-cpp-sys-2",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "iii-sdk"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1008,7 +1021,7 @@ dependencies = [
 
 [[package]]
 name = "judge-semif"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1016,10 +1029,9 @@ dependencies = [
  "hf-hub",
  "iii-config-client",
  "iii-console-ui",
+ "iii-llama-runtime",
  "iii-sdk",
  "judge-contract",
- "llama-cpp-2",
- "llama-cpp-sys-2",
  "schemars",
  "serde",
  "serde_json",

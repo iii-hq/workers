@@ -633,6 +633,7 @@ async fn seed_child(
             req.parent_session_id.as_deref(),
             depth,
             display.as_ref(),
+            crate::judge::current_provider().as_deref(),
         ),
         agent.as_ref(),
     );
@@ -846,13 +847,19 @@ fn normalize_display(
     }))
 }
 
+/// `judge_provider` is the spawning turn's (its baggage): a sub-agent keeps
+/// its parent's judge from then on, like it keeps the parent's model.
 fn child_session_metadata(
     parent: Option<&ParentLink>,
     display_parent_session_id: Option<&str>,
     depth: u32,
     display: Option<&SubagentDisplay>,
+    judge_provider: Option<&str>,
 ) -> Option<Value> {
     let mut metadata = serde_json::Map::new();
+    if let Some(provider) = judge_provider {
+        metadata.insert("judge_provider".into(), Value::String(provider.into()));
+    }
     if let Some(parent) = parent {
         metadata.insert(
             "parent_session_id".into(),
@@ -1230,7 +1237,7 @@ mod tests {
             function_call_id: "call_spawn".into(),
         };
         assert_eq!(
-            child_session_metadata(Some(&parent), None, 1, Some(&display("Frontend"))),
+            child_session_metadata(Some(&parent), None, 1, Some(&display("Frontend")), None),
             Some(json!({
                 "parent_session_id": "s_parent",
                 "parent_turn_id": "t_parent",
@@ -1249,7 +1256,7 @@ mod tests {
     #[test]
     fn parentless_display_still_creates_session_metadata() {
         assert_eq!(
-            child_session_metadata(None, None, 0, Some(&display("Explorer"))),
+            child_session_metadata(None, None, 0, Some(&display("Explorer")), None),
             Some(json!({
                 "subagent_display": {
                     "name": "Explorer",
@@ -1258,7 +1265,11 @@ mod tests {
                 }
             }))
         );
-        assert_eq!(child_session_metadata(None, None, 0, None), None);
+        assert_eq!(child_session_metadata(None, None, 0, None, None), None);
+        assert_eq!(
+            child_session_metadata(None, None, 0, None, Some("semif")),
+            Some(json!({ "judge_provider": "semif" }))
+        );
     }
 
     #[test]

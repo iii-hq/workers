@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ConfigFormProps, ExtensionIii, SelectProps, SettingsFieldProps } from '@iii-dev/console-ui'
-import { act, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { act, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JudgeRoutingForm, listProviders } from './index'
@@ -45,6 +45,9 @@ vi.mock('@iii-dev/console-ui', () => ({
       {children}
     </section>
   ),
+  Switch: ({ onChange, ...props }: InputHTMLAttributes<HTMLInputElement>) => (
+    <input type="checkbox" {...props} onChange={onChange} />
+  ),
   StatusPanel: ({ variant, headline, detail, action }: { variant?: string; headline: ReactNode; detail?: ReactNode; action?: ReactNode }) => (
     <div role="alert" data-variant={variant}>
       {headline}
@@ -59,6 +62,7 @@ const registry = {
     { function_id: 'judge-typesafe::evaluate', namespace: 'my-project', worker_name: 'judge-typesafe' },
     { function_id: 'judge-typesafe::cancel', namespace: 'my-project', worker_name: 'judge-typesafe' },
     { function_id: 'judge-local-llm::evaluate', namespace: 'my-project', worker_name: 'judge-local-llm' },
+    { function_id: 'judge-laya::configuration-id', namespace: 'my-project', worker_name: 'judge-laya' },
     { function_id: 'judge::evaluate', namespace: 'my-project', worker_name: 'judge' },
     { function_id: 'judgemental::evaluate', namespace: 'my-project', worker_name: 'judgemental' },
   ],
@@ -95,6 +99,7 @@ afterEach(async () => {
 describe('listProviders', () => {
   it('keeps one row per judge-<provider> worker answering evaluate', async () => {
     await expect(listProviders(engine())).resolves.toEqual([
+      { provider: 'laya', worker: 'judge-laya', namespace: 'my-project' },
       { provider: 'local-llm', worker: 'judge-local-llm', namespace: 'my-project' },
       { provider: 'typesafe', worker: 'judge-typesafe', namespace: 'my-project' },
     ])
@@ -110,9 +115,10 @@ describe('JudgeRoutingForm', () => {
       { timeoutMs: 10_000 },
     )
     const select = container.querySelector<HTMLSelectElement>('select[name="provider"]')!
-    expect([...select.options].map((option) => option.value)).toEqual(['', 'local-llm', 'typesafe'])
+    expect([...select.options].map((option) => option.value)).toEqual(['', 'laya', 'local-llm', 'typesafe'])
     expect(select.options[0].textContent).toBe('Built-in default (typesafe)')
-    expect(select.options[2].dataset.description).toBe('judge-typesafe · my-project')
+    expect(select.options[3].dataset.description).toBe('judge-typesafe · my-project')
+    expect(select.options[1].dataset.description).toBe('judge-laya · my-project')
     expect(select.value).toBe('typesafe')
     expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('judge-typesafe · my-project')
     expect(container.querySelector('[role="alert"]')).toBeNull()
@@ -177,6 +183,17 @@ describe('JudgeRoutingForm', () => {
     expect(container.textContent).toContain('single value')
     expect(onChange).not.toHaveBeenCalled()
     expect(iii.trigger).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a provider known only by its configuration id as registered and toggles preload_all', async () => {
+    const value = Object.freeze({ provider: 'laya', future: { keep: true } })
+    const { container, onChange } = await mount(value)
+    expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('judge-laya · my-project')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+    const preload = container.querySelector<HTMLInputElement>('#judge-cfg-preload_all')!
+    expect(preload.checked).toBe(false)
+    await act(async () => preload.click())
+    expect(onChange).toHaveBeenLastCalledWith({ ...value, preload_all: true })
   })
 
   it('focuses the provider control on a deep link', async () => {

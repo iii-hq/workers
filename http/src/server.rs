@@ -183,6 +183,14 @@ pub async fn rebuild_layers(router: &RouterCell, snapshot: &RestApiConfig) {
 pub struct HotRouter {
     pub inner: RouterCell,
     pub state: Arc<AppState>,
+    /// Present only on the normal router; kept even while disabled so reload
+    /// can enable the restricted listener without registering another provider.
+    pub webhook: Option<Arc<WebhookServer>>,
+}
+
+pub struct WebhookServer {
+    pub hot_router: HotRouter,
+    pub control: ServerControlCell,
 }
 
 impl Service<Request<Body>> for HotRouter {
@@ -198,6 +206,39 @@ impl Service<Request<Body>> for HotRouter {
         let router_arc = self.inner.clone();
         let state = self.state.clone();
         Box::pin(async move {
+            // Gate BEFORE CORS (which otherwise answers every OPTIONS request)
+            // and again in dynamic_handler (registrations may change meanwhile).
+            if state.public_webhooks_only {
+                let table = state.routes.read().await;
+                if table
+                    .match_route_for_listener(req.method().as_str(), req.uri().path(), true)
+                    .is_none()
+                {
+                    let allowed = table.allowed_methods_for_listener(req.uri().path(), true);
+                    let status = if allowed.is_empty() {
+                        StatusCode::NOT_FOUND
+                    } else {
+                        StatusCode::METHOD_NOT_ALLOWED
+                    };
+                    let mut response = handler::error_response(
+                        status,
+                        if allowed.is_empty() {
+                            "NOT_FOUND"
+                        } else {
+                            "METHOD_NOT_ALLOWED"
+                        },
+                        status.canonical_reason().unwrap_or("Request rejected"),
+                    );
+                    if !allowed.is_empty() {
+                        if let Ok(value) = allowed.join(", ").parse() {
+                            response
+                                .headers_mut()
+                                .insert(axum::http::header::ALLOW, value);
+                        }
+                    }
+                    return Ok(response);
+                }
+            }
             let router_clone = {
                 let router_guard = router_arc.read().await;
                 router_guard.clone()
@@ -257,16 +298,37 @@ pub async fn serve(
     let listener = TcpListener::bind(&addr).await?;
     let local_addr = listener.local_addr()?;
 
-    let state = Arc::new(AppState {
-        routes,
-        iii,
-        config,
-    });
-
+    // Bind both before spawning either: a failed webhook bind must not leak
+    // the normal listener/task during boot.
+    let webhook_listener = match &snapshot.webhook_listener {
+        Some(binding) => Some(TcpListener::bind((binding.host.as_str(), binding.port)).await?),
+        None => None,
+    };
     let router: RouterCell = Arc::new(RwLock::new(build_router(&snapshot)));
+    let webhook_router = HotRouter {
+        inner: router.clone(),
+        state: Arc::new(AppState {
+            routes: routes.clone(),
+            iii: iii.clone(),
+            config: config.clone(),
+            public_webhooks_only: true,
+        }),
+        webhook: None,
+    };
+    let webhook_control =
+        webhook_listener.map(|listener| spawn_server(listener, webhook_router.clone()));
     let hot_router = HotRouter {
         inner: router.clone(),
-        state,
+        state: Arc::new(AppState {
+            routes,
+            iii,
+            config,
+            public_webhooks_only: false,
+        }),
+        webhook: Some(Arc::new(WebhookServer {
+            hot_router: webhook_router,
+            control: Arc::new(Mutex::new(webhook_control)),
+        })),
     };
 
     let control = spawn_server(listener, hot_router.clone());
@@ -323,16 +385,21 @@ fn hot_router_local_addr(listener: &TcpListener) -> SocketAddr {
         .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
 }
 
-/// Gracefully stop a superseded server after a rebind: signal its graceful
-/// shutdown (closes the old listener + open connections so the old address is
-/// fully freed), then hard-abort it after [`OLD_SERVER_HARD_STOP_GRACE`] as a
-/// safety net. The join handle is detached — draining happens in the background.
-/// Mirrors the engine's post-rebind old-server teardown.
+/// Drain a listener with a bounded deadline and join its serving task. Used
+/// for reload and shutdown so no detached teardown tasks outlive the worker.
+pub async fn stop_server(control: ServerControl) {
+    let _ = control.graceful.send(());
+    let mut join = control.join;
+    if tokio::time::timeout(OLD_SERVER_HARD_STOP_GRACE, &mut join)
+        .await
+        .is_err()
+    {
+        control.abort.abort();
+        let _ = join.await;
+    }
+}
+
+/// Compatibility wrapper for callers that do not need to wait for draining.
 pub fn stop_old_server(old: ServerControl) {
-    let _ = old.graceful.send(());
-    let abort = old.abort;
-    tokio::spawn(async move {
-        tokio::time::sleep(OLD_SERVER_HARD_STOP_GRACE).await;
-        abort.abort();
-    });
+    tokio::spawn(stop_server(old));
 }
