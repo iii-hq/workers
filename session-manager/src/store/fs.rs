@@ -358,7 +358,6 @@ impl FsStore {
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .read(true)
-            .write(true)
             .append(true)
             .open(&path)
             .map_err(|e| StoreError(format!("open {}: {e}", path.display())))?;

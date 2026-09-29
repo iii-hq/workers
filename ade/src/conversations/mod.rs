@@ -112,6 +112,9 @@ pub fn register(iii: &Arc<IIIClient>) {
     );
 }
 
+/// Messages per `session::append-many` call.
+const APPEND_BATCH: usize = 200;
+
 async fn rpc(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value> {
     iii.trigger(TriggerRequest {
         function_id: function_id.into(),
@@ -212,16 +215,24 @@ async fn import_transcript(iii: &IIIClient, transcript: Transcript) -> Result<Im
         .as_str()
         .context("Created session ID is missing")?
         .to_owned();
-    if let Err(error) = rpc(
-        iii,
-        "session::append-many",
-        json!({
-            "session_id": session_id,
-            "messages": messages,
-        }),
-    )
-    .await
-    {
+    // The store writes a batch message by message under one RPC timeout, and a history with its
+    // commands can run to thousands of rows: append in order, each batch chained to the last.
+    let appended: Result<()> = async {
+        for batch in messages.chunks(APPEND_BATCH) {
+            rpc(
+                iii,
+                "session::append-many",
+                json!({
+                    "session_id": session_id,
+                    "messages": batch,
+                }),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = appended {
         rpc(iii, "session::delete", json!({"session_id": session_id}))
             .await
             .with_context(|| {
@@ -290,11 +301,14 @@ mod tests {
                 if fail_append.load(Ordering::SeqCst) {
                     return Err(Error::Handler("append failed".into()));
                 }
-                stored
-                    .lock()
-                    .unwrap()
+                let mut stored = stored.lock().unwrap();
+                let session = stored
                     .get_mut(request["session_id"].as_str().unwrap())
-                    .unwrap()["messages"] = request["messages"].clone();
+                    .unwrap();
+                session["messages"]
+                    .as_array_mut()
+                    .map(|all| all.extend(request["messages"].as_array().unwrap().clone()))
+                    .unwrap_or_else(|| session["messages"] = request["messages"].clone());
                 Ok(json!({}))
             }),
         );
@@ -350,9 +364,29 @@ mod tests {
                 }])
             );
         }
+        // A history longer than one batch arrives whole and in order.
+        let long = Transcript {
+            messages: (0..APPEND_BATCH * 2 + 50)
+                .map(|n| {
+                    ExternalMessage::new(format!("m{n}"), "user", format!("text {n}"), n as i64)
+                })
+                .collect(),
+            ..history()
+        };
+        let long_result = import_transcript(&iii, long).await.unwrap();
+        assert_eq!(long_result.imported_messages, APPEND_BATCH * 2 + 50);
+        {
+            let stored = sessions.lock().unwrap();
+            let all = stored[&long_result.session_id]["messages"]
+                .as_array()
+                .unwrap();
+            assert_eq!(all.len(), APPEND_BATCH * 2 + 50);
+            assert_eq!(all[0]["content"][0]["text"], "text 0");
+            assert_eq!(all[all.len() - 1]["content"][0]["text"], "text 449");
+        }
         fail.store(true, Ordering::SeqCst);
         assert!(import_transcript(&iii, history()).await.is_err());
-        assert_eq!(sessions.lock().unwrap().len(), 2);
+        assert_eq!(sessions.lock().unwrap().len(), 3);
         iii.shutdown_async().await;
     }
 }

@@ -525,6 +525,17 @@ fn is_read_only(metadata: &serde_json::Map<String, Value>) -> bool {
     metadata.get("read_only").and_then(Value::as_bool) == Some(true)
 }
 
+/// Rejects a session whose metadata carries `read_only: true`, for callers that already hold it.
+pub(crate) fn ensure_writable(
+    metadata: &serde_json::Map<String, Value>,
+    session_id: &str,
+) -> Result<(), HarnessError> {
+    if is_read_only(metadata) {
+        return Err(read_only_error(session_id));
+    }
+    Ok(())
+}
+
 fn read_only_error(session_id: &str) -> HarnessError {
     HarnessError::InvalidRequest(format!(
         "session `{session_id}` is read-only and cannot accept messages"
@@ -1466,6 +1477,16 @@ mod tests {
     use iii_helpers::observability::opentelemetry::Context;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
     use std::sync::Arc;
+
+    #[test]
+    fn a_reused_session_must_be_writable() {
+        let metadata = |value: Value| value.as_object().unwrap().clone();
+        assert!(ensure_writable(&metadata(serde_json::json!({})), "s").is_ok());
+        assert!(ensure_writable(&metadata(serde_json::json!({"read_only": false})), "s").is_ok());
+        let error =
+            ensure_writable(&metadata(serde_json::json!({"read_only": true})), "s").unwrap_err();
+        assert!(error.to_string().contains("read-only"), "{error}");
+    }
 
     fn failed_send_session_attribute(result: Result<(), HarnessError>) -> Option<String> {
         let exporter = InMemorySpanExporter::default();

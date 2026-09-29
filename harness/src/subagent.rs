@@ -639,6 +639,7 @@ async fn seed_child(
                      cannot recreate one — retry after the session exists again"
                 ))
             })?;
+            send::ensure_writable(&metadata, id)?;
             if let Some(p) = parent {
                 validate_turn_reuse(
                     &p.session_id,
@@ -655,6 +656,8 @@ async fn seed_child(
                 .ensure(id, title, linkage.as_ref(), kind.as_deref())
                 .await?;
             if !ensured.created {
+                // A reused session takes the child's task as a new message: it must be writable.
+                send::ensure_writable(&ensured.metadata, id)?;
                 // Reuse is legitimate for a parentless caller (a fork, or
                 // delivering a reaction into an existing chat). From a live
                 // turn it is almost always a cross-run id collision — models
