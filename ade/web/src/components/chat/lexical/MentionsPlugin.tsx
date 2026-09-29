@@ -62,8 +62,8 @@ export function atTriggerFn(text: string, _editor: LexicalEditor) {
 }
 
 interface MentionsPluginProps {
-  /** When set, this ref is flipped to true while the typeahead is visible
-      so a sibling SubmitOnEnter plugin can skip its Enter handler. */
+  /** When set, true while the menu shows options, so the composer's Enter
+      and arrow handlers yield those keys to the typeahead. */
   menuOpenRef?: React.MutableRefObject<boolean>
   functionEntries?: FunctionEntry[]
   /** Files under the conversation's working directory; absent = functions only. */
@@ -106,6 +106,19 @@ export function MentionsPlugin({
     return rows
   }, [functionEntries, files, query, page])
 
+  /* The trigger fires on any `@query`, so the typeahead counts as open on
+     text that matches nothing ("thanks @bob"). Only a menu that shows
+     options may claim Enter, or the message could not be sent; a list that
+     fills in after the file search lands claims it without a keystroke.
+     Written only while this menu is open, so it never clears another
+     menu's claim. */
+  const openRef = useRef(false)
+  useEffect(() => {
+    if (menuOpenRef && openRef.current) {
+      menuOpenRef.current = options.length > 0
+    }
+  }, [options, menuOpenRef])
+
   /* The typeahead plugin wraps this callback in editor.update() and passes us
      the TextNode currently holding "@<query>" (since shouldSplitNodeWithQuery
      is true inside the plugin). We replace it with the mention node and
@@ -144,14 +157,17 @@ export function MentionsPlugin({
       onQueryChange={setQuery}
       onSelectOption={onSelectOption}
       onOpen={() => {
-        if (menuOpenRef) menuOpenRef.current = true
+        openRef.current = true
+        if (menuOpenRef) menuOpenRef.current = options.length > 0
       }}
       onClose={() => {
+        openRef.current = false
         if (menuOpenRef) menuOpenRef.current = false
       }}
       triggerFn={atTriggerFn}
       /* Run the typeahead's KEY_ENTER_COMMAND (and arrows/tab/escape) at NORMAL
-         so it consumes Enter before our SubmitOnEnter handler at LOW. */
+         so it consumes Enter before the composer's send, which listens at
+         the front of LOW. */
       commandPriority={COMMAND_PRIORITY_NORMAL}
       menuRenderFn={(anchorElementRef, props) => {
         if (!anchorElementRef.current || options.length === 0) return null

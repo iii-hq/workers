@@ -19,10 +19,12 @@ import {
   $isParagraphNode,
   $isRangeSelection,
   CLEAR_EDITOR_COMMAND,
+  COMMAND_PRIORITY_BEFORE_LOW,
   COMMAND_PRIORITY_HIGH,
   COMMAND_PRIORITY_LOW,
   type ElementNode,
   INDENT_CONTENT_COMMAND,
+  INSERT_PARAGRAPH_COMMAND,
   INSERT_TAB_COMMAND,
   isDOMNode,
   isSelectionCapturedInDecoratorInput,
@@ -75,7 +77,7 @@ import { SlashCommandTransformPlugin } from './lexical/SlashCommandTransformPlug
 
 interface LexicalShellProps {
   onChange: (text: string) => void
-  /** Called on Enter from prose or `SEND_ANYWHERE_BINDING`; the send button is the other way in. */
+  /** Called on `SEND_BINDING` or `SEND_CHORD`; the send button is the other way in. */
   onSubmit: () => void
   placeholder?: string
   disabled?: boolean
@@ -84,17 +86,16 @@ interface LexicalShellProps {
 }
 
 /**
- * The key that sends from prose: a bare Enter. Exported so the send button
- * can say so. Shift+Enter breaks the line instead.
+ * The key that sends: a bare Enter, from anywhere in the draft. Exported so
+ * the send button can say so. Shift+Enter breaks the line instead.
  */
 export const SEND_BINDING = 'Enter'
 
 /**
- * The chord that sends from anywhere — inside a code block or a list item
- * too, where a bare Enter keeps its structural meaning: the platform's
- * primary modifier and Enter (⌘↵ on a Mac, Ctrl+Enter on Windows and Linux).
+ * The composer's earlier send chord (⌘↵ on a Mac, Ctrl+Enter on Windows and
+ * Linux) still sends, so the old habit never turns into a stray newline.
  */
-export const SEND_ANYWHERE_BINDING = 'Mod+Enter'
+const SEND_CHORD = 'Mod+Enter'
 
 const baseConfig = {
   namespace: 'iii-chat',
@@ -141,24 +142,28 @@ function ChangePlugin({ onChange }: { onChange: (text: string) => void }) {
 }
 
 /**
- * Enter sends; Shift+Enter inserts a newline; `SEND_ANYWHERE_BINDING`
- * (Mod+Enter) sends from anywhere in the draft, structure or not.
+ * Enter sends from anywhere in the draft, structure or not (so does
+ * `SEND_CHORD`); Shift+Enter is always the new line.
  *
- * The message is markdown with lists and code blocks, so a bare Enter keeps
- * its structural meaning where there is structure and only sends from
- * prose. In order: "```" alone on a paragraph opens a code block; inside a
- * code block, the next line (a second blank line at the end leaves the
- * block — see `$insertCodeLine`); inside a list, the next item (ListPlugin;
- * on an empty item it leaves the list); in prose, a bare Enter submits and
- * every other chord (Shift+Enter above all) is RichTextPlugin's line break.
- * Every newline shape exports as one `\n`.
+ * The message is markdown with lists and code blocks, so Shift+Enter makes
+ * the new line the caret's block expects. In order: "```" alone on a
+ * paragraph opens a code block; inside a code block, the next line (a second
+ * blank line at the end leaves the block — see `$insertCodeLine`); inside a
+ * list, the next item (ListPlugin; on an empty item it leaves the list); in
+ * prose, a new paragraph, a line of its own, so "- " or "```" typed on it
+ * still start a block. Any other chord (Alt+Enter, Ctrl+Enter on a Mac)
+ * stays Lexical's default rather than sending by accident. Every newline
+ * shape exports as one `\n`.
  *
- * We listen at LOW priority. While a typeahead menu is open we swallow Enter
- * here (return true) so it can't fall through to RichTextPlugin's
- * KEY_ENTER_COMMAND at EDITOR priority (which would insert a paragraph). The
- * typeahead runs at NORMAL and gets first shot at consuming Enter for option
- * selection; this branch is the safety net for the brief window where the
- * menu is open but the typeahead's Enter handler isn't (yet) consuming.
+ * Priorities: a typeahead menu consumes Enter at NORMAL to pick its option,
+ * so it always runs first. Sending listens at the front of LOW
+ * (BEFORE_LOW): after the typeahead, but ahead of MarkdownShortcutPlugin's
+ * own LOW Enter handler, which would turn a "```" line into a code block
+ * instead. Both handlers also stand aside while `menuOpenRef` says a menu
+ * shows options — the new-line one swallows Enter (return true) so it
+ * can't fall through to RichTextPlugin's KEY_ENTER_COMMAND at EDITOR
+ * priority — the safety net for the brief window where the menu shows but
+ * the typeahead's Enter handler isn't (yet) consuming.
  */
 function ComposerEnterPlugin({
   onSubmit,
@@ -169,18 +174,35 @@ function ComposerEnterPlugin({
 }) {
   const [editor] = useLexicalComposerContext()
   useEffect(() => {
-    return editor.registerCommand(
+    const offSend = editor.registerCommand(
+      KEY_ENTER_COMMAND,
+      (event) => {
+        if (!event) return false
+        // The Enter that confirms an IME candidate belongs to the IME
+        // (desktop Safari fires it after compositionend): neither send nor
+        // break the line.
+        if (event.isComposing || event.keyCode === 229) return true
+        if (menuOpenRef.current) return false
+        if (
+          !bindingMatchesEvent(SEND_BINDING, event) &&
+          !bindingMatchesEvent(SEND_CHORD, event)
+        ) {
+          return false
+        }
+        event.preventDefault()
+        onSubmit()
+        return true
+      },
+      COMMAND_PRIORITY_BEFORE_LOW,
+    )
+    const offNewLine = editor.registerCommand(
       KEY_ENTER_COMMAND,
       (event) => {
         if (menuOpenRef.current) {
           event?.preventDefault()
           return true
         }
-        if (event && bindingMatchesEvent(SEND_ANYWHERE_BINDING, event)) {
-          event.preventDefault()
-          onSubmit()
-          return true
-        }
+        if (!event?.shiftKey) return false
         const selection = $getSelection()
         if (!$isRangeSelection(selection)) return false
         // Opening a fence and adding a code line are caret operations; with a
@@ -191,7 +213,7 @@ function ComposerEnterPlugin({
         if (collapsed && $isParagraphNode(block)) {
           const fence = block.getTextContent().match(FENCE_ONLY_LINE)
           if (fence) {
-            event?.preventDefault()
+            event.preventDefault()
             const code = $createCodeNode(fence[2] || undefined)
             block.replace(code)
             code.select()
@@ -201,22 +223,23 @@ function ComposerEnterPlugin({
         const container = $getComposerContainer(anchor)
         if ($isCodeNode(container)) {
           if (!collapsed) return false
-          event?.preventDefault()
+          event.preventDefault()
           $insertCodeLine(container, selection)
           return true
         }
-        // A list item goes to ListPlugin: next item, or out of the list.
-        if ($isListItemNode(container)) return false
-        // Prose. Only a bare Enter sends; Shift+Enter is RichTextPlugin's line
-        // break, and any other chord (Alt+Enter, Ctrl+Enter on a Mac) stays
-        // Lexical's default rather than sending by accident.
-        if (!event || !bindingMatchesEvent(SEND_BINDING, event)) return false
+        // A list item or prose: the paragraph command. ListPlugin starts the
+        // next item or leaves the list; prose gets a paragraph of its own
+        // (RichTextPlugin's line break would stay in the same one, where no
+        // "- " or "```" typed after it could start a block).
         event.preventDefault()
-        onSubmit()
-        return true
+        return editor.dispatchCommand(INSERT_PARAGRAPH_COMMAND, undefined)
       },
       COMMAND_PRIORITY_LOW,
     )
+    return () => {
+      offSend()
+      offNewLine()
+    }
   }, [editor, onSubmit, menuOpenRef])
   return null
 }
@@ -365,7 +388,7 @@ function HistoryNavPlugin({
 /**
  * Down on the last line of a code block that ends the draft steps out into
  * a fresh paragraph after it. The block is usually the last thing typed,
- * and short of this the only ways out are three Enters or the mouse.
+ * and short of this the only ways out are three Shift+Enters or the mouse.
  * LOW priority, mounted right after HistoryNavPlugin so it registers after
  * it: on a pristine draft the queue still browses first, and this runs only
  * once the arrow has nowhere else to go.

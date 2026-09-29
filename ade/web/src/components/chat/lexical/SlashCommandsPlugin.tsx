@@ -39,7 +39,8 @@ class SlashCommandOption extends MenuOption {
 }
 
 interface SlashCommandsPluginProps {
-  /** True while the menu shows options so SubmitOnEnter yields Enter to the typeahead. */
+  /** True while the menu shows options, so the composer's Enter and arrow
+      handlers yield those keys to the typeahead. */
   menuOpenRef?: React.RefObject<boolean>
   /** The composer card the menu aligns to. */
   frameRef?: RefObject<HTMLElement | null>
@@ -104,10 +105,14 @@ export function SlashCommandsPlugin({
      text that matches nothing ("hello /foo"). Only a menu that actually
      shows options may claim Enter — otherwise the message could never be
      sent — so the flag follows the option count, not the trigger. A list
-     that fills in after the fetch lands flips it on without a keystroke. */
+     that fills in after the fetch lands flips it on without a keystroke.
+     Written only while this menu is open, so a fetch landing late never
+     clears another menu's claim. */
   const openRef = useRef(false)
   useEffect(() => {
-    if (menuOpenRef) menuOpenRef.current = openRef.current && options.length > 0
+    if (menuOpenRef && openRef.current) {
+      menuOpenRef.current = options.length > 0
+    }
   }, [options, menuOpenRef])
 
   /* The typeahead plugin wraps this callback in editor.update() and passes us
@@ -146,7 +151,8 @@ export function SlashCommandsPlugin({
         if (menuOpenRef) menuOpenRef.current = false
       }}
       triggerFn={slashTriggerFn}
-      // NORMAL so typeahead consumes Enter before LOW-priority SubmitOnEnter.
+      // NORMAL so the typeahead consumes Enter before the composer's send,
+      // which listens at the front of LOW.
       commandPriority={COMMAND_PRIORITY_NORMAL}
       menuRenderFn={(anchorElementRef, props) => {
         if (!anchorElementRef.current || options.length === 0) return null
