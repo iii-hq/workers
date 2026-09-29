@@ -15,6 +15,12 @@
 import {
   Badge,
   Button,
+  Checkbox,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
   EmptyState,
   type Host,
   type LiveAnnouncement,
@@ -58,6 +64,8 @@ export interface SetupStatus {
 const STATUS_FN = 'github::setup::webhooks-status'
 const LISTENER_FN = 'github::setup::enable-http-listener'
 const ENABLE_FN = 'github::setup::enable-webhooks'
+const CLOUDFLARED_INSTALL_URL =
+  'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/'
 /** Webhook storage opens at startup: the github compose container restarts. */
 const GITHUB_CONTAINER = 'github'
 
@@ -110,6 +118,76 @@ function summarize(status: SetupStatus): string {
     : `${open} of ${total} prerequisites need attention.`
 }
 
+interface QuickTunnelInstallDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onInstall: () => void
+}
+
+/** Require the operator to confirm cloudflared before quick-tunnel is added. */
+export function QuickTunnelInstallDialog({
+  open,
+  onOpenChange,
+  onInstall,
+}: QuickTunnelInstallDialogProps) {
+  const [cloudflaredInstalled, setCloudflaredInstalled] = useState(false)
+  const installStarted = useRef(false)
+
+  useEffect(() => {
+    if (open) installStarted.current = false
+  }, [open])
+
+  const setOpen = (next: boolean) => {
+    if (!next) setCloudflaredInstalled(false)
+    onOpenChange(next)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent data-iii-ui="github" className="gh-ui-webhooks__install-dialog">
+        <DialogTitle>
+          Would you like to add Webhook support so your agents can react to Github events?
+        </DialogTitle>
+        <DialogDescription className="gh-ui-webhooks__install-description">
+          Clicking install will install the quick-tunnel worker to this project which supports
+          cloudflared. You must first install cloudflared on this computer before proceeding.
+        </DialogDescription>
+        <a
+          className="gh-ui-webhooks__install-guide"
+          href={CLOUDFLARED_INSTALL_URL}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Cloudflare installation guide <ExternalLink aria-hidden />
+        </a>
+        <Checkbox
+          className="gh-ui-webhooks__install-check"
+          checked={cloudflaredInstalled}
+          onChange={(event) => setCloudflaredInstalled(event.currentTarget.checked)}
+          label="I have installed cloudflared"
+        />
+        <div className="gh-ui-webhooks__install-actions">
+          <DialogClose asChild>
+            <Button variant="ghost">Cancel</Button>
+          </DialogClose>
+          <Button
+            variant="primary"
+            disabled={!cloudflaredInstalled}
+            onClick={() => {
+              if (!cloudflaredInstalled || installStarted.current) return
+              installStarted.current = true
+              onInstall()
+              setOpen(false)
+            }}
+          >
+            Install
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function WebhookSetup({ host }: { host: Host }) {
   const [status, setStatus] = useState<SetupStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -117,6 +195,7 @@ export function WebhookSetup({ host }: { host: Host }) {
   const [actionError, setActionError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
+  const [installWorkerPrompt, setInstallWorkerPrompt] = useState<string | null>(null)
   const [checkedAt, setCheckedAt] = useState<Date | null>(null)
   const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
   const { confirm, dialog } = useConfirm()
@@ -196,13 +275,8 @@ export function WebhookSetup({ host }: { host: Host }) {
     [refresh],
   )
 
-  const installWorker = async (worker: string) => {
-    const ok = await confirm({
-      title: `Install the ${worker} worker?`,
-      description: `Adds ${worker} to this project with compose::add and starts it. It runs cloudflared, which you install yourself.`,
-      confirmLabel: 'Install',
-    })
-    if (ok) await run(`install:${worker}`, () => installAndWait(worker))
+  const installWorker = (worker: string) => {
+    setInstallWorkerPrompt(worker)
   }
 
   /** compose::add is asynchronous: follow its operation to a terminal status. */
@@ -352,6 +426,16 @@ export function WebhookSetup({ host }: { host: Host }) {
   return (
     <PageMain className="gh-ui-main gh-ui-webhooks">
       {dialog}
+      <QuickTunnelInstallDialog
+        open={installWorkerPrompt !== null}
+        onOpenChange={(open) => {
+          if (!open) setInstallWorkerPrompt(null)
+        }}
+        onInstall={() => {
+          const worker = installWorkerPrompt
+          if (worker) void run(`install:${worker}`, () => installAndWait(worker))
+        }}
+      />
       <LiveRegion announcement={announcement} />
       <SettingsSection
         title="PR webhook setup"
