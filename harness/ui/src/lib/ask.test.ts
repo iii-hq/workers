@@ -6,6 +6,7 @@ import {
   formatAnswer,
   isOpen,
   parseAsk,
+  turnIdOf,
 } from './ask'
 
 /**
@@ -300,7 +301,38 @@ describe('isOpen', () => {
     expect(isOpen(view, 'turn_8')).toBe(false)
   })
 
-  it('is open when the current turn is unknown', () => {
+  it('is closed when the session has no turn record (expired or none)', () => {
+    expect(isOpen(view, null)).toBe(false)
+  })
+
+  it('is open when the current turn is unknown (not read yet, or the read failed)', () => {
     expect(isOpen(view, undefined)).toBe(true)
+  })
+})
+
+describe('turnIdOf', () => {
+  it('reads the turn id of a lean harness::status report', () => {
+    const report = { session_id: 'sess_1', turn_id: 'turn_7', status: 'completed', step: 2, turn_count: 1 }
+    expect(turnIdOf(report)).toBe('turn_7')
+  })
+
+  it('a null report means the session has no turn record', () => {
+    // status.rs `handle`: `Ok(None)` when `get_turn` finds no record.
+    expect(turnIdOf(null)).toBeNull()
+  })
+
+  it('a report without a usable turn_id is unknown, not "no record"', () => {
+    // A report exists only when a record does, and `handle` always fills
+    // `turn_id` then; a report we cannot read proves nothing either way.
+    expect(turnIdOf({ session_id: 'sess_1' })).toBeUndefined()
+    expect(turnIdOf({ session_id: 'sess_1', turn_id: null })).toBeUndefined()
+    expect(turnIdOf({ session_id: 'sess_1', turn_id: '  ' })).toBeUndefined()
+  })
+
+  it('any other value is unknown', () => {
+    expect(turnIdOf(undefined)).toBeUndefined()
+    expect(turnIdOf('turn_7')).toBeUndefined()
+    expect(turnIdOf(['turn_7'])).toBeUndefined()
+    expect(turnIdOf(42)).toBeUndefined()
   })
 })

@@ -167,11 +167,34 @@ export function formatAnswer(
 }
 
 /**
- * Whether the question still takes an answer: the session's current turn is
- * the one that asked. An unknown current turn (`harness::status` not loaded
- * or failed) counts as open. It is better to allow an answer than to block
- * one.
+ * The session's current turn, as far as the card knows it:
+ * - a turn id: the session's current turn;
+ * - `null`: the session has no turn record (it expired, or there never was
+ *   one);
+ * - `undefined`: unknown (the status read has not answered yet, failed, or
+ *   returned a shape the card cannot read).
  */
-export function isOpen(view: AskView, currentTurnId: string | undefined): boolean {
-  return currentTurnId === undefined || currentTurnId === view.turnId
+export type CurrentTurn = string | null | undefined
+
+/**
+ * The current turn in a lean `harness::status` reply. The handler answers
+ * `null` when the session has no turn record and fills `turn_id` whenever it
+ * has one (harness/src/functions/status.rs), so `null` means "no record" and
+ * a reply without a usable `turn_id` proves nothing either way: unknown.
+ */
+export function turnIdOf(report: unknown): CurrentTurn {
+  if (report === null) return null
+  if (!isRecord(report)) return undefined
+  return isText(report.turn_id) ? report.turn_id : undefined
+}
+
+/**
+ * Whether the question still takes an answer: the session's current turn is
+ * the one that asked. A session with no turn record counts as answered: a card
+ * exists only because a turn ran, so a missing record means that turn is over
+ * (its record expired). An unknown current turn (not read yet, or the read
+ * failed) counts as open. It is better to allow an answer than to block one.
+ */
+export function isOpen(view: AskView, currentTurn: CurrentTurn): boolean {
+  return currentTurn === undefined || currentTurn === view.turnId
 }

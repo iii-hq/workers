@@ -13,8 +13,10 @@
  * Open vs answered: the card reads the session's current turn from
  * `harness::status` on mount, when the tab becomes visible again, and when
  * focus enters an open card (so an answer typed in the composer closes it
- * before a second one is sent). There is no interval polling. An unknown
- * turn (not loaded yet, null, or a failed call) counts as open.
+ * before a second one is sent). There is no interval polling. A session with
+ * no turn record (the reply is `null`: the record expired) counts as
+ * answered; an unknown turn (not read yet, or a failed call) counts as open
+ * (see `turnIdOf` and `isOpen` in lib/ask).
  *
  * Anything `parseAsk` rejects (a refused ask, a running call) returns null
  * and falls through to the console's default card.
@@ -45,20 +47,15 @@ import {
   type AskQuestionView,
   type AskSelection,
   type AskView,
+  type CurrentTurn,
   formatAnswer,
   isOpen,
   parseAsk,
+  turnIdOf,
 } from '../lib/ask'
 
 const ASK_ID = 'harness::ask'
 const STATUS_TIMEOUT_MS = 5000
-
-/** `turn_id` of the lean `harness::status` report; anything else is unknown. */
-function turnIdOf(report: unknown): string | undefined {
-  if (!report || typeof report !== 'object' || Array.isArray(report)) return undefined
-  const turnId = (report as Record<string, unknown>).turn_id
-  return typeof turnId === 'string' && turnId.length > 0 ? turnId : undefined
-}
 
 /**
  * The session's current turn id and a function to re-read it. Re-reads when
@@ -66,7 +63,7 @@ function turnIdOf(report: unknown): string | undefined {
  * still in flight, and nothing lands after unmount.
  */
 function useCurrentTurnId(host: Host, sessionId: string) {
-  const [turnId, setTurnId] = useState<string | undefined>(undefined)
+  const [turnId, setTurnId] = useState<CurrentTurn>(undefined)
   const latest = useRef(0)
 
   const check = useCallback(() => {
