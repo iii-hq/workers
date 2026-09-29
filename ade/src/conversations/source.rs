@@ -150,7 +150,7 @@ fn content_text(content: &Value, block_type: &str) -> String {
 }
 
 /// A Codex tool item as one call: the source's tool name and the arguments it ran with.
-/// `None` for item kinds this import does not carry (plans, image views, sub-agent chatter).
+/// `None` for item kinds this import does not carry (image views, sub-agent chatter).
 fn codex_call(kind: &str, entry_id: &str, item: &Value) -> Option<ExternalCall> {
     let (function_id, arguments) = match kind {
         "CommandExecution" => {
@@ -220,6 +220,35 @@ fn codex_result(kind: &str, item: &Value) -> (String, bool) {
     }
 }
 
+/// One call as the assistant turn that made it, plus the `function_result` that answers it.
+fn call_pair(
+    call: ExternalCall,
+    output: String,
+    is_error: bool,
+    (started_at, completed_at): (i64, i64),
+    (model, provider): (&Option<String>, &Option<String>),
+) -> [ExternalMessage; 2] {
+    let mut turn = ExternalMessage::new(
+        format!("{}:call", call.id),
+        "assistant",
+        String::new(),
+        started_at,
+    );
+    turn.model = model.clone();
+    turn.provider = provider.clone();
+    let mut result = ExternalMessage::new(
+        format!("{}:result", call.id),
+        "function_result",
+        output,
+        completed_at,
+    );
+    result.call_id = Some(call.id.clone());
+    result.function_id = Some(call.function_id.clone());
+    result.is_error = is_error;
+    turn.calls.push(call);
+    [turn, result]
+}
+
 fn records(mut reader: impl BufRead, mut visit: impl FnMut(Value) -> Result<()>) -> Result<bool> {
     let mut line = Vec::new();
     let mut index = 0;
@@ -250,6 +279,9 @@ fn parse(source: Source, id: &str, reader: impl BufRead, modified_at: i64) -> Re
             let mut provider = None;
             let mut model = None;
             let mut seen = HashSet::new();
+            // `update_plan` is not a completed item: the source records a call row, then its
+            // output row. Hold the call until the output arrives so the pair lands together.
+            let mut plan_calls: HashMap<String, (ExternalCall, i64)> = HashMap::new();
             let incomplete = records(reader, |row| {
                 let payload = &row["payload"];
                 match text(&row, "type") {
@@ -267,6 +299,48 @@ fn parse(source: Source, id: &str, reader: impl BufRead, modified_at: i64) -> Re
                         has_meta = true;
                     }
                     Some("turn_context") => model = text(payload, "model").map(str::to_owned),
+                    Some("response_item") => match text(payload, "type") {
+                        Some("function_call") if text(payload, "name") == Some("update_plan") => {
+                            let (Some(call_id), Ok(started_at)) =
+                                (text(payload, "call_id"), timestamp(&row["timestamp"]))
+                            else {
+                                return Ok(());
+                            };
+                            let arguments = text(payload, "arguments").map_or(Value::Null, |raw| {
+                                serde_json::from_str(raw).unwrap_or_else(|_| raw.into())
+                            });
+                            let call = ExternalCall {
+                                id: call_id.to_owned(),
+                                function_id: "update_plan".into(),
+                                arguments,
+                            };
+                            plan_calls.insert(call_id.to_owned(), (call, started_at));
+                        }
+                        Some("function_call_output") => {
+                            let Some((call, started_at)) =
+                                text(payload, "call_id").and_then(|id| plan_calls.remove(id))
+                            else {
+                                return Ok(());
+                            };
+                            if !seen.insert(format!("{}:call", call.id)) {
+                                return Ok(());
+                            }
+                            let completed_at = timestamp(&row["timestamp"]).unwrap_or(started_at);
+                            let output = match &payload["output"] {
+                                Value::String(output) => output.clone(),
+                                Value::Null => String::new(),
+                                other => other.to_string(),
+                            };
+                            messages.extend(call_pair(
+                                call,
+                                output,
+                                false,
+                                (started_at, completed_at),
+                                (&model, &provider),
+                            ));
+                        }
+                        _ => {}
+                    },
                     Some("event_msg") => {
                         ensure!(
                             text(payload, "type") != Some("thread_rolled_back"),
@@ -283,9 +357,14 @@ fn parse(source: Source, id: &str, reader: impl BufRead, modified_at: i64) -> Re
                         let completed_at = payload["completed_at_ms"]
                             .as_i64()
                             .context("Codex item completion time is missing")?;
-                        let (role, block_type) = match kind {
-                            "UserMessage" => ("user", "text"),
-                            "AgentMessage" => ("assistant", "Text"),
+                        let (role, body) = match kind {
+                            "UserMessage" => ("user", content_text(&item["content"], "text")),
+                            "AgentMessage" => ("assistant", content_text(&item["content"], "Text")),
+                            // A plan-mode proposal: the only place its text is recorded.
+                            "Plan" => (
+                                "assistant",
+                                text(item, "text").unwrap_or_default().to_owned(),
+                            ),
                             _ => {
                                 // Tool activity arrives already resolved: one call, then the
                                 // result the source recorded for it.
@@ -299,37 +378,29 @@ fn parse(source: Source, id: &str, reader: impl BufRead, modified_at: i64) -> Re
                                 let (output, is_error) = codex_result(kind, item);
                                 let started_at =
                                     payload["started_at_ms"].as_i64().unwrap_or(completed_at);
-                                let mut turn = ExternalMessage::new(
-                                    format!("{entry_id}:call"),
-                                    "assistant",
-                                    String::new(),
-                                    started_at,
-                                );
-                                turn.model = model.clone();
-                                turn.provider = provider.clone();
-                                let mut result = ExternalMessage::new(
-                                    format!("{entry_id}:result"),
-                                    "function_result",
+                                messages.extend(call_pair(
+                                    call,
                                     output,
-                                    completed_at,
-                                );
-                                result.call_id = Some(call.id.clone());
-                                result.function_id = Some(call.function_id.clone());
-                                result.is_error = is_error;
-                                turn.calls.push(call);
-                                messages.push(turn);
-                                messages.push(result);
+                                    is_error,
+                                    (started_at, completed_at),
+                                    (&model, &provider),
+                                ));
                                 return Ok(());
                             }
                         };
-                        let body = content_text(&item["content"], block_type);
                         if body.trim().is_empty() {
                             return Ok(());
                         }
-                        ensure!(
-                            seen.insert(entry_id.to_owned()),
-                            "The history repeats a completed message ID"
-                        );
+                        if kind == "Plan" {
+                            // A turn's plan completes again each time it is revised, under the
+                            // same ID: the latest revision is the plan.
+                            messages.retain(|message| message.id != entry_id);
+                        } else {
+                            ensure!(
+                                seen.insert(entry_id.to_owned()),
+                                "The history repeats a completed message ID"
+                            );
+                        }
                         let mut message = ExternalMessage::new(entry_id, role, body, completed_at);
                         message.model = model.clone();
                         message.provider = provider.clone();
@@ -448,6 +519,34 @@ fn parse(source: Source, id: &str, reader: impl BufRead, modified_at: i64) -> Re
                 leaf = parent;
             }
             messages.reverse();
+            // A parallel batch is filed one assistant row per call, so a call's result can sit
+            // on a sibling branch the walk above never visited. The rows still in `nodes` are
+            // exactly those: put each result right after the call it answers.
+            let mut sibling_results: HashMap<String, ExternalMessage> = nodes
+                .into_values()
+                .filter_map(|(_, projected)| projected.ok())
+                .flatten()
+                .filter(|message| message.role == "function_result")
+                .filter_map(|message| Some((message.call_id.clone()?, message)))
+                .collect();
+            if !sibling_results.is_empty() {
+                let answered: HashSet<&str> = messages
+                    .iter()
+                    .filter_map(|message| message.call_id.as_deref())
+                    .collect();
+                sibling_results.retain(|id, _| !answered.contains(id.as_str()));
+                let mut ordered = Vec::with_capacity(messages.len() + sibling_results.len());
+                for message in messages {
+                    let recovered: Vec<_> = message
+                        .calls
+                        .iter()
+                        .filter_map(|call| sibling_results.remove(&call.id))
+                        .collect();
+                    ordered.push(message);
+                    ordered.extend(recovered);
+                }
+                messages = ordered;
+            }
             // Results are met before the calls they answer: name them now that every
             // call on the branch is known.
             let names: HashMap<String, String> = messages
@@ -777,6 +876,116 @@ mod tests {
         assert_eq!(result.messages[0].text, result.messages[4].text);
         assert_eq!(result.messages[0].timestamp, 1789473600000);
         assert_eq!(result.conversation.title, "repeat");
+    }
+
+    #[test]
+    fn claude_recovers_results_filed_on_a_sibling_branch_of_parallel_calls() {
+        // Parallel calls are one assistant row each; the first call's result hangs off its own
+        // row, beside the row that carries the second call.
+        let bytes = jsonl(vec![
+            claude("root", None, "user", json!("run both")),
+            claude(
+                "call-1",
+                Some("root"),
+                "assistant",
+                json!([{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"a"}}]),
+            ),
+            claude(
+                "call-2",
+                Some("call-1"),
+                "assistant",
+                json!([{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"b"}}]),
+            ),
+            claude(
+                "tool-1",
+                Some("call-1"),
+                "user",
+                json!([{"type":"tool_result","tool_use_id":"toolu_1","content":"one"}]),
+            ),
+            claude(
+                "tool-2",
+                Some("call-2"),
+                "user",
+                json!([{"type":"tool_result","tool_use_id":"toolu_2","content":"two"}]),
+            ),
+        ]);
+        let result = parse(Source::ClaudeCode, ID, bytes.as_slice(), 0).unwrap();
+        assert_eq!(
+            result
+                .messages
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["root", "call-1", "tool-1:0", "call-2", "tool-2:0"]
+        );
+        let first = &result.messages[2];
+        assert_eq!(first.call_id.as_deref(), Some("toolu_1"));
+        assert_eq!(first.function_id.as_deref(), Some("Bash"));
+        assert_eq!(first.text, "one");
+    }
+
+    #[test]
+    fn codex_carries_plans_as_text_and_update_plan_as_a_call_pair() {
+        let row = |at: &str, payload: Value| json!({"timestamp":at,"type":"response_item","payload":payload});
+        let bytes = jsonl(vec![
+            json!({"type":"session_meta","payload":{"id":ID,"cwd":"/project","model_provider":"openai"}}),
+            json!({"type":"turn_context","payload":{"model":"example"}}),
+            json!({"type":"event_msg","payload":{"type":"item_completed","completed_at_ms":1000,"item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"plan it"}]}}}),
+            row(
+                "2026-09-15T12:00:01Z",
+                json!({"type":"function_call","name":"update_plan","call_id":"call_1","arguments":"{\"plan\":[{\"step\":\"a\",\"status\":\"in_progress\"}]}"}),
+            ),
+            row(
+                "2026-09-15T12:00:02Z",
+                json!({"type":"function_call_output","call_id":"call_1","output":"Plan updated"}),
+            ),
+            // A plan update whose output never came, and other function calls, are not carried.
+            row(
+                "2026-09-15T12:00:03Z",
+                json!({"type":"function_call","name":"update_plan","call_id":"call_2","arguments":"{}"}),
+            ),
+            row(
+                "2026-09-15T12:00:04Z",
+                json!({"type":"function_call","name":"send_message","call_id":"call_3","arguments":"{}"}),
+            ),
+            row(
+                "2026-09-15T12:00:05Z",
+                json!({"type":"function_call_output","call_id":"call_3","output":"sent"}),
+            ),
+            // The same turn's plan completing again is a revision: the last one wins.
+            json!({"type":"event_msg","payload":{"type":"item_completed","completed_at_ms":2500,"item":{"type":"Plan","id":"plan-1","text":"# Plan\n\nDraft"}}}),
+            json!({"type":"event_msg","payload":{"type":"item_completed","completed_at_ms":3000,"item":{"type":"Plan","id":"plan-1","text":"# Plan\n\nDo it"}}}),
+            json!({"type":"event_msg","payload":{"type":"item_completed","completed_at_ms":4000,"item":{"type":"AgentMessage","id":"a1","content":[{"type":"Text","text":"done"}]}}}),
+        ]);
+        let result = parse(Source::Codex, ID, bytes.as_slice(), 5000).unwrap();
+        let roles: Vec<_> = result.messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            [
+                "user",
+                "assistant",
+                "function_result",
+                "assistant",
+                "assistant"
+            ]
+        );
+        let call = &result.messages[1].calls[0];
+        assert_eq!(call.id, "call_1");
+        assert_eq!(call.function_id, "update_plan");
+        assert_eq!(
+            call.arguments,
+            json!({"plan":[{"step":"a","status":"in_progress"}]})
+        );
+        assert_eq!(result.messages[1].timestamp, 1789473601000);
+        assert_eq!(result.messages[1].model.as_deref(), Some("example"));
+        let outcome = &result.messages[2];
+        assert_eq!(outcome.call_id.as_deref(), Some("call_1"));
+        assert_eq!(outcome.function_id.as_deref(), Some("update_plan"));
+        assert_eq!(outcome.text, "Plan updated");
+        assert!(!outcome.is_error);
+        assert_eq!(outcome.timestamp, 1789473602000);
+        assert_eq!(result.messages[3].text, "# Plan\n\nDo it");
+        assert!(result.messages[3].calls.is_empty());
     }
 
     #[test]
