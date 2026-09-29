@@ -77,9 +77,23 @@ export async function importConversation(
   source: ConversationSource,
   id: string,
 ) {
-  return (await getIiiClient()).trigger<ImportResult>(
-    'console::conversations::import',
-    { source, id },
-    { timeoutMs: 120_000 },
-  )
+  try {
+    // The client's own trigger timeout applies: an import runs batch after batch server-side.
+    return await (await getIiiClient()).trigger<ImportResult>(
+      'console::conversations::import',
+      { source, id },
+    )
+  } catch (error) {
+    // A trigger that times out only stops waiting: the import can still finish, and importing
+    // again would make a second copy.
+    if (
+      error instanceof Error &&
+      error.message.startsWith('Invocation timeout')
+    ) {
+      throw new Error(
+        'Timed out waiting for the import. It may still be running, so check your conversations before importing it again.',
+      )
+    }
+    throw error
+  }
 }

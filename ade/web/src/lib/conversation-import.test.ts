@@ -29,7 +29,6 @@ it('uses read discovery/preview functions and imports only explicitly selected i
     [
       'console::conversations::import',
       { source: 'claude-code', id: 'history-1' },
-      { timeoutMs: 120_000 },
     ],
   ])
 })
@@ -53,4 +52,22 @@ it('keeps separate server IDs when importing the same source twice', async () =>
   expect(first.session_id).toBe('new-1')
   expect(second.session_id).toBe('new-2')
   expect(trigger).toHaveBeenCalledTimes(2)
+})
+
+it('says a timed-out import may still be running instead of reporting a plain failure', async () => {
+  const trigger = vi
+    .fn()
+    .mockRejectedValue(
+      new Error(
+        'Invocation timeout after 300000ms: console::conversations::import',
+      ),
+    )
+  vi.mocked(getIiiClient).mockResolvedValue({ trigger } as never)
+  await expect(importConversation('codex', 'big')).rejects.toThrow(
+    /may still be running/,
+  )
+  trigger.mockRejectedValue(new Error('permission denied'))
+  await expect(importConversation('codex', 'big')).rejects.toThrow(
+    'permission denied',
+  )
 })

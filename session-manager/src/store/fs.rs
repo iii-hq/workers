@@ -643,8 +643,12 @@ impl SessionStore for FsStore {
     }
 
     async fn delete_entries(&self, session_id: &str) -> Result<(), StoreError> {
-        self.mutate_snapshot(session_id, |s| s.entries.clear())
-            .await
+        self.mutate_snapshot(session_id, |s| {
+            s.entries.clear();
+            s.committed.clear();
+            s.pending_legacy_append = false;
+        })
+        .await
     }
 
     async fn get_active_leaf(&self, session_id: &str) -> Result<Option<String>, StoreError> {
@@ -1555,6 +1559,35 @@ mod tests {
             "reborn"
         );
         assert!(path.exists());
+    }
+
+    /// Committed ids belong to the entries: deleting the entries forgets them, so they are not
+    /// kept in the cache or written back as `Commit` records for a session that may be reused.
+    #[tokio::test]
+    async fn delete_entries_forgets_committed_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsStore::new(dir.path()).unwrap();
+        store.put_meta(&meta("s_1", "session")).await.unwrap();
+        let first = store
+            .commit_append("s_1", &entry("e_1", None, "first", 0), false)
+            .await
+            .unwrap();
+        assert!(first.committed);
+
+        store.delete_entries("s_1").await.unwrap();
+        assert!(store.lock()["s_1"].committed.is_empty());
+        let path = dir
+            .path()
+            .join(format!("{}.jsonl", encode_session_id("s_1")));
+        assert!(!std::fs::read_to_string(path)
+            .unwrap()
+            .contains("\"commit\""));
+
+        let again = store
+            .commit_append("s_1", &entry("e_1", None, "again", 0), false)
+            .await
+            .unwrap();
+        assert!(again.committed);
     }
 
     /// Cold loads of different sessions run side by side on the blocking

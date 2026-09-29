@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const PAGE_SIZE: usize = 25;
+/// Histories one discovery page may read, matches or not. A search that matches little would
+/// otherwise parse every history on the host inside a single call; the page then ends early with
+/// a cursor and the caller asks for the next one.
+const SCAN_LIMIT: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -708,7 +712,11 @@ fn discover_at(
     let query = query.unwrap_or("").trim().to_lowercase();
     let mut unavailable = 0;
     let mut seen = HashSet::new();
-    for (index, path) in paths.iter().enumerate().skip(offset) {
+    for (scanned, (index, path)) in paths.iter().enumerate().skip(offset).enumerate() {
+        if scanned == SCAN_LIMIT {
+            catalog.next_cursor = Some(index.to_string());
+            break;
+        }
         if file_id(source, path).is_none() {
             continue;
         }
@@ -1022,6 +1030,32 @@ mod tests {
         let result = read_at(Source::ClaudeCode, &root, ID).unwrap();
         assert_eq!(result.messages.len(), 1);
         assert_eq!(result.messages[0].text, "hello");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovery_reads_a_bounded_number_of_histories_per_page() {
+        let root = std::env::temp_dir().join(format!("ade-history-{}", uuid::Uuid::new_v4()));
+        let project = root.join("projects/project");
+        fs::create_dir_all(&project).unwrap();
+        for index in 0..SCAN_LIMIT + 5 {
+            let id = format!("0198ff66-9317-7000-8000-{index:012}");
+            let body = jsonl(vec![claude("u", None, "user", json!("conversation"))]);
+            fs::write(project.join(format!("{id}.jsonl")), body).unwrap();
+        }
+        // Nothing matches: the page still ends, with a cursor, after SCAN_LIMIT histories.
+        let first = discover_at(Source::ClaudeCode, &root, Some("absent"), None).unwrap();
+        assert!(first.conversations.is_empty());
+        assert_eq!(first.next_cursor.as_deref(), Some("100"));
+        let second = discover_at(
+            Source::ClaudeCode,
+            &root,
+            Some("absent"),
+            first.next_cursor.as_deref(),
+        )
+        .unwrap();
+        assert!(second.conversations.is_empty());
+        assert!(second.next_cursor.is_none());
         fs::remove_dir_all(root).unwrap();
     }
 

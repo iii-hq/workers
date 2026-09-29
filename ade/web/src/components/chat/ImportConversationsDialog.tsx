@@ -94,6 +94,22 @@ export function whenLabel(timestamp: number, now = Date.now()): string {
   return elapsed === 'just now' ? elapsed : `${elapsed} ago`
 }
 
+/**
+ * The list with the next page appended. The server pages by offset into a list ordered by
+ * modification time, so a history that is still being written can shift a conversation onto
+ * the following page: keep each one once.
+ */
+export function mergePages(current: Discovery, page: Discovery): Discovery {
+  const known = new Set(current.conversations.map((c) => c.id))
+  return {
+    ...page,
+    conversations: [
+      ...current.conversations,
+      ...page.conversations.filter((c) => !known.has(c.id)),
+    ],
+  }
+}
+
 function clip(value: string, limit: number): string {
   return value.length > limit ? `${value.slice(0, limit - 1)}…` : value
 }
@@ -850,10 +866,7 @@ export function ImportConversationsDialog({
         cursor: discovery.next_cursor,
       })
       if (generation.current !== requestGeneration) return
-      setDiscovery({
-        ...page,
-        conversations: [...discovery.conversations, ...page.conversations],
-      })
+      setDiscovery(mergePages(discovery, page))
     } catch (e) {
       if (generation.current === requestGeneration) setError(errText(e))
     } finally {
@@ -1068,9 +1081,11 @@ export function ImportConversationsDialog({
                       compact
                       title={search ? 'No matches' : 'No conversations'}
                       description={
-                        search
-                          ? 'No conversation title or project matches this search.'
-                          : 'This history has no conversations yet.'
+                        discovery?.next_cursor
+                          ? 'None of the newest histories matched. Load more to keep looking.'
+                          : search
+                            ? 'No conversation title or project matches this search.'
+                            : 'This history has no conversations yet.'
                       }
                     />
                   ) : null}

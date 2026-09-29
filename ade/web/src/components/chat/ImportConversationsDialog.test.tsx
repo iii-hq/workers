@@ -6,6 +6,7 @@ import {
   DiscoveryFailed,
   HistoryRow,
   ImportFooter,
+  mergePages,
   PreviewPane,
   previewCounts,
   previewRows,
@@ -343,5 +344,30 @@ describe('footer', () => {
     expect(html).toContain('role="alert"')
     expect(html).toContain('Nothing imported · 1 failed')
     expect(html).toContain('Retry failed')
+  })
+})
+
+describe('mergePages', () => {
+  const row = (id: string) => ({
+    id,
+    source: 'codex' as const,
+    title: id,
+    cwd: null,
+    created_at: 1,
+    updated_at: 1,
+  })
+  const page = (ids: string[], next: string | null) => ({
+    source: 'codex' as const,
+    directory: '/home/layon/.codex/sessions',
+    warnings: [],
+    available: true,
+    conversations: ids.map(row),
+    next_cursor: next,
+  })
+
+  it('keeps a conversation once when a history that is being written shifts onto the next page', () => {
+    const merged = mergePages(page(['a', 'b'], '2'), page(['b', 'c'], null))
+    expect(merged.conversations.map((c) => c.id)).toEqual(['a', 'b', 'c'])
+    expect(merged.next_cursor).toBeNull()
   })
 })
