@@ -52,11 +52,11 @@ pub struct Candidate {
 pub struct State {
     pub issues: BTreeMap<String, u64>,
     pub stop: Option<Stop>,
+    /// Calls the judge replied to (a deadline or a local pause refusal
+    /// is not a reply), and their questions.
     pub judge_calls: u64,
     pub questions: u64,
     pub input_tokens: u64,
-    /// Calls that came back with valid answers.
-    pub answered: u64,
     pub candidates: HashMap<String, Candidate>,
     visited: HashSet<String>,
     /// Directories scored ≤ 0.5, kept for the relationship pass.
@@ -121,11 +121,6 @@ impl Run {
                     break;
                 };
                 let request = prompts::navigation(&self.query, &group, anchor);
-                {
-                    let mut state = self.state();
-                    state.judge_calls += 1;
-                    state.questions += group.len() as u64;
-                }
                 let (evaluate, deadline) = (self.evaluate.clone(), self.deadline);
                 running.spawn(
                     async move {
@@ -145,13 +140,14 @@ impl Run {
                 self.issue("provider");
                 continue;
             };
+            if !matches!(outcome, Err(JudgeError::Deadline | JudgeError::Paused)) {
+                let mut state = self.state();
+                state.judge_calls += 1;
+                state.questions += group.len() as u64;
+            }
             match outcome {
                 Ok((scores, tokens)) => {
-                    {
-                        let mut state = self.state();
-                        state.input_tokens += tokens;
-                        state.answered += 1;
-                    }
+                    self.state().input_tokens += tokens;
                     for (i, item) in group.into_iter().enumerate() {
                         let p = scores.get(&prompts::key("q", i)).copied().unwrap_or(0.0);
                         results.push((item, p));
@@ -166,9 +162,9 @@ impl Run {
                 Err(JudgeError::TooLarge) => self.issue("request-size"),
                 Err(JudgeError::Deadline) => self.issue("deadline"),
                 Err(JudgeError::Rejected(_)) => self.issue("invalid_request"),
-                Err(JudgeError::Unavailable(reason)) => {
+                Err(error @ (JudgeError::Unavailable(_) | JudgeError::Paused)) => {
                     self.issue("provider");
-                    self.halt(Stop::Unavailable(reason));
+                    self.halt(Stop::Unavailable(error.reason()));
                 }
             }
         }
@@ -220,7 +216,8 @@ impl Run {
                 }
             }
         }
-        if !directories.is_empty() && self.state().stop.is_none() {
+        // As in jevgrep, directories left unexplored at a stop count too.
+        if !directories.is_empty() {
             self.issue("resource_limit");
         }
     }

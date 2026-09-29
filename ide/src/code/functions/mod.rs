@@ -205,9 +205,11 @@ const FIND_RELEVANT_DESC: &str =
      searches; for exact symbols, strings or filenames use coder::search. \
      Read the returned files before searching again. incomplete = partial \
      coverage (see issues; narrow path); unavailable = no judge, use \
-     coder::search. Sends the query, root-relative paths and file text \
-     (never protected, ignored, hidden or secret-looking files) to the \
-     session's judge provider, which may be hosted. Paths: relative to the \
+     coder::search. Sends the query, root-relative paths and file text to \
+     the session's judge provider, which may be hosted: never protected, \
+     ignored, hidden, .git or secret-named files, nor the text of binary or \
+     private-key files. Hidden entries are skipped only below path, so do \
+     not point path at a dot-folder holding tokens. Paths: relative to the \
      primary root or absolute inside an allowed root (see coder::info).";
 
 /// One function's complete agent-facing wire surface: id, registration

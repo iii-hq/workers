@@ -46,7 +46,8 @@ pub struct FindRelevantInput {
     /// Folder to search (default `.`); result paths are absolute.
     #[serde(default = "default_path")]
     pub path: String,
-    /// Root-relative glob patterns to leave out; they only narrow.
+    /// Root-relative globs (not gitignore lines) to leave out; `gen/` or
+    /// `gen/**` drops the folder itself. They only narrow.
     #[serde(default)]
     pub exclude_globs: Vec<String>,
     /// Deadline for the whole ask in ms; work left at the deadline makes
@@ -174,20 +175,20 @@ pub async fn handle(
         resolver,
         cfg,
         req,
-        judge::window(&iii, provider.as_deref()),
+        |deadline| async move { judge::window(&iii, provider.as_deref(), deadline).await },
         evaluate,
     )
     .await
     .map_err(err_to_string)
 }
 
-/// One ask over any judge: `window` is awaited once, after the input is
-/// validated; `evaluate` answers every request.
-pub async fn run(
+/// One ask over any judge: `window` runs once with the ask deadline, after
+/// the input is validated; `evaluate` answers every request.
+pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
     resolver: Arc<PathResolver>,
     cfg: Arc<CoderConfig>,
     req: FindRelevantInput,
-    window: impl Future<Output = Result<Option<u64>, JudgeError>>,
+    window: impl FnOnce(Instant) -> W,
     evaluate: Evaluator,
 ) -> Result<FindRelevantOutput, CoderError> {
     let started = Instant::now();
@@ -207,6 +208,12 @@ pub async fn run(
     }
     let deadline = started + Duration::from_millis(req.timeout_ms);
     let walk_root = resolver.resolve_scope(req.fs_scope.as_ref(), &req.path)?;
+    if walk::in_git_dir(&walk_root) {
+        return Err(CoderError::BadInput(format!(
+            "path is inside a .git directory, which is never searched: {}",
+            req.path
+        )));
+    }
     let md = std::fs::metadata(&walk_root).map_err(|e| CoderError::io_for_path(e, &req.path))?;
     if !md.is_dir() {
         return Err(CoderError::BadInput(format!(
@@ -227,8 +234,8 @@ pub async fn run(
             ..Stats::default()
         },
     };
-    let cap = match window.await {
-        Err(error) => return Ok(logged(unavailable(reason_of(error)))),
+    let cap = match window(deadline).await {
+        Err(error) => return Ok(logged(unavailable(error.reason()))),
         Ok(Some(tokens)) if tokens < MIN_WINDOW_TOKENS => {
             return Ok(logged(unavailable("judge window too small".into())))
         }
@@ -243,7 +250,7 @@ pub async fn run(
     })
     .await
     .map_err(|e| CoderError::Io(format!("find-relevant walk failed: {e}")))?;
-    let truncated = tree.truncated;
+    let (truncated, unreadable) = (tree.truncated, tree.unreadable);
     let run = Arc::new(Run {
         query: req.query,
         tree,
@@ -255,10 +262,14 @@ pub async fn run(
     if truncated {
         run.issue("resource_limit");
     }
+    if unreadable > 0 {
+        *run.state().issues.entry("unreadable".into()).or_default() += unreadable;
+    }
     run.discover(vec![".".into()]).await;
 
     let root = run.tree.root.clone();
     let state = std::mem::take(&mut *run.state());
+    let admitted = !state.candidates.is_empty();
     let mut files: Vec<RelevantFile> = state
         .candidates
         .into_values()
@@ -275,9 +286,8 @@ pub async fn run(
         .collect();
     sort_files(&mut files);
     let (status, reason) = match state.stop {
-        Some(Stop::Unavailable(reason)) if state.answered == 0 => {
-            (Status::Unavailable, Some(reason))
-        }
+        // Nothing admitted yet: point the agent at coder::search.
+        Some(Stop::Unavailable(reason)) if !admitted => (Status::Unavailable, Some(reason)),
         Some(Stop::Unavailable(reason)) => (Status::Incomplete, Some(reason)),
         Some(Stop::Deadline) => (Status::Incomplete, Some("deadline".into())),
         None if state.issues.is_empty() => (Status::Complete, None),
@@ -299,13 +309,6 @@ pub async fn run(
     }))
 }
 
-fn reason_of(error: JudgeError) -> String {
-    match error {
-        JudgeError::Unavailable(reason) | JudgeError::Rejected(reason) => reason,
-        other => other.to_string(),
-    }
-}
-
 /// render.ts: `priority ?? score` first, then score, then path.
 fn sort_files(files: &mut [RelevantFile]) {
     files.sort_by(|a, b| {
@@ -313,7 +316,7 @@ fn sort_files(files: &mut [RelevantFile]) {
         rank(b)
             .total_cmp(&rank(a))
             .then(b.score.total_cmp(&a.score))
-            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| walk::locale_cmp(&a.path, &b.path))
     });
 }
 

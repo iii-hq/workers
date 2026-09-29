@@ -60,6 +60,8 @@ pub enum JudgeError {
     TooLarge,
     /// `invalid_request`: this worker's bug, not an outage.
     Rejected(String),
+    /// Refused locally: a recent outage paused this provider. Never sent.
+    Paused,
 }
 
 impl std::fmt::Display for JudgeError {
@@ -69,6 +71,7 @@ impl std::fmt::Display for JudgeError {
             Self::Deadline => f.write_str("judge deadline exceeded"),
             Self::TooLarge => f.write_str("judge request too large"),
             Self::Rejected(reason) => write!(f, "judge rejected the request: {reason}"),
+            Self::Paused => write!(f, "judge unavailable: {PAUSED}"),
         }
     }
 }
@@ -78,7 +81,18 @@ impl JudgeError {
     pub fn pauses(&self) -> bool {
         matches!(self, Self::Unavailable(_))
     }
+
+    /// The short reason an ask reports.
+    pub fn reason(&self) -> String {
+        match self {
+            Self::Unavailable(reason) | Self::Rejected(reason) => reason.clone(),
+            Self::Paused => PAUSED.into(),
+            other => other.to_string(),
+        }
+    }
 }
+
+const PAUSED: &str = "paused after a recent failure";
 
 /// The calling session's judge provider from the handler's OTel baggage,
 /// when set and well-formed; `None` routes to the hub's default. Read it in
@@ -109,12 +123,14 @@ fn paused(provider: &str, now: i64) -> bool {
         .is_some_and(|until| now < *until)
 }
 
-fn pause(provider: &str, until: i64) {
-    PAUSED_UNTIL
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .insert(provider.to_string(), until);
+/// Start a [`PAUSE_MS`] pause unless one is running: concurrent failures
+/// never extend it (the directory's rule).
+fn pause(provider: &str, now: i64) {
+    let mut pauses = PAUSED_UNTIL.lock().unwrap_or_else(|p| p.into_inner());
+    let pauses = pauses.get_or_insert_with(HashMap::new);
+    if pauses.get(provider).is_none_or(|until| now >= *until) {
+        pauses.insert(provider.to_string(), now + PAUSE_MS);
+    }
 }
 
 /// Production [`Evaluator`] over the bus, bound to one provider.
@@ -136,20 +152,16 @@ pub async fn evaluate(
     provider: Option<&str>,
 ) -> Result<(Scores, u64), JudgeError> {
     let key = provider.unwrap_or_default();
-    let paused_now = || {
-        paused(key, now_ms())
-            .then(|| JudgeError::Unavailable("paused after a recent failure".into()))
-    };
-    if let Some(error) = paused_now() {
-        return Err(error);
+    if paused(key, now_ms()) {
+        return Err(JudgeError::Paused);
     }
     let _slot = tokio::time::timeout_at(deadline.into(), SLOTS.acquire())
         .await
         .map_err(|_| JudgeError::Deadline)?
         .expect("judge slots are never closed");
     // Another call may have found the judge down while this one queued.
-    if let Some(error) = paused_now() {
-        return Err(error);
+    if paused(key, now_ms()) {
+        return Err(JudgeError::Paused);
     }
     let remaining = deadline
         .saturating_duration_since(Instant::now())
@@ -195,7 +207,7 @@ pub async fn evaluate(
     if let Err(error) = &result {
         if error.pauses() {
             tracing::debug!(%error, "judge unavailable for coder::find-relevant");
-            pause(key, now_ms() + PAUSE_MS);
+            pause(key, now_ms());
         } else if matches!(error, JudgeError::Rejected(_)) {
             tracing::warn!(%error, "judge rejected a coder::find-relevant request");
         }
@@ -254,9 +266,19 @@ fn classify(
 
 /// The provider's smallest advertised context window in tokens: `None` when
 /// the hub is absent or advertises none (typesafe cards carry none).
-/// A listing that times out means a local provider is still loading.
-pub async fn window(iii: &IIIClient, provider: Option<&str>) -> Result<Option<u64>, JudgeError> {
-    let mut payload = serde_json::json!({ "timeout_ms": MODELS_TIMEOUT_MS });
+/// A listing that times out means a local provider is still loading. It
+/// never runs past the ask's `deadline`.
+pub async fn window(
+    iii: &IIIClient,
+    provider: Option<&str>,
+    deadline: Instant,
+) -> Result<Option<u64>, JudgeError> {
+    let budget = MODELS_TIMEOUT_MS.min(
+        deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis() as u64,
+    );
+    let mut payload = serde_json::json!({ "timeout_ms": budget });
     if let Some(provider) = provider {
         payload["provider"] = Value::String(provider.to_owned());
     }
@@ -264,9 +286,9 @@ pub async fn window(iii: &IIIClient, provider: Option<&str>) -> Result<Option<u6
         function_id: judge_contract::MODELS_FUNCTION_ID.into(),
         payload,
         action: None,
-        timeout_ms: Some(MODELS_TIMEOUT_MS),
+        timeout_ms: Some(budget),
     });
-    let reply = tokio::time::timeout(Duration::from_millis(MODELS_TIMEOUT_MS + 500), call)
+    let reply = tokio::time::timeout(Duration::from_millis(budget), call)
         .await
         .unwrap_or(Err(iii_sdk::Error::Timeout));
     window_from(reply)
@@ -311,11 +333,18 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_provider_pauses_only_itself() {
-        pause("find-relevant-pause-a", 2_000);
-        assert!(paused("find-relevant-pause-a", 1_000));
-        assert!(!paused("find-relevant-pause-a", 2_000));
-        assert!(!paused("find-relevant-pause-b", 1_000));
+    fn a_failing_provider_pauses_only_itself_and_never_extends() {
+        pause("find-relevant-pause-a", 0);
+        assert!(paused("find-relevant-pause-a", PAUSE_MS - 1));
+        assert!(!paused("find-relevant-pause-b", 1));
+        // a second failure during the pause does not push it out
+        pause("find-relevant-pause-a", PAUSE_MS - 1);
+        assert!(!paused("find-relevant-pause-a", PAUSE_MS));
+        // once over, the next failure starts a new one
+        pause("find-relevant-pause-a", PAUSE_MS);
+        assert!(paused("find-relevant-pause-a", 2 * PAUSE_MS - 1));
+        assert!(!JudgeError::Paused.pauses());
+        assert_eq!(JudgeError::Paused.reason(), PAUSED);
     }
 
     #[test]
