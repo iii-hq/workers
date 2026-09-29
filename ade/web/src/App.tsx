@@ -77,7 +77,7 @@ import {
   requestPaneFocus,
   takePaneFocusRequest,
 } from '@/lib/pane-focus'
-import { subscribePanelOpen } from '@/lib/panel-context'
+import { subscribePanelOpen, subscribeScreenOpen } from '@/lib/panel-context'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import {
@@ -100,6 +100,7 @@ import {
   isChatScreen,
   MAX_COLUMNS,
   MIN_COLUMN_FRACTION,
+  type ScreenPlacement,
   sessionIdForChatScreen,
   type TabScreen,
   tabColumns,
@@ -187,7 +188,7 @@ function paneIdsByTab(tabs: WorkspaceTab[]): Map<string, Set<string>> {
 }
 
 interface WorkspacePanelCommands {
-  openScreen: (screen: TabScreen) => void
+  openScreen: (screen: TabScreen, placement?: ScreenPlacement) => void
   split: (side: 'left' | 'right') => void
 }
 
@@ -310,17 +311,20 @@ export function App({
   )
 
   const panelCommandsRef = useRef<WorkspacePanelCommands | null>(null)
-  const openWorkspaceScreen = useCallback((screen: TabScreen) => {
-    // The keyboard asked for this screen, so the keyboard lands in it: the
-    // panes consume the request once the screen has a pane.
-    requestPaneFocus(screen)
-    const commands = panelCommandsRef.current
-    if (commands) commands.openScreen(screen)
-    else workspaceRef.current.openScreen(screen)
-    window.requestAnimationFrame(() =>
-      focusRequestedPane(workspaceRef.current.activeTab),
-    )
-  }, [])
+  const openWorkspaceScreen = useCallback(
+    (screen: TabScreen, placement?: ScreenPlacement) => {
+      // The keyboard asked for this screen, so the keyboard lands in it: the
+      // panes consume the request once the screen has a pane.
+      requestPaneFocus(screen)
+      const commands = panelCommandsRef.current
+      if (commands) commands.openScreen(screen, placement)
+      else workspaceRef.current.openScreen(screen, placement)
+      window.requestAnimationFrame(() =>
+        focusRequestedPane(workspaceRef.current.activeTab),
+      )
+    },
+    [],
+  )
   const stepPaneFocus = useCallback((delta: 1 | -1) => {
     const roots = tabPaneIds(workspaceRef.current.activeTab)
       .map(paneRoot)
@@ -346,6 +350,15 @@ export function App({
     () =>
       subscribePanelOpen((event) => {
         openWorkspaceScreen(`ext:${event.pageId}`)
+      }),
+    [openWorkspaceScreen],
+  )
+  // A worker page placing any screen from this browser (`host.panels.
+  // openScreen`): the same placement as the palette's, in the tab on screen.
+  useEffect(
+    () =>
+      subscribeScreenOpen(({ screen, relativeTo, direction, sizes }) => {
+        openWorkspaceScreen(screen, { relativeTo, direction, sizes })
       }),
     [openWorkspaceScreen],
   )
@@ -1133,13 +1146,13 @@ function WorkspacePanes({
             return false
           }
           pendingMobileScreenRef.current = command.screen
-          current.openScreen(command.screen)
+          current.openScreen(command.screen, command.placement)
           return true
         }
         if (current.tabs.some((tab) => tab.screens.includes(command.screen))) {
           return false
         }
-        current.openScreenInTab(origin.id, command.screen)
+        current.openScreenInTab(origin.id, command.screen, command.placement)
         return true
       }
 
@@ -1233,8 +1246,13 @@ function WorkspacePanes({
 
   useLayoutEffect(() => {
     const commands: WorkspacePanelCommands = {
-      openScreen: (screen) =>
-        dispatchPanelCommand({ type: 'open', screen, tabId: activeTab.id }),
+      openScreen: (screen, placement) =>
+        dispatchPanelCommand({
+          type: 'open',
+          screen,
+          tabId: activeTab.id,
+          placement,
+        }),
       split: (side) =>
         dispatchPanelCommand({ type: 'add', tabId: activeTab.id, side }),
     }

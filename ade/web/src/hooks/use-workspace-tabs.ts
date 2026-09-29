@@ -38,6 +38,7 @@ import {
   parseWorkspaceTabs,
   resolveActiveTab,
   resolvePointer,
+  type ScreenPlacement,
   shouldFlushPendingWrite,
   type TabScreen,
   tabColumns,
@@ -51,6 +52,7 @@ import {
   withPaneRemoved,
   withScreenDetached,
   withTabClosed,
+  withTabSizes,
   withWorkspaceScreenOpened,
   withWorkspaceTabs,
   workspaceLayoutSource,
@@ -140,6 +142,24 @@ function stabilizeAddedPane(
   })
 }
 
+/**
+ * Apply requested widths to the tab a screen was just placed in. A reused
+ * screen changes no tab, and its widths stay the operator's.
+ */
+function withPlacedSizes(
+  before: WorkspaceTab[],
+  after: WorkspaceTab[],
+  placedTabId: string,
+  sizes: readonly number[] | undefined,
+): WorkspaceTab[] {
+  if (!sizes) return after
+  return after.map((tab) =>
+    tab.id === placedTabId && !before.includes(tab)
+      ? withTabSizes(tab, sizes)
+      : tab,
+  )
+}
+
 function loadLocal(): LocalState {
   const fallback: LocalState = {
     tabs: defaultTabs(),
@@ -201,9 +221,13 @@ export interface UseWorkspaceTabsReturn {
   /** Persist drag-to-resize column fractions (index-aligned). */
   resizeColumns: (id: string, sizes: number[]) => void
   /** Reuse an existing screen or place it beside chat without replacing panes. */
-  openScreen: (screen: TabScreen) => void
+  openScreen: (screen: TabScreen, placement?: ScreenPlacement) => void
   /** Open relative to a specific tab without stealing a later tab selection. */
-  openScreenInTab: (id: string, screen: TabScreen) => void
+  openScreenInTab: (
+    id: string,
+    screen: TabScreen,
+    placement?: ScreenPlacement,
+  ) => void
 }
 
 export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
@@ -501,7 +525,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   )
 
   const openScreen = useCallback(
-    (screen: TabScreen) => {
+    (screen: TabScreen, placement: ScreenPlacement = {}) => {
       const newScreenTabId = newTabId()
       const stablePaneId = { current: null as string | null }
       const update: WorkspaceTransform = (state) => {
@@ -510,10 +534,18 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
           state.activeTabId,
           screen,
           () => newScreenTabId,
+          undefined,
+          placement.relativeTo,
+          placement.direction,
         )
         return {
           ...next,
-          tabs: stabilizeAddedPane(state.tabs, next.tabs, stablePaneId),
+          tabs: withPlacedSizes(
+            state.tabs,
+            stabilizeAddedPane(state.tabs, next.tabs, stablePaneId),
+            next.activeTabId,
+            placement.sizes,
+          ),
         }
       }
       const preview = update({ tabs, activeTabId })
@@ -524,7 +556,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   )
 
   const openScreenInTab = useCallback(
-    (id: string, screen: TabScreen) => {
+    (id: string, screen: TabScreen, placement: ScreenPlacement = {}) => {
       const newScreenTabId = newTabId()
       const stablePaneId = { current: null as string | null }
       persist((state) => {
@@ -534,9 +566,17 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
           requestedTabExists ? id : state.activeTabId,
           screen,
           () => newScreenTabId,
+          undefined,
+          placement.relativeTo,
+          placement.direction,
         )
         return {
-          tabs: stabilizeAddedPane(state.tabs, next.tabs, stablePaneId),
+          tabs: withPlacedSizes(
+            state.tabs,
+            stabilizeAddedPane(state.tabs, next.tabs, stablePaneId),
+            next.activeTabId,
+            placement.sizes,
+          ),
           activeTabId: requestedTabExists
             ? state.activeTabId
             : next.activeTabId,

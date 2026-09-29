@@ -1,7 +1,12 @@
-import type { TabScreen } from '@/lib/workspace-tabs'
+import type { ScreenPlacement, TabScreen } from '@/lib/workspace-tabs'
 
 export type PendingPanelCommand =
-  | { type: 'open'; screen: TabScreen; tabId: string }
+  | {
+      type: 'open'
+      screen: TabScreen
+      tabId: string
+      placement?: ScreenPlacement
+    }
   | {
       type: 'add'
       tabId: string
