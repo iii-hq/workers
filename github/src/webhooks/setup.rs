@@ -488,6 +488,13 @@ impl Service {
             .unwrap_or("127.0.0.1")
             .to_owned();
         let port = req.port.unwrap_or(DEFAULT_LISTENER_PORT);
+        // Never save what the checklist itself rejects: quick-tunnel forwards
+        // to a fixed port, so an ephemeral 0 is refused before writing.
+        if port == 0 {
+            return Err(Failure::Invalid(
+                "webhook listener port must be fixed (1..=65535)".into(),
+            ));
+        }
         value["webhook_listener"] = json!({ "host": host, "port": port });
         self.invoke("configuration::set", json!({"id": id, "value": value}))
             .await?;

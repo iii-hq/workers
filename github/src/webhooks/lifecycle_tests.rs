@@ -938,3 +938,26 @@ async fn readiness_compares_resolved_config_while_writes_keep_raw_placeholders()
     assert_eq!(set.payload["value"]["port"], "${HTTP_PORT}");
     s.iii.shutdown_async().await;
 }
+
+#[tokio::test]
+async fn an_explicit_port_zero_is_refused_before_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply(
+        "configuration::get",
+        Ok(json!({"value": {"port": 3111, "webhook_listener": null}})),
+    );
+    let error = s
+        .enable_http_listener(setup::EnableListenerRequest { port: Some(0) })
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("must be fixed"), "{error}");
+    assert!(bus
+        .calls()
+        .iter()
+        .all(|c| c.function != "configuration::set"));
+    s.iii.shutdown_async().await;
+}
