@@ -1,6 +1,5 @@
 import {
   Check,
-  ChevronRight,
   CircleCheck,
   Copy,
   Folder,
@@ -8,22 +7,24 @@ import {
   Info,
   Loader2,
   RotateCw,
-  Search,
   TriangleAlert,
   X,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Badge, type BadgeVariant } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import { Checkbox } from '@/components/ui/Checkbox'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/Dialog'
-import { Input } from '@/components/ui/Input'
+import { EmptyState } from '@/components/ui/EmptyState'
 import { SegmentedControl } from '@/components/ui/ModeToggle'
+import { SearchField } from '@/components/ui/SearchField'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import {
@@ -210,39 +211,6 @@ const ROW_STATUS: Record<RowStatus, { label: string; variant: BadgeVariant }> =
     failed: { label: 'Failed', variant: 'alert' },
   }
 
-function CheckBox({
-  checked,
-  disabled,
-  label,
-  onToggle,
-}: {
-  checked: boolean
-  disabled?: boolean
-  label: string
-  onToggle: () => void
-}) {
-  // A native checkbox keeps form semantics; the visuals ride on its sibling
-  // (the Switch primitive's own recipe), painted like the primary button.
-  return (
-    <label className="relative mt-px flex size-[18px] shrink-0 cursor-pointer items-center justify-center has-[:disabled]:cursor-default">
-      <input
-        type="checkbox"
-        className="peer sr-only"
-        checked={checked}
-        disabled={disabled}
-        aria-label={label}
-        onChange={onToggle}
-      />
-      <span
-        aria-hidden
-        className="iii-ui-motion-control flex size-[18px] items-center justify-center rounded-sm border border-transparent bg-surface text-transparent transition-[background-color,color] hover:bg-surface-hover peer-checked:bg-ink peer-checked:text-bg peer-checked:hover:bg-ink peer-focus-visible:ring-2 peer-focus-visible:ring-rule-focus peer-disabled:opacity-40"
-      >
-        <Check className="size-3" strokeWidth={3} />
-      </span>
-    </label>
-  )
-}
-
 export function HistoryRow({
   conversation,
   selected,
@@ -271,18 +239,18 @@ export function HistoryRow({
       data-selected={selected || undefined}
       data-status={status}
       className={cn(
-        'flex items-start gap-2.5 rounded-sm border border-transparent bg-surface px-[11px] py-[9px] transition-[background-color,border-color] hover:bg-surface-hover',
-        selected && 'border-edge bg-surface-selected',
-        open && 'border-edge',
+        'iii-ui-motion-control flex items-start gap-2.5 rounded-sm bg-surface px-3 py-2.5 transition-[background-color] hover:bg-surface-hover',
+        (selected || open) && 'bg-surface-selected',
         status === 'done' && 'bg-ok-muted hover:bg-ok-muted',
         status === 'failed' && 'bg-alert-muted hover:bg-alert-muted',
       )}
     >
-      <CheckBox
+      <Checkbox
+        className="mt-px shrink-0"
         checked={selected}
         disabled={busy}
-        label={`Select ${title}`}
-        onToggle={onToggle}
+        aria-label={`Select ${title}`}
+        onChange={onToggle}
       />
       <button
         type="button"
@@ -302,7 +270,7 @@ export function HistoryRow({
         </span>
         {failure ? (
           <span
-            className="mt-1 block truncate font-mono text-[11px] text-alert"
+            className="mt-1 block truncate font-mono text-[11px] text-alert-strong"
             title={failure}
           >
             {failure}
@@ -314,12 +282,7 @@ export function HistoryRow({
           variant={ROW_STATUS[status].variant}
           className="mt-px shrink-0 gap-1"
         >
-          {status === 'importing' ? (
-            <Loader2
-              className="size-3 animate-spin motion-reduce:animate-none"
-              aria-hidden
-            />
-          ) : null}
+          {status === 'importing' ? <StatusDot tone="accent" pulse /> : null}
           {ROW_STATUS[status].label}
         </Badge>
       ) : null}
@@ -330,7 +293,7 @@ export function HistoryRow({
 function SkeletonRow({ faded }: { faded?: number }) {
   return (
     <div
-      className="flex items-start gap-2.5 rounded-sm bg-surface px-[11px] py-[10px]"
+      className="flex items-start gap-2.5 rounded-sm bg-surface px-3 py-2.5"
       style={faded ? { opacity: faded } : undefined}
     >
       <Skeleton className="size-[18px]" />
@@ -376,7 +339,7 @@ function TextRow({
         role === 'user' && 'bg-surface',
       )}
     >
-      <div className="mb-1 font-mono text-[11px] text-ink-ghost">
+      <div className="mb-1 font-sans text-[11px] font-medium text-ink-faint">
         {role === 'user' ? 'You' : sourceLabel}
       </div>
       <p className="whitespace-pre-wrap break-words font-sans text-[13px] leading-[1.7] text-ink">
@@ -403,7 +366,7 @@ function CallRow({
       data-preview-role="function-call"
       data-function-id={functionId}
       data-function-status={failed ? 'error' : 'done'}
-      className="mb-2.5 flex items-center gap-2 px-0.5 py-1 font-sans text-[13px] text-muted-foreground"
+      className="mb-2.5 flex items-center gap-2 px-0.5 py-1 font-sans text-[13px] text-ink-faint"
     >
       {failed ? (
         <X
@@ -413,7 +376,7 @@ function CallRow({
         />
       ) : (
         <Check
-          className="size-4 shrink-0 stroke-muted-foreground"
+          className="size-4 shrink-0 stroke-ink-faint"
           strokeWidth={2.5}
           aria-hidden
         />
@@ -464,12 +427,12 @@ export function PreviewPane({
               <div className="min-w-0 flex-1 truncate font-sans text-[13px] font-semibold text-ink">
                 {conversation.title || conversation.id}
               </div>
-              <div className="shrink-0 font-mono text-[11px] text-ink-ghost">
+              <div className="shrink-0 font-sans text-[11px] text-ink-faint">
                 {sourceLabel}
               </div>
             </div>
-            <div className="mt-1 flex items-center gap-1.5 font-mono text-[11px] text-ink-ghost">
-              <span className="truncate">
+            <div className="mt-1 flex flex-wrap items-center gap-x-1.5 font-mono text-[11px] text-ink-ghost">
+              <span className="max-w-full truncate">
                 {conversation.cwd ?? 'No project'}
               </span>
               <span aria-hidden>·</span>
@@ -494,13 +457,15 @@ export function PreviewPane({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3.5">
         {!conversation ? (
-          <p className="py-10 text-center font-sans text-[13px] text-ink-faint">
-            Select a conversation to preview it.
-          </p>
+          <EmptyState
+            compact
+            title="Nothing to preview"
+            description="Select a conversation to preview it."
+          />
         ) : error ? (
           <StatusPanel
             variant="alert"
-            icon={<TriangleAlert className="size-[18px]" aria-hidden />}
+            icon={<TriangleAlert className="h-full w-full" />}
             headline="Could not read this conversation"
             detail={<span className="font-mono break-all">{error}</span>}
           />
@@ -513,14 +478,16 @@ export function PreviewPane({
                 key={warning}
                 variant="warn"
                 className="mb-3"
-                icon={<TriangleAlert className="size-[18px]" aria-hidden />}
+                icon={<TriangleAlert className="h-full w-full" />}
                 headline={warning}
               />
             ))}
             {rows.length === 0 ? (
-              <p className="py-10 text-center font-sans text-[13px] text-ink-faint">
-                Nothing to import from this conversation.
-              </p>
+              <EmptyState
+                compact
+                title="Nothing to import"
+                description="This conversation has no messages or commands to bring across."
+              />
             ) : null}
             {rows.map((row) =>
               row.kind === 'text' ? (
@@ -549,49 +516,32 @@ export function PreviewPane({
 
 export function SourceUnavailable({
   source,
-  directory,
   onSwitch,
   onRetry,
 }: {
   source: ConversationSource
-  directory: string
   onSwitch: (next: ConversationSource) => void
   onRetry: () => void
 }) {
   const other = SOURCE_OPTIONS.find((option) => option.value !== source)
   return (
-    <div className="flex flex-col items-center justify-center px-7 py-10 text-center">
-      <FolderX
-        className="mb-3.5 size-[22px] text-ink-ghost"
-        strokeWidth={1.75}
-        aria-hidden
-      />
-      <div className="font-sans text-[13px] font-semibold text-ink">
-        No {conversationSources[source]} history on this machine
-      </div>
-      <p className="mt-[7px] max-w-[42ch] font-sans text-[12px] leading-[1.65] text-ink-faint">
-        ADE looked in the directory below and found nothing readable. When ADE
-        runs in a container, that directory has to be mounted into it.
-      </p>
-      <code className="mt-3 rounded-sm bg-surface px-2.5 py-1.5 font-mono text-[11px] text-ink-faint">
-        {directory}
-      </code>
-      <div className="mt-[18px] flex items-center gap-2">
-        {other ? (
-          <Button
-            variant="pill"
-            size="sm"
-            onClick={() => onSwitch(other.value)}
-          >
-            <ChevronRight aria-hidden />
-            Try {other.label}
-          </Button>
-        ) : null}
-        <Button variant="ghost" size="sm" onClick={onRetry}>
-          Check again
-        </Button>
-      </div>
-    </div>
+    <EmptyState
+      compact
+      icon={FolderX}
+      title={`No ${conversationSources[source]} history on this machine`}
+      description="ADE looked in the directory above and found nothing readable. When ADE runs in a container, that directory has to be mounted into it."
+      actions={[
+        ...(other
+          ? [
+              {
+                label: `Try ${other.label}`,
+                onClick: () => onSwitch(other.value),
+              },
+            ]
+          : []),
+        { label: 'Check again', onClick: onRetry },
+      ]}
+    />
   )
 }
 
@@ -604,24 +554,21 @@ export function DiscoveryFailed({
 }) {
   const [copied, setCopied] = useState(false)
   return (
-    <div
+    <StatusPanel
       role="alert"
-      className="flex items-start gap-3 rounded-md bg-alert-muted px-3.5 py-3"
-    >
-      <span aria-hidden className="size-[18px] shrink-0 text-alert">
-        <TriangleAlert className="size-[18px]" />
-      </span>
-      <div className="flex min-w-0 flex-1 flex-col gap-y-0.5">
-        <div className="font-sans text-[13px] font-semibold text-alert">
-          Could not read the history directory
-        </div>
-        <div className="font-sans text-[12px] text-ink-faint">
+      variant="alert"
+      icon={<TriangleAlert className="h-full w-full" />}
+      headline="Could not read the history directory"
+      detail={
+        <>
           The import never started, so nothing was changed on disk.
-        </div>
-        <code className="mt-2 block break-all rounded-sm bg-surface px-[11px] py-[9px] font-mono text-[11px] leading-[1.55] text-ink-faint">
-          {error}
-        </code>
-        <div className="mt-2.5 flex items-center gap-2">
+          <code className="mt-2 block break-all rounded-sm bg-surface px-3 py-2 font-mono text-[11px] leading-[1.55]">
+            {error}
+          </code>
+        </>
+      }
+      action={
+        <div className="flex items-center gap-2">
           <Button variant="pill" size="sm" onClick={onRetry}>
             <RotateCw aria-hidden />
             Retry
@@ -641,8 +588,8 @@ export function DiscoveryFailed({
             {copied ? 'Copied' : 'Copy error'}
           </Button>
         </div>
-      </div>
-    </div>
+      }
+    />
   )
 }
 
@@ -688,7 +635,7 @@ export function ImportFooter({
           </div>
           <div className="mt-2 h-[3px] overflow-hidden rounded-full bg-surface">
             <div
-              className="h-[3px] rounded-full bg-accent transition-[width] duration-[220ms]"
+              className="iii-ui-motion-control h-[3px] rounded-full bg-accent transition-[width]"
               style={{ width: `${percent}%` }}
             />
           </div>
@@ -700,49 +647,45 @@ export function ImportFooter({
     )
   }
   if (phase === 'done' && summary) {
-    const tone =
-      summary.imported === 0 ? 'alert' : summary.failed > 0 ? 'warn' : 'ok'
+    const variant =
+      summary.imported === 0 ? 'alert' : summary.failed > 0 ? 'warn' : 'success'
     return (
-      <div className="flex flex-wrap items-center gap-3">
-        <div
-          role={summary.imported > 0 ? 'status' : 'alert'}
-          className={cn(
-            'flex min-w-0 flex-1 items-center gap-2 rounded-sm px-[11px] py-[7px] font-sans text-[12px] font-medium',
-            tone === 'ok' && 'bg-ok-muted text-ok',
-            tone === 'warn' && 'bg-warn-muted text-warn',
-            tone === 'alert' && 'bg-alert-muted text-alert',
-          )}
-        >
-          {tone === 'ok' ? (
-            <CircleCheck className="size-[15px] shrink-0" aria-hidden />
+      <StatusPanel
+        role={summary.imported > 0 ? 'status' : 'alert'}
+        variant={variant}
+        icon={
+          variant === 'success' ? (
+            <CircleCheck className="h-full w-full" />
           ) : (
-            <TriangleAlert className="size-[15px] shrink-0" aria-hidden />
-          )}
-          <span className="truncate">{summaryText(summary)}</span>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button variant="ghost" onClick={onImportMore}>
-            Import more
-          </Button>
-          {summary.lastSessionId ? (
-            <Button variant="primary" onClick={onOpen}>
-              {summary.imported > 1
-                ? 'Open last imported'
-                : 'Open conversation'}
+            <TriangleAlert className="h-full w-full" />
+          )
+        }
+        headline={summaryText(summary)}
+        action={
+          <>
+            <Button variant="ghost" onClick={onImportMore}>
+              Import more
             </Button>
-          ) : (
-            <Button variant="primary" onClick={onRetryFailed}>
-              Retry failed
-            </Button>
-          )}
-        </div>
-      </div>
+            {summary.lastSessionId ? (
+              <Button variant="primary" onClick={onOpen}>
+                {summary.imported > 1
+                  ? 'Open last imported'
+                  : 'Open conversation'}
+              </Button>
+            ) : (
+              <Button variant="primary" onClick={onRetryFailed}>
+                Retry failed
+              </Button>
+            )}
+          </>
+        }
+      />
     )
   }
   return (
     <div className="flex flex-wrap items-center gap-3">
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        <Info className="size-3.5 shrink-0 text-ink-ghost" aria-hidden />
+      <div className="flex min-w-[14rem] flex-1 items-center gap-2">
+        <Info className="size-4 shrink-0 text-ink-ghost" aria-hidden />
         <p className="font-sans text-[12px] leading-[1.5] text-ink-faint">
           Messages and the commands that ran come across. Reasoning, attachments
           and subagents are left behind.
@@ -1000,32 +943,26 @@ export function ImportConversationsDialog({
             onChange={switchSource}
             options={SOURCE_OPTIONS}
           />
-          <div className="relative min-w-[200px] flex-1">
-            <Search
-              className="pointer-events-none absolute top-1/2 left-3 size-[15px] -translate-y-1/2 text-ink-ghost"
-              aria-hidden
-            />
-            <Input
-              name="import-search"
-              aria-label="Search titles and projects"
-              placeholder="Search titles and projects"
-              value={query}
-              onChange={setQuery}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  setSearch(query.trim())
-                }
-              }}
-              disabled={busy}
-              className="pl-9"
-            />
-          </div>
+          <SearchField
+            className="min-w-[200px] flex-1"
+            name="import-search"
+            aria-label="Search titles and projects"
+            placeholder="Search titles and projects"
+            value={query}
+            onChange={setQuery}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                setSearch(query.trim())
+              }
+            }}
+            disabled={busy}
+          />
           {discovery?.available ? (
             <span className="shrink-0 font-mono text-[11px] tabular-nums text-ink-ghost">
               {loading ? (
                 <Loader2
-                  className="inline size-3 animate-spin motion-reduce:animate-none"
+                  className="inline size-4 animate-spin motion-reduce:animate-none"
                   aria-label="Searching"
                 />
               ) : (
@@ -1037,10 +974,7 @@ export function ImportConversationsDialog({
 
         {discovery ? (
           <div className="flex items-center gap-[7px] px-6 pt-2.5">
-            <Folder
-              className="size-[13px] shrink-0 text-ink-ghost"
-              aria-hidden
-            />
+            <Folder className="size-4 shrink-0 text-ink-ghost" aria-hidden />
             <span className="truncate font-mono text-[11px] text-ink-ghost">
               {discovery.directory}
             </span>
@@ -1050,7 +984,7 @@ export function ImportConversationsDialog({
           </div>
         ) : null}
 
-        <div className="min-h-0 px-6 pt-3.5">
+        <div className="@container flex min-h-0 flex-col px-6 pt-3.5">
           {error ? (
             <div className="py-6">
               <DiscoveryFailed
@@ -1061,21 +995,20 @@ export function ImportConversationsDialog({
           ) : unavailable ? (
             <SourceUnavailable
               source={source}
-              directory={discovery.directory}
               onSwitch={switchSource}
               onRetry={() => setRetry((value) => value + 1)}
             />
           ) : (
-            <div className="grid h-[470px] max-h-[55dvh] min-h-0 gap-4 sm:grid-cols-[minmax(0,348px)_minmax(0,1fr)]">
+            <div className="grid h-[470px] max-h-[55dvh] min-h-0 shrink grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)_minmax(0,1fr)] gap-4 @2xl:grid-cols-[minmax(0,348px)_minmax(0,1fr)] @2xl:grid-rows-[minmax(0,1fr)]">
               <div className="flex min-h-0 flex-col">
                 <div className="flex h-7 shrink-0 items-center gap-2.5">
                   {showSkeleton ? (
                     <>
                       <Skeleton className="size-[18px]" />
-                      <Skeleton className="block h-[9px] w-40" />
+                      <Skeleton className="block h-[9px] w-32" />
                       <span className="ml-auto flex items-center gap-1.5 font-sans text-[11px] text-ink-faint">
                         <Loader2
-                          className="size-3 animate-spin text-accent motion-reduce:animate-none"
+                          className="size-4 animate-spin text-accent motion-reduce:animate-none"
                           aria-hidden
                         />
                         Reading histories
@@ -1083,11 +1016,12 @@ export function ImportConversationsDialog({
                     </>
                   ) : (
                     <>
-                      <CheckBox
+                      <Checkbox
+                        className="shrink-0"
                         checked={allSelected}
                         disabled={busy || conversations.length === 0}
-                        label="Select all"
-                        onToggle={toggleAll}
+                        aria-label="Select all"
+                        onChange={toggleAll}
                       />
                       <span className="min-w-0 flex-1 truncate font-sans text-[11px] text-ink-faint">
                         {selectedIds.length === 0
@@ -1097,13 +1031,13 @@ export function ImportConversationsDialog({
                             : `${selectedIds.length} conversations selected`}
                       </span>
                       {selectedIds.length > 0 && !busy ? (
-                        <button
-                          type="button"
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={() => setSelected(new Set())}
-                          className="font-sans text-[11px] font-medium text-ink-faint hover:text-ink hover:underline"
                         >
                           Clear
-                        </button>
+                        </Button>
                       ) : null}
                     </>
                   )}
@@ -1113,16 +1047,13 @@ export function ImportConversationsDialog({
                   className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-1"
                 >
                   {discovery?.warnings.map((warning) => (
-                    <div
+                    <StatusPanel
                       key={warning}
-                      className="mb-1 flex items-center gap-2 rounded-sm bg-warn-muted px-[11px] py-[9px] font-sans text-[12px] text-warn"
-                    >
-                      <TriangleAlert
-                        className="size-[15px] shrink-0"
-                        aria-hidden
-                      />
-                      <span className="min-w-0 flex-1">{warning}</span>
-                    </div>
+                      variant="warn"
+                      className="mb-1"
+                      icon={<TriangleAlert className="h-full w-full" />}
+                      headline={warning}
+                    />
                   ))}
                   {showSkeleton ? (
                     <>
@@ -1133,11 +1064,15 @@ export function ImportConversationsDialog({
                     </>
                   ) : null}
                   {noResults ? (
-                    <p className="py-10 text-center font-sans text-[13px] text-ink-faint">
-                      {search
-                        ? 'No conversations match this search.'
-                        : 'No conversations found.'}
-                    </p>
+                    <EmptyState
+                      compact
+                      title={search ? 'No matches' : 'No conversations'}
+                      description={
+                        search
+                          ? 'No conversation title or project matches this search.'
+                          : 'This history has no conversations yet.'
+                      }
+                    />
                   ) : null}
                   {conversations.map((conversation) => (
                     <HistoryRow

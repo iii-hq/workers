@@ -217,6 +217,7 @@ export function ChatPanel({
                 </Button>
                 <IconButton
                   label="Import conversations"
+                  className="max-sm:size-12"
                   onClick={() => setImportOpen(true)}
                 >
                   <Download aria-hidden />

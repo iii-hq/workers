@@ -1,4 +1,4 @@
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
@@ -6,6 +6,7 @@ import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsB
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { PageHeader } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
+import { StatusPanel } from '@/components/ui/StatusPanel'
 import {
   Tooltip,
   TooltipContent,
@@ -2905,10 +2906,14 @@ export function ChatView({
               </p>
             )}
             {importTurnError && (
-              <p role="alert" className="mb-2 px-1 text-sm text-ink-faint">
-                Could not check conversation state: {importTurnError}. Reopen
-                this conversation to retry.
-              </p>
+              <StatusPanel
+                role="alert"
+                variant="alert"
+                className="mb-2"
+                icon={<TriangleAlert className="h-full w-full" />}
+                headline="Could not check conversation state"
+                detail={`${importTurnError}. Reopen this conversation to retry.`}
+              />
             )}
             {importNeedsSetup && (
               <p role="status" className="mb-2 px-1 text-sm text-ink-faint">

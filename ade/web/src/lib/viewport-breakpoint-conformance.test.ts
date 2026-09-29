@@ -33,7 +33,7 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   },
   'components/chat/ActiveSubagentChips.tsx': { max: 1, reason: TOUCH },
   'components/chat/AddProviderPanel.tsx': { max: 8, reason: SHEET },
-  'components/chat/ChatPanel.tsx': { max: 3, reason: TOUCH },
+  'components/chat/ChatPanel.tsx': { max: 4, reason: TOUCH },
   'components/chat/ChatView.tsx': {
     max: 6,
     reason: 'phone chrome: phone header hides the status dot; touch sizes',

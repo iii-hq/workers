@@ -234,15 +234,9 @@ describe('history row', () => {
 describe('discovery states', () => {
   it('offers the other source when one has no history', () => {
     const html = renderToStaticMarkup(
-      <SourceUnavailable
-        source="codex"
-        directory="/home/layon/.codex"
-        onSwitch={vi.fn()}
-        onRetry={vi.fn()}
-      />,
+      <SourceUnavailable source="codex" onSwitch={vi.fn()} onRetry={vi.fn()} />,
     )
     expect(html).toContain('No Codex history on this machine')
-    expect(html).toContain('/home/layon/.codex')
     expect(html).toContain('Try Claude Code')
     expect(html).toContain('Check again')
   })
