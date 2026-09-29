@@ -213,7 +213,7 @@ async fn the_daily_pass_drops_old_buckets_and_archives_quiet_resolved_groups() {
         .await
         .expect("resolve it in the past");
 
-    let outcome = sentinel::retention::prune(&store, &config)
+    let outcome = sentinel::retention::prune_at(&store, &config, NOW)
         .await
         .expect("prune");
 
@@ -259,7 +259,7 @@ async fn a_resolved_group_still_being_hit_is_not_archived() {
         .await
         .expect("resolve it");
 
-    let outcome = sentinel::retention::prune(&store, &config)
+    let outcome = sentinel::retention::prune_at(&store, &config, NOW)
         .await
         .expect("prune");
     assert_eq!(

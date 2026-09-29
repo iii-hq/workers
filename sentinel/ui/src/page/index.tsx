@@ -21,8 +21,8 @@ import { client } from '../api'
 import type { GroupStatus, GroupSummary, StatusResponse } from '../api'
 import { EVENT, PAGE_ID } from '../shared'
 import { GroupDetailView } from './detail'
-import { GroupsListView } from './list'
-import { OPEN_STATES, PAGE_SIZE, ago, bulkOutcome, sinceMs } from './present.js'
+import { GroupsListView, ListStatus } from './list'
+import { OPEN_STATES, PAGE_SIZE, bulkOutcome, sinceMs } from './present.js'
 
 type Props = { host: Host } & PageRenderProps
 
@@ -100,13 +100,17 @@ export function SentinelPage({
     triggers: [EVENT.groupChanged, EVENT.investigationChanged],
     fetch: useCallback(
       () =>
-        api.groups({
-          status: filters.statuses,
-          service_name: filters.service || undefined,
-          since_ms: sinceMs(filters.window, Date.now()) ?? undefined,
-          search: search || undefined,
-          limit,
-        }),
+        api
+          .groups({
+            status: filters.statuses,
+            service_name: filters.service || undefined,
+            since_ms: sinceMs(filters.window, Date.now()) ?? undefined,
+            search: search || undefined,
+            limit,
+          })
+          // What this answer is an answer to: until the next one lands, the
+          // counts under the list describe these filters, not the new ones.
+          .then((response) => ({ ...response, answered: { statuses: filters.statuses, window: filters.window } })),
       [api, filters.statuses, filters.service, filters.window, search, limit],
     ),
   })
@@ -207,16 +211,9 @@ export function SentinelPage({
         description={selected ? undefined : describe(status)}
         onClose={onRequestClose}
         actions={
-          <>
-            {!selected && !narrow && status?.groups.last_seen_ms ? (
-              <span className="sentinel-ui-ingested">
-                ingested {ago(status.groups.last_seen_ms, now)}
-              </span>
-            ) : null}
-            <IconButton label="Refresh" onClick={() => groups.refresh()}>
-              <RefreshCw size={16} />
-            </IconButton>
-          </>
+          <IconButton label="Refresh" onClick={() => groups.refresh()}>
+            <RefreshCw size={16} />
+          </IconButton>
         }
       >
         {selected ? (
@@ -250,6 +247,14 @@ export function SentinelPage({
                 variant="alert"
                 headline="The stored configuration was refused"
                 detail={`${status.config_error} — the worker is running on defaults and is not ingesting.`}
+              />
+            ) : null}
+            {status?.engine.trace_store === 'disabled' ? (
+              <StatusPanel
+                variant="warn"
+                headline="Error spans are not being captured"
+                // Last observed, not probed: it changes when the next trace is read.
+                detail="At the last capture the engine's trace store was off, so a failing span leaves nothing to read and is counted as lost before capture. Error logs are still grouped, without their session. Turn the trace store back on to capture spans again."
               />
             ) : null}
             {status && !status.enabled && !status.config_error ? (
@@ -319,6 +324,16 @@ export function SentinelPage({
             />
           )}
         </div>
+        {selected || !groups.data ? null : (
+          <ListStatus
+            answered={groups.data.answered}
+            narrow={narrow}
+            now={now}
+            shown={groups.data.groups.length}
+            status={status}
+            total={groups.data.total}
+          />
+        )}
       </PageMain>
     </PageShell>
   )

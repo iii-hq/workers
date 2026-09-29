@@ -295,6 +295,15 @@ pub struct FunctionContractLedgerEntry {
     /// still model-visible. Newly appended and legacy rows start ineligible.
     #[serde(default)]
     pub eligible: bool,
+    /// How many times this turn answered a request for this contract from
+    /// the ledger instead of sending it. Drives the re-fetch loop breaker in
+    /// `trigger::prepare_info_result`; reset at the start of every turn.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub repeats: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 /// Consecutive identical failures of one call (same function and arguments)
@@ -443,6 +452,34 @@ pub struct IdemRecord {
 pub(crate) mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_ledger_row_stores_a_repeat_count_only_when_there_is_one() {
+        let legacy = json!({
+            "contract_digest": "digest",
+            "source_function_call_id": "call_1",
+            "source_content_digest": "content",
+            "eligible": true
+        });
+        let row: FunctionContractLedgerEntry = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(
+            row.repeats, 0,
+            "a row stored before the count reads as zero"
+        );
+        assert_eq!(
+            serde_json::to_value(&row).unwrap(),
+            legacy,
+            "a zero count is not stored"
+        );
+
+        let counted = FunctionContractLedgerEntry { repeats: 2, ..row };
+        let stored = serde_json::to_value(&counted).unwrap();
+        assert_eq!(stored["repeats"], 2);
+        assert_eq!(
+            serde_json::from_value::<FunctionContractLedgerEntry>(stored).unwrap(),
+            counted
+        );
+    }
 
     pub(crate) fn record() -> TurnRecord {
         TurnRecord {
