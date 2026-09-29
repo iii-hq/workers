@@ -1580,6 +1580,30 @@ a.iii-ui-tree-item {
     var(--ease-smooth-out) both;
 }
 
+/* Compact chat confirmation. This portal belongs to viewport chrome, not
+   the originating pane: phones stack full-width touch actions (see the
+   phone chrome block below). */
+[data-chat-delete-dialog] {
+  width: calc(100vw - 2rem);
+  max-width: 24rem;
+  max-height: 85dvh;
+  padding: 1rem;
+  overflow-wrap: anywhere;
+}
+
+[data-chat-delete-actions] {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+[data-chat-delete-error] {
+  max-height: 25dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 /* Picker and sheet-detail views occupy the same panel and move in opposing
    directions: the root page leaves left, while detail pages leave right. */
 .iii-ui-motion-picker-page {
@@ -1703,9 +1727,17 @@ a.iii-ui-tree-item {
   }
 }
 
-/* viewport: phone chrome — touch row heights */
+/* viewport: phone chrome — touch row heights and stacked dialog actions */
 @media (max-width: 640px) {
   .iii-ui-list-item {
+    min-height: 3rem;
+  }
+
+  [data-chat-delete-actions] {
+    flex-direction: column-reverse;
+  }
+
+  [data-chat-delete-actions] > button {
     min-height: 3rem;
   }
 

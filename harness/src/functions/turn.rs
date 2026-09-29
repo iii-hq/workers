@@ -121,6 +121,10 @@ async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, Ha
     let (session_id, turn_id) = (payload.session_id.clone(), payload.turn_id.clone());
     // Orphan recovery must not re-enqueue a step that is executing here.
     let _inflight = deps.inflight.enter(&session_id);
+    // FIFO redelivery can overlap an old generation after an engine restart.
+    // Keep the entire generation + finalization lifetime visible to deletion,
+    // not only the shorter record locks released around the router RPC.
+    let _activity = deps.turn_activity.guard(&session_id).await;
     let mut transient_attempts = 0u32;
     let result = loop {
         match turn_loop::run_step(deps, payload.clone()).await {
@@ -154,6 +158,7 @@ async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, Ha
             }
         }
     };
+    deps.deletion_changed.notify_waiters();
     record_step_status(&result);
     Ok(result)
 }

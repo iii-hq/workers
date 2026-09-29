@@ -153,10 +153,14 @@ async fn imported_session_start_requires_explicit_runtime_options() {
             }
         }),
     );
-    sessions.register_function(
-        "state::get",
-        RegisterFunction::new_async(|_: Value| async { Ok::<_, iii_sdk::Error>(Value::Null) }),
-    );
+    // A send first checks the session tree's deletion tombstone, which reads harness state
+    // through its private id; nothing is tombstoned here.
+    for function_id in ["state::get", "harness::state::get"] {
+        sessions.register_function(
+            function_id,
+            RegisterFunction::new_async(|_: Value| async { Ok::<_, iii_sdk::Error>(Value::Null) }),
+        );
+    }
     let ensures = Arc::new(AtomicUsize::new(0));
     let observed = ensures.clone();
     sessions.register_function(
@@ -288,7 +292,9 @@ async fn imported_session_start_requires_explicit_runtime_options() {
     }
 
     assert_eq!(ensures.load(Ordering::SeqCst), 3);
-    assert_eq!(reads.load(Ordering::SeqCst), 7);
+    // 7 metadata reads for the read-only and runtime-option checks, plus the ones the
+    // session-tree deletion guard makes when a send addresses an existing session.
+    assert_eq!(reads.load(Ordering::SeqCst), 16);
 
     iii.shutdown();
     sessions.shutdown();

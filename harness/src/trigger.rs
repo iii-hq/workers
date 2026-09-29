@@ -658,8 +658,24 @@ pub async fn invoke_target(
     function_id: &str,
     arguments: &Value,
 ) -> ResultData {
+    invoke_target_classified(engine, policy, function_id, arguments)
+        .await
+        .0
+}
+
+/// [`invoke_target`] plus whether a failed dispatch has an unknown outcome
+/// (the target may still have run; see
+/// [`crate::clients::engine::invocation_outcome_unknown`]). The flag is set by
+/// the harness from the structured SDK error, never from result text a target
+/// controls, so it can gate the deletion dispatch witness.
+pub(crate) async fn invoke_target_classified(
+    engine: &EngineClient,
+    policy: &CompiledPolicy,
+    function_id: &str,
+    arguments: &Value,
+) -> (ResultData, bool) {
     if let Some(denied) = project_wide_compose_denial(function_id, arguments) {
-        return denied;
+        return (denied, false);
     }
     match engine.dispatch(function_id, arguments.clone()).await {
         Ok(mut value) => {
@@ -668,9 +684,12 @@ pub async fn invoke_target(
             } else if function_id == "engine::functions::info" {
                 post_filter_info(&mut value, policy);
             }
-            normalized_result(value)
+            (normalized_result(value), false)
         }
-        Err(e) => invocation_error_result(e.code, e.message),
+        Err(e) => {
+            let outcome_unknown = e.outcome_unknown;
+            (invocation_error_result(e.code, e.message), outcome_unknown)
+        }
     }
 }
 

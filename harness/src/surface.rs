@@ -69,6 +69,14 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<FunctionTriggerRequest, FunctionTriggerResponse>(FUNCTION_TRIGGER_ID),
         spec::<FunctionResolveRequest, FunctionResolveResponse>(FUNCTION_RESOLVE_ID),
         spec::<StopRequest, StopResponse>(STOP_ID),
+        spec::<
+            crate::functions::delete_session_tree::DeleteRequest,
+            crate::functions::delete_session_tree::Snapshot,
+        >(crate::functions::delete_session_tree::DELETE_ID),
+        spec::<
+            crate::functions::delete_session_tree::StatusRequest,
+            Option<crate::functions::delete_session_tree::Snapshot>,
+        >(crate::functions::delete_session_tree::STATUS_ID),
         spec::<StatusRequest, Option<StatusReport>>(STATUS_ID),
         spec::<SystemPromptRequest, SystemPromptPreview>(SYSTEM_PROMPT_ID),
         spec::<SessionTreeRequestV1, SessionTreeResponseV1>(SESSION_TREE_ID),

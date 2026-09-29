@@ -36,6 +36,32 @@ pub const BINDING_OWNER_SCOPE: &str = "harness_binding_owner";
 const STATE_GET_ID: &str = "state::get";
 const STATE_SET_ID: &str = "state::set";
 const STATE_DELETE_ID: &str = "state::delete";
+/// Strict list reader for lifecycle safety: malformed state must not disappear.
+pub(crate) async fn list_values<T: serde::de::DeserializeOwned>(
+    iii: &IIIClient,
+    scope: &str,
+    timeout_ms: u64,
+) -> Result<Vec<T>, HarnessError> {
+    let value = state_list(iii, scope, timeout_ms).await?;
+    let values: Vec<Value> = match value {
+        Value::Array(values) => values,
+        Value::Object(mut map) => match map.remove("values").or_else(|| map.remove("items")) {
+            Some(Value::Array(values)) => values,
+            Some(_) => return Err(HarnessError::State(format!("malformed list {scope}"))),
+            None => map.into_values().collect(),
+        },
+        _ => return Err(HarnessError::State(format!("malformed list {scope}"))),
+    };
+    values
+        .into_iter()
+        .filter(|v| !v.is_null())
+        .map(|v| {
+            serde_json::from_value(v)
+                .map_err(|e| HarnessError::State(format!("malformed {scope} row: {e}")))
+        })
+        .collect()
+}
+
 const STATE_LIST_ID: &str = "state::list";
 const PRIVATE_STATE_GET_ID: &str = "harness::state::get";
 const PRIVATE_STATE_LIST_ID: &str = "harness::state::list";
@@ -91,6 +117,27 @@ pub(crate) async fn state_set(
     value: Value,
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
+    if is_deletion_scope(scope) {
+        for _ in 0..8 {
+            let current = state_get(iii, scope, key, timeout_ms).await?;
+            if cas_value(
+                iii,
+                scope,
+                key,
+                (!current.is_null()).then_some(current),
+                value.clone(),
+                timeout_ms,
+            )
+            .await?
+            .is_none()
+            {
+                return Ok(());
+            }
+        }
+        return Err(HarnessError::State(format!(
+            "concurrent lifecycle write {scope}/{key}"
+        )));
+    }
     run_hidden(
         HIDDEN_FAMILY,
         iii.trigger(TriggerRequest {
@@ -111,6 +158,9 @@ pub(crate) async fn state_delete(
     key: &str,
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
+    if is_deletion_scope(scope) {
+        return state_set(iii, scope, key, Value::Null, timeout_ms).await;
+    }
     run_hidden(
         HIDDEN_FAMILY,
         iii.trigger(TriggerRequest {
@@ -311,7 +361,11 @@ pub async fn list_bindings(
     ))
 }
 
-async fn state_list(iii: &IIIClient, scope: &str, timeout_ms: u64) -> Result<Value, HarnessError> {
+pub(crate) async fn state_list(
+    iii: &IIIClient,
+    scope: &str,
+    timeout_ms: u64,
+) -> Result<Value, HarnessError> {
     let private = is_binding_scope(scope);
     let function_id = if private {
         PRIVATE_STATE_LIST_ID
@@ -348,7 +402,8 @@ async fn claim_private_namespace(iii: &IIIClient, timeout_ms: u64) -> Result<(),
             function_id: CLAIM_NAMESPACE_ID.into(),
             payload: json!({
                 "functions_prefix": NAMESPACE_PREFIX,
-                "scopes": [BINDING_SCOPE, BINDING_OWNER_SCOPE],
+                "scopes": [BINDING_SCOPE, BINDING_OWNER_SCOPE, crate::functions::delete_session_tree::OPERATIONS,
+                    crate::functions::delete_session_tree::GUARDS, crate::functions::delete_session_tree::DISPATCHES],
             }),
             action: None,
             timeout_ms: Some(timeout_ms),
@@ -374,7 +429,9 @@ where
     Fut: std::future::Future<Output = Result<Value, HarnessError>>,
 {
     match call().await {
-        Err(error) if is_unregistered_accessor(&error) => {
+        Err(error)
+            if is_unregistered_accessor(&error) || error.to_string().contains("INVALID_SCOPE") =>
+        {
             claim_private_namespace(iii, timeout_ms).await?;
             call().await
         }
@@ -390,7 +447,16 @@ fn is_unregistered_accessor(error: &HarnessError) -> bool {
 }
 
 fn is_binding_scope(scope: &str) -> bool {
-    matches!(scope, BINDING_SCOPE | BINDING_OWNER_SCOPE)
+    matches!(scope, BINDING_SCOPE | BINDING_OWNER_SCOPE) || is_deletion_scope(scope)
+}
+
+fn is_deletion_scope(scope: &str) -> bool {
+    matches!(
+        scope,
+        crate::functions::delete_session_tree::OPERATIONS
+            | crate::functions::delete_session_tree::GUARDS
+            | crate::functions::delete_session_tree::DISPATCHES
+    )
 }
 
 /// Tolerate the two `state::list` shapes seen across engines: a bare array of

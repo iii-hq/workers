@@ -27,6 +27,11 @@ pub struct Deps {
     pub hooks: HookRegistry,
     pub locks: SessionLocks,
     pub cancels: TurnCancels,
+    pub topology: Arc<tokio::sync::Mutex<()>>,
+    pub deletion_commands: SessionLocks,
+    pub turn_activity: SessionLocks,
+    pub deletion_changed: Arc<tokio::sync::Notify>,
+    pub deletion_events: crate::deletion_events::DeletionEvents,
     /// Sessions whose step executes in this process (orphan recovery).
     pub inflight: crate::inflight::InflightSteps,
     /// Harness-owned JSON project catalog, serialized across concurrent
@@ -46,7 +51,13 @@ impl Deps {
         events: TurnEvents,
         hooks: HookRegistry,
     ) -> Self {
+        let deletion_events = crate::deletion_events::DeletionEvents::register(&iii);
         Self {
+            topology: Arc::new(tokio::sync::Mutex::new(())),
+            deletion_commands: SessionLocks::new(),
+            turn_activity: SessionLocks::new(),
+            deletion_changed: Arc::new(tokio::sync::Notify::new()),
+            deletion_events,
             iii,
             config,
             functions,

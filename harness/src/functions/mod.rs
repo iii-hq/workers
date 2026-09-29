@@ -3,6 +3,7 @@
 //! `pub async fn handle(deps, req)` the registration closure wraps; tests call
 //! the same `handle` functions directly (SOP §7).
 
+pub mod delete_session_tree;
 pub mod filesystem;
 pub mod function_resolve;
 pub mod function_trigger;
@@ -270,6 +271,21 @@ fn register_with_metadata_meta<Req, Resp, F, Fut>(
 }
 
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
+    register_internal(iii, deps, delete_session_tree::DELETE_ID, "Durably cancel and delete only the selected session subtree; returns an operation snapshot.", |d, r| async move { delete_session_tree::handle(&d, r).await });
+    register_internal(
+        iii,
+        deps,
+        delete_session_tree::STATUS_ID,
+        "Read a durable session subtree deletion snapshot, or null if unknown.",
+        |d, r| async move { delete_session_tree::status(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        delete_session_tree::RUN_ID,
+        "Internal queued subtree deletion continuation.",
+        |d, r| async move { delete_session_tree::run(&d, r).await },
+    );
     register_internal(iii, deps, SEND_ID, SEND_DESC, |d, r| async move {
         send::handle(&d, r).await
     });

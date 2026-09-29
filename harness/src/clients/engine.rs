@@ -28,6 +28,54 @@ pub struct FunctionDescriptor {
 pub struct DispatchError {
     pub code: Option<String>,
     pub message: String,
+    /// Set by the harness (never parsed from remote text): the invocation may
+    /// or may not have run. See [`invocation_outcome_unknown`].
+    pub outcome_unknown: bool,
+}
+
+/// Remote codes whose invocation may still have run. From the iii engine
+/// 0.23: `invocation_stopped` (the target worker disconnected mid-call and
+/// the engine halted the invocation) and `invocation_error` (the engine lost
+/// the invocation's result channel or could not track it). `timeout` and
+/// `engine_restart` are the timeout/restart codes a forwarding worker (this
+/// harness included) reports for an interrupted nested call.
+const OUTCOME_UNKNOWN_REMOTE_CODES: &[&str] = &[
+    "invocation_stopped",
+    "invocation_error",
+    "timeout",
+    "engine_restart",
+];
+
+/// Whether a failed `iii.trigger` leaves the target's execution unknown, so
+/// it must be treated as possibly still running. Decided from the structured
+/// SDK error (iii-sdk 0.23) BEFORE any string conversion; the match is
+/// exhaustive, so a new SDK variant must be classified here.
+///
+/// - `NotConnected`: the request could not be queued, or the connection
+///   dropped while awaiting the reply; the engine may have dispatched it.
+/// - `Timeout`: the caller stopped waiting; the invocation is not cancelled.
+/// - `WebSocket`: transport failure around the request; delivery unknown.
+/// - `Runtime`: never constructed by the 0.23 SDK, so its meaning is
+///   unspecified; fail closed.
+/// - `Remote`: the engine or target answered. Unknown only for the
+///   transport/timeout/restart codes above; `function_not_found` never
+///   routed, and any other code (e.g. the SDK's `invocation_failed`) is the
+///   target's own completed failure.
+/// - `Handler`: raised on the caller side by request validation before
+///   anything is sent (a target's handler error arrives as `Remote`).
+/// - `Serde`: the caller-side trigger path yields it only for a local
+///   (de)serialization failure; a target's serde failure arrives as
+///   `Remote { code: "invocation_failed" }`.
+/// - `RegistrationRejected`: a fatal registration state, not an invocation.
+pub(crate) fn invocation_outcome_unknown(error: &iii_sdk::Error) -> bool {
+    use iii_sdk::Error;
+    match error {
+        Error::NotConnected | Error::Timeout | Error::WebSocket(_) | Error::Runtime(_) => true,
+        Error::Remote { code, .. } => OUTCOME_UNKNOWN_REMOTE_CODES
+            .iter()
+            .any(|known| code.eq_ignore_ascii_case(known)),
+        Error::Handler(_) | Error::Serde(_) | Error::RegistrationRejected { .. } => false,
+    }
 }
 
 impl std::fmt::Display for DispatchError {
@@ -94,6 +142,8 @@ impl EngineClient {
                         return Err(DispatchError {
                             code: Some("engine_restart".to_string()),
                             message: format!("{function_id}: {ENGINE_RESTART_INTERRUPTED}"),
+                            // "ran at most once and its result is unknown".
+                            outcome_unknown: true,
                         });
                     },
                 }
@@ -107,6 +157,8 @@ impl EngineClient {
             let raw = e.to_string();
             let mut parsed = parse_dispatch_error_message(&raw);
             parsed.message = format!("{function_id}: {}", parsed.message);
+            // Classify the structured error before it is flattened to text.
+            parsed.outcome_unknown = invocation_outcome_unknown(&e);
             parsed
         })
     }
@@ -347,12 +399,14 @@ fn parse_dispatch_error_message(raw: &str) -> DispatchError {
         return DispatchError {
             code: Some(code),
             message: raw.to_string(),
+            outcome_unknown: false,
         };
     }
 
     DispatchError {
         code: None,
         message: raw.to_string(),
+        outcome_unknown: false,
     }
 }
 
@@ -391,6 +445,7 @@ fn parse_dispatch_error_json(value: &Value) -> Option<DispatchError> {
                 (Some(code), Some(message)) => Some(DispatchError {
                     code: Some(code),
                     message,
+                    outcome_unknown: false,
                 }),
                 (None, Some(message)) => {
                     if let Ok(inner) = serde_json::from_str::<Value>(&message) {
@@ -399,6 +454,7 @@ fn parse_dispatch_error_json(value: &Value) -> Option<DispatchError> {
                         Some(DispatchError {
                             code: None,
                             message,
+                            outcome_unknown: false,
                         })
                     }
                 }
@@ -601,5 +657,63 @@ mod tests {
             err.message,
             "remote error (S215): path escapes the fs jail roots [/private/tmp]: /Users/example filesystem_access_request={\"v\":1,\"requested_root\":\"/Users/example\",\"attempted_path\":\"/Users/example\",\"error_code\":\"S215\"}"
         );
+    }
+
+    fn remote(code: &str) -> iii_sdk::Error {
+        iii_sdk::Error::Remote {
+            code: code.into(),
+            message: "connection timed out over websocket transport".into(),
+            stacktrace: None,
+        }
+    }
+
+    #[test]
+    fn transport_level_sdk_errors_leave_the_outcome_unknown() {
+        for error in [
+            iii_sdk::Error::NotConnected,
+            iii_sdk::Error::Timeout,
+            iii_sdk::Error::WebSocket("reset".into()),
+            iii_sdk::Error::Runtime("unspecified".into()),
+        ] {
+            assert!(invocation_outcome_unknown(&error), "{error}");
+        }
+    }
+
+    #[test]
+    fn completed_or_unsent_sdk_errors_have_a_known_outcome() {
+        for error in [
+            iii_sdk::Error::Handler("timeout in the text only".into()),
+            iii_sdk::Error::Serde("websocket in the text only".into()),
+            iii_sdk::Error::RegistrationRejected {
+                code: "WORKER_NAME_CONFLICT".into(),
+                namespace: "default".into(),
+                worker_name: None,
+                function_id: None,
+                owner_worker_id: "w".into(),
+            },
+        ] {
+            assert!(!invocation_outcome_unknown(&error), "{error}");
+        }
+    }
+
+    #[test]
+    fn remote_outcome_is_unknown_only_for_transport_timeout_or_restart_codes() {
+        for code in [
+            "invocation_stopped",
+            "invocation_error",
+            "timeout",
+            "ENGINE_RESTART",
+        ] {
+            assert!(invocation_outcome_unknown(&remote(code)), "{code}");
+        }
+        // The message text is target-controlled and never consulted.
+        for code in [
+            "function_not_found",
+            "invocation_failed",
+            "test_error",
+            "S215",
+        ] {
+            assert!(!invocation_outcome_unknown(&remote(code)), "{code}");
+        }
     }
 }
