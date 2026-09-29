@@ -342,7 +342,7 @@ export function ListStatus({
   const counts = status?.groups
   const within = WINDOW_WORDS[answered.window]
   const store = status?.engine.trace_store
-  // Only the parts that are not zero: "2 ignored hidden", not "0 resolved · 2 ignored hidden".
+  // Only the parts that are not zero: "2 ignored", not "0 resolved · 2 ignored".
   const hidden = counts
     ? [counts.resolved && `${spaced(counts.resolved)} resolved`, counts.ignored && `${spaced(counts.ignored)} ignored`]
         .filter(Boolean)
@@ -366,7 +366,8 @@ export function ListStatus({
         {within ? ` ${within}` : ''}
       </span>
       {narrow ? null : <span>regressions first, then last seen</span>}
-      {hidden && scopeOf(answered.statuses) === 'open' ? <span>{hidden} hidden</span> : null}
+      {/* All-time counts, not the window's: said so, rather than "hidden" beside "in the last 24 h". */}
+      {hidden && scopeOf(answered.statuses) === 'open' ? <span>all time: {hidden}, not in Open</span> : null}
     </StatusBar>
   )
 }
