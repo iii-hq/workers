@@ -2,27 +2,27 @@
 //! declarations and keep the verbatim source it selects.
 //!
 //! Ported from dzhng/jevgrep (MIT, Copyright (c) 2026 David Zhang), commit
-//! 82ef1fd: `packages/core/src/selection.ts` `selectFile` (first pass) and
-//! the selection loop of `retrieve.ts` (518-564).
+//! 82ef1fd: `packages/core/src/selection.ts` `selectFile` and the selection
+//! passes of `retrieve.ts` (518-594): a first pass over every file, then a
+//! sequential follow-up that shares everything selected as
+//! `selectedEvidence` and asks which declarations it references.
 //!
 //! Deviations: one read per file, re-hashed before its excerpts are
-//! emitted, instead of a freshness check before every judge attempt; a
-//! group the judge finds too large is halved like one over the state cap;
-//! files run concurrently up to the worker's judge slots.
+//! emitted, and the shared evidence re-hashed once before the follow-up,
+//! instead of a freshness check before every judge attempt; a group the
+//! judge finds too large is halved like one over the state cap; first-pass
+//! files run concurrently up to the worker's judge slots, and the follow-up
+//! visits files best first rather than in admission order.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
-use iii_helpers::observability::opentelemetry::Context;
-use tokio::task::JoinSet;
-
 use super::navigate::{Candidate, Run};
-use super::prompts::{self, Declaration, SourceRange};
+use super::prompts::{self, Declaration, Evidence, SourceRange};
 use super::units::{self, Inspection, MAX_PARSE_BYTES};
-use super::walk::{self, Snap, Snapshot, Unit};
+use super::walk::{self, Snapshot, Unit};
 use super::{Excerpt, Lead};
-use crate::code::judge::{JudgeError, SLOT_COUNT};
+use crate::code::judge::JudgeError;
 
 /// Units, context lines and owner headers above this are never shown whole.
 const SOURCE_UNIT_BYTES: usize = 24_000;
@@ -38,17 +38,29 @@ const CONTEXT_LINES: usize = 8;
 const EXCERPT_LINES: usize = 3;
 /// jevgrep's evidence state cap (`Run::state_cap` may lower it).
 pub const MAX_STATE_BYTES: usize = 80_000;
+/// The follow-up runs only when the shared evidence fits in this.
+const MAX_SHARED_EVIDENCE_BYTES: usize = 64_000;
 /// Selection, lead and presentation thresholds (strict).
 const SELECT: f64 = 0.5;
 const LEAD: f64 = 0.25;
 const PRESENT: f64 = 0.7;
 
-/// What selection found in one file.
-#[derive(Debug, Default)]
+/// What selection found in one file (jevgrep `FileEvidence`).
+#[derive(Debug, Default, Clone)]
 pub struct Selected {
+    /// Presentation: the selected source of decisions above 0.7.
     pub excerpts: Vec<Excerpt>,
+    /// All selected source; a test file shows this instead.
+    pub selected_excerpts: Vec<Excerpt>,
+    /// Selected source ±3 lines, shared with the follow-up.
+    pub evidence: Vec<Evidence>,
     pub leads: Vec<Lead>,
     pub source_omitted: bool,
+    // What the follow-up builds on.
+    selected: Vec<Span>,
+    rendered: Vec<Span>,
+    decisions: Vec<(Span, f64)>,
+    lead_ranges: Vec<(String, Range, f64)>,
 }
 
 impl Selected {
@@ -87,6 +99,47 @@ fn merge(mut spans: Vec<Span>) -> Vec<Span> {
         }
     }
     merged
+}
+
+/// `spans` without `cut` (a contextual rejection).
+fn retract(spans: Vec<Span>, cut: Span) -> Vec<Span> {
+    let mut kept = Vec::new();
+    for span in spans {
+        if span.end <= cut.start || span.start >= cut.end {
+            kept.push(span);
+            continue;
+        }
+        if span.start < cut.start {
+            kept.push(Span {
+                start: span.start,
+                end: cut.start,
+            });
+        }
+        if span.end > cut.end {
+            kept.push(Span {
+                start: cut.end,
+                end: span.end,
+            });
+        }
+    }
+    kept
+}
+
+/// One rendered excerpt.
+struct Block {
+    span: Span,
+    range: Range,
+    text: String,
+}
+
+impl Block {
+    fn excerpt(&self) -> Excerpt {
+        Excerpt {
+            line_from: self.range.start_line as u32,
+            line_to: self.range.end_line as u32,
+            text: self.text.clone(),
+        }
+    }
 }
 
 /// One file's lines and syntax, in the byte coordinates of its snapshot.
@@ -294,7 +347,7 @@ impl Source {
         ranges: Vec<SourceRange>,
         mut rendered: Vec<Span>,
         chosen: &[Span],
-    ) -> Vec<Excerpt> {
+    ) -> Vec<Block> {
         let line_count = self.lines.len();
         let mut windows: Vec<SourceRange> = ranges
             .iter()
@@ -374,11 +427,7 @@ impl Source {
                         .lines_text(range.start_line, range.end_line)
                         .to_string(),
                 };
-                Excerpt {
-                    line_from: range.start_line as u32,
-                    line_to: range.end_line as u32,
-                    text,
-                }
+                Block { span, range, text }
             })
             .collect()
     }
@@ -414,62 +463,91 @@ impl Source {
         }
         whole.extend(headers);
         self.excerpts_for(whole, partial, chosen)
+            .iter()
+            .map(Block::excerpt)
+            .collect()
     }
 }
 
-/// Select every candidate, at most one file per judge slot at a time.
-pub async fn select_all(run: &Arc<Run>) -> HashMap<String, Selected> {
-    let mut candidates: Vec<Candidate> = run.state().candidates.values().cloned().collect();
-    candidates.sort_by(|a, b| {
-        b.score
-            .total_cmp(&a.score)
-            .then_with(|| walk::locale_cmp(&a.path, &b.path))
-    });
-    let mut queue = candidates.into_iter();
-    let (mut running, mut selected) = (JoinSet::new(), HashMap::new());
-    loop {
-        while running.len() < SLOT_COUNT && !run.stopped() {
-            let Some(candidate) = queue.next() else {
-                break;
-            };
-            running.spawn(select_file(run.clone(), candidate).with_context(Context::current()));
-        }
-        let Some(joined) = running.join_next().await else {
+/// retrieve.ts `selectEvidence`: a first pass over every candidate, then,
+/// when everything selected fits in 64 000 JSON bytes, a sequential
+/// follow-up that shares it (in first-pass completion order) with each
+/// file's judge.
+pub async fn select_evidence(run: &Arc<Run>) -> HashMap<String, Selected> {
+    let candidates = run.sorted_candidates();
+    let mut completed = run
+        .parallel(candidates.clone(), |run, candidate| {
+            select_file(run, candidate, None, None)
+        })
+        .await;
+    let order: Vec<String> = completed.iter().map(|(path, _)| path.clone()).collect();
+    let mut files: HashMap<String, Selected> = completed
+        .drain(..)
+        .filter_map(|(path, file)| Some((path, file?)))
+        .collect();
+
+    let mut evidence: Vec<Evidence> = Vec::new();
+    for candidate in order
+        .iter()
+        .filter_map(|path| candidates.iter().find(|c| &c.path == path))
+    {
+        if run.stopped() {
             break;
-        };
-        match joined {
-            Ok((path, Some(file))) => {
-                selected.insert(path, file);
-            }
-            Ok((_, None)) => {}
-            Err(_) => run.issue("unreadable"),
+        }
+        if files
+            .get(&candidate.path)
+            .is_none_or(|file| file.evidence.is_empty())
+        {
+            continue;
+        }
+        // Shared source obeys the same freshness check as the target.
+        if fresh(run, candidate).await.is_none() {
+            files.insert(candidate.path.clone(), Selected::omitted());
+            continue;
+        }
+        evidence.extend(files[&candidate.path].evidence.iter().cloned());
+    }
+    if evidence.is_empty() || walk::json_len(&evidence) > MAX_SHARED_EVIDENCE_BYTES || run.stopped()
+    {
+        return files;
+    }
+    let evidence = Arc::new(evidence);
+    for candidate in candidates {
+        if run.stopped() {
+            break;
+        }
+        let previous = files.get(&candidate.path).cloned();
+        let (path, file) =
+            select_file(run.clone(), candidate, previous, Some(evidence.clone())).await;
+        if let Some(file) = file {
+            files.insert(path, file);
         }
     }
-    selected
+    files
 }
 
 /// Re-read `candidate` and check it is still the file the judge admitted.
 async fn fresh(run: &Arc<Run>, candidate: &Candidate) -> Option<Snapshot> {
-    let (reader, path) = (run.clone(), candidate.path.clone());
-    let snap = tokio::task::spawn_blocking(move || walk::read(&reader.tree, &path))
+    let (reader, candidate) = (run.clone(), candidate.clone());
+    tokio::task::spawn_blocking(move || reader.unchanged(&candidate))
         .await
-        .unwrap_or(Snap::Issue("unreadable"));
-    match snap {
-        Snap::Ok(snapshot) if snapshot.content_hash == candidate.content_hash => Some(snapshot),
-        Snap::Issue(kind) => {
-            run.issue(kind);
+        .unwrap_or_else(|_| {
+            run.issue("unreadable");
             None
-        }
-        _ => {
-            run.issue("changed");
-            None
-        }
-    }
+        })
 }
 
-/// selection.ts `selectFile`, first pass: `None` leaves the file as
-/// navigation found it.
-pub async fn select_file(run: Arc<Run>, candidate: Candidate) -> (String, Option<Selected>) {
+/// selection.ts `selectFile`: `None` leaves the file as it was. With
+/// `evidence` (the follow-up) each declaration is also asked whether the
+/// shared evidence references it, its score becomes `max(min(q, scope),
+/// ref)`, and a valid score ≤ 0.5 retracts an earlier selection; a failed
+/// or unasked group keeps what `previous` selected.
+pub async fn select_file(
+    run: Arc<Run>,
+    candidate: Candidate,
+    previous: Option<Selected>,
+    evidence: Option<Arc<Vec<Evidence>>>,
+) -> (String, Option<Selected>) {
     let path = candidate.path.clone();
     let Some(snapshot) = fresh(&run, &candidate).await else {
         return (path, Some(Selected::omitted()));
@@ -489,9 +567,13 @@ pub async fn select_file(run: Arc<Run>, candidate: Candidate) -> (String, Option
         return (path, None);
     };
 
-    let mut selected: Vec<Span> = Vec::new();
-    let mut decisions: Vec<(Span, f64)> = Vec::new();
-    let mut leads: Vec<(String, Range, f64)> = Vec::new();
+    let previous = previous.unwrap_or_default();
+    let mut selected: Vec<Span> = previous.selected;
+    let mut decisions: Vec<(Span, f64)> = previous.decisions;
+    let mut context: Vec<Span> = previous.rendered;
+    let mut leads: Vec<(String, Range, f64)> = previous.lead_ranges;
+    let mut coordinates: Vec<SourceRange> = Vec::new();
+    let shared = evidence.as_deref().map(Vec::as_slice);
     let mut index = 0;
     while index < groups.len() && !run.stopped() {
         let group = &groups[index];
@@ -508,7 +590,7 @@ pub async fn select_file(run: Arc<Run>, candidate: Candidate) -> (String, Option
             &path,
             &source.context(group),
             &declarations,
-            None,
+            shared,
         );
         let halve = |groups: &mut Vec<Vec<Unit>>| {
             let mut first = groups.remove(index);
@@ -516,6 +598,7 @@ pub async fn select_file(run: Arc<Run>, candidate: Candidate) -> (String, Option
             groups.insert(index, second);
             groups.insert(index, first);
         };
+        // Shared evidence counts toward the state cap too.
         if group.len() > 1 && walk::json_len(&request.state) > run.state_cap {
             halve(&mut groups);
             continue;
@@ -540,7 +623,10 @@ pub async fn select_file(run: Arc<Run>, candidate: Candidate) -> (String, Option
         for (i, unit) in group.iter().enumerate() {
             let answer =
                 |prefix: &str| scores.get(&prompts::key(prefix, i)).copied().unwrap_or(0.0);
-            let value = answer("q").min(answer("scope"));
+            let mut value = answer("q").min(answer("scope"));
+            if shared.is_some() {
+                value = value.max(answer("ref"));
+            }
             let span = Span {
                 start: unit.byte_start,
                 end: unit.byte_end,
@@ -549,8 +635,19 @@ pub async fn select_file(run: Arc<Run>, candidate: Candidate) -> (String, Option
                 Some(decision) => decision.1 = value,
                 None => decisions.push((span, value)),
             }
+            // Only a valid contextual rejection retracts a selection.
+            if shared.is_some() && value <= SELECT {
+                selected = retract(selected, span);
+            }
             if value > SELECT {
                 selected.push(span);
+                context.push(span);
+                if !source.partial_line(unit) {
+                    coordinates.push(SourceRange {
+                        start_line: unit.start_line,
+                        end_line: unit.end_line,
+                    });
+                }
             }
             if value > LEAD && !unit.name.ends_with(".context") {
                 let range = if source.partial_line(unit) {
@@ -575,6 +672,21 @@ pub async fn select_file(run: Arc<Run>, candidate: Candidate) -> (String, Option
     }
 
     let chosen = merge(selected);
+    // Evidence: the selections so far, whole lines ±3 (selection.ts
+    // `expanded`).
+    let (mut whole, mut partial) = (coordinates, Vec::new());
+    for span in merge(context) {
+        let range = source.range_for(span);
+        match range.bytes {
+            Some(_) => partial.push(span),
+            None => whole.push(SourceRange {
+                start_line: range.start_line,
+                end_line: range.end_line,
+            }),
+        }
+    }
+    // A later stage adds the Python neighbourhood (`pythonNeighborhood`).
+    let expanded = source.excerpts_for(whole, partial, &chosen);
     // Presentation is stricter than selection: decisions above 0.7 within
     // the selected source.
     let displayed = merge(
@@ -590,27 +702,46 @@ pub async fn select_file(run: Arc<Run>, candidate: Candidate) -> (String, Option
             .collect(),
     );
     let excerpts = source.presentation(&displayed, &chosen);
-    let mut leads: Vec<Lead> = leads
-        .into_iter()
+    let selected_excerpts = source.presentation(&chosen, &chosen);
+    let mut lead_list: Vec<Lead> = leads
+        .iter()
         .map(|(name, range, score)| Lead {
-            name,
+            name: name.clone(),
             line_from: range.start_line as u32,
             line_to: range.end_line as u32,
-            score,
+            score: *score,
         })
         .collect();
-    leads.sort_by_key(|lead| lead.line_from);
+    lead_list.sort_by_key(|lead| lead.line_from);
 
     // The file may have changed while the judge read it.
     if fresh(&run, &candidate).await.is_none() {
         return (path, Some(Selected::omitted()));
     }
+    let evidence = expanded
+        .iter()
+        .map(|block| Evidence {
+            path: path.clone(),
+            start_line: block.range.start_line,
+            end_line: block.range.end_line,
+            source_byte_start: block.range.bytes.map(|b| b.start),
+            source_byte_end: block.range.bytes.map(|b| b.end),
+            source: block.text.clone(),
+        })
+        .collect();
+    let rendered = expanded.iter().map(|block| block.span).collect();
     (
         path,
         Some(Selected {
             excerpts,
-            leads,
+            selected_excerpts,
+            evidence,
+            leads: lead_list,
             source_omitted: false,
+            selected: chosen,
+            rendered,
+            decisions,
+            lead_ranges: leads,
         }),
     )
 }
@@ -625,6 +756,7 @@ mod tests {
     use judge_contract::Evaluation;
     use serde_json::Value;
 
+    use super::walk::Snap;
     use super::*;
     use crate::code::judge::{Evaluator, Scores};
 
@@ -667,6 +799,7 @@ mod tests {
             deadline: Instant::now() + Duration::from_secs(60),
             cap: usize::MAX,
             state_cap,
+            cache: None,
             state: Mutex::new(Default::default()),
         });
         (run, log)
@@ -682,7 +815,7 @@ mod tests {
         std::fs::write(dir.path().join(path), source).unwrap();
         let (run, log) = run_over(dir.path(), state_cap, score);
         let candidate = candidate(&run, path);
-        let (_, selected) = select_file(run.clone(), candidate).await;
+        let (_, selected) = select_file(run.clone(), candidate, None, None).await;
         let sent = log.lock().unwrap().clone();
         (selected.unwrap(), run, sent)
     }
@@ -756,7 +889,7 @@ mod tests {
             Box::pin(async move { Ok((scores, 1)) })
         });
         let candidate = candidate(&run, "a.rs");
-        let (_, selected) = select_file(run, candidate).await;
+        let (_, selected) = select_file(run, candidate, None, None).await;
         let selected = selected.unwrap();
         assert!(selected.excerpts.is_empty());
         assert_eq!(selected.leads[0].score, 0.4);
@@ -883,7 +1016,7 @@ mod tests {
             Ok(0.9)
         });
         let candidate = candidate(&run, "a.rs");
-        let (_, selected) = select_file(run.clone(), candidate).await;
+        let (_, selected) = select_file(run.clone(), candidate, None, None).await;
         let selected = selected.unwrap();
         assert!(selected.source_omitted);
         assert!(selected.excerpts.is_empty() && selected.leads.is_empty());
