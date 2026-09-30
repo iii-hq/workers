@@ -13,6 +13,8 @@
 
 pub mod navigate;
 pub mod prompts;
+pub mod select;
+pub mod units;
 pub mod walk;
 
 use std::collections::BTreeMap;
@@ -35,6 +37,8 @@ pub const MIN_TIMEOUT_MS: u64 = 1_000;
 pub const MAX_TIMEOUT_MS: u64 = 280_000;
 /// Smallest judge context window (tokens) whose states fit untruncated.
 pub const MIN_WINDOW_TOKENS: u64 = 8_192;
+/// Excerpt bytes one result carries (`coder::read-file`'s ceiling).
+pub const MAX_SOURCE_BYTES: usize = 131_072;
 
 // examples are wire-contract; goldens pin them.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -234,14 +238,15 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
             ..Stats::default()
         },
     };
-    let cap = match window(deadline).await {
+    let window = match window(deadline).await {
         Err(error) => return Ok(logged(unavailable(error.reason()))),
         Ok(Some(tokens)) if tokens < MIN_WINDOW_TOKENS => {
             return Ok(logged(unavailable("judge window too small".into())))
         }
-        Ok(Some(tokens)) => navigate::MAX_REQUEST_BYTES.min(2 * tokens as usize),
-        Ok(None) => navigate::MAX_REQUEST_BYTES,
+        Ok(window) => window,
     };
+    // A known window caps every request at twice its tokens.
+    let cap = |jevgrep: usize| window.map_or(jevgrep, |tokens| jevgrep.min(2 * tokens as usize));
 
     let max_read_bytes = cfg.max_read_bytes;
     let walk_resolver = resolver.clone();
@@ -256,7 +261,8 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
         tree,
         evaluate,
         deadline,
-        cap,
+        cap: cap(navigate::MAX_REQUEST_BYTES),
+        state_cap: cap(select::MAX_STATE_BYTES),
         state: Mutex::new(Default::default()),
     });
     if truncated {
@@ -266,6 +272,7 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
         *run.state().issues.entry("unreadable".into()).or_default() += unreadable;
     }
     run.discover(vec![".".into()]).await;
+    let mut selected = select::select_all(&run).await;
 
     let root = run.tree.root.clone();
     let state = std::mem::take(&mut *run.state());
@@ -273,18 +280,22 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
     let mut files: Vec<RelevantFile> = state
         .candidates
         .into_values()
-        .map(|candidate| RelevantFile {
-            path: root.join(&candidate.path).display().to_string(),
-            score: candidate.score,
-            priority: None,
-            roles: Vec::new(),
-            excerpts: Vec::new(),
-            leads: Vec::new(),
-            call_leads: Vec::new(),
-            source_omitted: false,
+        .map(|candidate| {
+            let found = selected.remove(&candidate.path).unwrap_or_default();
+            RelevantFile {
+                path: root.join(&candidate.path).display().to_string(),
+                score: candidate.score,
+                priority: None,
+                roles: Vec::new(),
+                excerpts: found.excerpts,
+                leads: found.leads,
+                call_leads: Vec::new(),
+                source_omitted: found.source_omitted,
+            }
         })
         .collect();
     sort_files(&mut files);
+    spend_source_budget(&mut files, MAX_SOURCE_BYTES);
     let (status, reason) = match state.stop {
         // Nothing admitted yet: point the agent at coder::search.
         Some(Stop::Unavailable(reason)) if !admitted => (Status::Unavailable, Some(reason)),
@@ -318,6 +329,22 @@ fn sort_files(files: &mut [RelevantFile]) {
             .then(b.score.total_cmp(&a.score))
             .then_with(|| walk::locale_cmp(&a.path, &b.path))
     });
+}
+
+/// render.ts: excerpts are kept in output order while they fit `budget`;
+/// a file that loses one is marked `source_omitted` (its leads remain).
+fn spend_source_budget(files: &mut [RelevantFile], mut budget: usize) {
+    for file in files {
+        file.excerpts.retain(|excerpt| {
+            let fits = excerpt.text.len() <= budget;
+            if fits {
+                budget -= excerpt.text.len();
+            } else {
+                file.source_omitted = true;
+            }
+            fits
+        });
+    }
 }
 
 /// One line per ask; never the query or any path.

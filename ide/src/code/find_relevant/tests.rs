@@ -66,11 +66,12 @@ fn judge(
     })
 }
 
-/// Score each navigation item by `f`.
+/// Score each navigation item by `f`; select no evidence.
 fn per_item(ev: &Evaluation, f: impl Fn(&Value) -> f64) -> Scores {
-    ev.state["items"]
-        .as_array()
-        .unwrap()
+    let Some(items) = ev.state["items"].as_array() else {
+        return ev.questions.keys().map(|k| (k.clone(), 0.1)).collect();
+    };
+    items
         .iter()
         .enumerate()
         .map(|(i, item)| (key("q", i), f(item)))
@@ -130,8 +131,9 @@ async fn an_irrelevant_branch_is_never_sent() {
     let out = ask(&fx, None, judge(&log, keyword)).await;
     assert_eq!(out.status, Status::Complete);
     assert_eq!(paths(&fx, &out), ["src/core/needle.rs"]);
-    assert_eq!(out.stats.judge_calls, 2);
-    assert_eq!(out.stats.input_tokens, 14);
+    // two navigation levels, then one evidence call for the file
+    assert_eq!(out.stats.judge_calls, 3);
+    assert_eq!(out.stats.input_tokens, 21);
     let sent = log.lock().unwrap().join("\n");
     // irrelevant/a was scored (its preview names `b`) and pruned
     assert!(sent.contains("\"irrelevant/a\""));
@@ -278,8 +280,8 @@ async fn a_batch_the_judge_finds_too_large_is_split_until_it_fits() {
     .await;
     assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
     assert_eq!(out.files.len(), 6);
-    // 6 → 3 + 3 → (2 + 1) + (2 + 1)
-    assert_eq!(out.stats.judge_calls, 7);
+    // 6 → 3 + 3 → (2 + 1) + (2 + 1), then one evidence call per file
+    assert_eq!(out.stats.judge_calls, 7 + 6);
 
     // a single item the judge refuses is a request-size issue
     let log = Log::default();
@@ -407,6 +409,51 @@ async fn bad_input_is_c210() {
     assert!(log.lock().unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn excerpts_past_the_output_budget_are_omitted_but_keep_their_leads() {
+    // three 50 000-byte files the judge selects whole: two fit in 131 072
+    let source: String = (0..2_000)
+        .map(|i| format!("fn needle_{i:04}() -> u32 {{ {i:05} }}\n"))
+        .collect();
+    let source = &source[..50_000 - 50_000 % 34]; // whole 34-byte lines
+    let fx = fixture(
+        &[
+            ("a_needle.rs", source.as_bytes()),
+            ("b_needle.rs", source.as_bytes()),
+            ("c_needle.rs", source.as_bytes()),
+        ],
+        |_, _| {},
+    );
+    let out = ask(
+        &fx,
+        None,
+        judge(&Log::default(), |ev| {
+            if ev.state.get("items").is_some() {
+                keyword(ev)
+            } else {
+                Ok(ev.questions.keys().map(|k| (k.clone(), 0.9)).collect())
+            }
+        }),
+    )
+    .await;
+    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
+    assert_eq!(
+        paths(&fx, &out),
+        ["a_needle.rs", "b_needle.rs", "c_needle.rs"]
+    );
+    let shown: Vec<usize> = out
+        .files
+        .iter()
+        .map(|f| f.excerpts.iter().map(|e| e.text.len()).sum())
+        .collect();
+    assert_eq!(shown[0], source.len());
+    assert_eq!(shown, [shown[0], shown[0], 0]);
+    let omitted: Vec<bool> = out.files.iter().map(|f| f.source_omitted).collect();
+    assert_eq!(omitted, [false, false, true]);
+    assert_eq!(out.files[2].leads.len(), out.files[0].leads.len());
+    assert_eq!(out.files[2].leads[0].name, "needle_0000");
+}
+
 #[test]
 fn files_sort_by_priority_then_score_then_path() {
     let file = |path: &str, score: f64, priority: Option<f64>| RelevantFile {
@@ -492,10 +539,13 @@ async fn a_preview_too_big_for_the_window_is_scored_in_chunks_keeping_the_best()
     assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
     assert_eq!(paths(&fx, &out), ["big.txt"]);
     assert_eq!(out.files[0].score, 0.9);
-    assert_eq!(out.stats.judge_calls, 3);
-    assert!(log
-        .lock()
-        .unwrap()
+    let log = log.lock().unwrap();
+    let navigation: Vec<_> = log
+        .iter()
+        .filter(|sent| sent.contains("\"items\""))
+        .collect();
+    assert_eq!(navigation.len(), 3);
+    assert!(navigation
         .iter()
         .all(|sent| sent.contains("sampled source ranges")));
 }

@@ -35,7 +35,8 @@ use std::sync::Arc;
 use once_cell::sync::Lazy;
 use sha2::{Digest, Sha256};
 
-use super::prompts::{DirectoryPreview, FilePreview, Kind, PreviewEntry};
+use super::prompts::{Declaration, DirectoryPreview, FilePreview, Kind, PreviewEntry, SourceRange};
+use super::units::{self, MAX_PARSE_BYTES};
 use crate::code::path::PathResolver;
 
 /// jevgrep `filesystemDefaults.dependencyDirectories`.
@@ -79,6 +80,7 @@ const PREVIEW_ENTRIES: usize = 64;
 const PREVIEW_ENTRY_BYTES: usize = 4096;
 const PREVIEW_FILE_BYTES: usize = 16_384;
 const PREVIEW_JSON_BYTES: usize = 24_000;
+const PREVIEW_INDEX_JSON_BYTES: usize = 32_000;
 
 static CONTROL: Lazy<regex::bytes::Regex> = Lazy::new(|| {
     regex::bytes::Regex::new(r"[\x00-\x08\x0b\x0e-\x1f\x7f]").expect("control-byte regex")
@@ -358,7 +360,7 @@ fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::File::open(path)
 }
 
-fn json_len<T: serde::Serialize + ?Sized>(value: &T) -> usize {
+pub fn json_len<T: serde::Serialize + ?Sized>(value: &T) -> usize {
     serde_json::to_vec(value)
         .map(|v| v.len())
         .unwrap_or(usize::MAX)
@@ -420,7 +422,7 @@ fn utf16_prefix(text: &str, units: usize) -> &str {
 }
 
 /// retrieve.ts `previewFile`: the strict-UTF-8 opening bytes, shrunk until
-/// their JSON fits.
+/// their JSON fits; a truncated source file also lists its declarations.
 pub fn preview_file(snapshot: &Snapshot) -> FilePreview {
     let bytes = snapshot.source.as_bytes();
     let head = &bytes[..bytes.len().min(PREVIEW_FILE_BYTES)];
@@ -435,9 +437,8 @@ pub fn preview_file(snapshot: &Snapshot) -> FilePreview {
         text = utf16_prefix(text, units * 3 / 4);
         truncated = true;
     }
-    // Later stages: the Python opening sampler (`pythonPreview`) and the
-    // declaration index (`inspect`) refine truncated previews here.
-    FilePreview {
+    // A later stage: the Python opening sampler (`pythonPreview`).
+    let mut preview = FilePreview {
         size_bytes: bytes.len(),
         extension: extname(&snapshot.path).to_string(),
         text: text.to_string(),
@@ -446,10 +447,37 @@ pub fn preview_file(snapshot: &Snapshot) -> FilePreview {
         range: "opening bytes".into(),
         declarations: Some(Vec::new()),
         declaration_index_truncated: Some(false),
+    };
+    if truncated && units::supported(&snapshot.path) && bytes.len() <= MAX_PARSE_BYTES {
+        let syntax = units::inspect(
+            &snapshot.path,
+            &snapshot.source,
+            bytes.len().max(4),
+            MAX_PARSE_BYTES,
+        );
+        preview.declarations = Some(
+            syntax
+                .units
+                .into_iter()
+                .filter(|unit| !unit.partial)
+                .map(|unit| Declaration {
+                    name: unit.name,
+                    start_line: unit.start_line,
+                    end_line: unit.end_line,
+                })
+                .collect(),
+        );
+        while preview.declarations.as_ref().is_some_and(|d| !d.is_empty())
+            && json_len(&preview) > PREVIEW_INDEX_JSON_BYTES
+        {
+            preview.declarations.as_mut().map(Vec::pop);
+            preview.declaration_index_truncated = Some(true);
+        }
     }
+    preview
 }
 
-/// A line-aligned slice of a source (jevgrep `SourceUnit`, text mode).
+/// A line-aligned slice of a source (jevgrep `SourceUnit`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Unit {
     pub name: String,
@@ -458,6 +486,8 @@ pub struct Unit {
     pub byte_start: usize,
     pub byte_end: usize,
     pub partial: bool,
+    /// Line ranges of the enclosing declarations' headers.
+    pub owner_headers: Vec<SourceRange>,
 }
 
 /// source.ts `textUnits`: `[start_line, end_line]` of `source` as chunks of
@@ -507,6 +537,7 @@ pub fn text_units(
             byte_start: start,
             byte_end: finish,
             partial: partial || first != start || finish != end,
+            owner_headers: Vec::new(),
         });
         line += newlines;
         start = finish;
@@ -597,5 +628,33 @@ mod tests {
         let wide = preview_file(&snapshot("é".repeat(9_000)));
         assert_eq!(wide.text.len(), 16_384);
         assert_eq!(wide.preview_bytes, 16_384);
+    }
+
+    #[test]
+    fn truncated_source_previews_index_their_declarations_within_32000_bytes() {
+        let snapshot = |path: &str, source: String| Snapshot {
+            path: path.into(),
+            source,
+            content_hash: String::new(),
+        };
+        let small = preview_file(&snapshot("a.rs", "fn a() {}\n".into()));
+        assert_eq!(small.declarations, Some(Vec::new()));
+        let source: String = (0..2_000).map(|i| format!("fn f{i:04}() {{}}\n")).collect();
+        let big = preview_file(&snapshot("a.rs", source.clone()));
+        let declarations = big.declarations.as_ref().unwrap();
+        assert_eq!(
+            declarations[1],
+            Declaration {
+                name: "f0001".into(),
+                start_line: 2,
+                end_line: 2
+            }
+        );
+        assert!(declarations.len() < 2_000);
+        assert_eq!(big.declaration_index_truncated, Some(true));
+        assert!(json_len(&big) <= PREVIEW_INDEX_JSON_BYTES);
+        // unsupported languages and text fallbacks list none
+        let text = preview_file(&snapshot("a.txt", source));
+        assert_eq!(text.declarations, Some(Vec::new()));
     }
 }
