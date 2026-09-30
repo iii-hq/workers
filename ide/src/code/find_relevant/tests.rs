@@ -105,6 +105,7 @@ async fn ask_with(
         req,
         move |_| async move { Ok(window) },
         evaluate,
+        None,
     )
     .await
     .unwrap()
@@ -131,9 +132,10 @@ async fn an_irrelevant_branch_is_never_sent() {
     let out = ask(&fx, None, judge(&log, keyword)).await;
     assert_eq!(out.status, Status::Complete);
     assert_eq!(paths(&fx, &out), ["src/core/needle.rs"]);
-    // two navigation levels, then one evidence call for the file
-    assert_eq!(out.stats.judge_calls, 3);
-    assert_eq!(out.stats.input_tokens, 21);
+    // two navigation levels, then one evidence call and one assessment
+    // for the file
+    assert_eq!(out.stats.judge_calls, 4);
+    assert_eq!(out.stats.input_tokens, 28);
     let sent = log.lock().unwrap().join("\n");
     // irrelevant/a was scored (its preview names `b`) and pruned
     assert!(sent.contains("\"irrelevant/a\""));
@@ -270,7 +272,7 @@ async fn a_batch_the_judge_finds_too_large_is_split_until_it_fits() {
         &fx,
         None,
         judge(&log, |ev| {
-            if ev.questions.len() > 2 {
+            if ev.state.get("items").is_some() && ev.questions.len() > 2 {
                 Err(JudgeError::TooLarge)
             } else {
                 keyword(ev)
@@ -280,8 +282,9 @@ async fn a_batch_the_judge_finds_too_large_is_split_until_it_fits() {
     .await;
     assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
     assert_eq!(out.files.len(), 6);
-    // 6 → 3 + 3 → (2 + 1) + (2 + 1), then one evidence call per file
-    assert_eq!(out.stats.judge_calls, 7 + 6);
+    // 6 → 3 + 3 → (2 + 1) + (2 + 1), then one evidence call and one
+    // assessment per file
+    assert_eq!(out.stats.judge_calls, 7 + 6 + 6);
 
     // a single item the judge refuses is a request-size issue
     let log = Log::default();
@@ -398,6 +401,7 @@ async fn bad_input_is_c210() {
             req,
             |_| async { Ok(None) },
             judge(&log, keyword),
+            None,
         )
         .await
         .unwrap_err();
@@ -497,6 +501,7 @@ async fn git_metadata_is_never_a_walk_root() {
             },
             |_| async { Ok(None) },
             judge(&log, keyword),
+            None,
         )
         .await
         .unwrap_err();
@@ -584,6 +589,7 @@ async fn a_judge_not_ready_is_unavailable_without_a_call() {
         input("needle", 120_000),
         |_| async { Err(JudgeError::Unavailable("judge provider not ready".into())) },
         judge(&log, keyword),
+        None,
     )
     .await
     .unwrap();
@@ -634,4 +640,411 @@ fn names_sort_like_locale_compare() {
     let mut names = vec!["B", "a", "_x", "A", "b", "1"];
     names.sort_by(|a, b| walk::locale_cmp(a, b));
     assert_eq!(names, ["1", "_x", "a", "A", "b", "B"]);
+}
+
+fn sent(log: &Log) -> Vec<Value> {
+    log.lock()
+        .unwrap()
+        .iter()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect()
+}
+
+/// Navigation by [`keyword`]; evidence by `answer(name, follow_up)` →
+/// `(q, ref)` with scope 1; anything else 0.1.
+fn by_declaration(
+    ev: &Evaluation,
+    answer: impl Fn(&str, bool) -> (f64, f64),
+) -> Result<Scores, JudgeError> {
+    let Some(declarations) = ev.state["declarations"].as_array() else {
+        return keyword(ev);
+    };
+    let follow_up = ev.state.get("selectedEvidence").is_some();
+    let mut scores = Scores::new();
+    for (i, d) in declarations.iter().enumerate() {
+        let (q, reference) = answer(d["name"].as_str().unwrap(), follow_up);
+        scores.insert(key("q", i), q);
+        scores.insert(key("scope", i), 1.0);
+        if follow_up {
+            scores.insert(key("ref", i), reference);
+        }
+    }
+    Ok(scores)
+}
+
+const TWO_FUNCTIONS: &[u8] =
+    b"fn needle() -> u32 {\n    helper()\n}\n\n\n\n\n\n\n\nfn helper() -> u32 {\n    7\n}\n";
+
+fn texts(file: &RelevantFile) -> String {
+    file.excerpts.iter().map(|e| e.text.as_str()).collect()
+}
+
+#[tokio::test]
+async fn the_follow_up_asks_references_and_retracts_rejected_selections() {
+    let fx = fixture(&[("needle.rs", TWO_FUNCTIONS)], |_, _| {});
+    let log = Log::default();
+    let out = ask(
+        &fx,
+        None,
+        judge(&log, |ev| {
+            by_declaration(ev, |name, follow_up| match (name, follow_up) {
+                ("needle", false) => (0.9, 0.0),
+                // valid rejection: min(q, scope) and ref both ≤ 0.5
+                ("needle", true) => (0.2, 0.1),
+                // selected on the reference alone: max(min(0.1, 1), 0.9)
+                ("helper", true) => (0.1, 0.9),
+                _ => (0.1, 0.0),
+            })
+        }),
+    )
+    .await;
+    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
+    let file = &out.files[0];
+    assert!(texts(file).contains("fn helper"));
+    assert!(!texts(file).contains("fn needle"));
+    // leads keep their best standing: the rejection scored ≤ 0.25
+    let leads: Vec<_> = file
+        .leads
+        .iter()
+        .map(|l| (l.name.as_str(), l.score))
+        .collect();
+    assert_eq!(leads, [("needle", 0.9), ("helper", 0.9)]);
+
+    let follow_ups: Vec<Value> = sent(&log)
+        .into_iter()
+        .filter(|ev| ev["state"].get("selectedEvidence").is_some())
+        .collect();
+    assert_eq!(follow_ups.len(), 1);
+    let shared = &follow_ups[0]["state"]["selectedEvidence"];
+    assert_eq!(shared[0]["path"], "needle.rs");
+    assert_eq!(shared[0]["startLine"], 1);
+    assert!(shared[0]["source"]
+        .as_str()
+        .unwrap()
+        .starts_with("fn needle"));
+    assert!(follow_ups[0]["questions"].get("ref001").is_some());
+}
+
+#[tokio::test]
+async fn a_failed_follow_up_keeps_the_first_pass_evidence() {
+    let fx = fixture(&[("needle.rs", TWO_FUNCTIONS)], |_, _| {});
+    let out = ask(
+        &fx,
+        None,
+        judge(&Log::default(), |ev| {
+            if ev.state.get("selectedEvidence").is_some() {
+                return Err(JudgeError::Rejected("invalid_request".into()));
+            }
+            by_declaration(ev, |name, _| {
+                (if name == "needle" { 0.9 } else { 0.1 }, 0.0)
+            })
+        }),
+    )
+    .await;
+    assert_eq!(out.status, Status::Incomplete);
+    assert_eq!(out.issues.get("invalid_request"), Some(&1));
+    assert!(texts(&out.files[0]).contains("fn needle"));
+    assert!(!texts(&out.files[0]).contains("fn helper"));
+}
+
+#[tokio::test]
+async fn roles_and_priority_order_files_and_a_test_file_shows_all_its_selection() {
+    let source = b"fn needle_a() {}\n\n\n\n\n\n\n\n\nfn needle_b() {}\n";
+    let fx = fixture(
+        &[
+            ("impl_needle.rs", source),
+            ("b_needle.rs", source),
+            ("t_needle.rs", source),
+        ],
+        |_, _| {},
+    );
+    let out = ask(
+        &fx,
+        None,
+        judge(&Log::default(), |ev| {
+            if !ev.questions.contains_key("priority") {
+                // needle_b is selected (0.6) but not presented (≤ 0.7)
+                return by_declaration(ev, |name, _| {
+                    (if name == "needle_a" { 0.9 } else { 0.6 }, 0.0)
+                });
+            }
+            let answers: &[(&str, f64)] = match ev.state["path"].as_str().unwrap() {
+                "impl_needle.rs" => &[("implementation", 0.9), ("helper", 0.6), ("priority", 0.3)],
+                "t_needle.rs" => &[("test", 0.9), ("caller", 0.5), ("priority", 0.95)],
+                _ => return Err(JudgeError::Rejected("invalid_request".into())),
+            };
+            Ok(ev
+                .questions
+                .keys()
+                .map(|id| {
+                    let p = answers
+                        .iter()
+                        .find(|(role, _)| role == id)
+                        .map_or(0.1, |a| a.1);
+                    (id.clone(), p)
+                })
+                .collect())
+        }),
+    )
+    .await;
+    // priority 0.95, then b's score 0.9 (unassessed), then priority 0.3
+    assert_eq!(
+        paths(&fx, &out),
+        ["t_needle.rs", "b_needle.rs", "impl_needle.rs"]
+    );
+    let summary: Vec<_> = out
+        .files
+        .iter()
+        .map(|f| (f.roles.clone(), f.priority))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (vec!["test".to_string()], Some(0.95)),
+            (vec![], None),
+            (
+                vec!["implementation".to_string(), "helper".to_string()],
+                Some(0.3)
+            ),
+        ]
+    );
+    assert!(texts(&out.files[0]).contains("fn needle_b"));
+    assert!(!texts(&out.files[2]).contains("fn needle_b"));
+    assert!(texts(&out.files[2]).contains("fn needle_a"));
+}
+
+#[tokio::test]
+async fn the_relationship_pass_rediscovers_a_pruned_directory_once() {
+    let fx = fixture(
+        &[
+            (
+                "a/impl/needle.ts",
+                b"export class Needle {\n  run() {\n    return 1;\n  }\n}\n",
+            ),
+            (
+                "b/ext/plugin.ts",
+                b"import { Needle } from \"../../a/impl/needle\";\nexport class Plugin extends Needle {}\n",
+            ),
+            ("c/other/thing.ts", b"export const thing = 1;\n"),
+        ],
+        |_, _| {},
+    );
+    let log = Log::default();
+    let out = ask(
+        &fx,
+        None,
+        judge(&log, |ev| {
+            if ev.state.get("relationAnchor").is_none() {
+                return keyword(ev);
+            }
+            Ok(per_item(ev, |item| {
+                if item.to_string().contains("extends Needle") {
+                    0.9
+                } else {
+                    0.1
+                }
+            }))
+        }),
+    )
+    .await;
+    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
+    assert_eq!(paths(&fx, &out), ["a/impl/needle.ts", "b/ext/plugin.ts"]);
+    let anchored: Vec<Value> = sent(&log)
+        .into_iter()
+        .filter(|ev| ev["state"].get("relationAnchor").is_some())
+        .collect();
+    // one re-score of the pruned directories, one anchored discovery
+    assert_eq!(anchored.len(), 2);
+    let rescore = &anchored[0]["state"];
+    assert_eq!(
+        rescore["relationAnchor"],
+        serde_json::json!({"path": "a/impl/needle.ts", "classes": ["Needle"]})
+    );
+    let dirs: Vec<&str> = rescore["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(dirs, ["b/ext", "c/other"]);
+    let sample = &rescore["items"][0]["childPreview"]["contentSamples"][0];
+    assert_eq!(sample["name"], "plugin.ts");
+    assert_eq!(sample["truncated"], false);
+    assert_eq!(anchored[1]["state"]["items"][0]["path"], "b/ext/plugin.ts");
+}
+
+#[test]
+fn content_samples_take_head_middle_and_tail_and_shrink_to_fit() {
+    let files: Vec<(String, Vec<u8>)> = (0..2)
+        .map(|i| (format!("d/s/f{i}.txt"), "x".repeat(30_000).into_bytes()))
+        .collect();
+    let files: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), &b[..])).collect();
+    let fx = fixture(&files, |_, _| {});
+    let run = Run {
+        query: "q".into(),
+        tree: walk::walk(&fx.resolver, &fx.root, None, u64::MAX),
+        evaluate: judge(&Log::default(), keyword),
+        deadline: Instant::now() + Duration::from_secs(60),
+        cap: usize::MAX,
+        state_cap: usize::MAX,
+        cache: None,
+        state: Mutex::new(Default::default()),
+    };
+    let item = NavigationItem {
+        path: "d/s".into(),
+        kind: Kind::Directory,
+        source_range: None,
+        file_preview: None,
+        child_preview: Some(walk::preview_directory(&run.tree, "d/s")),
+    };
+    let preview = run.with_directory_content(item).child_preview.unwrap();
+    let samples = preview.content_samples.as_ref().unwrap();
+    // 8000 per file, three 2666-unit parts at 0, 15000 - 1333 and the tail
+    let offsets: Vec<&str> = samples[0]
+        .source
+        .lines()
+        .filter(|l| l.starts_with('['))
+        .collect();
+    assert_eq!(
+        offsets,
+        [
+            "[character offset 0]",
+            "[character offset 13667]",
+            "[character offset 27334]"
+        ]
+    );
+    assert!(samples.iter().all(|s| s.truncated));
+    assert!(walk::json_len(&preview) <= 28_000);
+
+    // many files: the 80-unit floor, then shrinking by 4/5 until it fits
+    let files: Vec<(String, Vec<u8>)> = (0..60)
+        .map(|i| (format!("m/s/f{i:02}.txt"), "y".repeat(2_000).into_bytes()))
+        .collect();
+    let files: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), &b[..])).collect();
+    let fx = fixture(&files, |_, _| {});
+    let run = Run {
+        tree: walk::walk(&fx.resolver, &fx.root, None, u64::MAX),
+        ..run
+    };
+    let item = NavigationItem {
+        path: "m/s".into(),
+        child_preview: Some(walk::preview_directory(&run.tree, "m/s")),
+        ..NavigationItem {
+            path: String::new(),
+            kind: Kind::Directory,
+            source_range: None,
+            file_preview: None,
+            child_preview: None,
+        }
+    };
+    let preview = run.with_directory_content(item).child_preview.unwrap();
+    let samples = preview.content_samples.as_ref().unwrap();
+    assert_eq!(samples.len(), 60);
+    assert!(walk::json_len(&preview) <= 28_000);
+    assert!(samples.iter().all(|s| s.source.len() >= 80));
+}
+
+#[tokio::test]
+async fn answers_are_reused_across_asks_in_one_namespace() {
+    let fx = fixture(&[("needle.rs", TWO_FUNCTIONS)], |_, _| {});
+    let judge_for = |log: &Log| {
+        judge(log, |ev| {
+            by_declaration(ev, |name, _| {
+                (if name == "needle" { 0.9 } else { 0.1 }, 0.0)
+            })
+        })
+    };
+    let namespace = format!("test-{}", std::process::id());
+    let ask_cached = |log: &Log| {
+        run(
+            fx.resolver.clone(),
+            fx.cfg.clone(),
+            input("where is the needle?", 120_000),
+            |_| async { Ok(None) },
+            judge_for(log),
+            Some(namespace.clone()),
+        )
+    };
+    let (first_log, second_log) = (Log::default(), Log::default());
+    let first = ask_cached(&first_log).await.unwrap();
+    let second = ask_cached(&second_log).await.unwrap();
+    assert!(first.stats.judge_calls > 0);
+    assert_eq!(first.stats.cache_hits, 0);
+    assert_eq!(second.stats.judge_calls, 0);
+    assert_eq!(second.stats.cache_hits, first.stats.judge_calls);
+    assert!(second_log.lock().unwrap().is_empty());
+    assert_eq!(texts(&first.files[0]), texts(&second.files[0]));
+    assert_eq!(second.status, Status::Complete);
+}
+
+#[test]
+fn the_cache_rejects_invalid_answers_and_keeps_within_its_caps() {
+    use judge_contract::{Content, Question};
+    let questions = |ids: &[&str]| -> BTreeMap<String, Question> {
+        ids.iter()
+            .map(|id| {
+                let question = Question::Noul {
+                    instructions: Content::Text("x".into()),
+                    criteria: None,
+                };
+                (id.to_string(), question)
+            })
+            .collect()
+    };
+    let scores = |pairs: &[(&str, f64)]| -> Scores {
+        pairs.iter().map(|(id, p)| (id.to_string(), *p)).collect()
+    };
+    let mut cache = AnswerCache::new(100, 40);
+    cache.put([1; 32], &scores(&[("q000", 0.5)])); // 12 JSON bytes
+    assert_eq!(
+        cache.get(&[1; 32], &questions(&["q000"])),
+        Some(scores(&[("q000", 0.5)]))
+    );
+    // answers to other questions are no hit
+    assert_eq!(cache.get(&[1; 32], &questions(&["q001"])), None);
+    assert_eq!(cache.get(&[1; 32], &questions(&["q000", "q001"])), None);
+    // out-of-range answers and entries over the entry cap are never kept
+    cache.put([2; 32], &scores(&[("q000", 1.5)]));
+    cache.put([3; 32], &scores(&[("q000", f64::NAN)]));
+    let many: Vec<(String, f64)> = (0..4).map(|i| (key("q", i), 0.1)).collect();
+    let many: Scores = many.into_iter().collect();
+    cache.put([4; 32], &many);
+    for key in [[2; 32], [3; 32], [4; 32]] {
+        assert!(!cache.entries.contains_key(&key));
+    }
+    // past the total, the oldest entries go first
+    for i in 5..=12 {
+        cache.put([i; 32], &scores(&[("q000", 0.25)])); // 13 bytes each
+    }
+    assert!(cache.bytes <= 100);
+    assert!(!cache.entries.contains_key(&[1; 32]));
+    assert!(!cache.entries.contains_key(&[5; 32]));
+    assert!((6..=12).all(|i| cache.entries.contains_key(&[i; 32])));
+    assert_eq!(cache.bytes, 7 * 13);
+}
+
+#[tokio::test]
+async fn agents_md_lists_accessible_files_at_the_root_and_above_returned_files() {
+    let fx = fixture(
+        &[
+            ("AGENTS.md", b"root rules"),
+            ("src/AGENTS.md", b"SECRET_RULES"),
+            ("src/core/AGENTS.md", b"core rules"),
+            ("src/core/needle.rs", b"fn needle() {}\n"),
+            ("other/AGENTS.md", b"other rules"),
+        ],
+        |_, cfg| cfg.non_accessible_globs = vec!["src/AGENTS.md".into()],
+    );
+    let log = Log::default();
+    let out = ask(&fx, None, judge(&log, keyword)).await;
+    assert_eq!(paths(&fx, &out), ["src/core/needle.rs"]);
+    let root = fx.root.display();
+    assert_eq!(
+        out.agents_md,
+        [
+            format!("{root}/AGENTS.md"),
+            format!("{root}/src/core/AGENTS.md")
+        ]
+    );
+    assert!(!log.lock().unwrap().join("\n").contains("SECRET_RULES"));
 }

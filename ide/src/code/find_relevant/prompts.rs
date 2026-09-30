@@ -14,8 +14,8 @@
 //! keep jevgrep's names because the model reads them; renaming them only to
 //! sort would change the calibrated text more than the order does.
 
-// The file-assessment and test-body builders serve passes that follow
-// evidence selection; until those land only tests reach them.
+// The test-body builder serves the Python passes; until those land only
+// tests reach it.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
@@ -41,6 +41,12 @@ pub struct Evidence {
     pub path: String,
     pub start_line: usize,
     pub end_line: usize,
+    /// Set when the excerpt does not cover whole lines (jevgrep spreads its
+    /// `EvidenceRange` here).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_byte_start: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_byte_end: Option<usize>,
     pub source: String,
 }
 

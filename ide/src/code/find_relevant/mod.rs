@@ -9,27 +9,33 @@
 //! layout. A missing or failing judge is a typed `unavailable` result, not
 //! an error.
 //!
-//! Output order follows jevgrep's `apps/cli/src/render.ts`.
+//! Output order follows jevgrep's `apps/cli/src/render.ts`; the answer
+//! cache ports `packages/core/src/cache.ts` (in memory only) and the
+//! `AGENTS.md` lookup `repository-context.ts`.
 
 pub mod navigate;
+pub mod passes;
 pub mod prompts;
 pub mod select;
 pub mod units;
 pub mod walk;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use judge_contract::{Evaluation, Question};
+use once_cell::sync::Lazy;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::code::config::CoderConfig;
 use crate::code::error::{err_to_string, CoderError};
-use crate::code::judge::{self, Evaluator, JudgeError};
+use crate::code::judge::{self, Evaluator, JudgeError, Scores};
 use crate::code::path::PathResolver;
-use navigate::{Run, Stop};
+use navigate::{Candidate, Run, Stop};
 
 pub const MAX_QUERY_BYTES: usize = 4000;
 pub const MIN_TIMEOUT_MS: u64 = 1_000;
@@ -175,25 +181,29 @@ pub async fn handle(
 ) -> Result<FindRelevantOutput, String> {
     let provider = judge::session_provider();
     let evaluate = judge::evaluator(iii.clone(), provider.clone());
+    let cache = Some(provider.clone().unwrap_or_default());
     run(
         resolver,
         cfg,
         req,
         |deadline| async move { judge::window(&iii, provider.as_deref(), deadline).await },
         evaluate,
+        cache,
     )
     .await
     .map_err(err_to_string)
 }
 
 /// One ask over any judge: `window` runs once with the ask deadline, after
-/// the input is validated; `evaluate` answers every request.
+/// the input is validated; `evaluate` answers every request the answer
+/// cache (namespace `cache`, `None` = bypass) cannot.
 pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
     resolver: Arc<PathResolver>,
     cfg: Arc<CoderConfig>,
     req: FindRelevantInput,
     window: impl FnOnce(Instant) -> W,
     evaluate: Evaluator,
+    cache: Option<String>,
 ) -> Result<FindRelevantOutput, CoderError> {
     let started = Instant::now();
     if req.query.trim().is_empty() {
@@ -263,6 +273,7 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
         deadline,
         cap: cap(navigate::MAX_REQUEST_BYTES),
         state_cap: cap(select::MAX_STATE_BYTES),
+        cache,
         state: Mutex::new(Default::default()),
     });
     if truncated {
@@ -271,23 +282,39 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
     if unreadable > 0 {
         *run.state().issues.entry("unreadable".into()).or_default() += unreadable;
     }
-    run.discover(vec![".".into()]).await;
-    let mut selected = select::select_all(&run).await;
+    run.discover(vec![".".into()], None).await;
+    run.relate().await;
+    // The assessment reads only discovery previews, so it runs alongside.
+    let (mut selected, mut assessments) =
+        tokio::join!(select::select_evidence(&run), passes::assess_files(&run));
 
     let root = run.tree.root.clone();
+    let candidates = run.sorted_candidates();
+    let agents_md = agents_md(&run.tree, &candidates);
     let state = std::mem::take(&mut *run.state());
-    let admitted = !state.candidates.is_empty();
-    let mut files: Vec<RelevantFile> = state
-        .candidates
-        .into_values()
+    let admitted = !candidates.is_empty();
+    let mut files: Vec<RelevantFile> = candidates
+        .into_iter()
         .map(|candidate| {
             let found = selected.remove(&candidate.path).unwrap_or_default();
+            // A file whose source changed keeps no assessment.
+            let assessment = assessments
+                .remove(&candidate.path)
+                .filter(|_| !found.source_omitted);
+            let (roles, priority) =
+                assessment.map_or((Vec::new(), None), |a| (a.roles, Some(a.priority)));
+            // A test file shows all its selected source (retrieve.ts 628-632).
+            let excerpts = if roles.iter().any(|role| role == "test") {
+                found.selected_excerpts
+            } else {
+                found.excerpts
+            };
             RelevantFile {
                 path: root.join(&candidate.path).display().to_string(),
                 score: candidate.score,
-                priority: None,
-                roles: Vec::new(),
-                excerpts: found.excerpts,
+                priority,
+                roles,
+                excerpts,
                 leads: found.leads,
                 call_leads: Vec::new(),
                 source_omitted: found.source_omitted,
@@ -308,13 +335,13 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
         status,
         reason,
         files,
-        agents_md: Vec::new(),
+        agents_md,
         issues: state.issues,
         stats: Stats {
             judge_calls: state.judge_calls,
             questions: state.questions,
             input_tokens: state.input_tokens,
-            cache_hits: 0,
+            cache_hits: state.cache_hits,
             elapsed_ms: started.elapsed().as_millis() as u64,
         },
     }))
@@ -347,6 +374,135 @@ fn spend_source_budget(files: &mut [RelevantFile], mut budget: usize) {
     }
 }
 
+/// repository-context.ts: `AGENTS.md` at the walk root and in every folder
+/// above a returned file, when the walk admitted it (the jail's
+/// protections, ignore rules and `exclude_globs` all apply). Absolute.
+fn agents_md(tree: &walk::Tree, candidates: &[Candidate]) -> Vec<String> {
+    let mut directories = vec![".".to_string()];
+    for candidate in candidates {
+        let mut path = candidate.path.as_str();
+        while let Some((parent, _)) = path.rsplit_once('/') {
+            if !directories.iter().any(|known| known == parent) {
+                directories.push(parent.to_string());
+            }
+            path = parent;
+        }
+    }
+    directories
+        .iter()
+        .filter(|directory| {
+            tree.children.get(*directory).is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|entry| !entry.is_dir && entry.name == "AGENTS.md")
+            })
+        })
+        .map(|directory| {
+            tree.root
+                .join(walk::join(directory, "AGENTS.md"))
+                .display()
+                .to_string()
+        })
+        .collect()
+}
+
+/// cache.ts's `promptVersion`: bump when a prompt's wording changes.
+const PROMPT_VERSION: &str = "unit-locators-1";
+/// The parsers behind every unit: keep in step with `Cargo.lock`.
+const PARSER_VERSION: &str =
+    "tree-sitter-0.24.7-python-0.23.6-go-0.23.4-rust-0.23.3-typescript-0.23.2";
+const CACHE_BYTES: usize = 64 << 20;
+const CACHE_ENTRY_BYTES: usize = 1 << 20;
+
+/// Answers shared by every ask in this process (cache.ts, minus the disk,
+/// the 7-day TTL and the cache issue counts).
+// ponytail: first-in first-out eviction under the byte cap (jevgrep trims
+// in directory-scan order, not LRU either); make it LRU if hit rates on
+// long-lived workers call for it.
+static CACHE: Lazy<Mutex<AnswerCache>> =
+    Lazy::new(|| Mutex::new(AnswerCache::new(CACHE_BYTES, CACHE_ENTRY_BYTES)));
+
+struct AnswerCache {
+    entries: HashMap<[u8; 32], (Scores, usize)>,
+    order: VecDeque<[u8; 32]>,
+    bytes: usize,
+    max_bytes: usize,
+    max_entry_bytes: usize,
+}
+
+impl AnswerCache {
+    fn new(max_bytes: usize, max_entry_bytes: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            bytes: 0,
+            max_bytes,
+            max_entry_bytes,
+        }
+    }
+
+    /// The cached answers when they answer exactly `questions`, each in
+    /// [0, 1].
+    fn get(&self, key: &[u8; 32], questions: &BTreeMap<String, Question>) -> Option<Scores> {
+        let (scores, _) = self.entries.get(key)?;
+        let valid = scores.len() == questions.len()
+            && questions
+                .keys()
+                .all(|id| scores.get(id).is_some_and(|p| (0.0..=1.0).contains(p)));
+        valid.then(|| scores.clone())
+    }
+
+    /// Keep `scores` unless one is out of range or the entry is over its
+    /// cap; evict the oldest entries past the total.
+    fn put(&mut self, key: [u8; 32], scores: &Scores) {
+        let size = walk::json_len(scores);
+        if self.entries.contains_key(&key)
+            || size > self.max_entry_bytes
+            || !scores.values().all(|p| (0.0..=1.0).contains(p))
+        {
+            return;
+        }
+        while self.bytes + size > self.max_bytes {
+            let Some(oldest) = self.order.pop_front() else {
+                return;
+            };
+            if let Some((_, freed)) = self.entries.remove(&oldest) {
+                self.bytes -= freed;
+            }
+        }
+        self.bytes += size;
+        self.order.push_back(key);
+        self.entries.insert(key, (scores.clone(), size));
+    }
+}
+
+/// cache.ts `key`: sha256 of `[1, namespace, state, questions]`.
+// ponytail: the key names the provider but not the hub's default model;
+// a model swap under the same provider serves old answers until restart.
+fn cache_key(provider: &str, request: &Evaluation) -> [u8; 32] {
+    let namespace = serde_json::json!({
+        "provider": provider,
+        "promptVersion": PROMPT_VERSION,
+        "parserVersion": PARSER_VERSION,
+    });
+    let key = (1, namespace, &request.state, &request.questions);
+    Sha256::digest(serde_json::to_vec(&key).unwrap_or_default()).into()
+}
+
+fn cached(key: &[u8; 32], questions: &BTreeMap<String, Question>) -> Option<Scores> {
+    CACHE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key, questions)
+}
+
+fn remember(key: [u8; 32], scores: &Scores) {
+    CACHE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .put(key, scores);
+}
+
 /// One line per ask; never the query or any path.
 fn logged(output: FindRelevantOutput) -> FindRelevantOutput {
     tracing::info!(
@@ -355,6 +511,7 @@ fn logged(output: FindRelevantOutput) -> FindRelevantOutput {
         judge_calls = output.stats.judge_calls,
         questions = output.stats.questions,
         input_tokens = output.stats.input_tokens,
+        cache_hits = output.stats.cache_hits,
         elapsed_ms = output.stats.elapsed_ms,
         files = output.files.len(),
         "coder::find-relevant"
