@@ -956,16 +956,16 @@ export function ShellExplorerPage({
     const source = activeDiff.source
     const openFile = (rel: string, line?: number) => openFileTab(rel, { pin: true, line })
     switch (source.type) {
-      case 'staged':
-        return { openFile, unstage: () => void scm.unstage([path]) }
+      case 'uncommitted':
       case 'unstaged': {
+        // Rolling back one file from its diff goes through the page's own
+        // confirmation, the same as the explorer's discard.
         const change = gitRef.current?.kind === 'ready' ? gitRef.current.changes.find((c) => c.path === path) : undefined
-        return {
-          openFile,
-          stage: () => void scm.stage([path]),
-          discard: change ? () => setPendingDiscard(change) : undefined,
-        }
+        return { openFile, discard: change ? () => setPendingDiscard(change) : undefined }
       }
+      case 'staged':
+      case 'revision':
+        return { openFile }
       case 'turn':
         return {
           openFile,
@@ -992,7 +992,7 @@ export function ShellExplorerPage({
       case 'change':
         return { openFile }
     }
-  }, [activeDiff, openFileTab, scm, revertTurnFiles])
+  }, [activeDiff, openFileTab, revertTurnFiles])
 
   // ── live updates: the watched root streams every change here ──
   // The worker runs a system-level watch on the browsed root for this
@@ -1575,10 +1575,10 @@ export function ShellExplorerPage({
     (delta: 1 | -1) => {
       const entries: { path: string; source: DiffSource }[] =
         sideTab === 'scm'
-          ? [
-              ...scm.unstaged.map((entry) => ({ path: entry.path, source: { type: 'unstaged' } as DiffSource })),
-              ...scm.staged.map((entry) => ({ path: entry.path, source: { type: 'staged' } as DiffSource })),
-            ]
+          ? [...scm.changes, ...scm.unversioned].map((entry) => ({
+              path: entry.path,
+              source: { type: 'uncommitted' } as DiffSource,
+            }))
           : newestTurn
             ? newestTurn.files
                 .map((file) => relativeToRoot(file.path, rootRef.current ?? ''))
@@ -1595,7 +1595,7 @@ export function ShellExplorerPage({
       const next = entries[index === -1 ? start : (index + delta + entries.length) % entries.length]
       openDiffTab(next.path, next.source)
     },
-    [sideTab, scm.unstaged, scm.staged, newestTurn, openDiffTab],
+    [sideTab, scm.changes, scm.unversioned, newestTurn, openDiffTab],
   )
 
   // The page's verbs, for the palette and for the keyboard while this pane
@@ -1638,8 +1638,8 @@ export function ShellExplorerPage({
         {
           id: 'source-control',
           title: 'Show source control',
-          detail: 'Staged and unstaged changes',
-          keywords: ['git', 'scm', 'staged', 'commit', 'changes'],
+          detail: 'Commit changes, stashes and history',
+          keywords: ['git', 'scm', 'commit', 'changes', 'stash', 'history', 'log'],
           run: () => {
             setSideTab('scm')
             setCollapsed(false)
@@ -2018,17 +2018,15 @@ export function ShellExplorerPage({
                   />
                 ) : sideTab === 'scm' ? (
                   <SourceControlTab
+                    host={host}
+                    root={root}
+                    conversationId={conversationId}
                     scm={scm}
-                    activePath={
-                      activeDiff && (activeDiff.source.type === 'staged' || activeDiff.source.type === 'unstaged')
-                        ? activeDiff.path
-                        : null
-                    }
-                    activeSide={
-                      activeDiff?.source.type === 'staged' ? 'staged' : activeDiff?.source.type === 'unstaged' ? 'unstaged' : null
-                    }
-                    onOpenChange={(scope, path, pin) => openDiffTab(path, { type: scope }, pin)}
+                    refreshEpoch={gitEpoch}
+                    activeDiff={activeDiff ? { path: activeDiff.path, source: activeDiff.source } : null}
+                    onOpenDiff={(path, source, pin) => openDiffTab(path, source, pin)}
                     onOpenFile={(rel) => openFileTab(rel, { pin: true })}
+                    onChanged={afterDiskChange}
                   />
                 ) : (
                   <TimelineTab

@@ -16,13 +16,13 @@ interface ExecResponse {
   stderr_truncated: boolean
 }
 
-async function git(host: Host, cwd: string, args: string[]): Promise<ExecResponse> {
-  return host.iii.trigger<ExecResponse>('shell::exec', {
-    command: 'git',
-    args,
-    cwd,
-    timeout_ms: 30_000,
-  })
+async function git(host: Host, cwd: string, args: string[], timeoutMs = 30_000): Promise<ExecResponse> {
+  return host.iii.trigger<ExecResponse>(
+    'shell::exec',
+    { command: 'git', args, cwd, timeout_ms: timeoutMs },
+    // The bus must outwait the command: a push can take the whole cap.
+    { timeoutMs: timeoutMs + 10_000 },
+  )
 }
 
 function failure(out: ExecResponse, operation: string): string | null {
@@ -32,8 +32,14 @@ function failure(out: ExecResponse, operation: string): string | null {
   return null
 }
 
-async function run(host: Host, root: string, args: string[], operation: string): Promise<ExecResponse> {
-  const out = await git(host, root, args)
+async function run(
+  host: Host,
+  root: string,
+  args: string[],
+  operation: string,
+  timeoutMs?: number,
+): Promise<ExecResponse> {
+  const out = await git(host, root, args, timeoutMs)
   const message = failure(out, operation)
   if (message !== null) throw new Error(message)
   return out
@@ -87,11 +93,14 @@ export function discardStep(change: Pick<GitChange, 'path' | 'status' | 'staged'
 }
 
 /** Discard working-tree (and index) changes for the given files. Each
-    change is undone on its own so one failure names one file. */
+    change is undone on its own so one failure names one file.
+    `keepAdded` only un-adds an added file, leaving it on disk as unversioned
+    (IntelliJ's unticked "Delete local copies of added files"). */
 export async function gitDiscard(
   host: Host,
   root: string,
   changes: readonly Pick<GitChange, 'path' | 'status' | 'staged' | 'from'>[],
+  options: { keepAdded?: boolean } = {},
 ): Promise<{ path: string; error: string | null }[]> {
   const results: { path: string; error: string | null }[] = []
   for (const change of changes) {
@@ -105,6 +114,7 @@ export async function gitDiscard(
         }
         case 'unstage-delete': {
           await gitUnstage(host, root, [step.path])
+          if (options.keepAdded) break
           const [result] = await coderDelete(host, [joinPath(root, step.path)], false)
           if (result && !result.success) throw new Error(result.error?.message ?? 'delete failed')
           break
@@ -148,6 +158,112 @@ export async function gitCommit(host: Host, root: string, message: string): Prom
   await run(host, root, ['commit', '-q', '-m', trimmed], 'git commit')
   const out = await run(host, root, ['rev-parse', '--short', 'HEAD'], 'git rev-parse')
   return out.stdout.trim()
+}
+
+/** One commit from the Commit panel: exactly the ticked paths, whatever the index holds. */
+export interface CommitRequest {
+  message: string
+  /** Root-relative; a rename lists both its source and its destination. */
+  paths: readonly string[]
+  amend: boolean
+  /** `--signoff`: a Signed-off-by trailer. */
+  signOff: boolean
+  /** `--no-verify`: skip the pre-commit and commit-msg hooks. */
+  noVerify: boolean
+  /** `--author`, when set: `Name <email>` or a pattern git resolves. */
+  author: string
+}
+
+/** The git commands a commit runs, in order. Ticked unversioned files have
+    to be added before git will commit them by path; `git commit -- <paths>`
+    then records the working copy of just those paths (`--only` is the default
+    with paths), so the other staged or unstaged changes stay put. An amend
+    with nothing ticked rewrites only the message (`--only`, no paths). */
+export function commitCommands(request: CommitRequest): string[][] {
+  const message = request.message.trim()
+  if (message === '') throw new Error('a commit message is required')
+  if (request.paths.length === 0 && !request.amend) throw new Error('select the changes to commit')
+  const flags = [
+    ...(request.amend ? ['--amend'] : []),
+    ...(request.signOff ? ['--signoff'] : []),
+    ...(request.noVerify ? ['--no-verify'] : []),
+    ...(request.author.trim() ? [`--author=${request.author.trim()}`] : []),
+  ]
+  if (request.paths.length === 0) return [['commit', '-q', ...flags, '--only', '-m', message]]
+  return [
+    ['add', '-A', '--', ...request.paths],
+    ['commit', '-q', ...flags, '-m', message, '--', ...request.paths],
+  ]
+}
+
+/** Run a commit request; returns the new short sha. */
+export async function gitCommitChanges(host: Host, root: string, request: CommitRequest): Promise<string> {
+  for (const args of commitCommands(request)) {
+    // Hooks may run a formatter or the test suite: give them the long cap.
+    await run(host, root, args, `git ${args[0]}`, 120_000)
+  }
+  const out = await run(host, root, ['rev-parse', '--short', 'HEAD'], 'git rev-parse')
+  return out.stdout.trim()
+}
+
+/** Push the current branch; a branch with no upstream yet gets one on `origin`. */
+export async function gitPush(host: Host, root: string): Promise<void> {
+  const out = await git(host, root, ['push'], 120_000)
+  if (out.exit_code === 0) return
+  if (/has no upstream branch|no upstream configured/i.test(out.stderr)) {
+    await run(host, root, ['push', '--set-upstream', 'origin', 'HEAD'], 'git push', 120_000)
+    return
+  }
+  const message = failure(out, 'git push')
+  if (message !== null) throw new Error(message)
+}
+
+/** A new commit that undoes `sha`. */
+export async function gitRevert(host: Host, root: string, sha: string): Promise<void> {
+  await run(host, root, ['revert', '--no-edit', sha], 'git revert', 120_000)
+}
+
+/** A branch at `at`, without switching to it. */
+export async function gitCreateBranch(host: Host, root: string, name: string, at: string): Promise<void> {
+  await run(host, root, ['branch', name.trim(), at], 'git branch')
+}
+
+export interface StashRequest {
+  message: string
+  includeUntracked: boolean
+  /** Only these root-relative paths (a rename lists both ends); empty stashes the whole working tree. */
+  paths?: readonly string[]
+}
+
+/** `git stash push`, limited to `paths` when given: the rest of the working tree stays as it is. */
+export function stashPushArgs(request: StashRequest): string[] {
+  const message = request.message.trim()
+  const paths = request.paths ?? []
+  return [
+    'stash',
+    'push',
+    ...(request.includeUntracked ? ['--include-untracked'] : []),
+    ...(message ? ['-m', message] : []),
+    ...(paths.length > 0 ? ['--', ...paths] : []),
+  ]
+}
+
+export async function gitStashPush(host: Host, root: string, request: StashRequest): Promise<void> {
+  await run(host, root, stashPushArgs(request), 'git stash')
+}
+
+/** `git stash apply` or, with `pop`, apply and drop on success. */
+export async function gitStashApply(host: Host, root: string, ref: string, pop: boolean): Promise<void> {
+  await run(host, root, ['stash', pop ? 'pop' : 'apply', ref], `git stash ${pop ? 'pop' : 'apply'}`)
+}
+
+export async function gitStashDrop(host: Host, root: string, ref: string): Promise<void> {
+  await run(host, root, ['stash', 'drop', ref], 'git stash drop')
+}
+
+/** Check out a new branch at the stash's base and apply it there; drops the stash on success. */
+export async function gitStashBranch(host: Host, root: string, name: string, ref: string): Promise<void> {
+  await run(host, root, ['stash', 'branch', name.trim(), ref], 'git stash branch')
 }
 
 export interface GitTagSummary {

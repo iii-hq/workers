@@ -1,6 +1,7 @@
-import type { ConfigFormProps } from '@iii-dev/console-ui'
+import type { ConfigFormProps, Host } from '@iii-dev/console-ui'
 import { DeclarativeWorkerConfigurationForm } from './form'
 import { validateWorkerConfigurationManifest, workerConfigurationManifest, workerConfigurationSpecs } from './manifest'
+import { ConfigurationHostContext } from './model-catalog'
 import { normalizeWorkerConfiguration } from './normalization'
 
 export {
@@ -34,9 +35,18 @@ export function WorkerConfigurationForm({ configurationId, ...props }: ConfigFor
   )
 }
 
-export function configurationForm(configurationId: string) {
+/**
+ * The form `host.configForms.register` mounts for `configurationId`. `host` is
+ * the registering script's own handle (it goes stale with that script, which
+ * the loader disposes on hot reload), for fields that call the engine.
+ */
+export function configurationForm(configurationId: string, host: Host) {
   return function RegisteredWorkerConfigurationForm(props: ConfigFormProps) {
-    return <WorkerConfigurationForm configurationId={configurationId} {...props} />
+    return (
+      <ConfigurationHostContext.Provider value={host}>
+        <WorkerConfigurationForm configurationId={configurationId} {...props} />
+      </ConfigurationHostContext.Provider>
+    )
   }
 }
 

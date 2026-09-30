@@ -108,6 +108,7 @@ mod tests {
             "grok",
             "harness",
             "http",
+            "ide",
             "memory",
             "memory-consolidate",
             "opencode",
@@ -130,7 +131,7 @@ mod tests {
             "workflow",
             "worktree",
         ];
-        assert_eq!(ids.len(), 38);
+        assert_eq!(ids.len(), 39);
         for id in ids {
             let registration = format!("configForms.register(\"{id}\"");
             assert!(

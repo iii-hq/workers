@@ -213,6 +213,24 @@ export async function loadDiffContents(
   turns: { get(turnId: string): Promise<SessionTurn | null> },
 ): Promise<DiffContents> {
   switch (source.type) {
+    case 'uncommitted': {
+      const [head, current] = await Promise.all([
+        gitSide(host, root, `HEAD:./${path}`).catch((error: unknown) => {
+          // An unborn HEAD has nothing to show on the old side.
+          if (error instanceof Error && /unknown revision/.test(error.message)) return null
+          throw error
+        }),
+        worktreeSide(host, root, path),
+      ])
+      return imageOrText(path, head, current.contents, { worktreeRevision: current.revision })
+    }
+    case 'revision': {
+      const [before, after] = await Promise.all([
+        gitSide(host, root, `${source.from}:./${path}`),
+        gitSide(host, root, `${source.to}:./${path}`),
+      ])
+      return imageOrText(path, before, after)
+    }
     case 'staged': {
       const [head, index] = await Promise.all([
         gitSide(host, root, `HEAD:./${path}`).catch((error: unknown) => {

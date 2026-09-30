@@ -148,6 +148,56 @@
   width: min(100%, 280px);
   min-width: 180px;
 }
+/* Multi-line text: the Input recipe (surface fill, hover, focus border) on a textarea. */
+[data-iii-ui="console"] .console-worker-config-textarea {
+  box-sizing: border-box;
+  display: block;
+  width: min(100%, 560px);
+  min-width: 0;
+  min-height: 96px;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: 400 13px/1.45 var(--font-sans);
+  resize: vertical;
+  transition:
+    border-color var(--motion-duration-control) var(--motion-ease-standard),
+    background-color var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="console"] .console-worker-config-textarea::placeholder {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="console"] .console-worker-config-textarea:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="console"] .console-worker-config-textarea:focus {
+  outline: none;
+  border-color: var(--color-rule-focus);
+}
+/* Model field: the shared ModelPicker beside its "Use chat default" action.
+ * The picker's own trigger is transparent; it gets the select-control fill. */
+[data-iii-ui="console"] .console-worker-config-model {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+[data-iii-ui="console"] .console-worker-config-model-picker {
+  width: min(100%, 280px);
+  min-width: 180px;
+}
+[data-iii-ui="console"] .console-worker-config-model-picker > button {
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+[data-iii-ui="console"] .console-worker-config-model-picker > button:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+}
 [data-iii-ui="console"] .console-worker-config-template-control {
   display: grid;
   grid-template-columns: auto minmax(160px, 1fr) auto;
@@ -402,12 +452,24 @@
   }
 }
 
+/* Phone widths: 16px text keeps iOS from zooming the field on focus. */
+@container (max-width: 30rem) {
+  [data-iii-ui="console"] .console-worker-config-textarea {
+    font-size: 16px;
+  }
+}
+
 @container (max-width: 679px) {
   [data-iii-ui="console"] .console-worker-config-control,
   [data-iii-ui="console"] .console-worker-config-number,
-  [data-iii-ui="console"] .console-worker-config-select {
+  [data-iii-ui="console"] .console-worker-config-select,
+  [data-iii-ui="console"] .console-worker-config-model,
+  [data-iii-ui="console"] .console-worker-config-model-picker {
     width: 100%;
     min-width: 0;
+  }
+  [data-iii-ui="console"] .console-worker-config-model {
+    justify-content: flex-start;
   }
   [data-iii-ui="console"] .console-worker-config-template-control {
     grid-template-columns: 1fr auto;

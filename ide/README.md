@@ -105,6 +105,11 @@ fs:
 
 sandbox:
   enabled: true              # false -> every target: sandbox call returns S210
+
+commit_messages:             # the Commit panel's Generate button (read live on every call)
+  model: null                # router model id ("provider::model" or bare); null = the chat's default model, passed by the panel
+  thinking: low              # default|minimal|low|medium|high|xhigh; "default" sends no reasoning override
+  instructions: ""           # free text appended to the prompt, e.g. "Use Conventional Commits"
 ```
 
 ### Zero-config default
@@ -164,6 +169,8 @@ The example runs on the host. The same payload retargets at a microVM with `targ
 | `shell::fs::sed` | Regex find-and-replace across one file or many. |
 | `shell::fs::write` | Write a file. Simplest form passes inline string `content` (host target only): `{ path, content: "file text" }`, with `mode` (octal, default `"0644"`) and `parents: true` to create parents. A `ContentRef` object in `content` instead streams large/staged payloads through an SDK channel (temp file + atomic rename) and is **required** for sandbox targets — an inline string on a sandbox target returns `S210`. Batch form: pass `files: [{ path, content, mode?, parents? }, ...]` (host, inline per file) to write several files in one call; the response then carries per-file `files: [{ path, bytes_written }]`. A single-file write leaves `files` empty and returns `{ bytes_written, path }`. Supplying both single `path`/`content` and `files` returns `S210`. |
 | `shell::fs::read` | Stream a file's bytes out through an SDK channel. For an inline read on the web surface, use the `harness::fs::read_inline` wrapper instead. |
+| `shell::scm::commit-message-config` | *(console only)* The live `commit_messages` settings: `{}` → `{ model: string \| null, thinking, instructions }`. See [Commit messages](#commit-messages-shellscm). |
+| `shell::scm::commit-message` | *(console only)* Write a git commit message for a diff with an LLM through `router::complete`: `{ changes, recent_subjects?, fallback_model? }` → `{ message, model }`. See [Commit messages](#commit-messages-shellscm). |
 
 Every `shell::fs::*` call accepts the same optional `target` as `exec`, so host and sandbox share one wire shape.
 
@@ -275,6 +282,44 @@ anyone is attached.
 last sequence number, replayable frames and bytes, and current output target.
 No credentials: it exists to separate a terminal that shows nothing because
 no output arrived from one whose frames the browser dropped.
+
+## Commit messages (`shell::scm::*`)
+
+The Commit panel's **Generate** button writes a commit message with an LLM.
+The page runs git and prepares the diff text; this worker reads its live
+`commit_messages` config (model, reasoning effort, extra instructions), builds
+the prompt and calls `router::complete` on the `llm-router` worker (120 s
+timeout, at most 1024 output tokens). Both functions are console-only
+(`internal: true`, denied to agents in `iii-permissions.yaml`: a call spends
+model budget outside the harness loop's accounting). Install and configure a
+provider on `llm-router` first.
+
+| Function | Request | Response |
+|---|---|---|
+| `shell::scm::commit-message-config` | `{}` | `{ "model": string \| null, "thinking": string, "instructions": string }` from the live config (`model` trimmed, blank → `null`). |
+| `shell::scm::commit-message` | `{ "changes": string, "recent_subjects"?: string[], "fallback_model"?: string \| null }` | `{ "message": string, "model": string }`, `model` being the id actually used. |
+
+- **Model**: `commit_messages.model` when set, else `fallback_model` (the
+  panel passes the chat's default model), else `NO_MODEL`. `provider::model`
+  is split on the first `::` into the router's `provider` and `model`; a bare
+  id sends only `model`.
+- **Thinking**: sent to the router as `thinking_level`; `default` omits it.
+- **Prompt**: a fixed system prompt (imperative summary of at most 72
+  characters, optional 72-column body, no preamble or fences) followed by
+  `commit_messages.instructions` under "The repository's own instructions win
+  over the rules above:". The user turn lists `recent_subjects` for style,
+  then `changes`, cut at 60000 characters with a trailing `[diff truncated]`.
+- **Result**: the text blocks of the answer, trimmed, with a whole-text
+  Markdown fence and one pair of wrapping quotes removed.
+
+Errors carry `{ code, message }`:
+
+| Code | Meaning |
+|---|---|
+| `NO_MODEL` | `commit_messages.model` is unset and no `fallback_model` was passed. |
+| `EMPTY_CHANGES` | `changes` is empty or whitespace. |
+| `ROUTER_FAILED` | `router::complete` failed (provider not configured, `llm-router` not installed, timeout) or the model's turn ended in an error; the message names `router::complete` and the router's reason. |
+| `EMPTY_MESSAGE` | The model answered with no text. |
 
 ## Two surfaces, one contract
 

@@ -106,6 +106,13 @@ pub struct ShellConfig {
     #[serde(default)]
     pub turns: TurnsConfig,
 
+    /// The Commit panel's "Generate" button (`shell::scm::commit-message`):
+    /// which model writes the message, how hard it thinks, and any repository
+    /// conventions to add to the prompt. Read live on every call, so an edit
+    /// applies without a restart.
+    #[serde(default)]
+    pub commit_messages: CommitMessagesConfig,
+
     #[serde(default, skip)]
     #[schemars(skip)]
     pub compiled_denylist: Vec<Regex>,
@@ -138,6 +145,62 @@ impl TurnsConfig {
     /// `data_dir` resolved against the Compose project directory.
     pub fn resolved_data_dir(&self) -> PathBuf {
         iii_worker_paths::resolve_path(&self.data_dir)
+    }
+}
+
+/// Settings for LLM-written commit messages (`shell::scm::commit-message`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(default)]
+pub struct CommitMessagesConfig {
+    /// `llm-router` model that writes the message: `provider::model` or a bare
+    /// model id. `null` (the default) uses the model the caller passes as
+    /// `fallback_model`, which the Commit panel fills with the chat's default.
+    pub model: Option<String>,
+    /// Reasoning effort sent to the model: `default` sends no reasoning
+    /// override (the model's own default); otherwise `minimal`, `low`
+    /// (the default), `medium`, `high` or `xhigh`.
+    pub thinking: CommitThinking,
+    /// Free text appended to the prompt, e.g. "Use Conventional Commits".
+    /// Takes precedence over the built-in style rules. Empty by default.
+    pub instructions: String,
+}
+
+impl CommitMessagesConfig {
+    /// `model` trimmed; `None` when unset or blank.
+    pub fn model_id(&self) -> Option<&str> {
+        self.model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+    }
+}
+
+/// Reasoning effort for commit-message generation. Plain comments on the
+/// variants (not doc comments) keep the published schema a flat `enum`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CommitThinking {
+    // Send no `thinking_level`: the model's own default applies.
+    Default,
+    Minimal,
+    #[default]
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+
+impl CommitThinking {
+    /// The router `thinking_level` value, or `None` for `Default`.
+    pub fn level(self) -> Option<&'static str> {
+        match self {
+            Self::Default => None,
+            Self::Minimal => Some("minimal"),
+            Self::Low => Some("low"),
+            Self::Medium => Some("medium"),
+            Self::High => Some("high"),
+            Self::Xhigh => Some("xhigh"),
+        }
     }
 }
 
@@ -522,6 +585,7 @@ impl Default for ShellConfig {
             sandbox: SandboxConfig::default(),
             code: crate::code::config::CoderConfig::default(),
             turns: TurnsConfig::default(),
+            commit_messages: CommitMessagesConfig::default(),
             compiled_denylist: Vec::new(),
         }
     }
@@ -1369,6 +1433,85 @@ sandbox:
         let back = ShellConfig::from_json(&v).expect("from_json round-trips");
         assert_eq!(back.denylist_patterns, c.denylist_patterns);
         assert_eq!(back.fs.host_roots, c.fs.host_roots);
+    }
+
+    #[test]
+    fn commit_messages_defaults_to_low_thinking_and_no_model() {
+        let c = ShellConfig::default().commit_messages;
+        assert_eq!(c.model, None);
+        assert_eq!(c.thinking, CommitThinking::Low);
+        assert_eq!(c.instructions, "");
+        assert_eq!(ShellConfig::seed_default().commit_messages, c);
+    }
+
+    /// A stored value written before `commit_messages` existed must keep
+    /// parsing, and a partial block fills the rest from the defaults.
+    #[test]
+    fn commit_messages_is_optional_everywhere() {
+        let mut stored = ShellConfig::seed_default().to_json();
+        stored.as_object_mut().unwrap().remove("commit_messages");
+        let back = ShellConfig::from_json(&stored).expect("pre-commit_messages value parses");
+        assert_eq!(back.commit_messages, CommitMessagesConfig::default());
+
+        let c = ShellConfig::from_yaml("commit_messages:\n  model: anthropic::sonnet\n")
+            .expect("partial block parses");
+        assert_eq!(
+            c.commit_messages.model.as_deref(),
+            Some("anthropic::sonnet")
+        );
+        assert_eq!(c.commit_messages.thinking, CommitThinking::Low);
+        assert_eq!(c.commit_messages.instructions, "");
+    }
+
+    #[test]
+    fn commit_messages_round_trips_and_rejects_unknown_thinking() {
+        let c = ShellConfig {
+            commit_messages: CommitMessagesConfig {
+                model: Some(" openai::gpt-5 ".into()),
+                thinking: CommitThinking::Xhigh,
+                instructions: "Use Conventional Commits".into(),
+            },
+            ..Default::default()
+        };
+        let back = ShellConfig::from_json(&c.to_json()).expect("round-trips");
+        assert_eq!(back.commit_messages, c.commit_messages);
+        assert_eq!(back.commit_messages.model_id(), Some("openai::gpt-5"));
+
+        let err = ShellConfig::from_yaml("commit_messages:\n  thinking: extreme\n")
+            .expect_err("unknown effort rejects");
+        assert!(err.contains("extreme"), "{err}");
+        let blank = CommitMessagesConfig {
+            model: Some("   ".into()),
+            ..Default::default()
+        };
+        assert_eq!(blank.model_id(), None);
+    }
+
+    /// The `thinking` values the router understands, and the schema the
+    /// console renders as a dropdown.
+    #[test]
+    fn commit_thinking_schema_is_an_enum_matching_the_wire_values() {
+        let all = [
+            (CommitThinking::Default, "default", None),
+            (CommitThinking::Minimal, "minimal", Some("minimal")),
+            (CommitThinking::Low, "low", Some("low")),
+            (CommitThinking::Medium, "medium", Some("medium")),
+            (CommitThinking::High, "high", Some("high")),
+            (CommitThinking::Xhigh, "xhigh", Some("xhigh")),
+        ];
+        let schema = ShellConfig::json_schema();
+        let values: Vec<&str> = schema["definitions"]["CommitThinking"]["enum"]
+            .as_array()
+            .expect("CommitThinking publishes an enum")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(values, all.map(|(_, name, _)| name));
+        for (variant, name, level) in all {
+            assert_eq!(serde_json::to_value(variant).unwrap(), name);
+            assert_eq!(variant.level(), level);
+        }
+        assert!(schema["properties"]["commit_messages"].is_object());
     }
 
     #[test]

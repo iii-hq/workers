@@ -190,3 +190,32 @@ describe('createTurnCache', () => {
     expect(trigger).toHaveBeenCalledTimes(3)
   })
 })
+
+describe('commit-panel diff sources', () => {
+  it('uncommitted reads HEAD against the working copy', async () => {
+    const specs: string[] = []
+    const { host } = hostWith({
+      'shell::exec': (payload) => {
+        specs.push((payload.args as string[])[1])
+        return exec({ stdout: 'old\n' })
+      },
+      'coder::read-file': () => ({ content: 'new\n', is_utf8: true, more_lines: false }),
+    })
+    const out = await loadDiffContents(host, '/r', 'a.ts', { type: 'uncommitted' }, noTurns)
+    expect(specs).toEqual(['HEAD:./a.ts'])
+    expect(out).toMatchObject({ oldContents: 'old\n', newContents: 'new\n' })
+  })
+
+  it('revision reads both sides from git, an absent side as empty', async () => {
+    const { host } = hostWith({
+      'shell::exec': (payload) => {
+        const spec = (payload.args as string[])[1]
+        return spec.startsWith('p:')
+          ? exec({ exit_code: 128, stderr: "fatal: path 'a.ts' does not exist in 'p'" })
+          : exec({ stdout: 'added\n' })
+      },
+    })
+    const out = await loadDiffContents(host, '/r', 'a.ts', { type: 'revision', from: 'p', to: 'c', label: 'c' }, noTurns)
+    expect(out).toMatchObject({ oldContents: '', newContents: 'added\n' })
+  })
+})

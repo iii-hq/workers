@@ -31,4 +31,19 @@ describe('diff-source', () => {
     expect(parseDiffSource({ type: 'nope' })).toBeNull()
     expect(parseDiffSource('staged')).toBeNull()
   })
+
+  it('commit-panel sources: HEAD to working copy, and a pair of revisions', () => {
+    expect(diffSourceKey({ type: 'uncommitted' })).toBe('uncommitted')
+    expect(diffSourceLabel({ type: 'uncommitted' })).toBe('Changes')
+    expect(diffSourceSides({ type: 'uncommitted' })).toEqual({ old: 'HEAD', new: 'working copy' })
+    const revision = { type: 'revision', from: 'p', to: 'c', label: '0d5b60e' } as const
+    expect(diffSourceKey(revision)).toBe('revision=p..c')
+    expect(diffSourceLabel(revision)).toBe('0d5b60e')
+    expect(diffSourceFollowsDisk(revision)).toBe(false)
+    expect(diffSourceFollowsDisk({ type: 'uncommitted' })).toBe(true)
+    expect(diffSourcePersists(revision)).toBe(true)
+    expect(parseDiffSource(revision)).toEqual(revision)
+    expect(parseDiffSource({ type: 'revision', from: 'p', to: '', label: 'x' })).toBeNull()
+    expect(parseDiffSource({ type: 'uncommitted' })).toEqual({ type: 'uncommitted' })
+  })
 })

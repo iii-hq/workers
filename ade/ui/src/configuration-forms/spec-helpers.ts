@@ -5,6 +5,7 @@ import type {
   DynamicMapFieldSpec,
   FilterListFieldSpec,
   FormFieldSpec,
+  ModelFieldSpec,
   NumberFieldSpec,
   ObjectCollectionFieldSpec,
   ObjectFieldSpec,
@@ -56,6 +57,13 @@ export const select = (
   options: optionsList,
   ...options,
 })
+
+export const model = (
+  path: string,
+  label: string,
+  description?: string,
+  options: Partial<Omit<ModelFieldSpec, 'kind' | 'path' | 'label' | 'description'>> = {},
+): ModelFieldSpec => ({ kind: 'model', path: p(path), label, description, ...options })
 
 export const toggle = (
   path: string,

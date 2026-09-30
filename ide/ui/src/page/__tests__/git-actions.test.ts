@@ -1,5 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
-import { discardStep, gitDiscard, gitFileAtRef, gitTags, gitUnstage, statusLetter } from '../git-actions'
+import {
+  commitCommands,
+  discardStep,
+  gitDiscard,
+  gitFileAtRef,
+  gitPush,
+  gitTags,
+  gitUnstage,
+  stashPushArgs,
+  statusLetter,
+} from '../git-actions'
 
 function reply(overrides: Partial<{ exit_code: number | null; stdout: string; stderr: string }> = {}) {
   return {
@@ -95,6 +105,72 @@ describe('gitTags / gitFileAtRef', () => {
   it('maps statuses to VS Code letters', () => {
     expect(['added', 'deleted', 'modified', 'renamed', 'untracked'].map((s) => statusLetter(s as never))).toEqual([
       'A', 'D', 'M', 'R', 'U',
+    ])
+  })
+})
+
+describe('commitCommands', () => {
+  const base = { message: '  fix: a  ', paths: ['a.ts', 'new.md'], amend: false, signOff: false, noVerify: false, author: '' }
+
+  it('adds the ticked paths, then commits exactly those paths', () => {
+    expect(commitCommands(base)).toEqual([
+      ['add', '-A', '--', 'a.ts', 'new.md'],
+      ['commit', '-q', '-m', 'fix: a', '--', 'a.ts', 'new.md'],
+    ])
+  })
+
+  it('carries amend, sign-off, --no-verify and the author', () => {
+    const [, commit] = commitCommands({ ...base, amend: true, signOff: true, noVerify: true, author: ' Ana <a@x.io> ' })
+    expect(commit).toEqual(['commit', '-q', '--amend', '--signoff', '--no-verify', '--author=Ana <a@x.io>', '-m', 'fix: a', '--', 'a.ts', 'new.md'])
+  })
+
+  it('amends only the message when nothing is ticked, and refuses an empty commit', () => {
+    expect(commitCommands({ ...base, paths: [], amend: true })).toEqual([['commit', '-q', '--amend', '--only', '-m', 'fix: a']])
+    expect(() => commitCommands({ ...base, paths: [] })).toThrow('select the changes')
+    expect(() => commitCommands({ ...base, message: '  ' })).toThrow('message is required')
+  })
+})
+
+describe('gitDiscard keepAdded', () => {
+  it('only un-adds an added file when told to keep local copies', async () => {
+    const { host, calls } = hostWith(reply())
+    const results = await gitDiscard(host, '/r', [{ path: 'n.ts', status: 'added', staged: true }], { keepAdded: true })
+    expect(results).toEqual([{ path: 'n.ts', error: null }])
+    expect(calls).toEqual([expect.objectContaining({ args: ['restore', '--staged', '--', 'n.ts'] })])
+  })
+})
+
+describe('gitPush', () => {
+  it('sets an upstream on origin when the branch has none', async () => {
+    const { host, calls } = hostWith(
+      reply({ exit_code: 128, stderr: 'fatal: The current branch feat has no upstream branch.' }),
+      reply(),
+    )
+    await gitPush(host, '/r')
+    expect(calls.map((call) => (call as { args: string[] }).args)).toEqual([
+      ['push'],
+      ['push', '--set-upstream', 'origin', 'HEAD'],
+    ])
+  })
+
+  it('reports any other push failure', async () => {
+    const { host } = hostWith(reply({ exit_code: 1, stderr: 'rejected: non-fast-forward' }))
+    await expect(gitPush(host, '/r')).rejects.toThrow('non-fast-forward')
+  })
+})
+
+describe('stashPushArgs', () => {
+  it('stashes the whole tree, or only the given paths', () => {
+    expect(stashPushArgs({ message: '', includeUntracked: false })).toEqual(['stash', 'push'])
+    expect(stashPushArgs({ message: ' wip ', includeUntracked: true, paths: ['a.ts', 'new.md'] })).toEqual([
+      'stash',
+      'push',
+      '--include-untracked',
+      '-m',
+      'wip',
+      '--',
+      'a.ts',
+      'new.md',
     ])
   })
 })

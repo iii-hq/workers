@@ -51,7 +51,7 @@
     color: var(--color-ink);
     background: var(--color-surface-hover);
   }
-  :is(.shui-view-detail, .shui-view-section-title, .shui-context-item .menu-label, .shui-search-summary,
+  :is(.shui-view-detail, .shui-context-item .menu-label, .shui-search-summary,
     .shui-search-file .name, .shui-search-path .name, .shui-search-file .dir, .shui-search-path .dir, .shui-scm-row-main .dir,
     .shui-search-match .text, .shui-scm-folder span, .shui-scm-row-main .name, .shui-timeline-turn-main .label,
     .shui-timeline-turn-main .meta, .shui-agent-tag, .shui-etab .open, .shui-etab .open .label, .shui-etab-chip, .shui-diff-chip,
@@ -67,7 +67,7 @@
   /* Row-shaped buttons: the list rows, crumbs and cards that act on click. */
   :is(.shui-scm-folder, .shui-scm-row-main, .shui-timeline-turn-main, .shui-launcher-recent-row, .shui-quick-open-row,
     .shui-browser-entry, .shui-chat-summary-file, .shui-breadcrumbs .crumb, .shui-browser-crumb, .shui-file-changes-more,
-    button.shui-file-change-path, .shui-launcher-card, .shui-view-section-toggle, .shui-etab .open, .shui-terminal-tab-select) {
+    button.shui-file-change-path, .shui-launcher-card, .shui-etab .open, .shui-terminal-tab-select) {
     border: 0;
     background: transparent;
     font: inherit;
@@ -694,47 +694,6 @@
     padding: 0;
     border-radius: 6px;
   }
-  .shui-view-section { display: flex; flex-direction: column; flex: none; }
-  .shui-view-section-head {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    height: 26px;
-    padding: 0 6px 0 4px;
-    color: var(--color-ink);
-  }
-  .shui-view-section-head:hover { background: var(--color-surface-hover); }
-  .shui-view-section-toggle {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    height: 100%;
-    padding: 0;
-    color: inherit;
-    font: 600 11.5px / 16px var(--font-sans);
-  }
-  .shui-view-section-toggle .chevron {
-    position: relative;
-    width: 16px;
-    height: 16px;
-    flex: none;
-  }
-  .shui-view-section-toggle .chevron::before {
-    content: '';
-    position: absolute;
-    top: 4px;
-    left: 6px;
-    width: 5px;
-    height: 5px;
-    border-right: 1.5px solid currentColor;
-    border-bottom: 1.5px solid currentColor;
-    transform: rotate(-45deg);
-    transition: transform var(--motion-duration-control) var(--motion-ease-standard);
-  }
-  .shui-view-section-toggle .chevron.open::before { top: 3px; transform: rotate(45deg); }
-  .shui-view-section-count,
   .shui-search-file .count {
     flex: none;
     min-width: 18px;
@@ -746,16 +705,12 @@
     font-variant-numeric: tabular-nums;
     text-align: center;
   }
-  .shui-view-section-head .shui-view-actions,
   .shui-timeline-turn-head .shui-view-actions,
   .shui-scm-row-actions { visibility: hidden; }
-  .shui-view-section-head:hover .shui-view-actions,
-  .shui-view-section-head:focus-within .shui-view-actions,
   .shui-timeline-turn-head:hover .shui-view-actions,
   .shui-timeline-turn-head:focus-within .shui-view-actions,
   .shui-scm-row:hover .shui-scm-row-actions,
   .shui-scm-row:focus-within .shui-scm-row-actions { visibility: visible; }
-  .shui-view-section-body { display: flex; flex-direction: column; }
 
   /* explorer: filter, notes, the @pierre/trees stage */
   .shui-tree-wrap {
@@ -999,34 +954,6 @@
     gap: 4px;
     font: 400 11px / 14px var(--font-mono);
   }
-  .shui-scm-commit {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 4px 12px 8px;
-  }
-  .shui-scm-message {
-    box-sizing: border-box;
-    width: 100%;
-    min-height: 46px;
-    padding: 6px 8px;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    background: var(--color-surface);
-    color: var(--color-ink);
-    font: 400 12.5px / 17px var(--font-sans);
-    resize: vertical;
-    outline: 0;
-  }
-  .shui-scm-message:focus { border-color: var(--color-rule-focus); }
-  .shui-scm-message::placeholder { color: var(--color-ink-ghost); }
-  .shui-scm-note {
-    padding: 4px 12px;
-    font: 400 11.5px / 16px var(--font-sans);
-    color: var(--color-ink-faint);
-  }
-  .shui-scm-note.warn { color: var(--color-warn); }
-  .shui-scm-sections,
   .shui-timeline-list {
     flex: 1;
     min-height: 0;
@@ -1108,6 +1035,426 @@
   [data-status="deleted"] .shui-scm-status { color: var(--shui-status-deleted); }
   [data-status="modified"] .shui-scm-status { color: var(--shui-status-modified); }
   [data-status="renamed"] .shui-scm-status { color: var(--shui-status-renamed); }
+
+  /* ── source control: IntelliJ's Commit tool window ───────────────────── */
+  .shui-scm-head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 8px 0 12px;
+    box-shadow: inset 0 -1px 0 var(--color-edge);
+  }
+  /* The tabs never scroll away; the branch chip gives up its width first. */
+  .shui-scm-head [role="tablist"] { flex: none; box-shadow: none; }
+  .shui-scm-head .spacer { flex: 1 1 0; }
+  .shui-scm-branch {
+    flex: 0 1 auto;
+    min-width: 0;
+    height: 22px;
+    padding: 0 6px;
+    border-radius: 6px;
+    background: var(--color-surface);
+    color: var(--color-ink-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shui-scm-branch svg { width: 12px; height: 12px; flex: none; }
+  .shui-scm-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .shui-scm-panel[hidden] { display: none; }
+  :is(.shui-commit, .shui-stash, .shui-history) { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+  .shui-commit-toolbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-height: 36px;
+    padding: 3px 6px;
+  }
+  .shui-toolbar-count { padding-right: 4px; font-size: 11px; color: var(--color-ink-ghost); }
+  .shui-history-filter { flex: 1; min-width: 0; }
+  .shui-commit-tree,
+  .shui-stash-list {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 6px 6px;
+  }
+  .shui-commit-error { padding: 8px 12px; }
+  .shui-commit-skeleton { display: flex; flex-direction: column; gap: 6px; padding: 6px; }
+  .shui-commit-skeleton-row { height: 20px; }
+  .shui-commit-skeleton-row.tall { height: 36px; }
+  .shui-commit-clean { display: flex; flex-direction: column; gap: 4px; padding: 20px 12px; }
+  .shui-commit-clean .title { font: 600 13px / 20px var(--font-sans); color: var(--color-ink); }
+  .shui-commit-clean .detail { font: 400 12px / 16px var(--font-sans); color: var(--color-ink-faint); }
+
+  /* the change tree: 28px rows, a tick per row, hover-revealed actions */
+  .shui-ctree { display: flex; flex-direction: column; }
+  .shui-ctree-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding-right: 6px;
+    border-radius: 6px;
+    white-space: nowrap;
+  }
+  .shui-ctree-row:hover { background: var(--color-surface-hover); }
+  .shui-ctree-row[data-selected] { background: var(--color-surface-selected); }
+  .shui-ctree-caret {
+    width: 16px;
+    height: 16px;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--color-ink-ghost);
+    cursor: pointer;
+  }
+  .shui-ctree-caret:hover { color: var(--color-ink); }
+  .shui-ctree-caret svg { width: 16px; height: 16px; }
+  .shui-ctree-tick { flex: none; }
+  .shui-ctree-main {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--color-ink);
+    font: 500 13px / 20px var(--font-sans);
+    text-align: left;
+    cursor: pointer;
+  }
+  .shui-ctree-main:focus-visible { outline: 2px solid var(--color-rule-focus); outline-offset: -2px; }
+  .shui-ctree-main .file-icon,
+  .shui-ctree-main .folder-icon { width: 16px; height: 16px; flex: none; }
+  .shui-ctree-main .folder-icon { color: var(--color-ink-ghost); }
+  /* The name keeps its width; the count or folder beside it gives way first. */
+  .shui-ctree-main .name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .shui-ctree-main .meta {
+    flex: 0 1000 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--color-ink-ghost);
+    font-size: 11px;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+  }
+  .shui-ctree-row[data-kind="group"] .name { font-weight: 600; }
+  .shui-ctree-row[data-kind="folder"] .name { font-weight: 400; }
+  .shui-ctree-row[data-status="untracked"] .name { color: var(--color-ink-faint); }
+  .shui-ctree-row[data-status="deleted"] .name { color: var(--color-ink-faint); text-decoration: line-through; }
+  .shui-ctree-actions { display: none; align-items: center; gap: 1px; flex: none; }
+  .shui-ctree-row:hover .shui-ctree-actions,
+  .shui-ctree-row:focus-within .shui-ctree-actions { display: inline-flex; }
+  .shui-ctree-actions > button {
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    min-height: 24px;
+    padding: 0;
+  }
+  .shui-ctree-actions > button svg { width: 16px; height: 16px; }
+  .shui-ctree-status {
+    width: 12px;
+    flex: none;
+    text-align: center;
+    font: 600 11px / 16px var(--font-mono);
+    color: var(--color-ink-faint);
+  }
+  .shui-ctree-status[data-status="added"],
+  .shui-ctree-status[data-status="untracked"] { color: var(--shui-status-added); }
+  .shui-ctree-status[data-status="deleted"] { color: var(--shui-status-deleted); }
+  .shui-ctree-status[data-status="modified"] { color: var(--shui-status-modified); }
+  .shui-ctree-status[data-status="renamed"] { color: var(--shui-status-renamed); }
+
+  /* the commit box */
+  .shui-commit-box {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 6px 12px 12px;
+  }
+  .shui-commit-bar,
+  .shui-commit-actions,
+  .shui-commit-status { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  .shui-commit-actions { gap: 8px; flex-wrap: wrap; row-gap: 6px; }
+  .shui-commit-bar > :first-child { flex: none; }
+  .shui-generate-split { display: inline-flex; align-items: center; }
+  .shui-generate { gap: 6px; padding: 0 8px; }
+  .shui-generate svg { width: 16px; height: 16px; }
+  .shui-generate.stop svg { color: var(--color-accent); }
+  .shui-generate-more { width: 24px; min-width: 24px; }
+  .shui-commit-message {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 116px;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font: 400 13px / 20px var(--font-sans);
+    resize: vertical;
+    outline: 0;
+  }
+  .shui-commit-message:focus { box-shadow: 0 0 0 1px var(--color-rule-focus); }
+  .shui-commit-message::placeholder { color: var(--color-ink-ghost); }
+  .shui-commit-message[aria-busy="true"] { color: var(--color-ink-faint); box-shadow: 0 0 0 1px var(--color-rule-focus); }
+  .shui-commit-status {
+    min-height: 18px;
+    font: 400 11px / 16px var(--font-sans);
+    color: var(--color-ink-faint);
+  }
+  .shui-commit-status .mono { font-family: var(--font-mono); color: var(--color-ink-ghost); }
+  .shui-commit-status [data-over] { color: var(--color-warn-strong); }
+  .shui-commit-writing { color: var(--color-ink); }
+  .shui-commit-link {
+    padding: 0 4px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--color-ink);
+    font: 500 11px / 16px var(--font-sans);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .shui-commit-link:hover { background: var(--color-surface-hover); }
+  .shui-commit-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin: 0;
+    font: 400 12px / 16px var(--font-sans);
+    color: var(--color-ink-faint);
+    overflow-wrap: anywhere;
+  }
+  .shui-commit-note.pad { padding: 2px 12px 6px; }
+  .shui-commit-note svg { width: 16px; height: 16px; flex: none; color: var(--color-ok); }
+  .shui-commit-note[data-failed] { color: var(--color-alert-strong); }
+  .shui-commit-note[data-failed] svg { color: var(--color-alert); }
+  .shui-commit-options { position: relative; }
+  .shui-commit-options[data-custom]::after {
+    content: '';
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    background: var(--color-ink);
+  }
+  .shui-commit-menu { max-width: min(340px, calc(100vw - 24px)); }
+  .shui-commit-menu-text { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shui-commit-menu-meta { flex: none; font-size: 11px; color: var(--color-ink-ghost); }
+  .shui-generate-model { display: flex; flex-direction: column; padding: 2px 8px 8px; font: 400 13px / 18px var(--font-sans); color: var(--color-ink); }
+  .shui-generate-model .meta { font: 400 11px / 16px var(--font-mono); color: var(--color-ink-ghost); }
+  .shui-generate-instructions {
+    margin: 0;
+    padding: 2px 8px 8px;
+    font: 400 12px / 18px var(--font-sans);
+    color: var(--color-ink-faint);
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* dialogs: text prompt and rollback */
+  .shui-text-dialog-form { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+  .shui-text-dialog-label { font: 500 12px / 16px var(--font-sans); color: var(--color-ink-faint); }
+  .shui-text-dialog-actions,
+  .shui-rollback-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 6px; }
+  .shui-rollback-dialog { display: flex; flex-direction: column; gap: 12px; }
+  .shui-rollback-tree { max-height: 260px; overflow: auto; padding: 4px; border-radius: 6px; background: var(--color-surface); }
+  .shui-rollback-options { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .shui-rollback-summary { margin-left: auto; font: 400 11px / 16px var(--font-sans); color: var(--color-ink-faint); font-variant-numeric: tabular-nums; }
+  .shui-danger-button { background: var(--color-alert); color: var(--color-bg); }
+  .shui-danger-button:hover { background: color-mix(in srgb, var(--color-alert) 90%, transparent); }
+
+  /* stash and history lists */
+  .shui-log-rows { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+  .shui-log-row { display: flex; align-items: stretch; gap: 6px; min-height: 44px; padding-left: 4px; border-radius: 6px; }
+  .shui-log-row:hover { background: var(--color-surface-hover); }
+  .shui-log-row[data-selected] { background: var(--color-surface-selected); }
+  .shui-log-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    padding: 5px 6px 5px 4px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--color-ink);
+    font: 500 13px / 18px var(--font-sans);
+    text-align: left;
+    cursor: pointer;
+  }
+  .shui-log-main:focus-visible { outline: 2px solid var(--color-rule-focus); outline-offset: -2px; }
+  .shui-log-main .subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shui-log-main .meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+    font: 400 11px / 16px var(--font-sans);
+    color: var(--color-ink-ghost);
+    white-space: nowrap;
+  }
+  .shui-log-main .mono { flex: none; font-family: var(--font-mono); }
+  .shui-log-main .meta .num { flex: none; }
+  .shui-log-main .author,
+  .shui-log-main .branch { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .shui-log-more { flex: none; font-family: var(--font-mono); }
+  .shui-log-main .branch { display: inline-flex; align-items: center; gap: 3px; color: var(--color-ink-faint); }
+  .shui-log-main .branch svg { width: 12px; height: 12px; flex: none; }
+  .shui-log-actions { display: none; align-items: center; padding-right: 4px; }
+  .shui-log-row:hover .shui-log-actions,
+  .shui-log-row:focus-within .shui-log-actions { display: inline-flex; }
+  .shui-log-actions > button { width: 24px; height: 24px; min-width: 24px; min-height: 24px; padding: 0; }
+  .shui-log-ref {
+    flex: 0 1 auto;
+    min-width: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    max-width: 140px;
+    height: 18px;
+    padding: 0 5px;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--color-surface);
+    color: var(--color-ink-faint);
+    font: 500 11px / 1 var(--font-mono);
+    text-overflow: ellipsis;
+  }
+  .shui-log-ref svg { width: 12px; height: 12px; flex: none; }
+  .shui-log-ref[data-kind="head"] { background: var(--color-surface-selected); color: var(--color-ink); }
+  /* One lane: the branch's first-parent line, a ring per commit, HEAD filled. */
+  .shui-log-lane { position: relative; width: 16px; flex: none; color: var(--color-glyph-blue); }
+  .shui-log-lane::before,
+  .shui-log-lane::after { content: ''; position: absolute; left: 7px; width: 2px; background: currentColor; }
+  .shui-log-lane::before { top: 0; height: calc(50% - 6px); }
+  .shui-log-lane::after { top: calc(50% + 6px); bottom: 0; }
+  .shui-log-lane[data-first]::before { display: none; }
+  .shui-log-lane .dot {
+    position: absolute;
+    top: calc(50% - 5px);
+    left: 3px;
+    box-sizing: border-box;
+    width: 10px;
+    height: 10px;
+    border: 2px solid currentColor;
+    border-radius: 9999px;
+  }
+  .shui-log-lane[data-head] .dot { background: currentColor; }
+  /* A merge commit: a larger ring says another line joined here. */
+  .shui-log-lane[data-merge] .dot { top: calc(50% - 6px); left: 2px; width: 12px; height: 12px; }
+
+  /* Head and actions stay put; only the file list scrolls, so Apply/Pop or
+     Revert are always in reach however many files the stash or commit has. */
+  .shui-log-details {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 55%;
+    min-height: 0;
+    overflow: hidden;
+    padding: 10px 12px 12px;
+    background: var(--color-panel);
+  }
+  .shui-log-details > * { flex: none; }
+  .shui-log-details > .shui-log-files {
+    flex: 1 1 auto;
+    min-height: 56px;
+    overflow: auto;
+  }
+  .shui-log-details-head { display: flex; align-items: center; gap: 4px; min-height: 24px; font: 400 12px / 16px var(--font-sans); }
+  .shui-log-details-head .mono { font-family: var(--font-mono); color: var(--color-ink); }
+  .shui-log-details-head .faint { font-size: 11px; color: var(--color-ink-ghost); }
+  .shui-log-details-head > button { width: 24px; height: 24px; min-width: 24px; min-height: 24px; padding: 0; }
+  .shui-log-details-subject {
+    margin: 0;
+    font: 600 13px / 18px var(--font-sans);
+    color: var(--color-ink);
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .shui-log-details-author { font: 400 12px / 16px var(--font-sans); color: var(--color-ink-faint); overflow-wrap: anywhere; }
+  .shui-log-details-body {
+    margin: 0;
+    font: 400 12px / 18px var(--font-sans);
+    color: var(--color-ink-faint);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .shui-log-details-empty { margin: 0; font: 400 12px / 16px var(--font-sans); color: var(--color-ink-ghost); }
+  .shui-log-details-empty.pad { padding: 16px 8px; }
+  .shui-log-details-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; row-gap: 6px; padding-top: 4px; }
+  .shui-log-ref-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .shui-log-files { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+  .shui-log-file {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 6px 0 4px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--color-ink);
+    font: 500 13px / 20px var(--font-sans);
+    text-align: left;
+    cursor: pointer;
+  }
+  .shui-log-file:hover { background: var(--color-surface-hover); }
+  .shui-log-file[data-selected] { background: var(--color-surface-selected); }
+  .shui-log-file:focus-visible { outline: 2px solid var(--color-rule-focus); outline-offset: -2px; }
+  .shui-log-file .file-icon { width: 16px; height: 16px; flex: none; }
+  .shui-log-file .name { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shui-log-file .dir {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-ink-ghost);
+    font-size: 11px;
+    font-weight: 400;
+  }
+
+  /* touch: rows and their actions grow to finger size, actions stay visible */
+  @media (hover: none) {
+    .shui-ctree-actions,
+    .shui-log-actions { display: inline-flex; }
+  }
 
   /* timeline view */
   .shui-timeline-turn { display: flex; flex-direction: column; flex: none; }

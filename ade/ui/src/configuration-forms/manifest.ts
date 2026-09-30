@@ -31,6 +31,9 @@ function collectField(field: FormFieldSpec, prefix: string): string[] {
   ) {
     return [path]
   }
+  if (field.kind === 'model') {
+    return field.thinkingKey ? [path, join(prefix, [...field.path.slice(0, -1), field.thinkingKey])] : [path]
+  }
   if (field.kind === 'string-list') return [`${path}[]`]
   if (field.kind === 'dynamic-map') return [`${path}.*`]
   if (field.kind === 'structured-value') return [`${path}.*`]

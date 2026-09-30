@@ -27,6 +27,8 @@ interface FieldBase {
 export interface TextFieldSpec extends FieldBase {
   kind: 'text' | 'password'
   placeholder?: string
+  /** Render a multi-line textarea instead of a one-line input. `text` only. */
+  multiline?: boolean
 }
 
 export interface NumberFieldSpec extends FieldBase {
@@ -39,6 +41,21 @@ export interface NumberFieldSpec extends FieldBase {
 export interface SelectFieldSpec extends FieldBase {
   kind: 'select'
   options: readonly Choice[]
+  placeholder?: string
+}
+
+/**
+ * A router model id (`provider::model`, or a bare id) chosen with the console's
+ * model picker; `null`/absent means unset. With `thinkingKey` the picker's
+ * reasoning-effort level is stored as a string under that sibling key (same
+ * parent object as `path`), so the field declares two leaf paths.
+ */
+export interface ModelFieldSpec extends FieldBase {
+  kind: 'model'
+  thinkingKey?: string
+  /** Level shown while `thinkingKey` is absent from the stored value. Defaults to `default`. */
+  thinkingDefault?: string
+  /** Shown while no model is set. Defaults to `Chat default`. */
   placeholder?: string
 }
 
@@ -128,6 +145,7 @@ export type FormFieldSpec =
   | TextFieldSpec
   | NumberFieldSpec
   | SelectFieldSpec
+  | ModelFieldSpec
   | SwitchFieldSpec
   | StringListFieldSpec
   | DynamicMapFieldSpec

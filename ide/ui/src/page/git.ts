@@ -191,7 +191,7 @@ function rootRelative(prefix: string, path: string): string {
   return prefix !== '' && path.startsWith(prefix) ? path.slice(prefix.length) : path
 }
 
-interface NameStatusEntry {
+export interface NameStatusEntry {
   path: string
   status: Exclude<GitFileStatus, 'untracked' | 'ignored'>
   from?: string
@@ -220,7 +220,7 @@ function diffStatus(code: string): NameStatusEntry['status'] | null {
 /** Parse `git diff --name-status -z`: status, then one path; rename/copy
     records carry old and new paths. NUL framing keeps all legal path bytes
     except NUL unambiguous. */
-function parseNameStatus(stdout: string, prefix: string): NameStatusEntry[] | string {
+export function parseNameStatus(stdout: string, prefix: string): NameStatusEntry[] | string {
   if (stdout === '') return []
   if (!stdout.endsWith('\0')) return 'git diff returned an incomplete name-status record'
 
