@@ -49,6 +49,34 @@ function rolesLabel(roles: readonly string[]): string {
   return `${roles.slice(0, 2).join(' · ')} +${roles.length - 2}`
 }
 
+/** What each coverage issue means to a reader; unknown kinds show as sent. */
+const ISSUE_LABELS: Record<string, string> = {
+  token_budget: 'judge token budget spent',
+  deadline: 'deadline',
+  resource_limit: 'size limit',
+  provider: 'judge errors',
+  'request-size': 'oversized requests',
+  changed: 'files changed meanwhile',
+  unreadable: 'unreadable files or folders',
+}
+
+function issueList(issues: readonly [string, number][]): string {
+  return issues
+    .map(([kind, count]) => {
+      const label = ISSUE_LABELS[kind] ?? kind
+      return count > 1 && kind !== 'token_budget' ? `${label} ×${count}` : label
+    })
+    .join(', ')
+}
+
+function partialNote(summary: RelevantSummary): string {
+  const issues = issueList(summary.issues)
+  if (summary.reason === 'token_budget') {
+    return `Stopped at the judge token budget${issues ? ` (${issues})` : ''}: the folder was too big to judge in full. Ask about a narrower folder.`
+  }
+  return `Partial result${issues ? ` (${issues})` : ''}: some folders or files went unjudged. Narrow the folder for full coverage.`
+}
+
 function Note({ tone, children }: { tone: 'partial' | 'unavailable' | 'empty'; children: React.ReactNode }) {
   return <p className={`shui-relevant-note is-${tone}`}>{children}</p>
 }
@@ -204,7 +232,6 @@ export function FindRelevantCard({
   )
   const heading = title(summary, running)
   const stats = running ? null : meta(summary)
-  const partialIssues = summary.issues.map(([kind, count]) => (count > 1 ? `${kind} ×${count}` : kind)).join(', ')
 
   return (
     <section
@@ -236,12 +263,7 @@ export function FindRelevantCard({
           Text search with <code>coder::search</code> still works.
         </Note>
       ) : null}
-      {summary.status === 'incomplete' ? (
-        <Note tone="partial">
-          Partial result{partialIssues ? ` (${partialIssues})` : ''}: some folders or files went unjudged. Narrow the
-          folder for full coverage.
-        </Note>
-      ) : null}
+      {summary.status === 'incomplete' ? <Note tone="partial">{partialNote(summary)}</Note> : null}
       {summary.status === 'complete' && summary.rows.length === 0 ? (
         <Note tone="empty">The judge found nothing in this folder that answers the question.</Note>
       ) : null}

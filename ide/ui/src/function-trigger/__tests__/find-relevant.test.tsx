@@ -118,6 +118,15 @@ describe('FindRelevantCard', () => {
     expect(renderToStaticMarkup(<FindRelevantCard summary={partial} running={false} />)).toContain(
       'Partial result (deadline ×2)',
     )
+    const budget = summarizeFindRelevant(input, {
+      ...output,
+      status: 'incomplete',
+      reason: 'token_budget',
+      issues: { resource_limit: 1, token_budget: 1 },
+    })!
+    expect(renderToStaticMarkup(<FindRelevantCard summary={budget} running={false} />)).toContain(
+      'Stopped at the judge token budget (size limit, judge token budget spent)',
+    )
     const unavailable = summarizeFindRelevant(input, {
       ...output,
       status: 'unavailable',

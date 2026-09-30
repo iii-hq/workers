@@ -155,6 +155,15 @@ pub struct CoderConfig {
     #[serde(default = "default_find_relevant_judge_slots")]
     #[schemars(range(min = 1, max = 64))]
     pub find_relevant_judge_slots: u32,
+
+    /// Judge input tokens one `coder::find-relevant` ask may spend (0 =
+    /// unlimited). Past it the ask schedules no more judge calls and returns
+    /// `incomplete` with what it found; calls already scheduled (up to about
+    /// twice `find_relevant_judge_slots`) still go out. TypeSafe bills about
+    /// $0.042 per million; a repository-root ask on a large monorepo can
+    /// pass 20 million, a component folder rarely 2.
+    #[serde(default = "default_find_relevant_judge_token_budget")]
+    pub find_relevant_judge_token_budget: u64,
 }
 
 fn default_default_exclude_globs() -> Vec<String> {
@@ -201,6 +210,9 @@ fn default_max_output_bytes() -> u64 {
 }
 fn default_search_response_budget_bytes() -> u64 {
     262_144
+}
+fn default_find_relevant_judge_token_budget() -> u64 {
+    3_000_000
 }
 fn default_find_relevant_judge_slots() -> u32 {
     crate::code::judge::DEFAULT_SLOTS as u32
@@ -333,6 +345,7 @@ impl Default for CoderConfig {
             search_response_budget_bytes: default_search_response_budget_bytes(),
             templates: TemplatesConfig::default(),
             find_relevant_judge_slots: default_find_relevant_judge_slots(),
+            find_relevant_judge_token_budget: default_find_relevant_judge_token_budget(),
         }
     }
 }
