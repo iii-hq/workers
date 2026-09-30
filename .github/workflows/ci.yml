@@ -30,7 +30,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - run: pip install --quiet pytest pyyaml
-      - run: pytest .github/scripts/tests/ -v
+      - run: pytest .github/scripts/tests/ ade/web/e2e/test_namespaced_provider_ports.py -v
       - name: Validate GitHub Actions workflows
         run: |
           set -euo pipefail

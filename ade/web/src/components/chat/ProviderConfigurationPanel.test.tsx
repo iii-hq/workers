@@ -420,7 +420,17 @@ describe('ProviderConfigurationPanel lifecycle with real QueryClient hooks', () 
   })
 
   it('re-resolves the family on Retry without transferring the dirty draft', async () => {
-    configure()
+    configure({
+      value: {
+        providers: {
+          'openai-codex': {
+            api_url: 'https://old.example',
+            max_tokens: 3,
+            api_key: 'A-SECRET',
+          },
+        },
+      },
+    })
     const view = mount()
     await waitForText('Provider settings')
     await flush()
@@ -481,14 +491,34 @@ describe('ProviderConfigurationPanel lifecycle with real QueryClient hooks', () 
       view.querySelector<HTMLInputElement>('input[inputmode="url"]')?.value,
     ).toBe('https://server.example')
     expect(view.textContent).not.toContain('unsaved changes')
+    // Retrying only rehydrates the destination. It must not write, and it
+    // must not carry A's dirty data or secret into B.
     expect(callsFor('configuration::set')).toHaveLength(0)
-    expect(
-      callsFor('configuration::set').every(
-        ([_, payload]) =>
-          payload.id !== 'renamed-router' ||
-          JSON.stringify(payload.value).includes('B-KEY') === false,
-      ),
-    ).toBe(true)
+    changeInput(
+      view.querySelector<HTMLInputElement>(
+        'input[inputmode="url"]',
+      ) as HTMLInputElement,
+      'https://b-saved.example',
+    )
+    await clickButton('save')
+    const writes = callsFor('configuration::set')
+    expect(writes).toHaveLength(1)
+    expect(writes[0]?.[1]).toEqual({
+      id: 'renamed-router',
+      value: {
+        providers: {
+          'openai-codex': {
+            api_url: 'https://b-saved.example',
+            max_tokens: 3,
+            api_key: 'B-KEY',
+          },
+        },
+      },
+    })
+    expect(JSON.stringify(writes[0]?.[1])).not.toContain('A-SECRET')
+    expect(JSON.stringify(writes[0]?.[1])).not.toContain(
+      'https://draft.example',
+    )
     expect(callsFor('configuration::list').length).toBeGreaterThanOrEqual(2)
     expect(
       callsFor('configuration::schema').some(
