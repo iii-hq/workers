@@ -325,6 +325,81 @@ jobs:
         run: cargo test --locked --test minilm_target
 
   # ──────────────────────────────────────────────────────────────
+  # ios-simulator ships for macOS only: it drives Xcode's simulators through
+  # `xcrun simctl` and a Swift helper (bridge/simbridge.swift) that the worker
+  # compiles on the host at first use. The ubuntu gate above proves only the
+  # Rust side; this one lints and tests on the release OS, compiles the helper
+  # with the exact flags bridge.rs uses, and runs it far enough to prove the
+  # runner's Xcode still exposes every CoreSimulator/SimulatorKit symbol it
+  # resolves (it stops at the device lookup, so no simulator is booted).
+  # ──────────────────────────────────────────────────────────────
+  ios-simulator-macos:
+    name: "ios-simulator: macOS lint + test + simbridge"
+    needs: discover
+    if: contains(needs.discover.outputs.rust, '"ios-simulator"')
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios-simulator
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+          components: clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: worker-ios-simulator
+          save-if: ${{ github.event_name == 'push' }}
+          workspaces: ios-simulator -> target
+
+      # The embedded UI's own tests assert on the built bundle, so it cannot
+      # be stubbed the way iii-directory's is.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - name: Setup Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Build the console UI
+        working-directory: ios-simulator/ui
+        run: pnpm install --frozen-lockfile && pnpm build
+
+      - name: Run clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked --all-features
+
+      - name: Compile simbridge
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun swiftc -O -swift-version 5 -o "$RUNNER_TEMP/simbridge" bridge/simbridge.swift
+
+      - name: Probe simbridge against the runner's Xcode
+        run: |
+          set -uo pipefail
+          udid=00000000-0000-0000-0000-000000000000
+          # Exits 1 by design: an unknown udid is the first thing it cannot find.
+          out="$("$RUNNER_TEMP/simbridge" --udid "$udid" --developer-dir "$(xcode-select -p)" < /dev/null)" || true
+          echo "$out"
+          if ! grep -q "device $udid not found" <<< "$out"; then
+            echo "::error::simbridge failed before the device lookup; the runner's Xcode no longer matches bridge/simbridge.swift"
+            exit 1
+          fi
+
+  # ──────────────────────────────────────────────────────────────
   # Shared Rust crates (crates/*): lint + test. Workers link these by
   # path; discover also fans a changed crate's dependents into the rust
   # matrix above, so dependents rebuild against the change while this
