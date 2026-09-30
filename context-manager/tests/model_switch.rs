@@ -366,3 +366,23 @@ async fn deadline_returns_overflow_and_releases_the_lease() {
     assert!(matches!(result, compact::CompactResponse::Overflow));
     assert!(leases.keys().is_empty());
 }
+
+#[tokio::test]
+async fn preview_reports_overflow_without_summarizing_or_acquiring_a_lease() {
+    let (deps, summarizer, leases) = setup(8000, Some(1));
+    let result = assemble::handle(
+        &deps,
+        serde_json::from_value(json!({
+            "messages":history(), "model":model(),
+            "options":{"preview_only":true,"allow_compaction":false,"tail_turns":1}
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(result.token_count > result.usable);
+    assert_eq!(result.usable, 8000);
+    assert!(!result.applied.compacted);
+    assert!(summarizer.calls.lock().unwrap().is_empty());
+    assert!(leases.keys().is_empty());
+}

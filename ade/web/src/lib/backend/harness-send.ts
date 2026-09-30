@@ -211,7 +211,12 @@ export interface HarnessStatusReport {
   result?: unknown
   result_error?: string | null
   /** The last generate step's context accounting (verbose only). */
-  context?: { total: number; usable: number; free: number }
+  context?: {
+    total: number
+    usable: number
+    free: number
+    categories?: { tools?: number; overhead?: number }
+  }
 }
 
 export interface HarnessStopResponse {

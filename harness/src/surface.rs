@@ -7,6 +7,7 @@
 //! of the agent-facing surface.
 
 use crate::functions::{
+    context_policy::{ContextPolicyRequest, ContextPolicyResponse},
     function_resolve::{FunctionResolveRequest, FunctionResolveResponse},
     function_trigger::{FunctionTriggerRequest, FunctionTriggerResponse},
     metrics::{SessionMetricsRequestV1, SessionMetricsResponseV1},
@@ -22,8 +23,8 @@ use crate::functions::{
     },
 };
 use crate::functions::{
-    FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, METRICS_ID, SEND_ID, SESSION_TREE_ID, SPAWN_ID,
-    STATUS_ID, STOP_ID, SYSTEM_PROMPT_ID, TURN_ID,
+    CONTEXT_POLICY_ID, FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, METRICS_ID, SEND_ID,
+    SESSION_TREE_ID, SPAWN_ID, STATUS_ID, STOP_ID, SYSTEM_PROMPT_ID, TURN_ID,
 };
 use crate::turn_loop::{TurnStepPayload, TurnStepResult};
 
@@ -78,6 +79,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
             Option<crate::functions::delete_session_tree::Snapshot>,
         >(crate::functions::delete_session_tree::STATUS_ID),
         spec::<StatusRequest, Option<StatusReport>>(STATUS_ID),
+        spec::<ContextPolicyRequest, ContextPolicyResponse>(CONTEXT_POLICY_ID),
         spec::<SystemPromptRequest, SystemPromptPreview>(SYSTEM_PROMPT_ID),
         spec::<SessionTreeRequestV1, SessionTreeResponseV1>(SESSION_TREE_ID),
         spec::<SessionMetricsRequestV1, SessionMetricsResponseV1>(METRICS_ID),

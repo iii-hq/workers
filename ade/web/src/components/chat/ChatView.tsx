@@ -6,6 +6,7 @@ import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsB
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { PageHeader } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
+import { StatusPanel } from '@/components/ui/StatusPanel'
 import {
   Tooltip,
   TooltipContent,
@@ -142,6 +143,7 @@ import {
   skillSelectionForSend,
 } from './system-prompt-selection'
 import { deriveTurnVisualState } from './turn-visual-state'
+import { useModelSwitch } from './use-model-switch'
 
 /**
  * Order the header's injected chips deterministically. The registry appends
@@ -305,7 +307,9 @@ export function ChatView({
       try {
         openChatFile(ref, workingDirRef.current)
       } catch (error) {
-        setFileOpenError(error instanceof Error ? error.message : 'Could not open this file.')
+        setFileOpenError(
+          error instanceof Error ? error.message : 'Could not open this file.',
+        )
       }
     },
     [workingDirEnabled],
@@ -831,6 +835,27 @@ export function ChatView({
     )
     return catalog?.id ?? last.model
   }, [conversation.model, conversation.messages, modelOptions])
+
+  const modelSwitch = useModelSwitch({
+    backend,
+    sessionId: conversation.id,
+    currentModel: effectiveModel,
+    models: modelOptions,
+    draft: conversation.draft === true,
+    disabled: submitBlocked || streamingIndicator || modelLocked,
+    transcript: conversation.messages,
+    revision: conversation.updatedAt,
+    onSwitch: (model) => onUpdateModel(conversation.id, model),
+    onCompacted: (switchApplied) => {
+      announcer.announce(
+        switchApplied
+          ? 'Conversation compacted. Switching models.'
+          : 'Conversation compacted. The model switch was not applied.',
+      )
+    },
+  })
+  // Synchronous send guard covers the check, confirmation and compaction.
+  submitBlockedRef.current = submitBlocked || modelSwitch.pending
 
   const contextWindow = useMemo(() => {
     const match = modelOptions.find((o) => o.id === effectiveModel)
@@ -2662,7 +2687,10 @@ export function ChatView({
 
       <ChatFileNavigation
         messages={conversation.messages}
-        historyComplete={conversation.hydrated !== false && conversation.history?.hasMore !== true}
+        historyComplete={
+          conversation.hydrated !== false &&
+          conversation.history?.hasMore !== true
+        }
         workingDir={conversation.workingDir ?? null}
         enabled={workingDirEnabled}
       >
@@ -2714,9 +2742,29 @@ export function ChatView({
         </RegisteredTriggerStatusProvider>
       </ChatFileNavigation>
       <LiveRegion announcement={announcer.announcement} />
+      {modelSwitch.dialog}
+      {modelSwitch.error || modelSwitch.notice ? (
+        <StatusPanel
+          role={modelSwitch.error ? 'alert' : 'status'}
+          variant={modelSwitch.error ? 'alert' : 'info'}
+          headline={
+            modelSwitch.error
+              ? 'Model switch not completed'
+              : 'Switching models'
+          }
+          detail={modelSwitch.error ?? modelSwitch.notice}
+        />
+      ) : null}
 
       <footer className={footerPad}>
-        {fileOpenError ? <p role="alert" className="mx-auto max-w-[760px] break-words text-[12px] text-alert">{fileOpenError}</p> : null}
+        {fileOpenError ? (
+          <p
+            role="alert"
+            className="mx-auto max-w-[760px] break-words text-[12px] text-alert"
+          >
+            {fileOpenError}
+          </p>
+        ) : null}
         <div className="mx-auto max-w-[760px]">
           {conversationsCtx ? (
             <ActiveSubagentChips
@@ -2782,7 +2830,7 @@ export function ChatView({
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
             modelPickerOpenRequest={modelPickerOpenRequest}
-            modelLocked={modelLocked}
+            modelLocked={modelLocked || modelSwitch.pending || sessionHydrating}
             functionEntries={functionEntries}
             searchFiles={searchFiles}
             onOpenFileMention={
@@ -2793,7 +2841,7 @@ export function ChatView({
             showPermissionMode={approvalEnabled}
             thinkingLevel={thinkingLevel}
             onThinkingLevelChange={handleThinkingLevelChange}
-            onModelChange={(next) => onUpdateModel(conversation.id, next)}
+            onModelChange={modelSwitch.request}
             showWorkingDir={workingDirEnabled}
             workingDir={conversation.workingDir ?? null}
             showMemoryBank={
@@ -2831,7 +2879,7 @@ export function ChatView({
             isStreaming={streamingIndicator}
             queueWhileStreaming={!!backend.queueMessage}
             blocked={harnessBlocked}
-            submitBlocked={submitBlocked}
+            submitBlocked={submitBlocked || modelSwitch.pending}
             autoFocus={focusComposerOnOpen && !harnessBlocked}
             idlePlaceholder={idleComposerPlaceholder(
               conversation.agentProfile,

@@ -664,6 +664,82 @@ async function realAbortRun(sessionId: string): Promise<void> {
   await stopTurn(client, sessionId)
 }
 
+/** Ask the actual assembly pipeline without permitting inference or mutation.
+ * Fetch the complete persisted window, not the paginated rows loaded by chat.
+ * Prompt/tool estimates remain a preview: the next user input and dynamic hooks
+ * can change the next turn's size; this is not permission for future compactions.
+ */
+async function realPreviewModelSwitch(
+  sessionId: string,
+  model: ModelId,
+  thinkingLevel?: string,
+): Promise<{ needsCompaction: boolean; tokens: number; usable: number }> {
+  const client = await getIiiClient()
+  const status = await getTurnStatus(client, sessionId)
+  if (status && isTurnActive(status.status)) {
+    throw new Error(
+      'Wait for the current turn to finish before switching models.',
+    )
+  }
+  const { provider, model: id } = resolveRunParams(model)
+  const policy = await client.trigger<{ allow_prune?: unknown }>(
+    'harness::context-policy',
+    { model: id },
+  )
+  if (!policy || typeof policy.allow_prune !== 'boolean') {
+    throw new Error(
+      'Could not determine the selected model’s context policy. Refresh the model list and try again.',
+    )
+  }
+  const [items, prompt] = await Promise.all([
+    fetchTranscript(sessionId, { includeImageData: true }),
+    client.trigger<{ parts: Array<{ body: string }> }>(
+      'harness::system-prompt::get',
+      { session_id: sessionId },
+    ),
+  ])
+  const anchor = latestCompactionAnchor(items)
+  const window = compactionWindow(items, anchor)
+  if (!window.length) return { needsCompaction: false, tokens: 0, usable: 0 }
+  const categories = status?.context?.categories
+  const knownThinkingLevels = ['minimal', 'low', 'medium', 'high', 'xhigh']
+  const preview = await client.trigger<{
+    token_count: number
+    usable: number
+    model_resolved: string
+  }>('context::assemble', {
+    messages: window.map((entry) => entry.message),
+    model: { id, provider },
+    system_prompt: prompt.parts.map((part) => part.body).join('\n\n'),
+    options: {
+      preview_only: true,
+      // Older servers ignore preview_only: they must still never summarize.
+      allow_compaction: false,
+      allow_prune: policy.allow_prune,
+      previous_summary: anchor?.summary ?? undefined,
+      request_overhead_tokens:
+        (categories?.tools ?? 0) + (categories?.overhead ?? 0),
+      ...(thinkingLevel && knownThinkingLevels.includes(thinkingLevel)
+        ? { thinking_level: thinkingLevel }
+        : {}),
+    },
+  })
+  if (
+    preview.model_resolved === 'fallback' ||
+    !Number.isFinite(preview.token_count) ||
+    !Number.isFinite(preview.usable)
+  ) {
+    throw new Error(
+      'Could not resolve the selected model’s context budget. Refresh the model list and try again.',
+    )
+  }
+  return {
+    needsCompaction: preview.token_count > preview.usable,
+    tokens: preview.token_count,
+    usable: preview.usable,
+  }
+}
+
 /** `context::compact` response, discriminated on `status`. */
 type CompactResponse =
   | {
@@ -756,7 +832,7 @@ async function realCompactSession(
       // (session::message-added → conversations layer) and the next turn's
       // assemble reads `summary` + `tail_start_entry_id` to anchor. A failed
       // append is a failed compaction: nothing would anchor on the summary.
-      await appendCustomEntry({
+      const appendResult = await appendCustomEntry({
         session_id: sessionId,
         custom_type: COMPACTION_CUSTOM_TYPE,
         data: {
@@ -774,6 +850,7 @@ async function realCompactSession(
           resp.summary.length > 0
             ? resp.summary
             : '[prior conversation compacted]',
+        compactionEntryId: appendResult.entry_id,
       }
     }
     if (resp?.status === 'busy') return { status: 'busy' }
@@ -812,4 +889,5 @@ export const realBackend: ChatBackend = {
   resolveApproval: realResolveApproval,
   abortRun: realAbortRun,
   compactSession: realCompactSession,
+  previewModelSwitch: realPreviewModelSwitch,
 }

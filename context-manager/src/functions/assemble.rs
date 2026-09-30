@@ -99,6 +99,11 @@ fn normalize_media(messages: &mut [AgentMessage], supports_vision: Option<bool>)
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AssembleOptions {
+    /// Read-only model-switch preview: apply normal media/cap/prune rules and
+    /// return the pre-compaction estimate, even when over budget. Never invokes
+    /// the summarizer, acquires a lease, or performs emergency reduction.
+    #[serde(default)]
+    pub preview_only: bool,
     /// Override the default reserve (`min(20000, 10% of context_window)`).
     #[serde(default)]
     pub reserved_tokens: Option<u64>,
@@ -377,7 +382,10 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     }
 
     // Step 2: compact the head.
-    if token_count > usable_budget && options.allow_compaction.unwrap_or(true) {
+    if !options.preview_only
+        && token_count > usable_budget
+        && options.allow_compaction.unwrap_or(true)
+    {
         // The default lease key hashes the *request* message set —
         // the same derivation context::compact uses — so callers
         // hitting both functions with the same history contend on the
@@ -414,7 +422,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     // Step 3: enforce the budget by reducing complete function-result
     // messages, including latest/protected results and their details.
     // This pass is intentionally independent of all normal-prune knobs.
-    if token_count > usable_budget {
+    if !options.preview_only && token_count > usable_budget {
         let emergency = emergency_reduce_with_sizes(
             &mut working,
             &mut sizes,
@@ -440,7 +448,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         "size memo drifted from a from-scratch recount"
     );
 
-    if token_count > usable_budget {
+    if !options.preview_only && token_count > usable_budget {
         return Err(ContextError::Overflow {
             token_count,
             usable: usable_budget,

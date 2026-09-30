@@ -143,3 +143,23 @@ assembly falls through to its existing emergency reduction and hard-limit check;
 explicit compaction returns `overflow`. No user/assistant text is discarded merely
 to fit a fragment. The estimator remains heuristic, so an upstream overflow can
 still require a larger-budget model, shorter input, or a new conversation.
+
+
+### Read-only model-switch preview
+
+`context::assemble` accepts `options.preview_only: true` for a read-only
+pre-compaction estimate. It uses the same resolved model budget, media
+normalization, result caps and normal pruning, but never invokes the summarizer,
+acquires a compaction lease, or performs emergency reduction. It returns
+`token_count` and `usable` even when over budget. Callers must compare those
+values: a preview response is not a model-ready request or a guarantee that a
+future user input will fit. The option defaults to false; normal assembly keeps
+its existing hard-limit behavior.
+
+The Console checks the full persisted compaction window before a model-picker
+switch. It asks for confirmation only when that preview is over budget. Cancel
+keeps the current model; confirmation compacts with the destination model and
+persists the summary before changing selection. Failed checks or compaction keep
+the previous selection. The preview includes the session prompt and known tool
+framing; a later user message, changed configuration, or dynamic hook can change
+the actual next turn's budget needs.

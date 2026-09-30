@@ -428,6 +428,8 @@ Harness default without consulting session or runtime state. Static
 `inject_prompt`; request-dependent hook functions and compaction are not run
 by the read-only preview and may change content when the prompt is sent.
 
+The read-only `harness::context-policy` surface returns whether the destination model permits aged function-result pruning. Console context previews must use this response rather than maintaining a model list locally; failures or malformed responses are not a permission to infer a policy.
+
 ## Delete a session subtree
 
 Console/operator callers use `harness::delete-session-tree { session_id }`, not

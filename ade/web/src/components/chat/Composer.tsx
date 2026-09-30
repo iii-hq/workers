@@ -173,7 +173,7 @@ interface ComposerProps {
   defaultWorkingDir?: string | null
   /** Worktrees tab in the picker (real backend + worktree worker only). */
   worktreePicker?: WorktreePickerOptions
-  onModelChange: (next: ModelId) => void
+  onModelChange: (next: ModelId, thinkingLevel?: ThinkingLevel) => unknown
   onWorkingDirChange?: (next: string) => void
   onThinkingLevelChange: (next: ThinkingLevel) => void
   onPermissionModeChange: (next: PermissionMode) => void
