@@ -70,6 +70,8 @@ pub struct State {
     /// Answers served from the in-memory cache instead of a call.
     pub cache_hits: u64,
     pub candidates: HashMap<String, Candidate>,
+    /// Candidate paths in first-admission order (jevgrep's `Map` order).
+    admitted: Vec<String>,
     visited: HashSet<String>,
     /// Directories scored ≤ 0.5, kept for the relationship pass.
     pub pruned: Vec<NavigationItem>,
@@ -89,6 +91,8 @@ pub struct Run {
     pub cap: usize,
     /// Evidence state byte cap, likewise.
     pub state_cap: usize,
+    /// Twice a known window, for requests jevgrep does not cap.
+    pub window_cap: usize,
     /// Answer-cache namespace (the judge provider, `""` for the hub's
     /// default); `None` bypasses the cache.
     pub cache: Option<String>,
@@ -121,7 +125,7 @@ impl Run {
         let cache_key = self
             .cache
             .as_deref()
-            .map(|namespace| super::cache_key(namespace, &request));
+            .and_then(|namespace| super::cache_key(namespace, &request));
         if let Some(scores) = cache_key
             .as_ref()
             .and_then(|key| super::cached(key, &request.questions))
@@ -130,12 +134,25 @@ impl Run {
             return Ok(scores);
         }
         let questions = request.questions.len() as u64;
+        let request_ids: Vec<String> = request.questions.keys().cloned().collect();
         let outcome = tokio::time::timeout_at(
             self.deadline.into(),
             (self.evaluate)(request, self.deadline),
         )
         .await
-        .unwrap_or(Err(JudgeError::Deadline));
+        .unwrap_or(Err(JudgeError::Deadline))
+        // evaluator.ts: every question answered in [0, 1], or the reply is
+        // invalid (`judge::classify` checks this too; the seam may not).
+        .and_then(|(scores, tokens)| {
+            let valid = request_ids
+                .iter()
+                .all(|id| scores.get(id).is_some_and(|p| (0.0..=1.0).contains(p)));
+            if valid {
+                Ok((scores, tokens))
+            } else {
+                Err(JudgeError::Unavailable("invalid_response".into()))
+            }
+        });
         let mut state = self.state();
         if !matches!(outcome, Err(JudgeError::Deadline | JudgeError::Paused)) {
             state.judge_calls += 1;
@@ -172,6 +189,16 @@ impl Run {
                 .then_with(|| walk::locale_cmp(&a.path, &b.path))
         });
         candidates
+    }
+
+    /// Admitted files in first-admission order (retrieve.ts `ordered`).
+    pub fn admitted(&self) -> Vec<Candidate> {
+        let state = self.state();
+        state
+            .admitted
+            .iter()
+            .map(|path| state.candidates[path].clone())
+            .collect()
     }
 
     /// retrieve.ts `unchanged`: re-read `candidate`; `None`, and an issue,
@@ -317,7 +344,13 @@ impl Run {
                             content_hash,
                             score: p,
                         };
-                        state.candidates.insert(item.path, candidate);
+                        if state
+                            .candidates
+                            .insert(item.path.clone(), candidate)
+                            .is_none()
+                        {
+                            state.admitted.push(item.path);
+                        }
                     }
                     Kind::File => {}
                 }

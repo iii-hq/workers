@@ -11,8 +11,7 @@
 //! emitted, and the shared evidence re-hashed once before the follow-up,
 //! instead of a freshness check before every judge attempt; a group the
 //! judge finds too large is halved like one over the state cap; first-pass
-//! files run concurrently up to the worker's judge slots, and the follow-up
-//! visits files best first rather than in admission order.
+//! files run concurrently up to the worker's judge slots.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,7 +37,8 @@ const CONTEXT_LINES: usize = 8;
 const EXCERPT_LINES: usize = 3;
 /// jevgrep's evidence state cap (`Run::state_cap` may lower it).
 pub const MAX_STATE_BYTES: usize = 80_000;
-/// The follow-up runs only when the shared evidence fits in this.
+/// The follow-up runs only when the shared evidence fits in this (and in
+/// `Run::window_cap`).
 const MAX_SHARED_EVIDENCE_BYTES: usize = 64_000;
 /// Selection, lead and presentation thresholds (strict).
 const SELECT: f64 = 0.5;
@@ -64,7 +64,7 @@ pub struct Selected {
 }
 
 impl Selected {
-    fn omitted() -> Self {
+    pub fn omitted() -> Self {
         Self {
             source_omitted: true,
             ..Self::default()
@@ -474,7 +474,7 @@ impl Source {
 /// follow-up that shares it (in first-pass completion order) with each
 /// file's judge.
 pub async fn select_evidence(run: &Arc<Run>) -> HashMap<String, Selected> {
-    let candidates = run.sorted_candidates();
+    let candidates = run.admitted();
     let mut completed = run
         .parallel(candidates.clone(), |run, candidate| {
             select_file(run, candidate, None, None)
@@ -507,8 +507,8 @@ pub async fn select_evidence(run: &Arc<Run>) -> HashMap<String, Selected> {
         }
         evidence.extend(files[&candidate.path].evidence.iter().cloned());
     }
-    if evidence.is_empty() || walk::json_len(&evidence) > MAX_SHARED_EVIDENCE_BYTES || run.stopped()
-    {
+    let shared_cap = MAX_SHARED_EVIDENCE_BYTES.min(run.window_cap);
+    if evidence.is_empty() || walk::json_len(&evidence) > shared_cap || run.stopped() {
         return files;
     }
     let evidence = Arc::new(evidence);
@@ -799,6 +799,7 @@ mod tests {
             deadline: Instant::now() + Duration::from_secs(60),
             cap: usize::MAX,
             state_cap,
+            window_cap: usize::MAX,
             cache: None,
             state: Mutex::new(Default::default()),
         });
