@@ -29,6 +29,7 @@ pub mod hooks;
 pub mod ids;
 pub mod inflight;
 pub mod judge;
+pub mod liveness;
 pub mod locks;
 pub mod manifest;
 pub mod policy;

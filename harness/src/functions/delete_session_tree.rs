@@ -140,9 +140,30 @@ pub async fn status(deps: &Deps, req: StatusRequest) -> Result<Option<Snapshot>,
     Ok(load(deps, &req.operation_id).await?.map(|op| op.snapshot))
 }
 
-/// Check the durable ancestry, so a not-yet-enumerated descendant is already
-/// barred by its root's tombstone. Metadata errors fail closed.
+/// The deletion owner tombstoning `session_id` or one of its durable
+/// ancestors, for regular session work (steps, dispatch, send, spawn, wake).
+/// A "live" answer is memoized per session until this process writes or
+/// releases any tombstone (see [`crate::liveness`]); an owner is always read
+/// from state.
 pub(crate) async fn guard_owner(
+    deps: &Deps,
+    session_id: &str,
+) -> Result<Option<String>, HarnessError> {
+    if deps.liveness.is_live(session_id) {
+        return Ok(None);
+    }
+    let stamp = deps.liveness.stamp();
+    let owner = guard_owner_uncached(deps, session_id).await?;
+    if owner.is_none() {
+        deps.liveness.remember_live(session_id, stamp);
+    }
+    Ok(owner)
+}
+
+/// Check the durable ancestry, so a not-yet-enumerated descendant is already
+/// barred by its root's tombstone. Metadata errors fail closed. Deletion's own
+/// conflict and parent checks call this authoritative walk directly.
+async fn guard_owner_uncached(
     deps: &Deps,
     session_id: &str,
 ) -> Result<Option<String>, HarnessError> {
@@ -279,8 +300,11 @@ async fn claim_guard(deps: &Deps, session_id: &str, owner: &str) -> Result<(), H
         json!(owner),
         deps.cfg().await.session_timeout_ms,
     )
-    .await?;
-    match current {
+    .await;
+    // Swapped, refused or unknown, a tombstone may now exist: no memoized
+    // "live" answer survives the write (see `crate::liveness`).
+    deps.liveness.invalidate();
+    match current? {
         None => Ok(()),
         Some(value) if value.as_str() == Some(owner) => Ok(()),
         Some(value) => Err(failure(format!(
@@ -291,7 +315,7 @@ async fn claim_guard(deps: &Deps, session_id: &str, owner: &str) -> Result<(), H
 
 async fn release_guard(deps: &Deps, session_id: &str, owner: &str) -> Result<(), HarnessError> {
     // A stale rollback cannot erase a replacement owner's reservation.
-    state::cas_value(
+    let released = state::cas_value(
         &deps.iii,
         GUARDS,
         session_id,
@@ -299,7 +323,10 @@ async fn release_guard(deps: &Deps, session_id: &str, owner: &str) -> Result<(),
         Value::Null,
         deps.cfg().await.session_timeout_ms,
     )
-    .await?;
+    .await;
+    // Like every guard mutation, invalidate whether or not it applied.
+    deps.liveness.invalidate();
+    released?;
     Ok(())
 }
 
@@ -345,7 +372,7 @@ async fn release_unplanned_ancestors(deps: &Deps, op: &Operation) -> Result<(), 
 /// Planned members supplement the live tree on partial-delete recovery.
 async fn reserve_root(deps: &Deps, op: &Operation) -> Result<(), HarnessError> {
     release_unplanned_ancestors(deps, op).await?;
-    let mut conflict = guard_owner(deps, &op.snapshot.session_id)
+    let mut conflict = guard_owner_uncached(deps, &op.snapshot.session_id)
         .await?
         .filter(|owner| owner != &op.snapshot.operation_id);
     if conflict.is_none() {
@@ -761,7 +788,9 @@ fn notification(op: &Operation) -> String {
 async fn notify_parent(deps: &Deps, parent: &str, op: &Operation) -> Result<(), HarnessError> {
     let cfg = deps.cfg().await;
     let topology = deps.topology.lock().await;
-    if guard_owner(deps, parent).await?.is_some() || !deps.session().await.exists(parent).await? {
+    if guard_owner_uncached(deps, parent).await?.is_some()
+        || !deps.session().await.exists(parent).await?
+    {
         return Ok(());
     }
     let Some(record) = state::get_turn(&deps.iii, parent, cfg.session_timeout_ms).await? else {
@@ -812,7 +841,7 @@ async fn notify_parent(deps: &Deps, parent: &str, op: &Operation) -> Result<(), 
     } else {
         let _lock = deps.locks.guard(parent).await;
         let _topology = deps.topology.lock().await;
-        if guard_owner(deps, parent).await?.is_some()
+        if guard_owner_uncached(deps, parent).await?.is_some()
             || !deps.session().await.exists(parent).await?
         {
             return Ok(());
@@ -854,36 +883,86 @@ pub(crate) struct DispatchWitness {
 }
 
 /// Must be persisted before dispatch; cleared only on a confirmed reply.
+///
+/// No process-wide lock: the witness is written BEFORE the tombstone check.
+/// Deletion claims its guards first and lists witnesses only afterwards, so
+/// with both sides writing before they read, either this check sees the
+/// tombstone or deletion's scan sees this witness and waits for its reply.
+/// The check itself is usually answered by [`crate::liveness`], leaving one
+/// CAS to write the witness and one to clear it as all a live dispatch adds.
 pub(crate) async fn begin_dispatch(
     deps: &Deps,
     session_id: &str,
     function_id: &str,
-) -> Result<String, HarnessError> {
-    let _topology = deps.topology.lock().await;
-    ensure_live(deps, session_id).await?;
-    let id = uuid::Uuid::new_v4().to_string();
-    state::state_set(
-        &deps.iii,
-        DISPATCHES,
-        &id,
-        json!(DispatchWitness {
+) -> Result<DispatchTicket, HarnessError> {
+    let ticket = DispatchTicket {
+        id: uuid::Uuid::new_v4().to_string(),
+        witness: json!(DispatchWitness {
             session_id: session_id.into(),
             function_id: function_id.into(),
         }),
-        deps.cfg().await.session_timeout_ms,
-    )
-    .await?;
-    Ok(id)
-}
-
-pub(crate) async fn end_dispatch(deps: &Deps, id: &str) -> Result<(), HarnessError> {
-    state::state_delete(
+    };
+    // The key is fresh, so one CAS from absent writes it: no read-then-swap.
+    if let Some(current) = state::cas_value(
         &deps.iii,
         DISPATCHES,
-        id,
+        &ticket.id,
+        None,
+        ticket.witness.clone(),
         deps.cfg().await.session_timeout_ms,
     )
-    .await?;
+    .await?
+    {
+        return Err(failure(format!(
+            "dispatch witness {} already present: {current}",
+            ticket.id
+        )));
+    }
+    if let Err(refused) = ensure_live(deps, session_id).await {
+        // Nothing was dispatched: withdraw the witness so a waiting deletion
+        // is not held by a call that never started. A failed withdrawal leaves
+        // it in place, which only keeps that deletion fail-closed.
+        if let Err(error) = end_dispatch(deps, &ticket).await {
+            tracing::warn!(
+                session_id,
+                function_id,
+                %error,
+                "could not withdraw the witness of a refused dispatch"
+            );
+        }
+        return Err(refused);
+    }
+    Ok(ticket)
+}
+
+/// A persisted dispatch witness: its key and the exact value written, so it
+/// is cleared by one CAS from that value.
+pub(crate) struct DispatchTicket {
+    id: String,
+    witness: Value,
+}
+
+pub(crate) async fn end_dispatch(deps: &Deps, ticket: &DispatchTicket) -> Result<(), HarnessError> {
+    match state::cas_value(
+        &deps.iii,
+        DISPATCHES,
+        &ticket.id,
+        Some(ticket.witness.clone()),
+        Value::Null,
+        deps.cfg().await.session_timeout_ms,
+    )
+    .await?
+    {
+        // Cleared now, or by an earlier attempt whose reply was lost.
+        None => {}
+        Some(current) if current.is_null() => {}
+        Some(current) => {
+            return Err(failure(format!(
+                "dispatch witness {} changed under its dispatch: {current}",
+                ticket.id
+            )))
+        }
+    }
     deps.deletion_changed.notify_waiters();
     Ok(())
 }

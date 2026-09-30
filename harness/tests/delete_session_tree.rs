@@ -1648,3 +1648,130 @@ async fn agent_dispatch_witness_follows_the_structured_outcome_not_error_text() 
         assert_eq!(witnesses, usize::from(keeps_witness), "{function}");
     }
 }
+
+/// Tombstone reads (`state::get` on the guard scope) the fixture has served.
+fn guard_reads(store: &Store) -> usize {
+    store
+        .calls
+        .iter()
+        .filter(|(function, data)| {
+            function.ends_with("state::get") && data["scope"] == deletion::GUARDS
+        })
+        .count()
+}
+
+/// Witness rows still present; a cleared witness is stored as `null`.
+fn dispatch_witnesses(store: &Store) -> Vec<Value> {
+    store
+        .state
+        .iter()
+        .filter(|((scope, _), row)| scope == deletion::DISPATCHES && !row.is_null())
+        .map(|(_, row)| row.clone())
+        .collect()
+}
+
+/// The RPCs the fixture served on the witness scope, in order.
+fn witness_rpcs(store: &Store) -> Vec<String> {
+    store
+        .calls
+        .iter()
+        .filter(|(_, data)| data["scope"] == deletion::DISPATCHES)
+        .map(|(function, _)| function.clone())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_dispatch_takes_no_process_wide_lock_and_reuses_a_live_answer() {
+    let stack = Stack::new("completed").await;
+    let engine = stack.deps.engine().await;
+    let policy = harness::policy::CompiledPolicy::from(None);
+    stack.store.lock().unwrap().calls.clear();
+    // Another session's admission holds topology for the whole exchange: a
+    // dispatch must not queue behind it.
+    let held = stack.deps.topology.clone().lock_owned().await;
+    let mut reads = Vec::new();
+    for _ in 0..2 {
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            harness::functions::subscribe::invoke(
+                &stack.deps,
+                &engine,
+                &policy,
+                "ext::probe",
+                &json!({}),
+                "child1",
+                false,
+                None,
+            ),
+        )
+        .await
+        .expect("dispatch must not wait on the process-wide topology lock");
+        // The fixture answers an unknown target with an error: it was reached.
+        assert!(result.is_error);
+        reads.push(guard_reads(&stack.store.lock().unwrap()));
+    }
+    drop(held);
+    let store = stack.store.lock().unwrap();
+    // The first dispatch walks child1 -> parent; the second reuses that answer.
+    assert_eq!(reads, vec![2, 2]);
+    assert_eq!(
+        store
+            .calls
+            .iter()
+            .filter(|(f, _)| f == "ext::probe")
+            .count(),
+        2
+    );
+    // Each dispatch writes its witness with one CAS and clears it with one.
+    assert_eq!(
+        witness_rpcs(&store),
+        vec!["harness::state::compare-and-set"; 4]
+    );
+    // Both replies confirmed their calls, so no witness outlives them.
+    let witnesses = dispatch_witnesses(&store);
+    assert!(witnesses.is_empty(), "{witnesses:#?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tombstone_after_a_live_answer_refuses_dispatch_and_withdraws_its_witness() {
+    let stack = Stack::new("completed").await;
+    let engine = stack.deps.engine().await;
+    let policy = harness::policy::CompiledPolicy::from(None);
+    let args = json!({});
+    let dispatch = |function: &'static str| {
+        harness::functions::subscribe::invoke(
+            &stack.deps,
+            &engine,
+            &policy,
+            function,
+            &args,
+            "child1",
+            false,
+            None,
+        )
+    };
+    // child1 is remembered live...
+    assert!(dispatch("ext::before").await.is_error);
+    // ...then this process tombstones its parent, well within the memo's TTL.
+    let accepted = stack.request("parent").await;
+    assert_eq!(accepted.status, DeletionStatus::Deleting);
+    stack.store.lock().unwrap().calls.clear();
+
+    let refused = dispatch("ext::after").await;
+    assert!(refused.is_error);
+    let message = refused.details["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(message.contains("tombstoned"), "{message}");
+    let store = stack.store.lock().unwrap();
+    // The guard write invalidated the memo: the lineage was read again...
+    assert!(guard_reads(&store) > 0);
+    // ...the target was never invoked, and its witness was withdrawn.
+    assert_eq!(
+        witness_rpcs(&store),
+        vec!["harness::state::compare-and-set"; 2]
+    );
+    assert!(!store.calls.iter().any(|(f, _)| f == "ext::after"));
+    let witnesses = dispatch_witnesses(&store);
+    assert!(witnesses.is_empty(), "{witnesses:#?}");
+}

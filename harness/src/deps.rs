@@ -31,6 +31,9 @@ pub struct Deps {
     pub deletion_commands: SessionLocks,
     pub turn_activity: SessionLocks,
     pub deletion_changed: Arc<tokio::sync::Notify>,
+    /// Memoized "no tombstone on this session or its ancestors" answers,
+    /// invalidated by every guard write in this process; see [`crate::liveness`].
+    pub liveness: crate::liveness::LivenessMemo,
     pub deletion_events: crate::deletion_events::DeletionEvents,
     /// Sessions whose step executes in this process (orphan recovery).
     pub inflight: crate::inflight::InflightSteps,
@@ -57,6 +60,7 @@ impl Deps {
             deletion_commands: SessionLocks::new(),
             turn_activity: SessionLocks::new(),
             deletion_changed: Arc::new(tokio::sync::Notify::new()),
+            liveness: crate::liveness::LivenessMemo::new(),
             deletion_events,
             iii,
             config,
