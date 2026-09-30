@@ -64,6 +64,9 @@ export interface TabUiState {
   terminalRightSize?: number
   terminalJobIds?: string[]
   terminalWorkspace?: TerminalWorkspaceState
+  /** The Git tool window in the docked panel, and its tab; absent = closed on Log. */
+  gitOpen?: boolean
+  gitTab?: 'log' | 'worktrees'
 }
 
 /** The stored object for the pane (or its legacy key), null when the
@@ -184,6 +187,8 @@ export async function loadTabUiState(
       ? raw.terminalJobIds.filter((id): id is string => typeof id === 'string')
       : undefined,
     terminalWorkspace,
+    gitOpen: raw.gitOpen === true ? true : undefined,
+    gitTab: raw.gitTab === 'log' || raw.gitTab === 'worktrees' ? raw.gitTab : undefined,
   }
 }
 

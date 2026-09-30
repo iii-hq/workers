@@ -276,6 +276,17 @@ export async function loadDiffContents(
       }
       return loadTurnDiff(host, root, path, turn)
     }
+    case 'commit': {
+      // Both sides are revisions. The file is absent on the old side when
+      // the commit added it, and on the new side when it deleted it.
+      const [before, after] = await Promise.all([
+        source.parent === null
+          ? null
+          : gitSide(host, root, source.from ? `${source.parent}:${source.from}` : `${source.parent}:./${path}`),
+        gitSide(host, root, `${source.sha}:./${path}`),
+      ])
+      return imageOrText(path, before, after)
+    }
     case 'change': {
       const out = await host.iii.trigger<ChangeDiffResponse>('coder::change-diff', { change_id: source.changeId })
       if (out.is_binary) {

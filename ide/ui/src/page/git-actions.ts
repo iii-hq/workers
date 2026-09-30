@@ -16,10 +16,24 @@ interface ExecResponse {
   stderr_truncated: boolean
 }
 
-async function git(host: Host, cwd: string, args: string[], timeoutMs = 30_000): Promise<ExecResponse> {
+/** `git` in `cwd`. `stdin` is fed to it; `env` adds to its environment. */
+export async function git(
+  host: Host,
+  cwd: string,
+  args: string[],
+  timeoutMs = 30_000,
+  options: { stdin?: string; env?: Record<string, string> } = {},
+): Promise<ExecResponse> {
   return host.iii.trigger<ExecResponse>(
     'shell::exec',
-    { command: 'git', args, cwd, timeout_ms: timeoutMs },
+    {
+      command: 'git',
+      args,
+      cwd,
+      timeout_ms: timeoutMs,
+      ...(options.stdin === undefined ? {} : { stdin: options.stdin }),
+      ...(options.env === undefined ? {} : { env: options.env }),
+    },
     // The bus must outwait the command: a push can take the whole cap.
     { timeoutMs: timeoutMs + 10_000 },
   )
@@ -52,7 +66,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
     anything and gives up untouched when the lock is held, so a lock failure
     is retried; `safeToRetry` lets a caller veto that when a command may have
     got further (a stash that already stored its entry). */
-async function run(
+export async function run(
   host: Host,
   root: string,
   args: string[],

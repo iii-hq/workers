@@ -85,6 +85,8 @@ export function EditorTabs({
       const index = tabs.tabs.findIndex((t) => t.id === tab.id)
       const hasRight = index !== -1 && index < tabs.tabs.length - 1
       const path = tab.target.path
+      // A commit's file outside the IDE's folder: a diff, nothing to open.
+      const outside = path.startsWith('../')
       return [
         { id: 'close', label: 'Close', onSelect: () => onClose(tab.id) },
         { id: 'close-others', label: 'Close others', disabled: tabs.tabs.length < 2, onSelect: () => onCloseOthers(tab.id) },
@@ -93,14 +95,14 @@ export function EditorTabs({
         { id: 'close-all', label: 'Close all', onSelect: onCloseAll },
         { type: 'separator', id: 's1' },
         ...(!tab.pinned ? [{ id: 'keep', label: 'Keep open', onSelect: () => onPin(tab.id) } satisfies ContextMenuItem] : []),
-        ...(tab.target.kind === 'diff'
+        ...(tab.target.kind === 'diff' && !outside
           ? [{ id: 'open-file', label: 'Open the file', onSelect: () => onOpenFile(path) } satisfies ContextMenuItem]
           : []),
         { id: 'copy-path', label: 'Copy path', onSelect: () => onCopyPath(path, true) },
         { id: 'copy-rel', label: 'Copy relative path', onSelect: () => onCopyPath(path, false) },
         { type: 'separator', id: 's2' },
-        { id: 'reveal', label: 'Reveal in explorer', onSelect: () => onReveal(path) },
-        { id: 'compare', label: 'Compare with', onSelect: () => onCompare(path) },
+        { id: 'reveal', label: 'Reveal in explorer', disabled: outside, onSelect: () => onReveal(path) },
+        { id: 'compare', label: 'Compare with', disabled: outside, onSelect: () => onCompare(path) },
       ]
     },
     [tabs.tabs, onClose, onCloseOthers, onCloseRight, onCloseSaved, onCloseAll, onPin, onCopyPath, onReveal, onCompare, onOpenFile],

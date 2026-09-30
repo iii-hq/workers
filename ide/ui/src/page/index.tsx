@@ -41,6 +41,7 @@ import {
   Eye,
   EyeOff,
   FolderX,
+  GitGraph,
   PanelLeft,
   PanelRight,
   RefreshCw,
@@ -49,7 +50,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { ActivityBar, type SideView } from './ActivityBar'
+import { ActivityBar, SIDE_VIEWS, type SideView } from './ActivityBar'
 import {
   type MissingPaths,
   missingAfterChanges,
@@ -104,6 +105,10 @@ import {
 import { SearchTab, type SearchRequest } from './SearchTab'
 import { ShellLauncher } from './ShellLauncher'
 import { SourceControlTab } from './SourceControlTab'
+import { registerWorktreesPage, type SwitchOutcome, type WorktreesPage } from './use-worktree-ops'
+import { WorktreeMenu } from './WorktreeSwitcher'
+import { DockPanel } from './DockPanel'
+import { type GitTab, GitToolWindow } from './GitToolWindow'
 import {
   activateTab,
   activeTab as activeTabOf,
@@ -221,6 +226,17 @@ export function ShellExplorerPage({
   rootRef.current = root
   const workingDirRef = useRef(workingDir ?? null)
   workingDirRef.current = workingDir ?? null
+  const conversationIdRef = useRef(conversationId)
+  conversationIdRef.current = conversationId
+  // Work that outlives this page (a worktree merge finishing after its
+  // workspace tab closed) checks this before it asks or moves anything.
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
   const acknowledgedWorkingDirRef = useRef<string | null>(null)
   const workingDirFollowRequestSeqRef = useRef(0)
   const workingDirFollowPendingRef = useRef<{ path: string; request: number } | null>(null)
@@ -250,6 +266,10 @@ export function ShellExplorerPage({
 
   // ── terminal ──
   const [terminalOpen, setTerminalOpen] = useState(false)
+  // The Git tool window shares the docked panel with the terminal.
+  const [gitOpen, setGitOpen] = useState(false)
+  const [gitTab, setGitTab] = useState<GitTab>('log')
+  const gitToggleRef = useRef<HTMLButtonElement>(null)
   const [terminalDock, setTerminalDock] = useState<TerminalDock>('bottom')
   const [terminalActive, setTerminalActive] = useState(false)
   const [terminalBottomSize, setTerminalBottomSize] = useState(TERMINAL_BOTTOM_DEFAULT_SIZE)
@@ -314,9 +334,7 @@ export function ShellExplorerPage({
   const revealSeqRef = useRef(0)
   /** Clear only the acknowledged request; a newer navigation must remain pending. */
   const onRevealHandled = useCallback((path: string, seq: number) => {
-    setRevealLineRequest((pending) =>
-      pending?.path === path && pending.seq === seq ? null : pending,
-    )
+    setRevealLineRequest((pending) => (pending?.path === path && pending.seq === seq ? null : pending))
   }, [])
   const historyRef = useRef<NavHistory>(EMPTY_HISTORY)
   const [historyState, setHistoryState] = useState({ back: false, forward: false })
@@ -351,14 +369,21 @@ export function ShellExplorerPage({
     return () => window.removeEventListener('beforeunload', warn)
   }, [dirtyPaths])
 
+  // Read at call time: a root change requested by an async action (a
+  // worktree merge) must see the edits made while it ran.
+  const dirtyPathsRef = useRef(dirtyPaths)
+  dirtyPathsRef.current = dirtyPaths
   const confirmDiscardAllEdits = useCallback(async () => {
-    if (dirtyPaths.size === 0) return true
+    const dirty = dirtyPathsRef.current
+    if (dirty.size === 0) return true
+    // A page that is gone cannot ask, and its dialog would never answer.
+    if (!mountedRef.current) return false
     return confirm({
-      title: `discard unsaved changes in ${dirtyPaths.size} ${dirtyPaths.size === 1 ? 'file' : 'files'}?`,
+      title: `discard unsaved changes in ${dirty.size} ${dirty.size === 1 ? 'file' : 'files'}?`,
       confirmLabel: 'Discard',
       tone: 'danger',
     })
-  }, [dirtyPaths, confirm])
+  }, [confirm])
 
   // ── boot: worker info + this workspace tab's persisted state ──
   useEffect(() => {
@@ -441,6 +466,8 @@ export function ShellExplorerPage({
         if (isSideView(restored.sideView)) setSideTab(restored.sideView)
         if (restored.diffOptions) setDiffOptions({ ...DEFAULT_DIFF_OPTIONS, ...restored.diffOptions })
         if (restored.terminalOpen) setTerminalOpen(true)
+        if (restored.gitOpen) setGitOpen(true)
+        if (restored.gitTab) setGitTab(restored.gitTab)
         if (restored.terminalDock) setTerminalDock(restored.terminalDock)
         if (restored.terminalActive) setTerminalActive(true)
         setTerminalBottomSize(clampTerminalSize(restored.terminalBottomSize, TERMINAL_BOTTOM_DEFAULT_SIZE))
@@ -473,7 +500,10 @@ export function ShellExplorerPage({
   // ── git status (gated on the resolved root) ──
   const gitSeqRef = useRef(0)
   const refreshGit = useCallback((): Promise<GitState | null> => {
-    if (!root) return Promise.resolve(null)
+    // A callback that outlived a root switch (an async action finishing
+    // after the pane moved, e.g. a worktree merge) must not read the old
+    // root, nor supersede the refresh of the root now in front.
+    if (!root || root !== rootRef.current) return Promise.resolve(null)
     const seq = ++gitSeqRef.current
     return gitChanges(host, root)
       .then((state) => {
@@ -991,6 +1021,9 @@ export function ShellExplorerPage({
         }
       case 'change':
         return { openFile }
+      case 'commit':
+        // A file outside the IDE's folder has a diff but no editor tab.
+        return path.startsWith('../') ? {} : { openFile }
     }
   }, [activeDiff, openFileTab, revertTurnFiles])
 
@@ -1131,6 +1164,8 @@ export function ShellExplorerPage({
       terminalBottomSize,
       terminalRightSize,
       terminalWorkspace,
+      gitOpen: gitOpen || undefined,
+      gitTab,
     })
   }, [
     saver,
@@ -1147,6 +1182,8 @@ export function ShellExplorerPage({
     terminalBottomSize,
     terminalRightSize,
     terminalWorkspace,
+    gitOpen,
+    gitTab,
   ])
 
   // ── root changes ──
@@ -1253,6 +1290,8 @@ export function ShellExplorerPage({
     }
     if (
       root === null ||
+      // A render older than a move already under way: the next one decides.
+      root !== rootRef.current ||
       manualRootActiveRequestRef.current !== null ||
       !workingDirectoryNeedsFollow(next, acknowledgedWorkingDirRef.current) ||
       workingDirFollowPendingRef.current?.path === next
@@ -1302,6 +1341,11 @@ export function ShellExplorerPage({
       setPendingRoot(null)
     }
   }, [workingDir, root, changeRoot, workingDirRetryEpoch])
+  // The discard confirm reads the edits through a ref, so saving them does
+  // not re-run the follow by itself: a follow paused over them resumes here.
+  useEffect(() => {
+    if (dirtyPaths.size === 0) setWorkingDirRetryEpoch((epoch) => epoch + 1)
+  }, [dirtyPaths])
   useEffect(
     () => () => {
       if (workingDirRetryTimerRef.current !== null) window.clearTimeout(workingDirRetryTimerRef.current)
@@ -1310,7 +1354,7 @@ export function ShellExplorerPage({
   )
 
   const changeManualRoot = useCallback(
-    (nextRoot: string) => {
+    (nextRoot: string, onDone?: (outcome: SwitchOutcome) => void, handToChat = true) => {
       const chatDir = workingDirRef.current
       // Suppress both a scheduled retry and an in-flight chat result before the
       // manual validation starts. changeRoot's new sequence supersedes the latter.
@@ -1324,44 +1368,106 @@ export function ShellExplorerPage({
       }
       setPendingRoot(nextRoot)
       const accepted = changeRoot(nextRoot, (outcome, validatedPath) => {
-        if (!ownsRequestToken(manualRootActiveRequestRef.current, request)) return
+        const moved = outcome === 'validated'
+        if (!ownsRequestToken(manualRootActiveRequestRef.current, request)) {
+          onDone?.({ moved, chatDir: workingDirRef.current })
+          return
+        }
         manualRootActiveRequestRef.current = null
         setPendingRoot(null)
         if (outcome === 'validated') setRootPinned(true)
-        if (outcome === 'validated' && workingDirRef.current === chatDir) {
+        if (outcome === 'validated' && !handToChat) {
+          // A move that leaves the chat where it is (the Worktrees view
+          // taking the IDE alone out of a folder).
+          onDone?.({ moved, chatDir: workingDirRef.current })
+        } else if (outcome === 'validated' && workingDirRef.current === chatDir) {
           // The chat follows the pick: hand it the validated folder, and
           // acknowledge it up front so the chat echoing the same folder
           // back does not re-root the pane a second time. A chat that
           // cannot take it (none beside, or not mounted) leaves the pick
           // pinned here, as before.
+          const sessionId = conversationIdRef.current
           const handedToChat =
             validatedPath !== undefined &&
             validatedPath !== chatDir &&
-            conversationId !== null &&
-            conversationId !== undefined &&
+            sessionId !== null &&
+            sessionId !== undefined &&
             ((host as WorkingDirectoryHost).chat?.requestWorkingDirectoryChange?.({
-              sessionId: conversationId,
+              sessionId,
               path: validatedPath,
             }) ??
               false)
           const settled = handedToChat && validatedPath !== undefined ? validatedPath : chatDir
           acknowledgedWorkingDirRef.current = settled
           workingDirRetryRef.current = { path: settled, failures: 0 }
+          onDone?.({ moved, chatDir: settled })
         } else {
           // Validation failure or a declined discard releases the unchanged chat
           // directory to follow again.
           setWorkingDirRetryEpoch((epoch) => epoch + 1)
+          onDone?.({ moved, chatDir: workingDirRef.current })
         }
       })
       if (accepted) return
+      onDone?.({ moved: false, chatDir: workingDirRef.current })
       setPendingRoot(null)
       if (ownsRequestToken(manualRootActiveRequestRef.current, request)) {
         manualRootActiveRequestRef.current = null
         setWorkingDirRetryEpoch((epoch) => epoch + 1)
       }
     },
-    [changeRoot, conversationId, host],
+    [changeRoot, host],
   )
+  // The Worktrees view's handle on this page. Its operations outlive the
+  // render, and the view, that started them, so it reads everything at call
+  // time; once the page is gone it moves nothing.
+  const changeManualRootRef = useRef(changeManualRoot)
+  changeManualRootRef.current = changeManualRoot
+  const afterDiskChangeRef = useRef(afterDiskChange)
+  afterDiskChangeRef.current = afterDiskChange
+  const turnActiveRef = useRef(harnessTurn.active)
+  turnActiveRef.current = harnessTurn.active
+  const worktreesPage = useMemo<WorktreesPage>(
+    () => ({
+      mounted: () => mountedRef.current,
+      root: () => rootRef.current,
+      chatDir: () => workingDirRef.current,
+      sessionId: () => conversationIdRef.current ?? null,
+      unsaved: () => {
+        const current = rootRef.current
+        return current === null ? [] : [...dirtyPathsRef.current].map((rel) => joinPath(current, rel))
+      },
+      turnActive: () => turnActiveRef.current,
+      changed: () => afterDiskChangeRef.current(),
+      moveIde: (path, handToChat) =>
+        mountedRef.current
+          ? new Promise<SwitchOutcome>((resolve) => changeManualRootRef.current(path, resolve, handToChat))
+          : Promise.resolve({ moved: false, chatDir: workingDirRef.current }),
+      moveChat: (path) => {
+        const sessionId = conversationIdRef.current
+        if (!mountedRef.current || sessionId === null || sessionId === undefined) return false
+        const left = workingDirRef.current
+        const taken = (host as WorkingDirectoryHost).chat?.requestWorkingDirectoryChange?.({ sessionId, path }) ?? false
+        if (!taken) return false
+        // A follow still heading into the folder the chat leaves is dropped.
+        if (workingDirFollowPendingRef.current !== null) {
+          workingDirFollowPendingRef.current = null
+          rootResolveSeqRef.current += 1
+          setPendingRoot(null)
+        }
+        setWorkingDirError(null)
+        // An IDE pinned elsewhere stays put rather than follow the chat; one
+        // whose follow was paused picks up the chat's new folder instead.
+        if (acknowledgedWorkingDirRef.current === left) {
+          acknowledgedWorkingDirRef.current = path
+          workingDirRetryRef.current = { path, failures: 0 }
+        }
+        return true
+      },
+    }),
+    [host],
+  )
+  useEffect(() => registerWorktreesPage(worktreesPage), [worktreesPage])
 
   // ── open request ──
   // The chat's "open in shell" arrives as panel context (parseShellPanelContext
@@ -1547,6 +1653,29 @@ export function ShellExplorerPage({
   })
 
   // ── terminal verbs ──
+  // One tool window in the docked panel at a time: a terminal opening there
+  // takes it from Git (a terminal in an editor tab leaves Git be).
+  useEffect(() => {
+    if (terminalOpen && terminalDock !== 'editor') setGitOpen(false)
+  }, [terminalOpen, terminalDock])
+  const openGit = useCallback(
+    (tab?: GitTab) => {
+      setGitOpen(true)
+      if (tab) setGitTab(tab)
+      if (terminalDock !== 'editor') setTerminalOpen(false)
+      window.requestAnimationFrame(() => {
+        frameEl?.querySelector<HTMLElement>('.shui-git-panel[data-state="active"] [data-git-focus]')?.focus()
+      })
+    },
+    [terminalDock, frameEl],
+  )
+  const closeGit = useCallback(() => {
+    // Focus inside the window would fall to the page body with it, where
+    // the pane's keys stop working; its toggle keeps them.
+    if (frameEl?.querySelector('.shui-git-window')?.contains(document.activeElement)) gitToggleRef.current?.focus()
+    setGitOpen(false)
+  }, [frameEl])
+  const toggleGit = useCallback(() => (gitOpen ? closeGit() : openGit()), [gitOpen, closeGit, openGit])
   const changeTerminalDock = useCallback((next: TerminalDock) => {
     setTerminalOpen(true)
     setTerminalDock(next)
@@ -1644,6 +1773,22 @@ export function ShellExplorerPage({
             setSideTab('scm')
             setCollapsed(false)
           },
+        },
+        {
+          id: 'toggle-git',
+          title: 'Toggle Git',
+          detail: 'The Git window: the log, branches and worktrees',
+          keywords: ['git', 'log', 'history', 'graph', 'branch', 'commit'],
+          shortcut: 'Shift+Alt+G',
+          firesWhileTyping: true,
+          run: toggleGit,
+        },
+        {
+          id: 'worktrees',
+          title: 'Show worktrees',
+          detail: 'Switch, create, merge and remove git worktrees',
+          keywords: ['git', 'worktree', 'branch', 'merge', 'worktrunk'],
+          run: () => openGit('worktrees'),
         },
         {
           id: 'timeline',
@@ -1800,6 +1945,8 @@ export function ShellExplorerPage({
       host,
       frameEl,
       toggleTerminal,
+      toggleGit,
+      openGit,
       showTab,
       closeTabId,
       revealFolder,
@@ -1814,23 +1961,13 @@ export function ShellExplorerPage({
 
   // ── header ──
   // The folder picker is the chat composer's: remembered projects first,
-  // a browse to add one, every pick validated by the worker.
+  // a browse to add one, every pick validated by the worker. The branch
+  // beside it is the composer's worktree menu, for the IDE's folder.
   const header = (
     <PageHeader
       className="shui-page-header"
       icon={<SquareTerminal />}
       title="IDE"
-      description={
-        root ? (
-          <DirectoryPicker
-            value={pendingRoot ?? root}
-            onChange={changeManualRoot}
-            defaultDir={info?.primary_root ?? null}
-            externalError={workingDirError}
-            className="shui-header-root"
-          />
-        ) : undefined
-      }
       actions={
         info && root ? (
           <div className="shui-page-actions">
@@ -1880,6 +2017,19 @@ export function ShellExplorerPage({
                 <Terminal aria-hidden className="shui-side-tab-icon" />
               </button>
             </Tooltip>
+            <Tooltip label={gitOpen ? 'Hide Git (Shift+Alt+G)' : 'Open Git (Shift+Alt+G)'}>
+              <button
+                ref={gitToggleRef}
+                type="button"
+                className={`shui-side-tab${gitOpen ? ' active' : ''}`}
+                onClick={toggleGit}
+                aria-pressed={gitOpen}
+                aria-label={gitOpen ? 'Hide Git' : 'Open Git'}
+                data-git-toggle=""
+              >
+                <GitGraph aria-hidden className="shui-side-tab-icon" />
+              </button>
+            </Tooltip>
             {narrow ? (
               <Tooltip label={collapsed ? 'Show the sidebar' : 'Hide the sidebar'}>
                 <button
@@ -1908,7 +2058,28 @@ export function ShellExplorerPage({
               })
             }
       }
-    />
+    >
+      {/* In the header's middle, not its description: that one clips focus
+          rings and the chip's larger touch target. */}
+      {root ? (
+        <span className="shui-header-project">
+          <DirectoryPicker
+            value={pendingRoot ?? root}
+            onChange={changeManualRoot}
+            defaultDir={info?.primary_root ?? null}
+            externalError={workingDirError}
+            className="shui-header-root"
+          />
+          <WorktreeMenu
+            host={host}
+            dir={root}
+            page={worktreesPage}
+            rereadKey={String(harnessTurn.active)}
+            side="bottom"
+          />
+        </span>
+      ) : null}
+    </PageHeader>
   )
 
   if (infoError) {
@@ -1940,13 +2111,13 @@ export function ShellExplorerPage({
   return (
     <PageShell>
       {header}
-      <div ref={setFrameEl} className={`shui-workspace-frame terminal-${terminalDock}`}>
+      <div ref={setFrameEl} className={`shui-workspace-frame terminal-${gitOpen ? 'bottom' : terminalDock}`}>
         {narrow && !collapsed ? (
           <button type="button" className="shui-sidebar-scrim" aria-label="Hide sidebar" onClick={() => setCollapsed(true)} />
         ) : null}
         <PageBody side={panelSide}>
           <PageSidebar
-            label={sideTab === 'files' ? 'Explorer' : sideTab === 'search' ? 'Search' : sideTab === 'scm' ? 'Source control' : 'Timeline'}
+            label={SIDE_VIEWS.find((view) => view.id === sideTab)?.label ?? 'Explorer'}
             side={panelSide}
             storageKey={`shell:${tabId || 'page'}:sidebar`}
             defaultWidth={SIDEBAR_DEFAULT_WIDTH}
@@ -2265,6 +2436,7 @@ export function ShellExplorerPage({
                   setSideTab('scm')
                   setCollapsed(false)
                 }}
+                onOpenGit={() => openGit()}
                 onOpenTimeline={() => {
                   setSideTab('timeline')
                   setCollapsed(false)
@@ -2309,7 +2481,41 @@ export function ShellExplorerPage({
           }}
           onCancel={() => setPendingDiscard(null)}
         />
-        {terminalOpen && terminalDock !== 'editor' ? (
+        {gitOpen && root !== null ? (
+          <DockPanel
+            dock="bottom"
+            size={terminalBottomSize}
+            narrow={narrow}
+            maximized={narrow}
+            label="Git"
+            noun="Git window"
+            onSizeChange={setTerminalBottomSize}
+          >
+            <GitToolWindow
+              host={host}
+              root={root}
+              page={worktreesPage}
+              tab={gitTab}
+              onTabChange={setGitTab}
+              onHide={closeGit}
+              narrow={narrow}
+              paneKey={paneKey}
+              onOpenCommitFile={(file, details) => {
+                openDiffTab(
+                  file.view,
+                  { type: 'commit', sha: details.sha, parent: details.parents[0] ?? null, from: file.from },
+                  true,
+                )
+                // A narrow page's Git window covers the editor: step aside for the diff.
+                if (narrow) closeGit()
+              }}
+              onOpenCompareFile={(file, ref) => {
+                openDiffTab(file.view, { type: 'compare', ref }, true)
+                if (narrow) closeGit()
+              }}
+            />
+          </DockPanel>
+        ) : terminalOpen && terminalDock !== 'editor' ? (
           <TerminalPanel
             state={terminalWorkspace}
             dispatch={dispatchTerminalWorkspace}

@@ -25,6 +25,24 @@ describe('diff-source', () => {
     expect(diffSourceFollowsDisk({ type: 'unstaged' })).toBe(true)
   })
 
+  it('commit diffs: parent to commit, fixed, persisted, with hex shas only', () => {
+    const source = { type: 'commit', sha: 'abcdef1234', parent: '1234567abc' } as const
+    expect(diffSourceKey(source)).toBe('commit=1234567abc..abcdef1234')
+    expect(diffSourceLabel(source)).toBe('abcdef1')
+    expect(diffSourceSides(source)).toEqual({ old: '1234567', new: 'abcdef1' })
+    expect(diffSourceSides({ type: 'commit', sha: 'abcdef1234', parent: null }).old).toBe('empty')
+    expect(diffSourceFollowsDisk(source)).toBe(false)
+    expect(diffSourcePersists(source)).toBe(true)
+    expect(parseDiffSource({ ...source, from: 'old/a.ts' })).toEqual({ ...source, from: 'old/a.ts' })
+    expect(parseDiffSource({ type: 'commit', sha: 'abcdef1', parent: null })).toEqual({
+      type: 'commit',
+      sha: 'abcdef1',
+      parent: null,
+    })
+    expect(parseDiffSource({ type: 'commit', sha: 'main', parent: null })).toBeNull()
+    expect(parseDiffSource({ type: 'commit', sha: 'abcdef1' })).toBeNull()
+  })
+
   it('parses persisted sources and rejects junk', () => {
     expect(parseDiffSource({ type: 'turn', turnId: 't1' })).toEqual({ type: 'turn', turnId: 't1' })
     expect(parseDiffSource({ type: 'turn' })).toBeNull()

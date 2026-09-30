@@ -109,6 +109,29 @@ describe('loadDiffContents', () => {
     )
   })
 
+  it('reads a commit against its parent, a rename from its source, and nothing before a root commit', async () => {
+    const specs: string[] = []
+    const { host } = hostWith({
+      'shell::exec': ({ args }) => {
+        const spec = (args as string[])[1]
+        specs.push(spec)
+        if (spec === 'p1:old/a.ts') return exec({ stdout: 'before\n' })
+        if (spec === 'c1:./a.ts') return exec({ stdout: 'after\n' })
+        return exec({ exit_code: 128, stderr: `fatal: path 'a.ts' does not exist in '${spec.split(':')[0]}'` })
+      },
+    })
+    const renamed = { type: 'commit', sha: 'c1', parent: 'p1', from: 'old/a.ts' } as const
+    expect(await loadDiffContents(host, '/r', 'a.ts', renamed, noTurns)).toEqual({
+      oldContents: 'before\n',
+      newContents: 'after\n',
+    })
+    expect(await loadDiffContents(host, '/r', 'a.ts', { type: 'commit', sha: 'c1', parent: null }, noTurns)).toEqual({
+      oldContents: '',
+      newContents: 'after\n',
+    })
+    expect(specs).toEqual(['p1:old/a.ts', 'c1:./a.ts', 'c1:./a.ts'])
+  })
+
   it('reads recorded changes through coder::change-diff', async () => {
     const { host } = hostWith({
       'coder::change-diff': () => ({ path: '/r/a.ts', old_contents: 'a', new_contents: 'b', is_binary: false }),

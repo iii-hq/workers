@@ -6,13 +6,8 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import {
-  type CSSProperties,
-  type Dispatch,
-  useEffect,
-  useRef,
-  useState,
-} from 'react'
+import { type Dispatch, useRef } from 'react'
+import { DockPanel } from './DockPanel'
 import type { TerminalDock } from './persist'
 import {
   TerminalWorkspace,
@@ -24,12 +19,6 @@ import type {
 } from './terminal-layout'
 import type { TerminalOutputRouter } from './terminal-output-router'
 import type { TerminalConnectionCoordinator } from './terminal-session-state'
-import { useSplitDrag } from '@iii-dev/console-ui/hooks'
-
-interface ResizeState {
-  startSize: number
-  maxSize: number
-}
 
 interface TerminalPanelSharedProps {
   dock: TerminalDock
@@ -50,28 +39,6 @@ interface TerminalPanelProps extends TerminalPanelSharedProps {
   leaseStore: Storage | null
   storageKey: string
   connectionCoordinators: Map<string, TerminalConnectionCoordinator>
-}
-
-function clampSize(size: number, maxSize: number): number {
-  return Math.min(Math.max(160, maxSize), Math.max(160, Math.round(size)))
-}
-
-function terminalPanelStyle(
-  dock: TerminalDock,
-  size: number,
-): CSSProperties | undefined {
-  switch (dock) {
-    case 'bottom':
-      return { height: size }
-    case 'right':
-      return { width: size }
-    case 'editor':
-      return undefined
-    default: {
-      const exhaustive: never = dock
-      return exhaustive
-    }
-  }
 }
 
 function DockActions({
@@ -132,84 +99,10 @@ function DockActions({
 
 export function TerminalPanel(props: TerminalPanelProps) {
   const { dock, size, onDockChange, onSizeChange, onClose, narrow } = props
-  const panelRef = useRef<HTMLElement>(null)
   const workspaceRef = useRef<TerminalWorkspaceHandle>(null)
-  const [resizeBounds, setResizeBounds] = useState({ size, max: 1200 })
-  const docked = dock !== 'editor'
-  const style = narrow && dock === 'right' ? undefined : terminalPanelStyle(dock, size)
-
-  useEffect(() => {
-    const panel = panelRef.current
-    const frame = panel?.parentElement
-    if (!panel || !frame || !docked) return
-    const update = () => {
-      const panelRect = panel.getBoundingClientRect()
-      const frameRect = frame.getBoundingClientRect()
-      setResizeBounds({
-        size: dock === 'bottom' ? panelRect.height : panelRect.width,
-        max:
-          dock === 'bottom'
-            ? Math.max(160, frameRect.height - 120)
-            : Math.max(160, frameRect.width - 240),
-      })
-    }
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(panel)
-    observer.observe(frame)
-    return () => observer.disconnect()
-  }, [dock, docked])
-
-  const maxSizeOf = (frame: Element | null | undefined) => {
-    const rect = frame?.getBoundingClientRect()
-    return dock === 'bottom'
-      ? Math.max(160, (rect?.height ?? window.innerHeight) - 120)
-      : Math.max(160, (rect?.width ?? window.innerWidth) - 240)
-  }
-  const currentSizeOf = (panel: Element | null) => {
-    const rect = panel?.getBoundingClientRect()
-    return dock === 'bottom' ? (rect?.height ?? size) : (rect?.width ?? size)
-  }
-  const resizer = useSplitDrag<ResizeState>({
-    horizontal: dock === 'right',
-    begin: (event) => {
-      if (!docked) return null
-      const panel = event.currentTarget.parentElement
-      return { startSize: currentSizeOf(panel), maxSize: maxSizeOf(panel?.parentElement) }
-    },
-    move: (origin, delta) => onSizeChange(clampSize(origin.startSize - delta, origin.maxSize)),
-    // Up/Left grow the panel: its free edge faces the start of the axis.
-    step: (direction, event) => {
-      const panel = event.currentTarget.parentElement
-      onSizeChange(clampSize(currentSizeOf(panel) + (direction === -1 ? 16 : -16), maxSizeOf(panel?.parentElement)))
-    },
-  })
 
   return (
-    <section
-      ref={panelRef}
-      className="shui-terminal-panel"
-      data-terminal-dock={dock}
-      style={style}
-      aria-label="Terminal"
-    >
-      {docked ? (
-        // biome-ignore lint/a11y/useSemanticElements: this is an interactive range separator, not a static thematic break.
-        <div
-          role="separator"
-          tabIndex={0}
-          className="shui-terminal-resize"
-          {...resizer}
-          aria-label={`Resize ${dock} terminal`}
-          aria-orientation={dock === 'bottom' ? 'horizontal' : 'vertical'}
-          aria-valuemin={160}
-          aria-valuemax={Math.round(resizeBounds.max)}
-          aria-valuenow={Math.round(resizeBounds.size)}
-          title="Drag to resize terminal"
-        >
-          <span aria-hidden />
-        </div>
-      ) : null}
+    <DockPanel dock={dock} size={size} narrow={narrow} label="Terminal" noun="terminal" onSizeChange={onSizeChange}>
       <TerminalWorkspace
         ref={workspaceRef}
         actions={
@@ -240,6 +133,6 @@ export function TerminalPanel(props: TerminalPanelProps) {
         storageKey={props.storageKey}
         connectionCoordinators={props.connectionCoordinators}
       />
-    </section>
+    </DockPanel>
   )
 }

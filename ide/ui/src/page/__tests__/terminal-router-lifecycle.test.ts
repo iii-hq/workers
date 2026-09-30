@@ -16,11 +16,13 @@ vi.mock('../../function-trigger/FileChangesView', () => ({
 }))
 vi.mock('../index', () => ({ ShellExplorerPage: () => null }))
 vi.mock('../ShellTurnSummary', () => ({ ShellTurnSummary: () => null }))
+vi.mock('../WorktreeSwitcher', () => ({ createWorktreeSwitcher: () => () => null }))
 
 describe('terminal output router lifecycle', () => {
   it('owns one router for the loaded UI asset and disposes it on teardown', () => {
     const offOutput = vi.fn()
     const pageRegister = vi.fn((_registration: unknown) => vi.fn())
+    const registerComposerControl = vi.fn((_control: unknown) => vi.fn())
     const host = {
       iii: {
         browserId: 'console-test',
@@ -28,7 +30,7 @@ describe('terminal output router lifecycle', () => {
       },
       pages: { register: pageRegister },
       functionTriggers: { register: vi.fn(() => vi.fn()) },
-      chat: { registerTurnSummary: vi.fn(() => vi.fn()) },
+      chat: { registerTurnSummary: vi.fn(() => vi.fn()), registerComposerControl },
     } as never
 
     const teardown = setup(host)
@@ -41,6 +43,10 @@ describe('terminal output router lifecycle', () => {
 
     expect(terminalOutputRouterHost(terminalRouter)).toBe(host)
     expect(offOutput).not.toHaveBeenCalled()
+    // The worktree switcher sits in the composer's project strip.
+    expect(registerComposerControl).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'ide-worktree-switcher', placement: 'project' }),
+    )
 
     teardown()
 

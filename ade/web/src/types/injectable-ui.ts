@@ -510,17 +510,38 @@ export interface ComposerControlProps {
   metadata: Readonly<Record<string, unknown>>
   /** Merge keys into the metadata; an `undefined` value removes the key. */
   setMetadata(patch: Record<string, unknown>): void
+  /**
+   * The session's working directory; `null` when it has none. A control
+   * moves it with `host.chat.requestWorkingDirectoryChange`. Absent on
+   * consoles that predate it.
+   */
+  workingDir?: string | null
+  /**
+   * The composer's options are locked, as the folder beside them is: a turn
+   * is running or the harness is unavailable. Absent on consoles that
+   * predate it; `isStreaming` is the fallback.
+   */
+  locked?: boolean
 }
 
 /**
- * A compact per-session setting rendered in the composer's footer, beside
- * the model picker: a value that applies to the session from its next turn
- * on, the way the model does. Duplicate `id`: last registration wins.
+ * A compact per-session control rendered in the composer: beside the model
+ * picker (a value that applies to the session from its next turn on, the way
+ * the model does), or with `placement: 'project'` in the working-directory
+ * strip after the folder. Duplicate `id`: last registration wins.
  */
 export interface ComposerControlRegistration {
   /** kebab-case; convention `<worker>-<name>`. */
   id: string
   render: React.ComponentType<ComposerControlProps>
+  /**
+   * `footer` (the default) sits beside the model picker. `project` sits in
+   * the working-directory strip above the composer, right after the folder,
+   * for what belongs to that folder (its git branch); it shows only where
+   * the console shows that strip. Consoles that predate it render every
+   * control in the footer.
+   */
+  placement?: 'footer' | 'project'
 }
 
 /**

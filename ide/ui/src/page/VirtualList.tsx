@@ -20,6 +20,14 @@ export interface VirtualListProps<T> {
   tabIndex?: number
   onKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => void
   listRef?: React.Ref<HTMLDivElement>
+  /** The option a listbox's focus sits on while the scroller keeps it. */
+  'aria-activedescendant'?: string
+  /** The rows mounted now, overscan included: a paged list loads more
+      as `last` nears the end. */
+  onRangeChange?: (first: number, last: number) => void
+  /** A row kept mounted outside the window: the one aria-activedescendant
+      names, so assistive tech can still read it. */
+  keepIndex?: number | null
 }
 
 export function VirtualList<T>({
@@ -35,6 +43,9 @@ export function VirtualList<T>({
   tabIndex,
   onKeyDown,
   listRef,
+  'aria-activedescendant': activeDescendant,
+  onRangeChange,
+  keepIndex = null,
 }: VirtualListProps<T>) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const [scrollTop, setScrollTop] = useState(0)
@@ -62,18 +73,25 @@ export function VirtualList<T>({
   const total = rows.length * rowHeight
   const first = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan)
   const last = Math.min(rows.length, Math.ceil((scrollTop + height) / rowHeight) + overscan)
+  const rangeRef = useRef(onRangeChange)
+  rangeRef.current = onRangeChange
+  useEffect(() => {
+    rangeRef.current?.(first, last)
+  }, [first, last])
+  const row = (index: number) => (
+    <div
+      key={rowKey(rows[index], index)}
+      className="shui-vrow"
+      style={{ transform: `translateY(${index * rowHeight}px)`, height: rowHeight }}
+    >
+      {renderRow(rows[index], index)}
+    </div>
+  )
   const visible: ReactNode[] = []
-  for (let index = first; index < last; index++) {
-    visible.push(
-      <div
-        key={rowKey(rows[index], index)}
-        className="shui-vrow"
-        style={{ transform: `translateY(${index * rowHeight}px)`, height: rowHeight }}
-      >
-        {renderRow(rows[index], index)}
-      </div>,
-    )
-  }
+  const kept = keepIndex !== null && keepIndex >= 0 && keepIndex < rows.length ? keepIndex : null
+  if (kept !== null && kept < first) visible.push(row(kept))
+  for (let index = first; index < last; index++) visible.push(row(index))
+  if (kept !== null && kept >= last) visible.push(row(kept))
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the scroller carries the caller's role and keyboard handling
@@ -88,6 +106,7 @@ export function VirtualList<T>({
       onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
       role={role}
       aria-label={ariaLabel}
+      aria-activedescendant={activeDescendant}
       tabIndex={tabIndex}
       onKeyDown={onKeyDown}
     >

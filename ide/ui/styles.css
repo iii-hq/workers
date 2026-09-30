@@ -534,6 +534,26 @@
     color: var(--color-ink-ghost);
   }
   .shui-header-root > button:hover { color: var(--color-ink); }
+  /* the folder, then its branch; the folder's name gives way first */
+  .shui-header-project {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    max-width: 100%;
+    vertical-align: middle;
+  }
+  /* at phone widths the folder keeps its icon and some of its name */
+  .shui-header-project > .shui-header-root { flex: 0 3 auto; min-width: 30px; }
+  /* a pane too narrow for both names: the chip keeps its icon (the title
+     and the menu tell the branch) and the IDE title gives way */
+  .shui-header-project > .shui-wt-switcher { flex: 0 1 auto; }
+  @container (max-width: 420px) {
+    .shui-page-header > h1 { display: none; }
+    .shui-header-project .shui-wt-chip-branch,
+    .shui-header-project .shui-wt-chip-caret { display: none; }
+    .shui-header-project > .shui-wt-switcher { flex: none; }
+  }
   .shui-side-tab,
   .shui-collapse-btn { width: 28px; height: 28px; }
   .shui-side-tab.active { color: var(--color-ink); background: var(--color-surface-active); }
@@ -1456,6 +1476,198 @@
     .shui-log-actions { display: inline-flex; }
   }
 
+  /* the worktree and branch forms: a column of fields under a title */
+  .shui-scm-commit {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 4px 12px 8px;
+  }
+  .shui-scm-message {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 46px;
+    padding: 6px 8px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font: 400 12.5px / 17px var(--font-sans);
+    resize: vertical;
+    outline: 0;
+  }
+  .shui-scm-message:focus { border-color: var(--color-rule-focus); }
+  .shui-scm-message::placeholder { color: var(--color-ink-ghost); }
+  /* worktrees view: source-control rows, with a marks column in place of the status letter */
+  .shui-wt-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .shui-wt-row .shui-scm-row-main[aria-disabled="true"] { cursor: default; }
+  .shui-wt-marks {
+    font: 400 11px / 16px var(--font-mono);
+    color: var(--color-ink-faint);
+    white-space: nowrap;
+  }
+  .shui-wt-input { min-height: 0; height: 28px; }
+  .shui-wt-options {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font: 400 12px / 16px var(--font-sans);
+    color: var(--color-ink-faint);
+  }
+
+  /* the composer's worktree switcher: a quiet chip in the project strip,
+     right after the folder, and its menu, laid out like the model picker's */
+  .shui-wt-switcher { display: inline-flex; min-width: 0; }
+  .shui-wt-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    max-width: 18rem;
+    height: 24px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--color-ink-faint);
+    font: 500 11px / 16px var(--font-mono);
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color var(--motion-duration-fast), background-color var(--motion-duration-fast);
+  }
+  .shui-wt-chip:hover,
+  .shui-wt-chip[data-state="open"] {
+    background: var(--color-surface-hover);
+    color: var(--color-ink);
+  }
+  .shui-wt-chip:focus-visible { outline: 2px solid var(--color-rule-focus); outline-offset: 1px; }
+  .shui-wt-chip:disabled { cursor: default; opacity: 0.5; }
+  .shui-wt-chip-warn { color: var(--color-warn); }
+  /* A bigger target for a finger, reaching down under the strip rather than
+     up over whatever sits above the composer. */
+  @media (pointer: coarse) {
+    .shui-wt-chip { position: relative; }
+    .shui-wt-chip::after { content: ""; position: absolute; inset: -4px -4px -12px; }
+    /* in the IDE's header, evenly around it */
+    .shui-wt-switcher[data-side="bottom"] .shui-wt-chip::after { inset: -8px -4px; }
+  }
+  .shui-wt-chip-icon { flex: none; width: 16px; height: 16px; }
+  .shui-wt-chip-caret { opacity: 0.6; }
+  .shui-wt-chip-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .shui-wt-chip-dirty {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--shui-status-modified);
+  }
+  .shui-wt-menu {
+    display: flex;
+    flex-direction: column;
+    width: min(26rem, calc(100vw - 24px));
+    max-height: min(60vh, 32rem);
+    padding: 0;
+    border: 1px solid var(--color-edge);
+    border-radius: var(--radius-lg);
+  }
+  .shui-wt-menu-body {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 4px;
+    min-height: 0;
+    padding: 6px 0 4px;
+  }
+  /* the search, with the menu's tools beside it, as in an IDE's branch popup */
+  .shui-wt-menu-top { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; padding: 0 6px 2px 8px; }
+  .shui-wt-menu-filter { flex: 1 1 auto; min-width: 0; }
+  .shui-wt-menu-tools { display: inline-flex; flex: none; align-items: center; gap: 2px; }
+  /* the branches: the console's compact tree (one line a row), flat in the
+     popup; a group's rows put their icon under the group's name */
+  .shui-wt-menu-list {
+    --iii-ui-tree-inset: 8px;
+    --iii-ui-tree-indent: 26px;
+    --iii-ui-tree-trailing: 8px;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 0 4px;
+    overflow-y: auto;
+    /* rows fit or truncate; what the tree fades out on hover (a row's folder
+       and check, lifted out of the flow) must not scroll the list sideways */
+    overflow-x: hidden;
+  }
+  .shui-wt-menu-list > * { flex-shrink: 0; }
+  /* choices in a menu read in full ink, at the menu's regular weight */
+  .shui-wt-row { color: var(--color-ink); font-weight: 400; }
+  /* the main button covers the whole row; the actions sit above it */
+  .shui-wt-row-main {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    align-items: center;
+    align-self: stretch;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .shui-wt-row-main::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+  .shui-wt-row-main:focus-visible { outline: none; }
+  .shui-wt-row-main:focus-visible::after {
+    outline: 2px solid color-mix(in oklab, var(--color-ink) 55%, transparent);
+    outline-offset: 1px;
+  }
+  .shui-wt-row-main:disabled,
+  .shui-wt-row-main[aria-disabled="true"] { cursor: default; }
+  .shui-wt-row-main:disabled { opacity: 0.55; }
+  .shui-wt-row .iii-ui-tree-item__action { z-index: 1; }
+  /* the name leads: a long folder on the trailing edge gives way first; the
+     actions, the row's own item, never do */
+  .shui-wt-row > .iii-ui-tree-item__trailing { flex: 0 1 auto; min-width: 0; max-width: 45%; }
+  .shui-wt-row > .iii-ui-tree-item__actions { flex: none; margin-left: 0.375rem; }
+  .shui-wt-row .iii-ui-tree-item__meta {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* ahead/behind and states, quiet, right after the name: the name gives way first */
+  .shui-wt-row-marks {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 4px;
+    margin-left: 8px;
+    color: var(--color-ink-ghost);
+    font: 400 11px / 16px var(--font-sans);
+    font-variant-numeric: tabular-nums;
+  }
+  .shui-wt-row-dirty { width: 6px; height: 6px; border-radius: 50%; background: var(--shui-status-modified); }
+  .shui-wt-row-check { flex: none; width: 16px; height: 16px; color: var(--color-ink-faint); }
+  .shui-wt-row-caret > svg { transition: transform var(--motion-duration-control) var(--motion-ease-standard); }
+  .shui-wt-row-caret[data-open] > svg { transform: rotate(90deg); }
+  .shui-wt-menu-merge { padding: 2px 0 6px; }
+  .shui-wt-menu-create .shui-scm-commit { padding: 0 8px; }
+  .shui-wt-menu-note {
+    margin: 0;
+    padding: 0 12px;
+    color: var(--color-ink-faint);
+    font: 400 12px / 16px var(--font-sans);
+  }
+  /* "N more", lined up with the names of the rows it follows */
+  .shui-wt-menu-note.shui-wt-menu-more {
+    padding: 4px var(--iii-ui-tree-trailing) 4px
+      calc(var(--iii-ui-tree-inset) + var(--iii-ui-tree-depth, 0) * var(--iii-ui-tree-indent) + 26px);
+    color: var(--color-ink-ghost);
+    font-size: 11px;
+  }
+  .shui-wt-menu-note.warn { color: var(--color-warn); }
+
   /* timeline view */
   .shui-timeline-turn { display: flex; flex-direction: column; flex: none; }
   .shui-timeline-turn-head {
@@ -2270,6 +2482,14 @@
     border-left: 1px solid var(--color-edge);
   }
   .shui-terminal-panel[data-terminal-dock="editor"] { flex: 1; width: 100%; height: 100%; }
+  /* a narrow page's Git window: over the whole frame, the editor mounted beneath */
+  .shui-terminal-panel[data-maximized] {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    max-height: none;
+    border-top: 0;
+  }
   .shui-terminal-workspace {
     flex: 1;
     display: flex;
@@ -2558,6 +2778,469 @@
     background-color: transparent;
     scrollbar-color: var(--color-ink-ghost) transparent;
   }
+
+  /* ── the Git tool window: the docked panel's other tenant, laid out
+     like WebStorm's Git window (a tab strip, then panes with an action
+     rail on their left edge) ────────────────────────────────────────── */
+  .shui-git-window { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .shui-git-tabs-root { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .shui-git-bar { flex: none; gap: 10px; padding: 0 6px 0 12px; }
+  .shui-git-title { flex: none; color: var(--color-ink); font: 600 13px / 20px var(--font-sans); }
+  .shui-git-tabs { flex: none; box-shadow: none; }
+  .shui-git-note {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--color-ink-faint);
+    font: 400 12px / 16px var(--font-sans);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shui-git-note.warn { color: var(--color-warn); }
+  .shui-git-panel { flex: 1; min-height: 0; display: flex; }
+  .shui-git-panel[data-state="inactive"] { display: none; }
+  /* a pane: its action rail on the left edge, its content beside it */
+  .shui-git-pane { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; }
+  .shui-git-rail { flex: none; border-right: 1px solid var(--color-edge); }
+  .shui-git-rail-action {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-ink-faint);
+    cursor: pointer;
+    transition:
+      color var(--motion-duration-fast) var(--motion-ease-standard),
+      background-color var(--motion-duration-fast) var(--motion-ease-standard);
+  }
+  .shui-git-rail-action > svg { width: 16px; height: 16px; }
+  .shui-git-rail-action:hover { background: var(--color-surface-hover); color: var(--color-ink); }
+  .shui-git-rail-action[data-tone="alert"]:hover { color: var(--color-alert); }
+  .shui-git-rail-action[aria-disabled="true"] { opacity: 0.35; cursor: default; }
+  .shui-git-rail-action[aria-disabled="true"]:hover { background: transparent; color: var(--color-ink-faint); }
+  .shui-git-rail-action:focus-visible { outline: 2px solid var(--color-rule-focus); outline-offset: 1px; }
+  .shui-git-column { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .shui-git-form { flex: none; padding: 8px 12px 0; border-bottom: 1px solid var(--color-edge); }
+  .shui-git-form .shui-scm-commit { padding: 0 0 8px; }
+  .shui-git-form-title { margin: 0 0 6px; color: var(--color-ink); font: 600 12px / 16px var(--font-sans); }
+  .shui-git-list { flex: 1; min-height: 0; overflow: auto; padding: 4px; outline: none; }
+  .shui-git-note-line { margin: 0; padding: 8px 12px; color: var(--color-ink-faint); font: 400 12px / 16px var(--font-sans); }
+  .shui-git-note-line.warn { color: var(--color-warn); }
+  .shui-git-skeleton { display: block; height: 32px; margin: 4px; border-radius: var(--radius-sm); }
+  /* selection stays neutral; the list's focus rings the active row */
+  .shui-git-wt[aria-selected="true"] { background: var(--color-surface-selected); }
+  .shui-git-list:focus .shui-git-wt[aria-selected="true"] { background: var(--color-accent-muted); }
+  .shui-git-list:focus-visible .shui-git-wt[aria-selected="true"] {
+    box-shadow: inset 0 0 0 1px var(--color-rule-focus);
+  }
+  /* a worktree: its folder over its branch; the one the IDE is in, checked */
+  .shui-git-wt {
+    display: grid;
+    grid-template-columns: 16px 16px minmax(0, 1fr);
+    column-gap: 8px;
+    align-items: center;
+    min-height: 40px;
+    padding: 4px 10px 4px 6px;
+    border-radius: var(--radius-sm);
+    color: var(--color-ink);
+    cursor: default;
+    user-select: none;
+    touch-action: manipulation;
+  }
+  .shui-git-wt:hover { background: var(--color-surface-hover); }
+  .shui-git-wt-check { display: inline-flex; color: var(--color-ink); }
+  .shui-git-wt-check > svg,
+  .shui-git-wt-icon { width: 16px; height: 16px; }
+  .shui-git-wt-icon { color: var(--color-ink-faint); }
+  .shui-git-wt-text { display: flex; min-width: 0; flex-direction: column; }
+  .shui-git-wt-folder {
+    overflow: hidden;
+    font: 600 13px / 18px var(--font-sans);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shui-git-wt-branch {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 5px;
+    color: var(--color-ink-faint);
+    font: 400 12px / 16px var(--font-sans);
+  }
+  .shui-git-wt-branch > svg { flex: none; width: 14px; height: 14px; }
+  .shui-git-wt-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shui-git-marks {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 6px;
+    color: var(--color-ink-faint);
+    font: 400 11px / 16px var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .shui-git-wt[data-held] .shui-git-wt-branch { color: var(--color-warn); }
+  .shui-git-wt[data-gone] { opacity: 0.55; }
+  /* speed search: the letters typed, and where they matched */
+  .shui-git-hit { background: transparent; color: var(--color-accent); text-decoration: underline; text-underline-offset: 2px; }
+  .shui-git-speed {
+    position: absolute;
+    top: 6px;
+    right: 10px;
+    z-index: 1;
+    padding: 1px 6px;
+    border: 1px solid var(--color-rule-focus);
+    border-radius: var(--radius-sm);
+    background: var(--color-panel-raised);
+    color: var(--color-ink);
+    font: 500 12px / 18px var(--font-mono);
+    pointer-events: none;
+  }
+  .shui-git-window[data-narrow] .shui-git-wt { min-height: 56px; }
+
+  /* the Log: the branches, the graph and the selected commit, side by side */
+  .shui-git-log { flex: 1; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); }
+  .shui-git-sash { width: 5px; cursor: col-resize; background: var(--color-edge); background-clip: content-box; padding: 0 2px; }
+  .shui-git-sash:hover,
+  .shui-git-sash:focus-visible { background-color: var(--color-rule-focus); padding: 0 1px; outline: none; }
+  .shui-git-branches,
+  .shui-git-commits,
+  .shui-git-details { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .shui-git-branch-search { flex: none; margin: 6px 6px 4px; }
+  /* the branches tree: the console's compact tree at the log's density */
+  .shui-git-tree {
+    --iii-ui-tree-row: 1.5rem;
+    --iii-ui-tree-inset: 6px;
+    --iii-ui-tree-indent: 16px;
+    --iii-ui-tree-gap: 6px;
+    --iii-ui-tree-trailing: 8px;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 4px 6px;
+    outline: none;
+  }
+  .shui-git-node { color: var(--color-ink); font-weight: 400; cursor: default; user-select: none; }
+  .shui-git-node[data-kind="section"] { font-weight: 600; }
+  .shui-git-node[data-remote] { color: var(--color-ink-faint); }
+  /* the current branch is marked by its ✓, not a second selection */
+  .shui-git-node[aria-current="true"]:not([aria-selected="true"], :hover) { background: transparent; }
+  .shui-git-caret { cursor: pointer; }
+  .shui-git-tree:focus .shui-git-node[aria-selected="true"] { background: var(--color-accent-muted); }
+  .shui-git-tree:focus-visible .shui-git-node[aria-selected="true"] { box-shadow: inset 0 0 0 1px var(--color-rule-focus); }
+  .shui-git-caret > svg { transition: transform var(--motion-duration-control) var(--motion-ease-standard); }
+  .shui-git-caret[data-open] > svg { transform: rotate(90deg); }
+  /* ↙ arrives on a pull, ↗ leaves on a push */
+  .shui-git-count {
+    color: var(--color-glyph-green);
+    font: 400 11px / 16px var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .shui-git-count[data-way="in"] { color: var(--color-glyph-blue); }
+  .shui-git-count,
+  .shui-git-mark { display: inline-flex; align-items: center; gap: 1px; }
+  .shui-git-count > svg,
+  .shui-git-mark > svg { width: 12px; height: 12px; }
+  .shui-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .shui-git-count[data-way="gone"] { color: var(--color-ink-faint); }
+  .shui-git-current { width: 14px; height: 14px; color: var(--color-ink-faint); }
+  /* the filter bar over the log */
+  .shui-git-filters {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--color-edge);
+    overflow-x: auto;
+  }
+  .shui-git-filter-text { flex: 1 1 180px; min-width: 120px; }
+  .shui-git-toggle,
+  .shui-git-filter {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 4px;
+    height: 24px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-ink-faint);
+    font: 400 12px / 16px var(--font-sans);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .shui-git-toggle { width: 24px; padding: 0; justify-content: center; }
+  .shui-git-toggle > svg,
+  .shui-git-filter > svg { width: 14px; height: 14px; }
+  .shui-git-toggle:hover,
+  .shui-git-filter:hover { background: var(--color-surface-hover); color: var(--color-ink); }
+  .shui-git-toggle[aria-pressed="true"],
+  .shui-git-filter[data-set] { background: var(--color-surface-selected); color: var(--color-ink); }
+  .shui-git-filter[data-static] { cursor: default; }
+  .shui-git-filter[data-static]:hover { background: transparent; color: var(--color-ink-faint); }
+  .shui-git-toggle:focus-visible,
+  .shui-git-filter:focus-visible { outline: 2px solid var(--color-rule-focus); outline-offset: 1px; }
+  .shui-git-filter-menu { max-height: 320px; overflow-y: auto; }
+  .shui-git-filter-check { width: 14px; height: 14px; margin-left: auto; }
+  /* commit rows: the graph, the subject with its chips, the author, the date */
+  .shui-git-commit-scroll { position: relative; flex: 1; min-height: 0; display: flex; }
+  .shui-git-commit-list { flex: 1; min-height: 0; outline: none; }
+  .shui-git-commit {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 150px) 128px;
+    column-gap: 10px;
+    align-items: center;
+    height: 100%;
+    padding: 0 10px 0 4px;
+    color: var(--color-ink);
+    cursor: default;
+    user-select: none;
+    touch-action: manipulation;
+  }
+  .shui-git-commit:hover { background: var(--color-surface-hover); }
+  .shui-git-commit[aria-selected="true"] { background: var(--color-surface-selected); }
+  .shui-git-commit-list:focus .shui-git-commit[aria-selected="true"] { background: var(--color-accent-muted); }
+  .shui-git-commit-list:focus-visible .shui-git-commit[aria-selected="true"] {
+    box-shadow: inset 0 0 0 1px var(--color-rule-focus);
+  }
+  .shui-git-commit-graph { display: flex; align-self: stretch; }
+  .shui-git-graph { flex: none; overflow: visible; }
+  .shui-git-graph path { fill: none; stroke-width: 1.5; stroke-linecap: round; }
+  .shui-git-graph-ring { fill: var(--color-bg); stroke-width: 2; }
+  .shui-git-commit-main { display: flex; min-width: 0; flex-direction: column; justify-content: center; gap: 2px; }
+  /* the subject fills the column and truncates first; the chips sit at its end */
+  .shui-git-commit-subject { display: flex; min-width: 0; align-items: center; gap: 6px; }
+  .shui-git-commit-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    font: 400 13px / 18px var(--font-sans);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shui-git-commit-author,
+  .shui-git-commit-date {
+    overflow: hidden;
+    color: var(--color-ink-faint);
+    font: 400 12px / 16px var(--font-sans);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shui-git-commit-date { font-variant-numeric: tabular-nums; }
+  /* a commit the IDE's HEAD does not have */
+  .shui-git-commit[data-off] .shui-git-commit-text { color: var(--color-ink-faint); }
+  /* a ref chip: a dot in its branch's colour, the name, "· origin" when the
+     remote sits on the same commit */
+  .shui-git-ref {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 5px;
+    max-width: 128px;
+    height: 18px;
+    padding: 0 6px;
+    overflow: hidden;
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-ink-faint);
+    font: 500 11px / 16px var(--font-sans);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shui-git-ref::before {
+    content: "";
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ref-color, var(--color-ink-ghost));
+  }
+  .shui-git-ref[data-kind="tag"]::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--color-ink-faint); }
+  .shui-git-ref[data-kind="remote"] { color: var(--color-ink-faint); }
+  .shui-git-ref-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .shui-git-ref[data-current] { background: var(--color-surface-selected); color: var(--color-ink); font-weight: 600; }
+  .shui-git-ref[data-more] { flex: none; min-width: 0; max-width: none; }
+  .shui-git-ref[data-more]::before { display: none; }
+  .shui-git-ref-remote { flex: none; color: var(--color-ink-faint); font-weight: 400; }
+  .shui-git-status {
+    flex: none;
+    margin: 0;
+    padding: 3px 10px;
+    border-top: 1px solid var(--color-edge);
+    color: var(--color-ink-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: 400 11px / 16px var(--font-sans);
+  }
+  .shui-git-status[data-warn] { color: var(--color-warn); }
+  /* the selected commit: its files over its details */
+  .shui-git-files { flex: 55 1 0; min-height: 0; display: flex; flex-direction: column; border-bottom: 1px solid var(--color-edge); }
+  .shui-git-pane-title {
+    flex: none;
+    margin: 0;
+    padding: 6px 10px 4px;
+    color: var(--color-ink-faint);
+    font: 600 11px / 16px var(--font-sans);
+  }
+  .shui-git-file-list { flex: 1; min-height: 0; overflow: auto; padding: 0 4px 6px; }
+  /* "Show diff with working tree": the whole pane is the file list */
+  .shui-git-files.shui-git-compare { flex: 1 1 auto; border-bottom: 0; }
+  .shui-git-compare-head { flex: none; display: flex; align-items: center; justify-content: space-between; padding-right: 6px; }
+  .shui-git-file {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 8px;
+    height: 24px;
+    padding-right: 8px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-ink);
+    font: 400 12px / 16px var(--font-sans);
+    text-align: left;
+    cursor: default;
+  }
+  .shui-git-file:hover,
+  .shui-git-file:focus-visible { background: var(--color-surface-hover); outline: none; }
+  .shui-git-file:disabled { color: var(--color-ink-ghost); }
+  .shui-git-file-status { flex: none; width: 12px; font: 600 11px / 16px var(--font-mono); text-align: center; }
+  .shui-git-file-status[data-status="added"] { color: var(--color-ok); }
+  .shui-git-file-status[data-status="deleted"] { color: var(--color-alert); }
+  .shui-git-file-status[data-status="modified"],
+  .shui-git-file-status[data-status="renamed"] { color: var(--color-accent); }
+  .shui-git-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shui-git-commit-info { flex: 45 1 0; min-height: 0; overflow: auto; padding: 8px 12px; }
+  .shui-git-info-subject { margin: 0 0 6px; color: var(--color-ink); font: 600 13px / 18px var(--font-sans); }
+  .shui-git-info-body {
+    margin: 0 0 8px;
+    color: var(--color-ink-faint);
+    font: 400 12px / 17px var(--font-sans);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .shui-git-info-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 6px;
+    margin: 0 0 4px;
+    color: var(--color-ink);
+    font: 400 12px / 18px var(--font-sans);
+  }
+  .shui-git-faint { color: var(--color-ink-faint); }
+  .shui-git-nowrap { white-space: nowrap; }
+  .shui-git-hash {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 4px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font: 400 12px / 18px var(--font-mono);
+    cursor: pointer;
+  }
+  .shui-git-hash > svg { width: 12px; height: 12px; color: var(--color-ink-faint); }
+  .shui-git-hash:hover { background: var(--color-surface-hover); }
+  .shui-git-hash:focus-visible { outline: 2px solid var(--color-rule-focus); outline-offset: 1px; }
+
+  /* narrow: one pane at a time under a Back header, the actions in a bar
+     along the bottom, rows sized for a thumb */
+  .shui-git-window[data-narrow] .shui-git-pane { flex-direction: column; }
+  .shui-git-actionbar {
+    height: auto;
+    gap: 0;
+    padding: 0 4px env(safe-area-inset-bottom);
+    border-top: 1px solid var(--color-edge);
+    border-right: 0;
+  }
+  .shui-git-actionbar .shui-git-rail-action {
+    flex: 1 1 0;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    width: auto;
+    height: 48px;
+  }
+  .shui-git-rail-label {
+    max-width: 100%;
+    overflow: hidden;
+    font: 500 11px / 14px var(--font-sans);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shui-git-drill {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 44px;
+    padding: 0 4px;
+    border-bottom: 1px solid var(--color-edge);
+  }
+  .shui-git-drill-title {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    padding: 0 6px;
+    overflow: hidden;
+    color: var(--color-ink);
+    font: 600 14px / 20px var(--font-sans);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shui-git-back {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 2px;
+    height: 44px;
+    padding: 0 8px 0 4px;
+    border: 0;
+    background: transparent;
+    color: var(--color-accent);
+    font: 500 14px / 20px var(--font-sans);
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .shui-git-back[data-end] { padding: 0 8px; }
+  .shui-git-back > svg { width: 20px; height: 20px; }
+  .shui-git-back:focus-visible { outline: 2px solid var(--color-rule-focus); outline-offset: -2px; }
+  .shui-git-window[data-narrow] .shui-git-tree { --iii-ui-tree-row: 2.75rem; }
+  .shui-git-window[data-narrow] .shui-git-filters { flex-wrap: wrap; overflow-x: visible; }
+  .shui-git-window[data-narrow] .shui-git-filter-text { flex-basis: 100%; }
+  .shui-git-window[data-narrow] .shui-git-toggle,
+  .shui-git-window[data-narrow] .shui-git-filter { height: 36px; }
+  .shui-git-window[data-narrow] .shui-git-toggle { width: 36px; }
+  .shui-git-window[data-narrow] .shui-git-node { touch-action: manipulation; }
+  .shui-git-commit[data-narrow] { grid-template-columns: auto minmax(0, 1fr); padding-right: 12px; }
+  .shui-git-commit-byline { display: flex; min-width: 0; align-items: center; gap: 8px; }
+  .shui-git-commit-byline > .shui-git-commit-author { flex: 0 1 auto; }
+  .shui-git-commit-byline > .shui-git-ref { flex: 0 1 auto; min-width: 56px; max-width: 50%; }
+  .shui-git-commit-byline > .shui-git-commit-date { flex: none; }
+  .shui-git-window[data-narrow] .shui-git-file { height: 44px; touch-action: manipulation; }
+  .shui-git-window[data-narrow] .shui-git-files { flex: 1 1 auto; max-height: 50%; }
+  .shui-git-window[data-narrow] .shui-git-files.shui-git-compare { max-height: none; }
 
   /* ── narrow panels: phones, and desktop panels split small ────────── */
   @container shui-page (max-width: 720px) {

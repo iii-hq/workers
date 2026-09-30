@@ -10,6 +10,9 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
   Kbd,
 } from '@iii-dev/console-ui'
@@ -31,6 +34,15 @@ export type ContextMenuItem =
     }
   | { type: 'separator'; id: string }
   | { type: 'label'; id: string; label: string }
+  /** A row that opens `items` beside it. */
+  | {
+      type: 'submenu'
+      id: string
+      label: string
+      icon?: ReactNode
+      disabled?: boolean
+      items: readonly ContextMenuItem[]
+    }
 
 export interface ContextMenuAnchor {
   x: number
@@ -85,28 +97,45 @@ function ContextMenuSurface({ state, onClose }: { state: ContextMenuState; onClo
         />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="bottom" sideOffset={2} className="shui-context-menu">
-        {state.items.map((item) => {
-          if (item.type === 'separator') return <DropdownMenuSeparator key={item.id} />
-          if (item.type === 'label') return <DropdownMenuLabel key={item.id}>{item.label}</DropdownMenuLabel>
-          return (
-            <DropdownMenuItem
-              key={item.id}
-              className={`shui-context-item${item.danger ? ' danger' : ''}`}
-              disabled={item.disabled}
-              onSelect={() => {
-                onClose()
-                item.onSelect()
-              }}
-            >
-              <span className="menu-icon" aria-hidden>
-                {item.icon}
-              </span>
-              <span className="menu-label">{item.label}</span>
-              {item.shortcut ? <Kbd className="menu-shortcut">{item.shortcut}</Kbd> : null}
-            </DropdownMenuItem>
-          )
-        })}
+        {state.items.map((item) => renderItem(item, onClose))}
       </DropdownMenuContent>
     </DropdownMenu>
+  )
+}
+
+function renderItem(item: ContextMenuItem, onClose: () => void): ReactNode {
+  if (item.type === 'separator') return <DropdownMenuSeparator key={item.id} />
+  if (item.type === 'label') return <DropdownMenuLabel key={item.id}>{item.label}</DropdownMenuLabel>
+  if (item.type === 'submenu') {
+    return (
+      <DropdownMenuSub key={item.id}>
+        <DropdownMenuSubTrigger className="shui-context-item" disabled={item.disabled}>
+          <span className="menu-icon" aria-hidden>
+            {item.icon}
+          </span>
+          <span className="menu-label">{item.label}</span>
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="shui-context-menu">
+          {item.items.map((child) => renderItem(child, onClose))}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    )
+  }
+  return (
+    <DropdownMenuItem
+      key={item.id}
+      className={`shui-context-item${item.danger ? ' danger' : ''}`}
+      disabled={item.disabled}
+      onSelect={() => {
+        onClose()
+        item.onSelect()
+      }}
+    >
+      <span className="menu-icon" aria-hidden>
+        {item.icon}
+      </span>
+      <span className="menu-label">{item.label}</span>
+      {item.shortcut ? <Kbd className="menu-shortcut">{item.shortcut}</Kbd> : null}
+    </DropdownMenuItem>
   )
 }

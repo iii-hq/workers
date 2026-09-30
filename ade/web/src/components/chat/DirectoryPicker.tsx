@@ -106,6 +106,8 @@ interface DirectoryPickerProps {
   presentation?: 'trigger' | 'embedded'
   /** Called after an embedded picker accepts a directory. */
   onSelect?: () => void
+  /** Which edge of the default trigger the popover lines up with. */
+  popoverAlign?: 'start' | 'end'
 }
 
 function withProject(
@@ -284,6 +286,7 @@ export function DirectoryPicker({
   emptyLabel = 'Choose project',
   presentation = 'trigger',
   onSelect,
+  popoverAlign = 'end',
 }: DirectoryPickerProps) {
   const embedded = presentation === 'embedded'
   const [open, setOpen] = useState(false)
@@ -592,6 +595,7 @@ export function DirectoryPicker({
         onOpenChange={setOpen}
         triggerRef={triggerRef}
         alignToInlineTrigger={triggerAppearance === 'inline'}
+        align={popoverAlign}
       >
         {/* section tabs (only with the worktree worker present) */}
         {worktrees?.enabled ? (
@@ -916,6 +920,7 @@ function DirectoryPickerSurface({
   onOpenChange,
   triggerRef,
   alignToInlineTrigger,
+  align,
   children,
 }: {
   open: boolean
@@ -924,6 +929,7 @@ function DirectoryPickerSurface({
   onOpenChange: (open: boolean) => void
   triggerRef: RefObject<HTMLButtonElement | null>
   alignToInlineTrigger: boolean
+  align: 'start' | 'end'
   children: ReactNode
 }) {
   if (embedded) {
@@ -964,7 +970,7 @@ function DirectoryPickerSurface({
         <PortalScope>
           <PopoverPrimitive.Content
             side="top"
-            align={alignToInlineTrigger ? 'center' : 'end'}
+            align={alignToInlineTrigger ? 'center' : align}
             sideOffset={8}
             collisionPadding={12}
             sticky="always"

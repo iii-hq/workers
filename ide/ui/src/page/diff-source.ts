@@ -20,6 +20,12 @@ export type DiffSource =
   /** One revision against another: a commit against its parent, a stash
       against its base. `label` names the newer side (`0d5b60e`, `stash@{1}`). */
   | { type: 'revision'; from: string; to: string; label: string }
+  /** One commit's change to the file: its parent (null for a root commit)
+      → the commit. `from` is a rename's source, relative to the
+      repository's top level rather than the browsed root. */
+  | { type: 'commit'; sha: string; parent: string | null; from?: string }
+
+const HEX = /^[0-9a-f]{4,64}$/i
 
 export function diffSourceKey(source: DiffSource): string {
   switch (source.type) {
@@ -35,6 +41,8 @@ export function diffSourceKey(source: DiffSource): string {
       return `compare=${source.ref}`
     case 'change':
       return `change=${source.changeId}`
+    case 'commit':
+      return `commit=${source.parent ?? ''}..${source.sha}`
   }
 }
 
@@ -60,6 +68,8 @@ export function diffSourceLabel(source: DiffSource, turnLabel?: string): string 
       return source.ref.replace(/^refs\/(heads|tags|remotes)\//, '')
     case 'change':
       return 'Change'
+    case 'commit':
+      return source.sha.slice(0, 7)
   }
 }
 
@@ -80,13 +90,15 @@ export function diffSourceSides(source: DiffSource, turnLabel?: string): { old: 
       return { old: diffSourceLabel(source), new: 'working copy' }
     case 'change':
       return { old: 'before the call', new: 'after the call' }
+    case 'commit':
+      return { old: source.parent === null ? 'empty' : source.parent.slice(0, 7), new: source.sha.slice(0, 7) }
   }
 }
 
 /** Diffs that follow the working copy re-read when the disk changes; a
-    recorded change or a pair of revisions is fixed. */
+    recorded change, a pair of revisions and a commit are fixed. */
 export function diffSourceFollowsDisk(source: DiffSource): boolean {
-  return source.type !== 'change' && source.type !== 'revision'
+  return source.type !== 'change' && source.type !== 'revision' && source.type !== 'commit'
 }
 
 /** Tabs worth keeping across reloads: a change id dies with the worker
@@ -118,6 +130,13 @@ export function parseDiffSource(value: unknown): DiffSource | null {
       return typeof raw.changeId === 'string' && raw.changeId !== ''
         ? { type: 'change', changeId: raw.changeId }
         : null
+    case 'commit': {
+      if (typeof raw.sha !== 'string' || !HEX.test(raw.sha)) return null
+      if (raw.parent !== null && (typeof raw.parent !== 'string' || !HEX.test(raw.parent))) return null
+      if (raw.from !== undefined && (typeof raw.from !== 'string' || raw.from === '')) return null
+      const source: DiffSource = { type: 'commit', sha: raw.sha, parent: raw.parent }
+      return typeof raw.from === 'string' ? { ...source, from: raw.from } : source
+    }
     default:
       return null
   }

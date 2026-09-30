@@ -443,17 +443,38 @@ export interface ComposerControlProps {
   metadata: Readonly<Record<string, unknown>>
   /** Merge keys into the metadata; an `undefined` value removes the key. */
   setMetadata(patch: Record<string, unknown>): void
+  /**
+   * The session's working directory; `null` when it has none. A control
+   * moves it with `host.chat.requestWorkingDirectoryChange`. Absent on
+   * consoles that predate it.
+   */
+  workingDir?: string | null
+  /**
+   * The composer's options are locked, as the folder beside them is: a turn
+   * is running or the harness is unavailable. Absent on consoles that
+   * predate it; `isStreaming` is the fallback.
+   */
+  locked?: boolean
 }
 
 /**
- * A compact per-session setting rendered in the composer's footer, beside
- * the model picker: a value that applies to the session from its next turn
- * on, the way the model does. Duplicate `id`: last registration wins.
+ * A compact per-session control rendered in the composer: beside the model
+ * picker (a value that applies to the session from its next turn on, the way
+ * the model does), or with `placement: 'project'` in the working-directory
+ * strip after the folder. Duplicate `id`: last registration wins.
  */
 export interface ComposerControlRegistration {
   /** kebab-case; convention `<worker>-<name>`. */
   id: string
   render: React.ComponentType<ComposerControlProps>
+  /**
+   * `footer` (the default) sits beside the model picker. `project` sits in
+   * the working-directory strip above the composer, right after the folder,
+   * for what belongs to that folder (its git branch); it shows only where
+   * the console shows that strip. Consoles that predate it render every
+   * control in the footer.
+   */
+  placement?: 'footer' | 'project'
 }
 
 /** Props for a worker-owned annotation detail rendered in the transcript. */
@@ -664,6 +685,7 @@ export interface UiClasses {
   readonly treeItemTrailing: 'iii-ui-tree-item__trailing'
   readonly treeItemMeta: 'iii-ui-tree-item__meta'
   readonly treeItemAction: 'iii-ui-tree-item__action'
+  readonly treeItemActions: 'iii-ui-tree-item__actions'
   readonly card: 'iii-ui-card'
   readonly cardHeader: 'iii-ui-card__header'
   readonly cardBody: 'iii-ui-card__body'
@@ -1001,6 +1023,9 @@ export interface DropdownMenuContentProps extends React.HTMLAttributes<HTMLDivEl
   side?: 'top' | 'right' | 'bottom' | 'left'
   align?: 'start' | 'center' | 'end'
   sideOffset?: number
+  /** As the menu opens and moves focus into itself; `preventDefault()`
+      keeps that focus from its first item, to focus another control. */
+  onOpenAutoFocus?(event: Event): void
 }
 export declare const DropdownMenuContent: React.ComponentType<DropdownMenuContentProps>
 export interface DropdownMenuItemProps extends React.HTMLAttributes<HTMLDivElement> {
@@ -1499,6 +1524,9 @@ export interface TabsTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonE
 export declare const TabsTrigger: React.ComponentType<TabsTriggerProps>
 export interface TabsContentProps extends React.HTMLAttributes<HTMLDivElement> {
   value: string
+  /** Keep the panel mounted while another tab shows (its state, scroll and
+      selection survive); `[data-state="inactive"]` then marks it for hiding. */
+  forceMount?: true
 }
 export declare const TabsContent: React.ComponentType<TabsContentProps>
 

@@ -133,7 +133,11 @@ import {
 import type { PageCommandsApi } from '@/types/injectable-ui'
 import { ActiveSubagentChips } from './ActiveSubagentChips'
 import { idleComposerPlaceholder } from './agent-defaults'
-import { Composer, type ComposerSubmitPayload } from './Composer'
+import {
+  Composer,
+  type ComposerSubmitPayload,
+  composerControlNodes,
+} from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
@@ -1015,9 +1019,10 @@ export function ChatView({
     })
   }, [extSessionTurnSummaries, conversation.id, streamingIndicator])
 
-  // Worker settings for this session, beside the model picker. Writes go
-  // through the console's own metadata writer (never the worker's), so they
-  // cannot race the model/thinking writes and apply from the next turn on.
+  // Worker settings for this session, beside the model picker (or, placed in
+  // the project strip, after the folder). Writes go through the console's own
+  // metadata writer (never the worker's), so they cannot race the
+  // model/thinking writes and apply from the next turn on.
   const extComposerControls = useExtComposerControls()
   const setSessionMetadata = conversationsCtx?.setSessionMetadata
   const composerControls = useMemo(() => {
@@ -1025,24 +1030,22 @@ export function ChatView({
     const metadata = conversation.sessionMetadata ?? {}
     const setMetadata = (patch: Record<string, unknown>) =>
       setSessionMetadata(conversation.id, patch)
-    return [...extComposerControls].sort(compareChips).map((control) => {
-      const Control = control.render
-      return (
-        <Control
-          key={control.id}
-          sessionId={conversation.id}
-          isStreaming={streamingIndicator}
-          metadata={metadata}
-          setMetadata={setMetadata}
-        />
-      )
+    return composerControlNodes([...extComposerControls].sort(compareChips), {
+      sessionId: conversation.id,
+      isStreaming: streamingIndicator,
+      metadata,
+      setMetadata,
+      workingDir: conversationWorkingDir,
+      locked: streamingIndicator || harnessBlocked,
     })
   }, [
     extComposerControls,
     setSessionMetadata,
     conversation.id,
     conversation.sessionMetadata,
+    conversationWorkingDir,
     streamingIndicator,
+    harnessBlocked,
   ])
 
   const extComposerActions = useExtComposerActions()
@@ -3036,7 +3039,8 @@ export function ChatView({
               onAttachmentsChange={handleComposerAttachmentsChange}
               syncedAttachments={conversation.draftAttachments}
               composerActions={composerActions}
-              composerControls={composerControls}
+              composerControls={composerControls?.footer}
+              projectControls={composerControls?.project}
               onSubmit={handleSubmit}
               onStop={handleStop}
               stopping={stopping}
