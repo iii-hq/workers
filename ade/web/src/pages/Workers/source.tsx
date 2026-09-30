@@ -271,6 +271,19 @@ function PathSource({ api, actions, declared, onOpenSettings }: Props) {
     }
   }, [api, settled, moved, declared.run])
 
+  const pointTo = async (path: string) => {
+    const ok = await actions.confirm({
+      title: `Point ${declared.name} to ${shortPath(path)}?`,
+      description: `${declared.name} restarts from that directory. If it does not build or start there, it stays down until you point it back.`,
+      confirmLabel: 'Point and restart',
+    })
+    if (ok)
+      await actions.track(
+        `Pointing ${declared.name} to ${shortPath(path)}`,
+        () => api.edit(declared.name, { worker: `path://${path}` }),
+      )
+  }
+
   const renamed = moved && basename(settled) !== declared.name
   const ready = moved && !renamed && !!target?.manifest
   const shortTarget = target ? shortPath(target.path) : shortPath(settled)
@@ -408,15 +421,7 @@ function PathSource({ api, actions, declared, onOpenSettings }: Props) {
               variant="primary"
               size="sm"
               disabled={actions.busy}
-              onClick={() =>
-                void actions.track(
-                  `Pointing ${declared.name} to ${shortTarget}`,
-                  () =>
-                    api.edit(declared.name, {
-                      worker: `path://${target.path}`,
-                    }),
-                )
-              }
+              onClick={() => void pointTo(target.path)}
             >
               Point to {shortTarget}
             </Button>
