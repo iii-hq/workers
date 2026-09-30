@@ -455,23 +455,36 @@ pub fn preview_file(snapshot: &Snapshot) -> FilePreview {
             bytes.len().max(4),
             MAX_PARSE_BYTES,
         );
-        preview.declarations = Some(
-            syntax
-                .units
-                .into_iter()
-                .filter(|unit| !unit.partial)
-                .map(|unit| Declaration {
-                    name: unit.name,
-                    start_line: unit.start_line,
-                    end_line: unit.end_line,
-                })
-                .collect(),
-        );
-        while preview.declarations.as_ref().is_some_and(|d| !d.is_empty())
-            && json_len(&preview) > PREVIEW_INDEX_JSON_BYTES
-        {
-            preview.declarations.as_mut().map(Vec::pop);
-            preview.declaration_index_truncated = Some(true);
+        let all: Vec<Declaration> = syntax
+            .units
+            .into_iter()
+            .filter(|unit| !unit.partial)
+            .map(|unit| Declaration {
+                name: unit.name,
+                start_line: unit.start_line,
+                end_line: unit.end_line,
+            })
+            .collect();
+        let mut fits = |keep: usize, truncated: bool| {
+            preview.declarations = Some(all[..keep].to_vec());
+            preview.declaration_index_truncated = Some(truncated);
+            json_len(&preview) <= PREVIEW_INDEX_JSON_BYTES
+        };
+        if !fits(all.len(), false) && !all.is_empty() {
+            // retrieve.ts pops one entry at a time until the preview fits
+            // (quadratic: 40k declarations took 23 s). The JSON grows with
+            // the kept prefix, so a binary search keeps the same prefix:
+            // `lo` is kept (an empty index stops the pops), `hi` is not.
+            let (mut lo, mut hi) = (0, all.len());
+            while hi - lo > 1 {
+                let mid = (lo + hi) / 2;
+                if fits(mid, true) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            fits(lo, true);
         }
     }
     preview
@@ -653,6 +666,14 @@ mod tests {
         assert!(declarations.len() < 2_000);
         assert_eq!(big.declaration_index_truncated, Some(true));
         assert!(json_len(&big) <= PREVIEW_INDEX_JSON_BYTES);
+        // the longest prefix that fits, as retrieve.ts's pop loop keeps
+        let mut longer = big.clone();
+        longer.declarations.as_mut().unwrap().push(Declaration {
+            name: format!("f{:04}", declarations.len()),
+            start_line: declarations.len() + 1,
+            end_line: declarations.len() + 1,
+        });
+        assert!(json_len(&longer) > PREVIEW_INDEX_JSON_BYTES);
         // unsupported languages and text fallbacks list none
         let text = preview_file(&snapshot("a.txt", source));
         assert_eq!(text.declarations, Some(Vec::new()));

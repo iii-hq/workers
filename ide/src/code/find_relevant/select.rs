@@ -526,16 +526,16 @@ pub async fn select_file(run: Arc<Run>, candidate: Candidate) -> (String, Option
                 halve(&mut groups);
                 continue;
             }
-            Err(JudgeError::TooLarge) => {
-                run.issue("request-size");
-                break;
-            }
-            // Another group may still be answered.
-            Err(JudgeError::Rejected(_)) => {
+            // selection.ts warns and moves on to the next group (a 413 or a
+            // timeout is a "provider" failure there); an outage or the ask
+            // deadline stops the loop through `run.stopped()`.
+            Err(error) => {
+                if matches!(error, JudgeError::TooLarge) {
+                    run.issue("request-size");
+                }
                 index += 1;
                 continue;
             }
-            Err(_) => break,
         };
         for (i, unit) in group.iter().enumerate() {
             let answer =
@@ -799,6 +799,78 @@ mod tests {
         assert_eq!(asked, [1; 8]);
         assert_eq!(run.state().judge_calls, sent.len() as u64);
         assert_eq!(ranges(&selected), [(1, 9)]);
+    }
+
+    #[tokio::test]
+    async fn judge_failures_halve_or_skip_the_group_and_later_groups_are_asked() {
+        let source: String = (0..4)
+            .map(|i| format!("function f{i}() {{ return {i}; }}\n\n\n\n\n\n\n\n\n"))
+            .collect();
+        let (selected, run, sent) = select(&source, "a.ts", MAX_STATE_BYTES, |d, ev| {
+            if ev.state["declarations"].as_array().unwrap().len() > 1 {
+                return Err(JudgeError::TooLarge);
+            }
+            match d["name"].as_str().unwrap() {
+                "f0" => Err(JudgeError::TooLarge),
+                "f1" => Err(JudgeError::Deadline),
+                _ => Ok(0.9),
+            }
+        })
+        .await;
+        let asked: Vec<usize> = sent
+            .iter()
+            .map(|ev| ev.state["declarations"].as_array().unwrap().len())
+            .collect();
+        assert_eq!(asked, [4, 2, 1, 1, 2, 1, 1]);
+        let issues = issues(&run);
+        assert_eq!(issues.get("request-size"), Some(&1));
+        assert_eq!(issues.get("deadline"), Some(&1));
+        // f2 (line 19) and f3 (line 28) are still selected
+        assert_eq!(ranges(&selected), [(16, 22), (25, 31)]);
+    }
+
+    #[tokio::test]
+    async fn a_giant_line_is_listed_by_bytes_and_never_pulled_into_an_excerpt() {
+        let source = format!(
+            "function target() {{\n  return 1;\n}}\nconst big = \"{}\";\n",
+            "x".repeat(25_000)
+        );
+        let (selected, _, sent) = select(&source, "a.ts", MAX_STATE_BYTES, |d, _| {
+            Ok(if named(d, "target") { 0.9 } else { 0.0 })
+        })
+        .await;
+        let context = sent[0].state["source"].as_str().unwrap();
+        assert!(context.starts_with("Source lines 1-3; source bytes 0-"));
+        assert!(context.contains("\nSource lines 4-4; source bytes "));
+        // line 4 is within ±3 lines of the selection but stays out
+        assert_eq!(ranges(&selected), [(1, 3)]);
+        assert!(!selected.excerpts[0].text.contains('x'));
+    }
+
+    #[tokio::test]
+    async fn a_unit_over_24000_bytes_is_asked_in_16_line_blocks() {
+        let body: String = (0..38)
+            .map(|i| format!("  const v{i:02} = \"{}\";\n", "y".repeat(680)))
+            .collect();
+        let source = format!("function big() {{\n{body}}}\n");
+        let (selected, _, sent) = select(&source, "a.ts", MAX_STATE_BYTES, |_, _| Ok(0.3)).await;
+        let asked: Vec<(u64, u64)> = sent
+            .iter()
+            .flat_map(|ev| ev.state["declarations"].as_array().unwrap())
+            .map(|d| {
+                (
+                    d["startLine"].as_u64().unwrap(),
+                    d["endLine"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(asked, [(1, 16), (17, 32), (33, 40)]);
+        let leads: Vec<_> = selected
+            .leads
+            .iter()
+            .map(|l| (l.name.as_str(), l.line_from, l.line_to))
+            .collect();
+        assert_eq!(leads, [("big", 1, 16), ("big", 17, 32), ("big", 33, 40)]);
     }
 
     #[tokio::test]

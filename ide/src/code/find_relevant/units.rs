@@ -320,7 +320,7 @@ fn declarations(source: &str, go: bool) -> Option<(Vec<Decl>, Vec<SourceRange>)>
             });
         }
     } else {
-        rust_visit(&named(root), "", &[], source, &mut units);
+        rust_visit(&named(root), "", &[], source, &mut units, 0)?;
     }
     Some((units, comments))
 }
@@ -348,13 +348,22 @@ fn start_with_attributes(node: Node<'_>) -> usize {
     node_range(start).start_line
 }
 
+/// Nesting deeper than this inspects as text. jevgrep's recursion runs in a
+/// parser child process, where a stack overflow becomes a failed parse (text
+/// fallback); here it would abort the whole worker.
+const MAX_RUST_DEPTH: usize = 256;
+
 fn rust_visit(
     nodes: &[Node<'_>],
     prefix: &str,
     headers: &[SourceRange],
     source: &str,
     units: &mut Vec<Decl>,
-) {
+    depth: usize,
+) -> Option<()> {
+    if depth > MAX_RUST_DEPTH {
+        return None;
+    }
     let mut owned = headers.to_vec();
     owned.extend(
         nodes
@@ -395,7 +404,7 @@ fn rust_visit(
             } else {
                 format!("{prefix}{owner}.")
             };
-            rust_visit(&members, &prefix, &own, source, units);
+            rust_visit(&members, &prefix, &own, source, units, depth + 1)?;
         } else {
             units.push(Decl {
                 name: format!("{prefix}{owner}"),
@@ -404,6 +413,7 @@ fn rust_visit(
             });
         }
     }
+    Some(())
 }
 
 /// source.ts TypeScript branch: top-level statements, a class with members
@@ -993,5 +1003,17 @@ mod tests {
         assert!(big
             .iter()
             .all(|u| u.partial && u.owner_headers == [range(1, 1)]));
+    }
+
+    #[test]
+    fn deeply_nested_rust_modules_are_text_not_a_stack_overflow() {
+        let source = format!("{}{}", "mod a{".repeat(10_000), "}".repeat(10_000));
+        let result = std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || inspect("deep.rs", &source, 3000, MAX_PARSE_BYTES))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(result.text);
     }
 }
