@@ -225,6 +225,14 @@ rules:
   - '!computer::screencast::stop'
   - '!computer::frame'
   - '!computer::on-config-change'
+  # ios-simulator: touch/watch/frame feed the console's live iPhone; agents
+  # use gesture/screenshot. tenants::list is operator-only (it names every
+  # consumer on a shared Mac). The device surface stays at needs_approval.
+  - '!ios-simulator::touch'
+  - '!ios-simulator::watch'
+  - '!ios-simulator::frame'
+  - '!ios-simulator::tenants::list'
+  - '!ios-simulator::on-config-change'
   # rbac-proxy: internal reload + catalog-cache hooks — invoked only by the
   # engine's trigger dispatch, never agent-callable. The handlers already
   # re-fetch/ignore the event payload; these denies are defense-in-depth.

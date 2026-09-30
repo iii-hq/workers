@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getIiiClient } from '@/lib/iii-client'
 import {
   fetchWorkspaceLayout,
+  layoutRevision,
   setWorkspaceLayout,
   WORKSPACE_GET_FUNCTION_ID,
   WORKSPACE_SET_FUNCTION_ID,
@@ -33,10 +34,15 @@ describe('workspace layout transport', () => {
       return { ok: true }
     })
     expect(await fetchWorkspaceLayout()).toEqual(stored)
-    await setWorkspaceLayout({ ...stored, activeTabId: 'tab-2' })
+    await setWorkspaceLayout(
+      { ...stored, activeTabId: 'tab-2' },
+      { ...stored, revision: 4 },
+    )
     expect(trigger).toHaveBeenCalledWith('console::workspace::get', {})
+    // The revision guarded is the one the change was computed from.
     expect(trigger).toHaveBeenCalledWith('console::workspace::set', {
       value: { ...stored, activeTabId: 'tab-2' },
+      expected_revision: 4,
     })
     expect(
       trigger.mock.calls.some(([fn]) =>
@@ -51,7 +57,16 @@ describe('workspace layout transport', () => {
 
     trigger.mockRejectedValue(new Error('function_not_found'))
     expect(await fetchWorkspaceLayout()).toBeNull()
-    await expect(setWorkspaceLayout({})).rejects.toThrow('function_not_found')
+    await expect(setWorkspaceLayout({}, {})).rejects.toThrow(
+      'function_not_found',
+    )
+  })
+
+  it('reads a missing or malformed revision as 0', () => {
+    expect(layoutRevision({ revision: 7 })).toBe(7)
+    for (const revision of [undefined, '7', -1, 1.5, null]) {
+      expect(layoutRevision({ revision })).toBe(0)
+    }
   })
 
   it('propagates other failures so the writer can retry on the next poll', async () => {

@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::summarize::{summarize_head, PromptSteering};
 use crate::core::budget::{default_reserved, preserve_recent_budget, usable};
 use crate::core::estimate::{by_role_from_sizes, estimator_for_model, Estimator};
 use crate::core::lease;
@@ -22,12 +23,10 @@ use crate::core::prune::{
     cap_results_with_sizes, emergency_reduce_with_sizes, prune_with_sizes, PruneParams,
 };
 use crate::core::selection::select;
-use crate::core::summary::{
-    build_system_prompt, render_system_prompt, render_user_prompt, strip_media,
-};
+use crate::core::summary::render_system_prompt;
 use crate::error::ContextError;
 use crate::functions::resolve_model;
-use crate::ports::{Deps, SummarizeRequest};
+use crate::ports::Deps;
 use crate::types::{
     AgentFunction, AgentMessage, ByRoleTokens, ContentBlock, EstimatorName, ModelInput, Role,
     ThinkingLevel,
@@ -100,6 +99,11 @@ fn normalize_media(messages: &mut [AgentMessage], supports_vision: Option<bool>)
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AssembleOptions {
+    /// Read-only model-switch preview: apply normal media/cap/prune rules and
+    /// return the pre-compaction estimate, even when over budget. Never invokes
+    /// the summarizer, acquires a lease, or performs emergency reduction.
+    #[serde(default)]
+    pub preview_only: bool,
     /// Override the default reserve (`min(20000, 10% of context_window)`).
     #[serde(default)]
     pub reserved_tokens: Option<u64>,
@@ -378,7 +382,10 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     }
 
     // Step 2: compact the head.
-    if token_count > usable_budget && options.allow_compaction.unwrap_or(true) {
+    if !options.preview_only
+        && token_count > usable_budget
+        && options.allow_compaction.unwrap_or(true)
+    {
         // The default lease key hashes the *request* message set —
         // the same derivation context::compact uses — so callers
         // hitting both functions with the same history contend on the
@@ -415,7 +422,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     // Step 3: enforce the budget by reducing complete function-result
     // messages, including latest/protected results and their details.
     // This pass is intentionally independent of all normal-prune knobs.
-    if token_count > usable_budget {
+    if !options.preview_only && token_count > usable_budget {
         let emergency = emergency_reduce_with_sizes(
             &mut working,
             &mut sizes,
@@ -441,7 +448,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         "size memo drifted from a from-scratch recount"
     );
 
-    if token_count > usable_budget {
+    if !options.preview_only && token_count > usable_budget {
         return Err(ContextError::Overflow {
             token_count,
             usable: usable_budget,
@@ -524,15 +531,18 @@ async fn try_compact(
         }
 
         let tokens_before: u64 = sizes[..selection.head_len].iter().sum();
-        let stripped = strip_media(head, config.max_output_chars);
-        let request = SummarizeRequest {
-            system_prompt: build_system_prompt(previous_summary, None),
-            user_prompt: render_user_prompt(&stripped),
-            model: model.id.clone(),
-            provider: model.provider.clone(),
-        };
-
-        match deps.summarizer.summarize(request).await {
+        match summarize_head(
+            deps,
+            model,
+            head,
+            usable_budget,
+            PromptSteering {
+                previous_summary,
+                instructions: None,
+            },
+        )
+        .await
+        {
             Ok(summary) => Some(CompactionOutcome {
                 summary,
                 head_len: selection.head_len,

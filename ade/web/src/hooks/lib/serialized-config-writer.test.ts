@@ -111,6 +111,79 @@ describe('SerializedConfigWriter', () => {
     expect(remote).toMatchObject({ count: 1 })
   })
 
+  it('re-applies a change on a fresh read when another writer got there first', async () => {
+    // A store that refuses a write computed from an older revision.
+    let remote: ConsoleConfigValue = { revision: 1, tabs: 1 }
+    let reads = 0
+    let writes = 0
+    let failures = 0
+    let cache: ConsoleConfigValue = { ...remote }
+    const conflict = { code: 'CONFLICT' }
+    const writer = new SerializedConfigWriter({
+      readRemote: async () => {
+        reads += 1
+        return { ...remote }
+      },
+      writeRemote: async (value, base) => {
+        writes += 1
+        // An agent's open lands between the first read and its write.
+        if (writes === 1) remote = { ...remote, opened: true, revision: 2 }
+        if (base.revision !== remote.revision) throw conflict
+        remote = { ...value, revision: numeric(remote, 'revision') + 1 }
+      },
+      readCached: () => cache,
+      publish: (value) => {
+        cache = value
+      },
+      onCommitError: () => {
+        failures += 1
+      },
+      retryOn: (error) => error === conflict,
+    })
+
+    cache = writer.enqueue((value) => ({
+      ...value,
+      tabs: numeric(value, 'tabs') + 1,
+    }))
+    await writer.whenIdle()
+
+    expect([reads, writes, failures]).toEqual([2, 2, 0])
+    expect(remote).toEqual({ revision: 3, tabs: 2, opened: true })
+    expect(cache).toMatchObject({ tabs: 2, opened: true })
+  })
+
+  it('stops after three conflicting writes and never retries other failures', async () => {
+    let writes = 0
+    let failures = 0
+    let cache: ConsoleConfigValue = {}
+    const conflict = { code: 'CONFLICT' }
+    let failWith: unknown = conflict
+    const writer = new SerializedConfigWriter({
+      readRemote: async () => ({}),
+      writeRemote: async () => {
+        writes += 1
+        throw failWith
+      },
+      readCached: () => cache,
+      publish: (value) => {
+        cache = value
+      },
+      onCommitError: () => {
+        failures += 1
+      },
+      retryOn: (error) => error === conflict,
+    })
+
+    writer.enqueue((value) => ({ ...value, tabs: 1 }))
+    await writer.whenIdle()
+    expect([writes, failures]).toEqual([3, 1])
+
+    failWith = new Error('disk full')
+    writer.enqueue((value) => ({ ...value, tabs: 2 }))
+    await writer.whenIdle()
+    expect([writes, failures]).toEqual([4, 2])
+  })
+
   it('reports a failed write, after which a read shows the server copy', async () => {
     let cache: ConsoleConfigValue = { count: 0 }
     let failures = 0

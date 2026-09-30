@@ -3,6 +3,7 @@
 //! `pub async fn handle(deps, req)` the registration closure wraps; tests call
 //! the same `handle` functions directly (SOP §7).
 
+pub mod context_policy;
 pub mod delete_session_tree;
 pub mod filesystem;
 pub mod function_resolve;
@@ -69,6 +70,9 @@ pub const STATUS_ID: &str = "harness::status";
 pub const STATUS_DESC: &str =
     "Read a session's current turn. Returns a lean summary by default; pass verbose: true for the \
      full runtime report and untruncated result.";
+pub const CONTEXT_POLICY_ID: &str = "harness::context-policy";
+pub const CONTEXT_POLICY_DESC: &str =
+    "Return the Harness context-pruning policy for a destination model without making a model request.";
 
 pub const SYSTEM_PROMPT_ID: &str = "harness::system-prompt::get";
 pub const SYSTEM_PROMPT_DESC: &str =
@@ -333,6 +337,13 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         SYSTEM_PROMPT_ID,
         SYSTEM_PROMPT_DESC,
         |d, r| async move { system_prompt::handle(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        CONTEXT_POLICY_ID,
+        CONTEXT_POLICY_DESC,
+        |d, r| async move { context_policy::handle(&d, r).await },
     );
     register(
         iii,

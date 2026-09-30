@@ -155,9 +155,13 @@ export async function appendCustomEntry(input: {
   custom_type: string
   data: unknown
   entry_id?: string
-}): Promise<void> {
+}): Promise<{ entry_id: string; parent_id: string | null; timestamp: number }> {
   const client = await getIiiClient()
-  await client.trigger('session::append', {
+  return client.trigger<{
+    entry_id: string
+    parent_id: string | null
+    timestamp: number
+  }>('session::append', {
     session_id: input.session_id,
     custom: { custom_type: input.custom_type, data: input.data },
     ...(input.entry_id ? { entry_id: input.entry_id } : {}),

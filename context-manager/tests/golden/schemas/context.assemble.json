@@ -275,6 +275,11 @@
               "null"
             ]
           },
+          "preview_only": {
+            "default": false,
+            "description": "Read-only model-switch preview: apply normal media/cap/prune rules and return the pre-compaction estimate, even when over budget. Never invokes the summarizer, acquires a lease, or performs emergency reduction.",
+            "type": "boolean"
+          },
           "previous_summary": {
             "default": null,
             "description": "Persisted summary from a prior compaction (see the spec's \"The compaction round trip\"); rendered into the system prompt and used as the anchor if compaction triggers again.",

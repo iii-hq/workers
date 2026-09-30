@@ -11,7 +11,7 @@ unset III_CONFIG_NAME
 cargo test --manifest-path "$ROOT/crates/config-client/Cargo.toml" --locked --offline --lib
 for worker in a2ui ade approval-gate bridge browser canvas code-runner codex computer \
   context-manager cron database devin document email github grok harness http ide \
-  iii-directory memory memory-consolidate pdf provider-xai pubsub queue rbac-proxy \
+  iii-directory ios-simulator memory memory-consolidate pdf provider-xai pubsub queue rbac-proxy \
   security-scan session-manager slack state storage tailscale telegram-bot voice \
   worktree fp web workflow sandbox-code-runner kanban; do
   printf '\n=== %s: configuration library tests ===\n' "$worker"

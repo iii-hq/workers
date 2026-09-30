@@ -32,6 +32,7 @@ import {
   withScreenDetached,
   withScreenOpenedBeside,
   withTabClosed,
+  withTabSizes,
   withWorkspaceScreenOpened,
   withWorkspaceTabs,
   workspaceLayoutSource,
@@ -820,5 +821,24 @@ describe('persisted shapes from earlier releases', () => {
     expect(tabs.map((t) => t.id)).toEqual(['tab-home', 'tab-2'])
     expect(tabPaneIds(tabs[1])).toEqual(['tab-2:pane:0'])
     expect(resolvePointer(null, parseActivation(value))).toBe('tab-2')
+  })
+})
+
+describe('withTabSizes', () => {
+  const tab: WorkspaceTab = {
+    id: 'a',
+    columns: 3,
+    screens: ['chat', 'ext:onboarding', 'traces'],
+  }
+
+  it('normalizes one positive width per column', () => {
+    expect(withTabSizes(tab, [3, 4, 3]).sizes).toEqual([0.3, 0.4, 0.3])
+  })
+
+  it('leaves the tab alone for a wrong count or a non-positive width', () => {
+    expect(withTabSizes(tab, [0.5, 0.5])).toBe(tab)
+    expect(withTabSizes(tab, [0.5, 0, 0.5])).toBe(tab)
+    expect(withTabSizes(tab, [0.5, Number.NaN, 0.5])).toBe(tab)
+    expect(withTabSizes(tab, undefined)).toBe(tab)
   })
 })

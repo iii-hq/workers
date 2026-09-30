@@ -147,6 +147,7 @@ import {
   skillSelectionForSend,
 } from './system-prompt-selection'
 import { deriveTurnVisualState } from './turn-visual-state'
+import { useModelSwitch } from './use-model-switch'
 
 /**
  * Order the header's injected chips deterministically. The registry appends
@@ -893,6 +894,27 @@ export function ChatView({
     )
     return catalog?.id ?? last.model
   }, [conversation.model, conversation.messages, modelOptions, imported])
+
+  const modelSwitch = useModelSwitch({
+    backend,
+    sessionId: conversation.id,
+    currentModel: effectiveModel,
+    models: modelOptions,
+    draft: conversation.draft === true,
+    disabled: submitBlocked || streamingIndicator || modelLocked,
+    transcript: conversation.messages,
+    revision: conversation.updatedAt,
+    onSwitch: (model) => onUpdateModel(conversation.id, model),
+    onCompacted: (switchApplied) => {
+      announcer.announce(
+        switchApplied
+          ? 'Conversation compacted. Switching models.'
+          : 'Conversation compacted. The model switch was not applied.',
+      )
+    },
+  })
+  // Synchronous send guard covers the check, confirmation and compaction.
+  submitBlockedRef.current = submitBlocked || modelSwitch.pending
 
   const contextWindow = useMemo(() => {
     const match = modelOptions.find((o) => o.id === effectiveModel)
@@ -2774,13 +2796,11 @@ export function ChatView({
           </span>
         </div>
       </PageHeader>
-
       {!readOnly && approvalSettings.settings.mode === 'full' ? (
         <FullPermissionsBanner
           onDisable={() => void approvalSettings.setMode('manual')}
         />
       ) : null}
-
       <ChatFileNavigation
         messages={conversation.messages}
         historyComplete={
@@ -2838,7 +2858,19 @@ export function ChatView({
         </RegisteredTriggerStatusProvider>
       </ChatFileNavigation>
       <LiveRegion announcement={announcer.announcement} />
-
+      {modelSwitch.dialog}
+      {modelSwitch.error || modelSwitch.notice ? (
+        <StatusPanel
+          role={modelSwitch.error ? 'alert' : 'status'}
+          variant={modelSwitch.error ? 'alert' : 'info'}
+          headline={
+            modelSwitch.error
+              ? 'Model switch not completed'
+              : 'Switching models'
+          }
+          detail={modelSwitch.error ?? modelSwitch.notice}
+        />
+      ) : null}
       {readOnly ? (
         <footer className={footerPad}>
           <div className="mx-auto max-w-[760px]">
@@ -2961,7 +2993,9 @@ export function ChatView({
               modelOptions={modelOptions}
               catalogLoading={catalogLoading}
               modelPickerOpenRequest={modelPickerOpenRequest}
-              modelLocked={modelLocked}
+              modelLocked={
+                modelLocked || modelSwitch.pending || sessionHydrating
+              }
               functionEntries={functionEntries}
               searchFiles={searchFiles}
               onOpenFileMention={
@@ -2972,7 +3006,7 @@ export function ChatView({
               showPermissionMode={approvalEnabled}
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={handleThinkingLevelChange}
-              onModelChange={(next) => onUpdateModel(conversation.id, next)}
+              onModelChange={modelSwitch.request}
               showWorkingDir={workingDirEnabled}
               workingDir={conversation.workingDir ?? null}
               showMemoryBank={
@@ -3010,7 +3044,7 @@ export function ChatView({
               isStreaming={streamingIndicator}
               queueWhileStreaming={!!backend.queueMessage}
               blocked={harnessBlocked}
-              submitBlocked={submitBlocked}
+              submitBlocked={submitBlocked || modelSwitch.pending}
               autoFocus={focusComposerOnOpen && !harnessBlocked}
               idlePlaceholder={idleComposerPlaceholder(
                 conversation.agentProfile,
@@ -3025,7 +3059,6 @@ export function ChatView({
           </div>
         </footer>
       )}
-
       {workingDirEnabled ? (
         <FilesystemAccessDialog
           open={filesystemDialogOpen}

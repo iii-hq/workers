@@ -57,7 +57,7 @@ export interface ModelPickerProps {
   /** Incremented by a parent CTA to open this picker when its trigger is visible. */
   openRequest?: number
   thinkingLevel: ThinkingLevel
-  onChange: (next: ModelId) => void
+  onChange: (next: ModelId, thinkingLevel?: ThinkingLevel) => unknown
   onThinkingLevelChange: (next: ThinkingLevel) => void
   disabled?: boolean
   loading?: boolean
@@ -351,7 +351,11 @@ export function ModelPicker({
           value={value}
           options={options}
           thinkingLevel={thinkingLevel}
-          onChange={onChange}
+          onChange={(next, effort) => {
+            const result = onChange(next, effort)
+            if (result instanceof Promise) setOpen(false)
+            return result
+          }}
           onThinkingLevelChange={onThinkingLevelChange}
           onConfigureProvider={
             showProviderConfiguration ? openProviderConfiguration : undefined
@@ -566,7 +570,7 @@ interface ModelPickerPanelProps {
   value: ModelId | null
   options: ModelOption[]
   thinkingLevel: ThinkingLevel
-  onChange: (next: ModelId) => void
+  onChange: (next: ModelId, thinkingLevel?: ThinkingLevel) => unknown
   onThinkingLevelChange: (next: ThinkingLevel) => void
   onConfigureProvider?: (providerId: string) => void
   /** Opens the registry page; absent hides the add affordance. */
@@ -796,8 +800,20 @@ export function ModelPickerPanel({
     const nextEffort = effortSupported(nextEfforts, remembered)
       ? remembered
       : 'default'
-    onChange(next)
-    if (nextEffort !== thinkingLevel) onThinkingLevelChange(nextEffort)
+    const result = onChange(next, nextEffort)
+    const applyEffort = () => {
+      if (nextEffort !== thinkingLevel) onThinkingLevelChange(nextEffort)
+    }
+    if (result instanceof Promise) {
+      void result.then(
+        (accepted) => {
+          if (accepted === true) applyEffort()
+        },
+        () => undefined,
+      )
+    } else {
+      applyEffort()
+    }
   }
 
   const showRail = onAddProvider !== undefined || groups.length > 0

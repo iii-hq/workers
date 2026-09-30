@@ -57,6 +57,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "harness::delete-session-tree",
             "harness::delete-session-tree-status",
             "harness::status",
+            "harness::context-policy",
             "harness::system-prompt::get",
             "harness::session-tree",
             "harness::metrics",

@@ -6,6 +6,10 @@ export type SerializedValue = Record<string, unknown>
 
 export type ConfigTransform = (value: SerializedValue) => SerializedValue
 
+/** Writes one queued change may take when `retryOn` keeps saying another
+ *  writer got there first. */
+const MAX_WRITE_ATTEMPTS = 3
+
 interface PendingConfigWrite {
   revision: number
   transform: ConfigTransform
@@ -13,12 +17,16 @@ interface PendingConfigWrite {
 
 export interface SerializedConfigWriterOptions {
   readRemote: () => Promise<SerializedValue | null>
-  writeRemote: (value: SerializedValue) => Promise<void>
+  /** `base` is the remote value `value` was computed from. */
+  writeRemote: (value: SerializedValue, base: SerializedValue) => Promise<void>
   readCached: () => SerializedValue | null | undefined
   publish: (value: SerializedValue) => void
   cancelReads?: () => void
   /** A write failed and the cache still shows its optimistic value. */
   onCommitError?: () => void
+  /** The write failed because another writer moved the document after it
+   *  was read: read again and re-apply the same change. */
+  retryOn?: (error: unknown) => boolean
 }
 
 /**
@@ -84,9 +92,7 @@ export class SerializedConfigWriter {
 
   private async commit(entry: PendingConfigWrite): Promise<void> {
     try {
-      const current = (await this.options.readRemote()) ?? {}
-      const committed = entry.transform(current)
-      await this.options.writeRemote(committed)
+      const committed = await this.write(entry.transform)
 
       this.removePending(entry.revision)
       this.settledRevision = entry.revision
@@ -109,6 +115,21 @@ export class SerializedConfigWriter {
       // owner re-reads (`onCommitError`), or its next refresh reconciles the
       // optimistic cache.
       this.options.onCommitError?.()
+    }
+  }
+
+  private async write(transform: ConfigTransform): Promise<SerializedValue> {
+    for (let attempt = 1; ; attempt++) {
+      const current = (await this.options.readRemote()) ?? {}
+      const committed = transform(current)
+      try {
+        await this.options.writeRemote(committed, current)
+        return committed
+      } catch (error) {
+        if (attempt >= MAX_WRITE_ATTEMPTS || !this.options.retryOn?.(error)) {
+          throw error
+        }
+      }
     }
   }
 

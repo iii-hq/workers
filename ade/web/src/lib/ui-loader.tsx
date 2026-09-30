@@ -26,7 +26,7 @@ import { registerPageCommands } from '@/lib/page-commands'
 import { requestPaletteOpen } from '@/lib/palette/open-request'
 import { registerPaletteSource } from '@/lib/palette/providers'
 import { PaneConfigurationProvider } from '@/lib/pane-configuration'
-import { requestPanelOpen } from '@/lib/panel-context'
+import { requestPanelOpen, requestScreenOpen } from '@/lib/panel-context'
 import { acquireScreenWakeLock } from '@/lib/screen-wake-lock'
 import { requestThinkingLevelChange } from '@/lib/thinking-level-request'
 import { ExtensionScopeProvider } from '@/lib/ui-scope'
@@ -45,6 +45,7 @@ import {
   setUiAssetsStatus,
 } from '@/lib/ui-slots'
 import { requestWorkingDirectoryChange } from '@/lib/working-directory-request'
+import { isValidScreen } from '@/lib/workspace-tabs'
 import type {
   ComposerActionProps,
   ComposerControlProps,
@@ -235,6 +236,29 @@ function makeHost(
           return
         }
         requestPanelOpen(request)
+      },
+      openScreen(request) {
+        const { screen, relativeTo, direction } = request
+        if (!isValidScreen(screen)) {
+          throw new Error(`panels.openScreen: unknown screen '${screen}'`)
+        }
+        if (relativeTo !== undefined && !isValidScreen(relativeTo)) {
+          throw new Error(
+            `panels.openScreen: unknown relativeTo '${relativeTo}'`,
+          )
+        }
+        if (
+          direction !== undefined &&
+          direction !== 'left' &&
+          direction !== 'right'
+        ) {
+          throw new Error(
+            `panels.openScreen: direction must be 'left' or 'right'`,
+          )
+        }
+        // The isolated `#/worker/…` shell has no workspace to place it in.
+        if (workerRouteFromHash(window.location.hash)) return
+        requestScreenOpen(request)
       },
     },
     overlays: {

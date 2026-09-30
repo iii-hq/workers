@@ -60,9 +60,14 @@ stack; traces need the engine's OpenTelemetry export.
   `engine::register_trigger`.
 - `workspace::open` reuses a tab that already shows the screen; it never
   duplicates panels. Selection of the active tab is per browser tab and only
-  follows a function-driven activation. A page that asks for a panel of its
-  own passes `relative_to` with its own screen id, so the panel lands beside
-  the page instead of beside the chat.
+  follows a function-driven activation, which every activating `open` stamps.
+  A page that asks for a panel of its own passes `relative_to` with its own
+  screen id, so the panel lands beside the page, in whichever tab shows it,
+  instead of beside the chat.
+- An injected page placing a screen for the operator in front of it calls
+  `host.panels.openScreen({ screen, relativeTo?, direction?, sizes? })`
+  (built-in screens like `traces` included): local and optimistic, no bus
+  round trip. Feature-detect it and fall back to `console::workspace::open`.
 - Native console UI (`ade/web`) and worker UI change in separate pull
   requests; the shared component surface is `@iii-dev/console-ui`
   (`packages/console-ui`) and its `index.d.ts` is the only API contract.

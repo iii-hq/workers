@@ -66,6 +66,20 @@ export interface PanelOpenRequest<T extends JsonValue = JsonValue> {
   context?: T
 }
 
+/** A workspace screen placed from this browser, in the tab on screen. */
+export interface ScreenOpenRequest {
+  /** `traces`, `workers`, `chat`, `chat:<session-id>`, or `ext:<page-id>`. */
+  screen: string
+  /** Screen the new column goes beside; a named one is looked for in every
+   *  tab, the one on screen first. Defaults to chat. */
+  relativeTo?: string
+  /** Side of `relativeTo`: `right` (default) or `left`. */
+  direction?: 'left' | 'right'
+  /** Widths of the tab the screen is placed in, one positive number per
+   *  column; ignored when the screen is reused or the count does not match. */
+  sizes?: number[]
+}
+
 /** Props the host passes to every registered page render component. */
 export interface PageRenderProps {
   panelSide: PanelSide
@@ -526,6 +540,14 @@ export interface Host {
   panels?: {
     /** Place/reuse a registered page and deliver its worker-defined context. */
     open(request: PanelOpenRequest): void
+    /**
+     * Place/reuse any workspace screen (a built-in one like `traces`
+     * included) from this browser, in the tab on screen: optimistic, with no
+     * bus round trip, unlike `console::workspace::open`. Throws on an unknown
+     * screen. Optional on consoles that predate it: feature-detect with
+     * `host.panels?.openScreen`.
+     */
+    openScreen?(request: ScreenOpenRequest): void
   }
   /**
    * Optional on consoles that predate floating overlays. Feature-detect with

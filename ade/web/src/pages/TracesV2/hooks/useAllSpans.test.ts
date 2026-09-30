@@ -142,6 +142,7 @@ describe('fetchLiveSpanSeed', () => {
       trace_ids: ['t-1', 't-2'],
       search_all_spans: true,
       include_internal: true,
+      include_events: false,
       start_time: 880_000,
       sort_by: 'start_time',
       sort_order: 'desc',
@@ -181,6 +182,7 @@ describe('fetchLiveSpanSeed', () => {
     expect(fetchTraceSpansMock).toHaveBeenCalledWith({
       search_all_spans: true,
       include_internal: true,
+      include_events: false,
       sort_by: 'start_time',
       sort_order: 'desc',
       limit: 500,

@@ -87,6 +87,11 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
     max: 2,
     reason: 'phone chrome: the phone bottom sheet itself',
   },
+  'components/ui/ConfirmDialog.tsx': {
+    max: 4,
+    reason:
+      'phone chrome: stacked confirmation actions with 48px touch targets',
+  },
   'components/ui/Dialog.tsx': { max: 3, reason: TOUCH },
   'components/ui/ImageViewer.tsx': { max: 5, reason: TOUCH },
   'components/ui/Input.tsx': { max: 2, reason: TOUCH },

@@ -186,6 +186,31 @@ export function withColumnAdded(
 /** Which side of the anchor column a new column lands on. */
 export type OpenDirection = 'left' | 'right'
 
+/** Where an opened screen lands, and the widths of the tab it lands in. */
+export interface ScreenPlacement {
+  /** Screen the new column goes beside; defaults to chat. */
+  relativeTo?: TabScreen
+  direction?: OpenDirection
+  /** One positive number per column of the tab after placement. */
+  sizes?: readonly number[]
+}
+
+/**
+ * `sizes` as the tab's column widths, normalized by their sum. Anything but
+ * one finite positive number per column leaves the tab as it is.
+ */
+export function withTabSizes(
+  tab: WorkspaceTab,
+  sizes: readonly number[] | undefined,
+): WorkspaceTab {
+  if (!sizes || sizes.length !== tabColumns(tab)) return tab
+  const total = sizes.reduce((sum, size) => sum + size, 0)
+  const normalized = sizes.map((size) => size / total)
+  const valid = (size: number) => Number.isFinite(size) && size > 0
+  if (!sizes.every(valid) || !normalized.every(valid)) return tab
+  return { ...tab, sizes: normalized }
+}
+
 /**
  * Place `screen` in an existing empty column or insert a new column beside
  * `anchor`, on the `direction` side. Returns `null` only when the tab is full
@@ -378,7 +403,7 @@ export function deepLinkScreen(hash: string): TabScreen | null {
   return view === null ? null : screenForView(view)
 }
 
-const isValidScreen = (s: unknown): s is TabScreen =>
+export const isValidScreen = (s: unknown): s is TabScreen =>
   typeof s === 'string' &&
   (isChatScreen(s) ||
     isRoutedScreen(s) ||
@@ -653,9 +678,14 @@ export interface OpenWorkspaceScreenResult {
 
 /**
  * Reuse a screen wherever it is already mounted; otherwise place it beside
- * chat in the active tab without replacing any pane. A saturated workspace
- * gets a fresh tab. Chat targets are already complete screens, so
- * their fallback tab does not add a second, generic chat panel.
+ * `anchor` without replacing any pane. A saturated workspace gets a fresh
+ * tab. Chat targets are already complete screens, so their fallback tab does
+ * not add a second, generic chat panel.
+ *
+ * A named anchor (anything but the generic chat) is looked for in every tab,
+ * the active one first, so the screen lands beside the one its caller can
+ * see; the generic chat anchor stays on the active tab. Mirrors
+ * `open_screen` in the console worker (shared fixtures).
  */
 export function withWorkspaceScreenOpened(
   tabs: WorkspaceTab[],
@@ -677,9 +707,15 @@ export function withWorkspaceScreenOpened(
   const existing = tabs.find((tab) => tab.screens.includes(screen))
   if (existing) return { tabs, activeTabId: existing.id }
 
-  if (active) {
+  const holdsAnchor = (tab: WorkspaceTab) =>
+    anchor !== CHAT_SCREEN && tab.screens.includes(anchor)
+  const target =
+    anchor === CHAT_SCREEN || (active && holdsAnchor(active))
+      ? active
+      : (tabs.find(holdsAnchor) ?? active)
+  if (target) {
     const placed = withScreenOpenedBeside(
-      active,
+      target,
       screen,
       anchor,
       makePaneId,
@@ -687,8 +723,8 @@ export function withWorkspaceScreenOpened(
     )
     if (placed) {
       return {
-        tabs: tabs.map((tab) => (tab.id === active.id ? placed : tab)),
-        activeTabId: active.id,
+        tabs: tabs.map((tab) => (tab.id === target.id ? placed : tab)),
+        activeTabId: target.id,
       }
     }
   }
