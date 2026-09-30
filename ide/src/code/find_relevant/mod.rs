@@ -392,43 +392,69 @@ fn result_bytes<T: Serialize + ?Sized>(value: &T) -> usize {
     json.len() + walk::json_len(json.as_str())
 }
 
-/// render.ts: excerpts are kept in output order while they fit `source`
-/// bytes and, beside everything else in `output`, `result` bytes as the
-/// harness counts them; a file that loses one is marked `source_omitted`
-/// (its leads remain). When the rest alone is over `result`, the last files
-/// lose their call leads, leads and then themselves, counted as a
-/// `resource_limit`.
+/// Spends `result` bytes (as the harness counts them; jevgrep prints
+/// everything) by value: the file list first, up to half of `result`; then
+/// call leads and leads in output order, up to half of what is left; then
+/// excerpts in output order while they also fit `source` bytes (a file that
+/// loses one is `source_omitted`). Files and leads that do not fit are cut
+/// from the tail, counted as a `resource_limit`.
+// ponytail: fixed half split between leads and excerpts; weigh by score if
+// agents keep re-reading files whose excerpts were dropped.
 fn spend_budget(output: &mut FindRelevantOutput, mut source: usize, result: usize) {
-    let excerpts: Vec<Vec<Excerpt>> = output
+    type Parts = (Vec<Excerpt>, Vec<CallLead>, Vec<Lead>);
+    let parts: Vec<Parts> = output
         .files
         .iter_mut()
-        .map(|file| std::mem::take(&mut file.excerpts))
+        .map(|file| {
+            (
+                std::mem::take(&mut file.excerpts),
+                std::mem::take(&mut file.call_leads),
+                std::mem::take(&mut file.leads),
+            )
+        })
         .collect();
     // An element costs at most its `result_bytes` (the 2 quote bytes pay
     // for its commas) and removing one saves at least that less 2, so
     // `used` never undercounts.
     let mut used = result_bytes(output);
     let mut trimmed = false;
-    while used > result {
-        let Some(file) = output.files.last_mut() else {
+    while used > result / 2 {
+        let Some(file) = output.files.pop() else {
             break;
         };
-        let saved = if let Some(call) = file.call_leads.pop() {
-            result_bytes(&call)
-        } else if let Some(lead) = file.leads.pop() {
-            result_bytes(&lead)
-        } else {
-            output.files.pop().map_or(0, |file| result_bytes(&file))
-        };
-        used -= saved.saturating_sub(2).min(used);
+        used -= result_bytes(&file).saturating_sub(2).min(used);
         trimmed = true;
     }
-    for (file, excerpts) in output.files.iter_mut().zip(excerpts) {
-        for excerpt in excerpts {
-            let size = result_bytes(&excerpt);
-            if excerpt.text.len() <= source && used + size <= result {
+    let fits = |used: &mut usize, size: usize, cap: usize| {
+        let ok = *used + size <= cap;
+        if ok {
+            *used += size;
+        }
+        ok
+    };
+    let lead_cap = used + result.saturating_sub(used) / 2;
+    let mut excerpts: Vec<Vec<Excerpt>> = Vec::with_capacity(output.files.len());
+    let mut leads_fit = true;
+    for (file, (file_excerpts, call_leads, leads)) in output.files.iter_mut().zip(parts) {
+        excerpts.push(file_excerpts);
+        for call in call_leads {
+            leads_fit = leads_fit && fits(&mut used, result_bytes(&call), lead_cap);
+            if leads_fit {
+                file.call_leads.push(call);
+            }
+        }
+        for lead in leads {
+            leads_fit = leads_fit && fits(&mut used, result_bytes(&lead), lead_cap);
+            if leads_fit {
+                file.leads.push(lead);
+            }
+        }
+    }
+    trimmed |= !leads_fit;
+    for (file, file_excerpts) in output.files.iter_mut().zip(excerpts) {
+        for excerpt in file_excerpts {
+            if excerpt.text.len() <= source && fits(&mut used, result_bytes(&excerpt), result) {
                 source -= excerpt.text.len();
-                used += size;
                 file.excerpts.push(excerpt);
             } else {
                 file.source_omitted = true;
