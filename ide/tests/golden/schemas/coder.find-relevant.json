@@ -45,6 +45,26 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "ByteSpan": {
+        "description": "UTF-8 byte offsets in the file: `[byte_from, byte_to)`.",
+        "properties": {
+          "byte_from": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "byte_to": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "byte_from",
+          "byte_to"
+        ],
+        "type": "object"
+      },
       "CallLead": {
         "properties": {
           "caller": {
@@ -94,8 +114,19 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "partial": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ByteSpan"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when `text` is only a byte span of its lines (for example inside a line over 24000 bytes): do not rewrite whole lines from it."
+          },
           "text": {
-            "description": "Verbatim source of the line range.",
+            "description": "Verbatim source of the line range; with `partial`, only that byte span of it.",
             "type": "string"
           }
         },

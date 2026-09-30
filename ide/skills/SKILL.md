@@ -156,5 +156,7 @@ level is a judge round trip, so a whole-repo ask can take minutes.
 `incomplete` means partial coverage (narrow `path` and retry);
 `unavailable` means no judge answered (fall back to `coder::search`). The
 query, root-relative paths and file text go to the session's judge
-provider, which may be hosted; protected, ignored, hidden and secret-looking
-files never do.
+provider, which may be hosted; protected, ignored and secret-looking files
+never do, nor hidden entries below `path` (so never point `path` at a
+dot-folder holding tokens). An excerpt with `partial` is only a byte span of
+its lines: read the file before rewriting those lines.

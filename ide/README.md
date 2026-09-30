@@ -193,7 +193,7 @@ fully unjailed, regardless of `fs.allow_unjailed`.
 | `coder::search` | Literal/regex content + path search with context lines, bounded by match/byte budgets. `respect_gitignore: true` skips what `.gitignore` hides; `fuzzy_paths: true` ranks path matches quick-open style, best first. |
 | `coder::list-folder` | Paginated single-folder listing. |
 | `coder::tree` | Recursive depth- and per-folder-bounded directory snapshot. |
-| `coder::find-relevant` | Judge-ranked discovery for behavioural questions (a port of [jevgrep](https://github.com/dzhng/jevgrep)): returns files best first with verbatim excerpts and line ranges. **Egress:** sends the query, root-relative paths and file text to the session's judge provider (`judge::evaluate`; hosted `judge-typesafe` by default), never protected, ignored, hidden or secret-looking files. Disable it with a `'!coder::find-relevant'` deny rule in `iii-permissions.yaml`, above its allow entry. See [below](#judge-ranked-discovery-coderfind-relevant). |
+| `coder::find-relevant` | Judge-ranked discovery for behavioural questions (a port of [jevgrep](https://github.com/dzhng/jevgrep)): returns files best first with verbatim excerpts and line ranges. **Egress:** sends the query, root-relative paths and file text to the session's judge provider (`judge::evaluate`; hosted `judge-typesafe` by default), never protected, ignored or secret-looking files nor hidden entries below `path`; binary and private-key files show by name only. A `'!coder::find-relevant'` deny rule in `iii-permissions.yaml`, above its allow entry, takes it from agents; the IDE's Search tab calls it directly. See [below](#judge-ranked-discovery-coderfind-relevant). |
 | `coder::create-file` / `coder::update-file` / `coder::delete-file` / `coder::move` | Batched create, line/regex edits, delete, and atomic rename/move. |
 
 Roots come from `fs.host_roots` (with the cwd+`/tmp` fallback noted above);
@@ -233,8 +233,13 @@ error.
 
 - **Budget.** `timeout_ms` (default 120000, max 280000, below the harness's
   300 s dispatch timeout) bounds the whole ask; each judge call gets at most
-  20 s of it. Excerpts share a 128 KiB output budget; files past it keep
-  their locations and set `source_omitted`.
+  20 s of it. Excerpts share a 128 KiB source budget, and the whole result
+  stays under the harness's 256 KiB result cap as the harness counts it
+  (the JSON plus the JSON again as text, so escaping counts twice); files
+  past either keep their locations and set `source_omitted`. When the
+  locations alone overflow, the last files lose their leads and then drop
+  out, and `issues` counts a `resource_limit`. An excerpt with `partial`
+  holds only that byte span of its lines (inside a line over 24000 bytes).
 - **Latency.** An ask makes one judge call per batch of folders, files or
   declarations, so a whole-repo ask can take tens of seconds to minutes.
   Point `path` at the subtree the question is about.
@@ -244,15 +249,20 @@ error.
   responsive. An outage pauses calls to that provider for 30 s.
 - **What leaves the host.** Paths relative to `path`, never the host
   layout. The walk skips `non_accessible_globs`, `fs.denylist_paths`,
-  gitignored and hidden entries, dependency and build folders
-  (`node_modules`, `vendor`, `target`, `dist`, …), secret-named files
+  gitignored entries, hidden entries below `path` (any dot-name, even one
+  an ignore file whitelists; `path` itself may be a dot-folder, so do not
+  point it at one holding tokens), dependency and build folders
+  (`node_modules`, `vendor`, `target`, `dist`, …) and secret-named files
   (`.env`/`.env.*`, `id_rsa`-style keys, `credentials(.json)`,
   `secrets.{json,yaml,yml}`, `.netrc`/`.npmrc`/`.pypirc`,
-  `*.pem`/`*.key`/`*.p12`/`*.pfx`), files holding a private key, and binary
-  or non-UTF-8 files. Tokens hard-coded in ordinary source files, and the
-  query itself, still go to the provider. To turn the function off, add
-  `'!coder::find-relevant'` to `iii-permissions.yaml` above its allow entry
-  (first match wins).
+  `*.pem`/`*.key`/`*.p12`/`*.pfx`). The text of files holding a private key
+  (PEM or armored PGP) and of binary or non-UTF-8 files is never sent,
+  though their names can appear in a folder's preview. Tokens hard-coded in
+  ordinary source files, and the query itself, still go to the provider. A
+  `'!coder::find-relevant'` rule in `iii-permissions.yaml` above its allow
+  entry (first match wins) takes the function from agents only: the IDE's
+  Search tab (Ask) calls it directly, outside the harness's permission
+  gate.
 
 ## Terminal sessions (`shell::pty::*`)
 
