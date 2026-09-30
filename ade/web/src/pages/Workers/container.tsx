@@ -365,10 +365,14 @@ function LogTab({
   const cursor = useRef<LogCursor | null>(null)
   const pane = useRef<HTMLPreElement>(null)
 
+  // A (re)load drops the old cursor and lines, so following restarts only
+  // once this tail and its cursor are in: no request from a stale cursor.
   // biome-ignore lint/correctness/useExhaustiveDependencies: attempt is the Retry token
   useEffect(() => {
     let cancelled = false
     setError(null)
+    cursor.current = null
+    setLines(null)
     api
       .logs(name, null, TAIL, 0)
       .then((result) => {
@@ -384,7 +388,6 @@ function LogTab({
   }, [api, name, attempt])
 
   const loaded = lines !== null
-  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt restarts following after Retry
   useEffect(() => {
     if (!follow || !loaded) return
     let cancelled = false
@@ -408,7 +411,7 @@ function LogTab({
     return () => {
       cancelled = true
     }
-  }, [api, name, follow, loaded, attempt])
+  }, [api, name, follow, loaded])
 
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase()
