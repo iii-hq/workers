@@ -235,10 +235,11 @@ error.
   300 s dispatch timeout) bounds the whole ask; each judge call gets at most
   20 s of it. Excerpts share a 128 KiB source budget, and the whole result
   stays under the harness's 256 KiB result cap as the harness counts it
-  (the JSON plus the JSON again as text, so escaping counts twice); files
-  past either keep their locations and set `source_omitted`. When the
-  locations alone overflow, the last files lose their leads and then drop
-  out, and `issues` counts a `resource_limit`. An excerpt with `partial`
+  (the JSON plus the JSON again as text, so escaping counts twice). The
+  file list takes up to half of that cap, leads up to half of the rest, and
+  excerpts the remainder, best files first; a file whose excerpts did not
+  fit sets `source_omitted`. Files or leads cut from the tail count a
+  `resource_limit` in `issues`. An excerpt with `partial`
   holds only that byte span of its lines (inside a line over 24000 bytes).
 - **Latency.** An ask makes one judge call per batch of folders, files or
   declarations, so a whole-repo ask can take tens of seconds to minutes.

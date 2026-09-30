@@ -538,14 +538,51 @@ fn a_result_stays_under_the_harness_cap_whatever_it_escapes() {
     assert_eq!(few.files[2].leads.len(), 50);
     assert_eq!(few.status, Status::Complete);
 
-    // many files: even their locations overflow, so the last ones go
+    // many files: even their paths overflow, so the last ones go, and the
+    // top files keep their leads and some source
     let mut many = output(400);
     spend_budget(&mut many, MAX_SOURCE_BYTES, MAX_RESULT_BYTES);
     assert!(harness_bytes(&many) < 262_144);
     assert!(many.files.len() < 400);
     assert_eq!(many.files[0].leads.len(), 50);
+    assert!(!many.files[0].excerpts.is_empty());
     assert_eq!(many.status, Status::Incomplete);
     assert_eq!(many.issues.get("resource_limit"), Some(&1));
+
+    // live shape (122 files, ~1300 leads): every path stays, the tail loses
+    // its leads, and the top files still show source
+    let plain = |i: usize| RelevantFile {
+        path: format!("/r/src/module_{i:03}.rs"),
+        excerpts: (0..4u32)
+            .map(|j| Excerpt {
+                line_from: j * 40 + 1,
+                line_to: j * 40 + 30,
+                text: "    let value = compute(input);\n".repeat(30),
+                partial: None,
+            })
+            .collect(),
+        leads: (0..11u32)
+            .map(|j| Lead {
+                name: format!("Type{i}.method_{j}"),
+                line_from: j * 10 + 1,
+                line_to: j * 10 + 9,
+                score: 0.4,
+            })
+            .collect(),
+        call_leads: Vec::new(),
+        ..file(i)
+    };
+    let mut leady = FindRelevantOutput {
+        files: (0..122).map(plain).collect(),
+        ..output(0)
+    };
+    spend_budget(&mut leady, MAX_SOURCE_BYTES, MAX_RESULT_BYTES);
+    assert!(harness_bytes(&leady) < 262_144);
+    assert_eq!(leady.files.len(), 122);
+    assert_eq!(leady.files[0].leads.len(), 11);
+    assert!(!leady.files[0].excerpts.is_empty());
+    assert!(leady.files[121].leads.is_empty());
+    assert_eq!(leady.issues.get("resource_limit"), Some(&1));
 }
 
 #[test]
