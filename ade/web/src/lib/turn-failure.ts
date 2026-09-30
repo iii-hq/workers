@@ -222,7 +222,7 @@ function ownershipFor(
     case 'configuration':
       return 'No provider is set up to serve this request. This is an ADE setup gap on your side, not a provider outage or an iii bug.'
     case 'context':
-      return 'The conversation exceeds the selected model’s available input budget. It could not be reduced enough to send; switching models can change that budget.'
+      return 'The conversation exceeds the selected model’s available input budget. It could not be reduced enough to send; please choose another model.'
     case 'rate-limit':
       return `${api} is throttling requests right now. This happens under load and is not caused by you or by iii.`
     case 'connection':
@@ -261,7 +261,7 @@ function defaultActionsFor(
     case 'context':
       return [
         'Send /compact to summarise the conversation so far.',
-        'If compaction fails, switch back to a model with a larger context window and compact before switching again.',
+        'If compaction fails, switch back to a model with a larger context window and compact from there before switching again.',
         'Or shorten the input or start a new conversation.',
       ]
     case 'rate-limit':
