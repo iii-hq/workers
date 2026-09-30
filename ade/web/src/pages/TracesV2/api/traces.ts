@@ -114,9 +114,8 @@ export interface TracesFilterParams {
   start_time?: number
   end_time?: number
   attributes?: [string, string][]
-  /** Exclude rows whose OWN attributes match any [key, value] pair (the
-   *  engine-side arm of hidden functions; the flat list filters
-   *  client-side instead to keep the live-append path). */
+  /** Exclude rows whose OWN attributes match any [key, value] pair: how
+   *  hidden functions reach the engine. */
   exclude_attributes?: [string, string][]
   sort_by?: 'start_time' | 'duration' | 'service_name'
   sort_order?: 'asc' | 'desc'
@@ -126,6 +125,10 @@ export interface TracesFilterParams {
   search_all_spans?: boolean
   /** Arbitrary attributes needed by the current list view. */
   attribute_projection?: string[]
+  /** `engine::traces::spans`: `false` drops each span's events and links,
+   *  where the invocation payloads ride, for a view that draws spans
+   *  without opening one. Older engines ignore it. */
+  include_events?: boolean
 }
 
 export interface SpanTreeNode {

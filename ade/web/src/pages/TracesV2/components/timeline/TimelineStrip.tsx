@@ -7,9 +7,9 @@
  * it opens its owning trace.
  *
  * Bars come straight from the all-spans feed (`useAllSpans`: a compact
- * trace-first seed + the engine's `iii:devtools:all-spans` stream): a pending
- * span renders as a LIVE bar growing along the now-edge and settles when its
- * close frame arrives, so liveness is span-accurate — no trace-level
+ * trace-first seed, re-run on every trace activity tick): a pending span
+ * renders as a LIVE bar growing along the now-edge and settles when a later
+ * seed brings its close, so liveness is span-accurate — no trace-level
  * correction needed.
  * Engine routing wrappers are skipped (see `storedSpansToTimelineSpans`).
  *
