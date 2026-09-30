@@ -104,7 +104,7 @@ export function Workers(props: WorkersProps) {
   }, [real])
   if (!real) {
     return (
-      <PageShell>
+      <PageShell aria-label="workers">
         <PageHeader
           icon={<Layers />}
           title="Workers"
@@ -120,7 +120,7 @@ export function Workers(props: WorkersProps) {
   }
   if (!client) {
     return (
-      <PageShell>
+      <PageShell aria-label="workers">
         <PageHeader
           icon={<Layers />}
           title="Workers"
@@ -474,7 +474,7 @@ function WorkersPage({
   )
 
   return (
-    <PageShell className="wk-shell">
+    <PageShell className="wk-shell" aria-label="workers">
       <PageHeader
         icon={<Layers />}
         title="Workers"
