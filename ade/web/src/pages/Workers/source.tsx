@@ -113,18 +113,29 @@ function PackageSource({ api, actions, declared }: Props) {
       .then((result) => {
         if (cancelled) return
         setVersions(result)
-        const newest =
-          result.versions.find((v) => v.tags.includes('latest')) ??
-          result.versions[0]
-        setPick((prev) => prev ?? newest?.version)
+        // Start on what is declared: a change is always something the operator picked.
+        setPick((prev) => prev ?? declared.version ?? undefined)
       })
       .catch((cause) => !cancelled && setError(errorMessage(cause)))
     return () => {
       cancelled = true
     }
-  }, [api, declared.name])
+  }, [api, declared.name, declared.version])
 
   const selector = policy === 'pin' ? pick : policy
+
+  const update = async () => {
+    const ok = await actions.confirm({
+      title: `Update ${declared.name} to ${selector}?`,
+      description:
+        'Compose resolves it and its dependencies again, and restarts the whole project when what runs changes.',
+      confirmLabel: 'Update and restart',
+    })
+    if (ok)
+      await actions.track(`Updating ${declared.name} to ${selector}`, () =>
+        api.update([`${declared.name}@${selector}`]),
+      )
+  }
   const newer = versions
     ? versions.versions.findIndex((v) => v.version === current)
     : -1
@@ -214,12 +225,7 @@ function PackageSource({ api, actions, declared }: Props) {
               variant="primary"
               size="sm"
               disabled={actions.busy}
-              onClick={() =>
-                void actions.track(
-                  `Updating ${declared.name} to ${selector}`,
-                  () => api.update([`${declared.name}@${selector}`]),
-                )
-              }
+              onClick={() => void update()}
             >
               Update to {selector}
             </Button>

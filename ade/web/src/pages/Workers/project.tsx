@@ -88,13 +88,26 @@ export function ProjectView({
     }
   }
 
-  const update = (names: string[]) =>
-    void actions.track(
+  const update = async (names: string[]) => {
+    const targets = names.map((name) => `${name}@${latest.of(name)}`)
+    const ok = await confirm({
+      title:
+        names.length === 1
+          ? `Update ${names[0]} to ${latest.of(names[0])}?`
+          : `Update ${names.length} packages?`,
+      description:
+        'Compose resolves them and their dependencies again, and restarts the whole project when what runs changes.',
+      details: names.length > 1 ? targets : undefined,
+      confirmLabel: 'Update and restart',
+    })
+    if (!ok) return
+    await actions.track(
       names.length === 1
         ? `Updating ${names[0]} to ${latest.of(names[0])}`
         : `Updating ${names.length} packages`,
-      () => api.update(names.map((name) => `${name}@${latest.of(name)}`)),
+      () => api.update(targets),
     )
+  }
 
   const stopDaemon = async () => {
     const ok = await confirm({
@@ -233,7 +246,7 @@ export function ProjectView({
                 variant="ghost"
                 size="sm"
                 disabled={busy}
-                onClick={() => update(outdated.map((c) => c.name))}
+                onClick={() => void update(outdated.map((c) => c.name))}
               >
                 Update {outdated.length}
               </Button>
@@ -284,7 +297,7 @@ export function ProjectView({
                                   disabled={busy}
                                   onClick={(event) => {
                                     event.stopPropagation()
-                                    update([c.name])
+                                    void update([c.name])
                                   }}
                                 >
                                   Update
