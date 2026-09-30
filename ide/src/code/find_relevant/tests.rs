@@ -1339,6 +1339,36 @@ async fn a_python_test_file_drops_the_bodies_the_judge_declines() {
 }
 
 #[tokio::test]
+async fn a_test_body_batch_the_judge_finds_too_large_is_halved() {
+    let fx = fixture(&[("test_needle.py", TESTS)], |_, _| {});
+    let log = Log::default();
+    let inner = python_judge(
+        &log,
+        |_| 0.9,
+        TEST_ROLE,
+        |name| if name == "test_keep" { 0.9 } else { 0.2 },
+    );
+    let evaluate: Evaluator = Arc::new(move |evaluation: Evaluation, deadline| {
+        let batch = evaluation
+            .state
+            .get("candidates")
+            .map(|c| c.as_object().unwrap().len());
+        if batch.is_some_and(|n| n > 1) {
+            return Box::pin(async { Err(JudgeError::TooLarge) });
+        }
+        inner(evaluation, deadline)
+    });
+    let out = ask(&fx, None, evaluate).await;
+    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
+    assert_eq!(ranges(&out.files[0]), [(1, 7)]);
+    let asked = sent(&log)
+        .into_iter()
+        .filter(|ev| ev["state"].get("candidates").is_some())
+        .count();
+    assert_eq!(asked, 3);
+}
+
+#[tokio::test]
 async fn an_all_negative_test_body_pass_keeps_the_presentation() {
     let fx = fixture(&[("test_needle.py", TESTS)], |_, _| {});
     let out = ask(

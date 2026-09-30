@@ -17,11 +17,16 @@
 //! process's output only the call ranges' remain (a class header on one
 //! line is empty and drops the pass, as there). A Python file is read once
 //! for both presentation passes, and only Python test files are re-checked
-//! before test-body changes apply; the caller's final re-hash covers the
-//! rest.
+//! before test-body changes apply (jevgrep re-checks every test input);
+//! the caller's final re-hash covers the rest. An inheritance chain deeper
+//! than 256 drops the call pass. The call and neighbourhood passes stop at
+//! the ask deadline (jevgrep's abort kills its parser process). A test-body
+//! batch too large for the judge or `Run::window_cap` is halved while it
+//! holds more than one candidate (jevgrep does not split it).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::time::Instant;
 
 use once_cell::sync::Lazy;
 use tree_sitter::Node;
@@ -112,6 +117,11 @@ pub async fn present(
     files: &mut HashMap<String, Selected>,
     assessments: &HashMap<String, Assessment>,
 ) {
+    // retrieve.ts runs these passes in `parallel`, which starts nothing
+    // once the ask stopped.
+    if run.stopped() {
+        return;
+    }
     let tested = |path: &str| {
         assessments
             .get(path)
@@ -142,7 +152,16 @@ pub async fn present(
             .into_iter()
             .filter_map(|(candidate, mut file, test)| {
                 let snapshot = reader.unchanged(&candidate)?;
-                local_call_context(&snapshot, &mut file);
+                let mut widened = file.clone();
+                let context = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    local_call_context(&snapshot, &mut widened, reader.deadline)
+                }));
+                match context {
+                    Ok(()) => file = widened,
+                    // Optional structural context never discards selected
+                    // evidence; the file keeps its test-body pass.
+                    Err(_) => reader.issue("local-call-context"),
+                }
                 let bodies = if test {
                     test_candidates(&snapshot, &file)
                 } else {
@@ -154,7 +173,6 @@ pub async fn present(
     })
     .await
     else {
-        // Optional structural context never discards selected evidence.
         run.issue("local-call-context");
         return;
     };
@@ -196,7 +214,7 @@ pub async fn present(
 /// add each possible local call target (at most 24 000 bytes) and its
 /// class header to the shown source, merging touching ranges, and list the
 /// calls as leads.
-fn local_call_context(snapshot: &Snapshot, file: &mut Selected) {
+fn local_call_context(snapshot: &Snapshot, file: &mut Selected, deadline: Instant) {
     if snapshot.source.len() > MAX_PARSE_BYTES
         || file.source_omitted
         || file.excerpts.iter().any(|e| e.partial)
@@ -204,7 +222,7 @@ fn local_call_context(snapshot: &Snapshot, file: &mut Selected) {
     {
         return;
     }
-    let found = calls(&snapshot.source, &file.selected_lines);
+    let found = calls(&snapshot.source, &file.selected_lines, deadline);
     if found.is_empty() {
         return;
     }
@@ -331,23 +349,43 @@ async fn select_test_bodies(
         groups.push(group);
     }
     let mut decisions: Vec<(TestCandidate, bool)> = Vec::new();
-    for batch in groups {
+    let mut index = 0;
+    while index < groups.len() {
         if run.stopped() {
             return None;
         }
-        let request = prompts::test_bodies(&run.query, &batch);
+        // An oversized batch of several candidates is halved (jevgrep has
+        // no split here, and no window cap).
+        let halve = |groups: &mut Vec<Vec<TestCandidate>>| {
+            let mut first = groups.remove(index);
+            let second = first.split_off(first.len().div_ceil(2));
+            groups.insert(index, second);
+            groups.insert(index, first);
+        };
+        let request = prompts::test_bodies(&run.query, &groups[index]);
+        let several = groups[index].len() > 1;
         if prompts::request_bytes(&request) > run.window_cap {
+            if several {
+                halve(&mut groups);
+                continue;
+            }
             run.issue("request-size");
             return None;
         }
         let scores = match run.call(request).await {
             Ok(scores) => scores,
+            Err(JudgeError::TooLarge) if several => {
+                halve(&mut groups);
+                continue;
+            }
             Err(JudgeError::TooLarge) => {
                 run.issue("request-size");
                 return None;
             }
             Err(_) => return None, // recorded by `call`
         };
+        let batch = std::mem::take(&mut groups[index]);
+        index += 1;
         for (i, candidate) in batch.into_iter().enumerate() {
             let keep = scores.get(&prompts::key("q", i)).is_some_and(|p| *p > KEEP);
             decisions.push((candidate, keep));
@@ -437,8 +475,10 @@ fn wrapper(node: Node<'_>) -> Node<'_> {
 /// parser-helpers.mjs `neighborhood` (source.ts `pythonNeighborhood`): for
 /// each method overlapping `ranges`, its class header (at most 40 lines,
 /// before the first member) and the adjacent sibling definitions of at
-/// most 40 lines. Additive only; empty when the source does not parse.
-pub fn neighborhood(source: &str, ranges: &[SourceRange]) -> Vec<SourceRange> {
+/// most 40 lines. Additive only; empty when the source does not parse or
+/// `deadline` passes (the sibling scan is quadratic in a class's members;
+/// jevgrep's abort kills its parser process instead).
+pub fn neighborhood(source: &str, ranges: &[SourceRange], deadline: Instant) -> Vec<SourceRange> {
     let Some(tree) = units::parse_python(source) else {
         return Vec::new();
     };
@@ -467,6 +507,9 @@ pub fn neighborhood(source: &str, ranges: &[SourceRange]) -> Vec<SourceRange> {
             .any(|s| s.start_line <= r.end_line && s.end_line >= r.start_line)
         {
             continue;
+        }
+        if Instant::now() >= deadline {
+            return Vec::new();
         }
         let siblings: Vec<Node<'_>> = py_body(owner)
             .into_iter()
@@ -869,15 +912,17 @@ fn unique<'t>(nodes: Vec<Node<'t>>, source: &str) -> Vec<(String, Node<'t>)> {
 }
 
 /// The C3 linearization of `key` over `bases`; a name that is not a local
-/// class linearizes to itself. `None` on a cycle or an inconsistent
-/// hierarchy.
+/// class linearizes to itself. `None` on a cycle, an inconsistent
+/// hierarchy or once `deadline` passes (the merge is quadratic in the
+/// bases; jevgrep's abort kills its parser process instead).
 fn mro(
     key: &str,
     seen: &[String],
     bases: &HashMap<String, Vec<String>>,
     memo: &mut HashMap<String, Vec<String>>,
+    deadline: Instant,
 ) -> Option<Vec<String>> {
-    if seen.iter().any(|s| s == key) || seen.len() > MAX_MRO_DEPTH {
+    if seen.iter().any(|s| s == key) || seen.len() > MAX_MRO_DEPTH || Instant::now() >= deadline {
         return None;
     }
     if let Some(order) = memo.get(key) {
@@ -888,7 +933,7 @@ fn mro(
     next.push(key.to_string());
     let mut sequences: Vec<VecDeque<String>> = Vec::new();
     for parent in &parents {
-        sequences.push(mro(parent, &next, bases, memo)?.into());
+        sequences.push(mro(parent, &next, bases, memo, deadline)?.into());
     }
     sequences.push(parents.into());
     let mut order = vec![key.to_string()];
@@ -899,15 +944,21 @@ fn mro(
         if active.is_empty() {
             break;
         }
-        let head = active
-            .iter()
-            .map(|&i| &sequences[i][0])
-            .find(|head| {
-                !active
-                    .iter()
-                    .any(|&j| sequences[j].iter().skip(1).any(|x| x == *head))
-            })?
-            .clone();
+        let mut head = None;
+        for &i in &active {
+            if Instant::now() >= deadline {
+                return None;
+            }
+            let candidate = &sequences[i][0];
+            if !active
+                .iter()
+                .any(|&j| sequences[j].iter().skip(1).any(|x| x == candidate))
+            {
+                head = Some(candidate.clone());
+                break;
+            }
+        }
+        let head = head?;
         for &i in &active {
             if sequences[i][0] == head {
                 sequences[i].pop_front();
@@ -987,8 +1038,8 @@ fn rebinds_self(n: Node<'_>, source: &str) -> bool {
 /// `m` (earlier bases that are not local classes are reported). A call
 /// into its own class, or to a target already inside `ranges`, is not a
 /// lead. Empty when the source does not parse or a hierarchy is cyclic or
-/// inconsistent.
-fn calls(source: &str, ranges: &[SourceRange]) -> Vec<Call> {
+/// inconsistent, or once `deadline` passes.
+fn calls(source: &str, ranges: &[SourceRange], deadline: Instant) -> Vec<Call> {
     let Some(tree) = units::parse_python(source) else {
         return Vec::new();
     };
@@ -1063,6 +1114,9 @@ fn calls(source: &str, ranges: &[SourceRange]) -> Vec<Call> {
                 continue;
             }
             for call in nodes.iter().filter(|n| n.kind() == "call") {
+                if Instant::now() >= deadline {
+                    return Vec::new();
+                }
                 let Some(callee) = unparenthesized(call.child_by_field_name("function"))
                     .filter(|f| f.kind() == "attribute")
                 else {
@@ -1080,7 +1134,7 @@ fn calls(source: &str, ranges: &[SourceRange]) -> Vec<Call> {
                 {
                     continue;
                 }
-                let Some(order) = mro(owner, &[], &bases, &mut memo) else {
+                let Some(order) = mro(owner, &[], &bases, &mut memo, deadline) else {
                     return Vec::new();
                 };
                 let attribute = callee
@@ -1146,6 +1200,10 @@ fn calls(source: &str, ranges: &[SourceRange]) -> Vec<Call> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn later() -> Instant {
+        Instant::now() + std::time::Duration::from_secs(60)
+    }
 
     fn lines(ranges: &[SourceRange]) -> Vec<(usize, usize)> {
         ranges.iter().map(|r| (r.start_line, r.end_line)).collect()
@@ -1263,16 +1321,16 @@ mod tests {
         );
         // second (7-8): header 1-3, first 4-5, the decorated third 10-12
         assert_eq!(
-            lines(&neighborhood(&source, &[range(7, 8)])),
+            lines(&neighborhood(&source, &[range(7, 8)], later())),
             [(1, 3), (4, 5), (10, 12)]
         );
         // third: second, but not the 46-line `long`
         assert_eq!(
-            lines(&neighborhood(&source, &[range(11, 12)])),
+            lines(&neighborhood(&source, &[range(11, 12)], later())),
             [(1, 3), (7, 8)]
         );
-        assert!(neighborhood("def a():\n    pass\n", &[range(1, 2)]).is_empty());
-        assert!(neighborhood("def broken(:\n", &[range(1, 1)]).is_empty());
+        assert!(neighborhood("def a():\n    pass\n", &[range(1, 2)], later()).is_empty());
+        assert!(neighborhood("def broken(:\n", &[range(1, 1)], later()).is_empty());
     }
 
     const HIERARCHY: &str = "class Base:
@@ -1312,21 +1370,21 @@ class Child(Left, External, Right):
                 vec!["Left".into(), "External".into(), "Right".into()],
             ),
         ]);
-        let order = mro("Child", &[], &bases, &mut HashMap::new()).unwrap();
+        let order = mro("Child", &[], &bases, &mut HashMap::new(), later()).unwrap();
         assert_eq!(order, ["Child", "Left", "External", "Right", "Base"]);
         // inconsistent: D wants B before A, A derives from B
         let bad = HashMap::from([
             ("A".to_string(), vec!["B".to_string()]),
             ("D".to_string(), vec!["B".into(), "A".into()]),
         ]);
-        assert!(mro("D", &[], &bad, &mut HashMap::new()).is_none());
+        assert!(mro("D", &[], &bad, &mut HashMap::new(), later()).is_none());
         let cyclic = HashMap::from([
             ("A".to_string(), vec!["B".to_string()]),
             ("B".to_string(), vec!["A".to_string()]),
         ]);
-        assert!(mro("A", &[], &cyclic, &mut HashMap::new()).is_none());
+        assert!(mro("A", &[], &cyclic, &mut HashMap::new(), later()).is_none());
 
-        let found = calls(HIERARCHY, &[range(21, 25)]);
+        let found = calls(HIERARCHY, &[range(21, 25)], later());
         let summary: Vec<_> = found
             .iter()
             .map(|c| {
@@ -1355,7 +1413,7 @@ class Child(Left, External, Right):
             ]
         );
         // a target already selected is no lead
-        let found = calls(HIERARCHY, &[range(5, 8), range(21, 25)]);
+        let found = calls(HIERARCHY, &[range(5, 8), range(21, 25)], later());
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "Right.run");
     }
@@ -1363,9 +1421,20 @@ class Child(Left, External, Right):
     #[test]
     fn a_method_that_may_rebind_self_or_a_cyclic_hierarchy_gives_no_calls() {
         let rebinding = "class A(B):\n    def go(self):\n        self = other\n        self.run()\n\nclass B:\n    def run(self):\n        pass\n";
-        assert!(calls(rebinding, &[range(1, 8)]).is_empty());
+        assert!(calls(rebinding, &[range(1, 8)], later()).is_empty());
         let cyclic = "class A(B):\n    def go(self):\n        self.run()\n\nclass B(A):\n    def run(self):\n        pass\n";
-        assert!(calls(cyclic, &[range(2, 3)]).is_empty());
+        assert!(calls(cyclic, &[range(2, 3)], later()).is_empty());
+    }
+
+    #[test]
+    fn a_passed_deadline_stops_the_structural_passes() {
+        let past = Instant::now();
+        assert!(calls(HIERARCHY, &[range(21, 25)], past).is_empty());
+        let bases = HashMap::from([("A".to_string(), vec!["B".to_string()])]);
+        assert!(mro("A", &[], &bases, &mut HashMap::new(), past).is_none());
+        let source = "class Box:\n    def a(self):\n        return 1\n\n    def b(self):\n        return 2\n";
+        assert!(!neighborhood(source, &[range(2, 3)], later()).is_empty());
+        assert!(neighborhood(source, &[range(2, 3)], past).is_empty());
     }
 
     #[test]
