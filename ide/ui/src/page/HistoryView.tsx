@@ -4,7 +4,16 @@
    the parent), with Revert… and New branch…. */
 
 import type { Host } from '@iii-dev/console-ui'
-import { Button, ConfirmDialog, EmptyState, IconButton, SearchField, Skeleton, StatusPanel } from '@iii-dev/console-ui'
+import {
+  Button,
+  ConfirmDialog,
+  EmptyState,
+  IconButton,
+  SearchField,
+  Skeleton,
+  StatusPanel,
+  uiClasses,
+} from '@iii-dev/console-ui'
 import { copyText, errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { CircleAlert, Copy, GitBranch, RefreshCw, Tag } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -13,6 +22,7 @@ import { gitCreateBranch, gitRevert } from './git-actions'
 import { type GitCommitDetails, type GitLogCommit, gitCommitDetails, gitLog, revisionParent } from './git-log'
 import { FileList, type Load } from './StashView'
 import { TextDialog } from './TextDialog'
+import { useSpin } from './use-spin'
 
 interface HistoryViewProps {
   host: Host
@@ -49,6 +59,9 @@ export function HistoryView({
   const [revertFor, setRevertFor] = useState<GitLogCommit | null>(null)
   const [branchFor, setBranchFor] = useState<GitLogCommit | null>(null)
   const [epoch, setEpoch] = useState(0)
+  // Only the Refresh button spins the icon; reloads after an action don't.
+  const [refreshing, setRefreshing] = useState(false)
+  const spinning = useSpin(refreshing)
   const seqRef = useRef(0)
 
   useEffect(() => {
@@ -57,12 +70,17 @@ export function HistoryView({
     gitLog(host, root)
       .then((commits) => {
         if (seqRef.current !== seq) return
+        setRefreshing(false)
         setLog({ kind: 'ready', value: commits })
         setSelected((current) =>
           commits.some((commit) => commit.sha === current) ? current : (commits[0]?.sha ?? null),
         )
       })
-      .catch((err: unknown) => seqRef.current === seq && setLog({ kind: 'error', message: errorMessage(err) }))
+      .catch((err: unknown) => {
+        if (seqRef.current !== seq) return
+        setRefreshing(false)
+        setLog({ kind: 'error', message: errorMessage(err) })
+      })
   }, [host, root, refreshEpoch, epoch])
 
   const commits = log.kind === 'ready' ? log.value : []
@@ -119,8 +137,16 @@ export function HistoryView({
           placeholder="Message, author or hash"
           aria-label="Filter commits"
         />
-        <IconButton label="Refresh" disabled={busy} onClick={() => setEpoch((value) => value + 1)}>
-          <RefreshCw aria-hidden />
+        <IconButton
+          label="Refresh"
+          disabled={busy}
+          aria-busy={spinning}
+          onClick={() => {
+            setRefreshing(true)
+            setEpoch((value) => value + 1)
+          }}
+        >
+          <RefreshCw aria-hidden className={spinning ? uiClasses.spin : undefined} />
         </IconButton>
       </div>
 

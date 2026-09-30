@@ -35,6 +35,8 @@ export interface SourceControlState {
   isIncluded: (entry: GitComparisonEntry) => boolean
   setIncluded: (entries: readonly GitComparisonEntry[], included: boolean) => void
   error: string | null
+  /** A refresh the user asked for is in flight (background re-reads don't count). */
+  refreshing: boolean
   busy: boolean
   /** The last action's outcome, for a status line. */
   note: { text: string; failed: boolean } | null
@@ -87,6 +89,7 @@ export function useSourceControl(
   const [note, setNote] = useState<SourceControlState['note']>(null)
   const seqRef = useRef(0)
   const [reloadEpoch, setReloadEpoch] = useState(0)
+  const [refreshing, setRefreshing] = useState(false)
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the epochs are reload triggers
   useEffect(() => {
@@ -96,6 +99,7 @@ export function useSourceControl(
     void Promise.all([gitComparison(host, root, 'uncommitted'), currentBranch(host, root)])
       .then(([state, branchName]) => {
         if (seqRef.current !== seq) return
+        setRefreshing(false)
         setBranch(branchName)
         if (state.kind === 'not-a-repo') {
           setPhase('not-a-repo')
@@ -117,6 +121,7 @@ export function useSourceControl(
       })
       .catch((err: unknown) => {
         if (seqRef.current !== seq) return
+        setRefreshing(false)
         setPhase('error')
         setError(errorMessage(err))
       })
@@ -156,7 +161,10 @@ export function useSourceControl(
     if (untracked.length > 0) setAdopted((current) => apply(current, untracked, on))
   }, [])
 
-  const reload = useCallback(() => setReloadEpoch((value) => value + 1), [])
+  const reload = useCallback(() => {
+    setRefreshing(true)
+    setReloadEpoch((value) => value + 1)
+  }, [])
 
   const perform = useCallback(
     async (label: string, action: () => Promise<string>): Promise<boolean> => {
@@ -243,6 +251,7 @@ export function useSourceControl(
       isIncluded,
       setIncluded,
       error,
+      refreshing,
       busy,
       note,
       reload,
@@ -259,6 +268,7 @@ export function useSourceControl(
       isIncluded,
       setIncluded,
       error,
+      refreshing,
       busy,
       note,
       reload,

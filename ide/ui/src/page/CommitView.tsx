@@ -1,4 +1,4 @@
-/* The Commit tab: a toolbar (refresh, rollback, show diff, view options,
+/* The Commit tab: a toolbar (refresh, rollback, stash, view options,
    expand/collapse), the change tree with a tick per change, and the commit
    box. Rolling back several files goes through one dialog that lists them. */
 
@@ -14,8 +14,9 @@ import {
   IconButton,
   Skeleton,
   StatusPanel,
+  uiClasses,
 } from '@iii-dev/console-ui'
-import { Archive, ChevronsDownUp, ChevronsUpDown, CircleAlert, Eye, GitCompare, RefreshCw, Undo2 } from 'lucide-react'
+import { Archive, ChevronsDownUp, ChevronsUpDown, CircleAlert, Eye, RefreshCw, Undo2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { ChangesTree } from './ChangesTree'
 import { CommitBox } from './CommitBox'
@@ -25,6 +26,7 @@ import { RollbackDialog } from './RollbackDialog'
 import { readScmShowUnversioned, readScmViewMode, writeScmShowUnversioned, writeScmViewMode } from './scm-view'
 import { TextDialog } from './TextDialog'
 import type { SourceControlState } from './use-source-control'
+import { useSpin } from './use-spin'
 
 interface CommitViewProps {
   host: Host
@@ -46,6 +48,7 @@ export function CommitView({ host, root, conversationId, scm, activePath, onOpen
   const [showUnversioned, setShowUnversioned] = useState(readScmShowUnversioned)
   const [open, setOpen] = useState<ReadonlyMap<string, boolean>>(new Map())
   const [rollbackEntries, setRollbackEntries] = useState<readonly GitComparisonEntry[] | null>(null)
+  const spinning = useSpin(scm.refreshing)
   const [stashEntries, setStashEntries] = useState<readonly GitComparisonEntry[] | null>(null)
 
   const groups = useMemo<ChangeGroup[]>(
@@ -74,7 +77,6 @@ export function CommitView({ host, root, conversationId, scm, activePath, onOpen
     scm.included.length > 0
       ? scm.included
       : [...scm.changes, ...scm.unversioned].filter((entry) => entry.path === activePath)
-  const diffTarget = scm.included[0] ?? scm.changes[0] ?? null
 
   if (scm.phase === 'not-a-repo') {
     return (
@@ -106,8 +108,8 @@ export function CommitView({ host, root, conversationId, scm, activePath, onOpen
   return (
     <div className="shui-commit">
       <div className="shui-commit-toolbar" role="toolbar" aria-label="Changes">
-        <IconButton label="Refresh" disabled={scm.busy} onClick={scm.reload}>
-          <RefreshCw aria-hidden />
+        <IconButton label="Refresh" disabled={scm.busy} onClick={scm.reload} aria-busy={spinning}>
+          <RefreshCw aria-hidden className={spinning ? uiClasses.spin : undefined} />
         </IconButton>
         <IconButton
           label={
@@ -130,13 +132,6 @@ export function CommitView({ host, root, conversationId, scm, activePath, onOpen
           onClick={() => setStashEntries(stashTargets)}
         >
           <Archive aria-hidden />
-        </IconButton>
-        <IconButton
-          label="Show diff"
-          disabled={diffTarget === null}
-          onClick={() => diffTarget && onOpenChange(diffTarget, true)}
-        >
-          <GitCompare aria-hidden />
         </IconButton>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

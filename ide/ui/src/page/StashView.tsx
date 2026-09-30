@@ -4,7 +4,16 @@
    aside, optionally with unversioned files. */
 
 import type { Host } from '@iii-dev/console-ui'
-import { Button, Checkbox, ConfirmDialog, EmptyState, IconButton, Skeleton, StatusPanel } from '@iii-dev/console-ui'
+import {
+  Button,
+  Checkbox,
+  ConfirmDialog,
+  EmptyState,
+  IconButton,
+  Skeleton,
+  StatusPanel,
+  uiClasses,
+} from '@iii-dev/console-ui'
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { Archive, CircleAlert, GitBranch, RefreshCw, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -15,6 +24,7 @@ import { gitStashApply, gitStashBranch, gitStashDrop, gitStashPush, statusLetter
 import { type GitStash, gitStashFiles, gitStashList, type StashFile, stashFileSource } from './git-log'
 import { basename, dirname } from './paths'
 import { TextDialog } from './TextDialog'
+import { useSpin } from './use-spin'
 
 interface StashViewProps {
   host: Host
@@ -48,6 +58,9 @@ export function StashView({
   const [branchFor, setBranchFor] = useState<GitStash | null>(null)
   const [dropFor, setDropFor] = useState<GitStash | null>(null)
   const [epoch, setEpoch] = useState(0)
+  // Only the Refresh button spins the icon; reloads after an action don't.
+  const [refreshing, setRefreshing] = useState(false)
+  const spinning = useSpin(refreshing)
   const seqRef = useRef(0)
 
   useEffect(() => {
@@ -56,10 +69,15 @@ export function StashView({
     gitStashList(host, root)
       .then((stashes) => {
         if (seqRef.current !== seq) return
+        setRefreshing(false)
         setList({ kind: 'ready', value: stashes })
         setSelected((current) => (stashes.some((stash) => stash.sha === current) ? current : (stashes[0]?.sha ?? null)))
       })
-      .catch((err: unknown) => seqRef.current === seq && setList({ kind: 'error', message: errorMessage(err) }))
+      .catch((err: unknown) => {
+        if (seqRef.current !== seq) return
+        setRefreshing(false)
+        setList({ kind: 'error', message: errorMessage(err) })
+      })
   }, [host, root, refreshEpoch, epoch])
 
   const stashes = list.kind === 'ready' ? list.value : []
@@ -103,8 +121,16 @@ export function StashView({
         <IconButton label="Stash changes…" disabled={busy || root === null} onClick={() => setStashOpen(true)}>
           <Archive aria-hidden />
         </IconButton>
-        <IconButton label="Refresh" disabled={busy} onClick={() => setEpoch((value) => value + 1)}>
-          <RefreshCw aria-hidden />
+        <IconButton
+          label="Refresh"
+          disabled={busy}
+          aria-busy={spinning}
+          onClick={() => {
+            setRefreshing(true)
+            setEpoch((value) => value + 1)
+          }}
+        >
+          <RefreshCw aria-hidden className={spinning ? uiClasses.spin : undefined} />
         </IconButton>
         <span className="spacer" />
         {list.kind === 'ready' ? (
