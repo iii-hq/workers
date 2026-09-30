@@ -158,9 +158,15 @@ async fn nothing_protected_ignored_or_secret_reaches_the_judge() {
                 "src/core/key.txt",
                 b"-----BEGIN OPENSSH PRIVATE KEY-----\nSECRET_PK needle\n",
             ),
+            (
+                "src/core/key.asc",
+                b"-----BEGIN PGP PRIVATE KEY BLOCK-----\nSECRET_PGP needle\n",
+            ),
             ("src/core/blob.bin", b"\x00\x01SECRET_BIN needle"),
             ("src/core/latin.txt", b"SECRET_UTF8 needle \xff"),
-            (".gitignore", b"ignored.txt\n"),
+            // a whitelisted dot-folder is still hidden
+            (".gitignore", b"ignored.txt\n!.secretdir/\n"),
+            (".secretdir/needle.rs", b"SECRET_HIDDEN needle"),
             ("ignored.txt", b"SECRET_IGN needle"),
             ("node_modules/needle/index.js", b"SECRET_NM needle"),
             ("vendor/needle.go", b"SECRET_VENDOR needle"),
@@ -183,6 +189,7 @@ async fn nothing_protected_ignored_or_secret_reaches_the_judge() {
         ".env",
         ".git-credentials",
         ".gitignore",
+        ".secretdir",
         "id_rsa",
         "x.pem",
         "credentials.json",
@@ -416,11 +423,12 @@ async fn bad_input_is_c210() {
 
 #[tokio::test]
 async fn excerpts_past_the_output_budget_are_omitted_but_keep_their_leads() {
-    // three 50 000-byte files the judge selects whole: two fit in 131 072
-    let source: String = (0..2_000)
-        .map(|i| format!("fn needle_{i:04}() -> u32 {{ {i:05} }}\n"))
+    // three ~50 000-byte files of ten functions the judge selects whole:
+    // two fit in 131 072 source bytes (and in the result cap)
+    let filler = "    // filler filler filler filler filler filler\n".repeat(100);
+    let source: String = (0..10)
+        .map(|i| format!("fn needle_{i:04}() -> u32 {{\n{filler}    {i}\n}}\n"))
         .collect();
-    let source = &source[..50_000 - 50_000 % 34]; // whole 34-byte lines
     let fx = fixture(
         &[
             ("a_needle.rs", source.as_bytes()),
@@ -457,6 +465,87 @@ async fn excerpts_past_the_output_budget_are_omitted_but_keep_their_leads() {
     assert_eq!(omitted, [false, false, true]);
     assert_eq!(out.files[2].leads.len(), out.files[0].leads.len());
     assert_eq!(out.files[2].leads[0].name, "needle_0000");
+}
+
+/// What harness/src/trigger.rs `cap_result` measures against its 262_144
+/// default: the result as one JSON text block, beside the result itself.
+fn harness_bytes(out: &FindRelevantOutput) -> usize {
+    let text = serde_json::to_string(out).unwrap();
+    let content = serde_json::json!([{ "type": "text", "text": text }]);
+    serde_json::to_vec(&(content, out)).unwrap().len()
+}
+
+#[test]
+fn a_result_stays_under_the_harness_cap_whatever_it_escapes() {
+    // quotes and backslashes count 6 times once escaped twice, tabs and
+    // newlines 5
+    let nasty = "\"\\\t\n\r".repeat(480);
+    let file = |i: usize| RelevantFile {
+        path: format!("/{}/{i:04}\"\\.py", "d".repeat(200)),
+        score: 0.9,
+        priority: Some(0.5),
+        roles: vec!["implementation".into()],
+        excerpts: (0..30u32)
+            .map(|j| Excerpt {
+                line_from: j,
+                line_to: j,
+                text: nasty.clone(),
+                partial: None,
+            })
+            .collect(),
+        leads: (0..50u32)
+            .map(|j| Lead {
+                name: format!("lead\"{j}"),
+                line_from: j,
+                line_to: j,
+                score: 0.5,
+            })
+            .collect(),
+        call_leads: (0..20u32)
+            .map(|j| CallLead {
+                caller: "A.go".into(),
+                name: format!("B.m{j}"),
+                line_from: j,
+                line_to: j,
+                unknown_earlier_bases: vec!["External".into()],
+            })
+            .collect(),
+        source_omitted: false,
+    };
+    let output = |files: usize| FindRelevantOutput {
+        status: Status::Complete,
+        reason: None,
+        files: (0..files).map(file).collect(),
+        agents_md: vec!["/r/AGENTS.md".into()],
+        issues: BTreeMap::new(),
+        stats: Stats::default(),
+    };
+
+    // a few files: their escaped source fills the cap long before 131 072
+    // source bytes
+    let mut few = output(3);
+    assert!(harness_bytes(&few) > 262_144);
+    spend_budget(&mut few, MAX_SOURCE_BYTES, MAX_RESULT_BYTES);
+    assert!(harness_bytes(&few) < 262_144);
+    let shown: usize = few
+        .files
+        .iter()
+        .flat_map(|f| &f.excerpts)
+        .map(|e| e.text.len())
+        .sum();
+    assert!(shown > 30_000 && shown < MAX_SOURCE_BYTES / 2, "{shown}");
+    assert!(few.files[2].source_omitted && few.files[2].excerpts.is_empty());
+    assert_eq!(few.files[2].leads.len(), 50);
+    assert_eq!(few.status, Status::Complete);
+
+    // many files: even their locations overflow, so the last ones go
+    let mut many = output(400);
+    spend_budget(&mut many, MAX_SOURCE_BYTES, MAX_RESULT_BYTES);
+    assert!(harness_bytes(&many) < 262_144);
+    assert!(many.files.len() < 400);
+    assert_eq!(many.files[0].leads.len(), 50);
+    assert_eq!(many.status, Status::Incomplete);
+    assert_eq!(many.issues.get("resource_limit"), Some(&1));
 }
 
 #[test]
@@ -625,13 +714,36 @@ async fn an_unlistable_folder_makes_the_result_incomplete() {
     assert_eq!(paths(&fx, &out), ["needle.rs"]);
 }
 
+#[tokio::test]
+async fn the_entry_cap_counts_only_what_discovery_lists() {
+    // `aaa/heavy` alone holds more than MAX_ENTRIES names: a depth-first
+    // walk capped there never reached `zzz`, though the judge prunes it
+    let fx = fixture(&[("zzz/needle.rs", b"fn needle() {}\n")], |_, _| {});
+    let heavy = fx.root.join("aaa/heavy");
+    std::fs::create_dir_all(&heavy).unwrap();
+    for i in 0..=walk::MAX_ENTRIES {
+        std::fs::File::create(heavy.join(format!("f{i:06}"))).unwrap();
+    }
+    let log = Log::default();
+    let out = ask(&fx, None, judge(&log, keyword)).await;
+    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
+    assert_eq!(paths(&fx, &out), ["zzz/needle.rs"]);
+    // `aaa/heavy` was offered on its (truncated) preview and pruned
+    let heavy_item = sent(&log)
+        .into_iter()
+        .flat_map(|ev| ev["state"]["items"].as_array().cloned().unwrap_or_default())
+        .find(|item| item["path"] == "aaa/heavy")
+        .unwrap();
+    assert_eq!(heavy_item["childPreview"]["truncated"], true);
+}
+
 #[cfg(unix)]
 #[test]
 fn a_folder_swapped_for_a_link_after_the_walk_is_never_read() {
     let fx = fixture(&[("src/a.rs", b"inside")], |_, _| {});
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("a.rs"), "SECRET_OUTSIDE").unwrap();
-    let tree = walk::walk(&fx.resolver, &fx.root, None, u64::MAX);
+    let tree = walk::Tree::new(&fx.resolver, &fx.root, None, u64::MAX);
     assert!(matches!(walk::read(&tree, "src/a.rs"), walk::Snap::Ok(_)));
     std::fs::rename(fx.root.join("src"), fx.root.join("old")).unwrap();
     std::os::unix::fs::symlink(outside.path(), fx.root.join("src")).unwrap();
@@ -888,7 +1000,7 @@ fn content_samples_take_head_middle_and_tail_and_shrink_to_fit() {
     let fx = fixture(&files, |_, _| {});
     let run = Run {
         query: "q".into(),
-        tree: walk::walk(&fx.resolver, &fx.root, None, u64::MAX),
+        tree: walk::Tree::new(&fx.resolver, &fx.root, None, u64::MAX),
         evaluate: judge(&Log::default(), keyword),
         deadline: Instant::now() + Duration::from_secs(60),
         cap: usize::MAX,
@@ -902,7 +1014,7 @@ fn content_samples_take_head_middle_and_tail_and_shrink_to_fit() {
         kind: Kind::Directory,
         source_range: None,
         file_preview: None,
-        child_preview: Some(walk::preview_directory(&run.tree, "d/s")),
+        child_preview: walk::preview_directory(&run.tree, "d/s"),
     };
     let preview = run.with_directory_content(item).child_preview.unwrap();
     let samples = preview.content_samples.as_ref().unwrap();
@@ -930,12 +1042,12 @@ fn content_samples_take_head_middle_and_tail_and_shrink_to_fit() {
     let files: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), &b[..])).collect();
     let fx = fixture(&files, |_, _| {});
     let run = Run {
-        tree: walk::walk(&fx.resolver, &fx.root, None, u64::MAX),
+        tree: walk::Tree::new(&fx.resolver, &fx.root, None, u64::MAX),
         ..run
     };
     let item = NavigationItem {
         path: "m/s".into(),
-        child_preview: Some(walk::preview_directory(&run.tree, "m/s")),
+        child_preview: walk::preview_directory(&run.tree, "m/s"),
         ..NavigationItem {
             path: String::new(),
             kind: Kind::Directory,

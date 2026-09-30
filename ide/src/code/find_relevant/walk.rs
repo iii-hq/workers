@@ -6,13 +6,15 @@
 //! `retrieve.ts` `previewDirectory`/`previewFile` and `source.ts`
 //! `splitSource`.
 //!
-//! Instead of jevgrep's lazy per-directory cursors, one `ignore` walk builds
-//! an in-memory children map up front. Every gate runs there, so a pruned
-//! entry never shows up in a preview either:
+//! A directory is listed only when navigation reaches it (jevgrep's
+//! per-directory cursors), by a one-level `ignore` walk that loads the
+//! ignore files of every ancestor, as one whole-tree walk would. Every gate
+//! runs there, so a pruned entry never shows up in a preview either:
 //! - the jail's protections: operator denylist, `non_accessible_globs`
 //!   (REDACTION INVARIANT), `default_exclude_globs`;
-//! - `.gitignore`/`.ignore` (also outside a Git checkout), hidden entries,
-//!   symlinks and special files;
+//! - `.gitignore`/`.ignore` (also outside a Git checkout), hidden entries
+//!   (any dot-name below the walk root, even one an ignore file
+//!   whitelists), symlinks and special files;
 //! - jevgrep's dependency directories and credential-like names;
 //! - the caller's `exclude_globs`.
 //!
@@ -27,7 +29,6 @@
 //! bytes from outside the root.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -73,7 +74,8 @@ const SENSITIVE_NAMES: [&str; 12] = [
 ];
 const SENSITIVE_SUFFIXES: [&str; 4] = [".pem", ".key", ".p12", ".pfx"];
 
-/// Entries one ask may walk.
+/// Entries one ask may list (jevgrep's `entriesSeen` cap), charged as
+/// discovery lists a directory; a preview or lookup lists at most this many.
 pub const MAX_ENTRIES: usize = 100_000;
 /// jevgrep `maxFileBytes`.
 const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
@@ -87,7 +89,9 @@ static CONTROL: Lazy<regex::bytes::Regex> = Lazy::new(|| {
     regex::bytes::Regex::new(r"[\x00-\x08\x0b\x0e-\x1f\x7f]").expect("control-byte regex")
 });
 static PRIVATE_KEY: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----").expect("private-key regex")
+    // jevgrep's pattern, plus the ` BLOCK` of an ASCII-armored PGP key.
+    regex::Regex::new(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")
+        .expect("private-key regex")
 });
 
 /// jevgrep `isSensitive`.
@@ -138,125 +142,142 @@ pub struct Entry {
     pub is_dir: bool,
 }
 
-/// The eligible tree under one walk root.
-#[derive(Debug)]
+/// The eligible tree under one walk root, listed a directory at a time.
 pub struct Tree {
     /// Canonical absolute walk root; never sent to the judge.
     pub root: PathBuf,
-    /// Root-relative directory (`.` = root) → its eligible children, sorted
-    /// by name.
-    pub children: HashMap<String, Vec<Entry>>,
-    /// The walk stopped at [`MAX_ENTRIES`].
-    pub truncated: bool,
-    /// Directories the walk could not list.
-    pub unreadable: u64,
+    resolver: Arc<PathResolver>,
+    exclude: Option<globset::GlobSet>,
+    /// Naming an excluded folder as the walk root disables the default
+    /// excludes for that walk, as in coder::search and coder::tree.
+    default_excludes: bool,
     /// Per-file read ceiling: jevgrep's 16 MiB capped by `max_read_bytes`.
     pub max_file_bytes: u64,
 }
 
-/// Walk `root` once, applying every name gate (module docs).
-pub fn walk(
-    resolver: &Arc<PathResolver>,
-    root: &Path,
-    exclude: Option<globset::GlobSet>,
-    max_read_bytes: u64,
-) -> Tree {
-    // Naming an excluded folder as the walk root disables the default
-    // excludes for that walk, as in coder::search and coder::tree.
-    let use_default_excludes = !resolver.is_default_excluded_dir(root);
-    let mut walker = ignore::WalkBuilder::new(root);
-    walker
-        .follow_links(false)
-        .hidden(true)
-        .parents(true)
-        .ignore(true)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .require_git(false)
-        .sort_by_file_name(|a, b| locale_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
-    let filter_resolver = resolver.clone();
-    let filter_root = root.to_path_buf();
-    walker.filter_entry(move |e| {
-        if e.depth() == 0 {
-            return true;
-        }
-        let Some(file_type) = e.file_type() else {
-            return false;
-        };
-        let (is_dir, is_file) = (file_type.is_dir(), file_type.is_file());
-        if !is_dir && !is_file {
-            return false; // symlinks and special files
-        }
-        let abs = e.path();
-        let name = e.file_name().to_string_lossy();
-        if name == ".git"
-            || filter_resolver.is_denied(abs)
-            || filter_resolver.is_non_accessible(abs)
-            || is_sensitive(&name)
-            || (is_dir && DEPENDENCY_DIRECTORIES.contains(&name.as_ref()))
-        {
-            return false;
-        }
-        if use_default_excludes
-            && if is_dir {
-                filter_resolver.is_default_excluded_dir(abs)
-            } else {
-                filter_resolver.is_default_excluded(abs)
-            }
-        {
-            return false;
-        }
-        // A directory also matches as `rel/`, so `gen/` and `gen/**` prune
-        // the folder itself, not just its contents.
-        match (&exclude, abs.strip_prefix(&filter_root)) {
-            (Some(set), Ok(rel)) => {
-                !(set.is_match(rel)
-                    || is_dir && set.is_match(format!("{}/", rel.to_string_lossy())))
-            }
-            _ => true,
-        }
-    });
+/// One directory's eligible children.
+#[derive(Debug, Default)]
+pub struct Listing {
+    /// Sorted by name.
+    pub entries: Vec<Entry>,
+    /// The listing stopped at its limit with entries left unread.
+    pub truncated: bool,
+    /// The directory could not be listed, or not all of it.
+    pub unreadable: bool,
+}
 
-    let mut tree = Tree {
-        root: root.to_path_buf(),
-        children: HashMap::from([(".".to_string(), Vec::new())]),
-        truncated: false,
-        unreadable: 0,
-        max_file_bytes: MAX_FILE_BYTES.min(max_read_bytes),
-    };
-    let mut seen = 0usize;
-    for entry in walker.build() {
-        let Ok(entry) = entry else {
-            tree.unreadable += 1;
-            continue;
-        };
-        if entry.depth() == 0 {
-            continue;
+impl Tree {
+    pub fn new(
+        resolver: &Arc<PathResolver>,
+        root: &Path,
+        exclude: Option<globset::GlobSet>,
+        max_read_bytes: u64,
+    ) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            resolver: resolver.clone(),
+            exclude,
+            default_excludes: !resolver.is_default_excluded_dir(root),
+            max_file_bytes: MAX_FILE_BYTES.min(max_read_bytes),
         }
-        if seen >= MAX_ENTRIES {
-            tree.truncated = true;
-            break;
-        }
-        seen += 1;
-        let Ok(rel) = entry.path().strip_prefix(root) else {
-            continue;
-        };
-        let rel = rel.to_string_lossy().replace('\\', "/");
-        let (parent, name) = match rel.rsplit_once('/') {
-            Some((parent, name)) => (parent.to_string(), name.to_string()),
-            None => (".".to_string(), rel.clone()),
-        };
-        let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
-        if is_dir {
-            tree.children.entry(rel).or_default();
-        }
-        tree.children
-            .entry(parent)
-            .or_default()
-            .push(Entry { name, is_dir });
     }
-    tree
+
+    /// The eligible children of `dir` (root-relative, `.` = the root) under
+    /// every name gate (module docs): the first `limit` in directory order,
+    /// sorted by name. Blocking.
+    pub fn list(&self, dir: &str, limit: usize) -> Listing {
+        let path = if dir == "." {
+            self.root.clone()
+        } else {
+            self.root.join(dir)
+        };
+        let mut walker = ignore::WalkBuilder::new(&path);
+        walker
+            .max_depth(Some(1))
+            .follow_links(false)
+            .hidden(true)
+            .parents(true)
+            .ignore(true)
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .require_git(false);
+        let (resolver, exclude, root) = (
+            self.resolver.clone(),
+            self.exclude.clone(),
+            self.root.clone(),
+        );
+        let default_excludes = self.default_excludes;
+        walker.filter_entry(move |e| {
+            if e.depth() == 0 {
+                return true;
+            }
+            let Some(file_type) = e.file_type() else {
+                return false;
+            };
+            let (is_dir, is_file) = (file_type.is_dir(), file_type.is_file());
+            if !is_dir && !is_file {
+                return false; // symlinks and special files
+            }
+            let abs = e.path();
+            let name = e.file_name().to_string_lossy();
+            // filesystem.ts 319: a dot-name is hidden whatever the ignore
+            // files say (the walker's own hidden check yields to a
+            // whitelist such as `!.kube/`); this also covers `.git`.
+            if name.starts_with('.')
+                || resolver.is_denied(abs)
+                || resolver.is_non_accessible(abs)
+                || is_sensitive(&name)
+                || (is_dir && DEPENDENCY_DIRECTORIES.contains(&name.as_ref()))
+            {
+                return false;
+            }
+            if default_excludes
+                && if is_dir {
+                    resolver.is_default_excluded_dir(abs)
+                } else {
+                    resolver.is_default_excluded(abs)
+                }
+            {
+                return false;
+            }
+            // A directory also matches as `rel/`, so `gen/` and `gen/**`
+            // prune the folder itself, not just its contents.
+            match (&exclude, abs.strip_prefix(&root)) {
+                (Some(set), Ok(rel)) => {
+                    !(set.is_match(rel)
+                        || is_dir && set.is_match(format!("{}/", rel.to_string_lossy())))
+                }
+                _ => true,
+            }
+        });
+
+        let mut listing = Listing::default();
+        // Errors before the directory itself come from ancestors' ignore
+        // files; after it, from reading the directory.
+        let mut opened = false;
+        for entry in walker.build() {
+            let Ok(entry) = entry else {
+                listing.unreadable |= opened;
+                continue;
+            };
+            if entry.depth() == 0 {
+                opened = true;
+                continue;
+            }
+            if listing.entries.len() >= limit {
+                listing.truncated = true;
+                break;
+            }
+            listing.entries.push(Entry {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                is_dir: entry.file_type().is_some_and(|t| t.is_dir()),
+            });
+        }
+        listing.unreadable |= !opened;
+        listing.entries.sort_by(|a, b| locale_cmp(&a.name, &b.name));
+        listing
+    }
 }
 
 /// One read of an eligible file (jevgrep `Snapshot`).
@@ -367,16 +388,20 @@ pub fn json_len<T: serde::Serialize + ?Sized>(value: &T) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// retrieve.ts `previewDirectory`.
-pub fn preview_directory(tree: &Tree, path: &str) -> DirectoryPreview {
-    let mut preview = DirectoryPreview::default();
+/// retrieve.ts `previewDirectory`: `None` when `path` cannot be listed.
+/// The entries are the first by name, not jevgrep's first page in directory
+/// order. Blocking.
+pub fn preview_directory(tree: &Tree, path: &str) -> Option<DirectoryPreview> {
+    let listing = tree.list(path, MAX_ENTRIES);
+    if listing.unreadable {
+        return None;
+    }
+    let mut preview = DirectoryPreview {
+        truncated: listing.truncated,
+        ..DirectoryPreview::default()
+    };
     let mut bytes = 0;
-    for entry in tree
-        .children
-        .get(path)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-    {
+    for entry in &listing.entries {
         let child = PreviewEntry {
             name: entry.name.clone(),
             kind: if entry.is_dir {
@@ -406,7 +431,7 @@ pub fn preview_directory(tree: &Tree, path: &str) -> DirectoryPreview {
                 .or_default() += 1;
         }
     }
-    preview
+    Some(preview)
 }
 
 /// The longest prefix of `text` within `units` UTF-16 code units, never

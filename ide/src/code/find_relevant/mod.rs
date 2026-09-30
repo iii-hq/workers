@@ -1,13 +1,12 @@
 //! `coder::find-relevant` — judge-ranked code discovery, a Rust port of
 //! dzhng/jevgrep (MIT, Copyright (c) 2026 David Zhang), commit 82ef1fd.
 //!
-//! Walks the jailed folder once ([`walk`]), then asks `judge::evaluate`
-//! jevgrep's yes/no questions ([`prompts`]) level by level ([`navigate`]),
-//! following only the branches the judge admits. Every entry passes the
-//! jail's protections and jevgrep's secret and content filters before any
-//! of it reaches the judge; paths leave as root-relative, never the host
-//! layout. A missing or failing judge is a typed `unavailable` result, not
-//! an error.
+//! Asks `judge::evaluate` jevgrep's yes/no questions ([`prompts`]) level by
+//! level ([`navigate`]), listing a folder ([`walk`]) only when it follows a
+//! branch the judge admits. Every entry passes the jail's protections and
+//! jevgrep's secret and content filters before any of it reaches the judge;
+//! paths leave as root-relative, never the host layout. A missing or failing
+//! judge is a typed `unavailable` result, not an error.
 //!
 //! Output order follows jevgrep's `apps/cli/src/render.ts`; the answer
 //! cache ports `packages/core/src/cache.ts` (in memory only) and the
@@ -45,6 +44,11 @@ pub const MAX_TIMEOUT_MS: u64 = 280_000;
 pub const MIN_WINDOW_TOKENS: u64 = 8_192;
 /// Excerpt bytes one result carries (`coder::read-file`'s ceiling).
 pub const MAX_SOURCE_BYTES: usize = 131_072;
+/// A result's size as the harness counts it ([`result_bytes`]) stays under
+/// this: harness/src/config.rs `default_max_result_bytes` (262_144), past
+/// which `trigger::cap_result` swaps the whole result for a marker, less
+/// headroom for its wrapping.
+pub const MAX_RESULT_BYTES: usize = 250_000;
 
 // examples are wire-contract; goldens pin them.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -102,11 +106,20 @@ pub enum Status {
 pub struct Excerpt {
     pub line_from: u32,
     pub line_to: u32,
-    /// Verbatim source of the line range.
+    /// Verbatim source of the line range; with `partial`, only that byte
+    /// span of it.
     pub text: String,
-    /// Not whole lines (a byte span of a giant line or partial unit).
-    #[serde(skip)]
-    pub partial: bool,
+    /// Present when `text` is only a byte span of its lines (for example
+    /// inside a line over 24000 bytes): do not rewrite whole lines from it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial: Option<ByteSpan>,
+}
+
+/// UTF-8 byte offsets in the file: `[byte_from, byte_to)`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, JsonSchema)]
+pub struct ByteSpan {
+    pub byte_from: u32,
+    pub byte_to: u32,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -261,17 +274,9 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
     // A known window caps every request at twice its tokens.
     let cap = |jevgrep: usize| window.map_or(jevgrep, |tokens| jevgrep.min(2 * tokens as usize));
 
-    let max_read_bytes = cfg.max_read_bytes;
-    let walk_resolver = resolver.clone();
-    let tree = tokio::task::spawn_blocking(move || {
-        walk::walk(&walk_resolver, &walk_root, exclude, max_read_bytes)
-    })
-    .await
-    .map_err(|e| CoderError::Io(format!("find-relevant walk failed: {e}")))?;
-    let (truncated, unreadable) = (tree.truncated, tree.unreadable);
     let run = Arc::new(Run {
         query: req.query,
-        tree,
+        tree: walk::Tree::new(&resolver, &walk_root, exclude, cfg.max_read_bytes),
         evaluate,
         deadline,
         cap: cap(navigate::MAX_REQUEST_BYTES),
@@ -280,12 +285,6 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
         cache,
         state: Mutex::new(Default::default()),
     });
-    if truncated {
-        run.issue("resource_limit");
-    }
-    if unreadable > 0 {
-        *run.state().issues.entry("unreadable".into()).or_default() += unreadable;
-    }
     run.discover(vec![".".into()], None).await;
     run.relate().await;
     // The assessment reads only discovery previews, so it runs alongside.
@@ -315,12 +314,13 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
 
     let root = run.tree.root.clone();
     let candidates = run.sorted_candidates();
-    let agents_md = agents_md(&run.tree, &candidates);
-    // repository-context.ts `instructionLookupIncomplete`: a truncated walk
-    // may not have listed an ancestor's AGENTS.md.
-    if truncated {
-        run.issue("agents_md_incomplete");
-    }
+    let (lookup, listed) = (run.clone(), candidates.clone());
+    let agents_md = tokio::task::spawn_blocking(move || agents_md(&lookup, &listed))
+        .await
+        .unwrap_or_else(|_| {
+            run.issue("agents_md_incomplete");
+            Vec::new()
+        });
     let state = std::mem::take(&mut *run.state());
     let admitted = !candidates.is_empty();
     let mut files: Vec<RelevantFile> = candidates
@@ -346,7 +346,6 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
         })
         .collect();
     sort_files(&mut files);
-    spend_source_budget(&mut files, MAX_SOURCE_BYTES);
     let (status, reason) = match state.stop {
         // Nothing admitted yet: point the agent at coder::search.
         Some(Stop::Unavailable(reason)) if !admitted => (Status::Unavailable, Some(reason)),
@@ -355,7 +354,7 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
         None if state.issues.is_empty() => (Status::Complete, None),
         None => (Status::Incomplete, None),
     };
-    Ok(logged(FindRelevantOutput {
+    let mut output = FindRelevantOutput {
         status,
         reason,
         files,
@@ -368,7 +367,9 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
             cache_hits: state.cache_hits,
             elapsed_ms: started.elapsed().as_millis() as u64,
         },
-    }))
+    };
+    spend_budget(&mut output, MAX_SOURCE_BYTES, MAX_RESULT_BYTES);
+    Ok(logged(output))
 }
 
 /// render.ts: `priority ?? score` first, then score, then path.
@@ -382,26 +383,71 @@ fn sort_files(files: &mut [RelevantFile]) {
     });
 }
 
-/// render.ts: excerpts are kept in output order while they fit `budget`;
-/// a file that loses one is marked `source_omitted` (its leads remain).
-fn spend_source_budget(files: &mut [RelevantFile], mut budget: usize) {
-    for file in files {
-        file.excerpts.retain(|excerpt| {
-            let fits = excerpt.text.len() <= budget;
-            if fits {
-                budget -= excerpt.text.len();
+/// What harness/src/trigger.rs `cap_result` measures for `value`: its
+/// compact JSON (`details`) plus that JSON again as one string (`normalize`
+/// renders an object without `content` as one text block), so quotes and
+/// backslashes count several times over.
+fn result_bytes<T: Serialize + ?Sized>(value: &T) -> usize {
+    let json = serde_json::to_string(value).unwrap_or_default();
+    json.len() + walk::json_len(json.as_str())
+}
+
+/// render.ts: excerpts are kept in output order while they fit `source`
+/// bytes and, beside everything else in `output`, `result` bytes as the
+/// harness counts them; a file that loses one is marked `source_omitted`
+/// (its leads remain). When the rest alone is over `result`, the last files
+/// lose their call leads, leads and then themselves, counted as a
+/// `resource_limit`.
+fn spend_budget(output: &mut FindRelevantOutput, mut source: usize, result: usize) {
+    let excerpts: Vec<Vec<Excerpt>> = output
+        .files
+        .iter_mut()
+        .map(|file| std::mem::take(&mut file.excerpts))
+        .collect();
+    // An element costs at most its `result_bytes` (the 2 quote bytes pay
+    // for its commas) and removing one saves at least that less 2, so
+    // `used` never undercounts.
+    let mut used = result_bytes(output);
+    let mut trimmed = false;
+    while used > result {
+        let Some(file) = output.files.last_mut() else {
+            break;
+        };
+        let saved = if let Some(call) = file.call_leads.pop() {
+            result_bytes(&call)
+        } else if let Some(lead) = file.leads.pop() {
+            result_bytes(&lead)
+        } else {
+            output.files.pop().map_or(0, |file| result_bytes(&file))
+        };
+        used -= saved.saturating_sub(2).min(used);
+        trimmed = true;
+    }
+    for (file, excerpts) in output.files.iter_mut().zip(excerpts) {
+        for excerpt in excerpts {
+            let size = result_bytes(&excerpt);
+            if excerpt.text.len() <= source && used + size <= result {
+                source -= excerpt.text.len();
+                used += size;
+                file.excerpts.push(excerpt);
             } else {
                 file.source_omitted = true;
             }
-            fits
-        });
+        }
+    }
+    if trimmed {
+        *output.issues.entry("resource_limit".into()).or_default() += 1;
+        if output.status == Status::Complete {
+            output.status = Status::Incomplete;
+        }
     }
 }
 
 /// repository-context.ts: `AGENTS.md` at the walk root and in every folder
-/// above a returned file, when the walk admitted it (the jail's
-/// protections, ignore rules and `exclude_globs` all apply). Absolute.
-fn agents_md(tree: &walk::Tree, candidates: &[Candidate]) -> Vec<String> {
+/// above a returned file, when a listing admits it (the jail's protections,
+/// ignore rules and `exclude_globs` all apply); a folder too large or
+/// unreadable to tell counts `agents_md_incomplete`. Absolute. Blocking.
+fn agents_md(run: &Run, candidates: &[Candidate]) -> Vec<String> {
     let mut directories = vec![".".to_string()];
     for candidate in candidates {
         let mut path = candidate.path.as_str();
@@ -415,14 +461,19 @@ fn agents_md(tree: &walk::Tree, candidates: &[Candidate]) -> Vec<String> {
     directories
         .iter()
         .filter(|directory| {
-            tree.children.get(*directory).is_some_and(|entries| {
-                entries
-                    .iter()
-                    .any(|entry| !entry.is_dir && entry.name == "AGENTS.md")
-            })
+            let listing = run.tree.list(directory, walk::MAX_ENTRIES);
+            let found = listing
+                .entries
+                .iter()
+                .any(|entry| !entry.is_dir && entry.name == "AGENTS.md");
+            if !found && (listing.truncated || listing.unreadable) {
+                run.issue("agents_md_incomplete");
+            }
+            found
         })
         .map(|directory| {
-            tree.root
+            run.tree
+                .root
                 .join(walk::join(directory, "AGENTS.md"))
                 .display()
                 .to_string()

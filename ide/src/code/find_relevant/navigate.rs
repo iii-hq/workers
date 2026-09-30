@@ -1,4 +1,4 @@
-//! Judge-driven navigation: breadth-first over the walked tree, two levels
+//! Judge-driven navigation: breadth-first from the walk root, two levels
 //! per round, admitting directories and files the judge scores above 0.5.
 //!
 //! Ported from dzhng/jevgrep (MIT, Copyright (c) 2026 David Zhang), commit
@@ -79,6 +79,8 @@ pub struct State {
     pub previews: HashMap<String, FilePreview>,
     /// Content hash of each file as previewed.
     hashes: HashMap<String, String>,
+    /// Entries of the directories discovery listed (jevgrep `entriesSeen`).
+    entries_seen: usize,
 }
 
 /// One ask's shared discovery state.
@@ -308,7 +310,10 @@ impl Run {
     /// pruned one is not kept again.
     pub async fn discover(self: &Arc<Self>, seeds: Vec<String>, anchor: Option<&RelationAnchor>) {
         let mut directories = seeds;
-        while !directories.is_empty() && !self.stopped() {
+        while !directories.is_empty()
+            && !self.stopped()
+            && self.state().entries_seen < walk::MAX_ENTRIES
+        {
             let level = std::mem::take(&mut directories);
             let (run, owned) = (self.clone(), anchor.cloned());
             let (items, chunks) =
@@ -365,7 +370,8 @@ impl Run {
     /// Read and preview one round: the `directories`, their child
     /// directories, and every eligible file in both. Returns the items to
     /// score and the chunked items of files whose preview alone is too big
-    /// for one request.
+    /// for one request. Every listed entry counts toward [`walk::MAX_ENTRIES`]
+    /// (retrieve.ts 303-336).
     fn build_level(
         &self,
         directories: Vec<String>,
@@ -377,19 +383,43 @@ impl Run {
         while index < level.len() && !self.stopped() {
             let (path, depth) = level[index].clone();
             index += 1;
+            let left = walk::MAX_ENTRIES.saturating_sub(self.state().entries_seen);
+            if left == 0 {
+                self.issue("resource_limit");
+                break;
+            }
             if !self.state().visited.insert(path.clone()) {
                 continue;
             }
-            for entry in self.tree.children.get(&path).into_iter().flatten() {
+            let listing = self.tree.list(&path, left + 1);
+            if listing.unreadable {
+                self.issue("unreadable");
+            }
+            if listing.entries.len() > left {
+                self.issue("resource_limit");
+            }
+            for entry in &listing.entries {
                 if self.stopped() {
                     break;
+                }
+                {
+                    let mut state = self.state();
+                    if state.entries_seen >= walk::MAX_ENTRIES {
+                        *state.issues.entry("resource_limit".into()).or_default() += 1;
+                        break;
+                    }
+                    state.entries_seen += 1;
                 }
                 let child = walk::join(&path, &entry.name);
                 if entry.is_dir {
                     if depth == 0 {
                         level.push((child, 1));
                     } else {
-                        let child_preview = walk::preview_directory(&self.tree, &child);
+                        let Some(child_preview) = walk::preview_directory(&self.tree, &child)
+                        else {
+                            self.issue("unreadable");
+                            continue;
+                        };
                         let item = NavigationItem {
                             path: child,
                             kind: Kind::Directory,

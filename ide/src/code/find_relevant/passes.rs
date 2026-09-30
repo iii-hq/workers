@@ -217,7 +217,7 @@ pub async fn present(
 fn local_call_context(snapshot: &Snapshot, file: &mut Selected, deadline: Instant) {
     if snapshot.source.len() > MAX_PARSE_BYTES
         || file.source_omitted
-        || file.excerpts.iter().any(|e| e.partial)
+        || file.excerpts.iter().any(|e| e.partial.is_some())
         || file.selected_lines.is_empty()
     {
         return;
@@ -266,7 +266,7 @@ fn local_call_context(snapshot: &Snapshot, file: &mut Selected, deadline: Instan
             line_from: r.start_line as u32,
             line_to: r.end_line as u32,
             text: source(r),
-            partial: false,
+            partial: None,
         })
         .collect();
     file.call_leads = kept
@@ -286,7 +286,7 @@ fn local_call_context(snapshot: &Snapshot, file: &mut Selected, deadline: Instan
 /// source (which must not hold a partial excerpt).
 fn test_candidates(snapshot: &Snapshot, file: &Selected) -> Vec<TestCandidate> {
     let shown = &file.excerpts;
-    if snapshot.source.len() > MAX_PARSE_BYTES || shown.iter().any(|e| e.partial) {
+    if snapshot.source.len() > MAX_PARSE_BYTES || shown.iter().any(|e| e.partial.is_some()) {
         return Vec::new();
     }
     let syntax = units::inspect(
@@ -419,7 +419,7 @@ async fn select_test_bodies(
                 line_from: r.start_line as u32,
                 line_to: r.end_line as u32,
                 text: lines[r.start_line - 1..r.end_line].join("\n"),
-                partial: false,
+                partial: None,
             })
             .filter(|e| !e.text.trim().is_empty())
             .collect();
@@ -971,17 +971,28 @@ fn mro(
 }
 
 /// parser-helpers.mjs `bodyNodes`: `function` and everything inside it
-/// outside nested definitions and lambdas.
-fn body_nodes(function: Node<'_>) -> Vec<Node<'_>> {
-    let (mut nodes, mut stack) = (Vec::new(), vec![function]);
-    while let Some(node) = stack.pop() {
-        nodes.push(node);
-        stack.extend(named(node).into_iter().rev().filter(|c| {
-            !matches!(
-                c.kind(),
-                "function_definition" | "class_definition" | "lambda" | "decorated_definition"
-            )
-        }));
+/// outside nested definitions and lambdas, each with whether it lies inside
+/// a match-case pattern.
+fn body_nodes(function: Node<'_>) -> Vec<(Node<'_>, bool)> {
+    let (mut nodes, mut stack) = (Vec::new(), vec![(function, false)]);
+    while let Some((node, in_pattern)) = stack.pop() {
+        nodes.push((node, in_pattern));
+        let inside = in_pattern || node.kind() == "case_pattern";
+        stack.extend(
+            named(node)
+                .into_iter()
+                .rev()
+                .filter(|c| {
+                    !matches!(
+                        c.kind(),
+                        "function_definition"
+                            | "class_definition"
+                            | "lambda"
+                            | "decorated_definition"
+                    )
+                })
+                .map(|c| (c, inside)),
+        );
     }
     nodes
 }
@@ -999,13 +1010,12 @@ fn assigns_self(target: Option<Node<'_>>, source: &str) -> bool {
     false
 }
 
-/// A statement that may rebind `self`, including by destructuring, a
-/// match pattern or an import.
-fn rebinds_self(n: Node<'_>, source: &str) -> bool {
+/// A node that may rebind `self`, including by destructuring, a match
+/// pattern (a `self` anywhere in one: `in_pattern`, from [`body_nodes`],
+/// so nested patterns are not rescanned) or an import.
+fn rebinds_self(n: Node<'_>, in_pattern: bool, source: &str) -> bool {
     match n.kind() {
-        "case_pattern" => preorder(n)
-            .into_iter()
-            .any(|c| c.kind() == "identifier" && text(c, source) == "self"),
+        "identifier" => in_pattern && text(n, source) == "self",
         "import_statement" => named(n).into_iter().any(|c| {
             c.kind() == "dotted_name" && text(c, source).split('.').next() == Some("self")
         }),
@@ -1110,10 +1120,20 @@ fn calls(source: &str, ranges: &[SourceRange], deadline: Instant) -> Vec<Call> {
             }
             let nodes = body_nodes(function);
             // Conservatively no leads once this scope may rebind self.
-            if nodes.iter().any(|n| rebinds_self(*n, source)) {
+            let mut rebinds = false;
+            for (n, in_pattern) in &nodes {
+                if Instant::now() >= deadline {
+                    return Vec::new();
+                }
+                if rebinds_self(*n, *in_pattern, source) {
+                    rebinds = true;
+                    break;
+                }
+            }
+            if rebinds {
                 continue;
             }
-            for call in nodes.iter().filter(|n| n.kind() == "call") {
+            for (call, _) in nodes.iter().filter(|(n, _)| n.kind() == "call") {
                 if Instant::now() >= deadline {
                     return Vec::new();
                 }
@@ -1424,6 +1444,26 @@ class Child(Left, External, Right):
         assert!(calls(rebinding, &[range(1, 8)], later()).is_empty());
         let cyclic = "class A(B):\n    def go(self):\n        self.run()\n\nclass B(A):\n    def run(self):\n        pass\n";
         assert!(calls(cyclic, &[range(2, 3)], later()).is_empty());
+    }
+
+    #[test]
+    fn nested_match_patterns_are_scanned_once() {
+        // rescanning every nested pattern's subtree took seconds here
+        let method = |capture: &str| {
+            let depth = 6_000;
+            format!(
+                "class A(B):\n    def go(self, v):\n        match v:\n            case {}{capture}{}:\n                pass\n        self.run()\n\nclass B:\n    def run(self):\n        pass\n",
+                "[".repeat(depth),
+                "]".repeat(depth)
+            )
+        };
+        let started = Instant::now();
+        // a `self` deep in the pattern may rebind it: no lead
+        assert!(calls(&method("self"), &[range(2, 6)], later()).is_empty());
+        let found = calls(&method("other"), &[range(2, 6)], later());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "B.run");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]

@@ -24,7 +24,7 @@ use super::passes;
 use super::prompts::{self, Declaration, Evidence, SourceRange};
 use super::units::{self, Inspection, MAX_PARSE_BYTES};
 use super::walk::{self, Snapshot, Unit};
-use super::{CallLead, Excerpt, Lead};
+use super::{ByteSpan, CallLead, Excerpt, Lead};
 use crate::code::judge::JudgeError;
 
 /// Units, context lines and owner headers above this are never shown whole.
@@ -147,7 +147,10 @@ impl Block {
             line_from: self.range.start_line as u32,
             line_to: self.range.end_line as u32,
             text: self.text.clone(),
-            partial: self.range.bytes.is_some(),
+            partial: self.range.bytes.map(|span| ByteSpan {
+                byte_from: span.start as u32,
+                byte_to: span.end as u32,
+            }),
         }
     }
 }
@@ -345,13 +348,65 @@ impl Source {
         )
     }
 
-    fn blank(&self, from: usize, to: usize) -> bool {
-        (from..=to).all(|l| self.lines_text(l, l).trim().is_empty())
+    /// selection.ts `excerptsFor`'s windows: each range ±3 lines, grown
+    /// over every comment it overlaps or that only blank lines separate
+    /// from it, until none is left. jevgrep rescans all comments until
+    /// nothing changes, quadratic over a run of comments; joining comments
+    /// into blocks first reaches the same fixed point in one step.
+    fn windows(&self, ranges: &[SourceRange]) -> Vec<SourceRange> {
+        let line_count = self.lines.len();
+        let code = |l: usize| !self.lines_text(l, l).trim().is_empty();
+        // The nearest non-blank line at or above each line (0: none), and
+        // at or below it (usize::MAX: none); lines past the end are blank.
+        let mut above = vec![0; line_count + 1];
+        for l in 1..=line_count {
+            above[l] = if code(l) { l } else { above[l - 1] };
+        }
+        let mut below = vec![usize::MAX; line_count + 2];
+        for l in (1..=line_count).rev() {
+            below[l] = if code(l) { l } else { below[l + 1] };
+        }
+        let above = |l: usize| above[l.min(line_count)];
+        let below = |l: usize| below.get(l).copied().unwrap_or(usize::MAX);
+        // Comments (sorted by start) that overlap or only blank lines part
+        // form a block: a window that takes one comment takes its block.
+        let mut blocks: Vec<SourceRange> = Vec::new();
+        for comment in &self.syntax.comments {
+            match blocks.last_mut() {
+                Some(block) if comment.start_line <= below(block.end_line + 1) => {
+                    block.end_line = block.end_line.max(comment.end_line)
+                }
+                _ => blocks.push(*comment),
+            }
+        }
+        ranges
+            .iter()
+            .map(|r| {
+                let start = r.start_line.saturating_sub(EXCERPT_LINES).max(1);
+                let end = line_count.min(r.end_line + EXCERPT_LINES);
+                // A comment joins iff it reaches the nearest non-blank line
+                // above or below the window. Blocks lie apart by a non-blank
+                // line, so the grown window reaches no further block.
+                let (up, down) = (above(start - 1), below(end + 1));
+                let first = blocks.partition_point(|b| b.end_line < up);
+                let last = blocks.partition_point(|b| b.start_line <= down);
+                if first < last {
+                    SourceRange {
+                        start_line: start.min(blocks[first].start_line),
+                        end_line: end.max(blocks[last - 1].end_line),
+                    }
+                } else {
+                    SourceRange {
+                        start_line: start,
+                        end_line: end,
+                    }
+                }
+            })
+            .collect()
     }
 
-    /// selection.ts `excerptsFor`: each range ±3 lines, grown over comments
-    /// separated from it only by blank lines, never through an unselected
-    /// giant line; `rendered` byte spans join as they are.
+    /// selection.ts `excerptsFor`: the [`Self::windows`], never through an
+    /// unselected giant line; `rendered` byte spans join as they are.
     fn excerpts_for(
         &self,
         ranges: Vec<SourceRange>,
@@ -359,37 +414,21 @@ impl Source {
         chosen: &[Span],
     ) -> Vec<Block> {
         let line_count = self.lines.len();
-        let mut windows: Vec<SourceRange> = ranges
-            .iter()
-            .map(|r| SourceRange {
-                start_line: r.start_line.saturating_sub(EXCERPT_LINES).max(1),
-                end_line: line_count.min(r.end_line + EXCERPT_LINES),
-            })
-            .collect();
-        for window in &mut windows {
-            let mut changed = true;
-            while changed {
-                changed = false;
-                for comment in &self.syntax.comments {
-                    let before = comment.end_line < window.start_line
-                        && self.blank(comment.end_line + 1, window.start_line - 1);
-                    let after = comment.start_line > window.end_line
-                        && self.blank(window.end_line + 1, comment.start_line - 1);
-                    let overlap = comment.start_line <= window.end_line
-                        && comment.end_line >= window.start_line;
-                    if overlap || before || after {
-                        let start = window.start_line.min(comment.start_line);
-                        let end = window.end_line.max(comment.end_line);
-                        if (start, end) != (window.start_line, window.end_line) {
-                            *window = SourceRange {
-                                start_line: start,
-                                end_line: end,
-                            };
-                            changed = true;
-                        }
-                    }
+        let mut windows = self.windows(&ranges);
+        let to_last_line = windows.iter().any(|w| w.end_line == line_count);
+        // Overlapping or touching windows render as one (their spans merge
+        // below either way), so each line is visited once.
+        windows.sort_by_key(|w| w.start_line);
+        let mut joined: Vec<SourceRange> = Vec::new();
+        for window in windows {
+            match joined.last_mut() {
+                Some(last) if window.start_line <= last.end_line + 1 => {
+                    last.end_line = last.end_line.max(window.end_line)
                 }
+                _ => joined.push(window),
             }
+        }
+        for window in &joined {
             let mut segment = self.offset(window.start_line - 1);
             for line in window.start_line..=window.end_line {
                 let (start, end) = (self.offset(line - 1), self.offset(line));
@@ -422,10 +461,7 @@ impl Source {
                 let mut range = self.range_for(span);
                 // A trailing empty line has no bytes but belongs to a
                 // line-based window.
-                if range.bytes.is_none()
-                    && span.end == self.len()
-                    && windows.iter().any(|w| w.end_line == line_count)
-                {
+                if range.bytes.is_none() && span.end == self.len() && to_last_line {
                     range.end_line = line_count;
                 }
                 let text = match range.bytes {
@@ -442,15 +478,13 @@ impl Source {
             .collect()
     }
 
-    /// selection.ts `presentationFor`: `spans` plus the headers (≤ 24 000
-    /// bytes) of the declarations they touch.
+    /// selection.ts `presentationFor`: `spans` (merged: sorted and apart)
+    /// plus the headers (≤ 24 000 bytes) of the declarations they touch.
     fn presentation(&self, spans: &[Span], chosen: &[Span]) -> Vec<Excerpt> {
         let mut headers: Vec<SourceRange> = Vec::new();
         for unit in &self.syntax.units {
-            if !spans
-                .iter()
-                .any(|s| s.start < unit.byte_end && s.end > unit.byte_start)
-            {
+            let next = spans.partition_point(|s| s.end <= unit.byte_start);
+            if spans.get(next).is_none_or(|s| s.start >= unit.byte_end) {
                 continue;
             }
             for header in &unit.owner_headers {
@@ -681,84 +715,83 @@ pub async fn select_file(
         index += 1;
     }
 
-    let chosen = merge(selected);
-    // Evidence: the selections so far, whole lines ±3 (selection.ts
-    // `expanded`).
-    let (mut whole, mut partial) = (coordinates, Vec::new());
-    for span in merge(context) {
-        let range = source.range_for(span);
-        match range.bytes {
-            Some(_) => partial.push(span),
-            None => whole.push(SourceRange {
+    // The rest is linear in the file (bounded by MAX_PARSE_BYTES) but can
+    // still take a while on a large one: keep it off the async runtime.
+    let (python, deadline, owner) = (units::is_python(&path), run.deadline, path.clone());
+    let built = tokio::task::spawn_blocking(move || {
+        let chosen = merge(selected);
+        // Evidence: the selections so far, whole lines ±3 (selection.ts
+        // `expanded`).
+        let (mut whole, mut partial) = (coordinates, Vec::new());
+        for span in merge(context) {
+            let range = source.range_for(span);
+            match range.bytes {
+                Some(_) => partial.push(span),
+                None => whole.push(SourceRange {
+                    start_line: range.start_line,
+                    end_line: range.end_line,
+                }),
+            }
+        }
+        if python && !whole.is_empty() {
+            // Optional context: a failing pass adds nothing.
+            let neighbours = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                passes::neighborhood(&source.snapshot.source, &whole, deadline)
+            }));
+            whole.extend(neighbours.unwrap_or_default());
+        }
+        let expanded = source.excerpts_for(whole, partial, &chosen);
+        // Presentation is stricter than selection: decisions above 0.7
+        // within the selected source (`chosen` is merged: sorted, apart).
+        let displayed = merge(
+            decisions
+                .iter()
+                .filter(|(_, score)| *score > PRESENT)
+                .flat_map(|(span, _)| {
+                    let first = chosen.partition_point(|s| s.end <= span.start);
+                    chosen[first..]
+                        .iter()
+                        .take_while(|s| s.start < span.end)
+                        .map(|s| Span {
+                            start: span.start.max(s.start),
+                            end: span.end.min(s.end),
+                        })
+                })
+                .collect(),
+        );
+        let excerpts = source.presentation(&displayed, &chosen);
+        let selected_excerpts = source.presentation(&chosen, &chosen);
+        let selected_lines = chosen
+            .iter()
+            .map(|span| source.range_for(*span))
+            .filter(|range| range.bytes.is_none())
+            .map(|range| SourceRange {
                 start_line: range.start_line,
                 end_line: range.end_line,
-            }),
-        }
-    }
-    if units::is_python(&path) && !whole.is_empty() {
-        let (text, ranges, deadline) =
-            (source.snapshot.source.clone(), whole.clone(), run.deadline);
-        let neighbours =
-            tokio::task::spawn_blocking(move || passes::neighborhood(&text, &ranges, deadline))
-                .await;
-        whole.extend(neighbours.unwrap_or_default());
-    }
-    let expanded = source.excerpts_for(whole, partial, &chosen);
-    // Presentation is stricter than selection: decisions above 0.7 within
-    // the selected source.
-    let displayed = merge(
-        decisions
-            .iter()
-            .filter(|(_, score)| *score > PRESENT)
-            .flat_map(|(span, _)| {
-                chosen.iter().filter_map(|s| {
-                    let (start, end) = (span.start.max(s.start), span.end.min(s.end));
-                    (start < end).then_some(Span { start, end })
-                })
             })
-            .collect(),
-    );
-    let excerpts = source.presentation(&displayed, &chosen);
-    let selected_excerpts = source.presentation(&chosen, &chosen);
-    let selected_lines = chosen
-        .iter()
-        .map(|span| source.range_for(*span))
-        .filter(|range| range.bytes.is_none())
-        .map(|range| SourceRange {
-            start_line: range.start_line,
-            end_line: range.end_line,
-        })
-        .collect();
-    let mut lead_list: Vec<Lead> = leads
-        .iter()
-        .map(|(name, range, score)| Lead {
-            name: name.clone(),
-            line_from: range.start_line as u32,
-            line_to: range.end_line as u32,
-            score: *score,
-        })
-        .collect();
-    lead_list.sort_by_key(|lead| lead.line_from);
-
-    // The file may have changed while the judge read it.
-    if fresh(&run, &candidate).await.is_none() {
-        return (path, Some(Selected::omitted()));
-    }
-    let evidence = expanded
-        .iter()
-        .map(|block| Evidence {
-            path: path.clone(),
-            start_line: block.range.start_line,
-            end_line: block.range.end_line,
-            source_byte_start: block.range.bytes.map(|b| b.start),
-            source_byte_end: block.range.bytes.map(|b| b.end),
-            source: block.text.clone(),
-        })
-        .collect();
-    let rendered = expanded.iter().map(|block| block.span).collect();
-    (
-        path,
-        Some(Selected {
+            .collect();
+        let mut lead_list: Vec<Lead> = leads
+            .iter()
+            .map(|(name, range, score)| Lead {
+                name: name.clone(),
+                line_from: range.start_line as u32,
+                line_to: range.end_line as u32,
+                score: *score,
+            })
+            .collect();
+        lead_list.sort_by_key(|lead| lead.line_from);
+        let evidence = expanded
+            .iter()
+            .map(|block| Evidence {
+                path: owner.clone(),
+                start_line: block.range.start_line,
+                end_line: block.range.end_line,
+                source_byte_start: block.range.bytes.map(|b| b.start),
+                source_byte_end: block.range.bytes.map(|b| b.end),
+                source: block.text.clone(),
+            })
+            .collect();
+        Selected {
             excerpts,
             selected_excerpts,
             evidence,
@@ -767,11 +800,21 @@ pub async fn select_file(
             source_omitted: false,
             selected_lines,
             selected: chosen,
-            rendered,
+            rendered: expanded.iter().map(|block| block.span).collect(),
             decisions,
             lead_ranges: leads,
-        }),
-    )
+        }
+    })
+    .await;
+    let Ok(selected) = built else {
+        run.issue("unreadable");
+        return (path, None);
+    };
+    // The file may have changed while the judge read it.
+    if fresh(&run, &candidate).await.is_none() {
+        return (path, Some(Selected::omitted()));
+    }
+    (path, Some(selected))
 }
 
 #[cfg(test)]
@@ -814,13 +857,13 @@ mod tests {
                 .map(|()| (scores, 1));
             Box::pin(async move { outcome })
         });
-        let tree = walk::Tree {
-            root: dir.canonicalize().unwrap(),
-            children: HashMap::new(),
-            truncated: false,
-            unreadable: 0,
-            max_file_bytes: 1 << 24,
+        let root = dir.canonicalize().unwrap();
+        let cfg = crate::code::config::CoderConfig {
+            base_paths: vec![root.clone()],
+            ..Default::default()
         };
+        let resolver = Arc::new(crate::code::path::PathResolver::new(&cfg).unwrap());
+        let tree = walk::Tree::new(&resolver, &root, None, 1 << 24);
         let run = Arc::new(Run {
             query: "q".into(),
             tree,
@@ -1069,5 +1112,163 @@ mod tests {
         let context = sent[0].state["source"].as_str().unwrap();
         assert!(context.starts_with("Opening context:\nline 0001"));
         assert!(context.contains("\nSource lines 1-"));
+    }
+
+    #[tokio::test]
+    async fn an_excerpt_inside_a_giant_line_is_a_marked_byte_span() {
+        // every declaration on the one line is asked about as the same two
+        // 24 000-byte chunks; only the first is selected
+        let source = format!(
+            "const pad = \"{}\"; function target() {{ return 1; }}\n",
+            "x".repeat(25_000)
+        );
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let (selected, _, _) = select(&source, "a.ts", MAX_STATE_BYTES, move |_, _| {
+            let first = asked
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .is_multiple_of(2);
+            Ok(if first { 0.9 } else { 0.0 })
+        })
+        .await;
+        let excerpt = &selected.excerpts[0];
+        let span = excerpt.partial.expect("a byte span");
+        assert_eq!((excerpt.line_from, excerpt.line_to), (1, 1));
+        assert_eq!((span.byte_from, span.byte_to), (0, 24_000));
+        assert_eq!(excerpt.text, source[..24_000]);
+        let wire = serde_json::to_value(excerpt).unwrap();
+        assert_eq!(
+            wire["partial"],
+            serde_json::json!({"byte_from": 0, "byte_to": 24_000})
+        );
+        // whole-line excerpts carry no `partial`
+        let whole = Excerpt {
+            partial: None,
+            ..excerpt.clone()
+        };
+        assert!(serde_json::to_value(&whole)
+            .unwrap()
+            .get("partial")
+            .is_none());
+    }
+
+    fn text_source(text: String) -> Source {
+        Source::new(Snapshot {
+            path: "a.txt".into(),
+            source: text,
+            content_hash: String::new(),
+        })
+    }
+
+    /// selection.ts's own fixed point: rescan every comment until no window
+    /// grows (quadratic over a run of comments).
+    fn windows_by_rescanning(source: &Source, ranges: &[SourceRange]) -> Vec<SourceRange> {
+        let line_count = source.lines.len();
+        let blank =
+            |from: usize, to: usize| (from..=to).all(|l| source.lines_text(l, l).trim().is_empty());
+        ranges
+            .iter()
+            .map(|r| {
+                let mut window = SourceRange {
+                    start_line: r.start_line.saturating_sub(EXCERPT_LINES).max(1),
+                    end_line: line_count.min(r.end_line + EXCERPT_LINES),
+                };
+                let mut changed = true;
+                while changed {
+                    changed = false;
+                    for comment in &source.syntax.comments {
+                        let before = comment.end_line < window.start_line
+                            && blank(comment.end_line + 1, window.start_line - 1);
+                        let after = comment.start_line > window.end_line
+                            && blank(window.end_line + 1, comment.start_line - 1);
+                        let overlap = comment.start_line <= window.end_line
+                            && comment.end_line >= window.start_line;
+                        if overlap || before || after {
+                            let grown = SourceRange {
+                                start_line: window.start_line.min(comment.start_line),
+                                end_line: window.end_line.max(comment.end_line),
+                            };
+                            changed |= grown != window;
+                            window = grown;
+                        }
+                    }
+                }
+                window
+            })
+            .collect()
+    }
+
+    #[test]
+    fn comment_growth_reaches_the_rescanning_fixed_point() {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        for _ in 0..2_000 {
+            let line_count = 1 + next(40);
+            let text: String = (0..line_count)
+                .map(|_| ["\n", "  \n", "code\n"][next(3)])
+                .collect();
+            let mut source = text_source(text);
+            // overlapping, nested and past-the-end comments included
+            let count = next(12);
+            let mut comments: Vec<SourceRange> = (0..count)
+                .map(|_| {
+                    let start = 1 + next(line_count + 2);
+                    SourceRange {
+                        start_line: start,
+                        end_line: start + next(4),
+                    }
+                })
+                .collect();
+            comments.sort_by_key(|c| c.start_line);
+            source.syntax.comments = comments;
+            let count = 1 + next(4);
+            let ranges: Vec<SourceRange> = (0..count)
+                .map(|_| {
+                    let start = 1 + next(line_count);
+                    SourceRange {
+                        start_line: start,
+                        end_line: start + next(3),
+                    }
+                })
+                .collect();
+            assert_eq!(
+                source.windows(&ranges),
+                windows_by_rescanning(&source, &ranges),
+                "comments {:?}, ranges {:?}",
+                source.syntax.comments,
+                ranges
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_run_of_comments_grows_a_window_in_linear_time() {
+        // 300 000 comments apart by blank lines above the selection: the
+        // rescanning fixed point takes one pass over them per comment
+        let text = format!("{}def target():\n    return 1\n", "#\n\n".repeat(300_000));
+        let mut source = text_source(text);
+        source.syntax.comments = (0..300_000)
+            .map(|i| SourceRange {
+                start_line: 2 * i + 1,
+                end_line: 2 * i + 1,
+            })
+            .collect();
+        let started = Instant::now();
+        let target = SourceRange {
+            start_line: 600_001,
+            end_line: 600_002,
+        };
+        let blocks = source.excerpts_for(vec![target], Vec::new(), &[]);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            (blocks[0].range.start_line, blocks[0].range.end_line),
+            (1, 600_003)
+        );
+        assert_eq!(blocks[0].text, source.snapshot.source);
     }
 }
