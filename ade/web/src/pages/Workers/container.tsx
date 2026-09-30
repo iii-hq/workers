@@ -384,6 +384,7 @@ function LogTab({
   }, [api, name, attempt])
 
   const loaded = lines !== null
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt restarts following after Retry
   useEffect(() => {
     if (!follow || !loaded) return
     let cancelled = false
@@ -407,7 +408,7 @@ function LogTab({
     return () => {
       cancelled = true
     }
-  }, [api, name, follow, loaded])
+  }, [api, name, follow, loaded, attempt])
 
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase()

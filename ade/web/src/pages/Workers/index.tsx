@@ -291,11 +291,22 @@ function WorkersPage({
   const ready = containers.filter((c) => c.state === 'ready').length
   const failing = containers.filter((c) => c.state === 'failed').length
 
-  // A worker that went away (removed, disconnected, another file) falls back to the project.
+  // A worker that went away (removed, disconnected, another file) falls back
+  // to the project. One this page has not seen yet (just added, the snapshot
+  // still on its way) keeps the selection; so does nothing on the first
+  // snapshot, which only drops a selection remembered from an earlier visit.
+  const seen = useRef<Set<string> | null>(null)
   useEffect(() => {
-    if (data && selection !== PROJECT && !selected && !outside)
-      setSelection(PROJECT)
-  }, [data, selection, selected, outside, setSelection])
+    if (!data) return
+    const present = new Set([
+      ...containers.map((c) => c.container),
+      ...workers.map((w) => w.name),
+    ])
+    const before = seen.current
+    seen.current = present
+    if (selection === PROJECT || present.has(selection)) return
+    if (before === null || before.has(selection)) setSelection(PROJECT)
+  }, [data, containers, workers, selection, setSelection])
 
   // The palette opens this screen on the worker it picked: select it when it
   // is here, otherwise filter the list by what was asked for.

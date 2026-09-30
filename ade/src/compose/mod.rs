@@ -218,12 +218,14 @@ async fn versions(iii: &IIIClient, input: VersionsInput) -> Result<VersionsResul
     let container_name = match (input.container, input.name) {
         (Some(container), _) => container,
         (None, Some(name)) => {
+            let (host, bare) = registry::split_reference(&name)
+                .map_err(|error| handler_error("INVALID_INPUT", error))?;
             let versions = registry::versions(&name)
                 .await
                 .map_err(|error| handler_error("REGISTRY_ERROR", error))?;
             return Ok(VersionsResult {
-                container: name.clone(),
-                reference: format!("{}/{name}", registry::DEFAULT_REGISTRY),
+                reference: format!("{host}/{bare}"),
+                container: bare,
                 declared: None,
                 versions,
             });

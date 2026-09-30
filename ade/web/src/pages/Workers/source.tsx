@@ -213,11 +213,12 @@ function PackageSource({ api, actions, declared }: Props) {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() =>
+              onClick={() => {
                 setPolicy(
                   current === 'latest' || current === 'next' ? current : 'pin',
                 )
-              }
+                setPick(current ?? undefined)
+              }}
             >
               Cancel
             </Button>
