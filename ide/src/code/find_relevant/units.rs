@@ -60,7 +60,7 @@ pub fn supported(path: &str) -> bool {
     language(path).is_some()
 }
 
-fn range(start_line: usize, end_line: usize) -> SourceRange {
+pub(super) fn range(start_line: usize, end_line: usize) -> SourceRange {
     SourceRange {
         start_line,
         end_line,
@@ -198,12 +198,12 @@ fn parse(source: &str, language: tree_sitter::Language) -> Option<Tree> {
     parser.parse(source, None)
 }
 
-fn named(node: Node<'_>) -> Vec<Node<'_>> {
+pub(super) fn named(node: Node<'_>) -> Vec<Node<'_>> {
     let mut cursor = node.walk();
     node.named_children(&mut cursor).collect()
 }
 
-fn text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
+pub(super) fn text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
     node.utf8_text(source.as_bytes()).unwrap_or_default()
 }
 
@@ -574,9 +574,9 @@ fn ts_add(
     }
 }
 
-/// parser-helpers.mjs `inspectPython`: `None` on a syntax error, a bare CR
-/// (retrieval coordinates count LF lines) or Python 2 syntax.
-fn python(source: &str) -> Option<Vec<Decl>> {
+/// parser-helpers.mjs `parse` for Python: `None` on a syntax error, a bare
+/// CR (retrieval coordinates count LF lines) or Python 2 syntax.
+pub(super) fn parse_python(source: &str) -> Option<Tree> {
     let bytes = source.as_bytes();
     if bytes
         .iter()
@@ -590,12 +590,23 @@ fn python(source: &str) -> Option<Vec<Decl>> {
     if root.has_error() || !valid_python(root, source) {
         return None;
     }
+    Some(tree)
+}
+
+/// jevgrep's `/\.pyi?$/`.
+pub fn is_python(path: &str) -> bool {
+    path.ends_with(".py") || path.ends_with(".pyi")
+}
+
+/// parser-helpers.mjs `inspectPython`.
+fn python(source: &str) -> Option<Vec<Decl>> {
+    let tree = parse_python(source)?;
     let mut units = Vec::new();
-    py_visit(&named(root), "", &[], source, &mut units);
+    py_visit(&named(tree.root_node()), "", &[], source, &mut units);
     Some(units)
 }
 
-fn py_definition(node: Node<'_>) -> Option<Node<'_>> {
+pub(super) fn py_definition(node: Node<'_>) -> Option<Node<'_>> {
     if node.kind() == "decorated_definition" {
         node.child_by_field_name("definition")
     } else {
@@ -603,12 +614,12 @@ fn py_definition(node: Node<'_>) -> Option<Node<'_>> {
     }
 }
 
-fn py_is_definition(node: Node<'_>) -> bool {
+pub(super) fn py_is_definition(node: Node<'_>) -> bool {
     py_definition(node)
         .is_some_and(|d| matches!(d.kind(), "function_definition" | "class_definition"))
 }
 
-fn py_body(node: Node<'_>) -> Vec<Node<'_>> {
+pub(super) fn py_body(node: Node<'_>) -> Vec<Node<'_>> {
     node.child_by_field_name("body")
         .map(named)
         .unwrap_or_default()
@@ -617,7 +628,7 @@ fn py_body(node: Node<'_>) -> Vec<Node<'_>> {
         .collect()
 }
 
-fn unparenthesized(mut node: Option<Node<'_>>) -> Option<Node<'_>> {
+pub(super) fn unparenthesized(mut node: Option<Node<'_>>) -> Option<Node<'_>> {
     while let Some(n) = node.filter(|n| n.kind() == "parenthesized_expression") {
         node = named(n).into_iter().find(|c| c.kind() != "comment");
     }
@@ -626,7 +637,7 @@ fn unparenthesized(mut node: Option<Node<'_>>) -> Option<Node<'_>> {
 
 /// Python AST ends exclude trailing comments; tree-sitter blocks include
 /// them.
-fn py_end_line(node: Node<'_>) -> usize {
+pub(super) fn py_end_line(node: Node<'_>) -> usize {
     let mut last = node;
     loop {
         let mut cursor = last.walk();
@@ -642,7 +653,7 @@ fn py_end_line(node: Node<'_>) -> usize {
     last.end_position().row + 1
 }
 
-fn py_start_line(node: Node<'_>) -> usize {
+pub(super) fn py_start_line(node: Node<'_>) -> usize {
     if node.kind() == "decorated_definition" {
         let decorator = named(node).into_iter().find(|c| c.kind() == "decorator");
         let expression = unparenthesized(decorator.and_then(|d| d.named_child(0)));

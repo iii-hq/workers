@@ -14,10 +14,6 @@
 //! keep jevgrep's names because the model reads them; renaming them only to
 //! sort would change the calibrated text more than the order does.
 
-// The test-body builder serves the Python passes; until those land only
-// tests reach it.
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 use judge_contract::{Content, Evaluation, Question};

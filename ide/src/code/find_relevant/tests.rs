@@ -1210,3 +1210,206 @@ async fn nothing_secret_in_a_pruned_directory_reaches_the_anchored_judge() {
         assert!(!sent.contains(forbidden), "{forbidden} reached the judge");
     }
 }
+
+fn ranges(file: &RelevantFile) -> Vec<(u32, u32)> {
+    file.excerpts
+        .iter()
+        .map(|e| (e.line_from, e.line_to))
+        .collect()
+}
+
+/// Navigation by [`keyword`], evidence by `select(name)` (the same in the
+/// follow-up), the assessment by `roles` (the rest 0.1) and test bodies by
+/// `keep(name)`.
+fn python_judge(
+    log: &Log,
+    select: fn(&str) -> f64,
+    roles: &'static [(&'static str, f64)],
+    keep: fn(&str) -> f64,
+) -> Evaluator {
+    judge(log, move |ev| {
+        if let Some(candidates) = ev.state.get("candidates") {
+            return Ok(candidates
+                .as_object()
+                .unwrap()
+                .values()
+                .enumerate()
+                .map(|(i, c)| (key("q", i), keep(c["name"].as_str().unwrap())))
+                .collect());
+        }
+        if ev.questions.contains_key("priority") {
+            return Ok(ev
+                .questions
+                .keys()
+                .map(|id| {
+                    let p = roles.iter().find(|(r, _)| r == id).map_or(0.1, |r| r.1);
+                    (id.clone(), p)
+                })
+                .collect());
+        }
+        by_declaration(ev, |name, _| (select(name), 0.0))
+    })
+}
+
+const CALLER: &[u8] = b"class Base:\n    def run(self):\n        return 0\n\n\n\n\n\n\n\n\n\n\nclass Needle(Base):\n    def go(self):\n        return self.run()\n";
+
+#[tokio::test]
+async fn a_selected_python_method_shows_the_local_method_it_calls() {
+    let fx = fixture(&[("needle.py", CALLER)], |_, _| {});
+    let out = ask(
+        &fx,
+        None,
+        python_judge(
+            &Log::default(),
+            |name| if name == "Needle.go" { 0.9 } else { 0.1 },
+            &[],
+            |_| 0.0,
+        ),
+    )
+    .await;
+    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
+    let file = &out.files[0];
+    // Base.run (2-3) and Base's header (1) join the presented Needle.go
+    assert_eq!(ranges(file), [(1, 3), (11, 17)]);
+    assert!(file.excerpts[0].text.ends_with("        return 0"));
+    let leads: Vec<_> = file
+        .call_leads
+        .iter()
+        .map(|c| {
+            format!(
+                "Possible local call {} -> {}: lines {}-{}",
+                c.caller, c.name, c.line_from, c.line_to
+            )
+        })
+        .collect();
+    assert_eq!(
+        leads,
+        ["Possible local call Needle.go -> Base.run: lines 2-3"]
+    );
+    assert!(file.call_leads[0].unknown_earlier_bases.is_empty());
+}
+
+const TESTS: &[u8] = b"import pytest\n\n\ndef test_keep():\n    assert 1\n\n\ndef test_drop():\n    assert 2\n\n\ndef test_other():\n    assert 3\n";
+
+const TEST_ROLE: &[(&str, f64)] = &[("test", 0.9), ("priority", 0.5)];
+
+#[tokio::test]
+async fn a_python_test_file_drops_the_bodies_the_judge_declines() {
+    let fx = fixture(&[("test_needle.py", TESTS)], |_, _| {});
+    let log = Log::default();
+    let out = ask(
+        &fx,
+        None,
+        python_judge(
+            &log,
+            |_| 0.9,
+            TEST_ROLE,
+            |name| {
+                if name == "test_keep" {
+                    0.9
+                } else {
+                    0.2
+                }
+            },
+        ),
+    )
+    .await;
+    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
+    let file = &out.files[0];
+    assert_eq!(file.roles, ["test"]);
+    // lines 1-14 less test_drop (8-9) and test_other (12-13); the blank
+    // remainders go too
+    assert_eq!(ranges(file), [(1, 7)]);
+    assert!(file.excerpts[0].text.ends_with("    assert 1\n\n"));
+    // every body stays a lead
+    assert_eq!(file.leads.len(), 3);
+    let asked: Vec<Value> = sent(&log)
+        .into_iter()
+        .filter(|ev| ev["state"].get("candidates").is_some())
+        .collect();
+    assert_eq!(asked.len(), 1);
+    let candidates = &asked[0]["state"]["candidates"];
+    assert_eq!(candidates["c001"]["name"], "test_drop");
+    assert_eq!(
+        candidates["c001"]["source"],
+        "def test_drop():\n    assert 2"
+    );
+    assert_eq!(candidates["c001"]["startLine"], 8);
+    assert!(asked[0]["questions"].get("q002").is_some());
+}
+
+#[tokio::test]
+async fn an_all_negative_test_body_pass_keeps_the_presentation() {
+    let fx = fixture(&[("test_needle.py", TESTS)], |_, _| {});
+    let out = ask(
+        &fx,
+        None,
+        python_judge(&Log::default(), |_| 0.9, TEST_ROLE, |_| 0.1),
+    )
+    .await;
+    assert_eq!(ranges(&out.files[0]), [(1, 14)]);
+    // so does a file without the test role, which is never asked
+    let log = Log::default();
+    let out = ask(
+        &fx,
+        None,
+        python_judge(&log, |_| 0.9, &[("implementation", 0.9)], |_| 0.9),
+    )
+    .await;
+    assert_eq!(ranges(&out.files[0]), [(1, 14)]);
+    assert!(!log.lock().unwrap().join("").contains("candidates"));
+}
+
+#[tokio::test]
+async fn a_large_python_file_is_previewed_by_sampled_ranges() {
+    let filler: String = (0..800)
+        .map(|i| format!("def filler_{i:03}(x):\n    return x + {i}\n\n\n"))
+        .collect();
+    let source = format!("{filler}def needle():\n    return 'found'\n\n\n{filler}");
+    let fx = fixture(&[("needle.py", source.as_bytes())], |_, _| {});
+    let log = Log::default();
+    ask(&fx, None, judge(&log, keyword)).await;
+    let previews: Vec<Value> = sent(&log)
+        .into_iter()
+        .filter_map(|ev| {
+            ev["state"]["items"]
+                .as_array()?
+                .iter()
+                .find(|item| item["path"] == "needle.py")
+                .map(|item| item["filePreview"].clone())
+        })
+        .collect();
+    assert_eq!(previews[0]["range"], "sampled source ranges");
+    assert_eq!(previews[0]["truncated"], true);
+    let text = previews[0]["text"].as_str().unwrap();
+    assert!(text.contains("; query-named implementation ---\n    return 'found'\n"));
+    assert!(text.len() <= 16_384);
+}
+
+#[tokio::test]
+async fn shared_evidence_carries_a_selected_methods_neighbours() {
+    let gap = "\n".repeat(10);
+    let source = format!(
+        "class Needle:\n    def a(self):\n        return 1\n{gap}\n    def b(self):\n        return 2\n{gap}\n    def c(self):\n        return 3\n"
+    );
+    let fx = fixture(&[("needle.py", source.as_bytes())], |_, _| {});
+    let log = Log::default();
+    let out = ask(
+        &fx,
+        None,
+        python_judge(
+            &log,
+            |name| if name == "Needle.b" { 0.9 } else { 0.1 },
+            &[],
+            |_| 0.0,
+        ),
+    )
+    .await;
+    let shared: Vec<String> = sent(&log)
+        .iter()
+        .filter_map(|ev| ev["state"].get("selectedEvidence").map(Value::to_string))
+        .collect();
+    assert!(shared[0].contains("def c(self)"));
+    // the presentation is not widened
+    assert!(!texts(&out.files[0]).contains("def c(self)"));
+}

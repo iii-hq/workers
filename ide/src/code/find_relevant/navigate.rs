@@ -412,7 +412,7 @@ impl Run {
                         continue;
                     }
                 };
-                let file_preview = walk::preview_file(&snapshot);
+                let file_preview = walk::preview_file(&snapshot, &self.query);
                 {
                     let mut state = self.state();
                     state.previews.insert(child.clone(), file_preview.clone());
