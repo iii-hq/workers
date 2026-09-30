@@ -58,6 +58,7 @@ fn judge(
 ) -> Evaluator {
     let log = log.clone();
     Arc::new(move |evaluation, _deadline| {
+        let evaluation = prompts::decoded(evaluation);
         log.lock()
             .unwrap()
             .push(serde_json::to_string(&evaluation).unwrap());
@@ -356,7 +357,7 @@ async fn the_deadline_returns_partial_results_as_incomplete() {
             if !first {
                 tokio::time::sleep(Duration::from_secs(30)).await;
             }
-            keyword(&ev).map(|scores| (scores, 1))
+            keyword(&prompts::decoded(ev)).map(|scores| (scores, 1))
         })
     });
     let started = Instant::now();
@@ -1349,6 +1350,7 @@ async fn a_test_body_batch_the_judge_finds_too_large_is_halved() {
         |name| if name == "test_keep" { 0.9 } else { 0.2 },
     );
     let evaluate: Evaluator = Arc::new(move |evaluation: Evaluation, deadline| {
+        let evaluation = prompts::decoded(evaluation);
         let batch = evaluation
             .state
             .get("candidates")

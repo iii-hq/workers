@@ -33,13 +33,15 @@ function fixture(): string {
 }
 
 /// 0.9 or 0.05 for every `noul` key: a navigation key `q007` reads
-/// `state.items[7]`, any other request reads its whole state.
+/// `state.items[7]`, any other request reads its whole state. The ide sends
+/// each state as JSON text so the engine cannot reorder its keys.
 function answer(evaluation: any): Record<string, { type: 'noul'; noul: number }> {
-  const items: unknown[] | undefined = evaluation.state?.items;
+  const state = typeof evaluation.state === 'string' ? JSON.parse(evaluation.state) : evaluation.state;
+  const items: unknown[] | undefined = state?.items;
   const answers: Record<string, { type: 'noul'; noul: number }> = {};
   for (const key of Object.keys(evaluation.questions ?? {})) {
     const index = /^q(\d+)$/.exec(key);
-    const subject = items && index ? items[Number(index[1])] : evaluation.state;
+    const subject = items && index ? items[Number(index[1])] : state;
     const hit = JSON.stringify(subject ?? '').includes(MARKER);
     answers[key] = { type: 'noul', noul: hit ? 0.9 : 0.05 };
   }

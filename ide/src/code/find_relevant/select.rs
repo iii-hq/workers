@@ -609,7 +609,7 @@ pub async fn select_file(
             groups.insert(index, first);
         };
         // Shared evidence counts toward the state cap too.
-        if group.len() > 1 && walk::json_len(&request.state) > run.state_cap {
+        if group.len() > 1 && prompts::state_text(&request).len() > run.state_cap {
             halve(&mut groups);
             continue;
         }
@@ -798,6 +798,7 @@ mod tests {
         let log = Arc::new(Mutex::new(Vec::new()));
         let sent = log.clone();
         let evaluate: Evaluator = Arc::new(move |ev: Evaluation, _| {
+            let ev = prompts::decoded(ev);
             sent.lock().unwrap().push(ev.clone());
             let mut scores = Scores::new();
             let outcome = ev.state["declarations"]
