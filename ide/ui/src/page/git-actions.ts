@@ -311,23 +311,51 @@ export async function gitStashBranch(host: Host, root: string, name: string, ref
   await run(host, root, ['stash', 'branch', name.trim(), ref], 'git stash branch')
 }
 
-/** Undoes what commit `sha` changed in `paths` (repository-relative), in
-    the working tree only: its diff against its first parent (everything
-    for a root commit), applied in reverse. Nothing is staged or
-    committed. The patch applies whole or not at all, so a file edited
-    since refuses it rather than half-reverting. */
-export async function gitRevertChanges(host: Host, cwd: string, sha: string, paths: readonly string[]): Promise<void> {
-  if (paths.length === 0) return
-  // `git apply` below a folder skips the paths outside it: run at the top.
-  const top = (await run(host, cwd, ['rev-parse', '--show-toplevel'], 'git rev-parse')).stdout.trim()
-  const spec = paths.map((path) => `:(top,literal)${path}`)
+/** The repository's top level: `git apply` below it skips the paths
+    outside the folder it runs in. */
+async function topOf(host: Host, cwd: string): Promise<string> {
+  return (await run(host, cwd, ['rev-parse', '--show-toplevel'], 'git rev-parse')).stdout.trim()
+}
+
+const inRepo = (paths: readonly string[]) => paths.map((path) => `:(top,literal)${path}`)
+
+/** What commit `sha` changed in `paths` (repository-relative), as a patch
+    against its first parent (everything for a root commit), binary files
+    included and untouched by local diff settings. */
+export async function gitCommitPatch(host: Host, cwd: string, sha: string, paths: readonly string[]): Promise<string> {
   const flags = ['--format=', '--binary', '--no-color', '--no-ext-diff', '--no-textconv', '--diff-merges=first-parent']
-  const patch = await run(host, top, ['show', ...flags, sha, '--', ...spec], 'git show')
-  if (patch.stdout_truncated) throw new Error('the changes are too large to revert here')
+  const patch = await run(host, cwd, ['show', ...flags, sha, '--', ...inRepo(paths)], 'git show')
+  if (patch.stdout_truncated) throw new Error('the changes are too large to use here')
   if (patch.stdout.trim() === '') throw new Error('the commit changed none of these files')
-  const out = await git(host, top, ['apply', '-R', '--whitespace=nowarn'], undefined, { stdin: patch.stdout })
+  return patch.stdout
+}
+
+/** Applies what commit `sha` changed in `paths` to the working tree only,
+    or undoes it (`reverse`): a cherry-pick or a revert of those files,
+    neither staged nor committed. The patch applies whole or not at all,
+    so a file edited since refuses it rather than half-changing. */
+export async function gitApplyCommitChanges(
+  host: Host,
+  cwd: string,
+  sha: string,
+  paths: readonly string[],
+  reverse: boolean,
+): Promise<void> {
+  if (paths.length === 0) return
+  const top = await topOf(host, cwd)
+  const patch = await gitCommitPatch(host, top, sha, paths)
+  const args = ['apply', ...(reverse ? ['-R'] : []), '--whitespace=nowarn']
+  const out = await git(host, top, args, undefined, { stdin: patch })
   const message = failure(out, 'git apply')
   if (message !== null) throw new Error(message)
+}
+
+/** Puts `paths` in the working tree as they are at `sha`, a path absent
+    there removed; the index stays. What was in those files is lost. */
+export async function gitRestoreFrom(host: Host, cwd: string, sha: string, paths: readonly string[]): Promise<void> {
+  if (paths.length === 0) return
+  const top = await topOf(host, cwd)
+  await run(host, top, ['restore', `--source=${sha}`, '--worktree', '--', ...inRepo(paths)], 'git restore')
 }
 
 export interface GitTagSummary {

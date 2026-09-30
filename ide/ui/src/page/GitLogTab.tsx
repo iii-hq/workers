@@ -36,7 +36,7 @@ import {
   PenLine,
   Trash2,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActionRail, type GitAction, menuItems } from './ActionRail'
 import { glyphColor, glyphOf } from './CommitGraph'
 import { useContextMenu } from './ContextMenu'
@@ -44,7 +44,7 @@ import { GitBranchTree } from './GitBranchTree'
 import { type FilesView, GitCommitDetails } from './GitCommitDetails'
 import { GitCommitList } from './GitCommitList'
 import { GitCompareFiles } from './GitCompareFiles'
-import { git } from './git-actions'
+import { git, gitCommitPatch } from './git-actions'
 import {
   type CommitDetails,
   type CommitFile,
@@ -153,6 +153,7 @@ export function GitLogTab({
   narrow = false,
   onOpenCommitFile,
   onOpenCompareFile,
+  onOpenWorkingFile,
 }: {
   host: Host
   root: string
@@ -164,9 +165,10 @@ export function GitLogTab({
   focusBranch: { name: string; seq: number } | null
   /** One pane at a time, drilled into. */
   narrow?: boolean
-  onOpenCommitFile(file: CommitFile, details: CommitDetails): void
+  onOpenCommitFile(file: CommitFile, details: CommitDetails, pin?: boolean): void
   /** Opens a file beside its working copy, as it is at `ref`. */
-  onOpenCompareFile(file: CommitFile, ref: string): void
+  onOpenCompareFile(file: CommitFile, ref: string, from?: string): void
+  onOpenWorkingFile(rel: string): void
 }) {
   const epoch = useWorktreeEpoch()
   const [filter, setFilter] = useState<LogFilter>({})
@@ -205,6 +207,11 @@ export function GitLogTab({
   // group leaves it on every branch.
   const tipRef = treeSel?.startsWith('ref:') ? treeSel.slice(4) : treeSel === 'head' ? 'HEAD' : null
   const log = useGitLog(host, root, epoch, active, filter, tipRef)
+  // A branch picked in the tree or the Branch menu ends a "History up to here".
+  const selectNode = useCallback((id: string | null) => {
+    setFilter((prev) => (prev.upTo === undefined ? prev : { ...prev, upTo: undefined }))
+    setTreeSel(id)
+  }, [])
   const details = useCommitDetails(host, root, log.snapshot, commitSel)
   const working = useWorkingDiff(host, root, log.snapshot?.prefix ?? null, comparing?.ref ?? null, epoch)
   const snapshot = log.snapshot
@@ -231,8 +238,13 @@ export function GitLogTab({
     }
     return out
   }, [nodeById])
-  const branchLabel =
-    selectedNode?.kind === 'ref' ? selectedNode.ref.name : selectedNode?.kind === 'head' ? 'HEAD' : null
+  const branchLabel = filter.upTo
+    ? `up to ${filter.upTo.slice(0, 7)}`
+    : selectedNode?.kind === 'ref'
+      ? selectedNode.ref.name
+      : selectedNode?.kind === 'head'
+        ? 'HEAD'
+        : null
   const remotes = useMemo(
     () => new Set((snapshot?.refs ?? []).filter((ref) => ref.kind === 'remote').map((ref) => ref.name.split('/')[0])),
     [snapshot],
@@ -709,7 +721,7 @@ export function GitLogTab({
   )
   const shows = (pane: Stage) => !narrow || stage === pane
   const pickBranch = (id: string | null) => {
-    setTreeSel(id)
+    selectNode(id)
     for (let up = id === null ? undefined : parentOf.get(id); up !== undefined; up = parentOf.get(up)) {
       setExpanded(up, true)
     }
@@ -742,7 +754,7 @@ export function GitLogTab({
           className="shui-git-back"
           data-end=""
           onClick={() => {
-            setTreeSel(null)
+            selectNode(null)
             setStage('commits')
           }}
         >
@@ -832,7 +844,7 @@ export function GitLogTab({
               expanded={expanded}
               onExpanded={setExpanded}
               selected={treeSel}
-              onSelect={setTreeSel}
+              onSelect={selectNode}
               onAct={(node) => run(refActions(node), 'open')}
               onDelete={(node) => run(refActions(node), 'delete')}
               onMenu={(node, anchor) => menu.open(anchor, menuItems(refActions(node)))}
@@ -920,9 +932,18 @@ export function GitLogTab({
                 })
               }
               busy={ops.busy}
-              onRevert={ops.revertChanges}
-              onShowHistory={(paths) => {
-                setFilter((prev) => ({ ...prev, paths }))
+              onCompare={onOpenCompareFile}
+              onEditSource={onOpenWorkingFile}
+              onCommitFiles={ops.commitFiles}
+              onCopyPatch={(sha, paths) => {
+                setHint(null)
+                gitCommitPatch(host, root, sha, paths)
+                  .then((patch) => navigator.clipboard.writeText(patch))
+                  .catch((err: unknown) => setHint(`copy as patch failed: ${errorMessage(err)}`))
+              }}
+              onHistory={(paths, sha) => {
+                setFilter((prev) => ({ ...prev, paths, upTo: sha }))
+                setCommitSel(sha)
                 if (narrow) setStage('commits')
               }}
             />

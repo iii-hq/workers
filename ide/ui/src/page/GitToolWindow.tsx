@@ -27,6 +27,7 @@ function GitToolWindowView({
   paneKey,
   onOpenCommitFile,
   onOpenCompareFile,
+  onOpenWorkingFile,
 }: {
   host: Host
   root: string
@@ -37,10 +38,12 @@ function GitToolWindowView({
   narrow?: boolean
   /** Keys the window's own layout (pane widths, open groups) to this pane. */
   paneKey: string
-  /** Opens a file a commit changed as a diff tab. */
-  onOpenCommitFile(file: CommitFile, details: CommitDetails): void
+  /** Opens a file a commit changed as a diff tab; `pin: false` makes it the preview tab. */
+  onOpenCommitFile(file: CommitFile, details: CommitDetails, pin?: boolean): void
   /** Opens a file as it is at `ref`, beside its working copy. */
-  onOpenCompareFile(file: CommitFile, ref: string): void
+  onOpenCompareFile(file: CommitFile, ref: string, from?: string): void
+  /** The file in the working tree, by its path below the IDE's folder. */
+  onOpenWorkingFile(rel: string): void
 }) {
   const ops = useWorktreeOps(host, root, page, true, 'view')
   const target = ops.list?.defaultBranch ?? null
@@ -115,6 +118,7 @@ function GitToolWindowView({
             narrow={narrow}
             onOpenCommitFile={onOpenCommitFile}
             onOpenCompareFile={onOpenCompareFile}
+            onOpenWorkingFile={onOpenWorkingFile}
           />
         </TabsContent>
         <TabsContent value="worktrees" forceMount className="shui-git-panel">

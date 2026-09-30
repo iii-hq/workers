@@ -253,7 +253,8 @@ export async function loadDiffContents(
       return imageOrText(path, index, current.contents, { worktreeRevision: current.revision })
     }
     case 'compare': {
-      const [ref, current] = await Promise.all([gitSide(host, root, `${source.ref}:./${path}`), worktreeSide(host, root, path)])
+      const spec = source.from ? `${source.ref}:${source.from}` : `${source.ref}:./${path}`
+      const [ref, current] = await Promise.all([gitSide(host, root, spec), worktreeSide(host, root, path)])
       return imageOrText(path, ref, current.contents, {
         worktreeRevision: current.revision,
         note:

@@ -2146,11 +2146,11 @@ export function ShellExplorerPage({
     [revertTurnFiles],
   )
   const openCommitFile = useCallback(
-    (file: CommitFile, details: CommitDetails) => {
+    (file: CommitFile, details: CommitDetails, pin = true) => {
       openDiffTab(
         file.view,
         { type: 'commit', sha: details.sha, parent: details.parents[0] ?? null, from: file.from },
-        true,
+        pin,
       )
       // A narrow page's Git window covers the editor: step aside for the diff.
       if (narrow) closeGit()
@@ -2158,11 +2158,18 @@ export function ShellExplorerPage({
     [openDiffTab, narrow, closeGit],
   )
   const openCompareFile = useCallback(
-    (file: CommitFile, ref: string) => {
-      openDiffTab(file.view, { type: 'compare', ref }, true)
+    (file: CommitFile, ref: string, from?: string) => {
+      openDiffTab(file.view, from ? { type: 'compare', ref, from } : { type: 'compare', ref }, true)
       if (narrow) closeGit()
     },
     [openDiffTab, narrow, closeGit],
+  )
+  const openWorkingFile = useCallback(
+    (rel: string) => {
+      openFileTab(rel, { pin: true })
+      if (narrow) closeGit()
+    },
+    [openFileTab, narrow, closeGit],
   )
 
   if (infoError) {
@@ -2593,6 +2600,7 @@ export function ShellExplorerPage({
               paneKey={paneKey}
               onOpenCommitFile={openCommitFile}
               onOpenCompareFile={openCompareFile}
+              onOpenWorkingFile={openWorkingFile}
             />
           </DockPanel>
         ) : terminalOpen && terminalDock !== 'editor' ? (

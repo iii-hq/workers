@@ -9,7 +9,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { gitRevertChanges } from './git-actions'
+import { gitApplyCommitChanges, gitRestoreFrom } from './git-actions'
 import { basename } from './paths'
 import {
   branchMergeMessage,
@@ -161,6 +161,13 @@ export interface BranchDeletion {
   list: WorktreeList
 }
 
+export type CommitFilesHow = 'revert' | 'cherry-pick' | 'get'
+const HOW_LABEL: Readonly<Record<CommitFilesHow, string>> = {
+  revert: 'revert',
+  'cherry-pick': 'cherry-pick',
+  get: 'get from revision',
+}
+
 export interface WorktreeOps {
   list: WorktreeList | null
   error: string | null
@@ -186,9 +193,10 @@ export interface WorktreeOps {
   renameBranch(from: string, to: string, onRenamed?: (branch: string) => void): void
   /** Fetches the branch's upstream and fast-forwards the branch to it. */
   updateBranch(branch: string): void
-  /** Undoes commit `sha`'s changes to `paths` (repository-relative) in the
-      IDE's working tree, uncommitted. */
-  revertChanges(sha: string, paths: readonly string[]): void
+  /** Commit `sha`'s change to `paths` (repository-relative) in the IDE's
+      working tree, uncommitted: undone (`revert`), applied again
+      (`cherry-pick`), or the files as the commit left them (`get`). */
+  commitFiles(how: CommitFilesHow, sha: string, paths: readonly string[]): void
   pushBranch(branch: string, target: PushTarget): void
   merge(wt: Worktree, options: MergeOptions, onMerged?: () => void): void
   /** The subjects a squash of `wt` folds together, oldest first. */
@@ -567,10 +575,15 @@ export function useWorktreeOps(
         return `renamed ${from} to ${branch}`
       }),
     updateBranch: (branch) => perform('update', (current) => updateBranch(host, current, branch)),
-    revertChanges: (sha, paths) =>
-      perform('revert', async (current) => {
-        await gitRevertChanges(host, page.root() ?? current.worktrees[0]?.path ?? '', sha, paths)
-        return `reverted ${sha.slice(0, 7)}'s changes to ${paths.length === 1 ? basename(paths[0]) : `${paths.length} files`}`
+    commitFiles: (how, sha, paths) =>
+      perform(HOW_LABEL[how], async (current) => {
+        const cwd = page.root() ?? current.worktrees[0]?.path ?? ''
+        if (how === 'get') await gitRestoreFrom(host, cwd, sha, paths)
+        else await gitApplyCommitChanges(host, cwd, sha, paths, how === 'revert')
+        const what = paths.length === 1 ? basename(paths[0]) : `${paths.length} files`
+        const short = sha.slice(0, 7)
+        if (how === 'get') return `${what}: as of ${short}`
+        return `${how === 'revert' ? 'reverted' : 'applied'} ${short}'s changes to ${what}`
       }),
     pushBranch: (branch, target) =>
       perform('push', async (current) => {

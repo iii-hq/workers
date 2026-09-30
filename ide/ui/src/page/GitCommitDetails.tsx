@@ -11,8 +11,12 @@
 
    The bar over the files acts on the selected one, as WebStorm's does:
    show its diff, revert the commit's change to it in the working tree,
-   show its history in the log. Its eye menu groups the files by folder or
-   lists them flat, and shows or hides the commit under them. */
+   show its history up to the commit. Its eye menu groups the files by
+   folder or lists them flat, and shows or hides the commit under them. A
+   file's context menu holds the rest: its diff in the preview tab or a
+   new one, compared with the working copy (as the commit left it, or as
+   it was before), its working copy, the commit's change applied again or
+   copied as a patch, and the file as the commit left it. */
 
 import {
   Chip,
@@ -25,13 +29,31 @@ import {
   EmptyState,
   IconButton,
   Skeleton,
+  useConfirm,
 } from '@iii-dev/console-ui'
 import { useSplitDrag } from '@iii-dev/console-ui/hooks'
-import { ChevronsDownUp, ChevronsUpDown, Copy, Eye, FileDiff, History, Undo2 } from 'lucide-react'
+import {
+  Cherry,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  ClipboardCopy,
+  Copy,
+  Eye,
+  FileDiff,
+  FileDown,
+  GitCompareArrows,
+  History,
+  Pencil,
+  Undo2,
+} from 'lucide-react'
 import { type CSSProperties, useRef, useState } from 'react'
+import { type GitAction, menuItems } from './ActionRail'
+import { useContextMenu } from './ContextMenu'
 import { GitFileList } from './GitFileList'
 import type { CommitDetails, CommitFile } from './git-log-window'
+import { basename } from './paths'
 import type { CommitDetailsState } from './use-git-log'
+import type { CommitFilesHow } from './use-worktree-ops'
 
 const when = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
@@ -69,8 +91,11 @@ export function GitCommitDetails({
   view,
   onView,
   busy,
-  onRevert,
-  onShowHistory,
+  onCompare,
+  onEditSource,
+  onCommitFiles,
+  onCopyPatch,
+  onHistory,
 }: {
   state: CommitDetailsState
   selected: string | null
@@ -80,21 +105,29 @@ export function GitCommitDetails({
   top: string | null
   /** The clone is shallow: a commit without parents may have unfetched ones. */
   shallow: boolean
-  onOpenFile(file: CommitFile, details: CommitDetails): void
+  /** The commit's change to the file; `pin: false` opens the preview tab. */
+  onOpenFile(file: CommitFile, details: CommitDetails, pin?: boolean): void
   onSelectCommit(sha: string): void
   view: FilesView
   onView(patch: Partial<FilesView>): void
-  /** A worktree operation is running: a revert waits. */
+  /** A worktree operation is running: what writes the working tree waits. */
   busy: boolean
-  /** Undoes commit `sha`'s change to `paths` in the working tree. */
-  onRevert(sha: string, paths: string[]): void
-  /** The log, narrowed to `paths`. */
-  onShowHistory(paths: string[]): void
+  /** The file as it is at `ref` beside its working copy; `from` names it there. */
+  onCompare(file: CommitFile, ref: string, from?: string): void
+  /** The working copy, by its path below the IDE's folder. */
+  onEditSource(rel: string): void
+  /** Commit `sha`'s change to `paths` in the working tree (see `WorktreeOps.commitFiles`). */
+  onCommitFiles(how: CommitFilesHow, sha: string, paths: string[]): void
+  onCopyPatch(sha: string, paths: string[]): void
+  /** The log, narrowed to `paths` and to what `sha` reaches. */
+  onHistory(paths: string[], sha: string): void
 }) {
   const { details, loading, error, branches } = state
   // The file picked in this commit, and how its folders were last set open.
   const [picked, setPicked] = useState<{ sha: string; path: string } | null>(null)
   const [folders, setFolders] = useState<{ sha: string; seq: number; open: boolean } | null>(null)
+  const menu = useContextMenu()
+  const { confirm, dialog } = useConfirm()
   const filesRef = useRef<HTMLElement>(null)
   const shownHeight = () => filesRef.current?.getBoundingClientRect().height ?? null
   const drag = useSplitDrag<number>({
@@ -128,6 +161,110 @@ export function GitCommitDetails({
   const file = picked?.sha === details.sha ? (details.files.find((each) => each.path === picked.path) ?? null) : null
   const ours = folders?.sha === details.sha ? folders : null
   const openAll = (open: boolean) => setFolders({ sha: details.sha, seq: (ours?.seq ?? 0) + 1, open })
+  const sha = details.sha
+  const short = sha.slice(0, 7)
+  const parent = details.parents[0] ?? null
+  const busyWhy = busy ? 'another operation is running' : null
+  const revert = (each: CommitFile) => onCommitFiles('revert', sha, pathsOf(each))
+  const history = (each: CommitFile) => onHistory(pathsOf(each), sha)
+  const getFromRevision = async (each: CommitFile) => {
+    const name = basename(each.path)
+    const ok = await confirm({
+      title: each.status === 'deleted' ? `Remove ${name}?` : `Replace ${name} with its version at ${short}?`,
+      description:
+        each.status === 'deleted'
+          ? `The commit deleted it: the working copy goes, uncommitted changes to it too.`
+          : 'Uncommitted changes to it are lost.',
+      confirmLabel: each.status === 'deleted' ? 'Remove' : 'Replace',
+      tone: 'danger',
+    })
+    if (ok) onCommitFiles('get', sha, [each.path])
+  }
+  // One list for the context menu; the bar's buttons run the same actions.
+  const fileActions = (each: CommitFile): GitAction[] => [
+    {
+      id: 'diff',
+      label: 'Show diff',
+      icon: <FileDiff aria-hidden />,
+      group: 'diff',
+      run: () => onOpenFile(each, details, false),
+    },
+    {
+      id: 'diff-tab',
+      label: 'Show diff in a new tab',
+      icon: <FileDiff aria-hidden />,
+      shortcut: 'Enter',
+      group: 'diff',
+      run: () => onOpenFile(each, details, true),
+    },
+    {
+      id: 'local',
+      label: 'Compare with local',
+      icon: <GitCompareArrows aria-hidden />,
+      group: 'diff',
+      blocked: each.status === 'deleted' ? 'the commit deleted it' : null,
+      run: () => onCompare(each, sha),
+    },
+    {
+      id: 'before-local',
+      label: 'Compare before with local',
+      icon: <GitCompareArrows aria-hidden />,
+      group: 'diff',
+      blocked: parent === null ? 'the commit has no parent' : each.status === 'added' ? 'the commit added it' : null,
+      run: () => {
+        if (parent !== null) onCompare(each, parent, each.from)
+      },
+    },
+    {
+      id: 'edit',
+      label: 'Edit source',
+      icon: <Pencil aria-hidden />,
+      group: 'open',
+      blocked: each.rel === null ? "it is outside the IDE's folder" : null,
+      run: () => {
+        if (each.rel !== null) onEditSource(each.rel)
+      },
+    },
+    {
+      id: 'revert',
+      label: 'Revert selected changes',
+      icon: <Undo2 aria-hidden />,
+      group: 'change',
+      blocked: busyWhy,
+      run: () => revert(each),
+    },
+    {
+      id: 'cherry-pick',
+      label: 'Cherry-pick selected changes',
+      icon: <Cherry aria-hidden />,
+      group: 'change',
+      blocked: busyWhy,
+      run: () => onCommitFiles('cherry-pick', sha, pathsOf(each)),
+    },
+    {
+      id: 'patch',
+      label: 'Copy as patch',
+      icon: <ClipboardCopy aria-hidden />,
+      group: 'change',
+      run: () => onCopyPatch(sha, pathsOf(each)),
+    },
+    {
+      id: 'get',
+      label: 'Get from revision',
+      icon: <FileDown aria-hidden />,
+      group: 'change',
+      danger: true,
+      blocked: busyWhy,
+      run: () => void getFromRevision(each),
+    },
+    {
+      id: 'history',
+      label: 'History up to here',
+      icon: <History aria-hidden />,
+      group: 'history',
+      run: () => history(each),
+    },
+  ]
   return (
     <div className="shui-git-details" data-pane="details" data-info={view.info || undefined}>
       <section
@@ -148,15 +285,11 @@ export function GitCommitDetails({
           <IconButton
             label={busy ? 'Revert selected changes: another operation is running' : 'Revert selected changes'}
             disabled={file === null || busy}
-            onClick={() => file && onRevert(details.sha, pathsOf(file))}
+            onClick={() => file && revert(file)}
           >
             <Undo2 aria-hidden />
           </IconButton>
-          <IconButton
-            label="Show history"
-            disabled={file === null}
-            onClick={() => file && onShowHistory(pathsOf(file))}
-          >
+          <IconButton label="History up to here" disabled={file === null} onClick={() => file && history(file)}>
             <History aria-hidden />
           </IconButton>
           <DropdownMenu>
@@ -196,7 +329,11 @@ export function GitCommitDetails({
           grouped={view.grouped}
           open={ours?.open ?? true}
           selected={file?.path ?? null}
-          onSelect={(each) => setPicked({ sha: details.sha, path: each.path })}
+          onSelect={(each) => setPicked({ sha, path: each.path })}
+          onMenu={(each, anchor) => {
+            setPicked({ sha, path: each.path })
+            menu.open(anchor, menuItems(fileActions(each)))
+          }}
           onOpen={(each) => onOpenFile(each, details)}
         />
       </section>
@@ -287,6 +424,8 @@ export function GitCommitDetails({
           </section>
         </>
       ) : null}
+      {menu.element}
+      {dialog}
     </div>
   )
 }

@@ -77,6 +77,9 @@ export interface LogFilter {
   until?: number
   /** Repository-relative paths. */
   paths?: string[]
+  /** Only the history this commit (a full hash) reaches: "History up to
+      here". It stands in for the branch the log follows. */
+  upTo?: string
 }
 
 export interface CommitFile extends NameStatusEntry {

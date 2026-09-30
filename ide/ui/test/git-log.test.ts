@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import type { Host } from '@iii-dev/console-ui'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadDiffContents } from '../src/page/diff-load'
-import { gitRevertChanges } from '../src/page/git-actions'
+import { gitApplyCommitChanges, gitCommitPatch, gitRestoreFrom } from '../src/page/git-actions'
 import {
   findCommit,
   type LogCommit,
@@ -313,8 +313,8 @@ describe('the new worktree verbs', () => {
   })
 })
 
-describe("revert a commit's changes", () => {
-  it('reverses the chosen files in the working tree, and refuses edited ones whole', async () => {
+describe("a commit's changes to chosen files", () => {
+  it('revert, cherry-pick, patch and get from revision in the working tree', async () => {
     mkdirSync(join(repo, 'sub'))
     commit(repo, 'a.txt', 'one\n', 'first')
     commit(repo, 'sub/b.txt', 'b\n', 'second')
@@ -324,22 +324,33 @@ describe("revert a commit's changes", () => {
     sh(repo, 'commit', '-q', '-m', 'third')
     const third = sh(repo, 'rev-parse', 'HEAD')
     // From a subfolder, one file of three: the other stays, nothing is staged.
-    await gitRevertChanges(host, join(repo, 'sub'), third, ['a.txt'])
+    await gitApplyCommitChanges(host, join(repo, 'sub'), third, ['a.txt'], true)
     expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('one\n')
     expect(existsSync(join(repo, 'c.txt'))).toBe(true)
     expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('')
     // An added file goes.
-    await gitRevertChanges(host, repo, third, ['c.txt'])
+    await gitApplyCommitChanges(host, repo, third, ['c.txt'], true)
     expect(existsSync(join(repo, 'c.txt'))).toBe(false)
     // Edited since: refused, and neither file moves.
     sh(repo, 'checkout', '-q', '--', '.')
     writeFileSync(join(repo, 'a.txt'), 'mine\n')
-    await expect(gitRevertChanges(host, repo, third, ['a.txt', 'c.txt'])).rejects.toThrow(/a\.txt/)
+    await expect(gitApplyCommitChanges(host, repo, third, ['a.txt', 'c.txt'], true)).rejects.toThrow(/a\.txt/)
     expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('mine\n')
     expect(existsSync(join(repo, 'c.txt'))).toBe(true)
     // An older commit's file, from its own diff.
     sh(repo, 'checkout', '-q', '--', '.')
-    await gitRevertChanges(host, repo, sh(repo, 'rev-parse', 'HEAD~1'), ['sub/b.txt'])
+    await gitApplyCommitChanges(host, repo, sh(repo, 'rev-parse', 'HEAD~1'), ['sub/b.txt'], true)
     expect(existsSync(join(repo, 'sub/b.txt'))).toBe(false)
+    // Cherry-pick puts it back; the patch names the file.
+    const second = sh(repo, 'rev-parse', 'HEAD~1')
+    await gitApplyCommitChanges(host, repo, second, ['sub/b.txt'], false)
+    expect(readFileSync(join(repo, 'sub/b.txt'), 'utf8')).toBe('b\n')
+    expect(await gitCommitPatch(host, repo, second, ['sub/b.txt'])).toContain('+++ b/sub/b.txt')
+    await expect(gitCommitPatch(host, repo, second, ['a.txt'])).rejects.toThrow(/none of these files/)
+    // Get from revision: the file as it was, over local edits; absent there, removed.
+    await gitRestoreFrom(host, join(repo, 'sub'), sh(repo, 'rev-parse', 'HEAD~2'), ['a.txt', 'c.txt'])
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('one\n')
+    expect(existsSync(join(repo, 'c.txt'))).toBe(false)
+    expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('')
   })
 })

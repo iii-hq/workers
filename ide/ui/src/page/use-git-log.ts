@@ -115,7 +115,7 @@ export function useGitLog(
       state.pending = true
       setLoading(true)
       try {
-        const tips = logTips(current, tipRef)
+        const tips = parsed.upTo ? [parsed.upTo] : logTips(current, tipRef)
         const [page, found] = await Promise.all([
           readLogPage(host, root, tips, parsed, skip, limit),
           skip === 0 && parsed.text ? findCommit(host, root, parsed.text.trim()) : Promise.resolve(null),

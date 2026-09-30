@@ -13,8 +13,10 @@ export type DiffSource =
   /** One Harness turn's change: its pre-image → the body it left behind
       (the next turn's pre-image when one was kept, else the working copy). */
   | { type: 'turn'; turnId: string }
-  /** A revision → working copy, chosen by the user. */
-  | { type: 'compare'; ref: string }
+  /** A revision → working copy, chosen by the user. `from` is the file's
+      path at `ref` when it had another name there, relative to the
+      repository's top level. */
+  | { type: 'compare'; ref: string; from?: string }
   /** An exact recorded change (`coder::change-diff`) from a chat card. */
   | { type: 'change'; changeId: string }
   /** One revision against another: a commit against its parent, a stash
@@ -38,7 +40,7 @@ export function diffSourceKey(source: DiffSource): string {
     case 'turn':
       return `turn=${source.turnId}`
     case 'compare':
-      return `compare=${source.ref}`
+      return source.from ? `compare=${source.ref}:${source.from}` : `compare=${source.ref}`
     case 'change':
       return `change=${source.changeId}`
     case 'commit':
@@ -125,7 +127,10 @@ export function parseDiffSource(value: unknown): DiffSource | null {
     case 'turn':
       return typeof raw.turnId === 'string' && raw.turnId !== '' ? { type: 'turn', turnId: raw.turnId } : null
     case 'compare':
-      return typeof raw.ref === 'string' && raw.ref !== '' ? { type: 'compare', ref: raw.ref } : null
+      if (typeof raw.ref !== 'string' || raw.ref === '') return null
+      return typeof raw.from === 'string' && raw.from !== ''
+        ? { type: 'compare', ref: raw.ref, from: raw.from }
+        : { type: 'compare', ref: raw.ref }
     case 'change':
       return typeof raw.changeId === 'string' && raw.changeId !== ''
         ? { type: 'change', changeId: raw.changeId }

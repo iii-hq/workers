@@ -2,10 +2,12 @@
    tree under the IDE's folder or as a flat list. Files outside it gather
    under their own group, their folders named from the IDE's (`../ide/src`),
    as in the Timeline. A click selects a file, for the actions over the
-   list; a double click or Enter opens its diff. */
+   list; a double click or Enter opens its diff, and a right click (or the
+   menu key) its menu. */
 
 import { useMemo } from 'react'
 import { ChangeEntries, TREE_INDENT, treeInset } from './ChangeEntries'
+import type { ContextMenuAnchor } from './ContextMenu'
 import { statusLetter, statusTitle } from './git-actions'
 import type { CommitFile } from './git-log-window'
 import { basename, dirname } from './paths'
@@ -18,6 +20,7 @@ export function GitFileList({
   open = true,
   selected = null,
   onSelect,
+  onMenu,
   onOpen,
 }: {
   files: readonly CommitFile[]
@@ -32,6 +35,7 @@ export function GitFileList({
   /** The selected file's path. */
   selected?: string | null
   onSelect?(file: CommitFile): void
+  onMenu?(file: CommitFile, anchor: ContextMenuAnchor): void
   onOpen(file: CommitFile): void
 }) {
   const base = top ?? ''
@@ -59,6 +63,14 @@ export function GitFileList({
               onClick={() => onSelect?.(file)}
               onFocus={() => onSelect?.(file)}
               onDoubleClick={() => onOpen(file)}
+              onContextMenu={(event) => {
+                if (!onMenu) return
+                event.preventDefault()
+                // From the keyboard the event has no pointer: open under the row.
+                const rect = event.currentTarget.getBoundingClientRect()
+                const keyed = event.clientX === 0 && event.clientY === 0
+                onMenu(file, keyed ? { x: rect.left + 16, y: rect.bottom } : { x: event.clientX, y: event.clientY })
+              }}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') onOpen(file)
               }}
