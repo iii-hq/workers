@@ -4,6 +4,20 @@
 
 ### Added
 
+- **Commit panel in Source control.** The view becomes a commit panel
+  with Commit, Stash and History tabs. Commit lists every uncommitted change
+  (HEAD → working copy) in Changes and Unversioned files groups with a tick
+  per change instead of stage/unstage, rolls back several files at once from
+  one dialog, and commits with Amend, recent messages, sign-off, Git hooks on
+  or off, author, and Commit and push. Stash applies, pops, drops and
+  branches stashes; History shows the branch's first-parent log with each
+  commit's files, Revert and New branch.
+- **Generate a commit message.** `shell::scm::commit-message` writes a git
+  commit message for a diff with an LLM through `llm-router`
+  (`router::complete`), and `shell::scm::commit-message-config` returns the
+  settings behind it. New `commit_messages` config block (`model`, `thinking`,
+  `instructions`), read live on every call. Console-only: denied to agents in
+  `iii-permissions.yaml`.
 - **Go to file (`Ctrl+P`).** A quick-open overlay inside the shell page:
   type any characters of a path in order (`ptofolder` finds
   `path/to/folder`) and the files of the pane's folder re-rank as you type,

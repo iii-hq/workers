@@ -3,6 +3,7 @@ import {
   IconButton,
   Input,
   type JsonValue,
+  ModelPicker,
   Select,
   SettingsList,
   SettingsRow,
@@ -10,7 +11,8 @@ import {
   Switch,
 } from '@iii-dev/console-ui'
 import { Trash2 } from 'lucide-react'
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { ConfigurationHostContext, useModelCatalog, withStoredModel } from './model-catalog'
 import {
   emptyStructuredValue,
   renameStructuredKey,
@@ -22,6 +24,7 @@ import type {
   DynamicMapFieldSpec,
   FilterListFieldSpec,
   FormFieldSpec,
+  ModelFieldSpec,
   ObjectCollectionFieldSpec,
   ObjectMapFieldSpec,
   PermissionRulesFieldSpec,
@@ -262,6 +265,20 @@ function ScalarField({ field, basePath = [], ...context }: FieldProps) {
         />
       )
     }
+  } else if (field.kind === 'text' && field.multiline) {
+    control = (
+      <textarea
+        id={id}
+        rows={4}
+        value={displayValue(value)}
+        onChange={(event) => setFieldValue(context, path, event.currentTarget.value, field.optional)}
+        placeholder={field.placeholder}
+        aria-invalid={Boolean(error)}
+        aria-describedby={errorId}
+        aria-label={field.label}
+        className="console-worker-config-textarea"
+      />
+    )
   } else {
     control = (
       <Input
@@ -293,7 +310,86 @@ function ScalarField({ field, basePath = [], ...context }: FieldProps) {
         ) : undefined
       }
       control={control}
-      layout={field.kind === 'switch' ? 'inline' : 'auto'}
+      layout={field.kind === 'switch' ? 'inline' : field.kind === 'text' && field.multiline ? 'stacked' : 'auto'}
+    />
+  )
+}
+
+const DEFAULT_MODEL_PLACEHOLDER = 'Chat default'
+
+function ModelField({
+  field,
+  basePath = [],
+  ...context
+}: FieldRenderContext & {
+  field: ModelFieldSpec
+  basePath?: ConfigPath
+}) {
+  const { options, loading } = useModelCatalog(useContext(ConfigurationHostContext))
+  const path = joinPath(basePath, field.path)
+  const thinkingPath = field.thinkingKey ? [...path.slice(0, -1), field.thinkingKey] : undefined
+  const stored = atPath(context.root, path)
+  const model = typeof stored === 'string' && stored !== '' ? stored : null
+  const storedLevel = thinkingPath ? atPath(context.root, thinkingPath) : undefined
+  const thinkingLevel =
+    typeof storedLevel === 'string' && storedLevel !== '' ? storedLevel : (field.thinkingDefault ?? 'default')
+  const error = errorFor(context.errors, path) ?? (thinkingPath ? errorFor(context.errors, thinkingPath) : undefined)
+  const errorId = error ? `${fieldId(path)}-error` : undefined
+
+  // Choosing a model reports the model and, in the same tick, the effort that
+  // goes with it. Both handlers would otherwise start from the render that
+  // opened the picker and the second write would drop the first.
+  const draft = useRef(context.root)
+  draft.current = context.root
+  const commit = (next: JsonValue) => {
+    draft.current = next
+    context.onChange(next)
+  }
+
+  return (
+    <SettingsRow
+      data-field={path[0]}
+      data-path={path.join('.')}
+      label={field.label}
+      description={field.description}
+      meta={
+        error ? (
+          <span id={errorId} className="console-worker-config-error">
+            {error}
+          </span>
+        ) : undefined
+      }
+      control={
+        // biome-ignore lint/a11y/useSemanticElements: the picker trigger has no label of its own; a fieldset would add default chrome to this row.
+        <div role="group" aria-label={field.label} aria-describedby={errorId} className="console-worker-config-model">
+          <ModelPicker
+            value={model}
+            options={withStoredModel(options, model)}
+            thinkingLevel={thinkingLevel}
+            onChange={(next) => commit(setAtPath(draft.current, path, next))}
+            onThinkingLevelChange={(next) => {
+              if (thinkingPath) commit(setAtPath(draft.current, thinkingPath, next))
+            }}
+            placeholder={field.placeholder ?? DEFAULT_MODEL_PLACEHOLDER}
+            loading={loading}
+            showReasoningEffort={thinkingPath !== undefined}
+            showRefresh={false}
+            showProviderConfiguration={false}
+            className="console-worker-config-model-picker"
+          />
+          {field.optional && model !== null ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => commit(setAtPath(draft.current, path, null))}
+              aria-label={`Use chat default for ${field.label}`}
+            >
+              Use chat default
+            </Button>
+          ) : null}
+        </div>
+      }
     />
   )
 }
@@ -1966,6 +2062,7 @@ export function FieldRenderer(props: FieldProps) {
   ) {
     return <ScalarField {...props} />
   }
+  if (field.kind === 'model') return <ModelField {...props} field={field} />
   if (field.kind === 'string-list') return <StringListField {...props} field={field} />
   if (field.kind === 'dynamic-map') return <DynamicMapField {...props} field={field} />
   if (field.kind === 'filter-list') return <FilterListField {...props} field={field} />

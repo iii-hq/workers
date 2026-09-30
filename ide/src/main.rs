@@ -404,6 +404,7 @@ async fn main() -> Result<()> {
     let pty_manager = pty::PtyManager::new(iii.clone(), watch_resolver.clone());
     pty::register(&iii, pty_manager.clone());
     register_workspace(&iii, &state);
+    register_scm(&iii, &state);
 
     // fs::* keep Value handlers (preserving S210) and read the live host backend
     // + sandbox toggle from AppState; the typed schema is attached separately.
@@ -567,6 +568,59 @@ fn register_workspace(iii: &iii_sdk::IIIClient, state: &AppState) {
             .description(
                 "Console-only: one bounded byte range of a file, base64 (at most 4 MiB raw per \
                  call), so a page can stream a large image without one oversized frame.",
+            )
+            .metadata(serde_json::json!({ "internal": true })),
+        );
+    }
+}
+
+/// Register the Commit panel's `shell::scm::*` functions. Console-only: the
+/// page prepares the diff, this worker owns the prompt and the model call, and
+/// both read `commit_messages` from the LIVE config on every call.
+fn register_scm(iii: &iii_sdk::IIIClient, state: &AppState) {
+    {
+        let st = state.clone();
+        iii.register_function(
+            functions::scm::CONFIG_FN_ID,
+            RegisterFunction::new_async(move |_req: functions::scm::CommitMessageConfigRequest| {
+                let st = st.clone();
+                telemetry::record_call(functions::scm::CONFIG_FN_ID, async move {
+                    let cfg = { st.runtime.read().await.config.commit_messages.clone() };
+                    Ok::<_, Error>(functions::scm::commit_message_config(&cfg))
+                })
+            })
+            .description(
+                "Console-only: the live `commit_messages` settings behind the Commit panel's \
+                 Generate button. Returns { model: string|null, thinking: string, instructions: \
+                 string }; `model` is null when unset (the panel then passes the chat's default \
+                 model as `fallback_model`).",
+            )
+            .metadata(serde_json::json!({ "internal": true })),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            functions::scm::COMMIT_MESSAGE_FN_ID,
+            RegisterFunction::new_async(move |req: functions::scm::CommitMessageRequest| {
+                let st = st.clone();
+                telemetry::record_call(functions::scm::COMMIT_MESSAGE_FN_ID, async move {
+                    let cfg = { st.runtime.read().await.config.commit_messages.clone() };
+                    let router = functions::scm::IiiRouter(st.iii.clone());
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis() as u64);
+                    functions::scm::commit_message(&cfg, &router, req, now_ms).await
+                })
+            })
+            .description(
+                "Console-only: write a git commit message for the diff text `changes` (stat + \
+                 unified diff, capped at 60000 chars) with an LLM through router::complete. \
+                 Optional `recent_subjects` give the repository's style; `fallback_model` \
+                 (provider::model) is used when commit_messages.model is unset. Returns \
+                 { message, model }. Errors return { code, message }: NO_MODEL no model \
+                 configured or passed, EMPTY_CHANGES blank diff, ROUTER_FAILED the model call \
+                 failed, EMPTY_MESSAGE the model returned no text.",
             )
             .metadata(serde_json::json!({ "internal": true })),
         );

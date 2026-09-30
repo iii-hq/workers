@@ -13,7 +13,7 @@
 
 import type { ConfigFormProps, Host } from '@iii-dev/console-ui'
 import {
-  configurationForm,
+  configurationForm as declarativeConfigurationForm,
   workerConfigurationIds,
   workerConfigurationManifest,
   workerConfigurationSpecs,
@@ -23,6 +23,9 @@ import { InjectableUiConfigForm } from './src/injectable-ui-form'
 export { workerConfigurationIds, workerConfigurationManifest, workerConfigurationSpecs }
 
 export default function setup(host: Host) {
+  // Declarative forms read the engine through this script's `host` (model fields).
+  const configurationForm = (id: string) => declarativeConfigurationForm(id, host)
+
   host.configForms.register('console', (props: ConfigFormProps) => <InjectableUiConfigForm host={host} {...props} />)
 
   host.configForms.register('a2ui', configurationForm('a2ui'))
@@ -55,6 +58,9 @@ export default function setup(host: Host) {
   host.configForms.register('sandbox-code-runner', configurationForm('sandbox-code-runner'))
   host.configForms.register('security-scan', configurationForm('security-scan'))
   host.configForms.register('session-manager', configurationForm('session-manager'))
+  // The worker's configuration entry is `ide` (its `ui_form` family); the same
+  // spec stays under `shell` for workers that still register the old entry.
+  host.configForms.register('ide', configurationForm('shell'))
   host.configForms.register('shell', configurationForm('shell'))
   host.configForms.register('slack', configurationForm('slack'))
   host.configForms.register('tailscale', configurationForm('tailscale'))

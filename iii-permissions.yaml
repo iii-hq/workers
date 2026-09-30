@@ -86,6 +86,11 @@ rules:
   # The explorer page's per-pane state (open tabs, folder, terminal layout):
   # developer-local files the console reads and writes on the person's behalf.
   - '!shell::ui-state::*'
+  # The Commit panel's Generate button: `commit-message` spends an LLM call
+  # through router::complete, outside the harness loop's accounting (the same
+  # reason router::complete itself is denied above), and both functions are
+  # console plumbing the page calls on the person's behalf.
+  - '!shell::scm::*'
   - '!oauth::anthropic::login'
   - '!oauth::openai-codex::login'
   - '!run::start'

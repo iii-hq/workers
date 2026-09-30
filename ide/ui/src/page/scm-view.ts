@@ -8,17 +8,38 @@ export function opensFileDirectly(entry: { path: string; status: string }): bool
 export type ScmViewMode = 'list' | 'tree'
 const STORAGE_KEY = 'iii::ide::scm-view-mode'
 
-export function readScmViewMode(key = STORAGE_KEY): ScmViewMode {
+/** The stored mode, else `fallback` (a list unless the view says otherwise). */
+export function readScmViewMode(key = STORAGE_KEY, fallback: ScmViewMode = 'list'): ScmViewMode {
   try {
-    return window.localStorage.getItem(key) === 'tree' ? 'tree' : 'list'
+    const stored = window.localStorage.getItem(key)
+    return stored === 'tree' || stored === 'list' ? stored : fallback
   } catch {
-    return 'list'
+    return fallback
   }
 }
 
 export function writeScmViewMode(mode: ScmViewMode, key = STORAGE_KEY): void {
   try {
     window.localStorage.setItem(key, mode)
+  } catch {
+    // Storage may be blocked; the live view can still switch.
+  }
+}
+
+const SHOW_UNVERSIONED_KEY = 'iii::ide::scm-show-unversioned'
+
+/** The Commit tab lists unversioned files unless the user hid them. */
+export function readScmShowUnversioned(key = SHOW_UNVERSIONED_KEY): boolean {
+  try {
+    return window.localStorage.getItem(key) !== 'false'
+  } catch {
+    return true
+  }
+}
+
+export function writeScmShowUnversioned(show: boolean, key = SHOW_UNVERSIONED_KEY): void {
+  try {
+    window.localStorage.setItem(key, String(show))
   } catch {
     // Storage may be blocked; the live view can still switch.
   }

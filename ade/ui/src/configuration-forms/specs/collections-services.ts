@@ -1,5 +1,6 @@
 import {
   filterList,
+  model,
   number,
   object,
   objectList,
@@ -555,7 +556,7 @@ export const serviceCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = 
   {
     id: 'shell',
     title: 'IDE',
-    description: 'Execution policy, environment, filesystem jail, code surface and turn history.',
+    description: 'Execution policy, environment, filesystem jail, code surface, turn history and commit messages.',
     sections: [
       {
         title: 'Execution',
@@ -644,6 +645,24 @@ export const serviceCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = 
           ]),
         ],
       },
+      {
+        title: 'Commit messages',
+        fields: [
+          object('commit_messages', 'Generate in the Commit panel', [
+            model('model', 'Model', "Empty uses the chat's default model.", {
+              thinkingKey: 'thinking',
+              thinkingDefault: 'low',
+              optional: true,
+            }),
+            text(
+              'instructions',
+              'Instructions',
+              'Added to the prompt on every Generate, e.g. “Use Conventional Commits”.',
+              { optional: true, multiline: true },
+            ),
+          ]),
+        ],
+      },
     ],
     expectedFields: [
       'max_timeout_ms',
@@ -678,6 +697,9 @@ export const serviceCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = 
       'code.search_response_budget_bytes',
       'turns.data_dir',
       'turns.max_blob_bytes',
+      'commit_messages.model',
+      'commit_messages.thinking',
+      'commit_messages.instructions',
     ],
   },
   {
