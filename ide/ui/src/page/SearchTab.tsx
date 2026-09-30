@@ -215,8 +215,21 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
     [host, root],
   )
 
-  // Search as you type. A fresh root clears the old answer. An ask costs
-  // judge calls, so it runs on Enter only.
+  // A new root orphans the answer and any search in flight: rows carry
+  // paths relative to the old root, and a click would open them in the
+  // new one. Text search re-runs below; an ask waits for Enter.
+  const shownRootRef = useRef(root)
+  useEffect(() => {
+    if (shownRootRef.current === root) return
+    shownRootRef.current = root
+    seqRef.current += 1
+    setResults(null)
+    setError(null)
+    setSearching(false)
+    setAskStartedAt(null)
+  }, [root])
+
+  // Search as you type. An ask costs judge calls, so it runs on Enter only.
   useEffect(() => {
     if (query.trim().length < MIN_AUTO_QUERY) {
       if (query.trim() === '')
@@ -238,7 +251,9 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
     const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - askStartedAt) / 1000)), 1000)
     return () => window.clearInterval(timer)
   }, [askStartedAt])
-  const searchingLabel = askStartedAt !== null ? `asking the judge… ${elapsed}s` : 'searching…'
+  // The live region says only start and finish; the ticking seconds sit
+  // beside it, hidden from screen readers.
+  const searchingLabel = askStartedAt !== null ? 'asking the judge…' : 'searching…'
 
   useEffect(() => {
     if (!request || request.seq === appliedRequestRef.current) return
@@ -476,7 +491,13 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
             aria-label="Search query"
             className="shui-search-query"
             onKeyDown={(event) => {
-              if (event.key === 'ArrowDown' && rows.length > 0) {
+              // Run here, not by implicit form submission: with the details
+              // open the form has three text fields and no submit button,
+              // so the browser's Enter-to-submit never fires.
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                event.preventDefault()
+                run({ query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore, ask })
+              } else if (event.key === 'ArrowDown' && rows.length > 0) {
                 event.preventDefault()
                 setFocusIndex(stepSearchRow(rows, -1, 1))
                 listRef.current?.focus()
@@ -533,15 +554,10 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
           >
             <Ellipsis aria-hidden />
           </button>
-          {summary !== null ? (
-            <span className="shui-search-summary" role="status">
-              {searching ? searchingLabel : summary}
-            </span>
-          ) : searching ? (
-            <span className="shui-search-summary" role="status">
-              {searchingLabel}
-            </span>
-          ) : null}
+          <span className="shui-search-summary">
+            <span role="status">{searching ? searchingLabel : (summary ?? '')}</span>
+            {askStartedAt !== null ? <span aria-hidden="true"> {elapsed}s</span> : null}
+          </span>
         </div>
         {detailsOpen ? (
           <div className="shui-search-details">
