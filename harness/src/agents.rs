@@ -422,6 +422,22 @@ pub(crate) async fn preload_contracts(
     Vec<String>,
     BTreeMap<String, Option<String>>,
 ) {
+    let (ordered, unavailable, digests, _) = lookup_contracts(deps, ids, policy).await;
+    (ordered, unavailable, digests)
+}
+
+/// [`preload_contracts`], plus the ids whose `engine::functions::info` batch
+/// failed: those read as unavailable too, though the engine never said so.
+pub(crate) async fn lookup_contracts(
+    deps: &Deps,
+    ids: &[String],
+    policy: &crate::policy::CompiledPolicy,
+) -> (
+    Vec<PreloadedContract>,
+    Vec<String>,
+    BTreeMap<String, Option<String>>,
+    Vec<String>,
+) {
     let snapshot = deps.functions().await;
     let mut contracts: HashMap<String, PreloadedContract> = HashMap::new();
     let mut pending: Vec<String> = Vec::new();
@@ -437,6 +453,7 @@ pub(crate) async fn preload_contracts(
         }
     }
     let cfg = deps.cfg().await;
+    let mut failed = Vec::new();
     for chunk in pending.chunks(INFO_BATCH_MAX) {
         let response = deps
             .iii
@@ -456,10 +473,13 @@ pub(crate) async fn preload_contracts(
                     }
                 }
             }
-            Err(error) => tracing::warn!(
-                %error,
-                "preloaded function contracts could not be fetched; those ids render as unavailable"
-            ),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "preloaded function contracts could not be fetched; those ids render as unavailable"
+                );
+                failed.extend(chunk.iter().cloned());
+            }
         }
     }
     let mut ordered = Vec::with_capacity(ids.len());
@@ -477,7 +497,7 @@ pub(crate) async fn preload_contracts(
             }
         }
     }
-    (ordered, unavailable, digests)
+    (ordered, unavailable, digests, failed)
 }
 
 /// The contracts one `engine::functions::info { function_ids }` batch

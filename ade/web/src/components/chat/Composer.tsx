@@ -61,7 +61,7 @@ import { useFileDrop } from './use-file-drop'
 
 const WIDE_TOOLBAR_QUERY = '(min-width: 640px)'
 
-/** The send chord spelled for this keyboard: ⌘↵ on a Mac, ctrl+↵ elsewhere. */
+/** The send key spelled for this keyboard: ↵ (Shift+↵ breaks the line). */
 function sendShortcutLabel(): string {
   const platform = shortcutPlatform()
   return formatBinding(SEND_BINDING, platform).join(

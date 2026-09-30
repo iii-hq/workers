@@ -80,8 +80,9 @@ stack; traces need the engine's OpenTelemetry export.
 
 ## Reactive triggers
 
-The console owns three trigger types. Two are the injectable-UI contract a
-worker binds to ship UI; the third is tab-internal.
+The console owns four trigger types. Two are the injectable-UI contract a
+worker binds to ship UI; the third is tab-internal; the fourth reports layout
+changes.
 
 - `console:script` — an ESM JavaScript asset. `config: { path }` is the
   identity (`<worker>/page.js`); the trigger's `function_id` is the worker's
@@ -89,6 +90,10 @@ worker binds to ship UI; the third is tab-internal.
 - `console:style` — a CSS asset with the same contract and a `.css` path.
 - `console:assets` — a tab's live-update subscription; the console registers
   it itself.
+- `console::workspace::changed` — fires after every workspace layout write
+  (`open`, `close`, a browser's own edit), and once when a binding registers.
+  Empty config, empty event: a page that watches the layout binds it and
+  re-reads `console::workspace::list`.
 
 Bind the first two once per asset at worker startup, after the content
 function is registered. Re-registering the same path with different bytes

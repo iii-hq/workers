@@ -3,15 +3,19 @@
  * model). Tabs live in the console worker's layout store
  * (`<data_dir>/workspace.json`, read and written through
  * `console::workspace::get` / `set` — `lib/workspace-layout.ts`), so the
- * layout follows the engine, and the query polls on an interval — a tab
- * created in another browser (or opened by an agent through
- * `console::workspace::open`) shows up here within seconds without a
- * reload.
+ * layout follows the engine. The console rings `console::workspace::changed`
+ * after every write and the query re-reads on the ring, so a tab created in
+ * another browser (or opened by an agent or an injected page through
+ * `console::workspace::open`) shows up here at once, without a reload. The
+ * console also rings every binding once when it registers, which catches this
+ * tab up after its first read and after each reconnect. The strip polls only
+ * until that first ring proves the binding live, and returning to the tab
+ * re-reads a stale copy.
  *
  * Every mutation applies OPTIMISTICALLY to the `['workspaceLayout']` cache
  * first (the strip must react to a close/create/rename in the same frame as
  * the click), then writes through the serialized read-modify-write funnel;
- * the next poll reconciles with whatever the server actually stored.
+ * the next read reconciles with whatever the server actually stored.
  *
  * When the console worker's store is unreachable (an older worker without
  * the functions, engine down), tabs degrade to localStorage so the strip
@@ -25,6 +29,7 @@ import {
   WORKSPACE_LAYOUT_QUERY_KEY,
   workspaceLayoutWriter,
 } from '@/hooks/lib/workspace-layout-writer'
+import { getIiiClient } from '@/lib/iii-client'
 import { moveItem } from '@/lib/reorder'
 import type { WorkspaceLayoutValue } from '@/lib/workspace-layout'
 import {
@@ -59,6 +64,13 @@ import {
 const LOCAL_KEY = 'iii-workspace-tabs'
 const SESSION_ACTIVE_KEY = 'iii-workspace-active'
 const POINTER_WRITE_DELAY_MS = 150
+/** Per-tab handler for `console::workspace::changed`; `client.on` appends
+ *  `::<browserId>`. The `iii::` prefix keeps the rings out of user-function
+ *  telemetry. */
+const WORKSPACE_CHANGED_FN = 'iii::console::workspace_changed'
+const WORKSPACE_POLL_MS = 5_000
+/** Backoff cap for re-binding the ring after a failed client bootstrap. */
+const RING_RETRY_MAX_MS = 30_000
 
 type LocalState = WorkspaceState
 
@@ -174,7 +186,8 @@ function persistLocal(state: LocalState): void {
 export interface UseWorkspaceTabsReturn {
   /** `pending` until the first server answer; then `server`, or `local`
       while the layout store is unreachable and `tabs` is the localStorage
-      copy. Flips `local` to `server` when a later poll succeeds. */
+      copy. Flips `local` to `server` once a later read succeeds (re-read
+      every 5 s while there is no server copy). */
   layoutSource: WorkspaceLayoutSource
   tabs: WorkspaceTab[]
   activeTabId: string
@@ -210,16 +223,70 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   const qc = useQueryClient()
   const writer = workspaceLayoutWriter(qc)
 
-  // refetchInterval keeps the strip reactive to writes from other
-  // browsers/tabs and from agents (`console::workspace::open`).
+  // Re-read on the ring below, not on a timer. The interval runs only until
+  // the first ring proves the binding live (a failed bootstrap, an older
+  // console) and while there is no server copy (the local fallback).
+  const [ringLive, setRingLive] = useState(false)
   const { data, isFetched } = useQuery<WorkspaceLayoutValue | null>({
     queryKey: WORKSPACE_LAYOUT_QUERY_KEY,
     queryFn: () => writer.readForQuery(),
     staleTime: 3_000,
-    refetchInterval: 5_000,
+    refetchInterval: (query) =>
+      ringLive && query.state.data != null ? false : WORKSPACE_POLL_MS,
     refetchOnWindowFocus: true,
     retry: 1,
   })
+
+  // Rung after every layout write, this tab's own included: an injected page
+  // (onboarding) opens a screen over the bus, not through `persist`. Invalidate,
+  // never set the pushed state. A read issued while local writes are pending
+  // keeps the optimistic value (`readForQuery`), so the ring re-reads once the
+  // queue has settled; writes queued after the ring rebase on the server copy.
+  useEffect(() => {
+    let cancelled = false
+    let retry: number | undefined
+    let offHandler: (() => void) | undefined
+    let offTrigger: (() => void) | undefined
+    const ring = () => {
+      setRingLive(true)
+      void writer
+        .whenIdle()
+        .then(() =>
+          qc.invalidateQueries({ queryKey: WORKSPACE_LAYOUT_QUERY_KEY }),
+        )
+    }
+    const bind = async (attempt: number) => {
+      try {
+        const client = await getIiiClient()
+        if (cancelled) return
+        offHandler = client.on(WORKSPACE_CHANGED_FN, ring)
+        offTrigger = client.registerTrigger({
+          type: 'console::workspace::changed',
+          function_id: `${WORKSPACE_CHANGED_FN}::${client.browserId}`,
+          config: {},
+        })
+      } catch {
+        offTrigger?.()
+        offHandler?.()
+        offTrigger = undefined
+        offHandler = undefined
+        // The client bootstrap can fail and later succeed (the layout query
+        // retries on its own); keep binding, the strip polls meanwhile.
+        if (cancelled) return
+        retry = window.setTimeout(
+          () => void bind(attempt + 1),
+          Math.min(RING_RETRY_MAX_MS, 1_000 * 2 ** attempt),
+        )
+      }
+    }
+    void bind(0)
+    return () => {
+      cancelled = true
+      window.clearTimeout(retry)
+      offTrigger?.()
+      offHandler?.()
+    }
+  }, [qc, writer])
   const available = data !== null && data !== undefined
   const layoutSource = workspaceLayoutSource(isFetched, available)
 

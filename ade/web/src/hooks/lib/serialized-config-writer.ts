@@ -17,6 +17,8 @@ export interface SerializedConfigWriterOptions {
   readCached: () => SerializedValue | null | undefined
   publish: (value: SerializedValue) => void
   cancelReads?: () => void
+  /** A write failed and the cache still shows its optimistic value. */
+  onCommitError?: () => void
 }
 
 /**
@@ -103,9 +105,10 @@ export class SerializedConfigWriter {
       this.removePending(entry.revision)
       this.settledRevision = entry.revision
       this.options.cancelReads?.()
-      // Preserve the existing best-effort behavior on failure. A later
-      // queued write still fetches fresh remote state; otherwise the next
-      // successful poll reconciles the optimistic cache.
+      // A later queued write still fetches fresh remote state. Otherwise the
+      // owner re-reads (`onCommitError`), or its next refresh reconciles the
+      // optimistic cache.
+      this.options.onCommitError?.()
     }
   }
 

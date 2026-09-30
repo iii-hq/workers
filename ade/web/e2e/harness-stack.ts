@@ -67,6 +67,8 @@ export interface HarnessStack {
   ready: ReadyManifest
   consoleUrl: string
   trigger(): Promise<unknown>
+  /** Call any engine function, the way an agent or another worker would. */
+  invoke(functionId: string, payload: Record<string, unknown>): Promise<unknown>
   waitForTurnCompleted(): Promise<TurnCompletedEvent>
   finish(): Promise<PlaygroundResult>
 }
@@ -273,6 +275,8 @@ export const test = base.extend<FixtureValues>({
             function_id: 'harness::send',
             payload: manifest.send,
           }),
+        invoke: (functionId, payload) =>
+          connectedSdk.trigger({ function_id: functionId, payload }),
         waitForTurnCompleted: () => armCompletion(connectedSdk, manifest),
         finish,
       }

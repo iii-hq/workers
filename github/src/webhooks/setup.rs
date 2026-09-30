@@ -90,6 +90,17 @@ pub struct ListenerProbe {
     pub status: Option<Value>,
 }
 
+/// Why the http worker's listener could not be inspected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HttpProbeFailure {
+    /// Compose confirms that this project does not declare http.
+    NotInstalled,
+    /// http is declared but a transient dependency call failed.
+    NotResponding(String),
+    /// Neither the function catalog nor Compose could establish its presence.
+    Unconfirmed(String),
+}
+
 fn host_port(listener: &Value) -> (String, u64) {
     (
         listener["host"].as_str().unwrap_or("127.0.0.1").to_owned(),
@@ -159,7 +170,7 @@ pub fn function_missing(e: &Failure) -> bool {
 /// Build the three checks from what the workers answered. Pure for tests.
 pub fn evaluate(
     tunnel: &std::result::Result<Value, TunnelProbe>,
-    listener: &std::result::Result<Option<ListenerProbe>, String>,
+    listener: &std::result::Result<Option<ListenerProbe>, HttpProbeFailure>,
 ) -> Vec<SetupCheck> {
     let quick = match tunnel {
         Ok(_) => check(
@@ -328,11 +339,28 @@ pub fn evaluate(
                 command: "compose::update { worker: \"http\" }".into(),
             }),
         ),
-        Err(e) => check(
+        Err(HttpProbeFailure::NotInstalled) => check(
+            "http_listener",
+            "http webhook listener",
+            CheckState::Missing,
+            "The http worker is not installed in this project.".into(),
+            Some(SetupFix::InstallWorker {
+                worker: "http".into(),
+                command: "compose::add { worker: \"http\" }".into(),
+            }),
+        ),
+        Err(HttpProbeFailure::NotResponding(error)) => check(
             "http_listener",
             "http webhook listener",
             CheckState::Unknown,
-            format!("http configuration unavailable: {e}"),
+            format!("http is installed but its configuration could not be checked: {error}"),
+            None,
+        ),
+        Err(HttpProbeFailure::Unconfirmed(error)) => check(
+            "http_listener",
+            "http webhook listener",
+            CheckState::Unknown,
+            format!("http is not registered, and compose could not confirm whether it is installed: {error}"),
             None,
         ),
     };
@@ -355,9 +383,9 @@ pub fn blockers(checks: &[SetupCheck]) -> Option<String> {
 }
 
 impl Service {
-    /// Whether compose declares quick-tunnel: Some(declared) when compose
+    /// Whether compose declares a worker: Some(declared) when compose
     /// answered, None when it could not be asked (never proof of absence).
-    async fn quick_tunnel_declared(&self) -> Option<bool> {
+    async fn worker_declared(&self, worker: &str) -> Option<bool> {
         let env = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
         let (payload, namespace) = compose_status_route(
             env("III_COMPOSE_NAMESPACE").as_deref(),
@@ -368,11 +396,14 @@ impl Service {
             .await
             .ok()?;
         let containers = status["containers"].as_array()?;
-        Some(
-            containers
-                .iter()
-                .any(|c| c["container"] == QUICK_TUNNEL_WORKER),
-        )
+        Some(containers.iter().any(|c| c["container"] == worker))
+    }
+
+    /// Configuration is a shared engine service registered in `default`, not
+    /// in this project's worker namespace.
+    async fn invoke_configuration(&self, function_id: &str, payload: Value) -> Result<Value> {
+        self.invoke_target(function_id, payload, Some("default"), None)
+            .await
     }
 
     /// The http worker's configuration id and raw value; None when http
@@ -389,7 +420,7 @@ impl Service {
             Err(e) => return Err(e),
         };
         let got = self
-            .invoke("configuration::get", json!({"id": id, "raw": raw}))
+            .invoke_configuration("configuration::get", json!({"id": id, "raw": raw}))
             .await?;
         Ok(Some((id, got["value"].clone())))
     }
@@ -429,16 +460,30 @@ impl Service {
             .await
         {
             Ok(status) => Ok(status),
-            Err(e) if function_missing(&e) => Err(match self.quick_tunnel_declared().await {
-                Some(true) => TunnelProbe::NotResponding(
-                    "declared in compose but not answering (restarting or stopped)".into(),
-                ),
-                Some(false) => TunnelProbe::NotInstalled,
-                None => TunnelProbe::Unconfirmed,
-            }),
+            Err(e) if function_missing(&e) => {
+                Err(match self.worker_declared(QUICK_TUNNEL_WORKER).await {
+                    Some(true) => TunnelProbe::NotResponding(
+                        "declared in compose but not answering (restarting or stopped)".into(),
+                    ),
+                    Some(false) => TunnelProbe::NotInstalled,
+                    None => TunnelProbe::Unconfirmed,
+                })
+            }
             Err(e) => Err(TunnelProbe::NotResponding(e.to_string())),
         };
-        let listener = self.listener_probe().await.map_err(|e| e.to_string());
+        let listener = match self.listener_probe().await {
+            Ok(Some(probe)) => Ok(Some(probe)),
+            // A missing http capability means "outdated" only when Compose
+            // confirms that the worker is declared; absence offers install.
+            Ok(None) => match self.worker_declared("http").await {
+                Some(true) => Ok(None),
+                Some(false) => Err(HttpProbeFailure::NotInstalled),
+                None => Err(HttpProbeFailure::Unconfirmed(
+                    "compose::status was unavailable".into(),
+                )),
+            },
+            Err(error) => Err(HttpProbeFailure::NotResponding(error.to_string())),
+        };
         let checks = evaluate(&tunnel, &listener);
         let active = self.store.is_some();
         Ok(SetupStatus {
@@ -496,7 +541,7 @@ impl Service {
             ));
         }
         value["webhook_listener"] = json!({ "host": host, "port": port });
-        self.invoke("configuration::set", json!({"id": id, "value": value}))
+        self.invoke_configuration("configuration::set", json!({"id": id, "value": value}))
             .await?;
         // http applies the change asynchronously: wait (bounded) until the
         // requested listener is bound or http reports why it is not.
@@ -529,7 +574,7 @@ impl Service {
         }
         let id = crate::configuration::config_id();
         let got = self
-            .invoke("configuration::get", json!({"id": id, "raw": true}))
+            .invoke_configuration("configuration::get", json!({"id": id, "raw": true}))
             .await?;
         let mut value = got["value"].clone();
         if !value.is_object() {
@@ -539,7 +584,7 @@ impl Service {
             value["webhooks"] = json!({});
         }
         value["webhooks"]["enabled"] = json!(req.enabled);
-        self.invoke("configuration::set", json!({"id": id, "value": value}))
+        self.invoke_configuration("configuration::set", json!({"id": id, "value": value}))
             .await?;
         // The live cell refreshes from the configuration trigger; report the
         // value just written so the caller knows a restart is due.

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
+    "test": "vitest run src/page/WebhookSetup.test.tsx",
     "watch": "node build.mjs --watch"
   },
   "dependencies": {
@@ -18,6 +19,7 @@
     "lucide-react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

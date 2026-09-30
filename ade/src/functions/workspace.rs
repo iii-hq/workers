@@ -2,9 +2,10 @@
 //! the bus, plus the `get`/`set` pair the SPA persists the strip through.
 //!
 //! The workspace layout (tabs, columns, screens, active pointer) is
-//! server-persisted in `<data_dir>/workspace.json` ([`WorkspaceStore`]) and
-//! polled by every connected browser, so a caller that writes it is showing
-//! the human something next to the conversation. It is ephemeral per-instance
+//! server-persisted in `<data_dir>/workspace.json` ([`WorkspaceStore`]). Every
+//! write rings `console::workspace::changed`, which each connected browser
+//! binds to re-read at once, so a caller that writes it is showing the human
+//! something next to the conversation. It is ephemeral per-instance
 //! state — deliberately NOT part of the `console` configuration entry, whose
 //! YAML is meant to be committed. These functions wrap the read-modify-write
 //! with the same placement rules the SPA uses (`web/src/lib/workspace-tabs.ts`);
@@ -18,14 +19,19 @@
 //!   "activeTabId": "tab-…", "activatedAt": 1710000000000, "activatedBy": "browser" }
 //! ```
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
+use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::protocol::{TriggerRequest, TriggerRequestWithMetadata};
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{IIIClient, RegisterFunction, RegisterTriggerType, TriggerAction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use tokio::sync::mpsc;
 
 use crate::workspace_store::WorkspaceStore;
 
@@ -39,6 +45,10 @@ const CODE_INVALID_SCREEN: &str = "WORKSPACE_INVALID_SCREEN";
 const CODE_INVALID_SIZES: &str = "WORKSPACE_INVALID_SIZES";
 const CODE_INVALID_LAYOUT: &str = "WORKSPACE_INVALID_LAYOUT";
 const CODE_UNAVAILABLE: &str = "WORKSPACE_UNAVAILABLE";
+
+/// Rung after every layout write; the event is empty, re-read with `list`.
+pub const CHANGED_TRIGGER: &str = "console::workspace::changed";
+const RING_GAP: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Tab {
@@ -787,7 +797,134 @@ pub struct SetOutput {
     pub ok: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChangedSpec {}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ChangedEvent {}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Binding {
+    function_id: String,
+    namespace: Option<String>,
+}
+
+type Bindings = Arc<RwLock<HashMap<String, Binding>>>;
+
+/// The map mirrors the engine's register/unregister callbacks. They reach this
+/// handler in arrival order (the SDK's connection runtime is single-threaded
+/// and FIFO) and are applied without an `.await`; one before the map write
+/// would let a reattach's unregister/register pair land out of order.
+///
+/// ponytail: a binding whose unregister never arrives (engine restart) stays
+/// until the console restarts, and every ring to it logs "function not found"
+/// engine-side. Ring with a short awaited timeout and prune on that error if
+/// the log ever matters.
+struct ChangedHandler {
+    bindings: Bindings,
+    /// Every binding is rung once as soon as it is live: a browser's first read
+    /// raced its registration, and a re-registration after a reconnect missed
+    /// whatever was written while the socket was down.
+    joined: mpsc::UnboundedSender<Binding>,
+}
+
+#[async_trait]
+impl TriggerHandler for ChangedHandler {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        serde_json::from_value::<ChangedSpec>(config.config.clone()).map_err(|error| {
+            Error::Handler(format!(
+                "{CHANGED_TRIGGER} config must be an empty object: {error}"
+            ))
+        })?;
+        let binding = Binding {
+            function_id: config.function_id,
+            namespace: config.namespace,
+        };
+        self.bindings
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(config.id, binding.clone());
+        let _ = self.joined.send(binding);
+        Ok(())
+    }
+
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        self.bindings
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&config.id);
+        Ok(())
+    }
+}
+
+/// Ring every `console::workspace::changed` binding after each store write:
+/// browsers do not poll the layout, they re-read it on the ring. The writer's
+/// own tab is rung too: an injected page (onboarding) calling `open` over the
+/// bus is the tab that has to show the result.
+fn register_changed(iii: &Arc<IIIClient>, store: &WorkspaceStore) {
+    let bindings = Bindings::default();
+    let (joined, mut joined_rx) = mpsc::unbounded_channel();
+    let _ = iii.register_trigger_type(
+        RegisterTriggerType::new(
+            CHANGED_TRIGGER,
+            "Fires after every change to the console workspace layout: open, close, or a \
+             browser's own edit, and once when a binding registers. Bind with an empty \
+             config. The event is empty; re-read the layout with console::workspace::list.",
+            ChangedHandler {
+                bindings: bindings.clone(),
+                joined,
+            },
+        )
+        .trigger_request_format::<ChangedSpec>()
+        .call_request_format::<ChangedEvent>(),
+    );
+    let joined_iii = iii.clone();
+    tokio::spawn(async move {
+        while let Some(target) = joined_rx.recv().await {
+            ring(&joined_iii, target).await;
+        }
+    });
+    // Subscribed before the task starts, so no save slips between the two.
+    let mut changed = store.subscribe();
+    let iii = iii.clone();
+    tokio::spawn(async move {
+        while changed.changed().await.is_ok() {
+            let targets: Vec<Binding> = bindings
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .values()
+                .cloned()
+                .collect();
+            for target in targets {
+                ring(&iii, target).await;
+            }
+            // ponytail: a fixed gap bounds a burst (the divider writes on every
+            // keydown) to ~10 rings/s per browser; the watch channel still rings
+            // once more after the burst ends.
+            tokio::time::sleep(RING_GAP).await;
+        }
+    });
+}
+
+async fn ring(iii: &IIIClient, target: Binding) {
+    let request = TriggerRequest {
+        function_id: target.function_id.clone(),
+        payload: json!({}),
+        action: Some(TriggerAction::Void),
+        timeout_ms: None,
+    };
+    let request: TriggerRequestWithMetadata = match target.namespace {
+        Some(namespace) => request.namespace(namespace),
+        None => request.into(),
+    };
+    if let Err(error) = iii.trigger(request).await {
+        tracing::debug!(function_id = %target.function_id, %error, "workspace ring failed");
+    }
+}
+
 pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
+    register_changed(iii, &store);
     let workspace = store.clone();
     iii.register_function(
         "console::workspace::get",
@@ -1445,5 +1582,49 @@ mod tests {
         );
         assert!(doc.get("workspace").is_none());
         let _ = std::fs::remove_dir_all(store.dir().await);
+    }
+
+    fn changed_binding(id: &str, config: Value) -> TriggerConfig {
+        TriggerConfig {
+            id: id.to_string(),
+            function_id: format!("iii::console::workspace_changed::{id}"),
+            config,
+            metadata: None,
+            namespace: Some("my-project".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_new_binding_is_rung_once_and_a_bad_config_is_refused() {
+        let (joined, mut joined_rx) = mpsc::unbounded_channel();
+        let handler = ChangedHandler {
+            bindings: Bindings::default(),
+            joined,
+        };
+
+        handler
+            .register_trigger(changed_binding("tab", json!({})))
+            .await
+            .unwrap();
+        assert_eq!(
+            joined_rx.try_recv().unwrap(),
+            Binding {
+                function_id: "iii::console::workspace_changed::tab".to_string(),
+                namespace: Some("my-project".to_string()),
+            }
+        );
+        assert!(handler.bindings.read().unwrap().contains_key("tab"));
+
+        assert!(handler
+            .register_trigger(changed_binding("bad", json!({ "screen": "traces" })))
+            .await
+            .is_err());
+        // The engine's unregister carries only the id.
+        handler
+            .unregister_trigger(changed_binding("tab", Value::Null))
+            .await
+            .unwrap();
+        assert!(handler.bindings.read().unwrap().is_empty());
+        assert!(joined_rx.try_recv().is_err());
     }
 }

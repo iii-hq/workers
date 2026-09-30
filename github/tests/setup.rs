@@ -1,6 +1,6 @@
 use github::webhooks::setup::{
-    blockers, compose_status_route, evaluate, function_missing, CheckState, ListenerProbe,
-    SetupFix, TunnelProbe, CLOUDFLARED_INSTALL_URL, DEFAULT_LISTENER_PORT,
+    blockers, compose_status_route, evaluate, function_missing, CheckState, HttpProbeFailure,
+    ListenerProbe, SetupFix, TunnelProbe, CLOUDFLARED_INSTALL_URL, DEFAULT_LISTENER_PORT,
 };
 use github::webhooks::Failure;
 use serde_json::{json, Value};
@@ -11,10 +11,10 @@ fn tunnel_with(cloudflared: Value) -> Result<Value, TunnelProbe> {
 fn probe(
     configured: Option<Value>,
     status: Option<Value>,
-) -> Result<Option<ListenerProbe>, String> {
+) -> Result<Option<ListenerProbe>, HttpProbeFailure> {
     Ok(Some(ListenerProbe { configured, status }))
 }
-fn listener_on() -> Result<Option<ListenerProbe>, String> {
+fn listener_on() -> Result<Option<ListenerProbe>, HttpProbeFailure> {
     probe(
         Some(json!({"host": "127.0.0.1", "port": 3112})),
         Some(json!({"applied": {"host": "127.0.0.1", "port": 3112}, "last_reload_error": null})),
@@ -107,10 +107,30 @@ fn listener_off_offers_enable_and_old_workers_are_unknown_not_blocking() {
     // Transient errors are unknown too, and never refuse a watch.
     let checks = evaluate(
         &Err(TunnelProbe::NotResponding("timeout".into())),
-        &Err("timeout".into()),
+        &Err(HttpProbeFailure::NotResponding("timeout".into())),
     );
     assert_eq!(states(&checks), [CheckState::Unknown; 3]);
     assert!(blockers(&checks).is_none());
+}
+
+#[test]
+fn missing_http_offers_install_while_declared_old_http_offers_update() {
+    let tunnel = tunnel_with(json!({"found": true}));
+    let missing = evaluate(&tunnel, &Err(HttpProbeFailure::NotInstalled));
+    assert_eq!(missing[2].state, CheckState::Missing);
+    assert!(matches!(
+        &missing[2].fix,
+        Some(SetupFix::InstallWorker { worker, command })
+            if worker == "http" && command.contains("compose::add")
+    ));
+
+    let outdated = evaluate(&tunnel, &Ok(None));
+    assert_eq!(outdated[2].state, CheckState::Unknown);
+    assert!(matches!(
+        &outdated[2].fix,
+        Some(SetupFix::UpdateWorker { worker, command })
+            if worker == "http" && command.contains("compose::update")
+    ));
 }
 
 #[test]

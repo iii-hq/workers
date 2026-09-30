@@ -560,3 +560,52 @@
   flex: 1 1 240px;
   min-width: 0;
 }
+
+/* DialogContent is portalled, so its root repeats data-iii-ui="github". */
+[data-iii-ui="github"].gh-ui-webhooks__install-dialog {
+  container-type: inline-size;
+  max-width: 448px;
+}
+
+[data-iii-ui="github"] .gh-ui-webhooks__install-description {
+  margin-top: 8px;
+  color: var(--color-ink);
+  line-height: 1.5;
+}
+
+[data-iii-ui="github"] .gh-ui-webhooks__install-guide {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  gap: 4px;
+  margin-top: 12px;
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+[data-iii-ui="github"] .gh-ui-webhooks__install-guide svg {
+  width: 14px;
+  height: 14px;
+}
+
+[data-iii-ui="github"] .gh-ui-webhooks__install-check {
+  margin-top: 20px;
+}
+
+[data-iii-ui="github"] .gh-ui-webhooks__install-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+@container (max-width: 639px) {
+  [data-iii-ui="github"] .gh-ui-webhooks__install-actions {
+    flex-direction: column-reverse;
+  }
+
+  [data-iii-ui="github"] .gh-ui-webhooks__install-actions > * {
+    width: 100%;
+  }
+}

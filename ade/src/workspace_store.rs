@@ -10,13 +10,15 @@
 //!
 //! The directory can be re-pointed live (`configuration:updated`); a new
 //! location that has no file yet simply starts from the default layout.
-//! Writes are atomic (temp file + rename) so a browser polling the file
+//! Writes are atomic (temp file + rename) so a browser re-reading the file
 //! through `console::workspace::get` never observes a half-written document.
+//! Every save and re-point bumps [`WorkspaceStore::subscribe`], which the
+//! `console::workspace::changed` trigger turns into a ring to each browser.
 
 use std::path::PathBuf;
 
 use serde_json::Value;
-use tokio::sync::{Mutex, MutexGuard, RwLock};
+use tokio::sync::{watch, Mutex, MutexGuard, RwLock};
 
 /// File name inside `data_dir` holding the layout document.
 pub const WORKSPACE_FILE: &str = "workspace.json";
@@ -33,6 +35,8 @@ pub struct WorkspaceStore {
     /// Serializes every read-modify-write of the document (SPA `set`,
     /// `open`, `close`) so two writers cannot interleave a stale copy.
     write_lock: Mutex<()>,
+    /// Bumped after every save and every re-point: what `get` returns changed.
+    changed: watch::Sender<()>,
 }
 
 impl WorkspaceStore {
@@ -41,6 +45,7 @@ impl WorkspaceStore {
         Self {
             dir: RwLock::new(dir),
             write_lock: Mutex::new(()),
+            changed: watch::Sender::new(()),
         }
     }
 
@@ -55,7 +60,13 @@ impl WorkspaceStore {
             return false;
         }
         *current = dir;
+        self.changed.send_replace(());
         true
+    }
+
+    /// Wakes after every save and every re-point.
+    pub fn subscribe(&self) -> watch::Receiver<()> {
+        self.changed.subscribe()
     }
 
     pub async fn path(&self) -> PathBuf {
@@ -133,6 +144,7 @@ impl WorkspaceStore {
                 path.display()
             ));
         }
+        self.changed.send_replace(());
         Ok(())
     }
 }
@@ -166,8 +178,10 @@ mod tests {
     async fn save_creates_the_directory_and_round_trips() {
         let dir = scratch_dir("roundtrip").join("nested");
         let store = WorkspaceStore::new(dir.clone());
+        let changed = store.subscribe();
         let doc = json!({ "tabs": [{ "id": "a", "screens": ["chat"] }], "activeTabId": "a" });
         store.save(&doc).await.unwrap();
+        assert!(changed.has_changed().unwrap());
         assert!(store.exists().await);
         assert_eq!(store.path().await, dir.join(WORKSPACE_FILE));
         assert_eq!(store.load().await.unwrap(), Some(doc));
@@ -205,8 +219,11 @@ mod tests {
             .save(&json!({ "tabs": [], "activeTabId": "one" }))
             .await
             .unwrap();
+        let changed = store.subscribe();
         assert!(!store.set_dir(first.clone()).await);
+        assert!(!changed.has_changed().unwrap());
         assert!(store.set_dir(second.clone()).await);
+        assert!(changed.has_changed().unwrap());
         assert_eq!(store.dir().await, second);
         // The new location starts empty; the old file is untouched.
         assert_eq!(store.load().await.unwrap(), None);

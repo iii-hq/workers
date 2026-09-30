@@ -65,7 +65,7 @@ const LIST_LINE = /^( *)(?:([-*+])|(\d{1,9})\.) (.*)$/
  */
 const INLINE_CODE_SPAN = /(`+)((?:(?!\1)[^\n])+?)\1(?!`)/g
 
-/** A paragraph holding only an opening fence — Enter turns it into a block. */
+/** A paragraph holding only an opening fence — Shift+Enter turns it into a block. */
 export const FENCE_ONLY_LINE = FENCE_OPEN
 
 /** The line breaks or the markup that make a paste worth reading as markdown. */
