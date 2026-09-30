@@ -195,6 +195,23 @@ A screen is `chat`, `chat:<session-id>`, `traces`, `workers`, or `ext:<page-id>`
 
 Defined in [`src/functions/status.rs`](src/functions/status.rs) and [`src/functions/workspace.rs`](src/functions/workspace.rs); the file store is [`src/workspace_store.rs`](src/workspace_store.rs).
 
+### Workers screen and the compose project
+
+The `workers` screen lists every worker the compose daemon runs, grouped into what needs attention, registry packages and local-path workers, plus the workers connected to the engine outside compose. A container opens on its followed log (`compose::logs`), its Source (pin another registry version through `compose::update`, or point a local worker at another checkout), its Settings (run script, `start_after`, environment, `config_override`) and, while connected, the functions it registered. The project view shows the start order, which packages have newer releases, the compose file and the daemon; **Add worker** declares one from the registry or a local directory. Lifecycle is the daemon's own `compose::*` functions; `add`, `update` and `remove` run as compose operations the page follows with `compose::operation`.
+
+The console adds what the daemon does not expose, read from the compose file and this host (the console runs beside the daemon):
+
+| Function | Input | Output |
+|---|---|---|
+| `console::compose::project` | `{ file? }` | The compose file as declared: namespace, engine endpoint, timeouts, each container's source, version, `start_after`, environment keys and run script |
+| `console::compose::versions` | `{ container? , name?, file? }` | `{ container, reference, declared, versions: [{ version, tags, created_at }] }` from the registry, newest first |
+| `console::compose::search` | `{ query }` | `{ workers: [{ name, version, description, dependencies }] }`; engine workers are left out |
+| `console::compose::inspect` | `{ path, run? }` | `{ path, exists, manifest, run_found, checkouts, workers }`: a directory's `iii.worker.yaml`, whether a relative run command is built, other git checkouts, or the workers inside a folder |
+| `console::compose::container` | `{ container, file? }` | One declaration; literal values whose names look like credentials are masked |
+| `console::compose::edit` | `{ container, worker?, run?, start_after?, environment?: { set, unset }, config_override?, file? }` | The accepted `compose::add` operation. The change merges with the declared entry, so masked values keep their file values; a new path must keep the container's name |
+
+`console::compose::changed` fires when the daemon writes `state.json` or the compose file changes (bind with an empty config; the event carries `kind`, `file`, `namespace`, `state_dir`, `path`, `captured_at`). Defined in [`src/compose/`](src/compose/).
+
 ## Architecture
 
 ```mermaid

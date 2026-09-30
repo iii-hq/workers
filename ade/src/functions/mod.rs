@@ -45,8 +45,9 @@ pub fn register_all(
     workspace::register(iii, workspace);
     subscribe::register(iii);
     crate::conversations::register(iii);
+    crate::compose::register(iii);
     tracing::info!(
-        "registered console::status, console::ui-manifest, console::subscribe, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{get,set,list,open,close}}, console::conversations::* and the console::workspace::changed trigger type"
+        "registered console::status, console::ui-manifest, console::subscribe, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{get,set,list,open,close}}, console::conversations::*, console::compose::*, and the console::workspace::changed and console::compose::changed trigger types"
     );
 }
 

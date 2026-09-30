@@ -15,19 +15,6 @@ const STOP_REASON = {
   notRunning: 'worker is not running',
 } as const
 
-export interface ComposeSummary {
-  namespace: string | null
-  file: string | null
-  daemonPid: number | null
-  ready: number
-  total: number
-}
-
-export interface WorkersView {
-  rows: WorkerRow[]
-  compose: ComposeSummary | null
-}
-
 function supervisorMap(entries: WorkerEntry[]): Map<string, WorkerEntry> {
   const map = new Map<string, WorkerEntry>()
   for (const entry of entries) {
@@ -181,20 +168,6 @@ function syntheticComposeRow(container: ComposeContainer): WorkerRow {
   }
 }
 
-export function summarizeCompose(
-  compose: RawWorkersSnapshot['compose'],
-): ComposeSummary | null {
-  if (!compose) return null
-  const containers = compose.containers
-  return {
-    namespace: compose.namespace ?? null,
-    file: compose.file ?? null,
-    daemonPid: compose.daemon_pid ?? null,
-    ready: containers.filter((c) => c.state === 'ready').length,
-    total: containers.length,
-  }
-}
-
 /** Merge engine catalogue, supervisor list, and compose status into table rows. */
 export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
   const supervisors = supervisorMap(snapshot.supervisorWorkers)
@@ -229,20 +202,4 @@ export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
 
   rows.sort((a, b) => a.name.localeCompare(b.name))
   return rows
-}
-
-export function mergeWorkersView(snapshot: RawWorkersSnapshot): WorkersView {
-  return {
-    rows: mergeWorkers(snapshot),
-    compose: summarizeCompose(snapshot.compose),
-  }
-}
-
-export async function fetchWorkersView(): Promise<WorkersView> {
-  const { fetchRawWorkersSnapshot } = await import('../api/workers')
-  return mergeWorkersView(await fetchRawWorkersSnapshot())
-}
-
-export async function fetchMergedWorkers(): Promise<WorkerRow[]> {
-  return (await fetchWorkersView()).rows
 }

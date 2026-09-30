@@ -175,7 +175,7 @@ impl TriggerHandler for ChangedTriggerHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         serde_json::from_value::<ChangedTriggerSpec>(config.config.clone()).map_err(|error| {
             Error::Handler(format!(
-                "compose-ui::changed config must be an empty object: {error}"
+                "console::compose::changed config must be an empty object: {error}"
             ))
         })?;
         self.bindings

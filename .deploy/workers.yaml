@@ -279,45 +279,6 @@ workers:
       binary: codex
       targets: *id001
     publish: true
-  compose-ui:
-    source:
-      path: compose-ui
-      package_manifest: Cargo.toml
-    artifact:
-      kind: rust-binary
-      toolchain:
-        name: rust
-        version: 1.97.1
-      binary: compose-ui
-      targets:
-      - aarch64-apple-darwin
-      - x86_64-apple-darwin
-      - x86_64-unknown-linux-gnu
-      - x86_64-unknown-linux-musl
-      - aarch64-unknown-linux-gnu
-      - armv7-unknown-linux-gnueabihf
-      windows_exception: not published to the Registry yet; no Windows build to restore
-      frontends:
-      - workspace_root: .
-        source_path: compose-ui/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
-    publish: true
   computer:
     source:
       path: computer

@@ -2,6 +2,7 @@
 //! sibling crates that want to embed parts of the worker.
 
 pub mod assets;
+pub mod compose;
 pub mod config;
 pub mod configuration;
 pub mod conversations;

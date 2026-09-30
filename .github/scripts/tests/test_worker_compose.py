@@ -205,7 +205,6 @@ def test_every_rust_worker_ships_windows_or_justifies_its_absence():
     # before the cutover. New Unix-only workers must declare a reviewed exception.
     assert without_windows == {
         "acp",
-        "compose-ui",
         "code-runner",
         "context-manager",
         "lsp",

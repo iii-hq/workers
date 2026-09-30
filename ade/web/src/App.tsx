@@ -1619,7 +1619,16 @@ function ScreenBody({
     )
   }
   if (screen === 'workers')
-    return <Workers onRequestClose={onClose} commands={commands} />
+    return (
+      <Workers
+        onRequestClose={onClose}
+        commands={commands}
+        panelSide={panelSide}
+        tabId={tabId}
+        paneId={paneId}
+        setDirty={setDirty}
+      />
+    )
   return <TracesV2 onRequestClose={onClose} commands={commands} />
 }
 

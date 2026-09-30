@@ -10,10 +10,8 @@ import {
   type WorkerListResponse,
   workerListResponseSchema,
 } from '@/components/chat/worker/parsers'
-import { errText } from '@/lib/errors'
 import { functionRegistered } from '@/lib/function-presence'
 import { getIiiClient } from '@/lib/iii-client'
-import type { ComposeAction } from '../types'
 
 export const WORKERS_RPC = {
   engineList: 'engine::workers::list',
@@ -21,14 +19,11 @@ export const WORKERS_RPC = {
   supervisorList: 'worker::list',
   supervisorStop: 'worker::stop',
   composeStatus: 'compose::status',
-  composeUp: 'compose::up',
-  composeDown: 'compose::down',
-  composeRestart: 'compose::restart',
 } as const
 
 export const composeContainerSchema = z.object({
   container: z.string(),
-  state: z.enum(['starting', 'ready', 'failed', 'stopped']),
+  state: z.enum(['starting', 'ready', 'restarting', 'failed', 'stopped']),
   owned: z.boolean().optional(),
   pid: z.number().nullable().optional(),
   last_error: z.string().nullable().optional(),
@@ -43,27 +38,6 @@ export const composeStatusSchema = z.object({
   containers: z.array(composeContainerSchema).default([]),
 })
 export type ComposeStatus = z.infer<typeof composeStatusSchema>
-
-const composeOpResultSchema = z.object({
-  status: z.string().optional(),
-  changed: z.boolean().optional(),
-  containers: z
-    .array(
-      z.object({
-        container: z.string(),
-        changed: z.boolean().optional(),
-        state: z.string().optional(),
-        error: z.unknown().optional(),
-      }),
-    )
-    .optional(),
-})
-
-const composeAnswerSchema = composeOpResultSchema.extend({
-  restarted: composeOpResultSchema.nullable().optional(),
-  up: composeOpResultSchema.nullable().optional(),
-  down: composeOpResultSchema.nullable().optional(),
-})
 
 export async function fetchEngineWorkersList(): Promise<WorkersListResponse> {
   const client = await getIiiClient()
@@ -112,35 +86,6 @@ export async function fetchComposeStatus(): Promise<ComposeStatus | null> {
 export async function stopSupervisorWorker(name: string): Promise<void> {
   const client = await getIiiClient()
   await client.trigger(WORKERS_RPC.supervisorStop, { name, yes: true })
-}
-
-const COMPOSE_FN: Record<ComposeAction, string> = {
-  start: WORKERS_RPC.composeUp,
-  stop: WORKERS_RPC.composeDown,
-  restart: WORKERS_RPC.composeRestart,
-}
-
-export async function composeContainerAction(
-  action: ComposeAction,
-  container: string,
-): Promise<void> {
-  const client = await getIiiClient()
-  const raw = await client.trigger<unknown>(
-    COMPOSE_FN[action],
-    { container },
-    { timeoutMs: 600_000 },
-  )
-  const answer = composeAnswerSchema.safeParse(raw)
-  if (!answer.success) return
-  const { restarted, up, down, ...top } = answer.data
-  const failures = [top, restarted, up, down]
-    .flatMap((result) => result?.containers ?? [])
-    .filter((entry) => entry.error)
-    .map((entry) => `${entry.container}: ${errText(entry.error)}`)
-  if (failures.length > 0) throw new Error(failures.join('\n'))
-  if (top.status === 'failed') {
-    throw new Error(`compose ${action} ${container} failed`)
-  }
 }
 
 export interface RawWorkersSnapshot {

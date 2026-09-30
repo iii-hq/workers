@@ -44,7 +44,6 @@ packages:
   - tailscale/ui
   - voice/ui
   - vscode/ui
-  - compose-ui/ui
   - kanban/ui
   - onboarding/ui
   - stories/ui

@@ -1,0 +1,258 @@
+import { describe, expect, it } from 'vitest'
+import type { ContainerEntry, DeclaredContainer } from './compose-api'
+import {
+  dependentsOf,
+  draftFrom,
+  entryShape,
+  entryYaml,
+  groupContainers,
+  MASK,
+  settingsPatch,
+  shortPath,
+  startWaves,
+  usualParent,
+} from './model'
+import type { WorkerRow } from './types'
+
+function declared(
+  name: string,
+  o: Partial<DeclaredContainer> = {},
+): DeclaredContainer {
+  return {
+    name,
+    source: 'path',
+    ref: `/home/me/workspaces/workers/${name}`,
+    version: null,
+    start_after: [],
+    environment: [],
+    run: null,
+    ...o,
+  }
+}
+
+const project = [
+  declared('state'),
+  declared('llm-router', { start_after: ['state'] }),
+  declared('provider-openai', { start_after: ['llm-router', 'state'] }),
+  declared('harness', { start_after: ['provider-openai', 'state', 'ghost'] }),
+  declared('database', {
+    source: 'package',
+    ref: 'api.workers.iii.dev/database',
+    version: '0.5.17',
+  }),
+  declared('harness-e2e', {
+    ref: '/home/me/.codex/worktrees/scenario-editorial/harness-e2e',
+  }),
+]
+const byName = new Map(project.map((d) => [d.name, d]))
+
+describe('groupContainers', () => {
+  const containers = [
+    { container: 'state', state: 'ready' },
+    { container: 'database', state: 'ready' },
+    {
+      container: 'provider-openai',
+      state: 'failed',
+      last_error: 'exited with status 101',
+    },
+    { container: 'harness-e2e', state: 'ready' },
+    { container: 'orphan', state: 'stopped' },
+  ]
+
+  it('puts failures first, then registry, local path and undeclared containers', () => {
+    const groups = groupContainers(containers, byName)
+    expect(groups.map((g) => [g.id, g.items.map((i) => i.name)])).toEqual([
+      ['attention', ['provider-openai']],
+      ['registry', ['database']],
+      ['path', ['state', 'harness-e2e']],
+      ['other', ['orphan']],
+    ])
+  })
+
+  it('describes each row by what tells it apart', () => {
+    const items = groupContainers(containers, byName).flatMap((g) => g.items)
+    const detail = Object.fromEntries(items.map((i) => [i.name, i.detail]))
+    expect(detail).toMatchObject({
+      'provider-openai': 'exited with status 101',
+      database: '0.5.17',
+      state: 'workers',
+      'harness-e2e': 'scenario-editorial',
+    })
+  })
+
+  it('lists engine workers compose does not run, and only those', () => {
+    const row = (name: string, o: Partial<WorkerRow>): WorkerRow => ({
+      id: name,
+      name,
+      runtime: 'node',
+      ipAddress: null,
+      version: '1.0.0',
+      pid: 7,
+      tag: null,
+      managementKind: 'standalone',
+      status: 'connected',
+      stopEnabled: false,
+      stopDisabledReason: null,
+      composeState: null,
+      lastError: null,
+      ...o,
+    })
+    const groups = groupContainers(containers, byName, '', [
+      row('database', { managementKind: 'compose' }),
+      row('by-hand', {}),
+      row('supervised', {
+        managementKind: 'supervisor',
+        status: 'stopped',
+        runtime: null,
+        version: null,
+      }),
+    ])
+    const outside = groups.find((g) => g.id === 'outside')
+    expect(outside?.items.map((i) => [i.name, i.state, i.detail])).toEqual([
+      ['by-hand', 'ready', 'standalone · node · 1.0.0'],
+      ['supervised', 'stopped', 'managed'],
+    ])
+  })
+
+  it('filters by name and drops empty groups', () => {
+    expect(
+      groupContainers(containers, byName, 'DATA').map((g) => g.id),
+    ).toEqual(['registry'])
+  })
+})
+
+describe('startWaves', () => {
+  it('orders containers by their deepest start_after, ignoring undeclared names', () => {
+    expect(startWaves(project)).toEqual([
+      ['state', 'database', 'harness-e2e'],
+      ['llm-router'],
+      ['provider-openai'],
+      ['harness'],
+    ])
+  })
+
+  it('survives a cycle instead of recursing forever', () => {
+    const cycle = [
+      declared('a', { start_after: ['b'] }),
+      declared('b', { start_after: ['a'] }),
+    ]
+    expect(startWaves(cycle).flat().sort()).toEqual(['a', 'b'])
+  })
+})
+
+describe('small helpers', () => {
+  it('lists dependents', () => {
+    expect(dependentsOf(project, 'state')).toEqual([
+      'llm-router',
+      'provider-openai',
+      'harness',
+    ])
+  })
+
+  it('shortens home directories', () => {
+    expect(shortPath('/home/me/workspaces/x')).toBe('~/workspaces/x')
+    expect(shortPath('/Users/me')).toBe('~')
+    expect(shortPath('/opt/x')).toBe('/opt/x')
+  })
+
+  it('finds the folder most local workers live in', () => {
+    expect(
+      usualParent(['/home/me/w/a', '/home/me/w/b', '/home/me/.codex/wt/c']),
+    ).toBe('/home/me/w')
+    expect(usualParent([])).toBeNull()
+  })
+})
+
+const entry: ContainerEntry = {
+  name: 'harness-e2e',
+  worker: 'path:///home/me/wt/harness-e2e',
+  version: null,
+  start_after: [],
+  env_file: ['.env'],
+  environment: [
+    { key: 'RUST_LOG', value: 'info', secret: false },
+    { key: 'OPENAI_API_KEY', value: null, secret: true },
+  ],
+  run: './target/debug/harness-e2e',
+  config_override: 'data_dir: ~/.iii/data/harness-e2e\n',
+}
+
+describe('settingsPatch', () => {
+  it('is empty until something changes', () => {
+    expect(settingsPatch(entry, draftFrom(entry))).toEqual({
+      patch: {},
+      changes: 0,
+    })
+  })
+
+  it('sends only the changed fields, never an untouched secret', () => {
+    const draft = draftFrom(entry)
+    draft.run = 'cargo run --locked --bin harness-e2e '
+    draft.startAfter = ['state']
+    draft.env[0].value = 'debug'
+    draft.env.push({
+      key: 'NEW',
+      value: '1',
+      secret: false,
+      replacing: false,
+      removed: false,
+      isNew: true,
+    })
+    expect(settingsPatch(entry, draft)).toEqual({
+      patch: {
+        run: 'cargo run --locked --bin harness-e2e',
+        start_after: ['state'],
+        environment: { set: { RUST_LOG: 'debug', NEW: '1' }, unset: [] },
+      },
+      changes: 4,
+    })
+  })
+
+  it('replaces a secret only once a new value is typed, and removes by key', () => {
+    const draft = draftFrom(entry)
+    draft.env[1].replacing = true
+    expect(settingsPatch(entry, draft).changes).toBe(0)
+    draft.env[1].value = 'sk-new'
+    draft.env[0].removed = true
+    expect(settingsPatch(entry, draft).patch.environment).toEqual({
+      set: { OPENAI_API_KEY: 'sk-new' },
+      unset: ['RUST_LOG'],
+    })
+  })
+})
+
+describe('entryYaml', () => {
+  it('renders the block and keeps secrets masked, even a replaced one', () => {
+    const draft = draftFrom(entry)
+    draft.env[1] = { ...draft.env[1], replacing: true, value: 'sk-new' }
+    const yaml = entryYaml(entryShape(entry, draft))
+    expect(yaml).toContain(`OPENAI_API_KEY: ${MASK}  # new value`)
+    expect(yaml).not.toContain('sk-new')
+    expect(entryYaml(entryShape(entry))).toBe(
+      [
+        '  harness-e2e:',
+        '    worker: path:///home/me/wt/harness-e2e',
+        '    env_file: [.env]',
+        '    config_override:',
+        '      data_dir: ~/.iii/data/harness-e2e',
+        '    environment:',
+        '      RUST_LOG: info',
+        `      OPENAI_API_KEY: ${MASK}`,
+        '    scripts:',
+        '      run: ./target/debug/harness-e2e',
+        '',
+      ].join('\n'),
+    )
+  })
+
+  it('quotes values YAML would read as something else', () => {
+    const yaml = entryYaml({
+      name: 'x',
+      worker: 'package://r/x',
+      version: '1.0',
+      env: [{ key: 'PORT', value: '3113' }],
+    })
+    expect(yaml).toContain('version: "1.0"')
+    expect(yaml).toContain('PORT: "3113"')
+  })
+})

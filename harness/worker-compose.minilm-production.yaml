@@ -62,9 +62,6 @@ containers:
   codex:
     worker: path://../codex
     scripts: { run: cargo run --locked --bin codex }
-  compose-ui:
-    worker: path://../compose-ui
-    scripts: { run: pnpm install --frozen-lockfile --ignore-workspace --ignore-scripts && pnpm build:bundle && node dist/bundle/index.mjs }
   cursor:
     worker: path://../cursor
     start_after: [state, llm-router]

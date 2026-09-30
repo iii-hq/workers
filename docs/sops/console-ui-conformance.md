@@ -80,7 +80,6 @@ permission to fork base hover, selection, tooltip, or selector behavior.
 | `canvas` | yes | Migrated: `formatRelative`/`errorMessage`/`unwrapEnvelope`, `lucide-react`, `useSplitDrag` on the editor/preview separator (keyboard resize), `usePaneState`, `StatusDot`, eyebrows, `uiClasses.pulse`; own `build.mjs` keeps the mermaid/excalidraw vendor bundles | Infinite canvas gestures and graph semantics |
 | `claude-code` | yes | Thin wrapper over the shared `@iii-workers/agent-terminal-ui` page (same page as `pi`); no local CSS | Agent terminal bound to a `shell::pty` session |
 | `code-runner` | yes | Migrated: `TerminalStream`, `MetaRow`/`Badge`/`Chip`/`Eyebrow`, `StatusPanel`, `Input`/`Checkbox` config form, `unwrapEnvelope`/`useCopyFlash`/`formatDuration` | Execution-result composition |
-| `compose-ui` | yes | Shared page chrome with `PageSidebar`, `ListItem`, `IconButton`, `Table` family, `Badge`/`Chip`/`StatusDot`, `EmptyState`/`Skeleton`, `TerminalStream`, `ConfirmDialog`; `lucide-react`, `uiClasses.spin`, `--shadow-floating`; topology edge `<svg>` allowlisted | Topology graph, project health stats, container table with log tails, worker package declaration, daemon projects table |
 | `computer` | yes | Migrated: `useContainerNarrow`, `useWorkerLive` for lifecycle events, `StatusDot`, `IconButton`, `StatusPanel`, `EmptyState`, `Skeleton`, `StatusBar`, `Eyebrow`, `lucide-react`; `useLiveFrames` stays local (stream-fed frames) | Remote-session viewport and controls |
 | `context-manager` | yes | Minimal shared renderer; no selectable navigation | Context accounting payload |
 | `cron` | yes | Shared page chrome with `PageSidebar`, `List`/`ListItem`, `Tabs`, `Table` family, `Select`/`SegmentedControl`, `IconButton`, `Dialog`/`DropdownMenu`, `RawValueInput`; `SearchField`, `lucide-react`, `uiClasses.spin`, `useContainerNarrow`, `copyText`/`errorMessage`, container queries | Schedule composer and run history |
@@ -137,7 +136,7 @@ owns; the registry refuses those at registration. See
 | Page | Commands (render time unless noted) | Keys | Palette source |
 |---|---|---|---|
 | chat (first-party) | focus composer, next / previous message, approve / deny the pending call, expand, copy, latest, switch model, stop, new chat, search conversations | `I`, `J` / `K`, `A` / `D`, `O`, `Y`, `End`, `M`, `Escape`, `N`, `/` | chats (built in) |
-| workers (first-party) | refresh, search, open Compose (when the compose-ui page is registered); start / stop / restart on compose-supervised rows | `R`, `/`, `C` | workers, functions (built in) |
+| workers (first-party) | refresh, add worker…, compose project, filter; start / stop / restart and remove per container, stop per supervised worker | `R`, `N`, `/` | workers, functions (built in) |
 | traces (first-party) | search, follow turns, clear filters, close detail | `/`, `F`, `Escape` | |
 | ide (page `ide`) | go to file…, search in files, show the explorer / source control / timeline, toggle the sidebar, toggle the terminal, next / previous tab, close the tab, reveal the active file, go to line…, go back / forward, next / previous change, compare the active file with…, new file…, toggle hidden files, toggle word wrap, revert the last turn; setup: open file…, open | `Ctrl+P` (Mac) / `Alt+P` (elsewhere, where `Ctrl+P` is the browser's Print), `` Ctrl+` ``, `Alt+←` / `Alt+→`, `Shift+Alt+←` / `Shift+Alt+→`, `Alt+Z` | files (`coder::search`, `#`) |
 | database | focus SQL, refresh, focus tables; setup: open | `S`, `R`, `/` | tables (`database::listTables`) |
@@ -153,7 +152,6 @@ owns; the registry refuses those at registration. See
 | computer | start, stop; setup: open | `N`, `X` | sessions (`computer::sessions::list`) |
 | worktree | refresh, close detail; setup: open | `R`, `Escape` | worktrees (`worktree::list`) |
 | tailscale | refresh, create link, copy link, open link, stop route, sections 1-7; setup: open | `R`, `N`, `C`, `O`, `X`, `1`-`7` | |
-| compose-ui (page `compose`) | refresh, filter containers, add worker…, validate compose file, sections 1-5 (Topology first); setup: open | `R`, `/`, `N`, `V`, `1`-`5` | containers (`compose::status`) |
 | ade catalog (functions, triggers) | search, toggle internal, refresh, run function; setup: open | `/`, `I`, `R`, `Mod+Enter` | functions (built in) |
 | eval | new evaluation, refresh history; setup: open, new evaluation… | `N`, `R` | evaluations (`api.list`) |
 | github | toggle live, refresh, close detail; setup: open | `L`, `R`, `Escape` | (PR / issue data not wired in the UI yet) |
