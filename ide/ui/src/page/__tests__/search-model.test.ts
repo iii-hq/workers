@@ -70,6 +70,13 @@ describe('groupContentMatches + rows', () => {
     expect(rows.map((r) => r.type)).toEqual(['file', 'file', 'match'])
     const open = flattenSearchRows(groups, [], new Set())
     expect(open.map((r) => r.type)).toEqual(['file', 'match', 'match', 'file', 'match'])
+    expect(open.map((r) => r.key)).toEqual([
+      'file:/r/src/a.ts',
+      'match:/r/src/a.ts:1:1',
+      'match:/r/src/a.ts:7:3',
+      'file:/r/b.md',
+      'match:/r/b.md:2:1',
+    ])
   })
 
   it('adds sections when both names and text matched', () => {
@@ -143,6 +150,22 @@ describe('relevantAsMatches', () => {
       [20, 'Store.load lines 20-40'],
       [50, 'lines 50-60'],
     ])
+  })
+
+  it('keys rows uniquely when an excerpt and a lead share a line', () => {
+    const out: FindRelevantResponse = {
+      status: 'complete',
+      files: [
+        file('/r/a.ts', {
+          excerpts: [{ line_from: 1, line_to: 3, text: 'function first() {' }],
+          leads: [{ name: 'first', line_from: 1, line_to: 3, score: 0.9 }],
+        }),
+      ],
+    }
+    const keys = flattenSearchRows(groupContentMatches(relevantAsMatches(out), '/r', noHighlight), [], new Set()).map(
+      (r) => r.key,
+    )
+    expect(keys).toEqual(['file:/r/a.ts', 'match:/r/a.ts:1:1', 'match:/r/a.ts:1:1#1'])
   })
 
   it('gives a file with neither excerpts nor leads one row at line 1', () => {

@@ -209,13 +209,16 @@ export type SearchRow =
   | { type: 'section'; key: string; label: string; count: number }
 
 /** The rows a virtual list renders: a section per kind, a header per
-    file with its matches indented beneath unless collapsed. */
+    file with its matches indented beneath unless collapsed. Keys are
+    unique: the judge's rows can share a line (an excerpt and a lead of
+    the same unit), so a repeated line:column gets a `#n` suffix. */
 export function flattenSearchRows(
   groups: readonly SearchFileGroup[],
   paths: readonly SearchPathRow[],
   collapsed: ReadonlySet<string>,
 ): SearchRow[] {
   const rows: SearchRow[] = []
+  const seen = new Map<string, number>()
   if (paths.length > 0) {
     rows.push({ type: 'section', key: 'section:paths', label: 'Files and folders', count: paths.length })
     for (const entry of paths) rows.push({ type: 'path', key: `path:${entry.path}`, entry })
@@ -229,12 +232,10 @@ export function flattenSearchRows(
     rows.push({ type: 'file', key: `file:${group.path}`, group, collapsed: isCollapsed })
     if (isCollapsed) continue
     for (const match of group.matches) {
-      rows.push({
-        type: 'match',
-        key: `match:${group.path}:${match.line}:${match.column}`,
-        group,
-        match,
-      })
+      const key = `match:${group.path}:${match.line}:${match.column}`
+      const repeat = seen.get(key) ?? 0
+      seen.set(key, repeat + 1)
+      rows.push({ type: 'match', key: repeat === 0 ? key : `${key}#${repeat}`, group, match })
     }
   }
   return rows
