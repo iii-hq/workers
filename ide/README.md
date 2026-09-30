@@ -193,6 +193,7 @@ fully unjailed, regardless of `fs.allow_unjailed`.
 | `coder::search` | Literal/regex content + path search with context lines, bounded by match/byte budgets. `respect_gitignore: true` skips what `.gitignore` hides; `fuzzy_paths: true` ranks path matches quick-open style, best first. |
 | `coder::list-folder` | Paginated single-folder listing. |
 | `coder::tree` | Recursive depth- and per-folder-bounded directory snapshot. |
+| `coder::find-relevant` | Judge-ranked discovery for behavioural questions (a port of [jevgrep](https://github.com/dzhng/jevgrep)): returns files best first with verbatim excerpts and line ranges. **Egress:** sends the query, root-relative paths and file text to the session's judge provider (`judge::evaluate`; hosted `judge-typesafe` by default), never protected, ignored, hidden or secret-looking files. Disable it with a `'!coder::find-relevant'` deny rule in `iii-permissions.yaml`, above its allow entry. See [below](#judge-ranked-discovery-coderfind-relevant). |
 | `coder::create-file` / `coder::update-file` / `coder::delete-file` / `coder::move` | Batched create, line/regex edits, delete, and atomic rename/move. |
 
 Roots come from `fs.host_roots` (with the cwd+`/tmp` fallback noted above);
@@ -214,6 +215,44 @@ out explicitly below:
 | `C221` | Optimistic whole-file save conflict: the file no longer matches `expected_revision`; no bytes were written. | n/a |
 
 No separate install: `iii trigger compose::add worker=ide` brings the whole surface.
+
+### Judge-ranked discovery (`coder::find-relevant`)
+
+`coder::find-relevant { query, path?, exclude_globs?, timeout_ms? }` walks
+`path` (default `.`) folder by folder, asking the judge jevgrep's yes/no
+relevance questions and descending only into what it admits, then picks
+excerpts from the admitted files. The judge is optional: the worker does
+not depend on it, and a missing or failing judge is a typed result, not an
+error.
+
+| `status` | Meaning |
+|---|---|
+| `complete` | Every admitted branch was explored. |
+| `incomplete` | Partial coverage: the deadline hit, a request failed or was too large, or a walk limit was reached. `issues` counts each kind and `reason` names a stop; narrow `path` and retry. |
+| `unavailable` | No judge answered (not deployed, no key, paused after a recent outage, or a context window under 8192 tokens). Use `coder::search`. |
+
+- **Budget.** `timeout_ms` (default 120000, max 280000, below the harness's
+  300 s dispatch timeout) bounds the whole ask; each judge call gets at most
+  20 s of it. Excerpts share a 128 KiB output budget; files past it keep
+  their locations and set `source_omitted`.
+- **Latency.** An ask makes one judge call per batch of folders, files or
+  declarations, so a whole-repo ask can take tens of seconds to minutes.
+  Point `path` at the subtree the question is about.
+- **Shared slots.** At most 3 judge calls are in flight across the whole
+  worker (every ask, every session). `judge-typesafe` serves 4 at a time,
+  and the spare one keeps the harness and `iii-directory` judge calls
+  responsive. An outage pauses calls to that provider for 30 s.
+- **What leaves the host.** Paths relative to `path`, never the host
+  layout. The walk skips `non_accessible_globs`, `fs.denylist_paths`,
+  gitignored and hidden entries, dependency and build folders
+  (`node_modules`, `vendor`, `target`, `dist`, …), secret-named files
+  (`.env`/`.env.*`, `id_rsa`-style keys, `credentials(.json)`,
+  `secrets.{json,yaml,yml}`, `.netrc`/`.npmrc`/`.pypirc`,
+  `*.pem`/`*.key`/`*.p12`/`*.pfx`), files holding a private key, and binary
+  or non-UTF-8 files. Tokens hard-coded in ordinary source files, and the
+  query itself, still go to the provider. To turn the function off, add
+  `'!coder::find-relevant'` to `iii-permissions.yaml` above its allow entry
+  (first match wins).
 
 ## Terminal sessions (`shell::pty::*`)
 

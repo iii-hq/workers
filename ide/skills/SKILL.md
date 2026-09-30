@@ -144,3 +144,17 @@ standalone worker) over the **same jail** (`fs.host_roots`): `coder::info`
 `coder::move`. Prefer these structured ops over editing files through
 `shell::exec`. They return `C2xx` error codes (distinct from `shell::*`'s
 `S2xx`); protected paths are the shared `code.non_accessible_globs`.
+
+To find where or how something works, ask `coder::find-relevant` with the
+question in plain words ("where does the harness stamp the filesystem scope
+on coder calls?"). It asks the judge which folders, files and declarations
+matter and returns files best first with verbatim excerpts and line ranges.
+Use `coder::search` instead for an exact symbol, string or filename. Read
+the returned excerpts, and `leads` via `coder::read-file`, before searching
+again. Set `path` to the narrowest folder that holds the answer: every
+level is a judge round trip, so a whole-repo ask can take minutes.
+`incomplete` means partial coverage (narrow `path` and retry);
+`unavailable` means no judge answered (fall back to `coder::search`). The
+query, root-relative paths and file text go to the session's judge
+provider, which may be hosted; protected, ignored, hidden and secret-looking
+files never do.
