@@ -35,6 +35,7 @@ use std::sync::Arc;
 use once_cell::sync::Lazy;
 use sha2::{Digest, Sha256};
 
+use super::passes;
 use super::prompts::{Declaration, DirectoryPreview, FilePreview, Kind, PreviewEntry, SourceRange};
 use super::units::{self, MAX_PARSE_BYTES};
 use crate::code::path::PathResolver;
@@ -422,8 +423,10 @@ fn utf16_prefix(text: &str, units: usize) -> &str {
 }
 
 /// retrieve.ts `previewFile`: the strict-UTF-8 opening bytes, shrunk until
-/// their JSON fits; a truncated source file also lists its declarations.
-pub fn preview_file(snapshot: &Snapshot) -> FilePreview {
+/// their JSON fits, or for a truncated Python file the `query`-aware
+/// sample ([`passes::python_preview`]); a truncated source file also lists
+/// its declarations.
+pub fn preview_file(snapshot: &Snapshot, query: &str) -> FilePreview {
     let bytes = snapshot.source.as_bytes();
     let head = &bytes[..bytes.len().min(PREVIEW_FILE_BYTES)];
     // The source is valid UTF-8, so only the cut can split a character.
@@ -437,7 +440,6 @@ pub fn preview_file(snapshot: &Snapshot) -> FilePreview {
         text = utf16_prefix(text, units * 3 / 4);
         truncated = true;
     }
-    // A later stage: the Python opening sampler (`pythonPreview`).
     let mut preview = FilePreview {
         size_bytes: bytes.len(),
         extension: extname(&snapshot.path).to_string(),
@@ -448,6 +450,19 @@ pub fn preview_file(snapshot: &Snapshot) -> FilePreview {
         declarations: Some(Vec::new()),
         declaration_index_truncated: Some(false),
     };
+    if truncated && units::is_python(&snapshot.path) && bytes.len() <= MAX_PARSE_BYTES {
+        let sampled =
+            passes::python_preview(&snapshot.source, query, PREVIEW_FILE_BYTES).filter(|text| {
+                !text.is_empty()
+                    && text.len() <= PREVIEW_FILE_BYTES
+                    && json_len(text.as_str()) <= PREVIEW_JSON_BYTES
+            });
+        if let Some(text) = sampled {
+            preview.preview_bytes = text.len();
+            preview.text = text;
+            preview.range = "sampled source ranges".into();
+        }
+    }
     if truncated && units::supported(&snapshot.path) && bytes.len() <= MAX_PARSE_BYTES {
         let syntax = units::inspect(
             &snapshot.path,
@@ -628,17 +643,17 @@ mod tests {
             source,
             content_hash: String::new(),
         };
-        let small = preview_file(&snapshot("fn a() {}\n".into()));
+        let small = preview_file(&snapshot("fn a() {}\n".into()), "");
         assert!(!small.truncated);
         assert_eq!(small.text, "fn a() {}\n");
         assert_eq!(small.extension, ".rs");
         // 16 KiB of quotes escapes to 32 KiB of JSON: shrunk by 3/4 steps
-        let quotes = preview_file(&snapshot("\"".repeat(20_000)));
+        let quotes = preview_file(&snapshot("\"".repeat(20_000)), "");
         assert!(quotes.truncated);
         assert!(json_len(&quotes.text) <= PREVIEW_JSON_BYTES);
         assert_eq!(quotes.text.len(), 16_384 * 3 / 4 * 3 / 4);
         // a cut through a multibyte character drops the partial character
-        let wide = preview_file(&snapshot("é".repeat(9_000)));
+        let wide = preview_file(&snapshot("é".repeat(9_000)), "");
         assert_eq!(wide.text.len(), 16_384);
         assert_eq!(wide.preview_bytes, 16_384);
     }
@@ -650,10 +665,10 @@ mod tests {
             source,
             content_hash: String::new(),
         };
-        let small = preview_file(&snapshot("a.rs", "fn a() {}\n".into()));
+        let small = preview_file(&snapshot("a.rs", "fn a() {}\n".into()), "");
         assert_eq!(small.declarations, Some(Vec::new()));
         let source: String = (0..2_000).map(|i| format!("fn f{i:04}() {{}}\n")).collect();
-        let big = preview_file(&snapshot("a.rs", source.clone()));
+        let big = preview_file(&snapshot("a.rs", source.clone()), "");
         let declarations = big.declarations.as_ref().unwrap();
         assert_eq!(
             declarations[1],
@@ -675,7 +690,7 @@ mod tests {
         });
         assert!(json_len(&longer) > PREVIEW_INDEX_JSON_BYTES);
         // unsupported languages and text fallbacks list none
-        let text = preview_file(&snapshot("a.txt", source));
+        let text = preview_file(&snapshot("a.txt", source), "");
         assert_eq!(text.declarations, Some(Vec::new()));
     }
 }

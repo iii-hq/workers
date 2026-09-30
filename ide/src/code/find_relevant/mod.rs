@@ -104,6 +104,9 @@ pub struct Excerpt {
     pub line_to: u32,
     /// Verbatim source of the line range.
     pub text: String,
+    /// Not whole lines (a byte span of a giant line or partial unit).
+    #[serde(skip)]
+    pub partial: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -288,6 +291,7 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
     // The assessment reads only discovery previews, so it runs alongside.
     let (mut selected, mut assessments) =
         tokio::join!(select::select_evidence(&run), passes::assess_files(&run));
+    passes::present(&run, &mut selected, &assessments).await;
     // retrieve.ts 722-723: the assessment may outlive the bytes it
     // classified; a file that changed keeps no roles, leads or source.
     let unchecked: Vec<Candidate> = run
@@ -329,20 +333,14 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
                 .filter(|_| !found.source_omitted);
             let (roles, priority) =
                 assessment.map_or((Vec::new(), None), |a| (a.roles, Some(a.priority)));
-            // A test file shows all its selected source (retrieve.ts 628-632).
-            let excerpts = if roles.iter().any(|role| role == "test") {
-                found.selected_excerpts
-            } else {
-                found.excerpts
-            };
             RelevantFile {
                 path: root.join(&candidate.path).display().to_string(),
                 score: candidate.score,
                 priority,
                 roles,
-                excerpts,
+                excerpts: found.excerpts,
                 leads: found.leads,
-                call_leads: Vec::new(),
+                call_leads: found.call_leads,
                 source_omitted: found.source_omitted,
             }
         })

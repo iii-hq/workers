@@ -12,15 +12,19 @@
 //! instead of a freshness check before every judge attempt; a group the
 //! judge finds too large is halved like one over the state cap; first-pass
 //! files run concurrently up to the worker's judge slots.
+//!
+//! A Python file's shared evidence also covers the neighbourhood of its
+//! selected methods (selection.ts 270-273, [`passes::neighborhood`]).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::navigate::{Candidate, Run};
+use super::passes;
 use super::prompts::{self, Declaration, Evidence, SourceRange};
 use super::units::{self, Inspection, MAX_PARSE_BYTES};
 use super::walk::{self, Snapshot, Unit};
-use super::{Excerpt, Lead};
+use super::{CallLead, Excerpt, Lead};
 use crate::code::judge::JudgeError;
 
 /// Units, context lines and owner headers above this are never shown whole.
@@ -55,7 +59,12 @@ pub struct Selected {
     /// Selected source ±3 lines, shared with the follow-up.
     pub evidence: Vec<Evidence>,
     pub leads: Vec<Lead>,
+    /// Possible local calls from the shown source (Python).
+    pub call_leads: Vec<CallLead>,
     pub source_omitted: bool,
+    /// The whole-line selected ranges (jevgrep `selected` without byte
+    /// spans), for the Python passes.
+    pub selected_lines: Vec<SourceRange>,
     // What the follow-up builds on.
     selected: Vec<Span>,
     rendered: Vec<Span>,
@@ -138,6 +147,7 @@ impl Block {
             line_from: self.range.start_line as u32,
             line_to: self.range.end_line as u32,
             text: self.text.clone(),
+            partial: self.range.bytes.is_some(),
         }
     }
 }
@@ -685,7 +695,12 @@ pub async fn select_file(
             }),
         }
     }
-    // A later stage adds the Python neighbourhood (`pythonNeighborhood`).
+    if units::is_python(&path) && !whole.is_empty() {
+        let (text, ranges) = (source.snapshot.source.clone(), whole.clone());
+        let neighbours =
+            tokio::task::spawn_blocking(move || passes::neighborhood(&text, &ranges)).await;
+        whole.extend(neighbours.unwrap_or_default());
+    }
     let expanded = source.excerpts_for(whole, partial, &chosen);
     // Presentation is stricter than selection: decisions above 0.7 within
     // the selected source.
@@ -703,6 +718,15 @@ pub async fn select_file(
     );
     let excerpts = source.presentation(&displayed, &chosen);
     let selected_excerpts = source.presentation(&chosen, &chosen);
+    let selected_lines = chosen
+        .iter()
+        .map(|span| source.range_for(*span))
+        .filter(|range| range.bytes.is_none())
+        .map(|range| SourceRange {
+            start_line: range.start_line,
+            end_line: range.end_line,
+        })
+        .collect();
     let mut lead_list: Vec<Lead> = leads
         .iter()
         .map(|(name, range, score)| Lead {
@@ -737,7 +761,9 @@ pub async fn select_file(
             selected_excerpts,
             evidence,
             leads: lead_list,
+            call_leads: Vec::new(),
             source_omitted: false,
+            selected_lines,
             selected: chosen,
             rendered,
             decisions,
