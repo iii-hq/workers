@@ -16,8 +16,12 @@
 //!
 //! ```json
 //! { "tabs": [ { "id", "name"?, "columns", "screens", "paneIds"?, "sizes"? } ],
-//!   "activeTabId": "tab-…", "activatedAt": 1710000000000, "activatedBy": "browser" }
+//!   "activeTabId": "tab-…", "activatedAt": 1710000000000, "activatedBy": "browser",
+//!   "revision": 7 }
 //! ```
+//!
+//! `revision` belongs to the store: every write stamps it, and `set` refuses
+//! a copy computed from an older one (`WORKSPACE_CONFLICT`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -33,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc;
 
-use crate::workspace_store::WorkspaceStore;
+use crate::workspace_store::{self, WorkspaceStore};
 
 pub const CHAT_SCREEN: &str = "chat";
 pub const CHAT_SESSION_SCREEN_PREFIX: &str = "chat:";
@@ -45,6 +49,7 @@ const CODE_INVALID_SCREEN: &str = "WORKSPACE_INVALID_SCREEN";
 const CODE_INVALID_SIZES: &str = "WORKSPACE_INVALID_SIZES";
 const CODE_INVALID_LAYOUT: &str = "WORKSPACE_INVALID_LAYOUT";
 const CODE_UNAVAILABLE: &str = "WORKSPACE_UNAVAILABLE";
+const CODE_CONFLICT: &str = "WORKSPACE_CONFLICT";
 
 /// Rung after every layout write; the event is empty, re-read with `list`.
 pub const CHANGED_TRIGGER: &str = "console::workspace::changed";
@@ -813,6 +818,12 @@ pub struct GetOutput {
 pub struct SetInput {
     /// The whole layout document; replaces what is stored.
     pub value: Value,
+    /// The `revision` of the document `value` was computed from. When the
+    /// stored layout has moved past it, nothing is written and the call fails
+    /// `WORKSPACE_CONFLICT`: re-read and apply the change again. Omitted, the
+    /// write is unconditional.
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -1010,6 +1021,38 @@ async fn open(store: &WorkspaceStore, input: OpenInput) -> Result<OpenOutput, Er
     })
 }
 
+async fn set(store: &WorkspaceStore, input: SetInput) -> Result<SetOutput, Error> {
+    if !input.value.is_object() {
+        return Err(remote(
+            CODE_INVALID_LAYOUT,
+            "`value` must be the layout document (a JSON object)",
+        ));
+    }
+    let _guard = store.lock().await;
+    if let Some(expected) = input.expected_revision {
+        let stored = store
+            .load()
+            .await
+            .map_err(|e| remote(CODE_UNAVAILABLE, e))?
+            .as_ref()
+            .map_or(0, workspace_store::revision);
+        if stored != expected {
+            return Err(remote(
+                CODE_CONFLICT,
+                format!(
+                    "the layout moved to revision {stored} after revision {expected} was read; \
+                     re-read it and apply the change again"
+                ),
+            ));
+        }
+    }
+    store
+        .save(&input.value)
+        .await
+        .map_err(|e| remote(CODE_UNAVAILABLE, e))?;
+    Ok(SetOutput { ok: true })
+}
+
 pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
     register_changed(iii, &store);
     let workspace = store.clone();
@@ -1041,24 +1084,12 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
         "console::workspace::set",
         RegisterFunction::new_async(move |input: SetInput| {
             let store = workspace.clone();
-            async move {
-                if !input.value.is_object() {
-                    return Err(remote(
-                        CODE_INVALID_LAYOUT,
-                        "`value` must be the layout document (a JSON object)",
-                    ));
-                }
-                let _guard = store.lock().await;
-                store
-                    .save(&input.value)
-                    .await
-                    .map_err(|e| remote(CODE_UNAVAILABLE, e))?;
-                Ok::<_, Error>(SetOutput { ok: true })
-            }
+            async move { set(&store, input).await }
         })
         .description(
             "Internal: replace the raw console workspace layout document wholesale \
-             (the SPA's read-modify-write path). Agents use `console::workspace::open` \
+             (the SPA's read-modify-write path; `expected_revision` refuses a stale \
+             copy with WORKSPACE_CONFLICT). Agents use `console::workspace::open` \
              and `close`.",
         )
         .metadata(json!({ "internal": true })),
@@ -1708,6 +1739,72 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(store.load().await.unwrap(), before);
+        let _ = std::fs::remove_dir_all(store.dir().await);
+    }
+
+    #[tokio::test]
+    async fn a_set_computed_before_an_open_is_refused_so_the_open_survives() {
+        let store = scratch_store("cas");
+        let set_input = |value: Value| serde_json::from_value::<SetInput>(value).unwrap();
+        let open_input = |value: Value| serde_json::from_value::<OpenInput>(value).unwrap();
+        let tab_a = |screens: Value| json!({ "tabs": [{ "id": "a", "columns": 2, "screens": screens }], "activeTabId": "a" });
+
+        // A browser writes the first layout from an empty store.
+        set(
+            &store,
+            set_input(json!({ "value": tab_a(json!(["chat"])), "expected_revision": 0 })),
+        )
+        .await
+        .unwrap();
+        let read = store.load().await.unwrap().unwrap();
+        assert_eq!(workspace_store::revision(&read), 1);
+
+        // It reads revision 1 and starts a rename; an agent's open lands first.
+        open(&store, open_input(json!({ "screen": "traces" })))
+            .await
+            .unwrap();
+        let after_open = store.load().await.unwrap();
+        let changed = store.subscribe();
+        let mut renamed = read.clone();
+        renamed["tabs"][0]["name"] = json!("renamed");
+        let refused = set(
+            &store,
+            set_input(json!({ "value": renamed, "expected_revision": 1 })),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&refused, Error::Remote { code, .. } if code == CODE_CONFLICT),
+            "{refused:?}"
+        );
+        assert_eq!(store.load().await.unwrap(), after_open, "nothing written");
+        assert!(!changed.has_changed().unwrap(), "nothing rung");
+
+        // Re-read and re-applied, the rename lands beside the open's traces.
+        let mut rebased = after_open.clone().unwrap();
+        rebased["tabs"][0]["name"] = json!("renamed");
+        set(
+            &store,
+            set_input(json!({ "value": rebased, "expected_revision": 2 })),
+        )
+        .await
+        .unwrap();
+        let doc = store.load().await.unwrap().unwrap();
+        assert_eq!(doc["tabs"][0]["name"], "renamed");
+        assert_eq!(doc["tabs"][0]["screens"], json!(["chat", "traces"]));
+        assert_eq!(workspace_store::revision(&doc), 3);
+
+        // Without `expected_revision` (an older bundle) the write is
+        // unconditional, and the store still stamps the next revision.
+        set(
+            &store,
+            set_input(json!({ "value": tab_a(json!(["chat"])) })),
+        )
+        .await
+        .unwrap();
+        let doc = store.load().await.unwrap().unwrap();
+        assert_eq!(doc["tabs"][0]["screens"], json!(["chat"]));
+        assert_eq!(workspace_store::revision(&doc), 4);
         let _ = std::fs::remove_dir_all(store.dir().await);
     }
 }

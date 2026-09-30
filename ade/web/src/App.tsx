@@ -379,14 +379,15 @@ export function App({
     else openSettings()
   }, [view, openSettings, requestCloseSettings])
   // ── Deep links ──
-  // `#/traces` / `#/workers` are one-shot commands, never state: open the
-  // screen with the same placement as an agent's console::workspace::open
-  // and a worker's panel-open (reuse the tab showing it, else beside chat,
-  // else a fresh tab), then drop the hash so a reload trusts the workspace
-  // store — the active tab — instead of replaying the link. Waits for the
-  // layout to hydrate so the link lands on the real tabs, not the local
-  // copy. Worker pages have no deep link here: `#/worker/<scope>` boots the
-  // isolated shell instead (main.tsx).
+  // `#/workers` (and `#/chat` / `#/traces-v2`, legacy aliases of traces) are
+  // one-shot commands, never state: open the screen with the same placement
+  // as an agent's console::workspace::open and a worker's panel-open (reuse
+  // the tab showing it, else beside chat, else a fresh tab), then drop the
+  // hash so a reload trusts the workspace store — the active tab — instead
+  // of replaying the link. Waits for the layout to hydrate so the link lands
+  // on the real tabs, not the local copy. `#/traces` and worker pages have
+  // no deep link here: `#/traces` and `#/worker/<scope>` boot the standalone
+  // shell instead (main.tsx).
   const layoutSource = workspace.layoutSource
   useEffect(() => {
     if (layoutSource === 'pending') return

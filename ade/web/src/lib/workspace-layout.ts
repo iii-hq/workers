@@ -12,7 +12,10 @@
  * The value is one JSON object shared by every browser pointing at this
  * engine. `set` replaces the WHOLE document, so writers must
  * read-modify-write (`hooks/lib/workspace-layout-writer.ts` serializes
- * that); concurrent browsers are last-write-wins.
+ * that). Every write stamps the document's `revision`, and `set` refuses a
+ * copy computed from an older one, so a write that lands between another
+ * writer's read and write (an agent's `open`, another browser) is never
+ * erased: that writer reads again and re-applies its change.
  *
  * When the console worker's functions are unavailable (an older worker, or
  * the engine is unreachable), reads resolve to `null` and the strip degrades
@@ -26,6 +29,19 @@ export const WORKSPACE_SET_FUNCTION_ID = 'console::workspace::set'
 
 /** The stored document: `tabs`, `activeTabId`, `activatedAt`, `activatedBy`, … */
 export type WorkspaceLayoutValue = Record<string, unknown>
+
+/** `set` refused a copy read before the layout's latest write. */
+export const WORKSPACE_CONFLICT = 'WORKSPACE_CONFLICT'
+
+/** The store's stamp on a document; one written before revisions reads 0. */
+export function layoutRevision(value: WorkspaceLayoutValue): number {
+  const revision = value.revision
+  return typeof revision === 'number' &&
+    Number.isSafeInteger(revision) &&
+    revision >= 0
+    ? revision
+    : 0
+}
 
 /** Identify a missing worker function so reads can fall back without noisy warnings. */
 function isUnavailable(err: unknown): boolean {
@@ -55,10 +71,17 @@ export async function fetchWorkspaceLayout(): Promise<WorkspaceLayoutValue | nul
   }
 }
 
-/** Replace the whole layout document (read-modify-write). */
+/**
+ * Replace the whole layout document, computed from `base`. Rejects with
+ * `WORKSPACE_CONFLICT` when the stored layout has moved past `base`.
+ */
 export async function setWorkspaceLayout(
   value: WorkspaceLayoutValue,
+  base: WorkspaceLayoutValue,
 ): Promise<void> {
   const client = await getIiiClient()
-  await client.trigger(WORKSPACE_SET_FUNCTION_ID, { value })
+  await client.trigger(WORKSPACE_SET_FUNCTION_ID, {
+    value,
+    expected_revision: layoutRevision(base),
+  })
 }

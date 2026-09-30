@@ -346,8 +346,11 @@ async fn exercise_delivery() {
                 .await
                 .unwrap();
             assert!(moved, "the legacy section must be lifted out");
-            // The layout landed in `<data_dir>/workspace.json`, flat.
-            assert_eq!(store.load().await.unwrap(), Some(legacy_layout.clone()));
+            // The layout landed in `<data_dir>/workspace.json`, flat, as the
+            // store's first revision.
+            let mut landed = legacy_layout.clone();
+            landed["revision"] = json!(1);
+            assert_eq!(store.load().await.unwrap(), Some(landed));
             // The entry lost ONLY `workspace`; siblings (including env
             // templates) are written back verbatim.
             assert_eq!(
