@@ -5,7 +5,8 @@
 //!
 //! Deviation: the assessment reads the discovery preview without re-reading
 //! the file; its roles attach only where the evidence re-hash held (the
-//! caller's check, retrieve.ts 643-650).
+//! caller's check, retrieve.ts 643-650); a request over `Run::window_cap`
+//! is not sent (jevgrep has no cap here).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,9 +41,13 @@ impl Assessment {
 /// One file-assessment request per candidate, reusing its discovery
 /// preview; a failed request leaves the file unassessed.
 pub async fn assess_files(run: &Arc<Run>) -> HashMap<String, Assessment> {
-    run.parallel(run.sorted_candidates(), |run, candidate| async move {
+    run.parallel(run.admitted(), |run, candidate| async move {
         let preview = run.state().previews.get(&candidate.path).cloned()?;
         let request = prompts::file_assessment(&run.query, &candidate.path, &preview);
+        if prompts::request_bytes(&request) > run.window_cap {
+            run.issue("request-size");
+            return None;
+        }
         match run.call(request).await {
             Ok(scores) => Some((candidate.path, Assessment::from_scores(&scores))),
             Err(JudgeError::TooLarge) => {

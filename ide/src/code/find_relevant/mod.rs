@@ -273,6 +273,7 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
         deadline,
         cap: cap(navigate::MAX_REQUEST_BYTES),
         state_cap: cap(select::MAX_STATE_BYTES),
+        window_cap: cap(usize::MAX),
         cache,
         state: Mutex::new(Default::default()),
     });
@@ -287,10 +288,35 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
     // The assessment reads only discovery previews, so it runs alongside.
     let (mut selected, mut assessments) =
         tokio::join!(select::select_evidence(&run), passes::assess_files(&run));
+    // retrieve.ts 722-723: the assessment may outlive the bytes it
+    // classified; a file that changed keeps no roles, leads or source.
+    let unchecked: Vec<Candidate> = run
+        .admitted()
+        .into_iter()
+        .filter(|c| selected.get(&c.path).is_none_or(|s| !s.source_omitted))
+        .collect();
+    let checker = run.clone();
+    let stale: Vec<String> = tokio::task::spawn_blocking(move || {
+        unchecked
+            .into_iter()
+            .filter(|c| checker.unchanged(c).is_none())
+            .map(|c| c.path)
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
+    for path in stale {
+        selected.insert(path, select::Selected::omitted());
+    }
 
     let root = run.tree.root.clone();
     let candidates = run.sorted_candidates();
     let agents_md = agents_md(&run.tree, &candidates);
+    // repository-context.ts `instructionLookupIncomplete`: a truncated walk
+    // may not have listed an ancestor's AGENTS.md.
+    if truncated {
+        run.issue("agents_md_incomplete");
+    }
     let state = std::mem::take(&mut *run.state());
     let admitted = !candidates.is_empty();
     let mut files: Vec<RelevantFile> = candidates
@@ -413,6 +439,10 @@ const PARSER_VERSION: &str =
     "tree-sitter-0.24.7-python-0.23.6-go-0.23.4-rust-0.23.3-typescript-0.23.2";
 const CACHE_BYTES: usize = 64 << 20;
 const CACHE_ENTRY_BYTES: usize = 1 << 20;
+/// Resident cost of an entry beyond its answers (map slot, queue key, one
+/// B-tree leaf) and of each answer (its node share and key `String`).
+const CACHE_ENTRY_OVERHEAD: usize = 512;
+const CACHE_ANSWER_OVERHEAD: usize = 96;
 
 /// Answers shared by every ask in this process (cache.ts, minus the disk,
 /// the 7-day TTL and the cache issue counts).
@@ -453,11 +483,12 @@ impl AnswerCache {
     }
 
     /// Keep `scores` unless one is out of range or the entry is over its
-    /// cap; evict the oldest entries past the total.
+    /// cap (its JSON, as on jevgrep's disk); evict the oldest entries past
+    /// the total, which counts resident bytes.
     fn put(&mut self, key: [u8; 32], scores: &Scores) {
-        let size = walk::json_len(scores);
+        let size = CACHE_ENTRY_OVERHEAD + scores.len() * CACHE_ANSWER_OVERHEAD;
         if self.entries.contains_key(&key)
-            || size > self.max_entry_bytes
+            || walk::json_len(scores) > self.max_entry_bytes
             || !scores.values().all(|p| (0.0..=1.0).contains(p))
         {
             return;
@@ -476,17 +507,20 @@ impl AnswerCache {
     }
 }
 
-/// cache.ts `key`: sha256 of `[1, namespace, state, questions]`.
-// ponytail: the key names the provider but not the hub's default model;
-// a model swap under the same provider serves old answers until restart.
-fn cache_key(provider: &str, request: &Evaluation) -> [u8; 32] {
+/// cache.ts `key`: sha256 of `[1, namespace, state, questions]`; `None`
+/// (bypass the cache) if the request cannot be serialized.
+// ponytail: the key names the session's provider but not the hub's model,
+// nor, for `""`, the hub's default provider; a swap of either serves old
+// answers until restart. Resolve both in `judge::window` if swaps happen.
+fn cache_key(provider: &str, request: &Evaluation) -> Option<[u8; 32]> {
     let namespace = serde_json::json!({
         "provider": provider,
         "promptVersion": PROMPT_VERSION,
         "parserVersion": PARSER_VERSION,
     });
     let key = (1, namespace, &request.state, &request.questions);
-    Sha256::digest(serde_json::to_vec(&key).unwrap_or_default()).into()
+    let bytes = serde_json::to_vec(&key).ok()?;
+    Some(Sha256::digest(bytes).into())
 }
 
 fn cached(key: &[u8; 32], questions: &BTreeMap<String, Question>) -> Option<Scores> {

@@ -541,7 +541,12 @@ async fn a_preview_too_big_for_the_window_is_scored_in_chunks_keeping_the_best()
         }),
     )
     .await;
-    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
+    // the whole preview is over 2 × 8192 bytes, too big to assess
+    assert_eq!(out.status, Status::Incomplete);
+    assert_eq!(
+        out.issues,
+        BTreeMap::from([("request-size".to_string(), 1)])
+    );
     assert_eq!(paths(&fx, &out), ["big.txt"]);
     assert_eq!(out.files[0].score, 0.9);
     let log = log.lock().unwrap();
@@ -887,6 +892,7 @@ fn content_samples_take_head_middle_and_tail_and_shrink_to_fit() {
         deadline: Instant::now() + Duration::from_secs(60),
         cap: usize::MAX,
         state_cap: usize::MAX,
+        window_cap: usize::MAX,
         cache: None,
         state: Mutex::new(Default::default()),
     };
@@ -947,34 +953,46 @@ fn content_samples_take_head_middle_and_tail_and_shrink_to_fit() {
 #[tokio::test]
 async fn answers_are_reused_across_asks_in_one_namespace() {
     let fx = fixture(&[("needle.rs", TWO_FUNCTIONS)], |_, _| {});
-    let judge_for = |log: &Log| {
-        judge(log, |ev| {
+    // `fail` rejects the file assessment, which must not be cached
+    let judge_for = |log: &Log, fail: bool| {
+        judge(log, move |ev| {
+            if fail && ev.questions.contains_key("priority") {
+                return Err(JudgeError::Rejected("invalid_request".into()));
+            }
             by_declaration(ev, |name, _| {
                 (if name == "needle" { 0.9 } else { 0.1 }, 0.0)
             })
         })
     };
     let namespace = format!("test-{}", std::process::id());
-    let ask_cached = |log: &Log| {
+    let ask_cached = |log: &Log, fail: bool| {
         run(
             fx.resolver.clone(),
             fx.cfg.clone(),
             input("where is the needle?", 120_000),
             |_| async { Ok(None) },
-            judge_for(log),
+            judge_for(log, fail),
             Some(namespace.clone()),
         )
     };
-    let (first_log, second_log) = (Log::default(), Log::default());
-    let first = ask_cached(&first_log).await.unwrap();
-    let second = ask_cached(&second_log).await.unwrap();
+    let logs = [Log::default(), Log::default(), Log::default()];
+    let first = ask_cached(&logs[0], true).await.unwrap();
+    let second = ask_cached(&logs[1], false).await.unwrap();
+    let third = ask_cached(&logs[2], false).await.unwrap();
     assert!(first.stats.judge_calls > 0);
     assert_eq!(first.stats.cache_hits, 0);
-    assert_eq!(second.stats.judge_calls, 0);
-    assert_eq!(second.stats.cache_hits, first.stats.judge_calls);
-    assert!(second_log.lock().unwrap().is_empty());
-    assert_eq!(texts(&first.files[0]), texts(&second.files[0]));
-    assert_eq!(second.status, Status::Complete);
+    assert_eq!(first.issues.get("invalid_request"), Some(&1));
+    // only the failed request is asked again
+    assert_eq!(second.stats.judge_calls, 1);
+    assert_eq!(second.stats.cache_hits, first.stats.judge_calls - 1);
+    let asked = sent(&logs[1]);
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0]["questions"].get("priority").is_some());
+    assert_eq!(third.stats.judge_calls, 0);
+    assert_eq!(third.stats.cache_hits, first.stats.judge_calls);
+    assert!(logs[2].lock().unwrap().is_empty());
+    assert_eq!(texts(&first.files[0]), texts(&third.files[0]));
+    assert_eq!(third.status, Status::Complete);
 }
 
 #[test]
@@ -994,7 +1012,9 @@ fn the_cache_rejects_invalid_answers_and_keeps_within_its_caps() {
     let scores = |pairs: &[(&str, f64)]| -> Scores {
         pairs.iter().map(|(id, p)| (id.to_string(), *p)).collect()
     };
-    let mut cache = AnswerCache::new(100, 40);
+    // a one-answer entry's resident cost, not its 12 JSON bytes
+    let entry = CACHE_ENTRY_OVERHEAD + CACHE_ANSWER_OVERHEAD;
+    let mut cache = AnswerCache::new(7 * entry + entry / 2, 40);
     cache.put([1; 32], &scores(&[("q000", 0.5)])); // 12 JSON bytes
     assert_eq!(
         cache.get(&[1; 32], &questions(&["q000"])),
@@ -1014,13 +1034,13 @@ fn the_cache_rejects_invalid_answers_and_keeps_within_its_caps() {
     }
     // past the total, the oldest entries go first
     for i in 5..=12 {
-        cache.put([i; 32], &scores(&[("q000", 0.25)])); // 13 bytes each
+        cache.put([i; 32], &scores(&[("q000", 0.25)]));
     }
-    assert!(cache.bytes <= 100);
+    assert!(cache.bytes <= cache.max_bytes);
     assert!(!cache.entries.contains_key(&[1; 32]));
     assert!(!cache.entries.contains_key(&[5; 32]));
     assert!((6..=12).all(|i| cache.entries.contains_key(&[i; 32])));
-    assert_eq!(cache.bytes, 7 * 13);
+    assert_eq!(cache.bytes, 7 * entry);
 }
 
 #[tokio::test]
@@ -1047,4 +1067,146 @@ async fn agents_md_lists_accessible_files_at_the_root_and_above_returned_files()
         ]
     );
     assert!(!log.lock().unwrap().join("\n").contains("SECRET_RULES"));
+}
+
+#[tokio::test]
+async fn a_follow_up_reply_missing_an_answer_retracts_nothing() {
+    let fx = fixture(&[("needle.rs", TWO_FUNCTIONS)], |_, _| {});
+    let out = ask(
+        &fx,
+        None,
+        judge(&Log::default(), |ev| {
+            let mut scores = by_declaration(ev, |name, follow_up| match (name, follow_up) {
+                ("needle", false) => (0.9, 0.0),
+                // would retract `needle`, but `ref000` goes missing
+                _ => (0.1, 0.1),
+            })?;
+            scores.remove("ref000");
+            Ok(scores)
+        }),
+    )
+    .await;
+    assert_eq!(out.status, Status::Incomplete);
+    assert_eq!(out.reason.as_deref(), Some("invalid_response"));
+    assert!(texts(&out.files[0]).contains("fn needle"));
+}
+
+#[tokio::test]
+async fn a_small_window_caps_the_shared_evidence() {
+    let padding = "    // padding padding padding padding padding padding padding padding\n";
+    let source = format!("fn needle() {{\n{}}}\n", padding.repeat(120));
+    let fx = fixture(
+        &[
+            ("a_needle.rs", source.as_bytes()),
+            ("b_needle.rs", source.as_bytes()),
+        ],
+        |_, _| {},
+    );
+    // ~17 KB of shared evidence: under jevgrep's 64 000, over 2 × 8192
+    for (window, follow_ups) in [(None, 2), (Some(8_192), 0)] {
+        let log = Log::default();
+        let out = ask(
+            &fx,
+            window,
+            judge(&log, |ev| by_declaration(ev, |_, _| (0.9, 0.0))),
+        )
+        .await;
+        assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
+        assert_eq!(out.files.len(), 2);
+        let shared = sent(&log)
+            .iter()
+            .filter(|ev| ev["state"].get("selectedEvidence").is_some())
+            .count();
+        assert_eq!(shared, follow_ups, "window {window:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_file_that_changes_under_its_assessment_keeps_no_roles() {
+    let fx = fixture(&[("needle.rs", TWO_FUNCTIONS)], |_, _| {});
+    let path = fx.root.join("needle.rs");
+    let out = ask(
+        &fx,
+        None,
+        judge(&Log::default(), move |ev| {
+            if !ev.questions.contains_key("priority") {
+                return by_declaration(ev, |name, _| {
+                    (if name == "needle" { 0.9 } else { 0.1 }, 0.0)
+                });
+            }
+            std::fs::write(&path, b"fn changed() {}\n").unwrap();
+            Ok(ev.questions.keys().map(|id| (id.clone(), 0.9)).collect())
+        }),
+    )
+    .await;
+    let file = &out.files[0];
+    assert!(file.roles.is_empty());
+    assert_eq!(file.priority, None);
+    assert!(file.source_omitted);
+    assert!(file.excerpts.is_empty() && file.leads.is_empty());
+    assert!(out.issues.contains_key("changed"));
+}
+
+#[tokio::test]
+async fn nothing_secret_in_a_pruned_directory_reaches_the_anchored_judge() {
+    let fx = fixture(
+        &[
+            (
+                "a/impl/needle.ts",
+                b"export class Needle {\n  run() {\n    return 1;\n  }\n}\n",
+            ),
+            (
+                "b/ext/plugin.ts",
+                b"export class Plugin extends Needle {}\n",
+            ),
+            (
+                "b/ext/key.txt",
+                b"-----BEGIN OPENSSH PRIVATE KEY-----\nSECRET_PK extends Needle\n",
+            ),
+            ("b/ext/blob.bin", b"\x00\x01SECRET_BIN extends Needle"),
+            ("b/ext/latin.txt", b"SECRET_UTF8 extends Needle \xff"),
+            ("b/ext/a.locked", b"SECRET_NA extends Needle"),
+            ("b/ext/ignored.txt", b"SECRET_IGN extends Needle"),
+            ("b/ext/.env", b"SECRET_ENV extends Needle"),
+            ("b/ext/id_rsa", b"SECRET_RSA extends Needle"),
+            (".gitignore", b"ignored.txt\n"),
+        ],
+        |_, cfg| cfg.non_accessible_globs = vec!["**/*.locked".into()],
+    );
+    let log = Log::default();
+    let out = ask(
+        &fx,
+        None,
+        judge(&log, |ev| {
+            if ev.state.get("relationAnchor").is_none() {
+                return keyword(ev);
+            }
+            Ok(per_item(ev, |item| {
+                if item.to_string().contains("extends Needle") {
+                    0.9
+                } else {
+                    0.1
+                }
+            }))
+        }),
+    )
+    .await;
+    assert_eq!(paths(&fx, &out), ["a/impl/needle.ts", "b/ext/plugin.ts"]);
+    let anchored: Vec<String> = sent(&log)
+        .iter()
+        .filter(|ev| ev["state"].get("relationAnchor").is_some())
+        .map(Value::to_string)
+        .collect();
+    assert!(anchored[0].contains("contentSamples"));
+    let sent = log.lock().unwrap().join("\n");
+    for forbidden in [
+        fx.root.display().to_string().as_str(),
+        "SECRET_",
+        "a.locked",
+        "ignored.txt",
+        ".env",
+        "id_rsa",
+    ] {
+        assert!(!sent.contains(forbidden), "{forbidden} reached the judge");
+    }
 }
