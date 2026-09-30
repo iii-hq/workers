@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import type { FindRelevantResponse, RelevantFile } from '../coder'
 import {
   effectivePattern,
   flattenSearchRows,
   groupContentMatches,
   locateHit,
   previewRow,
+  relevantAsMatches,
   searchSummary,
   stepSearchRow,
 } from '../search-model'
@@ -92,5 +94,59 @@ describe('groupContentMatches + rows', () => {
     expect(stepSearchRow(rows, 3, -1)).toBe(1)
     expect(stepSearchRow(rows, 1, -1)).toBe(1)
     expect(stepSearchRow(rows, rows.length - 1, 1)).toBe(rows.length - 1)
+  })
+})
+
+describe('relevantAsMatches', () => {
+  const file = (path: string, rest: Partial<RelevantFile> = {}): RelevantFile => ({
+    path,
+    score: 0.9,
+    roles: [],
+    excerpts: [],
+    leads: [],
+    source_omitted: false,
+    ...rest,
+  })
+  const noHighlight = { query: '', regex: false, ignoreCase: true, wholeWord: false }
+
+  it('keeps the worker ranking and opens excerpts at their first non-blank line', () => {
+    const out: FindRelevantResponse = {
+      status: 'complete',
+      files: [
+        file('/r/z.ts', { excerpts: [{ line_from: 10, line_to: 14, text: '\n  \nfunction pick() {\n}' }] }),
+        file('/r/a.ts', { excerpts: [{ line_from: 3, line_to: 3, text: 'const a = 1' }] }),
+      ],
+    }
+    const rows = relevantAsMatches(out)
+    expect(rows.map((r) => [r.path, r.line, r.text])).toEqual([
+      ['/r/z.ts', 12, 'function pick() {'],
+      ['/r/a.ts', 3, 'const a = 1'],
+    ])
+    const groups = groupContentMatches(rows, '/r', noHighlight)
+    expect(groups.map((g) => g.rel)).toEqual(['z.ts', 'a.ts'])
+    expect(groups[0].matches[0]).toMatchObject({ hit: '', lead: 'function pick() {' })
+  })
+
+  it('shows leads as line ranges, prefixed by their name when present', () => {
+    const out: FindRelevantResponse = {
+      status: 'incomplete',
+      files: [
+        file('/r/a.ts', {
+          leads: [
+            { name: 'Store.load', line_from: 20, line_to: 40, score: 0.4 },
+            { line_from: 50, line_to: 60, score: 0.3 },
+          ],
+        }),
+      ],
+    }
+    expect(relevantAsMatches(out).map((r) => [r.line, r.text])).toEqual([
+      [20, 'Store.load lines 20-40'],
+      [50, 'lines 50-60'],
+    ])
+  })
+
+  it('gives a file with neither excerpts nor leads one row at line 1', () => {
+    const out: FindRelevantResponse = { status: 'complete', files: [file('/r/b.py', { source_omitted: true })] }
+    expect(relevantAsMatches(out)).toEqual([{ path: '/r/b.py', line: 1, column: 1, text: 'relevant file' }])
   })
 })

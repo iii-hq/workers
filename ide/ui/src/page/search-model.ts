@@ -2,7 +2,7 @@
    renders: matches grouped by file, each line trimmed to a window around
    the hit, plus the flat row list a virtualized list walks. */
 
-import type { ContentMatch, SearchResponse } from './coder'
+import type { ContentMatch, FindRelevantResponse, SearchResponse } from './coder'
 import { basename, dirname } from './paths'
 
 export interface SearchMatchRow {
@@ -152,6 +152,33 @@ export function groupContentMatches(
     group.matches.push(previewRow(match, matcher))
   }
   return [...groups.values()]
+}
+
+/** `coder::find-relevant` files as search rows, in the worker's ranking:
+    an excerpt opens at its first non-blank line and shows it, a lead shows
+    its line range, a file with neither gets one row. Render with
+    `query: ''` so nothing is highlighted; the grouping Map keeps the
+    insertion (ranking) order. */
+export function relevantAsMatches(out: FindRelevantResponse): ContentMatch[] {
+  const rows: ContentMatch[] = []
+  for (const file of out.files) {
+    for (const excerpt of file.excerpts) {
+      const lines = excerpt.text.split('\n')
+      const at = Math.max(
+        0,
+        lines.findIndex((line) => line.trim() !== ''),
+      )
+      rows.push({ path: file.path, line: excerpt.line_from + at, column: 1, text: lines[at] })
+    }
+    for (const lead of file.leads) {
+      const range = `lines ${lead.line_from}-${lead.line_to}`
+      rows.push({ path: file.path, line: lead.line_from, column: 1, text: lead.name ? `${lead.name} ${range}` : range })
+    }
+    if (file.excerpts.length === 0 && file.leads.length === 0) {
+      rows.push({ path: file.path, line: 1, column: 1, text: 'relevant file' })
+    }
+  }
+  return rows
 }
 
 export interface SearchPathRow {
