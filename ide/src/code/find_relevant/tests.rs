@@ -1045,6 +1045,7 @@ fn content_samples_take_head_middle_and_tail_and_shrink_to_fit() {
         window_cap: usize::MAX,
         cache: None,
         slots: crate::code::judge::DEFAULT_SLOTS,
+        token_budget: 0,
         state: Mutex::new(Default::default()),
     };
     let item = NavigationItem {
@@ -1594,4 +1595,42 @@ async fn shared_evidence_carries_a_selected_methods_neighbours() {
     assert!(shared[0].contains("def c(self)"));
     // the presentation is not widened
     assert!(!texts(&out.files[0]).contains("def c(self)"));
+}
+
+#[tokio::test]
+async fn a_spent_judge_token_budget_stops_the_ask_as_incomplete() {
+    let files: &[(&str, &[u8])] = &[
+        ("a/needle_dir/b/needle_dir/c/needle.rs", b"fn needle() {}\n"),
+        ("a/other.rs", b"fn other() {}\n"),
+    ];
+    // The test judge bills 7 tokens a call; one slot keeps calls serial.
+    let budgeted = fixture(files, |_, cfg| {
+        cfg.find_relevant_judge_slots = 1;
+        cfg.find_relevant_judge_token_budget = 14;
+    });
+    let log = Log::default();
+    let out = ask(&budgeted, None, judge(&log, keyword)).await;
+    assert_eq!(out.status, Status::Incomplete);
+    assert_eq!(out.reason.as_deref(), Some("token_budget"));
+    assert_eq!(out.issues.get("token_budget"), Some(&1));
+    assert!(!out.issues.contains_key("deadline"), "{:?}", out.issues);
+    assert_eq!(out.stats.judge_calls, 2);
+    assert_eq!(out.stats.input_tokens, 14);
+    assert_eq!(log.lock().unwrap().len(), 2);
+
+    // 0 = unlimited: the same ask reaches the needle.
+    let unlimited = fixture(files, |_, cfg| {
+        cfg.find_relevant_judge_slots = 1;
+        cfg.find_relevant_judge_token_budget = 0;
+    });
+    let out = ask(&unlimited, None, judge(&Log::default(), keyword)).await;
+    assert!(out.stats.judge_calls > 2);
+    assert!(!out.issues.contains_key("token_budget"));
+    assert!(
+        paths(&unlimited, &out)
+            .iter()
+            .any(|p| p.ends_with("needle.rs")),
+        "{:?}",
+        paths(&unlimited, &out)
+    );
 }

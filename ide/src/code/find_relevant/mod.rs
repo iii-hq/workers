@@ -95,8 +95,9 @@ fn example_find_relevant_input() -> serde_json::Value {
 pub enum Status {
     /// Every admitted branch was explored.
     Complete,
-    /// Partial coverage (deadline, a failed or oversized request, a
-    /// resource limit): see `issues`; narrow `path` and retry.
+    /// Partial coverage (deadline, judge token budget, a failed or
+    /// oversized request, a resource limit): see `reason` and `issues`;
+    /// narrow `path` and retry.
     Incomplete,
     /// No judge answered; use coder::search.
     Unavailable,
@@ -285,6 +286,7 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
         window_cap: cap(usize::MAX),
         cache,
         slots: (cfg.find_relevant_judge_slots as usize).clamp(1, judge::MAX_SLOTS),
+        token_budget: cfg.find_relevant_judge_token_budget,
         state: Mutex::new(Default::default()),
     });
     run.discover(vec![".".into()], None).await;
@@ -353,6 +355,7 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
         Some(Stop::Unavailable(reason)) if !admitted => (Status::Unavailable, Some(reason)),
         Some(Stop::Unavailable(reason)) => (Status::Incomplete, Some(reason)),
         Some(Stop::Deadline) => (Status::Incomplete, Some("deadline".into())),
+        Some(Stop::Budget) => (Status::Incomplete, Some("token_budget".into())),
         None if state.issues.is_empty() => (Status::Complete, None),
         None => (Status::Incomplete, None),
     };

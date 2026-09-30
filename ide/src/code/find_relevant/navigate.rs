@@ -47,6 +47,8 @@ const ANCHOR_CLASSES_BYTES: usize = 4_000;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stop {
     Deadline,
+    /// The ask spent its judge token budget.
+    Budget,
     Unavailable(String),
 }
 
@@ -100,6 +102,8 @@ pub struct Run {
     pub cache: Option<String>,
     /// Judge calls this ask schedules at once (the worker's slot count).
     pub slots: usize,
+    /// Judge input tokens the ask may spend; 0 = unlimited.
+    pub token_budget: u64,
     pub state: Mutex<State>,
 }
 
@@ -137,6 +141,11 @@ impl Run {
             self.state().cache_hits += 1;
             return Ok(scores);
         }
+        // A spent budget refuses new calls like a passed deadline, without
+        // counting another deadline issue.
+        if self.state().stop == Some(Stop::Budget) {
+            return Err(JudgeError::Deadline);
+        }
         let questions = request.questions.len() as u64;
         let request_ids: Vec<String> = request.questions.keys().cloned().collect();
         let outcome = tokio::time::timeout_at(
@@ -165,6 +174,14 @@ impl Run {
         match outcome {
             Ok((scores, tokens)) => {
                 state.input_tokens += tokens;
+                // Calls already in flight still land; nothing new starts.
+                if self.token_budget > 0
+                    && state.input_tokens >= self.token_budget
+                    && state.stop.is_none()
+                {
+                    state.stop = Some(Stop::Budget);
+                    *state.issues.entry("token_budget".into()).or_default() += 1;
+                }
                 drop(state);
                 if let Some(key) = cache_key {
                     super::remember(key, &scores);

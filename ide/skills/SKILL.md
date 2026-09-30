@@ -151,8 +151,10 @@ on coder calls?"). It asks the judge which folders, files and declarations
 matter and returns files best first with verbatim excerpts and line ranges.
 Use `coder::search` instead for an exact symbol, string or filename. Read
 the returned excerpts, and `leads` via `coder::read-file`, before searching
-again. Set `path` to the narrowest folder that holds the answer: every
-level is a judge round trip, so a whole-repo ask can take minutes.
+again. Set `path` to the folder of the component the question is about
+(`judge/src`, not the repository root): every level is a judge round trip
+and the judge bills per token, so a whole-repo ask on a large repository
+takes minutes and stops at the judge token budget (reason `token_budget`).
 `incomplete` means partial coverage (narrow `path` and retry);
 `unavailable` means no judge answered (fall back to `coder::search`). The
 query, root-relative paths and file text go to the session's judge

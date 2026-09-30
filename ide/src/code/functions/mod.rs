@@ -144,9 +144,12 @@ const FIND_RELEVANT_DESC: &str =
      then files asking the judge yes/no relevance questions and returns \
      files best first. Start behavioural discovery here before broad text \
      searches; for exact symbols, strings or filenames use coder::search. \
+     Set path to the folder of the component the question is about (e.g. \
+     judge/src): time and judge cost grow with the folder, and a \
+     repository-root ask on a large repo hits the judge token budget. \
      Read the returned files before searching again. incomplete = partial \
-     coverage (see issues; narrow path); unavailable = no judge, use \
-     coder::search. Sends the query, root-relative paths and file text to \
+     coverage (see reason and issues; narrow path); unavailable = no judge, \
+     use coder::search. Sends the query, root-relative paths and file text to \
      the session's judge provider, which may be hosted: never protected, \
      ignored, hidden, .git or secret-named files, nor the text of binary or \
      private-key files. Hidden entries are skipped only below path, so do \

@@ -228,7 +228,7 @@ error.
 | `status` | Meaning |
 |---|---|
 | `complete` | Every admitted branch was explored. |
-| `incomplete` | Partial coverage: the deadline hit, a request failed or was too large, or a walk limit was reached. `issues` counts each kind and `reason` names a stop; narrow `path` and retry. |
+| `incomplete` | Partial coverage: the deadline hit, the judge token budget ran out, a request failed or was too large, or a walk limit was reached. `issues` counts each kind and `reason` names a stop; narrow `path` and retry. |
 | `unavailable` | No judge answered (not deployed, no key, paused after a recent outage, or a context window under 8192 tokens). Use `coder::search`. |
 
 - **Budget.** `timeout_ms` (default 120000, max 280000, below the harness's
@@ -241,9 +241,19 @@ error.
   fit sets `source_omitted`. Files or leads cut from the tail count a
   `resource_limit` in `issues`. An excerpt with `partial`
   holds only that byte span of its lines (inside a line over 24000 bytes).
-- **Latency.** An ask makes one judge call per batch of folders, files or
-  declarations, so a whole-repo ask can take tens of seconds to minutes.
-  Point `path` at the subtree the question is about.
+- **Latency and judge cost.** An ask makes one judge call per batch of
+  folders, files or declarations, so time and judge tokens grow with the
+  folder: a component folder takes seconds and well under 2M judge input
+  tokens, while a repository-root ask on a large monorepo takes minutes and
+  can pass 20M (about $1 at TypeSafe's $0.042 per million). Point `path` at
+  the subtree the question is about.
+- **Judge token budget.** `code.find_relevant_judge_token_budget` (default
+  3000000, 0 = unlimited, hot-reloaded) caps the judge input tokens one ask
+  may spend. Past it the ask starts no new judge call and returns
+  `incomplete` with reason `token_budget` and what it found so far. Calls
+  already scheduled (up to about twice `code.find_relevant_judge_slots`,
+  including ones queued for a slot) still go out, so the total can pass
+  the budget by that many calls.
 - **Shared slots.** At most `code.find_relevant_judge_slots` judge calls
   (default 3, hot-reloaded) are in flight across the whole worker (every
   ask, every session). `judge-typesafe` serves `concurrency` requests at a
