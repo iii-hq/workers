@@ -147,6 +147,14 @@ pub struct CoderConfig {
     /// `coder::scaffold-worker`: a local checkout or a cached clone.
     #[serde(default)]
     pub templates: TemplatesConfig,
+
+    /// Judge calls `coder::find-relevant` keeps in flight, shared by every
+    /// ask of this worker (1..=64). Keep it below the judge provider's own
+    /// limit (judge-typesafe `concurrency`, default 4) so other judge callers
+    /// (harness reconcile, directory search) keep a free slot.
+    #[serde(default = "default_find_relevant_judge_slots")]
+    #[schemars(range(min = 1, max = 64))]
+    pub find_relevant_judge_slots: u32,
 }
 
 fn default_default_exclude_globs() -> Vec<String> {
@@ -193,6 +201,9 @@ fn default_max_output_bytes() -> u64 {
 }
 fn default_search_response_budget_bytes() -> u64 {
     262_144
+}
+fn default_find_relevant_judge_slots() -> u32 {
+    crate::code::judge::DEFAULT_SLOTS as u32
 }
 
 /// Where `coder::list-templates` and `coder::scaffold-worker` read worker
@@ -321,6 +332,7 @@ impl Default for CoderConfig {
             max_output_bytes: default_max_output_bytes(),
             search_response_budget_bytes: default_search_response_budget_bytes(),
             templates: TemplatesConfig::default(),
+            find_relevant_judge_slots: default_find_relevant_judge_slots(),
         }
     }
 }

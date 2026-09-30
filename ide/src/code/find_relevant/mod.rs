@@ -196,7 +196,8 @@ pub async fn handle(
     req: FindRelevantInput,
 ) -> Result<FindRelevantOutput, String> {
     let provider = judge::session_provider();
-    let evaluate = judge::evaluator(iii.clone(), provider.clone());
+    let slots = cfg.find_relevant_judge_slots as usize;
+    let evaluate = judge::evaluator(iii.clone(), provider.clone(), slots);
     let cache = Some(provider.clone().unwrap_or_default());
     run(
         resolver,
@@ -283,6 +284,7 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
         state_cap: cap(select::MAX_STATE_BYTES),
         window_cap: cap(usize::MAX),
         cache,
+        slots: (cfg.find_relevant_judge_slots as usize).clamp(1, judge::MAX_SLOTS),
         state: Mutex::new(Default::default()),
     });
     run.discover(vec![".".into()], None).await;
