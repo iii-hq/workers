@@ -696,9 +696,11 @@ pub async fn select_file(
         }
     }
     if units::is_python(&path) && !whole.is_empty() {
-        let (text, ranges) = (source.snapshot.source.clone(), whole.clone());
+        let (text, ranges, deadline) =
+            (source.snapshot.source.clone(), whole.clone(), run.deadline);
         let neighbours =
-            tokio::task::spawn_blocking(move || passes::neighborhood(&text, &ranges)).await;
+            tokio::task::spawn_blocking(move || passes::neighborhood(&text, &ranges, deadline))
+                .await;
         whole.extend(neighbours.unwrap_or_default());
     }
     let expanded = source.excerpts_for(whole, partial, &chosen);
