@@ -914,7 +914,9 @@ export function ChatView({
     },
   })
   // Synchronous send guard covers the check, confirmation and compaction.
-  submitBlockedRef.current = submitBlocked || modelSwitch.pending
+  // `submit` re-checks an imported session itself, so the ref keeps the execution blocks
+  // only (see `executionBlocked`), plus a model switch in flight.
+  submitBlockedRef.current = executionBlocked || modelSwitch.pending
 
   const contextWindow = useMemo(() => {
     const match = modelOptions.find((o) => o.id === effectiveModel)
