@@ -277,7 +277,8 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
     () => (results ? flattenSearchRows(visibleGroups, results.paths, collapsed) : []),
     [results, visibleGroups, collapsed],
   )
-  const summary = results ? searchSummary(visibleGroups, results.paths, results.truncated) : null
+  // An incomplete ask has its own notice; "refine the query" is text-search advice.
+  const summary = results ? searchSummary(visibleGroups, results.paths, results.truncated && !ask) : null
   const allCollapsed = visibleGroups.length > 0 && visibleGroups.every((group) => collapsed.has(group.path))
 
   const toggleGroup = useCallback((path: string) => {
