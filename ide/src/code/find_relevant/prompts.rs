@@ -14,8 +14,8 @@
 //! keep jevgrep's names because the model reads them; renaming them only to
 //! sort would change the calibrated text more than the order does.
 
-// The evidence, file-assessment and test-body builders serve the selection
-// passes that follow navigation; until those land only tests reach them.
+// The file-assessment and test-body builders serve passes that follow
+// evidence selection; until those land only tests reach them.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;

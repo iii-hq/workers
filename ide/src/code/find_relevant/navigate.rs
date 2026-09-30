@@ -16,17 +16,17 @@ use std::time::Instant;
 
 use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
 use iii_helpers::observability::opentelemetry::Context;
+use judge_contract::Evaluation;
 use tokio::task::JoinSet;
 
 use super::prompts::{self, FilePreview, Kind, NavigationItem, RelationAnchor};
+use super::units::MAX_PARSE_BYTES;
 use super::walk::{self, Snap, Tree};
-use crate::code::judge::{Evaluator, JudgeError, SLOT_COUNT};
+use crate::code::judge::{Evaluator, JudgeError, Scores, SLOT_COUNT};
 
 /// jevgrep's per-request navigation caps.
 pub const MAX_ITEMS: usize = 128;
 pub const MAX_REQUEST_BYTES: usize = 38_000;
-/// Files larger than this are admitted on their preview alone.
-const MAX_PARSE_BYTES: usize = 1_000_000;
 /// Chunk size for a preview too large for one request.
 const CHUNK_BYTES: usize = 12_000;
 /// Admission threshold for directories and files (strict).
@@ -43,7 +43,6 @@ pub enum Stop {
 pub struct Candidate {
     pub path: String,
     /// Hash of the bytes the judge admitted; later passes re-check it.
-    #[allow(dead_code)]
     pub content_hash: String,
     pub score: f64,
 }
@@ -75,6 +74,8 @@ pub struct Run {
     pub deadline: Instant,
     /// Navigation request byte cap: jevgrep's, or twice a small window.
     pub cap: usize,
+    /// Evidence state byte cap, likewise.
+    pub state_cap: usize,
     pub state: Mutex<State>,
 }
 
@@ -87,10 +88,6 @@ impl Run {
         *self.state().issues.entry(kind.to_string()).or_default() += 1;
     }
 
-    fn halt(&self, stop: Stop) {
-        self.state().stop.get_or_insert(stop);
-    }
-
     /// True once the ask stopped; passing the deadline stops it.
     pub fn stopped(&self) -> bool {
         let mut state = self.state();
@@ -99,6 +96,40 @@ impl Run {
             *state.issues.entry("deadline".into()).or_default() += 1;
         }
         state.stop.is_some()
+    }
+
+    /// One judge call under the ask deadline, counted in the stats. A
+    /// missed deadline or a rejected request is an issue and an outage
+    /// halts the ask; `TooLarge` is left to the caller, which may split.
+    pub async fn call(&self, request: Evaluation) -> Result<Scores, JudgeError> {
+        let questions = request.questions.len() as u64;
+        let outcome = tokio::time::timeout_at(
+            self.deadline.into(),
+            (self.evaluate)(request, self.deadline),
+        )
+        .await
+        .unwrap_or(Err(JudgeError::Deadline));
+        let mut state = self.state();
+        if !matches!(outcome, Err(JudgeError::Deadline | JudgeError::Paused)) {
+            state.judge_calls += 1;
+            state.questions += questions;
+        }
+        match outcome {
+            Ok((scores, tokens)) => {
+                state.input_tokens += tokens;
+                return Ok(scores);
+            }
+            Err(JudgeError::TooLarge) => {}
+            Err(JudgeError::Deadline) => *state.issues.entry("deadline".into()).or_default() += 1,
+            Err(JudgeError::Rejected(_)) => {
+                *state.issues.entry("invalid_request".into()).or_default() += 1
+            }
+            Err(ref error @ (JudgeError::Unavailable(_) | JudgeError::Paused)) => {
+                *state.issues.entry("provider".into()).or_default() += 1;
+                state.stop.get_or_insert(Stop::Unavailable(error.reason()));
+            }
+        }
+        outcome.map(|(scores, _)| scores)
     }
 
     /// retrieve.ts `score`: batch `items`, ask the judge, split a batch the
@@ -121,16 +152,10 @@ impl Run {
                     break;
                 };
                 let request = prompts::navigation(&self.query, &group, anchor);
-                let (evaluate, deadline) = (self.evaluate.clone(), self.deadline);
+                let run = self.clone();
                 running.spawn(
-                    async move {
-                        let outcome =
-                            tokio::time::timeout_at(deadline.into(), evaluate(request, deadline))
-                                .await
-                                .unwrap_or(Err(JudgeError::Deadline));
-                        (group, outcome)
-                    }
-                    .with_context(Context::current()),
+                    async move { (group, run.call(request).await) }
+                        .with_context(Context::current()),
                 );
             }
             let Some(joined) = running.join_next().await else {
@@ -140,14 +165,8 @@ impl Run {
                 self.issue("provider");
                 continue;
             };
-            if !matches!(outcome, Err(JudgeError::Deadline | JudgeError::Paused)) {
-                let mut state = self.state();
-                state.judge_calls += 1;
-                state.questions += group.len() as u64;
-            }
             match outcome {
-                Ok((scores, tokens)) => {
-                    self.state().input_tokens += tokens;
+                Ok(scores) => {
                     for (i, item) in group.into_iter().enumerate() {
                         let p = scores.get(&prompts::key("q", i)).copied().unwrap_or(0.0);
                         results.push((item, p));
@@ -160,12 +179,7 @@ impl Run {
                     batches.push_back(second);
                 }
                 Err(JudgeError::TooLarge) => self.issue("request-size"),
-                Err(JudgeError::Deadline) => self.issue("deadline"),
-                Err(JudgeError::Rejected(_)) => self.issue("invalid_request"),
-                Err(error @ (JudgeError::Unavailable(_) | JudgeError::Paused)) => {
-                    self.issue("provider");
-                    self.halt(Stop::Unavailable(error.reason()));
-                }
+                Err(_) => {} // recorded by `call`
             }
         }
         results
