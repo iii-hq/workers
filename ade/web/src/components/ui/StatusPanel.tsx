@@ -70,12 +70,17 @@ export function StatusPanel({
       ) : null}
       <div className="min-w-0 flex flex-col gap-y-0.5">
         <div
-          className={cn('font-sans text-[13px] font-semibold', tone.headline)}
+          className={cn(
+            'font-sans text-[13px] font-semibold [overflow-wrap:anywhere]',
+            tone.headline,
+          )}
         >
           {headline}
         </div>
         {detail ? (
-          <div className="font-sans text-[12px] text-ink-faint">{detail}</div>
+          <div className="font-sans text-[12px] text-ink-faint [overflow-wrap:anywhere]">
+            {detail}
+          </div>
         ) : null}
       </div>
       {action ? (

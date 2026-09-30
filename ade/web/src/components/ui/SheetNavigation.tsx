@@ -1,6 +1,6 @@
 import { ArrowLeft, Check, ChevronRight } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useCallback, useId, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { BottomSheetDescription, BottomSheetTitle } from './BottomSheet'
 
@@ -62,11 +62,23 @@ export function SheetPage({
   className,
   contentClassName,
 }: SheetPageProps) {
+  const backButtonRef = useRef<HTMLButtonElement>(null)
+  const hasBack = onBack !== undefined
+
+  useEffect(() => {
+    if (!hasBack) return
+    const frame = window.requestAnimationFrame(() => {
+      backButtonRef.current?.focus()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [hasBack])
+
   return (
     <div className={cn('flex min-h-0 min-w-0 flex-1 flex-col', className)}>
       <div className="flex shrink-0 items-start gap-2 px-4 pb-4 pr-14">
         {onBack ? (
           <button
+            ref={backButtonRef}
             type="button"
             onClick={onBack}
             aria-label={backLabel}

@@ -8,7 +8,15 @@ import {
   Plus,
   RefreshCw,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type KeyboardEvent,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import {
   Tooltip,
@@ -82,17 +90,20 @@ interface PickerSubpageHeaderProps {
   title: string
   description: string
   onBack?: () => void
+  backButtonRef?: RefObject<HTMLButtonElement | null>
 }
 
 function PickerSubpageHeader({
   title,
   description,
   onBack,
+  backButtonRef,
 }: PickerSubpageHeaderProps) {
   return (
     <div className="flex shrink-0 items-start gap-2 px-4 py-3 pr-12">
       {onBack ? (
         <button
+          ref={backButtonRef}
           type="button"
           aria-label="back to models"
           onClick={onBack}
@@ -113,6 +124,10 @@ function PickerSubpageHeader({
       </div>
     </div>
   )
+}
+
+function stopMenuTabPropagation(event: KeyboardEvent<HTMLElement>) {
+  if (event.key === 'Tab') event.stopPropagation()
 }
 
 interface ModelGroup {
@@ -192,6 +207,11 @@ export function ModelPicker({
     useState<string | null>(null)
   const [addProviderOpen, setAddProviderOpen] = useState(false)
   const configurationGuard = useUnsavedGuard()
+  const providerBackRef = useRef<HTMLButtonElement | null>(null)
+  const addProviderBackRef = useRef<HTMLButtonElement | null>(null)
+  const configurationOriginRef = useRef<HTMLElement | null>(null)
+  const addProviderOriginRef = useRef<HTMLElement | null>(null)
+  const returnFocusRef = useRef<HTMLElement | null>(null)
 
   const optionsById = useMemo(
     () => new Map(options.map((option) => [option.id, option])),
@@ -253,6 +273,46 @@ export function ModelPicker({
       ? 'add-provider'
       : 'models'
 
+  useEffect(() => {
+    if (activePage === 'provider') {
+      const focusBackButton = () => {
+        providerBackRef.current?.focus()
+      }
+      providerBackRef.current?.focus()
+      const frame = window.requestAnimationFrame(focusBackButton)
+      return () => window.cancelAnimationFrame(frame)
+    }
+    if (activePage === 'add-provider') {
+      const focusBackButton = () => {
+        addProviderBackRef.current?.focus()
+      }
+      addProviderBackRef.current?.focus()
+      const frame = window.requestAnimationFrame(focusBackButton)
+      return () => window.cancelAnimationFrame(frame)
+    }
+    const returnFocus = returnFocusRef.current
+    if (activePage === 'models' && returnFocus) {
+      returnFocusRef.current = null
+      returnFocus.focus()
+    }
+  }, [activePage])
+
+  function rememberActiveElement(): HTMLElement | null {
+    return document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+  }
+
+  function openAddProvider() {
+    addProviderOriginRef.current = rememberActiveElement()
+    setAddProviderOpen(true)
+  }
+
+  function closeAddProvider() {
+    returnFocusRef.current = addProviderOriginRef.current
+    setAddProviderOpen(false)
+  }
+
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) {
       setOpen(true)
@@ -266,6 +326,7 @@ export function ModelPicker({
   }
 
   function openProviderConfiguration(providerId: string) {
+    configurationOriginRef.current = rememberActiveElement()
     setAddProviderOpen(false)
     setRenderedConfigurationProvider(providerId)
     setConfigurationProvider(providerId)
@@ -357,9 +418,7 @@ export function ModelPicker({
             showProviderConfiguration ? openProviderConfiguration : undefined
           }
           onAddProvider={
-            showProviderConfiguration
-              ? () => setAddProviderOpen(true)
-              : undefined
+            showProviderConfiguration ? openAddProvider : undefined
           }
           showReasoningEffort={showReasoningEffort}
           disabled={disabled}
@@ -372,12 +431,14 @@ export function ModelPicker({
         data-active={activePage === 'add-provider'}
         aria-hidden={activePage !== 'add-provider'}
         inert={activePage !== 'add-provider'}
+        onKeyDown={stopMenuTabPropagation}
         className="iii-ui-motion-picker-page absolute inset-0 flex min-h-0 flex-col [--picker-page-offset:var(--distance-base)]"
       >
         <PickerSubpageHeader
           title="Add a provider"
           description="Provider workers from the workers registry."
-          onBack={() => setAddProviderOpen(false)}
+          backButtonRef={addProviderBackRef}
+          onBack={closeAddProvider}
         />
         {addProviderOpen ? (
           <AddProviderPanel
@@ -393,6 +454,7 @@ export function ModelPicker({
         data-active={activePage === 'provider'}
         aria-hidden={activePage !== 'provider'}
         inert={activePage !== 'provider'}
+        onKeyDown={stopMenuTabPropagation}
         className="iii-ui-motion-picker-page absolute inset-0 flex min-h-0 flex-col [--picker-page-offset:var(--distance-base)]"
       >
         {renderedConfigurationProvider ? (
@@ -403,10 +465,12 @@ export function ModelPicker({
                 renderedConfigurationProvider
               }
               description="Credentials and provider-specific settings."
+              backButtonRef={providerBackRef}
               onBack={() =>
-                configurationGuard.tryNavigate(() =>
-                  setConfigurationProvider(null),
-                )
+                configurationGuard.tryNavigate(() => {
+                  returnFocusRef.current = configurationOriginRef.current
+                  setConfigurationProvider(null)
+                })
               }
             />
             <ProviderConfigurationPanel
