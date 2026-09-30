@@ -244,10 +244,12 @@ error.
 - **Latency.** An ask makes one judge call per batch of folders, files or
   declarations, so a whole-repo ask can take tens of seconds to minutes.
   Point `path` at the subtree the question is about.
-- **Shared slots.** At most 3 judge calls are in flight across the whole
-  worker (every ask, every session). `judge-typesafe` serves 4 at a time,
-  and the spare one keeps the harness and `iii-directory` judge calls
-  responsive. An outage pauses calls to that provider for 30 s.
+- **Shared slots.** At most `code.find_relevant_judge_slots` judge calls
+  (default 3, hot-reloaded) are in flight across the whole worker (every
+  ask, every session). `judge-typesafe` serves `concurrency` requests at a
+  time (default 4); keep the slots one or more below it so the harness and
+  `iii-directory` judge calls stay responsive, and raise both together to
+  speed up asks. An outage pauses calls to that provider for 30 s.
 - **What leaves the host.** Paths relative to `path`, never the host
   layout. The walk skips `non_accessible_globs`, `fs.denylist_paths`,
   gitignored entries, hidden entries below `path` (any dot-name, even one

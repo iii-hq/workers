@@ -31,13 +31,29 @@ pub const CALL_TIMEOUT_MS: u64 = 20_000;
 /// Model listing budget (the directory's `read_limits`).
 const MODELS_TIMEOUT_MS: u64 = 2_000;
 
-/// Worker-wide judge calls in flight.
-// ponytail: judge-typesafe serves 4 HTTP permits worker-wide
-// (judge-typesafe/src/client.rs:28); 3 leaves one for the harness reconcile
-// (2 s, pauses the judge on a deadline) and directory search (3 s). Raise it
-// together with typesafe's CONCURRENCY if asks measure too slow.
-pub const SLOT_COUNT: usize = 3;
-static SLOTS: Semaphore = Semaphore::const_new(SLOT_COUNT);
+/// Default worker-wide judge calls in flight (`code.find_relevant_judge_slots`):
+/// judge-typesafe's default `concurrency` is 4, and 3 leaves one for the
+/// harness reconcile (2 s, pauses the judge on a deadline) and directory
+/// search (3 s). Raise both together.
+pub const DEFAULT_SLOTS: usize = 3;
+pub const MAX_SLOTS: usize = 64;
+/// The worker's slot pool and its size; a new size replaces the pool.
+// ponytail: asks already waiting keep the old pool, so a resize briefly
+// allows old + new in flight; resize in place if that overlap matters.
+static SLOTS: Mutex<Option<(usize, Arc<Semaphore>)>> = Mutex::new(None);
+
+fn slots(count: usize) -> Arc<Semaphore> {
+    let count = count.clamp(1, MAX_SLOTS);
+    let mut slots = SLOTS.lock().unwrap_or_else(|p| p.into_inner());
+    match &*slots {
+        Some((size, pool)) if *size == count => pool.clone(),
+        _ => {
+            let pool = Arc::new(Semaphore::new(count));
+            *slots = Some((count, pool.clone()));
+            pool
+        }
+    }
+}
 
 /// Epoch ms until which each provider is skipped (`""` = the hub default).
 static PAUSED_UNTIL: Mutex<Option<HashMap<String, i64>>> = Mutex::new(None);
@@ -133,12 +149,15 @@ fn pause(provider: &str, now: i64) {
     }
 }
 
-/// Production [`Evaluator`] over the bus, bound to one provider.
-pub fn evaluator(iii: IIIClient, provider: Option<String>) -> Evaluator {
+/// Production [`Evaluator`] over the bus, bound to one provider and the
+/// configured slot count.
+pub fn evaluator(iii: IIIClient, provider: Option<String>, slot_count: usize) -> Evaluator {
     Arc::new(move |evaluation, deadline| {
         let iii = iii.clone();
         let provider = provider.clone();
-        Box::pin(async move { evaluate(&iii, evaluation, deadline, provider.as_deref()).await })
+        Box::pin(async move {
+            evaluate(&iii, evaluation, deadline, provider.as_deref(), slot_count).await
+        })
     })
 }
 
@@ -150,12 +169,14 @@ pub async fn evaluate(
     evaluation: Evaluation,
     deadline: Instant,
     provider: Option<&str>,
+    slot_count: usize,
 ) -> Result<(Scores, u64), JudgeError> {
     let key = provider.unwrap_or_default();
     if paused(key, now_ms()) {
         return Err(JudgeError::Paused);
     }
-    let _slot = tokio::time::timeout_at(deadline.into(), SLOTS.acquire())
+    let pool = slots(slot_count);
+    let _slot = tokio::time::timeout_at(deadline.into(), pool.acquire())
         .await
         .map_err(|_| JudgeError::Deadline)?
         .expect("judge slots are never closed");
@@ -460,6 +481,19 @@ mod tests {
             window_from(Err(iii_sdk::Error::Timeout)),
             Err(JudgeError::Unavailable("judge provider not ready".into()))
         );
+    }
+
+    #[test]
+    fn the_slot_pool_follows_the_configured_count() {
+        let three = slots(3);
+        assert!(Arc::ptr_eq(&three, &slots(3)));
+        assert_eq!(three.available_permits(), 3);
+        let eight = slots(8);
+        assert!(!Arc::ptr_eq(&three, &eight));
+        assert_eq!(eight.available_permits(), 8);
+        assert_eq!(slots(0).available_permits(), 1);
+        assert_eq!(slots(1000).available_permits(), MAX_SLOTS);
+        slots(DEFAULT_SLOTS);
     }
 
     #[test]

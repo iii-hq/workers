@@ -26,7 +26,7 @@ use tokio::task::JoinSet;
 use super::prompts::{self, ContentSample, FilePreview, Kind, NavigationItem, RelationAnchor};
 use super::units::{self, MAX_PARSE_BYTES};
 use super::walk::{self, Snap, Snapshot, Tree};
-use crate::code::judge::{Evaluator, JudgeError, Scores, SLOT_COUNT};
+use crate::code::judge::{Evaluator, JudgeError, Scores};
 
 /// jevgrep's per-request navigation caps.
 pub const MAX_ITEMS: usize = 128;
@@ -98,6 +98,8 @@ pub struct Run {
     /// Answer-cache namespace (the judge provider, `""` for the hub's
     /// default); `None` bypasses the cache.
     pub cache: Option<String>,
+    /// Judge calls this ask schedules at once (the worker's slot count).
+    pub slots: usize,
     pub state: Mutex<State>,
 }
 
@@ -233,7 +235,7 @@ impl Run {
         let mut queue = items.into_iter();
         let (mut running, mut results) = (JoinSet::new(), Vec::new());
         loop {
-            while running.len() < SLOT_COUNT && !self.stopped() {
+            while running.len() < self.slots && !self.stopped() {
                 let Some(item) = queue.next() else {
                     break;
                 };
@@ -265,7 +267,7 @@ impl Run {
         let mut results = Vec::new();
         let mut running = JoinSet::new();
         loop {
-            while running.len() < SLOT_COUNT && !self.stopped() {
+            while running.len() < self.slots && !self.stopped() {
                 let Some(group) = batches.pop_front() else {
                     break;
                 };

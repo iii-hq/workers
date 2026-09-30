@@ -873,6 +873,7 @@ mod tests {
             state_cap,
             window_cap: usize::MAX,
             cache: None,
+            slots: crate::code::judge::DEFAULT_SLOTS,
             state: Mutex::new(Default::default()),
         });
         (run, log)

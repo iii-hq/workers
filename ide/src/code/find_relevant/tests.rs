@@ -1044,6 +1044,7 @@ fn content_samples_take_head_middle_and_tail_and_shrink_to_fit() {
         state_cap: usize::MAX,
         window_cap: usize::MAX,
         cache: None,
+        slots: crate::code::judge::DEFAULT_SLOTS,
         state: Mutex::new(Default::default()),
     };
     let item = NavigationItem {
