@@ -31,7 +31,7 @@
     .shui-view-actions > button svg, .shui-scm-row-actions > button svg, .shui-timeline-turn-main .chevron, .shui-agent-tag svg,
     .shui-editor-head > button svg, .shui-goto-btn svg, .shui-review-option .menu-icon svg,
     .shui-launcher-recent-row .file-icon, .shui-quick-open-row .file-icon, .shui-browser-crumb-group svg,
-    .shui-chat-summary-pill .files-icon, .shui-chat-summary-pill .chevron, .shui-file-changes-more svg,
+    .shui-chat-summary-pill .files-icon, .shui-chat-summary-pill .chevron, .shui-file-changes-more svg, .shui-relevant-icon,
     .shui-terminal-tab-action svg, .shui-terminal-tab-new svg, .shui-terminal-action svg, .shui-terminal-status-action svg,
     .shui-terminal-jump svg) { width: 16px; height: 16px; flex: none; }
   :is(.shui-side-tab, .shui-collapse-btn, .shui-tree-note-close, .shui-search-toggle, .shui-search-details-toggle,
@@ -412,6 +412,232 @@
       gap: 3px;
     }
     .shui-file-change-row { align-items: flex-start; gap: 8px; }; }
+
+  /* ── the find-relevant artifact (coder::find-relevant chat calls) ─── */
+  .shui-relevant {
+    --shui-file-state-duration: var(--motion-duration-control);
+    --shui-file-panel-duration: var(--motion-duration-panel);
+    --shui-file-state-ease: var(--motion-ease-standard);
+    --shui-file-panel-ease: var(--motion-ease-enter);
+    container-type: inline-size;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+  }
+  .shui-relevant ::selection { background: color-mix(in oklab, var(--color-accent) 28%, transparent); }
+  .shui-relevant-head {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 10px 12px;
+    background: var(--color-panel-raised);
+  }
+  .shui-relevant-icon { color: var(--color-accent); }
+  .shui-relevant-title-group {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+  }
+  .shui-relevant-title { margin: 0; font-size: 13px; font-weight: 500; line-height: 1.4; }
+  .shui-relevant-stats {
+    flex: none;
+    color: var(--color-ink-faint);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  /* The one moving part: an indeterminate sweep along the header edge while
+     the judge walks the tree. */
+  .shui-relevant-progress {
+    position: absolute;
+    inset: auto 0 0;
+    height: 1px;
+    overflow: hidden;
+  }
+  .shui-relevant-progress::after {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 32%;
+    background: linear-gradient(90deg, transparent, var(--color-accent), transparent);
+    animation: shui-relevant-sweep calc(var(--motion-duration-panel) * 4) var(--motion-ease-standard) infinite;
+  }
+  .shui-relevant-query {
+    margin: 0;
+    padding: 10px 12px;
+    color: var(--color-ink);
+    font-size: 13px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+  .shui-relevant-query q { quotes: "\201C" "\201D"; }
+  .shui-relevant-query .scope {
+    margin-right: 8px;
+    color: var(--color-ink-faint);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .shui-relevant-note {
+    margin: 0;
+    padding: 0 12px 10px;
+    color: var(--color-ink-faint);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .shui-relevant-note.is-partial { color: color-mix(in oklab, var(--color-warn) 70%, var(--color-ink)); }
+  .shui-relevant-note.is-unavailable { color: color-mix(in oklab, var(--color-alert) 70%, var(--color-ink)); }
+  .shui-relevant-note code { font-family: var(--font-mono); font-size: 11px; }
+  /* The row-button reset's :is() carries button.* specificity; restate the
+     shared overflow toggle's size inside this card. */
+  .shui-relevant .shui-file-changes-more { font-size: 12px; }
+  .shui-relevant-list { margin: 0; padding: 0; list-style: none; }
+  .shui-relevant-row:nth-child(even) { background: var(--color-surface); }
+  .shui-relevant[data-state="settled"] .shui-relevant-list > .shui-relevant-row {
+    animation: shui-relevant-row-in var(--motion-duration-control) var(--motion-ease-enter) both;
+  }
+  .shui-relevant[data-state="settled"] .shui-relevant-list > .shui-relevant-row:nth-child(2) { animation-delay: calc(var(--motion-duration-fast) / 3); }
+  .shui-relevant[data-state="settled"] .shui-relevant-list > .shui-relevant-row:nth-child(3) { animation-delay: calc(var(--motion-duration-fast) * 2 / 3); }
+  .shui-relevant[data-state="settled"] .shui-relevant-list > .shui-relevant-row:nth-child(n + 4) { animation-delay: var(--motion-duration-fast); }
+  .shui-relevant-file {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr) auto auto;
+    align-items: center;
+    column-gap: 12px;
+    width: 100%;
+    padding: 7px 12px;
+    border: 0;
+    background: transparent;
+    color: var(--color-ink);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    text-align: left;
+  }
+  button.shui-relevant-file { cursor: pointer; }
+  button.shui-relevant-file:hover .name {
+    color: var(--color-accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  :is(button.shui-relevant-file, .shui-relevant-link, .shui-relevant-lead):focus-visible {
+    outline: 2px solid var(--color-rule-focus);
+    outline-offset: -2px;
+  }
+  .shui-relevant-meter {
+    position: relative;
+    height: 4px;
+    overflow: hidden;
+    border-radius: 6px;
+    background: color-mix(in oklab, var(--color-ink-ghost) 40%, transparent);
+  }
+  .shui-relevant-meter::after {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: calc(var(--rank, 0) * 100%);
+    border-radius: inherit;
+    background: var(--color-accent);
+  }
+  .shui-relevant-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shui-relevant-path .dir { color: var(--color-ink-faint); }
+  .shui-relevant-roles,
+  .shui-relevant-counts {
+    color: var(--color-ink-faint);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .shui-relevant-roles { max-width: 22ch; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-sans); }
+  .shui-relevant-counts { font-variant-numeric: tabular-nums; }
+  .shui-relevant-detail { padding: 0 12px 10px 52px; }
+  .shui-relevant-excerpt {
+    margin: 0;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--color-panel);
+  }
+  .shui-relevant-excerpt-cap {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 5px 10px 3px;
+    color: var(--color-ink-faint);
+    font-size: 11px;
+  }
+  .shui-relevant-link {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--color-accent);
+    font: inherit;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+  }
+  .shui-relevant-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .shui-relevant-code {
+    margin: 0;
+    padding: 0 0 6px;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.55;
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-ink-ghost) transparent;
+  }
+  .shui-relevant-code[data-clipped] {
+    mask-image: linear-gradient(to bottom, var(--color-ink) calc(100% - 2.2em), transparent);
+  }
+  .shui-relevant-line { display: flex; min-width: max-content; }
+  .shui-relevant-line .gutter {
+    flex: none;
+    width: 5ch;
+    padding-right: 12px;
+    color: var(--color-ink-ghost);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    user-select: none;
+  }
+  .shui-relevant-line .text { padding-right: 12px; white-space: pre; }
+  .shui-relevant-leads {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 6px;
+    margin: 8px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .shui-relevant-lead {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    max-width: 100%;
+    padding: 2px 7px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  button.shui-relevant-lead { cursor: pointer; }
+  button.shui-relevant-lead:hover { background: var(--color-surface-hover); }
+  .shui-relevant-lead .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shui-relevant-lead .range { flex: none; color: var(--color-ink-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .shui-relevant-leads-more { color: var(--color-ink-faint); font-family: var(--font-mono); font-size: 11px; }
+  .shui-relevant-row:nth-child(even) .shui-relevant-lead { background: var(--color-bg); }
+  @container (max-width: 520px) {
+    .shui-relevant-title-group { flex-direction: column; align-items: flex-start; gap: 2px; }
+    .shui-relevant-file { grid-template-columns: 28px minmax(0, 1fr) auto; }
+    .shui-relevant-roles { display: none; }
+    .shui-relevant-detail { padding-left: 12px; }
+  }
 
   /* ── the chat footer's "N files changed" pill + popover ───────────── */
   .shui-chat-summary {
@@ -3480,6 +3706,16 @@
   [data-iii-ui="ide"] .shui-quick-open-foot { padding-bottom: max(4px, env(safe-area-inset-bottom)); }
 }
 
+@keyframes shui-relevant-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(320%); }
+}
+
+@keyframes shui-relevant-row-in {
+  from { opacity: 0; transform: translateY(4px); filter: blur(2px); }
+  to { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
+
 @keyframes shui-file-change-metric-in {
   from { opacity: 0; transform: translateY(4px); filter: blur(2px); }
   to { opacity: 1; transform: translateY(0); filter: blur(0); }
@@ -3496,6 +3732,7 @@
     .shui-file-changes-overflow .shui-file-change-row,
     .shui-file-changes-more-label > span,
     .shui-file-changes-more svg,
+    .shui-relevant-row,
     .shui-chat-summary-pill .chevron,
     .shui-chat-summary-popover,
     .shui-launcher-card,
@@ -3507,4 +3744,5 @@
     filter: none !important;
     transform: none !important;
   }
+  [data-iii-ui="ide"] .shui-relevant-progress::after { animation: none; width: 100%; opacity: 0.4; }
 }
