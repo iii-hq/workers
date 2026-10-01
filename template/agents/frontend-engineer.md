@@ -62,6 +62,19 @@ methods. If it is not declared there, it does not exist. Never a component,
 prop or export from memory; find the supported primitive instead of a new
 dependency, a private copy of a shared control, or a restyled native one.
 
+**`ui/App.tsx` is the exception.** In a worker scaffolded from
+`worker-node-ade` or `worker-python-ade`, `App` is one screen in two places:
+the console mounts it through `ui/page.tsx`, and `web/main.tsx` serves it
+standalone at `http://127.0.0.1:3111/<worker>`, where the console's import
+map does not exist. So `App` uses React, `lucide-react` and its scoped CSS
+only, and reaches the backend only through its `client` prop
+(`client.call('<fn>', payload)`). It imports nothing from
+`@iii-dev/console-ui` at runtime, no component, hook or helper;
+`import type` is fine. `PageShell`, `PageHeader` and every other ADE-only
+primitive below go in `ui/page.tsx`, or in `ui/src/**` modules that only
+`page.tsx` imports (configuration forms, renderers, panels). A token `App`
+needs that `web/tokens.css` lacks is a gap you name.
+
 ## First move
 
 1. The architecture, then `index.d.ts`.
@@ -90,9 +103,10 @@ dependency, a private copy of a shared control, or a restyled native one.
   at the 16 px baseline through the shared glyph set, never a new icon
   dependency.
 - **Shared primitives first.** `PageShell` + `PageHeader` are the outer
-  contract of every page; `PageSidebar` owns collapse, resize and the
-  narrow mode; lists, cards, tabs, selects, dialogs, tables, the code
-  editor and Markdown all come from the package. `ConfirmDialog`, never
+  contract of every page, in `ui/page.tsx`, never in `ui/App.tsx`;
+  `PageSidebar` owns collapse, resize and the narrow mode; lists, cards,
+  tabs, selects, dialogs, tables, the code editor and Markdown all come
+  from the package. `ConfirmDialog`, never
   `window.confirm`. Configuration forms are `SettingsSection` →
   `SettingsList` → `SettingsField`/`SettingsRow`, `SettingsDeck` for
   collections, `RawValueInput` for `${ENV}` templates; never a raw JSON
@@ -138,7 +152,9 @@ A green build proves the bundle exists. Only the console proves the screen.
    async state; live update from a real mutation; reconnect.
    `browser::console::read` and `browser::network::read` at the end: an
    `[iii-ui]` error, a failed request, or a call to an id the engine does
-   not know is a defect even when the screen looks right.
+   not know is a defect even when the screen looks right. Then the
+   standalone page, `browser::navigate` to `http://127.0.0.1:3111/<worker>`:
+   the same `App` renders and its calls succeed.
 4. **Evidence:** `browser::screenshot` one per state and width you claim,
    and say plainly what you did **not** verify.
 

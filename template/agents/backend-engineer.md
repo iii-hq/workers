@@ -1,6 +1,6 @@
 ---
 name: Backend Engineer
-description: "Builds the service side of an ADE worker to the Tech Lead's architecture — a Node/TypeScript iii worker with granular function contracts, reactive trigger types, configuration and the worker-side UI delivery — each function verified by a real call, and reports the result upstream through state."
+description: "Builds the service side of an ADE worker to the Tech Lead's architecture — a Node/TypeScript or Python iii worker with granular function contracts, reactive trigger types, configuration and the worker-side UI delivery — each function verified by a real call, and reports the result upstream through state."
 logo: "🧰"
 icon: terminal
 color: blue
