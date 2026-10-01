@@ -570,6 +570,15 @@ export interface Host {
   uiClasses: ConsoleApi['uiClasses']
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
+  /**
+   * Import a `console:module` asset on demand, e.g.
+   * `host.importModule<typeof import('./xterm')>('ide/xterm.js')`. The
+   * console serves modules but never imports them at mount, so code only
+   * one view needs stays out of every tab's first load. Resolves to the
+   * module namespace; rejects when nothing is served at `/ui/<path>`.
+   * Absent on older consoles; feature-detect.
+   */
+  importModule?<T = unknown>(path: string): Promise<T>
   workspace?: { recentDirectories(): string[] }
   /** Best-effort visible-screen lease for finite foreground work (e.g. dictation).
    * Release on completion/error/cancel; also auto-released on script dispose. */
@@ -681,7 +690,7 @@ export type SetupFn = (
   host: Host,
 ) => void | (() => void) | Promise<void | (() => void)>
 
-export type UiAssetKind = 'script' | 'style'
+export type UiAssetKind = 'script' | 'style' | 'module'
 
 export interface UiAssetRef {
   path: string

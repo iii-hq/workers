@@ -250,7 +250,7 @@ data_dir: data/ade    # ephemeral per-instance state: the workspace layout (defa
 |---|---|---|
 | `http_host` | `0.0.0.0` | HTTP bind address; set `127.0.0.1` for local access only. Applied at startup |
 | `http_port` | `3113` | Initial TCP port seed for `/`, `/assets/*`, and `/ws`; the stored `console.http_port` wins thereafter |
-| `injectable_ui` | `true` | When `false`, skips the `console:script` / `console:style` / `console:assets` trigger types, the `/ui` + `/vendor` routes, and the SPA loader (`console::ui-manifest` answers `disabled: true`) |
+| `injectable_ui` | `true` | When `false`, skips the `console:script` / `console:style` / `console:module` / `console:assets` trigger types, the `/ui` + `/vendor` routes, and the SPA loader (`console::ui-manifest` answers `disabled: true`) |
 | `data_dir` | `data/ade` | Initial seed for the directory holding ephemeral per-instance state — the workspace tabs/panes layout (`workspace.json`). Relative paths resolve against `III_COMPOSE_DIR` (or the process directory outside Compose); absolute and `~/` paths keep their meaning. The stored `console.data_dir` wins thereafter |
 
 The configuration entry also stores UI preferences and
@@ -296,12 +296,13 @@ The SPA bundle is embedded into the binary at compile time via [`rust-embed`](ht
 Workers extend the console at **runtime** — whole pages, function-trigger
 renderers, and layered trigger-activity renderers as plain React
 components sharing the console's React instance
-(spec: `iii/tech-specs/2026-07-17-injectable-ui`). The console owns three
+(spec: `iii/tech-specs/2026-07-17-injectable-ui`). The console owns four
 injectable-UI trigger types:
 
 | Type id | Registered by | Carries |
 |---|---|---|
 | `console:script` | workers | an ESM script asset; `config.path` (e.g. `state/page.js`) is its identity — re-registering a path overrides it (hot reload) |
+| `console:module` | workers | an ESM module served at `/ui/<path>` like a script (`.js`, same cap and per-worker toggle) but never imported at mount: a script loads it with `host.importModule(path)` (the ide's xterm terminal). Manifest and pushes carry it as kind `module` |
 | `console:style` | workers | a CSS asset, applied as a `<link>` swap |
 | `console:assets` | console tabs | the live-update subscription the console pushes `sync`/`set`/`delete` events to |
 

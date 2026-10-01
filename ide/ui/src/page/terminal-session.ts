@@ -1,7 +1,6 @@
 import type { Host } from '@iii-dev/console-ui'
 import { useTerminalFontSize } from '@iii-workers/terminal-font'
-import { FitAddon } from '@xterm/addon-fit'
-import { Terminal } from '@xterm/xterm'
+import type { Terminal } from '@xterm/xterm'
 import {
   useCallback,
   useEffect,
@@ -126,6 +125,32 @@ const MAX_QUEUED_INPUT_BYTES = 64 * 1024
 /** The backend's MAX_INPUT_BYTES: no `shell::pty::write` may carry more. */
 const MAX_WRITE_BYTES = 64 * 1024
 const HEARTBEAT_MS = 10_000
+
+type XtermModule = typeof import('../../xterm')
+
+let xtermLoad: Promise<XtermModule> | null = null
+
+/**
+ * The terminal emulator, imported once on first use: it ships as its own
+ * console:module (ui/xterm.ts) so a console tab that never opens a terminal
+ * never downloads it. A failed import clears the memo so the next attempt
+ * imports again. The memo outlives a hot reload of xterm.js alone: new bytes
+ * reach a tab when page.js reloads.
+ */
+function loadXterm(host: Host): Promise<XtermModule> {
+  if (!host.importModule) {
+    return Promise.reject(
+      new Error('this console predates lazy modules; update the ade worker'),
+    )
+  }
+  xtermLoad ??= host
+    .importModule<XtermModule>('ide/xterm.js')
+    .catch((error: unknown) => {
+      xtermLoad = null
+      throw error
+    })
+  return xtermLoad
+}
 
 /**
  * Input typed while a write is in flight goes out together when it lands: one
@@ -272,6 +297,7 @@ export function useTerminalSession(
   )
   const [atBottom, setAtBottom] = useState(true)
   const [restartToken, setRestartToken] = useState(0)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<(() => void) | null>(null)
   // The size every terminal in the console shares, agent pages included. Held
@@ -498,116 +524,148 @@ export function useTerminalSession(
   )
 
   useEffect(() => {
-    if (!visible || !container) return
-    const readTheme = () => {
-      const styles = window.getComputedStyle(container)
-      const color = (name: string, fallback: string) =>
-        styles.getPropertyValue(name).trim() || fallback
-      const background = color('--color-bg', styles.backgroundColor || '#111111')
-      return {
-        background,
-        foreground: color('--color-ink', styles.color || '#e5e5e5'),
-        cursor: color('--color-ink', styles.color || '#e5e5e5'),
-        cursorAccent: background,
-        selectionBackground: color('--color-surface-active', '#3a3a3a'),
-        ...terminalAnsiPalette(background),
-      }
-    }
-    const styles = window.getComputedStyle(container)
-    const color = (name: string, fallback: string) =>
-      styles.getPropertyValue(name).trim() || fallback
-    const terminal = new Terminal({
-      cursorBlink: true,
-      cursorStyle: 'block',
-      fontFamily: color(
-        '--font-mono',
-        'ui-monospace, SFMono-Regular, Menlo, monospace',
-      ),
-      fontSize: fontSizeRef.current,
-      lineHeight: 1.2,
-      scrollback: 10_000,
-      scrollOnUserInput: true,
-      theme: readTheme(),
-    })
-    const fitAddon = new FitAddon()
-    const terminalHost = document.createElement('div')
-    terminalHost.className = 'shui-xterm-host'
-    terminal.loadAddon(fitAddon)
-    container.appendChild(terminalHost)
-    terminal.open(terminalHost)
-    terminalRef.current = terminal
-
-    const input = terminal.onData((data) =>
-      sendInput(new TextEncoder().encode(data)),
-    )
-    const binary = terminal.onBinary((data) =>
-      sendInput(binaryStringToBytes(data)),
-    )
-    const resized = terminal.onResize(({ cols, rows }) =>
-      sendResize(cols, rows),
-    )
-    const scrolled = terminal.onScroll((viewportY) => {
-      setAtBottom(viewportY >= terminal.buffer.active.baseY)
-    })
-    for (const chunk of preMountOutputRef.current) terminal.write(chunk)
-    preMountOutputRef.current = []
-
-    let fitFrame = 0
-    const fitTerminal = () => {
-      // Fitting a sliver hands the PTY a 1-column terminal, and the shell
-      // redraws its prompt at that width — the stray "%" marks and clipped
-      // prompts that survive the pane growing back. Inside a hidden panel the
-      // fit addon reads the CSS size, "100%", as 100px: a few cells square.
-      if (!terminalPaneMeasurable(container)) return
-      try {
-        fitAddon.fit()
-      } catch {
-        return
-      }
-      dimensionsRef.current = normalizeTerminalDimensions(
-        terminal.cols,
-        terminal.rows,
-      )
-    }
-    const scheduleFit = () => {
-      if (fitFrame) window.cancelAnimationFrame(fitFrame)
-      fitFrame = window.requestAnimationFrame(() => {
-        fitFrame = 0
-        fitTerminal()
+    if (!visible || !container || !host) return
+    let cancelled = false
+    let retryTimer = 0
+    // The import can take a while: focus the user has since put elsewhere
+    // (the editor, the chat composer) stays there.
+    const focusedBefore = document.activeElement
+    // A module still registering 404s at first: retry, backing off. A
+    // console without importModule never loads it, so that fails once.
+    const load = (attempt: number): Promise<XtermModule> =>
+      loadXterm(host).catch((error: unknown) => {
+        if (cancelled) throw error
+        preMountOutputRef.current = []
+        setLoadError(`Terminal failed to load: ${errorMessage(error)}`)
+        if (!host.importModule) throw error
+        return new Promise<XtermModule>((resolve) => {
+          retryTimer = window.setTimeout(
+            () => resolve(load(attempt + 1)),
+            Math.min(30_000, 1_000 * 2 ** attempt),
+          )
+        })
       })
-    }
-    fitRef.current = fitTerminal
-    const observer = new ResizeObserver(scheduleFit)
-    observer.observe(container)
-    const themeObserver = new MutationObserver(() => {
-      terminal.options.theme = readTheme()
-    })
-    themeObserver.observe(document.documentElement, {
-      attributeFilter: ['data-theme', 'class'],
-    })
-    const frame = window.requestAnimationFrame(() => {
-      fitTerminal()
-      terminal.focus()
-    })
+    void load(0).then(
+      ({ Terminal, FitAddon }) => {
+        if (cancelled) return
+        setLoadError(null)
+        const readTheme = () => {
+          const styles = window.getComputedStyle(container)
+          const color = (name: string, fallback: string) =>
+            styles.getPropertyValue(name).trim() || fallback
+          const background = color('--color-bg', styles.backgroundColor || '#111111')
+          return {
+            background,
+            foreground: color('--color-ink', styles.color || '#e5e5e5'),
+            cursor: color('--color-ink', styles.color || '#e5e5e5'),
+            cursorAccent: background,
+            selectionBackground: color('--color-surface-active', '#3a3a3a'),
+            ...terminalAnsiPalette(background),
+          }
+        }
+        const styles = window.getComputedStyle(container)
+        const color = (name: string, fallback: string) =>
+          styles.getPropertyValue(name).trim() || fallback
+        const terminal = new Terminal({
+          cursorBlink: true,
+          cursorStyle: 'block',
+          fontFamily: color(
+            '--font-mono',
+            'ui-monospace, SFMono-Regular, Menlo, monospace',
+          ),
+          fontSize: fontSizeRef.current,
+          lineHeight: 1.2,
+          scrollback: 10_000,
+          scrollOnUserInput: true,
+          theme: readTheme(),
+        })
+        const fitAddon = new FitAddon()
+        const terminalHost = document.createElement('div')
+        terminalHost.className = 'shui-xterm-host'
+        terminal.loadAddon(fitAddon)
+        container.appendChild(terminalHost)
+        terminal.open(terminalHost)
+        terminalRef.current = terminal
 
-    terminalCleanupRef.current = () => {
-      window.cancelAnimationFrame(frame)
-      if (fitFrame) window.cancelAnimationFrame(fitFrame)
-      themeObserver.disconnect()
-      observer.disconnect()
-      scrolled.dispose()
-      resized.dispose()
-      binary.dispose()
-      input.dispose()
-      terminal.dispose()
-      if (terminalRef.current === terminal) terminalRef.current = null
-      if (fitRef.current === fitTerminal) fitRef.current = null
-    }
+        const input = terminal.onData((data) =>
+          sendInput(new TextEncoder().encode(data)),
+        )
+        const binary = terminal.onBinary((data) =>
+          sendInput(binaryStringToBytes(data)),
+        )
+        const resized = terminal.onResize(({ cols, rows }) =>
+          sendResize(cols, rows),
+        )
+        const scrolled = terminal.onScroll((viewportY) => {
+          setAtBottom(viewportY >= terminal.buffer.active.baseY)
+        })
+        for (const chunk of preMountOutputRef.current) terminal.write(chunk)
+        preMountOutputRef.current = []
+
+        let fitFrame = 0
+        const fitTerminal = () => {
+          // Fitting a sliver hands the PTY a 1-column terminal, and the shell
+          // redraws its prompt at that width — the stray "%" marks and clipped
+          // prompts that survive the pane growing back. Inside a hidden panel the
+          // fit addon reads the CSS size, "100%", as 100px: a few cells square.
+          if (!terminalPaneMeasurable(container)) return
+          try {
+            fitAddon.fit()
+          } catch {
+            return
+          }
+          dimensionsRef.current = normalizeTerminalDimensions(
+            terminal.cols,
+            terminal.rows,
+          )
+        }
+        const scheduleFit = () => {
+          if (fitFrame) window.cancelAnimationFrame(fitFrame)
+          fitFrame = window.requestAnimationFrame(() => {
+            fitFrame = 0
+            fitTerminal()
+          })
+        }
+        fitRef.current = fitTerminal
+        const observer = new ResizeObserver(scheduleFit)
+        observer.observe(container)
+        const themeObserver = new MutationObserver(() => {
+          terminal.options.theme = readTheme()
+        })
+        themeObserver.observe(document.documentElement, {
+          attributeFilter: ['data-theme', 'class'],
+        })
+        const frame = window.requestAnimationFrame(() => {
+          fitTerminal()
+          const focused = document.activeElement
+          if (!focused || focused === document.body || focused === focusedBefore) {
+            terminal.focus()
+          }
+        })
+
+        terminalCleanupRef.current = () => {
+          window.cancelAnimationFrame(frame)
+          if (fitFrame) window.cancelAnimationFrame(fitFrame)
+          themeObserver.disconnect()
+          observer.disconnect()
+          scrolled.dispose()
+          resized.dispose()
+          binary.dispose()
+          input.dispose()
+          terminal.dispose()
+          if (terminalRef.current === terminal) terminalRef.current = null
+          if (fitRef.current === fitTerminal) fitRef.current = null
+        }
+      },
+      () => undefined,
+    )
     return () => {
+      cancelled = true
+      window.clearTimeout(retryTimer)
       terminalCleanupRef.current?.()
       terminalCleanupRef.current = null
     }
-  }, [container, sendInput, sendResize, visible])
+  }, [container, host, sendInput, sendResize, visible])
 
   // New type means new cell metrics: the pane refits, and the PTY learns the
   // new geometry through the onResize path the session already forwards. A
@@ -622,7 +680,9 @@ export function useTerminalSession(
 
   useEffect(() => {
     void restartToken
-    if (!visible || !router || !host || !root) return
+    // No shell behind a terminal that failed to load: it detaches until a
+    // retry mounts one, and its output stays with the backend meanwhile.
+    if (!visible || !router || !host || !root || loadError) return
     // Closing, the pane only waits to be removed: no attach, and above all no
     // fresh shell when the attach finds the old one gone.
     if (connectionCoordinator.closing) return
@@ -855,6 +915,7 @@ export function useTerminalSession(
     connectionCoordinator,
     host,
     leaseStore,
+    loadError,
     paneId,
     removeLease,
     restartToken,
@@ -1062,7 +1123,7 @@ export function useTerminalSession(
     () => ({
       atBottom,
       cwd: state.cwd,
-      error: state.error,
+      error: loadError ?? state.error,
       focus,
       jumpToLatest,
       restart,
@@ -1078,6 +1139,7 @@ export function useTerminalSession(
       focus,
       forget,
       jumpToLatest,
+      loadError,
       restart,
       startFresh,
       state.cwd,

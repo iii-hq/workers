@@ -144,7 +144,7 @@ fn schema() -> Value {
             },
             "injectableUi": {
                 "type": "object",
-                "description": "Injectable worker UI controls (console:script / console:style assets).",
+                "description": "Injectable worker UI controls (console:script / console:style / console:module assets).",
                 "properties": {
                     "disabledWorkers": {
                         "type": "array",

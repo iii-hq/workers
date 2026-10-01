@@ -13,11 +13,13 @@ never restate one). Behavior across widths and forms: `ade/design-console-ui`.
 
 ## How it works
 
-A worker registers `console:script` and `console:style` triggers whose
-`config.path` identifies an asset and whose `function_id` serves `{content}`
-for `{path}`. The console hashes and serves those bytes, then pushes changes
-to open tabs. Tabs `import()` scripts and call their default `setup(host)`;
-styles load as scoped `<link>` assets. Re-registering a path hot-reloads it.
+A worker registers `console:script` and `console:style` triggers (plus
+`console:module` for code loaded on demand) whose `config.path` identifies an
+asset and whose `function_id` serves `{content}` for `{path}`. The console
+hashes and serves those bytes, then pushes changes to open tabs. Tabs
+`import()` scripts and call their default `setup(host)`; styles load as scoped
+`<link>` assets; modules load only when a script calls
+`host.importModule(path)`. Re-registering a path hot-reloads it.
 Registration is deployment; disconnect is teardown.
 
 ## Project layout
@@ -152,6 +154,7 @@ consoles: feature-detect them.
 | `host.palette?` | `registerSource({ id, title, kind, prefix?, minQuery?, search })` adds live rows to the command palette; `open({ query? })`. |
 | `host.commands?` | `register(pageId, commands)` — palette rows for a page that may not be open yet (`run` usually calls `panels.open`). A mounted page contributes keys through `PageRenderProps.commands`. |
 | `host.iii` | The tab's bus client: `trigger(functionId, payload?, { timeoutMs? })`, `on(functionId, handler)`, `registerTrigger({ type, function_id, config })`, `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. |
+| `host.importModule?` | `importModule<T>(path)` imports one of the worker's `console:module` assets on demand and resolves to its namespace (Lazy modules below); rejects when nothing is served at `/ui/<path>`. |
 | `host.components`, `host.path`, `host.useTheme`, `host.uiClasses`, `host.workspace?`, `host.screen?` | Runtime component record, the current asset path, theme, class recipes, recent directories, visible-screen lease. |
 
 `PageRenderProps`: `panelSide` (`'left' | 'right'`, only to keep wide side
@@ -249,6 +252,34 @@ never add another icon dependency. Sizes: `ade/design-system` › Numbers.
 Never bundle Monaco, CodeMirror, a diff renderer, or an ANSI parser; use
 `CodeEditor`, `FileDiff`, and the terminal atoms.
 
+### Lazy modules
+
+Heavy code only one view needs (the ide terminal's `@xterm/xterm`) ships as
+a `console:module`: served at `/ui/<path>` like a script, never imported at
+mount. The page imports it when the view opens:
+
+```tsx
+if (!host.importModule) throw new Error('this console predates lazy modules')
+const { Terminal } = await host.importModule<typeof import('./xterm')>('ide/xterm.js')
+```
+
+1. Add the entry (`ui/xterm.ts`, exporting what the page uses) to
+   `buildWorkerUi({ entryPoints: ['page.tsx', 'styles.css', 'xterm.ts'] })`;
+   it emits the fixed-name `dist/xterm.js`.
+2. Embed it with `include_str!` and register it with `.module(path, …)`
+   (Registration below).
+3. Page code imports the library only as types (`import type`,
+   `typeof import('./xterm')`): one value import bundles it back into
+   `page.js`.
+
+`importModule` loads the hash-versioned URL when the tab knows the module, so
+a hot reload applies at the next call, and the bare `/ui/<path>` otherwise,
+so a call that beats the module's push to the tab still loads it. The console
+serves a module only once its registration lands: register modules before
+the scripts that import them (`ConsoleUi` does), and retry a rejected import
+with backoff, since the registration may still be landing (the ide terminal
+does).
+
 ## 2. The style asset (`ui/styles.css`)
 
 Plain CSS, **every top-level rule scoped under the worker's wrapper
@@ -298,7 +329,7 @@ attribute** — the console mounts each render inside
 | Option | Default | Purpose |
 |---|---|---|
 | `scope` | required | The `data-iii-ui` value — first asset path segment, normally the worker name |
-| `entryPoints` | `['page.tsx', 'styles.css']` | Extra scripts each need their own `console:script` trigger and a default `setup` |
+| `entryPoints` | `['page.tsx', 'styles.css']` | Extra scripts each need their own `console:script` trigger and a default `setup`; a lazy module needs a `console:module` trigger and no `setup` |
 | `outdir`, `root` | `'dist'`, `process.cwd()` | Pass `root: import.meta.dirname` when invoked from elsewhere |
 | `keyframePrefixes` | `[scope, "<scope>-ui"]` | Allowed `@keyframes` name prefixes |
 | `allowUnscopedSelectors` | `[]` | Selector prefixes that are global on purpose (a portal root, vendor CSS such as `.xterm`) |
@@ -373,11 +404,13 @@ ConsoleUi::new("mywork")
 
 This registers `<worker>::ui-content`, one Message-path trigger per asset,
 and the `III_<WORKER>_UI_WATCH` watcher; it panics on a path the console
-would reject. Export `ui` from the worker library and call `ui::register(&iii)`
-after its normal functions; adapt `state/build.rs` so missing or stale UI
-sources build before `include_str!`. Node workers register one function
+would reject; `.module(path, content)` adds a `console:module` the same way.
+Export `ui` from the worker library and call `ui::register(&iii)` after its
+normal functions; adapt `state/build.rs` so missing or stale UI sources build
+before `include_str!`. Node workers register one function
 mapping `{path}` to `{content, content_type?}`, then one Message-path
-`console:script` or `console:style` trigger per asset with `config: {path}`.
+`console:script`, `console:style` or `console:module` trigger per asset with
+`config: {path}`, modules first.
 
 **Always register through the SDK's Message path, never the engine's durable
 `register_trigger`:** Message-path triggers are garbage-collected on
@@ -387,9 +420,9 @@ disconnect and replayed on reconnect.
 
 | | |
 |---|---|
-| Trigger types | `console:script` (ESM JS), `console:style` (CSS); never register the tab-only `console:assets` type |
+| Trigger types | `console:script` (ESM JS, imported at mount), `console:module` (ESM JS, imported only by `host.importModule`; kind `module` in the manifest and tab pushes), `console:style` (CSS); never register the tab-only `console:assets` type |
 | Trigger config | `{ "path": string }`, nothing else |
-| Path rules | lowercase `[a-z0-9._-]` segments, no leading slash, no `.`/`..` segments, ≤ 512 chars; extension must match the type (`.js` / `.css`); **convention: first segment = worker name** — it becomes the `data-iii-ui` scope and the only human-readable attribution |
+| Path rules | lowercase `[a-z0-9._-]` segments, no leading slash, no `.`/`..` segments, ≤ 512 chars; extension must match the type (`.js` for scripts and modules, `.css`); **convention: first segment = worker name** — it becomes the `data-iii-ui` scope and the only human-readable attribution |
 | Content function | input `{ "path": string }` → output `{ "content": string, "content_type"?: string }` |
 | Size cap | 8 MiB per asset — larger registrations are rejected (the driver fails first) |
 | Reload | same path + changed content hash replaces the asset; unchanged content is a no-op |
@@ -406,8 +439,9 @@ cd mywork && III_MYWORK_UI_WATCH=1 cargo run    # terminal 2
 ```
 
 Every open tab hot-swaps the asset: scripts re-`import()` + re-`setup()` (slot
-React state is lost), styles link-swap with no flash; unchanged content is
-hash-deduped end to end.
+React state is lost), styles link-swap with no flash, a module's new bytes
+load at the next `host.importModule`; unchanged content is hash-deduped end to
+end.
 
 ## Debugging
 
@@ -420,6 +454,7 @@ hash-deduped end to end.
 | Registration rejected with a fetch error | the content function threw, returned no string `content`, or timed out |
 | "Invalid hook call" in the tab | a second React in the bundle — a custom build dropped an external |
 | `import()` fails on a bare specifier | a dependency imports a react-family subpath outside the six shared specifiers |
+| `host.importModule` rejects | nothing is served at `/ui/<path>`: a typo, the module is not registered, or its worker's UI is disabled |
 | Styles apply on the page but not in a custom portal | a custom `document.body` portal must carry `data-iii-ui="<worker>"` on its root |
 | Whole console restyled | unscoped rules reached the console — check `warnings` in the manifest |
 | Registered but absent | inspect `workers[].enabled` and `injectableUi.disabledWorkers` in the manifest |

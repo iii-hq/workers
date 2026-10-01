@@ -518,6 +518,15 @@ export interface Host {
   uiClasses: UiClasses
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
+  /**
+   * Import a `console:module` asset on demand, e.g.
+   * `host.importModule<typeof import('./xterm')>('ide/xterm.js')`. The
+   * console serves modules but never imports them at mount, so code only
+   * one view needs stays out of every tab's first load. Resolves to the
+   * module namespace; rejects when nothing is served at `/ui/<path>`.
+   * Absent on older consoles; feature-detect.
+   */
+  importModule?<T = unknown>(path: string): Promise<T>
   pages: { register(page: PageRegistration): () => void }
   /**
    * The console's remembered working directories, most recent first — the

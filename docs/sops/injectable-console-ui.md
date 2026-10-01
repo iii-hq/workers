@@ -27,6 +27,7 @@ does not restate any of it.
 |---|---|
 | Two assets, the template to copy | `state/Cargo.toml`, `state/build.rs`, `state/src/ui.rs`, `state/src/boot.rs` |
 | Extra script assets (vendor bundles) | `canvas/src/ui.rs`, `canvas/build.rs` |
+| A lazy `console:module` (xterm, loaded when a terminal opens) | `ide/src/ui.rs`, `ide/build.rs`, `ide/ui/build.mjs` |
 | Custom content function id | `code-runner/src/ui.rs` |
 | A worker that owns a trigger type | `cron/src/ui.rs` |
 
@@ -100,6 +101,12 @@ pub fn register(iii: &Arc<IIIClient>) {
 - One more `console:script` (a vendor bundle, a second page) is one more
   `.script(path, include_str!(…))` here, one more dist asset in `build.rs`,
   and one more `entryPoints` entry in `ui/build.mjs`.
+- Code only one view needs (the ide's xterm terminal) ships as a
+  `console:module` instead: `.module(path, include_str!(…))` here, the dist
+  asset in `build.rs`, and an `entryPoints` entry that emits a fixed-name
+  `dist/<name>.js`. The console serves it but never imports it at mount; the
+  page calls `host.importModule<typeof import('./<name>')>(path)` and imports
+  the library itself only as types (`ade/injectable-ui` › Lazy modules).
 - The builder panics on a path the console would reject: empty, over 512
   characters, a leading `/`, an empty, `.` or `..` segment, characters outside
   `[a-z0-9._-]`, an extension that does not match the asset kind, or a
