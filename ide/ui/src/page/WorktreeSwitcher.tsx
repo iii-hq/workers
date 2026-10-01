@@ -33,10 +33,12 @@ import {
   FolderGit2,
   GitBranch,
   GitBranchPlus,
+  GitMerge,
   Loader2,
   Plus,
   RefreshCw,
   Tag,
+  Trash2,
 } from 'lucide-react'
 import {
   type CSSProperties,
@@ -59,6 +61,9 @@ import {
   BranchNameForm,
   CheckoutQuestionDialog,
   DeleteBranchDialog,
+  type MergeDraft,
+  MergeForm,
+  mergeable,
   NewWorktreeForm,
   RemoveWorktreeDialog,
   WARNING,
@@ -232,8 +237,12 @@ export interface WorktreeMenuProps {
   rereadKey?: string
   /** Where the menu opens: above the composer, below the IDE's header. */
   side: 'top' | 'bottom'
-  /** Opens the Git window on a comparison; without it (the chat's chip) the
-      branch pages leave out "Compare with" and "Show Diff with Working Tree". */
+  /** The IDE's menu: the folder's actions, Recent/Local/Remote/Tags, and
+      each branch's actions in menus beside the list. Without it (the chat's
+      chip) the menu is the plain list, each row with its Merge and Delete. */
+  actions?: boolean
+  /** Opens the Git window on a comparison; without it the branch pages leave
+      out "Compare with" and "Show Diff with Working Tree". */
   onShowInGit?: (request: GitWindowRequest) => void
 }
 
@@ -246,6 +255,7 @@ export const WorktreeMenu = memo(function WorktreeMenu({
   frozen = false,
   rereadKey = '',
   side,
+  actions = false,
   onShowInGit,
 }: WorktreeMenuProps) {
   const [open, setOpen] = useState(false)
@@ -255,6 +265,8 @@ export const WorktreeMenu = memo(function WorktreeMenu({
   const head = useHead(host, dir, `${rereadKey}:${refreshes}`)
   const [query, setQuery] = useState('')
   const [creating, setCreating] = useState(false)
+  // The chat's chip: the row whose merge form is open.
+  const [merging, setMerging] = useState<MergeDraft | null>(null)
   // A row's actions: beside the list, or in its place with no room beside it.
   const [panel, setPanel] = useState<Panel | null>(null)
   // The top actions that ask for a name: a new branch here, or a tag/revision to check out.
@@ -331,7 +343,9 @@ export const WorktreeMenu = memo(function WorktreeMenu({
 
   const { list, busy } = ops
   // Only what was asked here: an outcome of the Git window's stays there.
-  const note = ops.noteIsMine ? ops.note : null
+  // The IDE's menu shows only what was asked from it; the chat's chip, as
+  // before, every outcome for the repository.
+  const note = !actions || ops.noteIsMine ? ops.note : null
   const target = list?.defaultBranch ?? null
   const here = list === null ? null : worktreeAt(list.worktrees, dir)
   const needle = query.trim()
@@ -366,6 +380,7 @@ export const WorktreeMenu = memo(function WorktreeMenu({
     if (!next) return
     setQuery('')
     setCreating(false)
+    setMerging(null)
     setPanel(null)
     setTopForm(null)
     setUnseen(false)
@@ -479,10 +494,13 @@ export const WorktreeMenu = memo(function WorktreeMenu({
     showPanel(row, true)
   }
   // The row whose actions are open beside the list.
-  const rowData = (id: string | undefined) => ({
-    'data-panel': id,
-    'data-open': (id !== undefined && panel?.id === id && panel.at !== null) || undefined,
-  })
+  const rowData = (id: string | undefined) =>
+    actions
+      ? {
+          'data-panel': id,
+          'data-open': (id !== undefined && panel?.id === id && panel.at !== null) || undefined,
+        }
+      : {}
   // Resting the pointer on a row opens its actions beside the list in place
   // of the ones open, and on any other row closes them; not while a form or
   // a file list is open there.
@@ -492,6 +510,61 @@ export const WorktreeMenu = memo(function WorktreeMenu({
       if (row !== null && targetOf(row) !== null) showPanel(row, false)
       else setPanel((open) => (open?.at === null ? open : null))
     })
+  // The chat's chip keeps the rows' own Merge and Delete (or Remove), with
+  // the merge form under the row; the IDE's menu has them in the menus beside.
+  const mergeFormFor = (key: string, onMerge: (draft: MergeDraft) => void, worktree: boolean) =>
+    merging?.path === key && target ? (
+      // Keys typed in the form stay out of the menu's typeahead.
+      // biome-ignore lint/a11y/noStaticElementInteractions: only keeps typing inside the form
+      <div className="shui-wt-menu-merge" onKeyDown={(event) => event.key !== 'Escape' && event.stopPropagation()}>
+        <MergeForm
+          draft={merging}
+          target={target}
+          busy={busy}
+          worktree={worktree}
+          onChange={setMerging}
+          onMerge={() => onMerge(merging)}
+          onCancel={() => setMerging(null)}
+        />
+      </div>
+    ) : null
+  const rowActions = (merge: (() => void) | null, remove: { label: string; title: string; run: () => void } | null) =>
+    merge || remove ? (
+      // The actions are the row's own item, not the trailing's: that one
+      // gives way to a long name, and they must not be squeezed out.
+      <span className={uiClasses.treeItemActions}>
+        {merge ? (
+          <button
+            type="button"
+            className={uiClasses.treeItemAction}
+            aria-label={`Merge into ${target}`}
+            title={`Merge into ${target}`}
+            aria-disabled={busy || undefined}
+            onClick={() => !busy && merge()}
+          >
+            <GitMerge aria-hidden />
+          </button>
+        ) : null}
+        {remove ? (
+          <button
+            type="button"
+            className={uiClasses.treeItemAction}
+            data-tone="alert"
+            aria-label={remove.label}
+            title={remove.title}
+            aria-disabled={busy || undefined}
+            onClick={() => {
+              if (busy) return
+              // The confirmation is a dialog of its own: the menu gives way.
+              setOpen(false)
+              remove.run()
+            }}
+          >
+            <Trash2 aria-hidden />
+          </button>
+        ) : null}
+      </span>
+    ) : null
   const entryRow = (entry: Entry, depth: number) => {
     const { wt } = entry
     const shown = depth > 0 ? entry.name.slice(entry.name.indexOf('/') + 1) : entry.name
@@ -500,30 +573,41 @@ export const WorktreeMenu = memo(function WorktreeMenu({
         entry.branch?.ahead ? `↑${entry.branch.ahead}` : '',
         entry.branch?.behind ? `↓${entry.branch.behind}` : '',
       ].filter(Boolean)
+      // Merged into, and deleted from, the default branch without a checkout.
+      const own = target !== null && entry.name !== target
+      const key = `branch:${entry.name}`
       return (
-        <div
-          key={`branch:${entry.name}`}
-          className={`${uiClasses.treeItem} shui-wt-row`}
-          style={depthOf(depth)}
-          {...rowData(`b:${entry.name}`)}
-        >
-          <button
-            type="button"
-            data-list-item=""
-            className="shui-wt-row-main"
-            aria-disabled={busy || undefined}
-            aria-label={[entry.name, ...marks].join(', ')}
-            title={`${entry.name}\nNo worktree yet: opens one at ${worktreePathFor(mainPath, entry.name)}`}
-            onClick={() => !busy && createFor(entry.name)}
-            onKeyDown={toPanel}
-          >
-            <span className={uiClasses.treeItemIcon}>
-              <GitBranch aria-hidden />
-            </span>
-            <span className={uiClasses.treeItemLabel}>{shown}</span>
-            {marksOf(false, marks)}
-          </button>
-          {moreButton(entry.name)}
+        <div key={key} className="shui-wt-row-with-form">
+          <div className={`${uiClasses.treeItem} shui-wt-row`} style={depthOf(depth)} {...rowData(`b:${entry.name}`)}>
+            <button
+              type="button"
+              data-list-item=""
+              className="shui-wt-row-main"
+              aria-disabled={busy || undefined}
+              aria-label={[entry.name, ...marks].join(', ')}
+              title={`${entry.name}\nNo worktree yet: opens one at ${worktreePathFor(mainPath, entry.name)}`}
+              onClick={() => !busy && createFor(entry.name)}
+              onKeyDown={toPanel}
+            >
+              <span className={uiClasses.treeItemIcon}>
+                <GitBranch aria-hidden />
+              </span>
+              <span className={uiClasses.treeItemLabel}>{shown}</span>
+              {marksOf(false, marks)}
+            </button>
+            {actions
+              ? moreButton(entry.name)
+              : own
+                ? rowActions(() => openBranchMerge(entry.name), {
+                    label: `Delete ${entry.name}`,
+                    title: 'Delete the branch',
+                    run: () => ops.askDeleteBranch(entry.name),
+                  })
+                : null}
+          </div>
+          {actions
+            ? null
+            : mergeFormFor(key, (draft) => ops.mergeBranch(entry.name, draft, () => setMerging(null)), false)}
         </div>
       )
     }
@@ -536,36 +620,51 @@ export const WorktreeMenu = memo(function WorktreeMenu({
     // A worktree on no branch has actions only when it can be removed.
     const panelId = entry.name !== '' ? `b:${entry.name}` : removable(wt) && !current ? `w:${wt.path}` : undefined
     return (
-      <div
-        key={wt.path}
-        className={`${uiClasses.treeItem} shui-wt-row`}
-        data-selected={current || undefined}
-        style={depthOf(depth)}
-        {...rowData(panelId)}
-      >
-        <button
-          type="button"
-          data-list-item=""
-          className="shui-wt-row-main"
-          disabled={wt.prunable || wt.bare}
-          aria-disabled={busy || undefined}
-          aria-current={current ? 'true' : undefined}
-          aria-label={[name, folder, wt.dirty ? 'uncommitted changes' : null, ...marks].filter(Boolean).join(', ')}
-          title={titles.join('\n')}
-          onClick={() => !busy && switchTo(wt)}
-          onKeyDown={toPanel}
+      <div key={wt.path} className="shui-wt-row-with-form">
+        <div
+          className={`${uiClasses.treeItem} shui-wt-row`}
+          data-selected={current || undefined}
+          style={depthOf(depth)}
+          {...rowData(panelId)}
         >
-          <span className={uiClasses.treeItemIcon}>
-            <FolderGit2 aria-hidden />
+          <button
+            type="button"
+            data-list-item=""
+            className="shui-wt-row-main"
+            disabled={wt.prunable || wt.bare}
+            aria-disabled={busy || undefined}
+            aria-current={current ? 'true' : undefined}
+            aria-label={[name, folder, wt.dirty ? 'uncommitted changes' : null, ...marks].filter(Boolean).join(', ')}
+            title={titles.join('\n')}
+            onClick={() => !busy && switchTo(wt)}
+            onKeyDown={toPanel}
+          >
+            <span className={uiClasses.treeItemIcon}>
+              <FolderGit2 aria-hidden />
+            </span>
+            <span className={uiClasses.treeItemLabel}>{entry.name === '' ? name : shown}</span>
+            {marksOf(wt.dirty === true, marks)}
+          </button>
+          <span className={uiClasses.treeItemTrailing}>
+            {folder ? <span className={uiClasses.treeItemMeta}>{folder}</span> : null}
+            {current ? <Check aria-hidden className="shui-wt-row-check" /> : null}
           </span>
-          <span className={uiClasses.treeItemLabel}>{entry.name === '' ? name : shown}</span>
-          {marksOf(wt.dirty === true, marks)}
-        </button>
-        <span className={uiClasses.treeItemTrailing}>
-          {folder ? <span className={uiClasses.treeItemMeta}>{folder}</span> : null}
-          {current ? <Check aria-hidden className="shui-wt-row-check" /> : null}
-        </span>
-        {panelId === undefined ? null : moreButton(name)}
+          {actions
+            ? panelId === undefined
+              ? null
+              : moreButton(name)
+            : rowActions(
+                mergeable(wt, target) ? () => openMerge(wt) : null,
+                removable(wt)
+                  ? {
+                      label: wt.prunable ? `Prune ${basename(wt.path)}` : `Remove ${basename(wt.path)}`,
+                      title: wt.prunable ? 'Prune the worktree' : 'Remove the worktree',
+                      run: () => ops.askRemove(wt),
+                    }
+                  : null,
+              )}
+        </div>
+        {actions ? null : mergeFormFor(wt.path, (draft) => ops.merge(wt, draft, () => setMerging(null)), true)}
       </div>
     )
   }
@@ -843,6 +942,23 @@ export const WorktreeMenu = memo(function WorktreeMenu({
       </div>
     )
   }
+  const openBranchMerge = (branch: string) => {
+    const key = `branch:${branch}`
+    setMerging({ path: key, squash: true, message: '' })
+    void ops
+      .branchMergeMessage(branch)
+      .then((message) =>
+        setMerging((draft) => (draft?.path === key && draft.message === '' ? { ...draft, message } : draft)),
+      )
+  }
+  const openMerge = (wt: Worktree) => {
+    setMerging({ path: wt.path, squash: true, message: '' })
+    void ops
+      .mergeMessage(wt)
+      .then((message) =>
+        setMerging((draft) => (draft?.path === wt.path && draft.message === '' ? { ...draft, message } : draft)),
+      )
+  }
   // A worktree on no branch: removing it is what it offers.
   const worktreePage = (path: string, back: () => void) => {
     const wt = list?.worktrees.find((candidate) => candidate.path === path) ?? null
@@ -1069,21 +1185,21 @@ export const WorktreeMenu = memo(function WorktreeMenu({
                     // Touch gets the tree's finger-sized rows, with actions always shown.
                     data-narrow={FINE_POINTER ? undefined : ''}
                     aria-label={`Branches of ${basename(mainPath)}`}
-                    {...rowsHover()}
+                    {...(actions ? rowsHover() : {})}
                     // The actions beside stay level with their row, so a scroll closes them.
                     onScroll={() => {
                       if (panel !== null && !settled.current) closePanel(false)
                     }}
                   >
-                    {lowered === '' ? topActions() : null}
-                    {lowered === '' && recentEntries.length > 0 ? (
+                    {actions && lowered === '' ? topActions() : null}
+                    {actions && lowered === '' && recentEntries.length > 0 ? (
                       <div className="shui-wt-section">
                         <DropdownMenuSeparator />
                         <ListGroupLabel>Recent</ListGroupLabel>
                         {recentEntries.map((entry) => entryRow(entry, 0))}
                       </div>
                     ) : null}
-                    {lowered === '' ? (
+                    {actions && lowered === '' ? (
                       <>
                         <DropdownMenuSeparator />
                         <ListGroupLabel>Local</ListGroupLabel>
@@ -1109,11 +1225,12 @@ export const WorktreeMenu = memo(function WorktreeMenu({
                           <span className={uiClasses.treeItemMeta}>from {target ?? 'HEAD'}</span>
                         </span>
                       </div>
-                    ) : matches.length === 0 && remoteMatches.length === 0 && tagMatches.length === 0 ? (
+                    ) : matches.length === 0 &&
+                      (!actions || (remoteMatches.length === 0 && tagMatches.length === 0)) ? (
                       <p className="shui-wt-menu-note">Nothing matches.</p>
                     ) : null}
-                    {remoteRows()}
-                    {tagRows()}
+                    {actions ? remoteRows() : null}
+                    {actions ? tagRows() : null}
                   </List>
                 )}
               </>

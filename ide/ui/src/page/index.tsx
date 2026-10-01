@@ -2214,6 +2214,7 @@ export function ShellExplorerPage({
             page={worktreesPage}
             rereadKey={String(harnessTurn.active)}
             side="bottom"
+            actions
             onShowInGit={showInGit}
           />
         </span>

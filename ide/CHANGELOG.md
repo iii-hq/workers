@@ -4,7 +4,8 @@
 
 ### Added
 
-- **Branch actions in the branch menu.** The branch chip's menu opens with
+- **Branch actions in the branch menu.** The IDE header's branch chip (the
+  chat's keeps its plain list, each row with its Merge and Delete) opens with
   Update Project, Push…, New Branch… and Checkout Tag or Revision…, then
   Recent, Local, Remote and Tags, each part set off by a separator.
   Resting the pointer on a branch or a tag (or its ›, or →) opens its
@@ -27,8 +28,8 @@
   them and offers Smart Checkout (stashed across it and brought back) or
   Force Checkout; a remote branch whose local branch has commits of its own
   offers to drop them or rebase them onto it, and one with none is reset to
-  it and tracks it. The rows lose their merge and delete buttons, and the
-  menu shows only the outcomes of what was asked from it. Clicking a branch
+  it and tracks it. In the IDE the rows lose their merge and delete
+  buttons, and the menu shows only the outcomes of what was asked from it. Clicking a branch
   row still opens its worktree. A stopped rebase or merge says how to
   continue or abort.
 - **Remove several worktrees at once.** In the Git window's Worktrees tab,

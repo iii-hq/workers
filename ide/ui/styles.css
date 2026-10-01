@@ -1682,6 +1682,7 @@
   .shui-wt-row-check { flex: none; width: 16px; height: 16px; color: var(--color-ink-faint); }
   .shui-wt-row-caret > svg { transition: transform var(--motion-duration-control) var(--motion-ease-standard); }
   .shui-wt-row-caret[data-open] > svg { transform: rotate(90deg); }
+  .shui-wt-menu-merge { padding: 2px 0 6px; }
   .shui-wt-menu-create .shui-scm-commit { padding: 0 8px; }
   .shui-wt-menu-note {
     margin: 0;
