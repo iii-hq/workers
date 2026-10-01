@@ -9,7 +9,7 @@
 
 import { Toolbar, Tooltip } from '@iii-dev/console-ui'
 import { Ellipsis } from 'lucide-react'
-import type { KeyboardEvent, ReactNode } from 'react'
+import { Fragment, type KeyboardEvent, type ReactNode } from 'react'
 import type { ContextMenuAnchor, ContextMenuItem } from './ContextMenu'
 
 export interface GitAction {
@@ -35,6 +35,20 @@ export interface GitAction {
   applies?: boolean
   /** Stays in the narrow bar; the others go under More. */
   primary?: boolean
+  /** Actions of one intent (open, sync, …): a new group starts with a
+      divider on the rail and a separator in the menu. */
+  group?: string
+}
+
+/** Where a new group starts: after the previous action shown, when both
+    name a group and they differ. */
+function startsGroup(action: GitAction, previous: GitAction | undefined): boolean {
+  return (
+    previous !== undefined &&
+    action.group !== undefined &&
+    previous.group !== undefined &&
+    action.group !== previous.group
+  )
 }
 
 function RailButton({ action, bar }: { action: GitAction; bar: boolean }) {
@@ -88,6 +102,7 @@ export function ActionRail({
   const shown = actions.filter((action) => action.in !== 'menu' && action.items === undefined)
   const button = (action: GitAction) => <RailButton key={action.id} action={action} bar={bar} />
   if (!bar) {
+    const top = shown.filter((action) => !action.end)
     return (
       <Toolbar
         as="nav"
@@ -97,7 +112,12 @@ export function ActionRail({
         onKeyDown={railKeys(false)}
         end={shown.filter((action) => action.end).map(button)}
       >
-        {shown.filter((action) => !action.end).map(button)}
+        {top.map((action, index) => (
+          <Fragment key={action.id}>
+            {startsGroup(action, top[index - 1]) ? <span className="shui-git-rail-sep" aria-hidden /> : null}
+            {button(action)}
+          </Fragment>
+        ))}
       </Toolbar>
     )
   }
@@ -132,29 +152,29 @@ export function ActionRail({
 }
 
 /** The same actions as context menu rows: those that apply, and with
-    `withRail` the rail's own (Fetch, Collapse all) too. */
+    `withRail` the rail's own (Fetch, Collapse all) too. A new group starts
+    after a separator. */
 export function menuItems(actions: readonly GitAction[], withRail = false): ContextMenuItem[] {
-  return actions
-    .filter((action) => (withRail || action.in !== 'rail') && action.applies !== false)
-    .map(
-      (action): ContextMenuItem =>
-        action.items !== undefined
-          ? {
-              type: 'submenu',
-              id: action.id,
-              label: action.label,
-              icon: action.icon,
-              disabled: (action.blocked ?? null) !== null,
-              items: menuItems(action.items),
-            }
-          : {
-              id: action.id,
-              label: action.label,
-              icon: action.icon,
-              shortcut: action.shortcut,
-              disabled: (action.blocked ?? null) !== null,
-              danger: action.danger,
-              onSelect: action.run,
-            },
-    )
+  const listed = actions.filter((action) => (withRail || action.in !== 'rail') && action.applies !== false)
+  return listed.flatMap((action, index): ContextMenuItem[] => [
+    ...(startsGroup(action, listed[index - 1]) ? [{ type: 'separator' as const, id: `sep:${action.id}` }] : []),
+    action.items !== undefined
+      ? {
+          type: 'submenu',
+          id: action.id,
+          label: action.label,
+          icon: action.icon,
+          disabled: (action.blocked ?? null) !== null,
+          items: menuItems(action.items),
+        }
+      : {
+          id: action.id,
+          label: action.label,
+          icon: action.icon,
+          shortcut: action.shortcut,
+          disabled: (action.blocked ?? null) !== null,
+          danger: action.danger,
+          onSelect: action.run,
+        },
+  ])
 }

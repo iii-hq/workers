@@ -38,10 +38,10 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ActionRail, type GitAction, menuItems } from './ActionRail'
-import { glyphOf } from './CommitGraph'
+import { glyphColor, glyphOf } from './CommitGraph'
 import { useContextMenu } from './ContextMenu'
 import { GitBranchTree } from './GitBranchTree'
-import { GitCommitDetails } from './GitCommitDetails'
+import { type FilesView, GitCommitDetails } from './GitCommitDetails'
 import { GitCommitList } from './GitCommitList'
 import { GitCompareFiles } from './GitCompareFiles'
 import { git } from './git-actions'
@@ -63,9 +63,16 @@ import { type PushTarget, pushTarget, type Worktree, worktreeAt } from './worktr
 interface Layout {
   tree: number
   details: number
+  /** How the commit's files show. */
+  files: FilesView
   expanded: string[]
 }
-const LAYOUT: Layout = { tree: 240, details: 320, expanded: ['local'] }
+const LAYOUT: Layout = {
+  tree: 240,
+  details: 320,
+  files: { height: null, grouped: true, info: true },
+  expanded: ['local'],
+}
 
 /** The narrow pane's drill-in steps. */
 type Stage = 'branches' | 'commits' | 'commit'
@@ -77,9 +84,20 @@ function normalize(raw: unknown): Layout {
   return {
     tree: width(value.tree, LAYOUT.tree),
     details: width(value.details, LAYOUT.details),
+    files: filesView(value.files),
     expanded: Array.isArray(value.expanded)
       ? value.expanded.filter((id): id is string => typeof id === 'string')
       : LAYOUT.expanded,
+  }
+}
+
+function filesView(raw: unknown): FilesView {
+  const value = (raw ?? {}) as Partial<FilesView>
+  return {
+    height:
+      typeof value.height === 'number' && Number.isFinite(value.height) ? Math.max(48, Math.round(value.height)) : null,
+    grouped: value.grouped !== false,
+    info: value.info !== false,
   }
 }
 
@@ -401,6 +419,7 @@ export function GitLogTab({
     return [
       {
         id: 'open',
+        group: 'open',
         label: ref?.kind === 'remote' ? `Open as ${localNameOf(ref)}` : 'Open',
         short: 'Open',
         icon: <FolderInput aria-hidden />,
@@ -419,6 +438,7 @@ export function GitLogTab({
       },
       {
         id: 'new-branch',
+        group: 'open',
         label: `New branch from '${name}'…`,
         short: 'Branch',
         icon: <GitBranchPlus aria-hidden />,
@@ -430,6 +450,7 @@ export function GitLogTab({
       },
       {
         id: 'new',
+        group: 'open',
         label: `New worktree from '${name}'…`,
         short: 'Worktree',
         icon: <FolderPlus aria-hidden />,
@@ -442,6 +463,7 @@ export function GitLogTab({
       },
       {
         id: 'diff',
+        group: 'compare',
         label: 'Show diff with working tree',
         short: 'Diff',
         icon: <FileDiff aria-hidden />,
@@ -451,6 +473,7 @@ export function GitLogTab({
       },
       {
         id: 'update',
+        group: 'sync',
         label: 'Update',
         short: 'Update',
         icon: <ArrowDownToLine aria-hidden />,
@@ -469,6 +492,7 @@ export function GitLogTab({
       },
       {
         id: 'push',
+        group: 'sync',
         label: 'Push…',
         short: 'Push',
         icon: <ArrowUpFromLine aria-hidden />,
@@ -480,18 +504,18 @@ export function GitLogTab({
         },
       },
       {
-        id: 'merge',
-        label: `Merge into ${target ?? 'the default branch'}`,
-        short: 'Merge',
-        icon: <GitMerge aria-hidden />,
-        applies: isLocal,
-        blocked: !isLocal ? 'select a local branch' : ref?.name === target ? `it is ${target}` : busyWhy,
-        run: () => {
-          if (ref !== null) openMerge(ref)
-        },
+        id: 'fetch',
+        group: 'sync',
+        label: 'Fetch all remotes',
+        short: 'Fetch',
+        icon: <CloudDownload aria-hidden />,
+        in: 'rail',
+        blocked: remotes.size === 0 ? 'no remote to fetch' : busyWhy,
+        run: ops.fetch,
       },
       {
         id: 'tracked',
+        group: 'sync',
         label: `Tracked branch '${upstream?.name ?? ''}'`,
         icon: <Cloud aria-hidden />,
         in: 'menu',
@@ -504,7 +528,20 @@ export function GitLogTab({
         run: () => {},
       },
       {
+        id: 'merge',
+        group: 'merge',
+        label: `Merge into ${target ?? 'the default branch'}`,
+        short: 'Merge',
+        icon: <GitMerge aria-hidden />,
+        applies: isLocal,
+        blocked: !isLocal ? 'select a local branch' : ref?.name === target ? `it is ${target}` : busyWhy,
+        run: () => {
+          if (ref !== null) openMerge(ref)
+        },
+      },
+      {
         id: 'rename',
+        group: 'edit',
         label: 'Rename…',
         icon: <PenLine aria-hidden />,
         shortcut: 'F2',
@@ -521,6 +558,7 @@ export function GitLogTab({
       },
       {
         id: 'copy',
+        group: 'edit',
         label: 'Copy name',
         icon: <Copy aria-hidden />,
         in: 'menu',
@@ -530,6 +568,7 @@ export function GitLogTab({
       },
       {
         id: 'delete',
+        group: 'delete',
         label: wt !== null ? 'Remove its worktree' : 'Delete',
         short: wt !== null ? 'Remove' : 'Delete',
         icon: <Trash2 aria-hidden />,
@@ -552,15 +591,6 @@ export function GitLogTab({
         },
       },
       {
-        id: 'fetch',
-        label: 'Fetch all remotes',
-        short: 'Fetch',
-        icon: <CloudDownload aria-hidden />,
-        in: 'rail',
-        blocked: remotes.size === 0 ? 'no remote to fetch' : busyWhy,
-        run: ops.fetch,
-      },
-      {
         id: 'collapse',
         label: 'Collapse all',
         short: 'Collapse',
@@ -581,6 +611,7 @@ export function GitLogTab({
     return [
       {
         id: 'copy-hash',
+        group: 'copy',
         label: 'Copy hash',
         short: 'Copy',
         icon: <Copy aria-hidden />,
@@ -588,6 +619,7 @@ export function GitLogTab({
       },
       {
         id: 'new-branch-here',
+        group: 'new',
         label: `New branch from ${commit.sha.slice(0, 7)}…`,
         short: 'Branch',
         icon: <GitBranchPlus aria-hidden />,
@@ -596,6 +628,7 @@ export function GitLogTab({
       },
       {
         id: 'new-here',
+        group: 'new',
         label: `New worktree from ${commit.sha.slice(0, 7)}…`,
         short: 'Worktree',
         icon: <FolderPlus aria-hidden />,
@@ -604,6 +637,7 @@ export function GitLogTab({
       },
       {
         id: 'diff-here',
+        group: 'compare',
         label: 'Show diff with working tree',
         short: 'Diff',
         icon: <FileDiff aria-hidden />,
@@ -612,6 +646,7 @@ export function GitLogTab({
       ...refs.map(
         (ref): GitAction => ({
           id: `open:${ref.fullName}`,
+          group: 'open',
           label: `Open ${ref.name}`,
           short: 'Open',
           icon: <FolderInput aria-hidden />,
@@ -649,6 +684,9 @@ export function GitLogTab({
     )
   }
 
+  // With nothing picked in the tree, the rail acts on HEAD's branch (as
+  // WebStorm's toolbar does), so it opens live rather than greyed out.
+  const railNode = selectedNode ?? nodeById.get('head') ?? null
   // The narrow bar acts on what the stage shows: the commit on its own
   // stage (one Open, for its first branch), else the branch picked.
   const selectedCommit = commitSel === null ? null : (log.commits.find((commit) => commit.sha === commitSel) ?? null)
@@ -659,7 +697,7 @@ export function GitLogTab({
       const open = actions.find((action) => action.id.startsWith('open:'))
       return actions.filter((action) => !action.id.startsWith('open:') || action === open)
     }
-    return refActions(selectedNode).filter((action) => !narrow || stage === 'branches' || action.id !== 'collapse')
+    return refActions(railNode).filter((action) => !narrow || stage === 'branches' || action.id !== 'collapse')
   }
   const rail = (
     <ActionRail
@@ -829,6 +867,7 @@ export function GitLogTab({
               branches={branchChoices}
               onBranch={pickBranch}
               seeds={seeds}
+              headColor={glyphColor(repoGlyph(snapshot?.refs.find((ref) => ref.current)?.name ?? null))}
               narrow={narrow}
               prefix={snapshot?.prefix ?? ''}
               labels={labels}
@@ -873,6 +912,19 @@ export function GitLogTab({
               prefix={snapshot?.prefix ?? ''}
               top={here?.path ?? null}
               onSelectCommit={setCommitSel}
+              view={layout.files}
+              onView={(patch) =>
+                setStored((prev) => {
+                  const next = normalize(prev)
+                  return { ...next, files: filesView({ ...next.files, ...patch }) }
+                })
+              }
+              busy={ops.busy}
+              onRevert={ops.revertChanges}
+              onShowHistory={(paths) => {
+                setFilter((prev) => ({ ...prev, paths }))
+                if (narrow) setStage('commits')
+              }}
             />
           ) : null}
         </div>

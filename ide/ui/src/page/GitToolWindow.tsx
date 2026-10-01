@@ -89,6 +89,7 @@ function GitToolWindowView({
           }
         >
           <span className="shui-git-title">Git</span>
+          <span className="shui-git-title-rule" aria-hidden />
           <TabsList className="shui-git-tabs">
             <TabsTrigger value="log" icon={false}>
               Log

@@ -50,6 +50,8 @@ export interface Worktree {
   /** The branch a rebase or bisect stopped here returns to. Git lists the
       worktree as detached meanwhile, yet keeps the branch as its own. */
   held?: { branch: string; by: 'rebase' | 'bisect' }
+  /** The subject and the committer date (unix seconds) of `head`. */
+  tip?: { subject: string; date: number }
 }
 
 /** The branch checked out in `wt`, or held there by a rebase or bisect. */
@@ -177,7 +179,7 @@ export async function listWorktrees(host: Host, root: string): Promise<WorktreeL
   // default branch and the branches counted against it.
   const [worktrees, [defaultBranch, branches]] = await Promise.all([
     readWorktrees(host, root).then(async (list) => {
-      await fillDirty(host, list)
+      await Promise.all([fillDirty(host, list), fillTips(host, root, list)])
       return list
     }),
     findDefaultBranch(host, root).then(async (target) => [target, await readBranches(host, root, target)] as const),
@@ -271,6 +273,25 @@ async function fillHeld(host: Host, worktrees: readonly Worktree[], branches: Re
       else if (branches.has(bisected)) wt.held = { branch: bisected, by: 'bisect' }
     }),
   )
+}
+
+/** Each worktree's last commit, for its row: one `git log` over every head. */
+async function fillTips(host: Host, cwd: string, worktrees: readonly Worktree[]): Promise<void> {
+  const heads = [...new Set(worktrees.flatMap((wt) => (wt.head ? [wt.head] : [])))]
+  if (heads.length === 0) return
+  const out = await git(host, cwd, ['log', '--no-walk=unsorted', '--format=%H%x00%ct%x00%s', ...heads]).catch(
+    () => null,
+  )
+  if (out?.exit_code !== 0) return
+  const tips = new Map<string, { subject: string; date: number }>()
+  for (const line of out.stdout.split('\n')) {
+    const [sha, date, subject] = line.split('\0')
+    if (sha && subject !== undefined) tips.set(sha, { subject, date: Number(date) })
+  }
+  for (const wt of worktrees) {
+    const tip = wt.head ? tips.get(wt.head) : undefined
+    if (tip) wt.tip = tip
+  }
 }
 
 async function fillDirty(host: Host, worktrees: readonly Worktree[]): Promise<void> {

@@ -26,7 +26,7 @@ import {
 import { type CSSProperties, useDeferredValue, useId, useMemo, useState } from 'react'
 import { glyphOf } from './CommitGraph'
 import type { ContextMenuAnchor } from './ContextMenu'
-import type { RefTreeNode } from './git-log-window'
+import { middle, type RefTreeNode } from './git-log-window'
 import { speedMarks, useRowNav } from './use-row-nav'
 
 interface Row {
@@ -212,7 +212,10 @@ export function GitBranchTree({
                 >
                   <ChevronRight aria-hidden />
                 </span>
-              ) : null}
+              ) : (
+                // A leaf keeps the caret's place, so icons line up at each depth.
+                <span className="shui-git-caret-slot" />
+              )}
               {node.kind !== 'section' ? (
                 <span
                   className={uiClasses.treeItemIcon}
@@ -221,17 +224,27 @@ export function GitBranchTree({
                   <Icon aria-hidden />
                 </span>
               ) : null}
-              <span className={uiClasses.treeItemLabel}>
-                {speedMarks(node.label, nav.query).map((part, at) =>
-                  part.hit ? (
-                    <mark key={at} className="shui-git-hit">
-                      {part.text}
-                    </mark>
-                  ) : (
-                    part.text
-                  ),
-                )}
-              </span>
+              {node.kind === 'head' && node.ref !== null ? (
+                // "HEAD", then its branch, cut in the middle so both ends show.
+                <span className={uiClasses.treeItemLabel}>
+                  HEAD{' '}
+                  <span className="shui-git-head-branch" title={node.ref.name}>
+                    {middle(node.ref.name, 18)}
+                  </span>
+                </span>
+              ) : (
+                <span className={uiClasses.treeItemLabel}>
+                  {speedMarks(node.label, nav.query).map((part, at) =>
+                    part.hit ? (
+                      <mark key={at} className="shui-git-hit">
+                        {part.text}
+                      </mark>
+                    ) : (
+                      part.text
+                    ),
+                  )}
+                </span>
+              )}
               <span className={uiClasses.treeItemTrailing}>
                 {ref?.behind ? (
                   <span className="shui-git-count" data-way="in" title={`${ref.behind} to pull from ${ref.upstream}`}>

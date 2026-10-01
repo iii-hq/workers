@@ -1,12 +1,22 @@
 /* The Log's reads and the new worktree verbs against a real git, in
    throwaway repositories. */
 
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Host } from '@iii-dev/console-ui'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadDiffContents } from '../src/page/diff-load'
+import { gitRevertChanges } from '../src/page/git-actions'
 import {
   findCommit,
   type LogCommit,
@@ -232,6 +242,9 @@ describe('the new worktree verbs', () => {
     expect(sh(tracked.path, 'rev-parse', '--abbrev-ref', '@{upstream}')).toBe('origin/remote-only')
     list = await listWorktrees(host, repo)
     expect(list.worktrees.find((wt) => wt.path === tracked.path)?.head).toBe(one)
+    // Each row carries its last commit.
+    expect(list.worktrees.find((wt) => wt.path === tracked.path)?.tip?.subject).toBe('one')
+    expect(list.worktrees[0].tip?.subject).toBe('two')
     // A start point is for a new branch only.
     await expect(createWorktree(host, list, 'main-copy', '--detach')).rejects.toThrow(/not a commit/)
     sh(repo, 'branch', 'taken')
@@ -297,5 +310,36 @@ describe('the new worktree verbs', () => {
     await expect(updateBranch(host, list, 'main')).rejects.toThrow(/diverged/)
     // Checked out nowhere, a branch behind its upstream moves all the same.
     expect(await updateBranch(host, list, 'renamed')).toMatch(/^updated renamed to origin\/feature/)
+  })
+})
+
+describe("revert a commit's changes", () => {
+  it('reverses the chosen files in the working tree, and refuses edited ones whole', async () => {
+    mkdirSync(join(repo, 'sub'))
+    commit(repo, 'a.txt', 'one\n', 'first')
+    commit(repo, 'sub/b.txt', 'b\n', 'second')
+    writeFileSync(join(repo, 'a.txt'), 'two\n')
+    writeFileSync(join(repo, 'c.txt'), 'c\n')
+    sh(repo, 'add', '-A')
+    sh(repo, 'commit', '-q', '-m', 'third')
+    const third = sh(repo, 'rev-parse', 'HEAD')
+    // From a subfolder, one file of three: the other stays, nothing is staged.
+    await gitRevertChanges(host, join(repo, 'sub'), third, ['a.txt'])
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('one\n')
+    expect(existsSync(join(repo, 'c.txt'))).toBe(true)
+    expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('')
+    // An added file goes.
+    await gitRevertChanges(host, repo, third, ['c.txt'])
+    expect(existsSync(join(repo, 'c.txt'))).toBe(false)
+    // Edited since: refused, and neither file moves.
+    sh(repo, 'checkout', '-q', '--', '.')
+    writeFileSync(join(repo, 'a.txt'), 'mine\n')
+    await expect(gitRevertChanges(host, repo, third, ['a.txt', 'c.txt'])).rejects.toThrow(/a\.txt/)
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('mine\n')
+    expect(existsSync(join(repo, 'c.txt'))).toBe(true)
+    // An older commit's file, from its own diff.
+    sh(repo, 'checkout', '-q', '--', '.')
+    await gitRevertChanges(host, repo, sh(repo, 'rev-parse', 'HEAD~1'), ['sub/b.txt'])
+    expect(existsSync(join(repo, 'sub/b.txt'))).toBe(false)
   })
 })

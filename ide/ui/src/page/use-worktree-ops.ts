@@ -9,6 +9,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { gitRevertChanges } from './git-actions'
 import { basename } from './paths'
 import {
   branchMergeMessage,
@@ -185,6 +186,9 @@ export interface WorktreeOps {
   renameBranch(from: string, to: string, onRenamed?: (branch: string) => void): void
   /** Fetches the branch's upstream and fast-forwards the branch to it. */
   updateBranch(branch: string): void
+  /** Undoes commit `sha`'s changes to `paths` (repository-relative) in the
+      IDE's working tree, uncommitted. */
+  revertChanges(sha: string, paths: readonly string[]): void
   pushBranch(branch: string, target: PushTarget): void
   merge(wt: Worktree, options: MergeOptions, onMerged?: () => void): void
   /** The subjects a squash of `wt` folds together, oldest first. */
@@ -563,6 +567,11 @@ export function useWorktreeOps(
         return `renamed ${from} to ${branch}`
       }),
     updateBranch: (branch) => perform('update', (current) => updateBranch(host, current, branch)),
+    revertChanges: (sha, paths) =>
+      perform('revert', async (current) => {
+        await gitRevertChanges(host, page.root() ?? current.worktrees[0]?.path ?? '', sha, paths)
+        return `reverted ${sha.slice(0, 7)}'s changes to ${paths.length === 1 ? basename(paths[0]) : `${paths.length} files`}`
+      }),
     pushBranch: (branch, target) =>
       perform('push', async (current) => {
         await pushBranch(host, current, branch, target)

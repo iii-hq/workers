@@ -1,18 +1,23 @@
 /* The files a commit changed, or that differ from the working tree, as a
-   tree under the IDE's folder. Files outside it gather under their own
-   group, their folders named from the IDE's (`../ide/src`), as in the
-   Timeline. A double click or Enter opens the file's diff. */
+   tree under the IDE's folder or as a flat list. Files outside it gather
+   under their own group, their folders named from the IDE's (`../ide/src`),
+   as in the Timeline. A click selects a file, for the actions over the
+   list; a double click or Enter opens its diff. */
 
 import { useMemo } from 'react'
-import { ChangeEntries } from './ChangeEntries'
+import { ChangeEntries, TREE_INDENT, treeInset } from './ChangeEntries'
 import { statusLetter, statusTitle } from './git-actions'
 import type { CommitFile } from './git-log-window'
-import { basename } from './paths'
+import { basename, dirname } from './paths'
 
 export function GitFileList({
   files,
   prefix,
   top,
+  grouped = true,
+  open = true,
+  selected = null,
+  onSelect,
   onOpen,
 }: {
   files: readonly CommitFile[]
@@ -20,6 +25,13 @@ export function GitFileList({
   prefix: string
   /** The worktree's absolute top, when known: names the outside folders. */
   top: string | null
+  /** A tree of folders; else a flat list, each file beside its folder. */
+  grouped?: boolean
+  /** Folders start open. */
+  open?: boolean
+  /** The selected file's path. */
+  selected?: string | null
+  onSelect?(file: CommitFile): void
   onOpen(file: CommitFile): void
 }) {
   const base = top ?? ''
@@ -30,26 +42,35 @@ export function GitFileList({
       <ChangeEntries
         // The outside group reads absolute paths.
         entries={entries}
-        mode="tree"
+        mode={grouped ? 'tree' : 'list'}
         getPath={relOf}
         outsideRoot={`${base}/${prefix.replace(/\/$/, '')}`}
-        renderEntry={({ file }, depth) => (
-          <button
-            type="button"
-            className="shui-git-file"
-            style={{ paddingLeft: 8 + depth * 14 }}
-            title={file.from ? `${file.from} → ${file.path}` : file.path}
-            onDoubleClick={() => onOpen(file)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') onOpen(file)
-            }}
-          >
-            <span className="shui-git-file-status" data-status={file.status} title={statusTitle(file.status)}>
-              {statusLetter(file.status)}
-            </span>
-            <span className="shui-git-file-name">{basename(file.path)}</span>
-          </button>
-        )}
+        defaultOpen={open}
+        renderEntry={({ file }, depth) => {
+          const folder = grouped ? '' : dirname(file.view)
+          return (
+            <button
+              key={file.path}
+              type="button"
+              className="shui-git-file"
+              aria-current={file.path === selected || undefined}
+              style={{ paddingLeft: grouped ? treeInset(depth) + TREE_INDENT : 8 }}
+              title={file.from ? `${file.from} → ${file.path}` : file.path}
+              onClick={() => onSelect?.(file)}
+              onFocus={() => onSelect?.(file)}
+              onDoubleClick={() => onOpen(file)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') onOpen(file)
+              }}
+            >
+              <span className="shui-git-file-status" data-status={file.status} title={statusTitle(file.status)}>
+                {statusLetter(file.status)}
+              </span>
+              <span className="shui-git-file-name">{basename(file.path)}</span>
+              {folder !== '' ? <span className="shui-git-file-dir">{folder}</span> : null}
+            </button>
+          )
+        }}
       />
     </div>
   )

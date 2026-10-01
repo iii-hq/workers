@@ -9,7 +9,7 @@
 import { ConfirmDialog, EmptyState, IconButton } from '@iii-dev/console-ui'
 import { Bot, ChevronDown, ChevronRight, FolderTree, List, RefreshCw, Undo2 } from 'lucide-react'
 import { memo, useCallback, useEffect, useState } from 'react'
-import { ChangeEntries } from './ChangeEntries'
+import { ChangeEntries, treeInset } from './ChangeEntries'
 import { readScmViewMode, relativeDisplayPath, writeScmViewMode } from './scm-view'
 import { FileTypeIcon } from './file-type-icon'
 import { basename, dirname } from './paths'
@@ -188,7 +188,8 @@ function TimelineTabView({
                             key={file.path}
                             className={`shui-scm-row${isActive ? ' active' : ''}${rel === null ? ' outside' : ''}`}
                             data-status={kindStatus(file.kind)}
-                            style={viewMode === 'tree' ? { paddingLeft: 6 + depth * 14 } : undefined}
+                            // the main button's own 20px padding is the caret's place
+                            style={viewMode === 'tree' ? { paddingLeft: treeInset(depth) } : undefined}
                           >
                             <button
                               type="button"

@@ -311,6 +311,25 @@ export async function gitStashBranch(host: Host, root: string, name: string, ref
   await run(host, root, ['stash', 'branch', name.trim(), ref], 'git stash branch')
 }
 
+/** Undoes what commit `sha` changed in `paths` (repository-relative), in
+    the working tree only: its diff against its first parent (everything
+    for a root commit), applied in reverse. Nothing is staged or
+    committed. The patch applies whole or not at all, so a file edited
+    since refuses it rather than half-reverting. */
+export async function gitRevertChanges(host: Host, cwd: string, sha: string, paths: readonly string[]): Promise<void> {
+  if (paths.length === 0) return
+  // `git apply` below a folder skips the paths outside it: run at the top.
+  const top = (await run(host, cwd, ['rev-parse', '--show-toplevel'], 'git rev-parse')).stdout.trim()
+  const spec = paths.map((path) => `:(top,literal)${path}`)
+  const flags = ['--format=', '--binary', '--no-color', '--no-ext-diff', '--no-textconv', '--diff-merges=first-parent']
+  const patch = await run(host, top, ['show', ...flags, sha, '--', ...spec], 'git show')
+  if (patch.stdout_truncated) throw new Error('the changes are too large to revert here')
+  if (patch.stdout.trim() === '') throw new Error('the commit changed none of these files')
+  const out = await git(host, top, ['apply', '-R', '--whitespace=nowarn'], undefined, { stdin: patch.stdout })
+  const message = failure(out, 'git apply')
+  if (message !== null) throw new Error(message)
+}
+
 export interface GitTagSummary {
   name: string
   sha: string

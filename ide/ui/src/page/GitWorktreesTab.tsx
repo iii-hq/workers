@@ -1,6 +1,7 @@
 /* The Git window's Worktrees tab, laid out like WebStorm's. Each worktree
-   is a two-line row, its folder over its branch, and the one the IDE is in
-   has a check.
+   is a row, its folder over its branch, and the one the IDE is in has a
+   check. A wide list adds columns: the last commit, its date and the
+   marks, with the row's own actions on hover.
 
    A click selects a row, and a double click or Enter opens it: the IDE
    and the chat move there. The rail on the left and the row's menu act on
@@ -24,12 +25,18 @@ import {
 } from 'lucide-react'
 import { useId, useState } from 'react'
 import { ActionRail, type GitAction, menuItems } from './ActionRail'
+import { glyphColor, glyphOf } from './CommitGraph'
 import { useContextMenu } from './ContextMenu'
 import { basename } from './paths'
 import { speedMarks, useRowNav } from './use-row-nav'
 import type { WorktreeOps } from './use-worktree-ops'
 import { type MergeDraft, MergeForm, mergeable, NewWorktreeForm, worktreeMarks } from './WorktreeForms'
 import { branchOf, type Worktree, worktreeAt } from './worktrees'
+
+const day = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' })
+const full = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+/** The actions a wide row shows on hover and when selected. */
+const ROW_ACTIONS = new Set(['open', 'merge', 'remove'])
 
 function Marked({ text, query }: { text: string; query: string }) {
   return (
@@ -239,74 +246,124 @@ export function GitWorktreesTab({
             ))}
           </div>
         ) : (
-          <div
-            role="listbox"
-            aria-label={`Worktrees of ${repo}`}
-            className="shui-git-list"
-            data-git-focus=""
-            {...nav.listProps}
-          >
-            {items.map((wt, index) => {
-              const isHere = wt.path === here?.path
-              const branch = branchOf(wt)
-              const { marks, titles } = worktreeMarks(wt, target)
-              const quiet = marks.filter((mark) => mark !== '●')
-              return (
-                // biome-ignore lint/a11y/useFocusableInteractive: the listbox holds focus and names this row through aria-activedescendant
-                <div
-                  key={wt.path}
-                  role="option"
-                  className="shui-git-wt"
-                  aria-current={isHere ? 'true' : undefined}
-                  data-gone={wt.prunable || undefined}
-                  data-held={wt.held ? '' : undefined}
-                  title={titles.join('\n')}
-                  {...nav.rowProps(index)}
-                >
-                  <span className="shui-git-wt-check">{isHere ? <Check aria-hidden /> : null}</span>
-                  <FolderGit2 aria-hidden className="shui-git-wt-icon" />
-                  <span className="shui-git-wt-text">
-                    <span className="shui-git-wt-folder">
-                      <Marked text={basename(wt.path)} query={nav.query} />
-                    </span>
-                    <span className="shui-git-wt-branch">
-                      <GitBranch aria-hidden />
-                      <span className="shui-git-wt-name">
-                        {branch !== null ? (
-                          <Marked text={branch} query={nav.query} />
-                        ) : wt.bare ? (
-                          'bare'
+          <>
+            <div className="shui-git-wt shui-git-wt-head" aria-hidden>
+              <span />
+              <span />
+              <span>Worktree</span>
+              <span>Last commit</span>
+              <span>Date</span>
+              <span>Status</span>
+              <span />
+            </div>
+            <div
+              role="listbox"
+              aria-label={`Worktrees of ${repo}`}
+              className="shui-git-list"
+              data-git-focus=""
+              {...nav.listProps}
+            >
+              {items.map((wt, index) => {
+                const isHere = wt.path === here?.path
+                const branch = branchOf(wt)
+                const { marks, titles } = worktreeMarks(wt, target)
+                const quiet = marks.filter((mark) => mark !== '●')
+                const status =
+                  quiet.length === 0 ? null : (
+                    <span className="shui-git-marks">
+                      {quiet.map((mark) => {
+                        // ↑n / ↓n: ahead of / behind the default branch
+                        const Arrow = mark.startsWith('↑') ? ArrowUp : mark.startsWith('↓') ? ArrowDown : null
+                        return Arrow === null ? (
+                          <span key={mark}>{mark}</span>
                         ) : (
-                          `detached${wt.head ? ` · ${wt.head.slice(0, 7)}` : ''}`
-                        )}
+                          <span key={mark} className="shui-git-mark">
+                            <Arrow aria-hidden />
+                            {mark.slice(1)}
+                            <span className="shui-sr-only">
+                              {mark.startsWith('↑') ? ' ahead of ' : ' behind '}
+                              {target}
+                            </span>
+                          </span>
+                        )
+                      })}
+                    </span>
+                  )
+                return (
+                  // biome-ignore lint/a11y/useFocusableInteractive: the listbox holds focus and names this row through aria-activedescendant
+                  <div
+                    key={wt.path}
+                    role="option"
+                    className="shui-git-wt"
+                    aria-current={isHere ? 'true' : undefined}
+                    data-gone={wt.prunable || undefined}
+                    data-held={wt.held ? '' : undefined}
+                    title={titles.join('\n')}
+                    {...nav.rowProps(index)}
+                  >
+                    <span className="shui-git-wt-check">{isHere ? <Check aria-hidden /> : null}</span>
+                    <FolderGit2
+                      aria-hidden
+                      className="shui-git-wt-icon"
+                      style={{ color: glyphColor(glyphOf(branch, target)) }}
+                    />
+                    <span className="shui-git-wt-text">
+                      <span className="shui-git-wt-folder">
+                        <Marked text={basename(wt.path)} query={nav.query} />
                       </span>
-                      {wt.dirty ? <span className="shui-wt-row-dirty" /> : null}
-                      {quiet.length > 0 ? (
-                        <span className="shui-git-marks">
-                          {quiet.map((mark) => {
-                            // ↑n / ↓n: ahead of / behind the default branch
-                            const Arrow = mark.startsWith('↑') ? ArrowUp : mark.startsWith('↓') ? ArrowDown : null
-                            return Arrow === null ? (
-                              <span key={mark}>{mark}</span>
-                            ) : (
-                              <span key={mark} className="shui-git-mark">
-                                <Arrow aria-hidden />
-                                {mark.slice(1)}
-                                <span className="shui-sr-only">
-                                  {mark.startsWith('↑') ? ' ahead of ' : ' behind '}
-                                  {target}
-                                </span>
-                              </span>
-                            )
-                          })}
+                      <span className="shui-git-wt-branch">
+                        <GitBranch aria-hidden />
+                        <span className="shui-git-wt-name">
+                          {branch !== null ? (
+                            <Marked text={branch} query={nav.query} />
+                          ) : wt.bare ? (
+                            'bare'
+                          ) : (
+                            `detached${wt.head ? ` · ${wt.head.slice(0, 7)}` : ''}`
+                          )}
+                        </span>
+                        {wt.dirty ? <span className="shui-wt-row-dirty" /> : null}
+                        {status}
+                      </span>
+                    </span>
+                    {/* the columns a wide list adds; a narrow one keeps the two lines */}
+                    <span className="shui-git-wt-subject">{wt.tip?.subject}</span>
+                    <span className="shui-git-wt-date" title={wt.tip ? full.format(wt.tip.date * 1000) : undefined}>
+                      {wt.tip ? day.format(wt.tip.date * 1000) : null}
+                    </span>
+                    <span className="shui-git-wt-status">
+                      {wt.dirty ? (
+                        <span className="shui-git-wt-edited">
+                          <span className="shui-wt-row-dirty" />
+                          edited
                         </span>
                       ) : null}
+                      {status ?? (wt.dirty || wt.ahead === undefined ? null : 'up to date')}
                     </span>
-                  </span>
-                </div>
-              )
-            })}
-          </div>
+                    {/* the row's actions for a mouse; the rail, keys and menu hold them all */}
+                    <span className="shui-git-wt-actions" aria-hidden>
+                      {actionsFor(wt)
+                        .filter((action) => ROW_ACTIONS.has(action.id) && (action.blocked ?? null) === null)
+                        .map((action) => (
+                          <button
+                            key={action.id}
+                            type="button"
+                            tabIndex={-1}
+                            title={action.label}
+                            className="shui-git-rail-action"
+                            data-tone={action.danger ? 'alert' : undefined}
+                            onClick={action.run}
+                            onDoubleClick={(event) => event.stopPropagation()}
+                          >
+                            {action.icon}
+                          </button>
+                        ))}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </>
         )}
         {nav.query !== '' ? <span className="shui-git-speed">{nav.query}</span> : null}
       </div>

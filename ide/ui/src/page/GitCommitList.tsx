@@ -4,8 +4,9 @@
 
    The list is windowed and paged: rows load as the scroll nears the end.
    It is a listbox that keeps focus itself; a click selects, and a double
-   click or Enter opens the commit's first file. A commit the IDE's HEAD
-   does not have reads faint, so what this worktree holds stands out.
+   click or Enter opens the commit's first file. The commits the IDE's
+   HEAD has are tinted in its branch's colour, as WebStorm marks the
+   current branch; every subject stays in full ink.
 
    In a narrow pane each row takes two lines: the subject over its author
    and date. */
@@ -19,7 +20,7 @@ import {
   SearchField,
   uiClasses,
 } from '@iii-dev/console-ui'
-import { CaseSensitive, Check, ChevronDown, FolderClosed, RefreshCw, Regex } from 'lucide-react'
+import { CaseSensitive, Check, ChevronDown, RefreshCw, Regex, SlidersHorizontal } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { type Glyph, GraphCell, glyphColor, MAX_LANES } from './CommitGraph'
 import type { ContextMenuAnchor } from './ContextMenu'
@@ -125,6 +126,7 @@ export function GitCommitList({
   branches,
   onBranch,
   seeds,
+  headColor,
   narrow = false,
   prefix,
   labels,
@@ -149,6 +151,8 @@ export function GitCommitList({
   /** Where the IDE's HEAD history starts in this log: HEAD itself, or its
       merge bases with the branch shown. */
   seeds: readonly string[]
+  /** The colour of HEAD's branch: the commits it has are tinted with it. */
+  headColor: string
   narrow?: boolean
   /** The IDE's folder below the repository's top (`''` at the top). */
   prefix: string
@@ -219,10 +223,100 @@ export function GitCommitList({
   // The graph's parents are whole only without text, user and date filters.
   const inHead = useMemo(() => (graph === null ? null : reachable(commits, seeds)), [graph, commits, seeds])
   const inFolder = filter.paths !== undefined && filter.paths.length > 0
+  const folder = prefix.replace(/\/$/, '')
+  // The IDE's folder, or the files a "Show history" narrowed the log to.
+  const onlyFolder = inFolder && filter.paths?.length === 1 && filter.paths[0] === folder
+  const pathsValue = !inFolder ? null : onlyFolder ? folder : (filter.paths?.[0]?.split('/').pop() ?? null)
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const filtersId = useId()
+  const activeFilters = [
+    filter.regex === true,
+    filter.caseSensitive === true,
+    branchLabel !== null,
+    filter.author !== undefined,
+    filter.since !== undefined,
+    inFolder,
+  ].filter(Boolean).length
   const filtered = (filter.text ?? '') !== '' || filter.author !== undefined || filter.since !== undefined || inFolder
 
+  const filterControls = (
+    <>
+      <Toggle
+        label="Regular expression"
+        pressed={filter.regex === true}
+        onChange={(regex) => onFilter({ ...filter, regex })}
+      >
+        <Regex aria-hidden />
+      </Toggle>
+      <Toggle
+        label="Match case"
+        pressed={filter.caseSensitive === true}
+        onChange={(caseSensitive) => onFilter({ ...filter, caseSensitive })}
+      >
+        <CaseSensitive aria-hidden />
+      </Toggle>
+      <Menu label="Branch" value={branchLabel}>
+        <DropdownMenuItem onSelect={() => onBranch(null)}>
+          All branches
+          {branchLabel === null ? <Check aria-hidden className="shui-git-filter-check" /> : null}
+        </DropdownMenuItem>
+        {branches.map((branch) => (
+          <DropdownMenuItem key={branch.id} onSelect={() => onBranch(branch.id)}>
+            {branch.name}
+            {branchLabel === branch.name ? <Check aria-hidden className="shui-git-filter-check" /> : null}
+          </DropdownMenuItem>
+        ))}
+      </Menu>
+      <Menu label="User" value={filter.author ?? null}>
+        <DropdownMenuItem onSelect={() => onFilter({ ...filter, author: undefined })}>Anyone</DropdownMenuItem>
+        {authors.map((author) => (
+          <DropdownMenuItem key={author} onSelect={() => onFilter({ ...filter, author })}>
+            {author}
+            {filter.author === author ? <Check aria-hidden className="shui-git-filter-check" /> : null}
+          </DropdownMenuItem>
+        ))}
+      </Menu>
+      <Menu label="Date" value={filter.since === undefined ? null : (filter.sinceLabel ?? 'Custom')}>
+        {RANGES.map((option) => (
+          <DropdownMenuItem
+            key={option.label}
+            onSelect={() =>
+              onFilter({
+                ...filter,
+                since: option.days === null ? undefined : Math.floor(Date.now() / 1000) - option.days * DAY,
+                sinceLabel: option.days === null ? undefined : option.label,
+              })
+            }
+          >
+            {option.label}
+          </DropdownMenuItem>
+        ))}
+      </Menu>
+      {prefix !== '' || inFolder ? (
+        <Menu label="Paths" value={pathsValue}>
+          <DropdownMenuItem onSelect={() => onFilter({ ...filter, paths: undefined })}>
+            Whole repository
+            {inFolder ? null : <Check aria-hidden className="shui-git-filter-check" />}
+          </DropdownMenuItem>
+          {prefix !== '' ? (
+            <DropdownMenuItem onSelect={() => onFilter({ ...filter, paths: [folder] })}>
+              {folder}
+              {onlyFolder ? <Check aria-hidden className="shui-git-filter-check" /> : null}
+            </DropdownMenuItem>
+          ) : null}
+          {inFolder && !onlyFolder ? (
+            <DropdownMenuItem onSelect={() => undefined}>
+              {filter.paths?.[0]}
+              <Check aria-hidden className="shui-git-filter-check" />
+            </DropdownMenuItem>
+          ) : null}
+        </Menu>
+      ) : null}
+    </>
+  )
+
   return (
-    <div className="shui-git-commits" data-pane="commits">
+    <div className="shui-git-commits" data-pane="commits" style={{ '--head-color': headColor } as React.CSSProperties}>
       {/* biome-ignore lint/a11y/useSemanticElements: a filter bar, not a form: nothing is submitted */}
       <div className="shui-git-filters" role="group" aria-label="Filter the log">
         <SearchField
@@ -234,69 +328,25 @@ export function GitCommitList({
           autoComplete="off"
           spellCheck={false}
         />
-        <Toggle
-          label="Regular expression"
-          pressed={filter.regex === true}
-          onChange={(regex) => onFilter({ ...filter, regex })}
-        >
-          <Regex aria-hidden />
-        </Toggle>
-        <Toggle
-          label="Match case"
-          pressed={filter.caseSensitive === true}
-          onChange={(caseSensitive) => onFilter({ ...filter, caseSensitive })}
-        >
-          <CaseSensitive aria-hidden />
-        </Toggle>
-        <Menu label="Branch" value={branchLabel}>
-          <DropdownMenuItem onSelect={() => onBranch(null)}>
-            All branches
-            {branchLabel === null ? <Check aria-hidden className="shui-git-filter-check" /> : null}
-          </DropdownMenuItem>
-          {branches.map((branch) => (
-            <DropdownMenuItem key={branch.id} onSelect={() => onBranch(branch.id)}>
-              {branch.name}
-              {branchLabel === branch.name ? <Check aria-hidden className="shui-git-filter-check" /> : null}
-            </DropdownMenuItem>
-          ))}
-        </Menu>
-        <Menu label="User" value={filter.author ?? null}>
-          <DropdownMenuItem onSelect={() => onFilter({ ...filter, author: undefined })}>Anyone</DropdownMenuItem>
-          {authors.map((author) => (
-            <DropdownMenuItem key={author} onSelect={() => onFilter({ ...filter, author })}>
-              {author}
-              {filter.author === author ? <Check aria-hidden className="shui-git-filter-check" /> : null}
-            </DropdownMenuItem>
-          ))}
-        </Menu>
-        <Menu label="Date" value={filter.since === undefined ? null : (filter.sinceLabel ?? 'Custom')}>
-          {RANGES.map((option) => (
-            <DropdownMenuItem
-              key={option.label}
-              onSelect={() =>
-                onFilter({
-                  ...filter,
-                  since: option.days === null ? undefined : Math.floor(Date.now() / 1000) - option.days * DAY,
-                  sinceLabel: option.days === null ? undefined : option.label,
-                })
-              }
-            >
-              {option.label}
-            </DropdownMenuItem>
-          ))}
-        </Menu>
-        {prefix !== '' ? (
-          <Toggle
-            label={`Only commits in ${prefix.replace(/\/$/, '')}`}
-            pressed={inFolder}
-            onChange={(on) => onFilter({ ...filter, paths: on ? [prefix.replace(/\/$/, '')] : undefined })}
+        {narrow ? (
+          // A narrow pane keeps one row: the filters open below on demand.
+          <button
+            type="button"
+            className="shui-git-filter"
+            aria-expanded={filtersOpen}
+            aria-controls={filtersId}
+            data-set={activeFilters > 0 || undefined}
+            onClick={() => setFiltersOpen((open) => !open)}
           >
-            <FolderClosed aria-hidden />
-          </Toggle>
-        ) : null}
+            <SlidersHorizontal aria-hidden />
+            {activeFilters > 0 ? `Filters · ${activeFilters}` : 'Filters'}
+          </button>
+        ) : (
+          filterControls
+        )}
         <button
           type="button"
-          className="shui-git-toggle"
+          className="shui-git-toggle shui-git-refresh"
           aria-label="Refresh the log"
           title="Refresh the log"
           onClick={log.refresh}
@@ -305,6 +355,12 @@ export function GitCommitList({
           <RefreshCw aria-hidden className={log.loading ? uiClasses.spin : undefined} />
         </button>
       </div>
+      {narrow && filtersOpen ? (
+        // biome-ignore lint/a11y/useSemanticElements: the rest of the filter bar, not a form
+        <div id={filtersId} className="shui-git-filters shui-git-filters-more" role="group" aria-label="More filters">
+          {filterControls}
+        </div>
+      ) : null}
       {log.error !== null && commits.length === 0 ? (
         <p className="shui-git-note-line warn">{log.error}</p>
       ) : commits.length === 0 && !log.loading && filtered ? (
@@ -382,7 +438,7 @@ export function GitCommitList({
                   role="option"
                   className="shui-git-commit"
                   data-narrow={narrow || undefined}
-                  data-off={inHead !== null && !inHead.has(commit.sha) ? '' : undefined}
+                  data-head={inHead?.has(commit.sha) ? '' : undefined}
                   aria-setsize={log.done ? commits.length : -1}
                   aria-posinset={index + 1}
                   {...nav.rowProps(index)}
@@ -416,8 +472,8 @@ export function GitCommitList({
                     </span>
                     {narrow ? (
                       <span className="shui-git-commit-byline">
-                        {refChips}
                         {byline}
+                        {refChips}
                       </span>
                     ) : null}
                   </span>

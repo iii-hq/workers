@@ -485,3 +485,21 @@ export async function readContainingBranches(
     .map(([fullName]) => shortName(fullName))
   return { names: names.slice(0, cap), total: names.length, partial: out.stdout_truncated }
 }
+
+/** A long branch name cut in the middle, keeping its folder and its last
+    word: `fix/supply-chain-hardening` reads `fix/…-chain-hardening`. */
+export function middle(name: string, max = 22): string {
+  if (name.length <= max) return name
+  const slash = name.indexOf('/')
+  const head = slash > 0 && slash < 10 ? name.slice(0, slash + 1) : name.slice(0, 4)
+  const room = max - head.length - 1
+  // The longest tail that fits and starts at a word break.
+  let start = name.length - room
+  for (let at = head.length; at < name.length; at += 1) {
+    if ((name[at] === '-' || name[at] === '/') && name.length - at <= room) {
+      start = at
+      break
+    }
+  }
+  return `${head}…${name.slice(start)}`
+}

@@ -4,6 +4,7 @@ import {
   labelsBySha,
   logArgs,
   logTips,
+  middle,
   parseRecords,
   parseRefs,
   type RefsSnapshot,
@@ -156,6 +157,13 @@ describe('the log', () => {
     expect(fromFolder('template/', 'ide/src/x.rs')).toBe('../ide/src/x.rs')
     expect(fromFolder('a/b/', 'a/c.txt')).toBe('../c.txt')
     expect(fromFolder('a/b/', 'README.md')).toBe('../../README.md')
+  })
+
+  it('cuts a long branch name in the middle, at a word break', () => {
+    expect(middle('main')).toBe('main')
+    expect(middle('fix/supply-chain-hardening')).toBe('fix/…-chain-hardening')
+    expect(middle('feat/ide-worktrees-and-a-very-long-name')).toBe('feat/…-very-long-name')
+    expect(middle('x'.repeat(30))).toBe(`xxxx…${'x'.repeat(17)}`)
   })
 
   it('labels each commit, current branch first, tags last', () => {
