@@ -97,6 +97,9 @@ provider id `openai`.
   new models and removing retired ones. Failed or empty refreshes preserve the
   router's persisted last-known-good slice. Namespacing prevents
   `AmbiguousModel` collisions with `provider-openai`.
+  Context limits follow the backend's `context_window`, using
+  `max_context_window` only when it is absent. The latter is the ceiling for
+  configuration overrides in the [upstream Codex contract](https://github.com/openai/codex/blob/rust-v0.159.0/codex-rs/protocol/src/openai_models.rs#L452-L455).
 - **Request:** Responses API — `input` items, `stream: true`, `store: false`,
   optional `tools` and `reasoning: { effort }`. Headers: `Authorization: Bearer`,
   `chatgpt-account-id`, Codex compatibility `version`,
@@ -219,6 +222,6 @@ Regenerate the wire-schema goldens with `UPDATE_GOLDENS=1 cargo test`.
 | model routes ambiguously | a `codex/*` id collided with another provider | keep codex ids namespaced; or pin `provider: "openai-codex"` |
 
 The OAuth adapter follows the upstream [Codex device login](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/login/src/device_code_auth.rs)
-and token refresh protocol at the provider's current compatibility version.
+and token refresh protocol.
 See [OpenAI authentication guidance](https://learn.chatgpt.com/docs/auth) for
 account/workspace setup.
