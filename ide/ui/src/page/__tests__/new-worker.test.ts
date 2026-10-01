@@ -65,6 +65,8 @@ describe('defaultDirectory', () => {
     expect(defaultDirectory('workers', 'svc')).toBe('workers/svc')
     expect(defaultDirectory('apps/backend/', 'svc')).toBe('apps/backend/svc')
     expect(defaultDirectory('/tmp/scratch', 'svc')).toBe('/tmp/scratch/svc')
+    // The absolute root stays absolute: stripDirSlash('/') is '' and would turn it root-relative.
+    expect(defaultDirectory('/', 'svc')).toBe('/svc')
   })
 })
 
@@ -263,6 +265,17 @@ describe('addToStack', () => {
     expect(fake.payload('compose::restart')).toEqual({ container: 'my-thing' })
     expect(fake.count('compose::add')).toBe(0)
     expect(fake.count('compose::operation')).toBe(0)
+  })
+
+  it('keeps owned on a retry whose first status read fails', async () => {
+    // The dialog stores this owned and passes it to the next Retry; losing it would
+    // stop that Retry at "already exists in the stack" for good.
+    const fake = bus({ 'compose::status': [new Error('bus down')], 'compose::logs': [new Error('UNKNOWN_CONTAINER')] })
+    const outcome = await addToStack(fake.trigger, RESULT, () => {}, { owned: true, sleep: noWait })
+    expect(outcome).toEqual({ ok: false, error: 'bus down', logs: [], owned: true })
+    // A first attempt that never reached compose still owns nothing.
+    const first = bus({ 'compose::status': [new Error('bus down')], 'compose::logs': [new Error('UNKNOWN_CONTAINER')] })
+    expect(await addToStack(first.trigger, RESULT, () => {}, { sleep: noWait })).toMatchObject({ owned: false })
   })
 
   it('gives up after MAX_POLLS reads', async () => {

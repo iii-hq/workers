@@ -58,7 +58,8 @@ export function validateWorkerName(name: string): string | null {
     absolute like `parentDir`. coder::scaffold-worker requires the last
     segment to be the name (C232): compose keys the container by it. */
 export function defaultDirectory(parentDir: string, name: string): string {
-  return joinRel(stripDirSlash(parentDir), name)
+  // stripDirSlash('/') is '', which would turn the absolute root root-relative.
+  return parentDir === '/' ? `/${name}` : joinRel(stripDirSlash(parentDir), name)
 }
 
 /** The file to open once created: the shallowest src/index.ts or src/main.py. */
@@ -191,7 +192,8 @@ export async function addToStack(
   { owned = false, sleep = pause }: { owned?: boolean; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<StackOutcome> {
   const key = result.name
-  let sent = false
+  // A retry already owns the container, whatever fails before the first compose call.
+  let sent = owned
   const fail = async (error: string): Promise<StackOutcome> => {
     let logs: string[] = []
     try {
@@ -210,7 +212,6 @@ export async function addToStack(
       if (!owned) {
         return { ok: false, error: `a container named ${key} already exists in the stack`, logs: [], owned: false }
       }
-      sent = true
       // `container` is never empty here: an empty key is never declared.
       await trigger('compose::restart', { container: key })
     } else {
