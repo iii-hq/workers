@@ -76,9 +76,18 @@ pub trait StateAdapter: Send + Sync + 'static {
         event: &Value,
     ) -> anyhow::Result<crate::barrier::Decision>;
     async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>>;
-    /// Keys within a scope, in the adapter's natural order (kv: insertion
-    /// order; redis: hash-field order). Added for the console state UI —
-    /// `list` returns values only, which cannot drive per-item navigation.
+    /// Owned references for a handler that serializes once at the SDK boundary.
+    /// KV overrides this without deep clones; other adapters keep their existing
+    /// list semantics and wrap the returned values, never changing wire output.
+    async fn list_snapshot(
+        &self,
+        scope: &str,
+    ) -> anyhow::Result<crate::structs::StateListSnapshot> {
+        Ok(crate::structs::StateListSnapshot(
+            self.list(scope).await?.into_iter().map(Arc::new).collect(),
+        ))
+    }
+
     async fn list_keys(&self, scope: &str) -> anyhow::Result<Vec<String>>;
     async fn list_groups(&self) -> anyhow::Result<Vec<String>>;
     /// Only `save_interval_ms` is hot-tunable (kv file_based); default no-op.
@@ -160,6 +169,12 @@ impl StateAdapter for KvStoreAdapter {
     }
     async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>> {
         Ok(self.storage.list(scope.to_string()).await)
+    }
+    async fn list_snapshot(
+        &self,
+        scope: &str,
+    ) -> anyhow::Result<crate::structs::StateListSnapshot> {
+        Ok(self.storage.list_snapshot(scope).await)
     }
     async fn list_keys(&self, scope: &str) -> anyhow::Result<Vec<String>> {
         Ok(self.storage.list_keys(scope.to_string()).await)

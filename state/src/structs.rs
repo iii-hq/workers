@@ -48,6 +48,22 @@ pub struct StateGetGroupInput {
     pub scope: String,
 }
 
+/// Serialization-only snapshot: the SDK builds the outgoing JSON once, while
+/// the worker retains shared immutable records instead of another deep copy.
+/// Wire shape is the same array returned by legacy state::list.
+#[derive(Debug, Clone, Serialize)]
+#[serde(transparent)]
+pub struct StateListSnapshot(pub Vec<std::sync::Arc<Value>>);
+
+impl JsonSchema for StateListSnapshot {
+    fn schema_name() -> String {
+        "StateListSnapshot".into()
+    }
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        <Vec<Value> as JsonSchema>::json_schema(generator)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateListGroupsInput {}
 

@@ -17,6 +17,11 @@ use tokio::sync::RwLock;
 
 const KEY_FILE_EXTENSION: &str = "bin";
 
+// Values are immutable once installed. A persistence snapshot clones only keys
+// and Arc handles, not every JSON tree; replacing a key preserves older snapshots.
+type Scope = IndexMap<String, Arc<Value>>;
+type Store = Arc<RwLock<HashMap<String, Scope>>>;
+
 /// Default persistence flush cadence (ms) for file-backed stores. Used when no
 /// `save_interval_ms` is configured at construction.
 const DEFAULT_SAVE_INTERVAL_MS: u64 = 5000;
@@ -75,7 +80,7 @@ fn index_from_path(path: &Path) -> Option<String> {
     decode_index(file_name)
 }
 
-fn load_store_from_dir(dir: &Path) -> HashMap<String, IndexMap<String, Value>> {
+fn load_store_from_dir(dir: &Path) -> HashMap<String, Scope> {
     let mut store = HashMap::new();
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -107,14 +112,14 @@ fn load_store_from_dir(dir: &Path) -> HashMap<String, IndexMap<String, Value>> {
                 continue;
             }
         };
-        let storage = match rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes) {
+        let storage = match rkyv::access::<ArchivedKeyStorage, rkyv::rancor::Error>(&bytes) {
             Ok(storage) => storage,
             Err(err) => {
                 tracing::warn!(error = ?err, path = %path.display(), "failed to parse index file");
                 continue;
             }
         };
-        let value = match serde_json::from_str::<IndexMap<String, Value>>(&storage.0) {
+        let value = match serde_json::from_str::<Scope>(storage.0.as_str()) {
             Ok(value) => value,
             Err(err) => {
                 tracing::warn!(error = ?err, path = %path.display(), "failed to decode index value");
@@ -127,31 +132,29 @@ fn load_store_from_dir(dir: &Path) -> HashMap<String, IndexMap<String, Value>> {
     store
 }
 
-async fn persist_index_to_disk(
-    dir: &Path,
-    index: &str,
-    value: &IndexMap<String, Value>,
-) -> anyhow::Result<()> {
-    if let Err(err) = tokio::fs::create_dir_all(dir).await {
-        tracing::error!(error = ?err, path = %dir.display(), "failed to create storage directory");
-        return Err(err.into());
-    }
-
+// Called only by the blocking flush task (or unit tests). Keep the legacy
+// KeyStorage(String) archive layout, temporary filename and rename semantics.
+fn persist_index_to_disk(dir: &Path, index: &str, value: &Scope) -> anyhow::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
     let file_name = index_file_name(index);
     let path = dir.join(&file_name);
     let temp_path = dir.join(format!("{}.tmp", file_name));
     let json = serde_json::to_string(value)?;
-    let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&KeyStorage(json))?;
-
-    tokio::fs::write(&temp_path, bytes).await?;
-    tokio::fs::rename(&temp_path, &path).await?;
-
+    let file = std::fs::File::create(&temp_path)?;
+    let writer = rkyv::ser::writer::IoWriter::new(std::io::BufWriter::new(file));
+    let writer = rkyv::api::high::to_bytes_in::<_, rkyv::rancor::Error>(&KeyStorage(json), writer)?;
+    let mut buffered = writer.into_inner();
+    // BufWriter::drop hides write failures. Do not publish until flush succeeds.
+    buffered.flush()?;
+    drop(buffered);
+    std::fs::rename(&temp_path, &path)?;
     Ok(())
 }
 
-async fn delete_index_from_disk(dir: &Path, index: &str) -> anyhow::Result<()> {
+fn delete_index_from_disk(dir: &Path, index: &str) -> anyhow::Result<()> {
     let path = dir.join(index_file_name(index));
-    match tokio::fs::remove_file(&path).await {
+    match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err.into()),
@@ -163,12 +166,12 @@ async fn delete_index_from_disk(dir: &Path, index: &str) -> anyhow::Result<()> {
 /// concurrent `set`/`delete` may have queued fresh intent for it meanwhile;
 /// overwriting that would persist the stale intent instead (a failed delete
 /// landing on a fresh upsert deletes live data on the next flush).
-async fn requeue(dirty: &Arc<RwLock<HashMap<String, DirtyOp>>>, index: String, op: DirtyOp) {
-    dirty.write().await.entry(index).or_insert(op);
+fn requeue(dirty: &Arc<RwLock<HashMap<String, DirtyOp>>>, index: String, op: DirtyOp) {
+    dirty.blocking_write().entry(index).or_insert(op);
 }
 
 pub struct KvStore {
-    store: Arc<RwLock<HashMap<String, IndexMap<String, Value>>>>,
+    store: Store,
     file_store_dir: Option<PathBuf>,
     dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
     /// Stop signal for the current save-loop instance. Replaced (and the prior
@@ -311,7 +314,7 @@ impl KvStore {
     }
 
     async fn save_loop(
-        store: Arc<RwLock<HashMap<String, IndexMap<String, Value>>>>,
+        store: Store,
         dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
         flush_lock: Arc<tokio::sync::Mutex<()>>,
         polling_interval: u64,
@@ -346,45 +349,56 @@ impl KvStore {
     /// attempt did not fully succeed. Shared by the periodic save loop and
     /// [`KvStore::flush`], which `flush_lock` keeps from overlapping.
     async fn flush_dirty(
-        store: &Arc<RwLock<HashMap<String, IndexMap<String, Value>>>>,
+        store: &Store,
         dirty: &Arc<RwLock<HashMap<String, DirtyOp>>>,
-        flush_lock: &tokio::sync::Mutex<()>,
+        flush_lock: &Arc<tokio::sync::Mutex<()>>,
         dir: &Path,
     ) -> anyhow::Result<()> {
-        let _guard = flush_lock.lock().await;
-        let batch = {
-            let mut dirty = dirty.write().await;
-            dirty.drain().collect::<Vec<_>>()
-        };
+        // Move the lock into the blocking task BEFORE it drains dirty intent.
+        // Aborting this future cannot let another flush overtake the writer or
+        // let shutdown return while a previous write still owns the temp file.
+        let guard = Arc::clone(flush_lock).lock_owned().await;
+        // Serialize with any older writer before checking: shutdown must still
+        // wait for in-flight work even if that writer has drained dirty intent.
+        // Empty ticks need neither Arc clones nor a blocking task.
+        if dirty.read().await.is_empty() {
+            return Ok(());
+        }
+        let store = Arc::clone(store);
+        let dirty = Arc::clone(dirty);
+        let dir = dir.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            Self::flush_dirty_blocking(&store, &dirty, &dir)
+        })
+        .await?
+    }
 
-        // Every scope is attempted even after one fails, so a single bad path
-        // can't strand the rest of the batch on the shutdown flush.
+    fn flush_dirty_blocking(
+        store: &Store,
+        dirty: &Arc<RwLock<HashMap<String, DirtyOp>>>,
+        dir: &Path,
+    ) -> anyhow::Result<()> {
+        let batch = dirty.blocking_write().drain().collect::<Vec<_>>();
         let mut failed = 0usize;
         for (index, op) in batch {
-            match op {
+            let result = match op {
                 DirtyOp::Upsert => {
-                    let value = {
-                        let store = store.read().await;
-                        store.get(&index).cloned()
-                    };
-                    if let Some(value) = value
-                        && let Err(err) = persist_index_to_disk(dir, &index, &value).await
-                    {
-                        tracing::error!(error = ?err, index = %index, "failed to persist index");
-                        failed += 1;
-                        requeue(dirty, index, DirtyOp::Upsert).await;
+                    // Drop the read lock before serializing or touching disk.
+                    let snapshot = store.blocking_read().get(&index).cloned();
+                    match snapshot {
+                        Some(value) => persist_index_to_disk(dir, &index, &value),
+                        None => Ok(()),
                     }
                 }
-                DirtyOp::Delete => {
-                    if let Err(err) = delete_index_from_disk(dir, &index).await {
-                        tracing::error!(error = ?err, index = %index, "failed to delete index");
-                        failed += 1;
-                        requeue(dirty, index, DirtyOp::Delete).await;
-                    }
-                }
+                DirtyOp::Delete => delete_index_from_disk(dir, &index),
+            };
+            if let Err(error) = result {
+                tracing::error!(error = ?error, index = %index, "failed to persist index");
+                failed += 1;
+                requeue(dirty, index, op);
             }
         }
-
         if failed > 0 {
             anyhow::bail!("{failed} scope(s) failed to persist and were requeued");
         }
@@ -402,46 +416,33 @@ impl KvStore {
     }
 
     pub async fn set(&self, index: String, key: String, data: Value) -> StreamSetResult {
-        let result = {
+        let old = {
             let mut store = self.store.write().await;
-            let index_map = store.get_mut(&index);
-
-            if let Some(index_map) = index_map {
-                let old_value = index_map.get(&key).cloned();
-                index_map.insert(key.clone(), data.clone());
-
-                StreamSetResult {
-                    old_value,
-                    new_value: data.clone(),
-                }
-            } else {
-                let mut index_map = IndexMap::new();
-                index_map.insert(key, data.clone());
-                store.insert(index.clone(), index_map);
-
-                StreamSetResult {
-                    old_value: None,
-                    new_value: data.clone(),
-                }
-            }
+            store
+                .entry(index.clone())
+                .or_default()
+                .insert(key, Arc::new(data.clone()))
         };
-
         if self.file_store_dir.is_some() {
             self.dirty.write().await.insert(index, DirtyOp::Upsert);
         }
-
-        result
+        StreamSetResult {
+            old_value: old.map(Arc::unwrap_or_clone),
+            new_value: data,
+        }
     }
 
     pub async fn get(&self, index: String, key: String) -> Option<Value> {
-        let store = self.store.read().await;
-        let index = store.get(&index);
-
-        if let Some(index) = index {
-            return index.get(&key).cloned();
-        }
-
-        None
+        // Select one immutable version while locked, then build the independent
+        // response without holding a read lock over a potentially large clone.
+        let value = self
+            .store
+            .read()
+            .await
+            .get(&index)
+            .and_then(|scope| scope.get(&key))
+            .cloned();
+        value.map(Arc::unwrap_or_clone)
     }
 
     pub async fn delete(&self, index: String, key: String) -> StreamDeleteResult {
@@ -460,7 +461,12 @@ impl KvStore {
                 } else {
                     None
                 };
-                (StreamDeleteResult { old_value: removed }, dirty_op)
+                (
+                    StreamDeleteResult {
+                        old_value: removed.map(Arc::unwrap_or_clone),
+                    },
+                    dirty_op,
+                )
             } else {
                 (StreamDeleteResult { old_value: None }, None)
             }
@@ -494,7 +500,7 @@ impl KvStore {
         let current = store
             .get(&index)
             .and_then(|index_map| index_map.get(&key))
-            .cloned();
+            .map(|value| value.as_ref().clone());
 
         // `expected: None` means "I expect this key to be absent" — the
         // set-if-absent form a claim needs. A stored `null` counts as absent so
@@ -508,7 +514,7 @@ impl KvStore {
         store
             .entry(index.clone())
             .or_insert_with(IndexMap::new)
-            .insert(key, value);
+            .insert(key, Arc::new(value));
         drop(store);
 
         if self.file_store_dir.is_some() {
@@ -535,7 +541,7 @@ impl KvStore {
         let current = store
             .get(&index)
             .and_then(|index_map| index_map.get(&key))
-            .cloned();
+            .map(|value| value.as_ref().clone());
 
         let (next, decision) = crate::barrier::arrive(current.as_ref(), cfg, event)?;
         let encoded =
@@ -550,7 +556,7 @@ impl KvStore {
         store
             .entry(index.clone())
             .or_insert_with(IndexMap::new)
-            .insert(key, encoded);
+            .insert(key, Arc::new(encoded));
         drop(store);
 
         if self.file_store_dir.is_some() {
@@ -570,11 +576,12 @@ impl KvStore {
         // Automatically create index_map if it doesn't exist
         let index_map = store.entry(index.clone()).or_insert_with(IndexMap::new);
 
-        let old_value = index_map.get(&key).cloned();
-        let (updated_value, errors) = crate::update_ops::apply_update_ops(old_value.clone(), &ops);
-
-        // Write the updated value back to the store
-        index_map.insert(key.clone(), updated_value.clone());
+        // Only one working copy is needed. Keep the original map entry until
+        // update completes, then reuse that displaced version in the response
+        // when no in-flight persistence/list snapshot still shares it.
+        let current = index_map.get(&key).map(|value| value.as_ref().clone());
+        let (updated_value, errors) = crate::update_ops::apply_update_ops(current, &ops);
+        let previous = index_map.insert(key, Arc::new(updated_value.clone()));
 
         drop(store);
 
@@ -586,17 +593,33 @@ impl KvStore {
         }
 
         StreamUpdateResult {
-            old_value,
+            old_value: previous.map(Arc::unwrap_or_clone),
             new_value: updated_value,
             errors,
         }
     }
 
     pub async fn list(&self, index: String) -> Vec<Value> {
-        let store = self.store.read().await;
-        store
+        // Membership and insertion order are captured under the lock, but the
+        // compatibility API's owned JSON trees are cloned only after releasing it.
+        let values: Vec<_> = self
+            .store
+            .read()
+            .await
             .get(&index)
-            .map_or(vec![], |topic| topic.values().cloned().collect())
+            .map_or_else(Vec::new, |scope| scope.values().map(Arc::clone).collect());
+        values.into_iter().map(Arc::unwrap_or_clone).collect()
+    }
+
+    /// Snapshot references for a single serialization at the RPC boundary.
+    /// Existing list callers keep their owned Vec<Value> contract.
+    pub async fn list_snapshot(&self, index: &str) -> crate::structs::StateListSnapshot {
+        let store = self.store.read().await;
+        crate::structs::StateListSnapshot(
+            store
+                .get(index)
+                .map_or_else(Vec::new, |scope| scope.values().map(Arc::clone).collect()),
+        )
     }
 
     pub async fn list_keys(&self, index: String) -> Vec<String> {
@@ -635,12 +658,10 @@ mod test {
         let index = "test";
         let key = "test_group::item1";
         let data = serde_json::json!({"key": "value"});
-        let index_data = IndexMap::from([(key.to_string(), data.clone())]);
+        let index_data = IndexMap::from([(key.to_string(), Arc::new(data.clone()))]);
         let file_path = dir.join(index_file_name(index));
 
-        persist_index_to_disk(&dir, index, &index_data.clone())
-            .await
-            .unwrap();
+        persist_index_to_disk(&dir, index, &index_data).unwrap();
 
         let config = serde_json::json!({
             "store_method": "file_based",
@@ -694,26 +715,25 @@ mod test {
     /// `set` queues an `Upsert`. Requeueing the failed `Delete` with a plain
     /// `insert` would overwrite that `Upsert`, and the next flush would then
     /// delete a scope the store still holds — silent data loss.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn requeue_never_overwrites_newer_intent() {
+    #[test]
+    fn requeue_never_overwrites_newer_intent() {
         let dirty: Arc<RwLock<HashMap<String, DirtyOp>>> = Arc::new(RwLock::new(HashMap::new()));
 
         dirty
-            .write()
-            .await
+            .blocking_write()
             .insert("scope".to_string(), DirtyOp::Upsert);
-        requeue(&dirty, "scope".to_string(), DirtyOp::Delete).await;
+        requeue(&dirty, "scope".to_string(), DirtyOp::Delete);
         assert!(
-            matches!(dirty.read().await.get("scope"), Some(DirtyOp::Upsert)),
+            matches!(dirty.blocking_read().get("scope"), Some(DirtyOp::Upsert)),
             "the newer Upsert must survive the failed Delete's requeue"
         );
 
         // With nothing newer queued, the failed op is restored so the next
         // flush retries it.
-        dirty.write().await.clear();
-        requeue(&dirty, "scope".to_string(), DirtyOp::Delete).await;
+        dirty.blocking_write().clear();
+        requeue(&dirty, "scope".to_string(), DirtyOp::Delete);
         assert!(matches!(
-            dirty.read().await.get("scope"),
+            dirty.blocking_read().get("scope"),
             Some(DirtyOp::Delete)
         ));
     }
@@ -868,8 +888,11 @@ mod test {
         // A file persisted with persist_index_to_disk IS the builtin's format
         // (same rkyv KeyStorage + percent-encoded name); a fresh store must load it.
         let dir = temp_store_dir();
-        let data = IndexMap::from([("user-1".to_string(), serde_json::json!({"name": "Alice"}))]);
-        persist_index_to_disk(&dir, "users", &data).await.unwrap();
+        let data = IndexMap::from([(
+            "user-1".to_string(),
+            Arc::new(serde_json::json!({"name": "Alice"})),
+        )]);
+        persist_index_to_disk(&dir, "users", &data).unwrap();
 
         let store = KvStore::new(Some(serde_json::json!({
             "store_method": "file_based",
@@ -1123,3 +1146,7 @@ mod cas_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "store_memory_tests.rs"]
+mod memory_tests;
