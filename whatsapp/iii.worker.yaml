@@ -1,0 +1,18 @@
+iii: v1
+name: whatsapp
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: whatsapp
+license: Apache-2.0
+description: Native WhatsApp sessions, messages, media, groups and events through whatsapp-rust; no Node or browser runtime.
+tags: [whatsapp, messaging, native, rust, groups]
+dependencies:
+  configuration: latest
+config:
+  data_dir: data/whatsapp
+  max_sessions: 32
+  max_media_bytes: 16777216
+  max_events: 1000
+  operation_timeout_secs: 30
+  shutdown_timeout_secs: 15

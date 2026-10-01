@@ -1,0 +1,6 @@
+# Only local session summaries are allowed automatically.
+# Messages, contact data, pairing material and mutations use the harness policy.
+version: 1
+rules:
+  - whatsapp::sessions::list
+  - whatsapp::sessions::get

@@ -1,4 +1,18 @@
 workers:
+  whatsapp:
+    source:
+      path: whatsapp
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: whatsapp
+      targets:
+      - x86_64-unknown-linux-gnu
+      windows_exception: Initial native worker targets Linux x86_64; Windows credential lifecycle and packaging are not yet validated.
+    publish: true
   a2ui:
     source:
       path: a2ui

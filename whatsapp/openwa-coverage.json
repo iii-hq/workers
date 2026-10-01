@@ -1,0 +1,1838 @@
+{
+  "source": {
+    "title": "OpenWA API",
+    "version": "0.24.0",
+    "repository": "https://github.com/rmyndharis/OpenWA",
+    "commit": "261fd4e902649328eb2eefd8ee592237cfd94fa2",
+    "openapi_url": "https://github.com/rmyndharis/OpenWA/blob/261fd4e902649328eb2eefd8ee592237cfd94fa2/openapi.json",
+    "sha256": "08eb45e0d80d12bbc15f474111aab65bf6699e3611c2a9ecacab786bdcfd3619",
+    "inspected_date": "2026-09-30",
+    "operation_count": 202
+  },
+  "native_dependency": {
+    "repository": "https://github.com/oxidezap/whatsapp-rust",
+    "commit": "dd0763c4635b353c4ed52def39d030fb2f375f9a"
+  },
+  "status_definitions": {
+    "native_equivalent": "The corresponding action is implemented through one or more native iii functions with worker-specific schemas. This does not claim HTTP, authentication, storage, response-shape or live-tested OpenWA parity.",
+    "partial": "A stated subset of the OpenWA operation is implemented; notes identify missing behavior.",
+    "not_implemented": "No worker implementation of the operation is provided. Related native primitives or event observations do not imply implementation."
+  },
+  "verification": "Function mappings were inspected in worker registration source. Offline tests validate request handling and projections. No live WhatsApp account has been paired for end-to-end validation.",
+  "operations": [
+    {
+      "method": "GET",
+      "path": "/api/audit",
+      "operationId": "AuditController_findAll",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persistent OpenWA audit log or audit query API is implemented."
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/api-keys",
+      "operationId": "AuthController_create",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "OpenWA API-key CRUD, roles, scopes, expiration and validation are not implemented; iii access controls are a separate system."
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/api-keys",
+      "operationId": "AuthController_findAll",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "OpenWA API-key CRUD, roles, scopes, expiration and validation are not implemented; iii access controls are a separate system."
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/api-keys/{id}",
+      "operationId": "AuthController_findOne",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "OpenWA API-key CRUD, roles, scopes, expiration and validation are not implemented; iii access controls are a separate system."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/auth/api-keys/{id}",
+      "operationId": "AuthController_update",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "OpenWA API-key CRUD, roles, scopes, expiration and validation are not implemented; iii access controls are a separate system."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/auth/api-keys/{id}",
+      "operationId": "AuthController_delete",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "OpenWA API-key CRUD, roles, scopes, expiration and validation are not implemented; iii access controls are a separate system."
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/api-keys/{id}/revoke",
+      "operationId": "AuthController_revoke",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "OpenWA API-key CRUD, roles, scopes, expiration and validation are not implemented; iii access controls are a separate system."
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/validate",
+      "operationId": "AuthValidateController_validate",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "OpenWA API-key CRUD, roles, scopes, expiration and validation are not implemented; iii access controls are a separate system."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions",
+      "operationId": "SessionController_create",
+      "status": "partial",
+      "functions": [
+        "whatsapp::sessions::create"
+      ],
+      "notes": "Creates persistent stopped session metadata by ID. Does not accept OpenWA name/config/proxy options; start and pairing are separate native functions."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions",
+      "operationId": "SessionController_findAll",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::sessions::list"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}",
+      "operationId": "SessionController_findOne",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::sessions::get"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{sessionId}",
+      "operationId": "SessionController_delete",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::sessions::delete"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/config",
+      "operationId": "SessionController_getConfig",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No per-session OpenWA configuration getter/updater; worker YAML uses a distinct fixed contract."
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/sessions/{sessionId}/config",
+      "operationId": "SessionController_updateConfig",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No per-session OpenWA configuration getter/updater; worker YAML uses a distinct fixed contract."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/proxy",
+      "operationId": "SessionController_getProxy",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No per-session proxy configuration API."
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/sessions/{sessionId}/proxy",
+      "operationId": "SessionController_updateProxy",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No per-session proxy configuration API."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/start",
+      "operationId": "SessionController_start",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::sessions::start"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/stop",
+      "operationId": "SessionController_stop",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::sessions::stop"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/logout",
+      "operationId": "SessionController_logout",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::sessions::logout"
+      ],
+      "notes": "Requests upstream best-effort unlink, stops the native session, and clears local credentials. A server-side logout acknowledgement is not guaranteed."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/force-kill",
+      "operationId": "SessionController_forceKill",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "Normal native stop is available; no force-kill operation or child process exists."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/qr",
+      "operationId": "SessionController_getQRCode",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::sessions::qr"
+      ],
+      "notes": "Returns the current unexpired native QR pairing payload and expiry; image rendering and response shapes differ from OpenWA."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/pairing-code",
+      "operationId": "SessionController_requestPairingCode",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::sessions::pair_code"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/groups",
+      "operationId": "SessionController_getGroups",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::list"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/groups",
+      "operationId": "GroupController_create",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::create"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/chats",
+      "operationId": "SessionController_getChats",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No durable chat/message/reaction read model or historical query API. Bounded incoming events are not a substitute for a complete history."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/chats/read",
+      "operationId": "SessionController_markChatRead",
+      "status": "partial",
+      "functions": [
+        "whatsapp::chats::mark_read",
+        "whatsapp::messages::mark_read"
+      ],
+      "notes": "Chat read-state sync and explicit message read receipts are separate native calls. The OpenWA newest-message receipt fallback is not implemented when message IDs are omitted; callers must retain and supply message IDs for receipts."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/presence/subscribe",
+      "operationId": "SessionController_subscribeToPresence",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::chats::subscribe_presence"
+      ],
+      "notes": "Subscribes to native presence events; observe them via the iii event trigger or events::poll."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/sessions/{sessionId}/presence",
+      "operationId": "SessionController_setOnlinePresence",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::chats::presence"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/presence/{chatId}",
+      "operationId": "SessionController_getPresence",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No current-presence query cache. Presence observations may arrive as events."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/chats/unread",
+      "operationId": "SessionController_markChatUnread",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::chats::mark_read"
+      ],
+      "notes": "Pass read=false to sync the chat's unread state."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{sessionId}/chats/{chatId}/messages",
+      "operationId": "SessionController_clearChatMessages",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::chats::clear"
+      ],
+      "notes": "Clears messages with explicit delete_starred/delete_media flags and an optional caller-supplied synchronized message range."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/chats/archive",
+      "operationId": "SessionController_archiveChat",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::chats::archive",
+        "whatsapp::chats::unarchive"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/chats/mute",
+      "operationId": "SessionController_muteChat",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::chats::mute",
+        "whatsapp::chats::unmute"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/chats/pin",
+      "operationId": "SessionController_pinChat",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::chats::pin",
+        "whatsapp::chats::unpin"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/chats/delete",
+      "operationId": "SessionController_deleteChat",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::chats::delete"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/chats/typing",
+      "operationId": "SessionController_sendChatState",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::chats::state"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/stats/overview",
+      "operationId": "SessionController_getStats",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA historical message/session analytics or Prometheus scrape contract."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/webhooks",
+      "operationId": "WebhookController_create",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/webhooks",
+      "operationId": "WebhookController_findBySession",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/webhooks/{id}",
+      "operationId": "WebhookController_findOne",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/sessions/{sessionId}/webhooks/{id}",
+      "operationId": "WebhookController_update",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{sessionId}/webhooks/{id}",
+      "operationId": "WebhookController_delete",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/webhooks/{id}/test",
+      "operationId": "WebhookController_test",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+    },
+    {
+      "method": "GET",
+      "path": "/api/webhooks/delivery-failures",
+      "operationId": "WebhooksListController_deliveryFailures",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+    },
+    {
+      "method": "GET",
+      "path": "/api/webhooks",
+      "operationId": "WebhooksListController_findAll",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/automation-rules",
+      "operationId": "AutomationRuleController_create",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persisted OpenWA automation-rule model or rule executor."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/automation-rules",
+      "operationId": "AutomationRuleController_findAll",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persisted OpenWA automation-rule model or rule executor."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/automation-rules/{ruleId}",
+      "operationId": "AutomationRuleController_findOne",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persisted OpenWA automation-rule model or rule executor."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/sessions/{sessionId}/automation-rules/{ruleId}",
+      "operationId": "AutomationRuleController_update",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persisted OpenWA automation-rule model or rule executor."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{sessionId}/automation-rules/{ruleId}",
+      "operationId": "AutomationRuleController_remove",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persisted OpenWA automation-rule model or rule executor."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/messages",
+      "operationId": "MessageController_getMessages",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No durable chat/message/reaction read model or historical query API. Bounded incoming events are not a substitute for a complete history."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/send-text",
+      "operationId": "MessageController_sendText",
+      "status": "partial",
+      "functions": [
+        "whatsapp::messages::send_text"
+      ],
+      "notes": "Sends plain text. OpenWA mentions, quoting, automatic/custom link-preview options are not exposed."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/send-template",
+      "operationId": "MessageController_sendTemplate",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No stored template lookup/rendering; the send_text function accepts already rendered text."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/send-image",
+      "operationId": "MessageController_sendImage",
+      "status": "partial",
+      "functions": [
+        "whatsapp::media::send"
+      ],
+      "notes": "Sends prepared image media supplied as bounded base64 to direct/group chats. No arbitrary URL fetch, transcoding, channel media upload, mentions or quoted-message attachment."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/send-video",
+      "operationId": "MessageController_sendVideo",
+      "status": "partial",
+      "functions": [
+        "whatsapp::media::send"
+      ],
+      "notes": "Sends prepared video media supplied as bounded base64 to direct/group chats. No arbitrary URL fetch, transcoding, channel media upload, mentions or quoted-message attachment."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/send-audio",
+      "operationId": "MessageController_sendAudio",
+      "status": "partial",
+      "functions": [
+        "whatsapp::media::send"
+      ],
+      "notes": "Sends prepared audio media supplied as bounded base64 to direct/group chats. No arbitrary URL fetch, transcoding, channel media upload, mentions or quoted-message attachment. Use voice_note=true for already encoded voice notes."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/send-document",
+      "operationId": "MessageController_sendDocument",
+      "status": "partial",
+      "functions": [
+        "whatsapp::media::send"
+      ],
+      "notes": "Sends prepared document media supplied as bounded base64 to direct/group chats. No arbitrary URL fetch, transcoding, channel media upload, mentions or quoted-message attachment."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/send-location",
+      "operationId": "MessageController_sendLocation",
+      "status": "partial",
+      "functions": [
+        "whatsapp::messages::send_location"
+      ],
+      "notes": "Sends a static coordinate location with optional name/address. Quoted-message attachment is not exposed."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/send-contact",
+      "operationId": "MessageController_sendContact",
+      "status": "partial",
+      "functions": [
+        "whatsapp::messages::send_contact"
+      ],
+      "notes": "Sends a caller-supplied complete vCard and display name. Does not construct a card from contactNumber/contactName or attach a quoted message."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/send-sticker",
+      "operationId": "MessageController_sendSticker",
+      "status": "partial",
+      "functions": [
+        "whatsapp::media::send"
+      ],
+      "notes": "Sends prepared sticker media supplied as bounded base64 to direct/group chats. No arbitrary URL fetch, transcoding, channel media upload, mentions or quoted-message attachment. Sticker bytes must already be WebP."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/send-poll",
+      "operationId": "MessageController_sendPoll",
+      "status": "partial",
+      "functions": [
+        "whatsapp::messages::send_poll"
+      ],
+      "notes": "Creates a poll with explicit options and selectable count. Quoted-message attachment is not exposed; callers retain the returned poll secret for later voting."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/reply",
+      "operationId": "MessageController_reply",
+      "status": "partial",
+      "functions": [
+        "whatsapp::messages::reply"
+      ],
+      "notes": "Replies quoting caller-supplied original text, sender and message key. Does not retrieve stored messages, quote arbitrary media, or support the OpenWA mentions option."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/click-button",
+      "operationId": "MessageController_clickButton",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No native interactive-button click function is registered."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/forward",
+      "operationId": "MessageController_forward",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No native forwarding function or stored-message lookup is registered."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/react",
+      "operationId": "MessageController_react",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::messages::react"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/messages/batch/{batchId}",
+      "operationId": "MessageController_getBatchStatus",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persistent bulk-send batches, background job cancellation or per-batch status model."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/batch/{batchId}/cancel",
+      "operationId": "MessageController_cancelBatch",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persistent bulk-send batches, background job cancellation or per-batch status model."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/messages/{chatId}/history",
+      "operationId": "MessageController_getChatHistory",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No durable chat/message/reaction read model or historical query API. Bounded incoming events are not a substitute for a complete history."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/messages/{chatId}/{messageId}/reactions",
+      "operationId": "MessageController_getReactions",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No durable chat/message/reaction read model or historical query API. Bounded incoming events are not a substitute for a complete history."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/messages/{chatId}/{messageId}/media",
+      "operationId": "MessageController_getChatMedia",
+      "status": "partial",
+      "functions": [
+        "whatsapp::media::download"
+      ],
+      "notes": "Downloads and decrypts/verifies bounded native CDN media when direct path, hashes, encryption key and length are supplied. Does not find media by chat/message ID."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/delete",
+      "operationId": "MessageController_deleteMessage",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::messages::delete",
+        "whatsapp::messages::delete_for_me"
+      ],
+      "notes": "Remote revoke and local-only delete are separate native functions and require the original message key; no stored-message lookup."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/vote-poll",
+      "operationId": "MessageController_votePoll",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::messages::vote_poll"
+      ],
+      "notes": "Caller supplies the original poll metadata/secret. The worker does not retrieve missing poll secrets from OpenWA storage."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/pin",
+      "operationId": "MessageController_pinMessage",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::messages::pin"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/unpin",
+      "operationId": "MessageController_unpinMessage",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::messages::unpin"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/star",
+      "operationId": "MessageController_starMessage",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::messages::star",
+        "whatsapp::messages::unstar"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/edit",
+      "operationId": "MessageController_edit",
+      "status": "partial",
+      "functions": [
+        "whatsapp::messages::edit"
+      ],
+      "notes": "Edits this account's text messages by caller-supplied message key. OpenWA mentions handling is not exposed."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/send-bulk",
+      "operationId": "MessageController_sendBulk",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persistent bulk-send batches, background job cancellation or per-batch status model."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/templates",
+      "operationId": "TemplateController_create",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persisted OpenWA message-template store or rendering contract."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/templates",
+      "operationId": "TemplateController_findBySession",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persisted OpenWA message-template store or rendering contract."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/templates/{id}",
+      "operationId": "TemplateController_findOne",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persisted OpenWA message-template store or rendering contract."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/sessions/{sessionId}/templates/{id}",
+      "operationId": "TemplateController_update",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persisted OpenWA message-template store or rendering contract."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{sessionId}/templates/{id}",
+      "operationId": "TemplateController_delete",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persisted OpenWA message-template store or rendering contract."
+    },
+    {
+      "method": "GET",
+      "path": "/api/health",
+      "operationId": "HealthController_check",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA HTTP health/liveness/readiness endpoints or corresponding iii health function."
+    },
+    {
+      "method": "GET",
+      "path": "/api/health/live",
+      "operationId": "HealthController_liveness",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA HTTP health/liveness/readiness endpoints or corresponding iii health function."
+    },
+    {
+      "method": "GET",
+      "path": "/api/health/ready",
+      "operationId": "HealthController_readiness",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA HTTP health/liveness/readiness endpoints or corresponding iii health function."
+    },
+    {
+      "method": "GET",
+      "path": "/api/settings",
+      "operationId": "SettingsController_get",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA infrastructure engine, configuration, update, restart or storage import/export control API."
+    },
+    {
+      "method": "GET",
+      "path": "/api/infra/status",
+      "operationId": "InfraStatusController_getStatus",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA infrastructure engine, configuration, update, restart or storage import/export control API."
+    },
+    {
+      "method": "GET",
+      "path": "/api/infra/engines",
+      "operationId": "InfraStatusController_getEngines",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA infrastructure engine, configuration, update, restart or storage import/export control API."
+    },
+    {
+      "method": "GET",
+      "path": "/api/infra/engines/current",
+      "operationId": "InfraStatusController_getCurrentEngine",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA infrastructure engine, configuration, update, restart or storage import/export control API."
+    },
+    {
+      "method": "GET",
+      "path": "/api/infra/update-check",
+      "operationId": "InfraStatusController_getUpdateCheck",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA infrastructure engine, configuration, update, restart or storage import/export control API."
+    },
+    {
+      "method": "GET",
+      "path": "/api/infra/health",
+      "operationId": "InfraStatusController_healthCheck",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA infrastructure engine, configuration, update, restart or storage import/export control API."
+    },
+    {
+      "method": "GET",
+      "path": "/api/infra/config",
+      "operationId": "InfraConfigController_getConfig",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA infrastructure engine, configuration, update, restart or storage import/export control API."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/infra/config",
+      "operationId": "InfraConfigController_saveConfig",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA infrastructure engine, configuration, update, restart or storage import/export control API."
+    },
+    {
+      "method": "POST",
+      "path": "/api/infra/restart",
+      "operationId": "InfraConfigController_requestRestart",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA infrastructure engine, configuration, update, restart or storage import/export control API."
+    },
+    {
+      "method": "GET",
+      "path": "/api/infra/export-data",
+      "operationId": "InfraDataController_exportData",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA infrastructure engine, configuration, update, restart or storage import/export control API."
+    },
+    {
+      "method": "POST",
+      "path": "/api/infra/import-data",
+      "operationId": "InfraDataController_importData",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA infrastructure engine, configuration, update, restart or storage import/export control API."
+    },
+    {
+      "method": "GET",
+      "path": "/api/infra/storage/files/count",
+      "operationId": "InfraStorageController_getStorageFileCount",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA infrastructure engine, configuration, update, restart or storage import/export control API."
+    },
+    {
+      "method": "GET",
+      "path": "/api/infra/storage/export",
+      "operationId": "InfraStorageController_exportStorage",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA infrastructure engine, configuration, update, restart or storage import/export control API."
+    },
+    {
+      "method": "POST",
+      "path": "/api/infra/storage/import",
+      "operationId": "InfraStorageController_importStorage",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA infrastructure engine, configuration, update, restart or storage import/export control API."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/contacts",
+      "operationId": "ContactController_findAll",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No persisted address-book contact index or list query; supplied contacts can be checked/fetched individually."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/contacts/profile-pictures",
+      "operationId": "ContactController_getProfilePictures",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::contacts::pictures"
+      ],
+      "notes": "Native batch is bounded to 50 supplied JIDs and preserves per-contact lookup errors and privacy outcomes; calls run sequentially within the worker operation budget."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/contacts/blocked",
+      "operationId": "ContactController_getBlockedContacts",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::contacts::blocked"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/contacts/{contactId}",
+      "operationId": "ContactController_findOne",
+      "status": "partial",
+      "functions": [
+        "whatsapp::contacts::info"
+      ],
+      "notes": "Fetches server metadata for supplied JIDs, including About, picture ID, business flag, devices, username and PN/LID metadata. Does not provide the stored address-book contact record."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/sessions/{sessionId}/contacts/{contactId}",
+      "operationId": "ContactController_upsertContact",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::contacts::save"
+      ],
+      "notes": "Saves full_name/first_name via native app-state sync. Requires a bare phone-number JID; caller composes a full name from OpenWA firstName/lastName when needed."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{sessionId}/contacts/{contactId}",
+      "operationId": "ContactController_deleteContact",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::contacts::remove"
+      ],
+      "notes": "Removes a saved contact via native app-state sync. Requires a bare phone-number JID; LIDs are not accepted for address-book mutation."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/contacts/check/{number}",
+      "operationId": "ContactController_checkNumber",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::contacts::check"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/contacts/{contactId}/profile-picture",
+      "operationId": "ContactController_getProfilePicture",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::contacts::picture"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/contacts/{contactId}/phone",
+      "operationId": "ContactController_resolvePhone",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::contacts::resolve_phone"
+      ],
+      "notes": "Returns supplied PN digits or a server-returned PN mapping for a LID; unknown mappings remain null."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/contacts/{contactId}/block",
+      "operationId": "ContactController_blockContact",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::contacts::block"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{sessionId}/contacts/{contactId}/block",
+      "operationId": "ContactController_unblockContact",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::contacts::unblock"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/groups/join-info",
+      "operationId": "GroupController_joinInfo",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::invite_info"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}",
+      "operationId": "GroupController_findOne",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::get"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/groups/join",
+      "operationId": "GroupController_join",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::join"
+      ],
+      "notes": "Join response preserves pending-approval versus joined state."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/settings",
+      "operationId": "GroupController_getSettings",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::get"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/settings",
+      "operationId": "GroupController_updateSettings",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::set_announcement",
+        "whatsapp::groups::set_locked",
+        "whatsapp::groups::set_ephemeral",
+        "whatsapp::groups::set_member_add_mode"
+      ],
+      "notes": "All four OpenWA settings have native setters. Invoke each requested setting separately; no composite operation or rollback is provided."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/participants",
+      "operationId": "GroupController_addParticipants",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::add_participants"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/participants",
+      "operationId": "GroupController_removeParticipants",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::remove_participants"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/participants/promote",
+      "operationId": "GroupController_promoteParticipants",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::promote_participants"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/participants/demote",
+      "operationId": "GroupController_demoteParticipants",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::demote_participants"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/membership-requests",
+      "operationId": "GroupController_getMembershipRequests",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::membership_requests"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/membership-requests/approve",
+      "operationId": "GroupController_approveMembershipRequests",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::approve_requests"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/membership-requests/reject",
+      "operationId": "GroupController_rejectMembershipRequests",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::reject_requests"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/subject",
+      "operationId": "GroupController_setSubject",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::set_subject"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/description",
+      "operationId": "GroupController_setDescription",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::set_description"
+      ],
+      "notes": "Uses a supplied description version or fetches the current version. Concurrent changes remain errors; null removes the description."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/leave",
+      "operationId": "GroupController_leave",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::leave"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/picture",
+      "operationId": "GroupController_getPicture",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::picture"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/picture",
+      "operationId": "GroupController_setPicture",
+      "status": "partial",
+      "functions": [
+        "whatsapp::groups::set_picture"
+      ],
+      "notes": "Sets a group photo from bounded base64-encoded prepared JPEG bytes. OpenWA remote URL fetching and other image-format handling are not implemented."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/picture",
+      "operationId": "GroupController_deletePicture",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::remove_picture"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/invite-code",
+      "operationId": "GroupController_getInviteCode",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::invite_link"
+      ],
+      "notes": "Returns the full invite URL, not OpenWA's invite-code DTO."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/groups/{groupId}/invite-code/revoke",
+      "operationId": "GroupController_revokeInviteCode",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::groups::revoke_invite"
+      ],
+      "notes": "Resets and returns the full invite URL, not OpenWA's invite-code DTO."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/sessions/{sessionId}/profile/name",
+      "operationId": "ProfileController_setName",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::profile::set_name"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/sessions/{sessionId}/profile/status",
+      "operationId": "ProfileController_setStatus",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::profile::set_about"
+      ],
+      "notes": "Sets profile About text; it does not publish a story/status."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/sessions/{sessionId}/profile/picture",
+      "operationId": "ProfileController_setPicture",
+      "status": "partial",
+      "functions": [
+        "whatsapp::profile::set_picture"
+      ],
+      "notes": "Sets the account photo from bounded base64-encoded prepared JPEG bytes. OpenWA remote URL fetching and other image-format handling are not implemented."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{sessionId}/profile/picture",
+      "operationId": "ProfileController_deletePicture",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::profile::remove_picture"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/calls/link",
+      "operationId": "CallController_createLink",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "Upstream create_call_link requires the opt-in voip-control feature, which this worker does not enable; no call-link function is registered."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/calls/{callId}/reject",
+      "operationId": "CallController_reject",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::calls::reject"
+      ],
+      "notes": "Rejects a known call using its call ID, peer and call creator. Those identifiers must come from the incoming call event."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/labels",
+      "operationId": "LabelController_findAll",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No corresponding label function or durable label query index is registered in this snapshot."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/labels/{labelId}",
+      "operationId": "LabelController_findOne",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No corresponding label function or durable label query index is registered in this snapshot."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/sessions/{sessionId}/labels/{labelId}",
+      "operationId": "LabelController_upsertLabel",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::labels::set"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{sessionId}/labels/{labelId}",
+      "operationId": "LabelController_deleteLabel",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::labels::delete"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/labels/{labelId}/chats",
+      "operationId": "LabelController_getChatsByLabel",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No corresponding label function or durable label query index is registered in this snapshot."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/labels/chat/{chatId}",
+      "operationId": "LabelController_getChatLabels",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No corresponding label function or durable label query index is registered in this snapshot."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/labels/chat/{chatId}",
+      "operationId": "LabelController_addLabelToChat",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::labels::add_chat"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{sessionId}/labels/chat/{chatId}/{labelId}",
+      "operationId": "LabelController_removeLabelFromChat",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::labels::remove_chat"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/channels",
+      "operationId": "ChannelController_findAll",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::newsletters::list"
+      ],
+      "notes": "Lists channels subscribed to by the native session."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/channels",
+      "operationId": "ChannelController_create",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::newsletters::create"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/channels/{channelId}",
+      "operationId": "ChannelController_findOne",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::newsletters::get"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{sessionId}/channels/{channelId}",
+      "operationId": "ChannelController_unsubscribe",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::newsletters::leave"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/channels/{channelId}/messages",
+      "operationId": "ChannelController_getMessages",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::newsletters::messages"
+      ],
+      "notes": "Retrieves bounded native channel history pages with server-ID cursors and protobuf JSON content. Message stanza IDs and server pagination IDs remain distinct."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/channels/{channelId}/delete",
+      "operationId": "ChannelController_remove",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::newsletters::delete"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/channels/{channelId}/mute",
+      "operationId": "ChannelController_mute",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::newsletters::mute_updates"
+      ],
+      "notes": "Mutes channel admin activity (channel updates) for this follower. Follower-activity admin notifications use a separate native function."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/channels/{channelId}/admins/demote",
+      "operationId": "ChannelController_demoteAdmin",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::newsletters::demote_admin"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/channels/{channelId}/owner/transfer",
+      "operationId": "ChannelController_transferOwnership",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::newsletters::change_owner"
+      ],
+      "notes": "Implemented as native iii functions with worker-specific request and response schemas; no HTTP compatibility is implied."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/channels/subscribe",
+      "operationId": "ChannelController_subscribe",
+      "status": "native_equivalent",
+      "functions": [
+        "whatsapp::newsletters::get_by_invite",
+        "whatsapp::newsletters::join"
+      ],
+      "notes": "Resolve the OpenWA invite code with newsletters::get_by_invite, then pass the returned newsletter JID to newsletters::join. These are two native calls, not a composite OpenWA-compatible operation."
+    },
+    {
+      "method": "GET",
+      "path": "/api/stats/overview",
+      "operationId": "StatsController_getOverview",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA historical message/session analytics or Prometheus scrape contract."
+    },
+    {
+      "method": "GET",
+      "path": "/api/stats/messages",
+      "operationId": "StatsController_getMessageStats",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA historical message/session analytics or Prometheus scrape contract."
+    },
+    {
+      "method": "GET",
+      "path": "/api/stats/sessions/{sessionId}",
+      "operationId": "StatsController_getSessionStats",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA historical message/session analytics or Prometheus scrape contract."
+    },
+    {
+      "method": "GET",
+      "path": "/api/metrics",
+      "operationId": "MetricsController_scrape",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA historical message/session analytics or Prometheus scrape contract."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/status",
+      "operationId": "StatusController_getStatuses",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No corresponding status function or retained status query index is registered in this snapshot."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/status/{id}",
+      "operationId": "StatusController_getContactStatus",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No corresponding status function or retained status query index is registered in this snapshot."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{sessionId}/status/{id}",
+      "operationId": "StatusController_deleteStatus",
+      "status": "partial",
+      "functions": [
+        "whatsapp::status::revoke"
+      ],
+      "notes": "Revokes a caller-supplied status message ID for the same explicit recipient list used when posting. No stored status lookup or automatic audience recovery."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/status/{statusId}/media",
+      "operationId": "StatusController_getStatusMedia",
+      "status": "partial",
+      "functions": [
+        "whatsapp::media::download"
+      ],
+      "notes": "Downloads bounded media from supplied native CDN metadata. No status-ID lookup or retained status-media index."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/status/send-text",
+      "operationId": "StatusController_sendTextStatus",
+      "status": "partial",
+      "functions": [
+        "whatsapp::status::send_text"
+      ],
+      "notes": "Publishes text with native font/ARGB color to an explicit recipient allowlist. Automatic recipient discovery from phone privacy/contact state is not implemented."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/status/send-image",
+      "operationId": "StatusController_sendImageStatus",
+      "status": "partial",
+      "functions": [
+        "whatsapp::status::send_media"
+      ],
+      "notes": "Publishes prepared base64 image media to an explicit recipient allowlist. No URL fetch, transcoding, thumbnail generation or automatic audience discovery."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/status/send-video",
+      "operationId": "StatusController_sendVideoStatus",
+      "status": "partial",
+      "functions": [
+        "whatsapp::status::send_media"
+      ],
+      "notes": "Publishes prepared base64 video media to an explicit recipient allowlist. No URL fetch, transcoding, thumbnail generation or automatic audience discovery."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/status/send-voice",
+      "operationId": "StatusController_sendVoiceStatus",
+      "status": "partial",
+      "functions": [
+        "whatsapp::status::send_media"
+      ],
+      "notes": "Publishes prepared base64 audio with voice_note=true to an explicit recipient allowlist through native audio_message/send_raw. No URL fetch, transcoding, background-color option or automatic audience discovery."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/media/convert",
+      "operationId": "MediaController_conversionStatus",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No voice/video transcoding job system, converter capability endpoint or conversion status API."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/media/convert/voice",
+      "operationId": "MediaController_convertVoice",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No voice/video transcoding job system, converter capability endpoint or conversion status API."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/media/convert/video",
+      "operationId": "MediaController_convertVideo",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No voice/video transcoding job system, converter capability endpoint or conversion status API."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/catalog",
+      "operationId": "CatalogController_getCatalog",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "Upstream has native business/catalog APIs, but this worker does not register catalog/product functions."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/catalog/products",
+      "operationId": "CatalogController_getProducts",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "Upstream has native business/catalog APIs, but this worker does not register catalog/product functions."
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/catalog/products/{productId}",
+      "operationId": "CatalogController_getProduct",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "Upstream has native business/catalog APIs, but this worker does not register catalog/product functions."
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/messages/send-product",
+      "operationId": "CatalogController_sendProduct",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "Upstream has native business/catalog APIs, but this worker does not register catalog/product functions."
+    },
+    {
+      "method": "GET",
+      "path": "/api/plugins",
+      "operationId": "PluginsController_findAll",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA installable plugin runtime, package catalogue, configuration UI or plugin lifecycle; native Rust build-time plugins are a different system."
+    },
+    {
+      "method": "POST",
+      "path": "/api/plugins/install",
+      "operationId": "PluginsController_install",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA installable plugin runtime, package catalogue, configuration UI or plugin lifecycle; native Rust build-time plugins are a different system."
+    },
+    {
+      "method": "POST",
+      "path": "/api/plugins/install-url",
+      "operationId": "PluginsController_installFromUrl",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA installable plugin runtime, package catalogue, configuration UI or plugin lifecycle; native Rust build-time plugins are a different system."
+    },
+    {
+      "method": "GET",
+      "path": "/api/plugins/catalog",
+      "operationId": "PluginsController_catalog",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA installable plugin runtime, package catalogue, configuration UI or plugin lifecycle; native Rust build-time plugins are a different system."
+    },
+    {
+      "method": "GET",
+      "path": "/api/plugins/{id}",
+      "operationId": "PluginsController_findOne",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA installable plugin runtime, package catalogue, configuration UI or plugin lifecycle; native Rust build-time plugins are a different system."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/plugins/{id}",
+      "operationId": "PluginsController_uninstall",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA installable plugin runtime, package catalogue, configuration UI or plugin lifecycle; native Rust build-time plugins are a different system."
+    },
+    {
+      "method": "POST",
+      "path": "/api/plugins/{id}/enable",
+      "operationId": "PluginsController_enable",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA installable plugin runtime, package catalogue, configuration UI or plugin lifecycle; native Rust build-time plugins are a different system."
+    },
+    {
+      "method": "POST",
+      "path": "/api/plugins/{id}/disable",
+      "operationId": "PluginsController_disable",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA installable plugin runtime, package catalogue, configuration UI or plugin lifecycle; native Rust build-time plugins are a different system."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/plugins/{id}/config",
+      "operationId": "PluginsController_updateConfig",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA installable plugin runtime, package catalogue, configuration UI or plugin lifecycle; native Rust build-time plugins are a different system."
+    },
+    {
+      "method": "GET",
+      "path": "/api/plugins/{id}/config-ui",
+      "operationId": "PluginsController_getConfigUi",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA installable plugin runtime, package catalogue, configuration UI or plugin lifecycle; native Rust build-time plugins are a different system."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/plugins/{id}/config/{sessionId}",
+      "operationId": "PluginsController_updateSessionConfig",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA installable plugin runtime, package catalogue, configuration UI or plugin lifecycle; native Rust build-time plugins are a different system."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/plugins/{id}/sessions",
+      "operationId": "PluginsController_updateSessions",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA installable plugin runtime, package catalogue, configuration UI or plugin lifecycle; native Rust build-time plugins are a different system."
+    },
+    {
+      "method": "POST",
+      "path": "/api/plugins/{id}/update",
+      "operationId": "PluginsController_update",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA installable plugin runtime, package catalogue, configuration UI or plugin lifecycle; native Rust build-time plugins are a different system."
+    },
+    {
+      "method": "GET",
+      "path": "/api/plugins/{id}/health",
+      "operationId": "PluginsController_healthCheck",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA installable plugin runtime, package catalogue, configuration UI or plugin lifecycle; native Rust build-time plugins are a different system."
+    },
+    {
+      "method": "GET",
+      "path": "/api/ingress/{pluginId}/{instanceId}/{path}",
+      "operationId": "IngressController_receive_get",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA plugin ingress, instance secret/configuration store, integration executor or redrive queue."
+    },
+    {
+      "method": "POST",
+      "path": "/api/ingress/{pluginId}/{instanceId}/{path}",
+      "operationId": "IngressController_receive_post",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA plugin ingress, instance secret/configuration store, integration executor or redrive queue."
+    },
+    {
+      "method": "PUT",
+      "path": "/api/ingress/{pluginId}/{instanceId}/{path}",
+      "operationId": "IngressController_receive_put",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA plugin ingress, instance secret/configuration store, integration executor or redrive queue."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/ingress/{pluginId}/{instanceId}/{path}",
+      "operationId": "IngressController_receive_delete",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA plugin ingress, instance secret/configuration store, integration executor or redrive queue."
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/ingress/{pluginId}/{instanceId}/{path}",
+      "operationId": "IngressController_receive_patch",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA plugin ingress, instance secret/configuration store, integration executor or redrive queue."
+    },
+    {
+      "method": "OPTIONS",
+      "path": "/api/ingress/{pluginId}/{instanceId}/{path}",
+      "operationId": "IngressController_receive_options",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA plugin ingress, instance secret/configuration store, integration executor or redrive queue."
+    },
+    {
+      "method": "HEAD",
+      "path": "/api/ingress/{pluginId}/{instanceId}/{path}",
+      "operationId": "IngressController_receive_head",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA plugin ingress, instance secret/configuration store, integration executor or redrive queue."
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/instances/{pluginId}/{instanceId}/redrive",
+      "operationId": "RedriveController_redriveInstance",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA plugin ingress, instance secret/configuration store, integration executor or redrive queue."
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/plugins/{pluginId}/instances",
+      "operationId": "IntegrationInstanceController_create",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA plugin ingress, instance secret/configuration store, integration executor or redrive queue."
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/plugins/{pluginId}/instances",
+      "operationId": "IntegrationInstanceController_list",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA plugin ingress, instance secret/configuration store, integration executor or redrive queue."
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/plugins/{pluginId}/instances/{instanceId}",
+      "operationId": "IntegrationInstanceController_getOne",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA plugin ingress, instance secret/configuration store, integration executor or redrive queue."
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/integration/plugins/{pluginId}/instances/{instanceId}",
+      "operationId": "IntegrationInstanceController_patch",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA plugin ingress, instance secret/configuration store, integration executor or redrive queue."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/integration/plugins/{pluginId}/instances/{instanceId}",
+      "operationId": "IntegrationInstanceController_remove",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA plugin ingress, instance secret/configuration store, integration executor or redrive queue."
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/plugins/{pluginId}/instances/{instanceId}/regenerate-secret",
+      "operationId": "IntegrationInstanceController_regenerate",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No OpenWA plugin ingress, instance secret/configuration store, integration executor or redrive queue."
+    },
+    {
+      "method": "GET",
+      "path": "/api/search",
+      "operationId": "SearchController_search",
+      "status": "not_implemented",
+      "functions": [],
+      "notes": "No durable searchable contact/chat/message index."
+    }
+  ]
+}
