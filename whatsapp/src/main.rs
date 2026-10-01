@@ -105,17 +105,7 @@ async fn run_cli() -> Result<()> {
         );
         let page: serde_json::Value =
             serde_json::from_slice(&input).context("invalid event import JSON")?;
-        let events = page
-            .as_array()
-            .or_else(|| page.get("events").and_then(serde_json::Value::as_array))
-            .context("event import must be an events array or an events::poll page")?;
         let session_id = cli.import_session.context("missing import session")?;
-        ensure!(
-            events.iter().all(|event| event
-                .get("session_id")
-                .is_none_or(|id| id.as_str() == Some(&session_id))),
-            "event import contains a different session"
-        );
         let imported =
             whatsapp::sessions::import_events(&seed.unwrap_or_default(), &session_id, &page)?;
         println!("{}", json!({"imported": imported}));

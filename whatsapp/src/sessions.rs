@@ -1082,7 +1082,7 @@ fn regular_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn private_file(path: &Path) -> Result<()> {
+pub(crate) fn private_file(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(_) => regular_file(path)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

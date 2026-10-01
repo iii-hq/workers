@@ -51,12 +51,7 @@ function participantIdentity(participant: GroupParticipant): string {
   return /^\+?\d+$/.test(identifier) ? `+${identifier.replace(/^\+/, '')}` : identityLabel(identifier)
 }
 
-/** Changing accounts clears cached group data before the new account can render. */
-export function GroupBrowser(props: GroupBrowserProps) {
-  return <SessionGroups key={props.sessionId} {...props} />
-}
-
-function SessionGroups({ host, sessionId, connected, narrow, panelSide, onOpenMessages }: GroupBrowserProps) {
+export function GroupBrowser({ host, sessionId, connected, narrow, panelSide, onOpenMessages }: GroupBrowserProps) {
   const [groups, setGroups] = useState<GroupOverview[] | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [details, setDetails] = useState<Record<string, GroupDetail>>({})

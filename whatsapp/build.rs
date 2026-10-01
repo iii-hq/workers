@@ -1,23 +1,16 @@
 //! Build script for the `whatsapp` worker.
 //!
-//! 1. Forwards the build-time target triple to the binary as `env!("TARGET")`
-//!    (used by `manifest.rs` for the registry `supported_targets` field).
-//! 2. Ensures the injected console UI assets exist: `src/ui.rs` embeds
-//!    `ui/dist/page.js` and `ui/dist/styles.css` via `include_str!`, so if
-//!    either is missing or stale we run `pnpm install && pnpm build` inside
-//!    `ui/` first (the console worker's `web/` precedent). Set
-//!    `SKIP_UI_BUILD=1` to use the existing `ui/dist/` outputs as-is.
+//! Ensures the injected console UI assets exist: `src/ui.rs` embeds
+//! `ui/dist/page.js` and `ui/dist/styles.css` via `include_str!`, so if
+//! either is missing or stale we run `pnpm install && pnpm build` inside
+//! `ui/` first (the console worker's `web/` precedent). Set
+//! `SKIP_UI_BUILD=1` to use the existing `ui/dist/` outputs as-is.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
 fn main() {
-    println!(
-        "cargo:rustc-env=TARGET={}",
-        std::env::var("TARGET").unwrap()
-    );
-
     // `dist/` itself is not listed: include_str! reads it directly, and
     // listing it would rebuild-loop on our own output.
     println!("cargo:rerun-if-changed=ui/page.tsx");
@@ -57,7 +50,8 @@ fn main() {
         return;
     }
 
-    let pnpm = locate_pnpm();
+    let pnpm = std::env::var_os("PNPM")
+        .unwrap_or_else(|| if cfg!(windows) { "pnpm.cmd" } else { "pnpm" }.into());
 
     let status = Command::new(&pnpm)
         .args(["install"])
@@ -152,28 +146,4 @@ fn subtree_older_than(root: &Path, ceiling: SystemTime) -> bool {
         }
     }
     true
-}
-
-fn locate_pnpm() -> PathBuf {
-    if let Ok(explicit) = std::env::var("PNPM") {
-        return PathBuf::from(explicit);
-    }
-    let candidates = if cfg!(windows) {
-        ["pnpm.cmd", "pnpm.exe", "pnpm"].as_slice()
-    } else {
-        ["pnpm"].as_slice()
-    };
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    for dir in std::env::split_paths(&path) {
-        for name in candidates {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return candidate;
-            }
-        }
-    }
-    panic!(
-        "pnpm not found on PATH — install Node + pnpm, or set SKIP_UI_BUILD=1 \
-         after building the UI manually with `cd ui && pnpm install && pnpm build`"
-    );
 }

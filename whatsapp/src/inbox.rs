@@ -22,7 +22,7 @@ use whatsapp_rust::{
     prelude::{Event as NativeEvent, InboundMessage},
 };
 
-use crate::{registry::Registry, validate};
+use crate::{registry::Registry, sessions::private_file, validate};
 
 const MAX_TEXT_BYTES: usize = 16_384;
 
@@ -184,32 +184,6 @@ fn now_ms() -> i64 {
         .as_millis()
         .try_into()
         .unwrap_or(i64::MAX)
-}
-
-fn private_file(path: &Path) -> Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(meta) => ensure!(
-            meta.is_file() && !meta.file_type().is_symlink(),
-            "inbox path must be a regular file"
-        ),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let mut options = fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            options.open(path)?;
-        }
-        Err(error) => return Err(error.into()),
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
 }
 
 impl Inbox {
