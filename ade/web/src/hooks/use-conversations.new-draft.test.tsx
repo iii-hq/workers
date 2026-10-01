@@ -91,6 +91,20 @@ describe('the new chat across a browser restart', () => {
     expect(api.getDraftText(newChat().id)).toBeUndefined()
   })
 
+  it("keeps another new chat's text when one with the same text is removed", async () => {
+    await boot()
+    const first = newChat().id
+    await act(async () => api.setDraftText(first, 'same words'))
+    let second = ''
+    await act(async () => {
+      second = api.createNew({ text: 'other' })
+    })
+    await act(async () => api.setDraftText(second, 'same words'))
+    await act(async () => api.remove(first))
+    await boot()
+    expect(api.getDraftText(newChat().id)).toBe('same words')
+  })
+
   it('starts empty once what was typed was sent', async () => {
     await boot()
     const { id } = newChat()

@@ -1560,6 +1560,16 @@ export function useConversations(
   })
   const conversationsRef = useRef(conversations)
   conversationsRef.current = conversations
+  /** The local draft the saved new-chat text belongs to (on boot, the one
+      it was restored into): only that one's removal or send clears it. */
+  const newChatDraftOwnerRef = useRef<string | null>(
+    conversations[0]?.draftText ? conversations[0].id : null,
+  )
+  const forgetNewChatDraft = useCallback((id: string) => {
+    if (newChatDraftOwnerRef.current !== id) return
+    newChatDraftOwnerRef.current = null
+    saveNewChatDraft('')
+  }, [])
   const [activeId, setActiveId] = useState<string | null>(() => loadActiveId())
   const [connectionState, setConnectionState] = useState<IIIConnectionState>(
     serverEnabled ? 'connecting' : 'connected',
@@ -2717,13 +2727,7 @@ export function useConversations(
     async (id: string, options?: DeleteSessionTreeOptions): Promise<void> => {
       const conv = conversationsRef.current.find((c) => c.id === id)
       // A removed new chat takes its saved text with it, never another's.
-      if (
-        conv?.draft &&
-        (draftTextsRef.current.get(id) ?? conv.draftText ?? '') ===
-          loadNewChatDraft()
-      ) {
-        saveNewChatDraft('')
-      }
+      if (conv?.draft) forgetNewChatDraft(id)
       // Unknown ids must still reach the idempotent backend: session::deleted
       // can arrive while the dialog is open or before a failed wait is retried.
       const deletedIds = new Set(
@@ -2770,7 +2774,12 @@ export function useConversations(
         current && deletedIds.has(current) ? null : current,
       )
     },
-    [serverEnabled, invalidateSessionMetaLookup, markConversationMissing],
+    [
+      serverEnabled,
+      invalidateSessionMetaLookup,
+      markConversationMissing,
+      forgetNewChatDraft,
+    ],
   )
 
   const setModel = useCallback(
@@ -3097,7 +3106,7 @@ export function useConversations(
           kind: 'user',
         })
         // Sent: the session holds its draft now, not the new chat's slot.
-        saveNewChatDraft('')
+        forgetNewChatDraft(id)
         patchConversation(id, (c) => ({
           ...mergeConversationMeta(
             { ...c, draft: false, hydrated: false },
@@ -3119,7 +3128,12 @@ export function useConversations(
         throw err
       }
     },
-    [serverEnabled, conversations, patchConversation],
+    [
+      serverEnabled,
+      conversations,
+      patchConversation, // Sent: the session holds its draft now, not the new chat's slot.
+      forgetNewChatDraft,
+    ],
   )
 
   /* Live mirror for the draft callbacks: they fire from debounce timers and
@@ -3201,7 +3215,10 @@ export function useConversations(
       const conv = conversationsRef.current.find((c) => c.id === id)
       // Local drafts have no session yet; their text lives in the ref map so
       // in-tab switches keep it, and in localStorage to outlive the browser.
-      if (conv?.draft) saveNewChatDraft(text)
+      if (conv?.draft) {
+        saveNewChatDraft(text)
+        newChatDraftOwnerRef.current = id
+      }
       if (!serverEnabled) return
       if (!conv || conv.draft) return
       queueDraftSave(id, { text })
