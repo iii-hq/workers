@@ -240,16 +240,16 @@ fn batches_hold_at_most_128_items_and_38000_bytes() {
         .collect();
     // the verbatim file question alone is ~560 bytes, so at 38 000 bytes the
     // byte cap binds first; the item cap shows under a larger one
-    let (batches, oversize) = plan_batches("q", tiny.clone(), None, usize::MAX);
+    let (batches, oversize) = plan_batches("q", tiny.clone(), usize::MAX);
     assert_eq!(oversize, 0);
     assert_eq!(
         batches.iter().map(Vec::len).collect::<Vec<_>>(),
         [128, 128, 44]
     );
-    let (batches, _) = plan_batches("q", tiny, None, navigate::MAX_REQUEST_BYTES);
+    let (batches, _) = plan_batches("q", tiny, navigate::MAX_REQUEST_BYTES);
     assert_eq!(batches.iter().map(Vec::len).sum::<usize>(), 300);
     for batch in &batches {
-        let bytes = prompts::request_bytes(&prompts::navigation("q", batch, None));
+        let bytes = prompts::request_bytes(&prompts::navigation("q", batch));
         assert!(bytes <= navigate::MAX_REQUEST_BYTES, "{bytes}");
     }
 
@@ -257,11 +257,11 @@ fn batches_hold_at_most_128_items_and_38000_bytes() {
         .map(|i| file_item(&format!("f{i}.rs"), "a".repeat(10_000)))
         .collect();
     big.insert(3, file_item("huge.rs", "a".repeat(40_000)));
-    let (batches, oversize) = plan_batches("q", big, None, navigate::MAX_REQUEST_BYTES);
+    let (batches, oversize) = plan_batches("q", big, navigate::MAX_REQUEST_BYTES);
     assert_eq!(oversize, 1, "a single item over the cap is dropped");
     assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), [3, 3, 1]);
     for batch in &batches {
-        let bytes = prompts::request_bytes(&prompts::navigation("q", batch, None));
+        let bytes = prompts::request_bytes(&prompts::navigation("q", batch));
         assert!(bytes <= navigate::MAX_REQUEST_BYTES, "{bytes}");
     }
     // a known window caps a request at twice its tokens
@@ -270,7 +270,6 @@ fn batches_hold_at_most_128_items_and_38000_bytes() {
         (0..4)
             .map(|i| file_item(&format!("f{i}.rs"), "a".repeat(10_000)))
             .collect(),
-        None,
         2 * 10_000,
     );
     assert_eq!(
@@ -819,24 +818,16 @@ fn sent(log: &Log) -> Vec<Value> {
         .collect()
 }
 
-/// Navigation by [`keyword`]; evidence by `answer(name, follow_up)` →
-/// `(q, ref)` with scope 1; anything else 0.1.
-fn by_declaration(
-    ev: &Evaluation,
-    answer: impl Fn(&str, bool) -> (f64, f64),
-) -> Result<Scores, JudgeError> {
+/// Navigation by [`keyword`]; evidence by `answer(name)` with scope 1;
+/// anything else 0.1.
+fn by_declaration(ev: &Evaluation, answer: impl Fn(&str) -> f64) -> Result<Scores, JudgeError> {
     let Some(declarations) = ev.state["declarations"].as_array() else {
         return keyword(ev);
     };
-    let follow_up = ev.state.get("selectedEvidence").is_some();
     let mut scores = Scores::new();
     for (i, d) in declarations.iter().enumerate() {
-        let (q, reference) = answer(d["name"].as_str().unwrap(), follow_up);
-        scores.insert(key("q", i), q);
+        scores.insert(key("q", i), answer(d["name"].as_str().unwrap()));
         scores.insert(key("scope", i), 1.0);
-        if follow_up {
-            scores.insert(key("ref", i), reference);
-        }
     }
     Ok(scores)
 }
@@ -846,74 +837,6 @@ const TWO_FUNCTIONS: &[u8] =
 
 fn texts(file: &RelevantFile) -> String {
     file.excerpts.iter().map(|e| e.text.as_str()).collect()
-}
-
-#[tokio::test]
-async fn the_follow_up_asks_references_and_retracts_rejected_selections() {
-    let fx = fixture(&[("needle.rs", TWO_FUNCTIONS)], |_, _| {});
-    let log = Log::default();
-    let out = ask(
-        &fx,
-        None,
-        judge(&log, |ev| {
-            by_declaration(ev, |name, follow_up| match (name, follow_up) {
-                ("needle", false) => (0.9, 0.0),
-                // valid rejection: min(q, scope) and ref both ≤ 0.5
-                ("needle", true) => (0.2, 0.1),
-                // selected on the reference alone: max(min(0.1, 1), 0.9)
-                ("helper", true) => (0.1, 0.9),
-                _ => (0.1, 0.0),
-            })
-        }),
-    )
-    .await;
-    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
-    let file = &out.files[0];
-    assert!(texts(file).contains("fn helper"));
-    assert!(!texts(file).contains("fn needle"));
-    // leads keep their best standing: the rejection scored ≤ 0.25
-    let leads: Vec<_> = file
-        .leads
-        .iter()
-        .map(|l| (l.name.as_str(), l.score))
-        .collect();
-    assert_eq!(leads, [("needle", 0.9), ("helper", 0.9)]);
-
-    let follow_ups: Vec<Value> = sent(&log)
-        .into_iter()
-        .filter(|ev| ev["state"].get("selectedEvidence").is_some())
-        .collect();
-    assert_eq!(follow_ups.len(), 1);
-    let shared = &follow_ups[0]["state"]["selectedEvidence"];
-    assert_eq!(shared[0]["path"], "needle.rs");
-    assert_eq!(shared[0]["startLine"], 1);
-    assert!(shared[0]["source"]
-        .as_str()
-        .unwrap()
-        .starts_with("fn needle"));
-    assert!(follow_ups[0]["questions"].get("ref001").is_some());
-}
-
-#[tokio::test]
-async fn a_failed_follow_up_keeps_the_first_pass_evidence() {
-    let fx = fixture(&[("needle.rs", TWO_FUNCTIONS)], |_, _| {});
-    let out = ask(
-        &fx,
-        None,
-        judge(&Log::default(), |ev| {
-            if ev.state.get("selectedEvidence").is_some() {
-                return Err(JudgeError::Rejected("invalid_request".into()));
-            }
-            by_declaration(ev, |name, _| {
-                (if name == "needle" { 0.9 } else { 0.1 }, 0.0)
-            })
-        }),
-    )
-    .await;
-    assert_eq!(out.status, Status::Incomplete);
-    assert_eq!(out.issues.get("invalid_request"), Some(&1));
-    assert!(texts(&out.files[0]).contains("fn needle"));
-    assert!(!texts(&out.files[0]).contains("fn helper"));
 }
 
 #[tokio::test]
@@ -933,9 +856,7 @@ async fn roles_and_priority_order_files_and_a_test_file_shows_all_its_selection(
         judge(&Log::default(), |ev| {
             if !ev.questions.contains_key("priority") {
                 // needle_b is selected (0.6) but not presented (≤ 0.7)
-                return by_declaration(ev, |name, _| {
-                    (if name == "needle_a" { 0.9 } else { 0.6 }, 0.0)
-                });
+                return by_declaration(ev, |name| if name == "needle_a" { 0.9 } else { 0.6 });
             }
             let answers: &[(&str, f64)] = match ev.state["path"].as_str().unwrap() {
                 "impl_needle.rs" => &[("implementation", 0.9), ("helper", 0.6), ("priority", 0.3)],
@@ -983,137 +904,21 @@ async fn roles_and_priority_order_files_and_a_test_file_shows_all_its_selection(
 }
 
 #[tokio::test]
-async fn the_relationship_pass_rediscovers_a_pruned_directory_once() {
-    let fx = fixture(
-        &[
-            (
-                "a/impl/needle.ts",
-                b"export class Needle {\n  run() {\n    return 1;\n  }\n}\n",
-            ),
-            (
-                "b/ext/plugin.ts",
-                b"import { Needle } from \"../../a/impl/needle\";\nexport class Plugin extends Needle {}\n",
-            ),
-            ("c/other/thing.ts", b"export const thing = 1;\n"),
-        ],
-        |_, _| {},
-    );
-    let log = Log::default();
+async fn a_reply_missing_an_answer_is_an_invalid_response() {
+    let fx = fixture(&[("needle.rs", TWO_FUNCTIONS)], |_, _| {});
     let out = ask(
         &fx,
         None,
-        judge(&log, |ev| {
-            if ev.state.get("relationAnchor").is_none() {
-                return keyword(ev);
-            }
-            Ok(per_item(ev, |item| {
-                if item.to_string().contains("extends Needle") {
-                    0.9
-                } else {
-                    0.1
-                }
-            }))
+        judge(&Log::default(), |ev| {
+            let mut scores = by_declaration(ev, |_| 0.9)?;
+            scores.remove("scope000");
+            Ok(scores)
         }),
     )
     .await;
-    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
-    assert_eq!(paths(&fx, &out), ["a/impl/needle.ts", "b/ext/plugin.ts"]);
-    let anchored: Vec<Value> = sent(&log)
-        .into_iter()
-        .filter(|ev| ev["state"].get("relationAnchor").is_some())
-        .collect();
-    // one re-score of the pruned directories, one anchored discovery
-    assert_eq!(anchored.len(), 2);
-    let rescore = &anchored[0]["state"];
-    assert_eq!(
-        rescore["relationAnchor"],
-        serde_json::json!({"path": "a/impl/needle.ts", "classes": ["Needle"]})
-    );
-    let dirs: Vec<&str> = rescore["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|item| item["path"].as_str().unwrap())
-        .collect();
-    assert_eq!(dirs, ["b/ext", "c/other"]);
-    let sample = &rescore["items"][0]["childPreview"]["contentSamples"][0];
-    assert_eq!(sample["name"], "plugin.ts");
-    assert_eq!(sample["truncated"], false);
-    assert_eq!(anchored[1]["state"]["items"][0]["path"], "b/ext/plugin.ts");
-}
-
-#[test]
-fn content_samples_take_head_middle_and_tail_and_shrink_to_fit() {
-    let files: Vec<(String, Vec<u8>)> = (0..2)
-        .map(|i| (format!("d/s/f{i}.txt"), "x".repeat(30_000).into_bytes()))
-        .collect();
-    let files: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), &b[..])).collect();
-    let fx = fixture(&files, |_, _| {});
-    let run = Run {
-        query: "q".into(),
-        tree: walk::Tree::new(&fx.resolver, &fx.root, None, u64::MAX),
-        evaluate: judge(&Log::default(), keyword),
-        deadline: Instant::now() + Duration::from_secs(60),
-        cap: usize::MAX,
-        state_cap: usize::MAX,
-        window_cap: usize::MAX,
-        cache: None,
-        slots: crate::code::judge::DEFAULT_SLOTS,
-        token_budget: 0,
-        state: Mutex::new(Default::default()),
-    };
-    let item = NavigationItem {
-        path: "d/s".into(),
-        kind: Kind::Directory,
-        source_range: None,
-        file_preview: None,
-        child_preview: walk::preview_directory(&run.tree, "d/s"),
-    };
-    let preview = run.with_directory_content(item).child_preview.unwrap();
-    let samples = preview.content_samples.as_ref().unwrap();
-    // 8000 per file, three 2666-unit parts at 0, 15000 - 1333 and the tail
-    let offsets: Vec<&str> = samples[0]
-        .source
-        .lines()
-        .filter(|l| l.starts_with('['))
-        .collect();
-    assert_eq!(
-        offsets,
-        [
-            "[character offset 0]",
-            "[character offset 13667]",
-            "[character offset 27334]"
-        ]
-    );
-    assert!(samples.iter().all(|s| s.truncated));
-    assert!(walk::json_len(&preview) <= 28_000);
-
-    // many files: the 80-unit floor, then shrinking by 4/5 until it fits
-    let files: Vec<(String, Vec<u8>)> = (0..60)
-        .map(|i| (format!("m/s/f{i:02}.txt"), "y".repeat(2_000).into_bytes()))
-        .collect();
-    let files: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), &b[..])).collect();
-    let fx = fixture(&files, |_, _| {});
-    let run = Run {
-        tree: walk::Tree::new(&fx.resolver, &fx.root, None, u64::MAX),
-        ..run
-    };
-    let item = NavigationItem {
-        path: "m/s".into(),
-        child_preview: walk::preview_directory(&run.tree, "m/s"),
-        ..NavigationItem {
-            path: String::new(),
-            kind: Kind::Directory,
-            source_range: None,
-            file_preview: None,
-            child_preview: None,
-        }
-    };
-    let preview = run.with_directory_content(item).child_preview.unwrap();
-    let samples = preview.content_samples.as_ref().unwrap();
-    assert_eq!(samples.len(), 60);
-    assert!(walk::json_len(&preview) <= 28_000);
-    assert!(samples.iter().all(|s| s.source.len() >= 80));
+    assert_eq!(out.status, Status::Incomplete);
+    assert_eq!(out.reason.as_deref(), Some("invalid_response"));
+    assert_eq!(out.issues.get("provider"), Some(&1));
 }
 
 #[tokio::test]
@@ -1125,9 +930,7 @@ async fn answers_are_reused_across_asks_in_one_namespace() {
             if fail && ev.questions.contains_key("priority") {
                 return Err(JudgeError::Rejected("invalid_request".into()));
             }
-            by_declaration(ev, |name, _| {
-                (if name == "needle" { 0.9 } else { 0.1 }, 0.0)
-            })
+            by_declaration(ev, |name| if name == "needle" { 0.9 } else { 0.1 })
         })
     };
     let namespace = format!("test-{}", std::process::id());
@@ -1236,58 +1039,6 @@ async fn agents_md_lists_accessible_files_at_the_root_and_above_returned_files()
 }
 
 #[tokio::test]
-async fn a_follow_up_reply_missing_an_answer_retracts_nothing() {
-    let fx = fixture(&[("needle.rs", TWO_FUNCTIONS)], |_, _| {});
-    let out = ask(
-        &fx,
-        None,
-        judge(&Log::default(), |ev| {
-            let mut scores = by_declaration(ev, |name, follow_up| match (name, follow_up) {
-                ("needle", false) => (0.9, 0.0),
-                // would retract `needle`, but `ref000` goes missing
-                _ => (0.1, 0.1),
-            })?;
-            scores.remove("ref000");
-            Ok(scores)
-        }),
-    )
-    .await;
-    assert_eq!(out.status, Status::Incomplete);
-    assert_eq!(out.reason.as_deref(), Some("invalid_response"));
-    assert!(texts(&out.files[0]).contains("fn needle"));
-}
-
-#[tokio::test]
-async fn a_small_window_caps_the_shared_evidence() {
-    let padding = "    // padding padding padding padding padding padding padding padding\n";
-    let source = format!("fn needle() {{\n{}}}\n", padding.repeat(120));
-    let fx = fixture(
-        &[
-            ("a_needle.rs", source.as_bytes()),
-            ("b_needle.rs", source.as_bytes()),
-        ],
-        |_, _| {},
-    );
-    // ~17 KB of shared evidence: under jevgrep's 64 000, over 2 × 8192
-    for (window, follow_ups) in [(None, 2), (Some(8_192), 0)] {
-        let log = Log::default();
-        let out = ask(
-            &fx,
-            window,
-            judge(&log, |ev| by_declaration(ev, |_, _| (0.9, 0.0))),
-        )
-        .await;
-        assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
-        assert_eq!(out.files.len(), 2);
-        let shared = sent(&log)
-            .iter()
-            .filter(|ev| ev["state"].get("selectedEvidence").is_some())
-            .count();
-        assert_eq!(shared, follow_ups, "window {window:?}");
-    }
-}
-
-#[tokio::test]
 async fn a_file_that_changes_under_its_assessment_keeps_no_roles() {
     let fx = fixture(&[("needle.rs", TWO_FUNCTIONS)], |_, _| {});
     let path = fx.root.join("needle.rs");
@@ -1296,9 +1047,7 @@ async fn a_file_that_changes_under_its_assessment_keeps_no_roles() {
         None,
         judge(&Log::default(), move |ev| {
             if !ev.questions.contains_key("priority") {
-                return by_declaration(ev, |name, _| {
-                    (if name == "needle" { 0.9 } else { 0.1 }, 0.0)
-                });
+                return by_declaration(ev, |name| if name == "needle" { 0.9 } else { 0.1 });
             }
             std::fs::write(&path, b"fn changed() {}\n").unwrap();
             Ok(ev.questions.keys().map(|id| (id.clone(), 0.9)).collect())
@@ -1313,112 +1062,11 @@ async fn a_file_that_changes_under_its_assessment_keeps_no_roles() {
     assert!(out.issues.contains_key("changed"));
 }
 
-#[tokio::test]
-async fn nothing_secret_in_a_pruned_directory_reaches_the_anchored_judge() {
-    let fx = fixture(
-        &[
-            (
-                "a/impl/needle.ts",
-                b"export class Needle {\n  run() {\n    return 1;\n  }\n}\n",
-            ),
-            (
-                "b/ext/plugin.ts",
-                b"export class Plugin extends Needle {}\n",
-            ),
-            (
-                "b/ext/key.txt",
-                concat!(
-                    "-----BEGIN OPENSSH PRIVATE",
-                    " KEY-----\nSECRET_PK extends Needle\n"
-                )
-                .as_bytes(),
-            ),
-            ("b/ext/blob.bin", b"\x00\x01SECRET_BIN extends Needle"),
-            ("b/ext/latin.txt", b"SECRET_UTF8 extends Needle \xff"),
-            ("b/ext/a.locked", b"SECRET_NA extends Needle"),
-            ("b/ext/ignored.txt", b"SECRET_IGN extends Needle"),
-            ("b/ext/.env", b"SECRET_ENV extends Needle"),
-            ("b/ext/id_rsa", b"SECRET_RSA extends Needle"),
-            (".gitignore", b"ignored.txt\n"),
-        ],
-        |_, cfg| cfg.non_accessible_globs = vec!["**/*.locked".into()],
-    );
-    let log = Log::default();
-    let out = ask(
-        &fx,
-        None,
-        judge(&log, |ev| {
-            if ev.state.get("relationAnchor").is_none() {
-                return keyword(ev);
-            }
-            Ok(per_item(ev, |item| {
-                if item.to_string().contains("extends Needle") {
-                    0.9
-                } else {
-                    0.1
-                }
-            }))
-        }),
-    )
-    .await;
-    assert_eq!(paths(&fx, &out), ["a/impl/needle.ts", "b/ext/plugin.ts"]);
-    let anchored: Vec<String> = sent(&log)
-        .iter()
-        .filter(|ev| ev["state"].get("relationAnchor").is_some())
-        .map(Value::to_string)
-        .collect();
-    assert!(anchored[0].contains("contentSamples"));
-    let sent = log.lock().unwrap().join("\n");
-    for forbidden in [
-        fx.root.display().to_string().as_str(),
-        "SECRET_",
-        "a.locked",
-        "ignored.txt",
-        ".env",
-        "id_rsa",
-    ] {
-        assert!(!sent.contains(forbidden), "{forbidden} reached the judge");
-    }
-}
-
 fn ranges(file: &RelevantFile) -> Vec<(u32, u32)> {
     file.excerpts
         .iter()
         .map(|e| (e.line_from, e.line_to))
         .collect()
-}
-
-/// Navigation by [`keyword`], evidence by `select(name)` (the same in the
-/// follow-up), the assessment by `roles` (the rest 0.1) and test bodies by
-/// `keep(name)`.
-fn python_judge(
-    log: &Log,
-    select: fn(&str) -> f64,
-    roles: &'static [(&'static str, f64)],
-    keep: fn(&str) -> f64,
-) -> Evaluator {
-    judge(log, move |ev| {
-        if let Some(candidates) = ev.state.get("candidates") {
-            return Ok(candidates
-                .as_object()
-                .unwrap()
-                .values()
-                .enumerate()
-                .map(|(i, c)| (key("q", i), keep(c["name"].as_str().unwrap())))
-                .collect());
-        }
-        if ev.questions.contains_key("priority") {
-            return Ok(ev
-                .questions
-                .keys()
-                .map(|id| {
-                    let p = roles.iter().find(|(r, _)| r == id).map_or(0.1, |r| r.1);
-                    (id.clone(), p)
-                })
-                .collect());
-        }
-        by_declaration(ev, |name, _| (select(name), 0.0))
-    })
 }
 
 const CALLER: &[u8] = b"class Base:\n    def run(self):\n        return 0\n\n\n\n\n\n\n\n\n\n\nclass Needle(Base):\n    def go(self):\n        return self.run()\n";
@@ -1429,12 +1077,9 @@ async fn a_selected_python_method_shows_the_local_method_it_calls() {
     let out = ask(
         &fx,
         None,
-        python_judge(
-            &Log::default(),
-            |name| if name == "Needle.go" { 0.9 } else { 0.1 },
-            &[],
-            |_| 0.0,
-        ),
+        judge(&Log::default(), |ev| {
+            by_declaration(ev, |name| if name == "Needle.go" { 0.9 } else { 0.1 })
+        }),
     )
     .await;
     assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
@@ -1457,108 +1102,6 @@ async fn a_selected_python_method_shows_the_local_method_it_calls() {
         ["Possible local call Needle.go -> Base.run: lines 2-3"]
     );
     assert!(file.call_leads[0].unknown_earlier_bases.is_empty());
-}
-
-const TESTS: &[u8] = b"import pytest\n\n\ndef test_keep():\n    assert 1\n\n\ndef test_drop():\n    assert 2\n\n\ndef test_other():\n    assert 3\n";
-
-const TEST_ROLE: &[(&str, f64)] = &[("test", 0.9), ("priority", 0.5)];
-
-#[tokio::test]
-async fn a_python_test_file_drops_the_bodies_the_judge_declines() {
-    let fx = fixture(&[("test_needle.py", TESTS)], |_, _| {});
-    let log = Log::default();
-    let out = ask(
-        &fx,
-        None,
-        python_judge(
-            &log,
-            |_| 0.9,
-            TEST_ROLE,
-            |name| {
-                if name == "test_keep" {
-                    0.9
-                } else {
-                    0.2
-                }
-            },
-        ),
-    )
-    .await;
-    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
-    let file = &out.files[0];
-    assert_eq!(file.roles, ["test"]);
-    // lines 1-14 less test_drop (8-9) and test_other (12-13); the blank
-    // remainders go too
-    assert_eq!(ranges(file), [(1, 7)]);
-    assert!(file.excerpts[0].text.ends_with("    assert 1\n\n"));
-    // every body stays a lead
-    assert_eq!(file.leads.len(), 3);
-    let asked: Vec<Value> = sent(&log)
-        .into_iter()
-        .filter(|ev| ev["state"].get("candidates").is_some())
-        .collect();
-    assert_eq!(asked.len(), 1);
-    let candidates = &asked[0]["state"]["candidates"];
-    assert_eq!(candidates["c001"]["name"], "test_drop");
-    assert_eq!(
-        candidates["c001"]["source"],
-        "def test_drop():\n    assert 2"
-    );
-    assert_eq!(candidates["c001"]["startLine"], 8);
-    assert!(asked[0]["questions"].get("q002").is_some());
-}
-
-#[tokio::test]
-async fn a_test_body_batch_the_judge_finds_too_large_is_halved() {
-    let fx = fixture(&[("test_needle.py", TESTS)], |_, _| {});
-    let log = Log::default();
-    let inner = python_judge(
-        &log,
-        |_| 0.9,
-        TEST_ROLE,
-        |name| if name == "test_keep" { 0.9 } else { 0.2 },
-    );
-    let evaluate: Evaluator = Arc::new(move |evaluation: Evaluation, deadline| {
-        let evaluation = prompts::decoded(evaluation);
-        let batch = evaluation
-            .state
-            .get("candidates")
-            .map(|c| c.as_object().unwrap().len());
-        if batch.is_some_and(|n| n > 1) {
-            return Box::pin(async { Err(JudgeError::TooLarge) });
-        }
-        inner(evaluation, deadline)
-    });
-    let out = ask(&fx, None, evaluate).await;
-    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
-    assert_eq!(ranges(&out.files[0]), [(1, 7)]);
-    let asked = sent(&log)
-        .into_iter()
-        .filter(|ev| ev["state"].get("candidates").is_some())
-        .count();
-    assert_eq!(asked, 3);
-}
-
-#[tokio::test]
-async fn an_all_negative_test_body_pass_keeps_the_presentation() {
-    let fx = fixture(&[("test_needle.py", TESTS)], |_, _| {});
-    let out = ask(
-        &fx,
-        None,
-        python_judge(&Log::default(), |_| 0.9, TEST_ROLE, |_| 0.1),
-    )
-    .await;
-    assert_eq!(ranges(&out.files[0]), [(1, 14)]);
-    // so does a file without the test role, which is never asked
-    let log = Log::default();
-    let out = ask(
-        &fx,
-        None,
-        python_judge(&log, |_| 0.9, &[("implementation", 0.9)], |_| 0.9),
-    )
-    .await;
-    assert_eq!(ranges(&out.files[0]), [(1, 14)]);
-    assert!(!log.lock().unwrap().join("").contains("candidates"));
 }
 
 #[tokio::test]
@@ -1585,34 +1128,6 @@ async fn a_large_python_file_is_previewed_by_sampled_ranges() {
     let text = previews[0]["text"].as_str().unwrap();
     assert!(text.contains("; query-named implementation ---\n    return 'found'\n"));
     assert!(text.len() <= 16_384);
-}
-
-#[tokio::test]
-async fn shared_evidence_carries_a_selected_methods_neighbours() {
-    let gap = "\n".repeat(10);
-    let source = format!(
-        "class Needle:\n    def a(self):\n        return 1\n{gap}\n    def b(self):\n        return 2\n{gap}\n    def c(self):\n        return 3\n"
-    );
-    let fx = fixture(&[("needle.py", source.as_bytes())], |_, _| {});
-    let log = Log::default();
-    let out = ask(
-        &fx,
-        None,
-        python_judge(
-            &log,
-            |name| if name == "Needle.b" { 0.9 } else { 0.1 },
-            &[],
-            |_| 0.0,
-        ),
-    )
-    .await;
-    let shared: Vec<String> = sent(&log)
-        .iter()
-        .filter_map(|ev| ev["state"].get("selectedEvidence").map(Value::to_string))
-        .collect();
-    assert!(shared[0].contains("def c(self)"));
-    // the presentation is not widened
-    assert!(!texts(&out.files[0]).contains("def c(self)"));
 }
 
 #[tokio::test]

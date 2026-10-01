@@ -614,7 +614,7 @@ pub(super) fn py_definition(node: Node<'_>) -> Option<Node<'_>> {
     }
 }
 
-pub(super) fn py_is_definition(node: Node<'_>) -> bool {
+fn py_is_definition(node: Node<'_>) -> bool {
     py_definition(node)
         .is_some_and(|d| matches!(d.kind(), "function_definition" | "class_definition"))
 }

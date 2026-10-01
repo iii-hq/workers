@@ -2,15 +2,13 @@
 //! per round, admitting directories and files the judge scores above 0.5.
 //!
 //! Ported from dzhng/jevgrep (MIT, Copyright (c) 2026 David Zhang), commit
-//! 82ef1fd: `packages/core/src/retrieve.ts` `score` (79-155),
-//! `withDirectoryContent` (197-241), `discover` (297-417), `parallel`
-//! (450-464) and the relationship pass (468-505).
+//! 82ef1fd: `packages/core/src/retrieve.ts` `score` (79-155), `discover`
+//! (297-417) and `parallel` (450-464).
 //!
 //! Deviations: concurrency is the worker-wide judge slots, not 32 stage
 //! workers; one ask deadline bounds every call; an outage stops the walk
 //! (jevgrep keeps asking a failing provider); the level reads the snapshot
-//! it previews instead of re-reading before chunking, and content samples
-//! are not re-hashed before each judge attempt; answers are cached in
+//! it previews instead of re-reading before chunking; answers are cached in
 //! memory only ([`super::AnswerCache`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -23,8 +21,8 @@ use iii_helpers::observability::opentelemetry::Context;
 use judge_contract::Evaluation;
 use tokio::task::JoinSet;
 
-use super::prompts::{self, ContentSample, FilePreview, Kind, NavigationItem, RelationAnchor};
-use super::units::{self, MAX_PARSE_BYTES};
+use super::prompts::{self, FilePreview, Kind, NavigationItem};
+use super::units::MAX_PARSE_BYTES;
 use super::walk::{self, Snap, Snapshot, Tree};
 use crate::code::judge::{Evaluator, JudgeError, Scores};
 
@@ -35,13 +33,6 @@ pub const MAX_REQUEST_BYTES: usize = 38_000;
 const CHUNK_BYTES: usize = 12_000;
 /// Admission threshold for directories and files (strict).
 pub const ADMIT: f64 = 0.5;
-/// Content samples of one pruned directory: a budget split across its
-/// files, a floor per file, and the preview's JSON ceiling.
-const SAMPLE_BYTES: usize = 16_000;
-const SAMPLE_FLOOR: usize = 80;
-const SAMPLE_JSON_BYTES: usize = 28_000;
-/// An anchor's class list stays under this many JSON bytes.
-const ANCHOR_CLASSES_BYTES: usize = 4_000;
 
 /// Why an ask stopped scheduling judge work.
 #[derive(Debug, Clone, PartialEq)]
@@ -75,8 +66,6 @@ pub struct State {
     /// Candidate paths in first-admission order (jevgrep's `Map` order).
     admitted: Vec<String>,
     visited: HashSet<String>,
-    /// Directories scored ≤ 0.5, kept for the relationship pass.
-    pub pruned: Vec<NavigationItem>,
     /// Discovery previews by path, reused by the file assessment.
     pub previews: HashMap<String, FilePreview>,
     /// Content hash of each file as previewed.
@@ -272,12 +261,8 @@ impl Run {
     /// retrieve.ts `score`: batch `items`, ask the judge, split a batch the
     /// judge found too large and requeue its halves. Only a failed leaf
     /// records an issue.
-    pub async fn score(
-        self: &Arc<Self>,
-        items: Vec<NavigationItem>,
-        anchor: Option<&RelationAnchor>,
-    ) -> Vec<(NavigationItem, f64)> {
-        let (mut batches, oversize) = plan_batches(&self.query, items, anchor, self.cap);
+    pub async fn score(self: &Arc<Self>, items: Vec<NavigationItem>) -> Vec<(NavigationItem, f64)> {
+        let (mut batches, oversize) = plan_batches(&self.query, items, self.cap);
         for _ in 0..oversize {
             self.issue("request-size");
         }
@@ -288,7 +273,7 @@ impl Run {
                 let Some(group) = batches.pop_front() else {
                     break;
                 };
-                let request = prompts::navigation(&self.query, &group, anchor);
+                let request = prompts::navigation(&self.query, &group);
                 let run = self.clone();
                 running.spawn(
                     async move { (group, run.call(request).await) }
@@ -324,35 +309,27 @@ impl Run {
 
     /// retrieve.ts `discover`: breadth-first from `seeds`, two levels per
     /// round. Admitted directories seed the next round; files above the
-    /// threshold become candidates, keeping their best score. Under an
-    /// `anchor` every directory is judged on its content samples, and a
-    /// pruned one is not kept again.
-    pub async fn discover(self: &Arc<Self>, seeds: Vec<String>, anchor: Option<&RelationAnchor>) {
+    /// threshold become candidates, keeping their best score.
+    pub async fn discover(self: &Arc<Self>, seeds: Vec<String>) {
         let mut directories = seeds;
         while !directories.is_empty()
             && !self.stopped()
             && self.state().entries_seen < walk::MAX_ENTRIES
         {
             let level = std::mem::take(&mut directories);
-            let (run, owned) = (self.clone(), anchor.cloned());
-            let (items, chunks) =
-                tokio::task::spawn_blocking(move || run.build_level(level, owned.as_ref()))
-                    .await
-                    .unwrap_or_else(|_| {
-                        self.issue("unreadable");
-                        Default::default()
-                    });
-            let mut classified = self.score(items, anchor).await;
-            classified.extend(self.score(chunks, anchor).await);
+            let run = self.clone();
+            let (items, chunks) = tokio::task::spawn_blocking(move || run.build_level(level))
+                .await
+                .unwrap_or_else(|_| {
+                    self.issue("unreadable");
+                    Default::default()
+                });
+            let mut classified = self.score(items).await;
+            classified.extend(self.score(chunks).await);
             let mut state = self.state();
             for (item, p) in classified {
                 match item.kind {
                     Kind::Directory if p > ADMIT => directories.push(item.path),
-                    Kind::Directory if anchor.is_some() => {}
-                    Kind::Directory => {
-                        state.pruned.retain(|pruned| pruned.path != item.path);
-                        state.pruned.push(item);
-                    }
                     Kind::File if p > ADMIT => {
                         if state
                             .candidates
@@ -376,7 +353,7 @@ impl Run {
                             state.admitted.push(item.path);
                         }
                     }
-                    Kind::File => {}
+                    _ => {}
                 }
             }
         }
@@ -391,11 +368,7 @@ impl Run {
     /// score and the chunked items of files whose preview alone is too big
     /// for one request. Every listed entry counts toward [`walk::MAX_ENTRIES`]
     /// (retrieve.ts 303-336).
-    fn build_level(
-        &self,
-        directories: Vec<String>,
-        anchor: Option<&RelationAnchor>,
-    ) -> (Vec<NavigationItem>, Vec<NavigationItem>) {
+    fn build_level(&self, directories: Vec<String>) -> (Vec<NavigationItem>, Vec<NavigationItem>) {
         let mut level: Vec<(String, u8)> = directories.into_iter().map(|d| (d, 0)).collect();
         let (mut items, mut chunks) = (Vec::new(), Vec::new());
         let mut index = 0;
@@ -439,16 +412,12 @@ impl Run {
                             self.issue("unreadable");
                             continue;
                         };
-                        let item = NavigationItem {
+                        items.push(NavigationItem {
                             path: child,
                             kind: Kind::Directory,
                             source_range: None,
                             file_preview: None,
                             child_preview: Some(child_preview),
-                        };
-                        items.push(match anchor {
-                            Some(_) => self.with_directory_content(item),
-                            None => item,
                         });
                     }
                     continue;
@@ -484,7 +453,6 @@ impl Run {
                     && prompts::request_bytes(&prompts::navigation(
                         &self.query,
                         std::slice::from_ref(&item),
-                        anchor,
                     )) > self.cap;
                 if !oversize {
                     items.push(item);
@@ -516,157 +484,6 @@ impl Run {
         }
         (items, chunks)
     }
-
-    /// retrieve.ts `withDirectoryContent`: add head, middle and tail
-    /// samples of the directory's previewed files, shrunk until the
-    /// preview's JSON fits. Offsets and lengths count UTF-16 code units, as
-    /// in JavaScript. Blocking.
-    pub(super) fn with_directory_content(&self, mut item: NavigationItem) -> NavigationItem {
-        let Some(preview) = item.child_preview.as_mut() else {
-            return item;
-        };
-        let files: Vec<String> = preview
-            .entries
-            .iter()
-            .filter(|entry| entry.kind == Kind::File)
-            .map(|entry| entry.name.clone())
-            .collect();
-        let per_file = SAMPLE_FLOOR.max(SAMPLE_BYTES / files.len().max(1));
-        let part = per_file / 3;
-        let mut samples = Vec::new();
-        for name in files {
-            if self.stopped() {
-                break;
-            }
-            let snapshot = match walk::read(&self.tree, &walk::join(&item.path, &name)) {
-                Snap::Ok(snapshot) => snapshot,
-                Snap::Excluded => continue,
-                Snap::Issue(kind) => {
-                    self.issue(kind);
-                    continue;
-                }
-            };
-            if snapshot.source.len() > MAX_PARSE_BYTES {
-                continue;
-            }
-            let units: Vec<u16> = snapshot.source.encode_utf16().collect();
-            let length = units.len();
-            let source = if length <= per_file {
-                snapshot.source
-            } else {
-                [
-                    0,
-                    (length / 2).saturating_sub(part / 2),
-                    length.saturating_sub(part),
-                ]
-                .iter()
-                .map(|&start| {
-                    let end = length.min(start + part);
-                    format!(
-                        "[character offset {start}]\n{}",
-                        String::from_utf16_lossy(&units[start..end])
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n...\n")
-            };
-            samples.push(ContentSample {
-                name,
-                source,
-                truncated: length > per_file,
-            });
-        }
-        preview.content_samples = Some(samples);
-        let utf16_len = |text: &str| text.encode_utf16().count();
-        while walk::json_len(&*preview) > SAMPLE_JSON_BYTES
-            && preview
-                .content_samples
-                .iter()
-                .flatten()
-                .any(|s| utf16_len(&s.source) > SAMPLE_FLOOR)
-        {
-            for sample in preview.content_samples.iter_mut().flatten() {
-                let units: Vec<u16> = sample.source.encode_utf16().collect();
-                let keep = units.len().min(SAMPLE_FLOOR.max(units.len() * 4 / 5));
-                // A cut through a surrogate pair becomes U+FFFD, one unit
-                // like the lone surrogate JavaScript keeps.
-                sample.source = String::from_utf16_lossy(&units[..keep]);
-                sample.truncated = true;
-            }
-        }
-        item
-    }
-
-    /// retrieve.ts 468-505, run once after the first discovery: anchor on
-    /// the best candidate that declares classes, re-judge every pruned
-    /// directory on its content samples for a code relationship to them,
-    /// and discover from the directories that have one.
-    pub async fn relate(self: &Arc<Self>) {
-        let run = self.clone();
-        let Ok(Some(anchor)) = tokio::task::spawn_blocking(move || run.anchor()).await else {
-            return;
-        };
-        if self.stopped() {
-            return;
-        }
-        let pruned = self.state().pruned.clone();
-        let run = self.clone();
-        let items = tokio::task::spawn_blocking(move || {
-            let mut items = Vec::new();
-            for item in pruned {
-                if run.stopped() {
-                    break;
-                }
-                items.push(run.with_directory_content(item));
-            }
-            items
-        })
-        .await
-        .unwrap_or_default();
-        let seeds = self
-            .score(items, Some(&anchor))
-            .await
-            .into_iter()
-            .filter(|(_, p)| *p > ADMIT)
-            .map(|(item, _)| item.path)
-            .collect();
-        self.discover(seeds, Some(&anchor)).await;
-    }
-
-    /// The first candidate, best first, whose whole-source units name
-    /// classes (`Class.context`) listed in under 4000 JSON bytes. Blocking.
-    fn anchor(&self) -> Option<RelationAnchor> {
-        for candidate in self.sorted_candidates() {
-            if candidate.score <= ADMIT || self.stopped() {
-                break;
-            }
-            let Some(snapshot) = self.unchanged(&candidate) else {
-                continue;
-            };
-            let size = snapshot.source.len();
-            let syntax = units::inspect(&snapshot.path, &snapshot.source, size.max(4), size.max(1));
-            let mut classes: Vec<String> = Vec::new();
-            for unit in syntax.units {
-                let Some(class) = unit
-                    .name
-                    .ends_with(".context")
-                    .then(|| unit.name.split('.').next().unwrap_or_default())
-                else {
-                    continue;
-                };
-                if !classes.iter().any(|known| known == class) {
-                    classes.push(class.to_string());
-                }
-            }
-            if !classes.is_empty() && walk::json_len(&classes) < ANCHOR_CLASSES_BYTES {
-                return Some(RelationAnchor {
-                    path: candidate.path,
-                    classes,
-                });
-            }
-        }
-        None
-    }
 }
 
 /// Group `items` into requests of at most [`MAX_ITEMS`] items and `cap`
@@ -674,12 +491,10 @@ impl Run {
 pub fn plan_batches(
     query: &str,
     items: Vec<NavigationItem>,
-    anchor: Option<&RelationAnchor>,
     cap: usize,
 ) -> (VecDeque<Vec<NavigationItem>>, usize) {
-    let bytes = |batch: &[NavigationItem]| {
-        prompts::request_bytes(&prompts::navigation(query, batch, anchor))
-    };
+    let bytes =
+        |batch: &[NavigationItem]| prompts::request_bytes(&prompts::navigation(query, batch));
     let (mut batches, mut batch, mut oversize) = (VecDeque::new(), Vec::new(), 0);
     for item in items {
         if bytes(std::slice::from_ref(&item)) > cap {
