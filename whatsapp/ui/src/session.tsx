@@ -1,9 +1,9 @@
-import { Badge, Button, CodeEditor, EmptyState, Input, List, ListItem, LiveRegion, MetaRow, SettingsField, Skeleton, StatusPanel, type Host, type PageCommandsApi, type LiveAnnouncement } from '@iii-dev/console-ui'
+import { Badge, Button, EmptyState, Input, List, ListItem, LiveRegion, MetaRow, SettingsField, Skeleton, StatusPanel, type Host, type PageCommandsApi, type LiveAnnouncement } from '@iii-dev/console-ui'
 import { errorMessage, formatDuration, formatRelative } from '@iii-dev/console-ui/format'
 import { useEffect, useId, useRef, useState } from 'react'
-import { MessageCircle, Play, Send, Square } from 'lucide-react'
+import { MessageCircle, Play, Square } from 'lucide-react'
 import QRCode from 'qrcode'
-import { eventDetail, normalizeRecipient, pairingIsCurrent, pairingPhone, requestScope, STATUS_LABEL, validateMessage, type PairingCode, type SentMessage, type SessionStatus } from './model'
+import { eventDetail, pairingIsCurrent, pairingPhone, requestScope, STATUS_LABEL, type PairingCode, type SessionStatus } from './model'
 import { useSession } from './use-session'
 
 export function SessionBadge({ status }: { status: SessionStatus }) {
@@ -38,8 +38,8 @@ const EVENT_LABELS: Record<string, string> = {
   'session.pair_code_invalidated': 'Código invalidado', 'session.paired': 'Conta pareada',
   'session.pairing_failed': 'Pareamento falhou', 'session.logged_out': 'Conta desvinculada',
 }
-export function SessionDetail({ host, sessionId, refreshList, onDirty, commands }: {
-  host: Host; sessionId: string; refreshList(): void; onDirty(dirty: boolean): void; commands?: PageCommandsApi
+export function SessionDetail({ host, sessionId, refreshList, commands }: {
+  host: Host; sessionId: string; refreshList(): void; commands?: PageCommandsApi
 }) {
   const [operation, setOperation] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -49,19 +49,12 @@ export function SessionDetail({ host, sessionId, refreshList, onDirty, commands 
   const { session, qr, feed, error, loading, refresh } = useSession(host, sessionId, operation === 'start' || operation === 'stop')
   const [phone, setPhone] = useState('')
   const [phonePair, setPhonePair] = useState<PairingCode | null>(null)
-  const [recipient, setRecipient] = useState('')
-  const [text, setText] = useState('')
-  const [recipientError, setRecipientError] = useState<string | null>(null)
-  const [textError, setTextError] = useState<string | null>(null)
-  const [sent, setSent] = useState<SentMessage | null>(null)
   const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
   const [now, setNow] = useState(Date.now())
-  const recipientRef = useRef<HTMLInputElement>(null)
   const instance = useId()
   const status = session?.status ?? 'stopped'
   const canStart = !!session && !error && ['stopped', 'disconnected', 'logged_out', 'failed'].includes(status)
   const canStop = !!session && !['stopped', 'logged_out', 'stopping'].includes(status)
-  const canSend = status === 'connected' && !error && !operation
   const pairAllowed = status === 'pairing' && !error && operation !== 'start' && operation !== 'stop'
   const validQr = pairAllowed && pairingIsCurrent(qr, status, now) ? qr : null
   const validPhonePair = pairAllowed && pairingIsCurrent(phonePair, status, now) ? phonePair : null
@@ -72,7 +65,6 @@ export function SessionDetail({ host, sessionId, refreshList, onDirty, commands 
     document.addEventListener('visibilitychange', tick)
     return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', tick); scope.current.invalidate(); pairScope.current.invalidate() }
   }, [])
-  useEffect(() => { onDirty(!!text.trim() || !!recipient.trim()); return () => onDirty(false) }, [onDirty, text, recipient])
   const lastPairInvalidation = feed.events.filter((event) => ['session.pair_code_invalidated', 'session.paired', 'session.pairing_failed'].includes(event.kind)).at(-1)?.sequence
   useEffect(() => {
     pairScope.current.invalidate()
@@ -117,38 +109,11 @@ export function SessionDetail({ host, sessionId, refreshList, onDirty, commands 
     finally { if (current()) { busy.current = false; setOperation(null); refresh() } }
   }
 
-  const send = async () => {
-    if (busy.current || !canSend) return
-    let chatId: string
-    setRecipientError(null)
-    try { chatId = normalizeRecipient(recipient) } catch (cause) { setRecipientError(errorMessage(cause)); recipientRef.current?.focus(); return }
-    const invalidText = validateMessage(text)
-    setTextError(invalidText)
-    if (invalidText) return
-    busy.current = true
-    const current = scope.current.begin()
-    setOperation('send')
-    setSent(null)
-    setActionError(null)
-    try {
-      const result = await host.iii.trigger<SentMessage>('whatsapp::messages::send_text', { session_id: sessionId, chat_id: chatId, text }, { timeoutMs: 610000 })
-      if (!current()) return
-      setSent(result)
-      setText('')
-      setRecipient('')
-      setAnnouncement({ seq: Date.now(), text: `Mensagem enviada. Identificador ${result.message_id}.`, urgency: 'polite' })
-    } catch (cause) {
-      if (current()) setActionError(`${errorMessage(cause)} O envio não será repetido automaticamente. Se houve demora ou perda de conexão, confira a atividade antes de enviar de novo.`)
-    } finally { if (current()) { busy.current = false; setOperation(null); refresh() } }
-  }
-
   useEffect(() => commands?.register([
     { id: 'start', title: 'Iniciar sessão', shortcut: 'S', enabled: () => canStart && !busy.current, run: () => void lifecycle('start') },
     { id: 'stop', title: 'Parar sessão', shortcut: 'X', enabled: () => canStop && !busy.current, run: () => void lifecycle('stop') },
-    { id: 'compose', title: 'Preparar mensagem de teste', shortcut: 'I', enabled: () => canSend, run: () => recipientRef.current?.focus() },
-    { id: 'send', title: 'Enviar mensagem de teste', enabled: () => canSend && !!text.trim() && !!recipient.trim(), run: () => void send() },
     { id: 'pair-code', title: 'Solicitar código de pareamento', enabled: () => pairAllowed && !!phone.trim() && !busy.current, run: () => void requestCode() },
-  ]), [commands, canStart, canStop, canSend, pairAllowed, phone, recipient, text])
+  ]), [commands, canStart, canStop, pairAllowed, phone])
 
   if (!session && loading) return <div className="wa-ui-content"><Skeleton className="wa-ui-loading" /><Skeleton className="wa-ui-loading" /></div>
   return <div className="wa-ui-content">
@@ -177,15 +142,6 @@ export function SessionDetail({ host, sessionId, refreshList, onDirty, commands 
         </div>
       </div>
     </section>}
-
-    <section className="wa-ui-section" aria-labelledby={`${instance}-test`}>
-      <h3 id={`${instance}-test`}>Enviar uma mensagem de teste</h3>
-      <p className="wa-ui-note">{canSend || operation === 'send' ? 'O envio acontece somente ao escolher Enviar mensagem. O identificador confirma a submissão; a entrega aparece na atividade.' : 'Conecte esta sessão para habilitar o envio. O rascunho permanece aqui enquanto você conecta.'}</p>
-      <SettingsField field="recipient" label="Destinatário" error={recipientError ?? undefined} description="Telefone com código do país, sem espaços, ou JID completo de contato ou grupo." controlSize="full" layout="stacked" renderControl={(control) => <Input {...control} ref={recipientRef} value={recipient} autoComplete="off" placeholder="+5511999999999 ou 120363000000000000@g.us" disabled={!!operation} onChange={(next) => { setRecipient(next); setRecipientError(null); setSent(null) }} />} />
-      <div className="wa-ui-stack"><label htmlFor={`${instance}-message`}>Mensagem</label><CodeEditor id={`${instance}-message`} language="plaintext" value={text} onChange={(next) => { setText(next); setTextError(null); setSent(null) }} disabled={!!operation} aria-label="Mensagem de teste" className="wa-ui-message" placeholder="Escreva a mensagem que será enviada." />{textError && <StatusPanel variant="alert" headline={textError} />}</div>
-      <div className="wa-ui-actions"><Button onClick={() => void send()} disabled={!canSend || !recipient.trim() || !text.trim()}><Send size={16} aria-hidden="true" />{operation === 'send' ? 'Enviando…' : 'Enviar mensagem'}</Button></div>
-      {sent && <StatusPanel variant="success" headline="Mensagem submetida" detail={<><span>Identificador: </span><span className="wa-ui-mono">{sent.message_id}</span><br /><span>Destino: </span><span className="wa-ui-mono">{sent.chat_id}</span><br />Aguarde a confirmação de entrega na atividade.</>} />}
-    </section>
 
     <section className="wa-ui-section" aria-labelledby={`${instance}-activity`}>
       <h3 id={`${instance}-activity`}>Atividade da sessão</h3>

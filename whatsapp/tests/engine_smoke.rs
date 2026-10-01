@@ -189,11 +189,206 @@ fn real_engine_registers_all_schemas_and_serves_offline_session_lifecycle() {
     .unwrap();
     assert_eq!(created["status"], "stopped");
 
+    // Inbox reads do not need a native client and never mark a conversation read.
+    // The fresh local session has neither messages nor a WhatsApp credentials DB.
+    for (function, payload, rows) in [
+        (
+            "whatsapp::chats::list",
+            json!({"session_id": "offline"}),
+            "chats",
+        ),
+        (
+            "whatsapp::messages::list",
+            json!({"session_id": "offline", "chat_id": "123@g.us"}),
+            "messages",
+        ),
+    ] {
+        let page = trigger(&binary, port, function, payload).unwrap();
+        assert_eq!(page[rows], json!([]), "{function}: {page}");
+        assert_eq!(page["next_cursor"], Value::Null);
+        assert_eq!(
+            page["coverage"]["message_limit"],
+            defaults["max_inbox_messages"]
+        );
+        assert_eq!(page["coverage"]["retention_truncated"], false);
+        assert_eq!(page["coverage"]["last_history_sync_at_ms"], Value::Null);
+        assert!(page["coverage"]["capture_started_at_ms"].as_u64().unwrap() > 0);
+    }
+    for (function, payload, expected) in [
+        (
+            "whatsapp::chats::list",
+            json!({"session_id": "offline", "limit": 0}),
+            "limit must be 1..200",
+        ),
+        (
+            "whatsapp::chats::list",
+            json!({"session_id": "offline", "limit": 201}),
+            "limit must be 1..200",
+        ),
+        (
+            "whatsapp::messages::list",
+            json!({"session_id": "offline", "chat_id": "123@g.us", "limit": 0}),
+            "limit must be 1..200",
+        ),
+        (
+            "whatsapp::messages::list",
+            json!({"session_id": "offline", "chat_id": "123@g.us", "limit": 201}),
+            "limit must be 1..200",
+        ),
+        (
+            "whatsapp::chats::list",
+            json!({"session_id": "offline", "query": "x".repeat(257)}),
+            "query must be at most 256 bytes",
+        ),
+        (
+            "whatsapp::chats::list",
+            json!({"session_id": "offline", "cursor": "invalid!"}),
+            "invalid cursor",
+        ),
+        (
+            "whatsapp::messages::list",
+            json!({"session_id": "offline", "chat_id": "123@g.us", "cursor": "x".repeat(2049)}),
+            "invalid cursor",
+        ),
+        (
+            "whatsapp::messages::list",
+            json!({"session_id": "offline", "chat_id": "../outside"}),
+            "invalid inbox chat_id",
+        ),
+        (
+            "whatsapp::messages::request_history",
+            json!({"session_id": "offline", "chat_id": "123@g.us", "count": 0}),
+            "count must be 1..100",
+        ),
+        (
+            "whatsapp::messages::request_history",
+            json!({"session_id": "offline", "chat_id": "123@g.us", "count": 101}),
+            "count must be 1..100",
+        ),
+        (
+            "whatsapp::messages::request_history",
+            json!({"session_id": "offline", "chat_id": "123@g.us"}),
+            "history requires a known message in this chat",
+        ),
+        (
+            "whatsapp::messages::request_history",
+            json!({"session_id": "offline", "chat_id": "../outside"}),
+            "invalid inbox chat_id",
+        ),
+    ] {
+        let error = trigger(&binary, port, function, payload).unwrap_err();
+        assert!(error.contains(expected), "{function}: {error}");
+    }
+
+    // Seed only this test's isolated display archive. A short-lived second
+    // SQLite connection closes before RPC reads and configuration-driven pruning.
+    {
+        let inbox = whatsapp::inbox::Inbox::open(
+            &temp.path().join("data/whatsapp/offline"),
+            whatsapp::config::Config::default().max_inbox_messages,
+        )
+        .unwrap();
+        let fixtures = (0..4)
+            .map(|number| {
+                let chat = if number == 3 {
+                    "15550000001@s.whatsapp.net"
+                } else {
+                    "123@g.us"
+                };
+                json!({"kind": "message.received", "data": {
+                    "info": {"id": format!("fixture-{number}"), "timestamp_ms": (number + 1) * 1000,
+                        "push_name": "Smoke fixture", "source": {"chat": chat,
+                            "sender": "15550000001@s.whatsapp.net", "is_from_me": false}},
+                    "message": {"conversation": format!("offline fixture {number}")}
+                }})
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            inbox
+                .import_event_page(&json!({"events": fixtures}))
+                .unwrap(),
+            4
+        );
+    }
+    let first_chats = trigger(
+        &binary,
+        port,
+        "whatsapp::chats::list",
+        json!({"session_id": "offline", "limit": 1}),
+    )
+    .unwrap();
+    assert_eq!(first_chats["chats"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        first_chats["chats"][0]["chat_id"],
+        "15550000001@s.whatsapp.net"
+    );
+    assert!(first_chats["next_cursor"].is_string());
+    let second_chats = trigger(
+        &binary,
+        port,
+        "whatsapp::chats::list",
+        json!({"session_id": "offline", "limit": 1, "cursor": first_chats["next_cursor"]}),
+    )
+    .unwrap();
+    assert_eq!(second_chats["chats"][0]["chat_id"], "123@g.us");
+    assert_eq!(second_chats["chats"][0]["message_count"], 3);
+    assert_eq!(second_chats["next_cursor"], Value::Null);
+    let first_messages = trigger(
+        &binary,
+        port,
+        "whatsapp::messages::list",
+        json!({"session_id": "offline", "chat_id": "123@g.us", "limit": 2}),
+    )
+    .unwrap();
+    assert_eq!(first_messages["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(first_messages["messages"][0]["message_id"], "fixture-2");
+    assert_eq!(first_messages["messages"][0]["text"], "offline fixture 2");
+    assert!(first_messages["next_cursor"].is_string());
+    let second_messages = trigger(
+        &binary,
+        port,
+        "whatsapp::messages::list",
+        json!({"session_id": "offline", "chat_id": "123@g.us", "limit": 2, "cursor": first_messages["next_cursor"]}),
+    )
+    .unwrap();
+    assert_eq!(second_messages["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(second_messages["messages"][0]["message_id"], "fixture-0");
+    assert_eq!(second_messages["next_cursor"], Value::Null);
+    for (function, payload) in [
+        (
+            "whatsapp::chats::list",
+            json!({"session_id": "offline", "query": "fixture", "cursor": first_chats["next_cursor"]}),
+        ),
+        (
+            "whatsapp::messages::list",
+            json!({"session_id": "offline", "chat_id": "15550000001@s.whatsapp.net", "cursor": first_messages["next_cursor"]}),
+        ),
+    ] {
+        let error = trigger(&binary, port, function, payload).unwrap_err();
+        assert!(
+            error.contains("cursor belongs to another chat or search"),
+            "{error}"
+        );
+    }
+    // A known anchor still cannot start history fetching for an offline session.
+    let history_error = trigger(
+        &binary,
+        port,
+        "whatsapp::messages::request_history",
+        json!({"session_id": "offline", "chat_id": "123@g.us"}),
+    )
+    .unwrap_err();
+    assert!(
+        history_error.contains("session is not connected"),
+        "{history_error}"
+    );
+
     // Configuration lives in default while its subscriber and status RPC live
     // in the worker's namespace. A set must reach that subscriber by itself.
     let mut tuned = defaults.clone();
     tuned["max_sessions"] = json!(1);
     tuned["max_media_bytes"] = json!(4096);
+    tuned["max_inbox_messages"] = json!(2);
     tuned["operation_timeout_secs"] = json!(9);
     tuned["shutdown_timeout_secs"] = json!(3);
     trigger(
@@ -207,6 +402,18 @@ fn real_engine_registers_all_schemas_and_serves_offline_session_lifecycle() {
         trigger(&binary, port, "whatsapp::config-status", json!({}))
             .is_ok_and(|status| status["last_outcome"] == "applied" && status["active"] == tuned)
     });
+    let retained = trigger(
+        &binary,
+        port,
+        "whatsapp::messages::list",
+        json!({"session_id": "offline", "chat_id": "123@g.us"}),
+    )
+    .unwrap();
+    assert_eq!(retained["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(retained["messages"][0]["message_id"], "fixture-2");
+    assert_eq!(retained["coverage"]["message_limit"], 2);
+    assert_eq!(retained["coverage"]["retention_truncated"], true);
+    assert_eq!(retained["next_cursor"], Value::Null);
     let limit_error = trigger(
         &binary,
         port,
@@ -241,16 +448,25 @@ fn real_engine_registers_all_schemas_and_serves_offline_session_lifecycle() {
     assert_eq!(status["rejected_reloads"], 0);
     assert_eq!(status["restart_required_fields"], json!([]));
 
-    let mut invalid = tuned.clone();
-    invalid["max_sessions"] = json!(0);
-    let schema_error = trigger(
-        &binary,
-        port,
-        "configuration::set",
-        json!({"id": CONFIG_ID, "value": invalid}),
-    )
-    .unwrap_err();
-    assert!(schema_error.contains("SCHEMA_INVALID"), "{schema_error}");
+    for (field, value) in [
+        ("max_sessions", 0),
+        ("max_inbox_messages", 0),
+        ("max_inbox_messages", 100_001),
+    ] {
+        let mut invalid = tuned.clone();
+        invalid[field] = json!(value);
+        let schema_error = trigger(
+            &binary,
+            port,
+            "configuration::set",
+            json!({"id": CONFIG_ID, "value": invalid}),
+        )
+        .unwrap_err();
+        assert!(
+            schema_error.contains("SCHEMA_INVALID"),
+            "{field}: {schema_error}"
+        );
+    }
     assert_eq!(
         trigger(
             &binary,
@@ -389,7 +605,7 @@ fn real_engine_registers_all_schemas_and_serves_offline_session_lifecycle() {
     wait_for(|| worker.0.try_wait().unwrap().is_some());
     assert!(worker.0.wait().unwrap().success());
     eprintln!(
-        "verified {} function schemas, ADE assets, namespaced configuration reloads, offline lifecycle and clean SIGTERM",
+        "verified {} function schemas, ADE assets, namespaced configuration reloads, offline inbox pagination and live retention, offline lifecycle and clean SIGTERM",
         functions.len()
     );
 }

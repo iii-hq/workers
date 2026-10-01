@@ -3132,6 +3132,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "clap",
+ "diesel",
  "iii-config-client",
  "iii-console-ui",
  "iii-sdk",

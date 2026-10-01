@@ -1,6 +1,7 @@
+use std::io::Read;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use iii_sdk::{InitOptions, register_worker, runtime::WorkerMetadata};
 use serde_json::json;
@@ -28,6 +29,12 @@ struct Cli {
     /// Print function schemas without connections or storage access.
     #[arg(long)]
     catalog: bool,
+    /// Import a saved events::poll page into an existing session's local inbox, offline.
+    #[arg(long, requires_all = ["local_config", "import_session"], conflicts_with_all = ["manifest", "catalog"])]
+    import_events: Option<std::path::PathBuf>,
+    /// Existing session receiving the offline event import.
+    #[arg(long, requires = "import_events")]
+    import_session: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -84,6 +91,36 @@ async fn run_cli() -> Result<()> {
             None
         }
     };
+    if let Some(path) = cli.import_events {
+        const MAX_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
+        let mut input = Vec::new();
+        std::fs::File::open(path)
+            .context("opening event import")?
+            .take(MAX_IMPORT_BYTES + 1)
+            .read_to_end(&mut input)
+            .context("reading event import")?;
+        ensure!(
+            input.len() as u64 <= MAX_IMPORT_BYTES,
+            "event import exceeds 64 MiB"
+        );
+        let page: serde_json::Value =
+            serde_json::from_slice(&input).context("invalid event import JSON")?;
+        let events = page
+            .as_array()
+            .or_else(|| page.get("events").and_then(serde_json::Value::as_array))
+            .context("event import must be an events array or an events::poll page")?;
+        let session_id = cli.import_session.context("missing import session")?;
+        ensure!(
+            events.iter().all(|event| event
+                .get("session_id")
+                .is_none_or(|id| id.as_str() == Some(&session_id))),
+            "event import contains a different session"
+        );
+        let imported =
+            whatsapp::sessions::import_events(&seed.unwrap_or_default(), &session_id, &page)?;
+        println!("{}", json!({"imported": imported}));
+        return Ok(());
+    }
     let iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {

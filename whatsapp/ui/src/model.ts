@@ -111,7 +111,7 @@ export const STATUS_LABEL: Record<SessionStatus, string> = {
 
 export const DEFAULTS = {
   data_dir: 'data/whatsapp', max_sessions: 32, max_media_bytes: 16 * 1024 * 1024,
-  max_events: 1000, operation_timeout_secs: 30, shutdown_timeout_secs: 15,
+  max_events: 1000, max_inbox_messages: 10000, operation_timeout_secs: 30, shutdown_timeout_secs: 15,
 } as const
 export type ConfigKey = keyof typeof DEFAULTS
 export interface ConfigStatus {

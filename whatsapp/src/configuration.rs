@@ -196,6 +196,7 @@ mod tests {
         let changed = Config {
             data_dir: directory.path().join("next-start"),
             max_events: 5,
+            max_inbox_messages: 50,
             max_sessions: 2,
             max_media_bytes: 2048,
             operation_timeout_secs: 10,

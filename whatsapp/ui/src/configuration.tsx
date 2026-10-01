@@ -7,6 +7,7 @@ import { configNumber, DEFAULTS, isObject, isOpaqueField, withConfigField, type 
 const FIELDS: { key: ConfigKey; label: string; description: string; min?: number; max?: number }[] = [
   { key: 'data_dir', label: 'Diretório de dados', description: 'Credenciais SQLite e metadados locais de cada sessão. Relativo ao diretório do worker. Alterar exige reiniciar; os dados existentes não são movidos.' },
   { key: 'max_events', label: 'Eventos retidos por sessão', description: 'Histórico em memória usado pela atividade. Alterar exige reiniciar o worker.', min: 1, max: 100000 },
+  { key: 'max_inbox_messages', label: 'Mensagens armazenadas por sessão', description: 'Limita o arquivo de mensagens capturadas e o histórico recebido. Aplica sem reiniciar; reduzir remove as mensagens mais antigas.', min: 1, max: 100000 },
   { key: 'max_sessions', label: 'Limite de sessões', description: 'Aplica ao criar novas sessões; reduzir não remove as existentes.', min: 1, max: 1024 },
   { key: 'max_media_bytes', label: 'Limite de mídia em bytes', description: 'Aplica às próximas operações de mídia.', min: 1, max: 67108864 },
   { key: 'operation_timeout_secs', label: 'Tempo limite das operações', description: 'Em segundos. Aplica às próximas chamadas.', min: 1, max: 600 },
@@ -76,8 +77,8 @@ export function WhatsAppConfigForm({ host, value, onChange, schema, errors, focu
   return <div ref={root} className="wa-ui-config">
     <RuntimeStatus host={host} />
     {!isObject(value) ? <SettingsList><SettingsField field="configuration" label="Configuração do WhatsApp" description="O valor completo é personalizado. Ele só será substituído por uma ação explícita." error={rootError} controlSize="full" renderControl={(control) => <OpaqueField control={control} value={value} label="Configuração do WhatsApp" onChange={onChange} onReplace={() => onChange({})} />} /></SettingsList> : <>
-      <SettingsSection title="Armazenamento e histórico" description="As credenciais ficam no diretório de dados do worker, fora da configuração do projeto. Parear uma conta é uma ação separada na página WhatsApp."><SettingsList>{FIELDS.slice(0, 2).map(field)}</SettingsList></SettingsSection>
-      <SettingsSection title="Limites e tempos" description="Alterações válidas são aplicadas sem reiniciar. Deixe um campo vazio para restaurar o padrão."><SettingsList>{FIELDS.slice(2).map(field)}</SettingsList></SettingsSection>
+      <SettingsSection title="Armazenamento e histórico" description="As credenciais e o arquivo de mensagens ficam no diretório de dados do worker, fora da configuração do projeto. Parear uma conta é uma ação separada na página WhatsApp."><SettingsList>{FIELDS.slice(0, 3).map(field)}</SettingsList></SettingsSection>
+      <SettingsSection title="Limites e tempos" description="Alterações válidas são aplicadas sem reiniciar. Deixe um campo vazio para restaurar o padrão."><SettingsList>{FIELDS.slice(3).map(field)}</SettingsList></SettingsSection>
       {rootError && <StatusPanel variant="alert" headline="Revise a configuração" detail={rootError} />}
       {unmappedErrors.length > 0 && <StatusPanel variant="alert" headline="Há outros valores que precisam de revisão" detail={unmappedErrors.join('\n')} />}
     </>}

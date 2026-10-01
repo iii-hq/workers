@@ -34,6 +34,53 @@ async fn creation_and_reopen_remain_offline_and_preserve_metadata() {
 }
 
 #[tokio::test]
+async fn offline_import_opens_only_target_archive_and_rejects_cross_session_events() {
+    let directory = TempDir::new().unwrap();
+    let original = config(&directory);
+    let manager = SessionManager::open(original.clone()).unwrap();
+    manager.create("target").await.unwrap();
+    manager.create("other").await.unwrap();
+    let events = json!((0..3).map(|n| json!({"kind":"message.received","data":{
+        "info":{"id":n.to_string(),"timestamp_ms":n,"source":{"chat":"123@g.us","sender":"10@s.whatsapp.net","is_from_me":false}},
+        "message":{"conversation":"retained"}
+    }})).collect::<Vec<_>>());
+    manager
+        .inbox("other")
+        .unwrap()
+        .import_event_page(&events)
+        .unwrap();
+    let other = manager.inbox("other").unwrap();
+    drop(manager);
+    let lowered = Config {
+        max_inbox_messages: 1,
+        ..original.clone()
+    };
+    assert_eq!(
+        whatsapp::sessions::import_events(&lowered, "target", &events).unwrap(),
+        3
+    );
+    assert_eq!(
+        other
+            .list_messages("123@g.us", None, 50)
+            .unwrap()
+            .messages
+            .len(),
+        3
+    );
+    assert!(whatsapp::sessions::import_events(&lowered, "missing", &events).is_err());
+    assert!(!original.data_dir.join("missing").exists());
+    assert!(
+        whatsapp::sessions::import_events(
+            &lowered,
+            "target",
+            &json!([{"session_id":"other","kind":"message.received"}])
+        )
+        .is_err()
+    );
+    assert!(!original.data_dir.join("target/credentials.db").exists());
+}
+
+#[tokio::test]
 async fn unsafe_identifiers_never_create_paths() {
     let directory = TempDir::new().unwrap();
     let manager = SessionManager::open(config(&directory)).unwrap();

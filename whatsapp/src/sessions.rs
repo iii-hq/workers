@@ -1,5 +1,5 @@
 //! Named, durable native sessions. Opening a manager never opens a WhatsApp connection.
-use crate::{config::Config, registry::Registry};
+use crate::{config::Config, inbox::Inbox, registry::Registry};
 use anyhow::{Context, Result, bail, ensure};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -111,6 +111,7 @@ struct Session {
     directory: PathBuf,
     created_at_ms: u64,
     max_events: usize,
+    inbox: Arc<Inbox>,
     state: Mutex<State>,
     lifecycle: AsyncMutex<Lifecycle>,
     broadcast: broadcast::Sender<Event>,
@@ -121,13 +122,16 @@ impl Session {
         directory: PathBuf,
         metadata: Metadata,
         max_events: usize,
+        max_inbox_messages: usize,
         broadcast: broadcast::Sender<Event>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        let inbox = Inbox::open(&directory, max_inbox_messages)?;
+        Ok(Self {
             id: metadata.session_id,
             directory,
             created_at_ms: metadata.created_at_ms,
             max_events,
+            inbox,
             state: Mutex::new(State {
                 status: SessionStatus::Stopped,
                 generation: 0,
@@ -141,7 +145,7 @@ impl Session {
             }),
             lifecycle: AsyncMutex::new(Lifecycle::default()),
             broadcast,
-        }
+        })
     }
 
     fn summary(&self) -> SessionSummary {
@@ -217,6 +221,7 @@ impl Session {
         {
             let mut state = self.state.lock().unwrap();
             state.generation += 1;
+            self.inbox.invalidate();
             state.qr = None;
             state.pair_code = None;
             state.pair_phone = None;
@@ -291,8 +296,9 @@ impl SessionManager {
                     path,
                     metadata,
                     config.max_events,
+                    config.max_inbox_messages,
                     broadcast.clone(),
-                )),
+                )?),
             );
         }
         Ok(Arc::new(Self {
@@ -311,6 +317,9 @@ impl SessionManager {
     /// The returned fields retain their boot values until the worker restarts.
     pub fn apply_config(&self, mut config: Config) -> Result<Vec<String>> {
         config.validate()?;
+        // Match create's sessions -> config lock order and retain the guard so
+        // concurrent creation/deletion cannot miss a live archive-limit change.
+        let sessions = self.sessions.read().unwrap();
         let mut active = self.config.write().unwrap();
         let mut restart_required = Vec::new();
         if config.data_dir != active.data_dir {
@@ -321,12 +330,27 @@ impl SessionManager {
             restart_required.push("max_events".to_owned());
             config.max_events = active.max_events;
         }
+        if config.max_inbox_messages != active.max_inbox_messages {
+            for session in sessions.values() {
+                session.inbox.set_limit(config.max_inbox_messages)?;
+            }
+        }
         *active = config;
         Ok(restart_required)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.broadcast.subscribe()
+    }
+
+    /// Local display archive access never starts or connects a native session.
+    pub fn inbox(&self, id: &str) -> Result<Arc<Inbox>> {
+        let session = self.session(id)?;
+        ensure!(
+            !session.state.lock().unwrap().deleted,
+            "session has been deleted"
+        );
+        Ok(session.inbox.clone())
     }
 
     fn active(&self) -> Result<()> {
@@ -370,12 +394,19 @@ impl SessionManager {
             let _ = fs::remove_dir_all(&directory);
             return Err(error);
         }
-        let session = Arc::new(Session::from_metadata(
-            directory,
+        let session = match Session::from_metadata(
+            directory.clone(),
             metadata,
             config.max_events,
+            config.max_inbox_messages,
             self.broadcast.clone(),
-        ));
+        ) {
+            Ok(session) => Arc::new(session),
+            Err(error) => {
+                let _ = fs::remove_dir_all(&directory);
+                return Err(error.context("initialize session inbox"));
+            }
+        };
         let summary = session.summary();
         sessions.insert(id.to_owned(), session);
         Ok(summary)
@@ -445,12 +476,25 @@ impl SessionManager {
                 );
                 let bot = Bot::builder()
                     .with_backend_arc(store.clone())
+                    .with_inbound_durability_hook(NativeArchive {
+                        session: Arc::downgrade(&session),
+                        generation,
+                    })
                     .with_event_handler(NativeEvents {
                         session: Arc::downgrade(&session),
                         generation,
                     })
                     .build()
                     .await?;
+                if let Some(account) = bot.client().pn() {
+                    session
+                        .inbox
+                        .set_account(&account.to_non_ad().to_string())?;
+                } else {
+                    // Credentials were removed or this is a new pairing. An
+                    // archive with unknown ownership cannot follow a new account.
+                    session.inbox.clear()?;
+                }
                 for name in ["credentials.db", "credentials.db-wal", "credentials.db-shm"] {
                     let file = session.directory.join(name);
                     if file.exists() {
@@ -624,6 +668,7 @@ impl SessionManager {
             session.stop_locked(&mut lifecycle, timeout).await?;
             unlinked.context("native logout timed out; local credentials were retained")?;
             clear_credentials(&session.directory)?;
+            session.inbox.clear()?;
             session.transition(SessionStatus::LoggedOut, "session.logged_out")?;
             Ok(session.summary())
         })
@@ -645,9 +690,10 @@ impl SessionManager {
                     Duration::from_secs(manager.config().shutdown_timeout_secs),
                 )
                 .await?;
-            private_directory(&session.directory)?;
-            fs::remove_dir_all(&session.directory).context("remove session data")?;
             let mut sessions = manager.sessions.write().unwrap();
+            private_directory(&session.directory)?;
+            session.inbox.close()?;
+            fs::remove_dir_all(&session.directory).context("remove session data")?;
             session.state.lock().unwrap().deleted = true;
             sessions.remove(&session.id);
             Ok(session.summary())
@@ -724,6 +770,34 @@ struct NativeEvents {
     generation: u64,
 }
 
+struct NativeArchive {
+    session: Weak<Session>,
+    generation: u64,
+}
+
+#[async_trait::async_trait]
+impl whatsapp_rust::types::durability_hook::InboundDurabilityHook for NativeArchive {
+    async fn on_messages(
+        &self,
+        client: Arc<Client>,
+        batch: &[whatsapp_rust::prelude::InboundMessage],
+    ) -> Result<()> {
+        let session = self
+            .session
+            .upgrade()
+            .context("session archive is unavailable")?;
+        let capture = {
+            let state = session.state.lock().unwrap();
+            ensure!(
+                !state.deleted && state.generation == self.generation,
+                "session archive generation changed"
+            );
+            session.inbox.capture()
+        };
+        capture.on_messages(client, batch).await
+    }
+}
+
 impl EventHandler for NativeEvents {
     fn handle_event(&self, event: Arc<NativeEvent>) {
         let Some(session) = self.session.upgrade() else {
@@ -732,6 +806,13 @@ impl EventHandler for NativeEvents {
         let mut state = session.state.lock().unwrap();
         if state.deleted || state.generation != self.generation {
             return;
+        }
+        if matches!(
+            &*event,
+            NativeEvent::HistorySync(_) | NativeEvent::Receipt(_)
+        ) || matches!(&*event, NativeEvent::Messages(batch) if !batch.hook_committed)
+        {
+            session.inbox.capture().ingest_event(event.clone());
         }
         let payload = match &*event {
             NativeEvent::PairingQrCode(qr) => {
@@ -771,6 +852,9 @@ impl EventHandler for NativeEvents {
                 ))
             }
             NativeEvent::LoggedOut(logout) => {
+                if session.inbox.clear().is_err() {
+                    tracing::warn!("could not clear logged-out WhatsApp inbox");
+                }
                 state.status = SessionStatus::LoggedOut;
                 state.qr = None;
                 state.pair_code = None;
@@ -790,6 +874,13 @@ impl EventHandler for NativeEvents {
                 Some(("session.qr_expired", json!({})))
             }
             NativeEvent::PairSuccess(pair) => {
+                if session
+                    .inbox
+                    .set_account(&pair.id.to_non_ad().to_string())
+                    .is_err()
+                {
+                    tracing::warn!("could not update paired WhatsApp inbox account");
+                }
                 state.qr = None;
                 state.pair_code = None;
                 state.pair_phone = None;
@@ -915,6 +1006,45 @@ fn validate_id(id: &str) -> Result<()> {
         "session_id must contain 1 to 64 ASCII letters, digits, underscores or hyphens"
     );
     Ok(())
+}
+
+/// Import one existing session's private event snapshot offline. Other session
+/// directories and archives are neither opened nor trimmed by this operation.
+pub fn import_events(config: &Config, id: &str, page: &Value) -> Result<usize> {
+    config.validate()?;
+    validate_id(id)?;
+    ensure!(
+        config.data_dir.exists(),
+        "session data directory does not exist"
+    );
+    private_directory(&config.data_dir)?;
+    let directory = config.data_dir.join(id);
+    ensure!(directory.exists(), "unknown session: {id}");
+    private_directory(&directory)?;
+    let metadata_path = directory.join("metadata.json");
+    regular_file(&metadata_path)?;
+    ensure!(
+        fs::metadata(&metadata_path)?.len() <= 4096,
+        "session metadata exceeds limit"
+    );
+    let metadata: Metadata = serde_json::from_slice(&fs::read(metadata_path)?)?;
+    ensure!(
+        metadata.session_id == id && metadata.next_sequence > 0,
+        "session metadata does not match its directory"
+    );
+    let events = page
+        .as_array()
+        .or_else(|| page.get("events").and_then(Value::as_array))
+        .context("expected an event array or event page")?;
+    for event in events {
+        if let Some(event_session) = event.get("session_id") {
+            ensure!(
+                event_session.as_str() == Some(id),
+                "snapshot contains events for another session"
+            );
+        }
+    }
+    Inbox::open(&directory, config.max_inbox_messages)?.import_event_page(page)
 }
 
 fn now_ms() -> u64 {

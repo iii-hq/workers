@@ -320,11 +320,16 @@ pub fn register(registry: &mut Registry) {
         |m, r| async move {
             let message = text_message(&r.text)?;
             let to = validate::jid(&r.chat_id)?;
-            Ok(m.client(&r.session_id)
+            let capture = m.inbox(&r.session_id)?.capture();
+            let result = m
+                .client(&r.session_id)
                 .await?
                 .send_message(to, message)
-                .await?
-                .into())
+                .await?;
+            if capture.record_sent(&result).await.is_err() {
+                tracing::warn!("Submitted text message could not be retained in the local inbox");
+            }
+            Ok(result.into())
         },
     );
     registry.add::<ReplyRequest, SentMessage, _, _>(
@@ -333,11 +338,16 @@ pub fn register(registry: &mut Registry) {
         |m, r| async move {
             let message = r.message()?;
             let to = validate::jid(&r.chat_id)?;
-            Ok(m.client(&r.session_id)
+            let capture = m.inbox(&r.session_id)?.capture();
+            let result = m
+                .client(&r.session_id)
                 .await?
                 .send_message(to, message)
-                .await?
-                .into())
+                .await?;
+            if capture.record_sent(&result).await.is_err() {
+                tracing::warn!("Submitted reply could not be retained in the local inbox");
+            }
+            Ok(result.into())
         },
     );
     registry.add::<EditRequest, SentMessage, _, _>(

@@ -18,7 +18,7 @@
     "partial": "A stated subset of the OpenWA operation is implemented; notes identify missing behavior.",
     "not_implemented": "No worker implementation of the operation is provided. Related native primitives or event observations do not imply implementation."
   },
-  "verification": "Function mappings were inspected in worker registration source. Offline tests validate request handling and projections. No live WhatsApp account has been paired for end-to-end validation.",
+  "verification": "Function mappings were inspected in worker registration source. Offline tests validate request handling, archive behavior and projections. A paired account is used for read-only group/inbox validation; messaging and group mutations have not been exercised against that account.",
   "operations": [
     {
       "method": "GET",
@@ -238,9 +238,9 @@
       "method": "GET",
       "path": "/api/sessions/{sessionId}/chats",
       "operationId": "SessionController_getChats",
-      "status": "not_implemented",
-      "functions": [],
-      "notes": "No durable chat/message/reaction read model or historical query API. Bounded incoming events are not a substitute for a complete history."
+      "status": "partial",
+      "functions": ["whatsapp::chats::list"],
+      "notes": "Searchable, paginated local conversations from captured and synchronized messages. Retention is bounded; this is not the complete WhatsApp chat list or OpenWA's database contract."
     },
     {
       "method": "POST",
@@ -470,9 +470,9 @@
       "method": "GET",
       "path": "/api/sessions/{sessionId}/messages",
       "operationId": "MessageController_getMessages",
-      "status": "not_implemented",
-      "functions": [],
-      "notes": "No durable chat/message/reaction read model or historical query API. Bounded incoming events are not a substitute for a complete history."
+      "status": "partial",
+      "functions": ["whatsapp::messages::list", "whatsapp::messages::request_history"],
+      "notes": "Paginated normalized local messages, plus an explicit asynchronous older-history request anchored by a stored message. No full-history guarantee, media download or OpenWA database response parity."
     },
     {
       "method": "POST",

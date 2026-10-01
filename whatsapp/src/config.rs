@@ -31,6 +31,9 @@ pub struct Config {
     /// Event retention and broadcast capacity. Changing this requires a worker restart.
     #[schemars(range(min = 1, max = 100000))]
     pub max_events: usize,
+    /// Maximum retained inbox messages per session; lowering this trims oldest rows live.
+    #[schemars(range(min = 1, max = 100000))]
+    pub max_inbox_messages: usize,
     #[schemars(range(min = 1, max = 600))]
     pub operation_timeout_secs: u64,
     #[schemars(range(min = 1, max = 120))]
@@ -44,6 +47,7 @@ impl Default for Config {
             max_sessions: 32,
             max_media_bytes: 16 * 1024 * 1024,
             max_events: 1000,
+            max_inbox_messages: 10_000,
             operation_timeout_secs: 30,
             shutdown_timeout_secs: 15,
         }
@@ -81,6 +85,10 @@ impl Config {
         ensure!(
             (1..=100_000).contains(&self.max_events),
             "max_events must be 1..100000"
+        );
+        ensure!(
+            (1..=100_000).contains(&self.max_inbox_messages),
+            "max_inbox_messages must be 1..100000"
         );
         ensure!(
             (1..=600).contains(&self.operation_timeout_secs),

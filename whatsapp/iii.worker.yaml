@@ -14,5 +14,6 @@ config:
   max_sessions: 32
   max_media_bytes: 16777216
   max_events: 1000
+  max_inbox_messages: 10000
   operation_timeout_secs: 30
   shutdown_timeout_secs: 15

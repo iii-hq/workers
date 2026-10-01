@@ -60,9 +60,27 @@ release declaration.
 The running worker injects a **WhatsApp** page and configuration form into ADE.
 Open `#/worker/whatsapp` on your ADE host (normally
 `http://127.0.0.1:3113/#/worker/whatsapp`). The page has session creation and
-selection, explicit connect/stop actions, a local QR renderer, phone-code
-pairing, a text-message test, and recent activity. Sending requires a connected
-session and an explicit recipient. Opening the page never starts a session.
+selection and three tabs: **Mensagens**, **Grupos** and **Conexão**. Search
+conversations, read stored messages, open participating groups and inspect
+their participants and administrators. The conversation composer sends to the
+selected chat only after an explicit action. Connection controls include
+connect/stop, local QR rendering, phone-code pairing and recent activity.
+Opening the page never starts a session or marks messages as read.
+
+Each session keeps a separate private `inbox.db` with normalized text and media
+labels from received messages, available WhatsApp history sync, and text/replies
+sent through this worker. Media is not downloaded by the inbox. The archive
+does not preserve view-once content or media keys and scrubs expired temporary
+message bodies on archive reads and writes. `max_inbox_messages` bounds retention (default 10,000 per session);
+lowering it applies immediately and removes the oldest retained messages.
+Stored conversations can be read while disconnected. Participating groups and
+their current membership require a connected session.
+
+The archive starts when this worker version captures messages; it is not a
+complete copy of the phone's history. **Buscar histórico** requests older
+messages from the linked phone using an existing message as its anchor. Results
+arrive asynchronously, depend on WhatsApp availability, and remain subject to
+the retention limit. An empty conversation has no anchor to request history.
 
 Use the page's settings action to edit the actual entry for this worker
 instance. `whatsapp::configuration-id` resolves that ID in the worker's
@@ -81,7 +99,7 @@ values remain authoritative on startup; remove an override if ADE should own
 that setting. `--local-config` ignores central edits and reports local mode.
 
 Pairing data stays in page memory, expires, and is cleared on session change.
-The activity feed is bounded and is not a persistent chat archive. The send
+The activity feed is bounded; the inbox is a separate persistent archive. The send
 result identifies the protocol message; receipts establish later delivery.
 After a send timeout, check activity before sending again.
 
@@ -125,6 +143,19 @@ remote unlink. SIGINT/SIGTERM attempt a graceful stop and native state flush
 within the shutdown deadline. A timeout can abort before flushing completes;
 local credential files are preserved.
 
+To migrate a saved event page from an older worker while its session is stopped:
+
+```sh
+./target/release/whatsapp --local-config --config seed.yaml \
+  --import-events saved-events.json --import-session work
+```
+
+The seed must point to the existing `data_dir`. This offline operation accepts
+an `events::poll` response or an event array, validates session envelopes,
+normalizes display fields and deduplicates messages without opening an engine
+or WhatsApp connection. It prints only the processed message count. Protect and
+remove the saved input after migration; it may contain private message bodies.
+
 ## Functions and events
 
 `--catalog` emits the authoritative function list with JSON schemas. Families
@@ -148,7 +179,9 @@ announce availability/expiry and do not contain the pairing secret.
 
 Delivery is best effort, with a bounded broadcast queue and per-session event
 ring. Reconcile with `whatsapp::events::poll` using `after_sequence` and
-`limit`; persist events externally for durable history. Sequence reservations
+`limit`; use `whatsapp::chats::list` and `whatsapp::messages::list` for the local
+message archive. `whatsapp::messages::request_history` requests an older batch
+from the linked phone. Sequence reservations
 survive restart, but event payloads do not. `truncated` reports unavailable
 history; oversized message bodies are replaced by a bounded truncation notice.
 Other oversized native events are dropped with a diagnostic.
