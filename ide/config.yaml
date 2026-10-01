@@ -23,7 +23,8 @@ env:
   # When `inherit` is false, ONLY these keys are forwarded to children. Has
   # no effect on per-call `env` (deny-only, see line 16 above) — this list
   # governs forwarding only, never what a caller may override per call.
-  # git fetch/push over SSH needs the agent socket: add SSH_AUTH_SOCK here.
+  # git fetch/push over SSH needs the agent socket (SSH_AUTH_SOCK), but every
+  # child command then gets the agent's keys: add it only if that is intended.
   allow:
     - PATH
     - HOME
