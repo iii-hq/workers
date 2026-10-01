@@ -1,5 +1,5 @@
 # Registration is offline; creating a manager never connects a WhatsApp account.
-data_dir: data/whatsapp-interface
+data_dir: data/whatsapp-go-interface
 max_sessions: 1
 max_media_bytes: 1048576
 max_events: 10

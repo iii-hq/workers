@@ -1,31 +1,4 @@
 workers:
-  whatsapp:
-    source:
-      path: whatsapp
-      package_manifest: Cargo.toml
-    artifact:
-      kind: rust-binary
-      toolchain:
-        name: rust
-        version: 1.97.1
-      binary: whatsapp
-      targets:
-      - x86_64-unknown-linux-gnu
-      windows_exception: Initial native worker targets Linux x86_64; Windows credential lifecycle and packaging are not yet validated.
-      frontends:
-      - workspace_root: .
-        source_path: whatsapp/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command: [pnpm, install, --frozen-lockfile]
-        build_command: [pnpm, run, build]
-        outputs: [dist]
-    publish: true
   a2ui:
     source:
       path: a2ui

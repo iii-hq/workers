@@ -1,0 +1,136 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "CloudConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "access_token": {
+          "default": "",
+          "format": "password",
+          "type": "string",
+          "writeOnly": true
+        },
+        "api_version": {
+          "default": "v26.0",
+          "type": "string"
+        },
+        "app_secret": {
+          "default": "",
+          "format": "password",
+          "type": "string",
+          "writeOnly": true
+        },
+        "business_account_id": {
+          "default": "",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "phone_number_id": {
+          "default": "",
+          "type": "string"
+        },
+        "verify_token": {
+          "default": "",
+          "format": "password",
+          "type": "string",
+          "writeOnly": true
+        }
+      },
+      "type": "object"
+    }
+  },
+  "example": {
+    "cloud": {
+      "access_token": "",
+      "api_version": "v26.0",
+      "app_secret": "",
+      "business_account_id": "",
+      "enabled": false,
+      "phone_number_id": "",
+      "verify_token": ""
+    },
+    "data_dir": "data/whatsapp-go",
+    "max_events": 1000,
+    "max_inbox_messages": 10000,
+    "max_media_bytes": 16777216,
+    "max_sessions": 32,
+    "operation_timeout_secs": 30,
+    "shutdown_timeout_secs": 15
+  },
+  "properties": {
+    "cloud": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/CloudConfig"
+        }
+      ],
+      "default": {
+        "access_token": "",
+        "api_version": "v26.0",
+        "app_secret": "",
+        "business_account_id": "",
+        "enabled": false,
+        "phone_number_id": "",
+        "verify_token": ""
+      },
+      "description": "Optional official Meta integration; independent of linked-device sessions."
+    },
+    "data_dir": {
+      "default": "data/whatsapp-go",
+      "description": "Persistent native session storage. Changing this requires a worker restart.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "max_events": {
+      "default": 1000,
+      "description": "Event retention and broadcast capacity. Changing this requires a worker restart.",
+      "format": "uint",
+      "maximum": 100000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "max_inbox_messages": {
+      "default": 10000,
+      "description": "Maximum retained inbox messages per session; lowering this trims oldest rows live.",
+      "format": "uint",
+      "maximum": 100000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "max_media_bytes": {
+      "default": 16777216,
+      "format": "uint",
+      "maximum": 67108864,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "max_sessions": {
+      "default": 32,
+      "description": "Maximum number of sessions; existing sessions survive a lower limit.",
+      "format": "uint",
+      "maximum": 1024,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "operation_timeout_secs": {
+      "default": 30,
+      "format": "uint64",
+      "maximum": 600,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "shutdown_timeout_secs": {
+      "default": 15,
+      "format": "uint64",
+      "maximum": 120,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "title": "Config",
+  "type": "object"
+}

@@ -1,17 +1,17 @@
 iii: v1
 name: whatsapp
-language: rust
+language: go
 deploy: binary
-manifest: Cargo.toml
+manifest: go.mod
 bin: whatsapp
 license: Apache-2.0
-description: Native WhatsApp sessions and official Meta Cloud API messaging in one Rust worker; no Node or browser runtime.
-tags: [whatsapp, messaging, native, rust, groups, cloud-api]
+description: Native whatsmeow sessions and official Meta Cloud API messaging in one Go worker; no Node or browser runtime.
+tags: [whatsapp, messaging, native, go, groups, cloud-api]
 dependencies:
   configuration: latest
   http: latest
 config:
-  data_dir: data/whatsapp
+  data_dir: data/whatsapp-go
   max_sessions: 32
   max_media_bytes: 16777216
   max_events: 1000

@@ -1,47 +1,45 @@
 # WhatsApp
 
-A Rust iii worker supporting both [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust)
+A Go iii worker supporting both [whatsmeow](https://github.com/tulir/whatsmeow)
 linked devices and the official Meta WhatsApp Cloud API. The native WhatsApp
 client, Cloud API client, encryption and SQLite storage are embedded in the executable.
 There is no Node, Chromium, sidecar process or sandbox requirement. The worker
 connects to an existing iii engine; normal configuration uses the configuration worker.
 
 The dependency is pinned to
-`dd0763c4635b353c4ed52def39d030fb2f375f9a`, with `iii-sdk = 0.23.0`.
+`8b41cfe6d9c4` (`v0.0.0-20260929112325-8b41cfe6d9c4`), with the iii Go SDK `v0.24.3`.
 This is a native function API, not an HTTP-compatible deployment of OpenWA.
-[openwa-coverage.json](openwa-coverage.json) inventories all 202 operations from
-the inspected OpenWA version and distinguishes native actions, partial mappings
-and missing application features.
+[openwa-rust-coverage.json](openwa-rust-coverage.json) is the historical Rust/OpenWA
+comparison, not a declaration of Go support. Use `--catalog` for the supported Go API.
 
 ## Build and run
 
-Rust 1.94 or newer and a native C toolchain are needed at build time for bundled
-SQLite and cryptographic dependencies. The repository release toolchain is 1.97.1.
-Building the embedded ADE page also requires Node and pnpm (the release pins
-Node 22.20.0 and pnpm 11.13.1). `build.rs` builds stale or missing assets; an
-already-built executable needs neither tool. For reproducible frontend builds:
-
-```sh
-pnpm install --frozen-lockfile
-pnpm --dir whatsapp/ui build
-```
-
-Run these from the repository root before the Cargo commands below.
-`SKIP_UI_BUILD=1` uses existing `ui/dist` assets and fails if they are missing.
+Use Go 1.27.1 on Linux. SQLite uses the pure-Go `modernc.org/sqlite` driver;
+the binary builds with `CGO_ENABLED=0` and requires no C toolchain. ADE bundles
+are checked in under `assets/`, so a fresh Go build needs neither Node nor pnpm.
 
 ```sh
 cd whatsapp
-cargo build --release --locked
-./target/release/whatsapp --manifest
-./target/release/whatsapp --catalog
-./target/release/whatsapp --url ws://127.0.0.1:49134
+make build
+./bin/whatsapp --manifest
+./bin/whatsapp --catalog
+./bin/whatsapp --url ws://127.0.0.1:49134
 ```
 
 The first two inspection commands use neither the network nor session storage.
+For frontend changes, install dependencies from the repository root using its
+Node and pnpm versions, then rebuild and copy the embedded bundles:
+
+```sh
+pnpm install --frozen-lockfile
+make -C whatsapp ui
+make -C whatsapp build
+```
+
 For isolated development without the configuration worker:
 
 ```sh
-./target/release/whatsapp --local-config --url ws://127.0.0.1:49134
+./bin/whatsapp --local-config --config config.example.yaml --url ws://127.0.0.1:49134
 ```
 
 Use `--config file.yaml` for a YAML seed. In normal mode, the central entry
@@ -52,9 +50,24 @@ timeouts apply live; `data_dir` and `max_events` require a worker restart.
 Give each process its own `data_dir`; sharing live credential databases between
 worker processes is unsupported.
 
-The initial release target is Linux x86_64 GNU. It uses the host's standard
-system libraries; a statically linked musl artifact is not part of this initial
-release declaration.
+This branch supports local Go builds. The repository release pipeline has no
+Go binary recipe yet, so WhatsApp is excluded from `.deploy/workers.yaml` until
+that recipe exists. No cross-platform release artifact is declared here.
+
+### Compatibility with the Rust worker
+
+Use the default `data/whatsapp-go` or another fresh directory. whatsmeow has its
+own credential schema, and this worker rejects Rust session metadata. Stop the
+old process before reusing its engine identity, then create and explicitly pair
+a new Go session. Do not point this executable at the old `data/whatsapp` tree.
+The old credentials and archive stay available to the Rust executable; no
+automatic credential, archive, event-page or Cloud database migration is provided.
+The Go CLI does not implement the Rust `--import-events` command.
+
+An existing central configuration may still select the old directory. Update
+that entry to the new directory before starting this worker, or use a separate
+`III_CONFIG_NAME` for an isolated instance. Native operation coverage differs
+from the Rust version; unsupported calls are omitted from registration.
 
 ## ADE interface
 
@@ -118,9 +131,8 @@ The activity feed is bounded; the inbox is a separate persistent archive. The se
 result identifies the protocol message; receipts establish later delivery.
 After a send timeout, check activity before sending again.
 
-For UI development, run `pnpm --dir whatsapp/ui watch` and start the worker
-with `III_WHATSAPP_UI_WATCH=/absolute/path/to/whatsapp/ui/dist`. Assets normally
-remain embedded; no frontend server is needed in production.
+After editing the UI, run `make ui build` from this directory and restart the
+development worker. Assets remain embedded; no frontend server is needed.
 
 ## Official Meta Cloud API
 
@@ -249,24 +261,11 @@ remote unlink. SIGINT/SIGTERM attempt a graceful stop and native state flush
 within the shutdown deadline. A timeout can abort before flushing completes;
 local credential files are preserved.
 
-To migrate a saved event page from an older worker while its session is stopped:
-
-```sh
-./target/release/whatsapp --local-config --config seed.yaml \
-  --import-events saved-events.json --import-session work
-```
-
-The seed must point to the existing `data_dir`. This offline operation accepts
-an `events::poll` response or an event array, validates session envelopes,
-normalizes display fields and deduplicates messages without opening an engine
-or WhatsApp connection. It prints only the processed message count. Protect and
-remove the saved input after migration; it may contain private message bodies.
-
 ## Functions and events
 
 `--catalog` emits the authoritative function list with JSON schemas. Families
 cover sessions, messages, media, chats, groups, contacts, profile, privacy,
-communities, newsletters, status, labels and call rejection/termination.
+communities, newsletters, labels, call rejection and the official Cloud API.
 Inputs are strict: unknown fields fail. WhatsApp feature operations require a
 connected session; connection and pairing use the session lifecycle functions.
 Server/app-state errors are returned, including participant
@@ -289,12 +288,11 @@ ring. Reconcile with `whatsapp::events::poll` using `after_sequence` and
 message archive. `whatsapp::messages::request_history` requests an older batch
 from the linked phone. Sequence reservations
 survive restart, but event payloads do not. `truncated` reports unavailable
-history; oversized message bodies are replaced by a bounded truncation notice.
-Other oversized native events are dropped with a diagnostic.
+history; oversized event data is replaced by `{"content_omitted":true}`.
 Default retention is 1000 events per session. Individual event envelopes are
 capped at 64 KiB. Callback failures are not retried automatically.
-Only worker-owned diagnostics are logged, even with verbose `RUST_LOG` settings;
-native protocol logs are suppressed because they can contain pairing secrets.
+Only worker-owned diagnostics are logged; native protocol logs are suppressed
+because they can contain pairing secrets.
 The executable also disables SDK trace payload capture before starting its
 runtime. Timing and error spans remain available without recording function
 inputs/outputs such as pairing codes and message bodies.
@@ -306,51 +304,74 @@ inputs/outputs such as pairing codes and message bodies.
   hard byte cap, and do not fetch arbitrary caller URLs.
 - Files must already use the desired encoding. There is no voice/video
   transcoding, thumbnail generation, conversion queue or external codec process.
-- Status audience recipients are explicit; the native privacy flag does not
-  compute or enforce a recipient list.
+- Status publishing is excluded: whatsmeow uses account-wide privacy settings
+  and cannot preserve the original API's explicit per-send recipient list.
 - Send results contain protocol message IDs, not a delivery guarantee. Remote
   mutation timeouts can have an unknown outcome; inspect state before retrying.
 - OpenWA plugins, automation rules, API-key management, webhooks administration,
   infrastructure endpoints and persisted message/chat/contact queries require
   additional application functionality. They are not advertised as working functions.
-- Call rejection/termination send signaling requests. Call-link generation and
-  audio/video call transport are not enabled.
+- Call rejection sends signaling only and requires `peer` and `call_creator`
+  to identify the same person. Call termination, call links and audio/video
+  call transport are not exposed.
 - The native library is an unofficial protocol client. Its behavior and feature
   availability depend on the WhatsApp service. Offline tests do not establish
   live account interoperability or full OpenWA parity.
 
+The following original native IDs are intentionally not registered. Each uses
+the `whatsapp::` prefix:
+
+- `status::audience`, `status::send_text`, `status::send_media`, `status::revoke`;
+  `calls::terminate`; `chats::unsubscribe_presence`.
+- `newsletters::remove_picture`, `newsletters::delete`, `newsletters::update`,
+  `newsletters::set_picture`, `newsletters::change_owner`, `newsletters::demote_admin`,
+  `newsletters::admin_info`, `newsletters::followers`,
+  `newsletters::mute_follower_activity`, `newsletters::vote_poll`, `newsletters::my_addons`.
+- `groups::remove_linked_participants`, `groups::cancel_requests`,
+  `groups::revoke_request_codes`, `groups::set_history`,
+  `groups::set_forwarding_restriction`, `groups::set_admin_reports`,
+  `groups::set_limit_sharing`, `groups::set_member_link_mode`, `groups::set_member_history_mode`.
+- `contacts::remove`, `privacy::update_disallowed`, `communities::deactivate`,
+  `communities::join_subgroup`, `communities::remove_participants`.
+
+Unavailable group/contact/newsletter metadata is returned as `null`, with
+matching response schemas, rather than guessed values. Native send results
+have `recipient_fanout: null` because whatsmeow does not expose those counters.
+
 ## Validation
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked --all-features
+make test
+go vet ./...
+go test -race ./...
 pnpm --dir ui test
-pnpm --dir ui build
+make ui build
 ```
-
-With an existing native iii engine binary, run the isolated engine integration:
-
-```sh
-III_BINARY=/absolute/path/to/iii cargo test --locked --test engine_smoke -- --ignored --nocapture
-```
-
-It starts an engine on a temporary loopback port, verifies every registered schema,
-exercises offline session metadata, UI delivery and configuration reloads through
-real RPC, and checks SIGTERM. It creates
-no WhatsApp connection and removes its temporary state on completion.
-
-The Cloud webhook integration additionally needs a standalone HTTP worker:
-
-```sh
-III_BINARY=/absolute/path/to/iii HTTP_BINARY=/absolute/path/to/http \
-  cargo test --locked --test cloud_engine_smoke -- --ignored --nocapture
-```
-
-It starts an isolated loopback HTTP listener and verifies the exact signed body,
-plaintext challenge, duplicate handling, account isolation, safe status and live
-disable behavior. Test credentials are dummy values and it makes no Meta API call.
 
 Tests cover storage/lifecycle, event bounds and projections, message construction,
 addressing, media bounds, strict requests, offline registration and function
 schemas. They do not pair an account or send a real WhatsApp message.
+`make catalog` prints the registered schemas. After changing `catalog.json`, run
+`make generate` to refresh the SDK schema adapters and rerun tests.
+
+Go SDK 0.24.3 cannot advertise trigger filter or event payload schemas to the
+engine. Runtime filter validation remains active; the JSON example under
+[Functions and events](#functions-and-events) defines the subscription contract.
+
+The optional engine smoke test starts an isolated engine and worker on loopback
+with temporary configuration and storage. Point it at existing local binaries:
+
+```sh
+go build -o /tmp/whatsapp-go-smoke .
+III_BINARY=/path/to/iii \
+WHATSAPP_BINARY=/tmp/whatsapp-go-smoke \
+HTTP_BINARY=/path/to/http \
+go test -run '^TestEngineSmoke$' -count=1 -v .
+```
+
+This checks central configuration reloads, runtime schemas, ADE assets, offline
+session lifecycle and event delivery across namespaces. `HTTP_BINARY` is optional;
+when supplied, it also checks webhook verification, raw-body signatures, account
+isolation and duplicate message persistence using synthetic credentials and data.
+The test does not pair an account or call Meta. Without `III_BINARY` and
+`WHATSAPP_BINARY`, it is skipped.
