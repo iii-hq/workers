@@ -11,6 +11,13 @@
 //! Output order follows jevgrep's `apps/cli/src/render.ts`; the answer
 //! cache ports `packages/core/src/cache.ts` (in memory only) and the
 //! `AGENTS.md` lookup `repository-context.ts`.
+//!
+//! jevgrep's contextual follow-up, relationship pass and Python test-body
+//! selection are deliberately not ported. Measured in MOT-4965 against
+//! blind gold labels, the follow-up spent up to 93% of an ask's judge
+//! tokens for small coverage gains, the relationship pass never fired on
+//! scoped asks, and test-body selection cut the key lines of questions
+//! about tests.
 
 pub mod navigate;
 pub mod passes;
@@ -289,8 +296,7 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
         token_budget: cfg.find_relevant_judge_token_budget,
         state: Mutex::new(Default::default()),
     });
-    run.discover(vec![".".into()], None).await;
-    run.relate().await;
+    run.discover(vec![".".into()]).await;
     // The assessment reads only discovery previews, so it runs alongside.
     let (mut selected, mut assessments) =
         tokio::join!(select::select_evidence(&run), passes::assess_files(&run));

@@ -1,28 +1,23 @@
 //! The passes around evidence selection: file roles and read-early
-//! priority (judged beside it), the Python presentation passes after it,
-//! and the Python preview sampler and neighbourhood the earlier stages use.
+//! priority (judged beside it), the presentation passes after it, and the
+//! Python preview sampler discovery uses.
 //!
 //! Ported from dzhng/jevgrep (MIT, Copyright (c) 2026 David Zhang), commit
 //! 82ef1fd: `packages/core/src/retrieve.ts` `assessFiles` (596-622) and the
-//! presentation passes (623-695), `call-context.ts`,
-//! `test-body-selection.ts`, `parser-preview.mjs`, and the `neighborhood`,
-//! `previewMatches` and `calls` helpers of `parser-helpers.mjs`.
+//! presentation passes (623-695), `call-context.ts`, `parser-preview.mjs`,
+//! and the `previewMatches` and `calls` helpers of `parser-helpers.mjs`.
 //!
 //! Deviations: the assessment reads the discovery preview without re-reading
 //! the file; its roles attach only where the evidence re-hash held (the
-//! caller's check, retrieve.ts 643-650); an assessment or test-body request
-//! over `Run::window_cap` is not sent (jevgrep has no cap there). Python
-//! names and query tokens are not NFKC normalized, and parser columns are
-//! UTF-8 bytes, not UTF-16 units. Of the checks jevgrep runs on its parser
+//! caller's check, retrieve.ts 643-650); an assessment request over
+//! `Run::window_cap` is not sent (jevgrep has no cap there). Python names
+//! and query tokens are not NFKC normalized, and parser columns are UTF-8
+//! bytes, not UTF-16 units. Of the checks jevgrep runs on its parser
 //! process's output only the call ranges' remain (a class header on one
 //! line is empty and drops the pass, as there). A Python file is read once
-//! for both presentation passes, and only Python test files are re-checked
-//! before test-body changes apply (jevgrep re-checks every test input);
-//! the caller's final re-hash covers the rest. An inheritance chain deeper
-//! than 256 drops the call pass. The call and neighbourhood passes stop at
-//! the ask deadline (jevgrep's abort kills its parser process). A test-body
-//! batch too large for the judge or `Run::window_cap` is halved while it
-//! holds more than one candidate (jevgrep does not split it).
+//! for the call pass; the caller's final re-hash covers later changes. An
+//! inheritance chain deeper than 256 drops the call pass, which stops at
+//! the ask deadline (jevgrep's abort kills its parser process).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -31,27 +26,21 @@ use std::time::Instant;
 use once_cell::sync::Lazy;
 use tree_sitter::Node;
 
-use super::navigate::{Candidate, Run};
-use super::prompts::{self, SourceRange, TestCandidate};
+use super::navigate::Run;
+use super::prompts::{self, SourceRange};
 use super::select::Selected;
 use super::units::{
-    self, named, py_body, py_definition, py_end_line, py_is_definition, py_start_line, range, text,
-    unparenthesized, MAX_PARSE_BYTES,
+    self, named, py_body, py_definition, py_end_line, py_start_line, range, text, unparenthesized,
+    MAX_PARSE_BYTES,
 };
-use super::walk::{self, Snapshot};
+use super::walk::Snapshot;
 use super::{CallLead, Excerpt};
 use crate::code::judge::{JudgeError, Scores};
 
 /// Roles and priority above this count (strict).
 const ROLE: f64 = 0.5;
-/// Test bodies above this stay shown (strict).
-const KEEP: f64 = 0.5;
-/// Larger call targets and test-body units are never shown whole.
+/// Larger call targets are never shown whole.
 const SOURCE_UNIT_BYTES: usize = 24_000;
-/// Class headers and sibling methods of a selected method up to this long.
-const NEIGHBOUR_LINES: usize = 40;
-const TEST_BATCH: usize = 32;
-const TEST_BATCH_BYTES: usize = 64_000;
 /// Deeper inheritance chains drop the call pass. jevgrep's recursion runs in
 /// a parser process, where a stack overflow is a failed parse; here it would
 /// abort the worker.
@@ -108,10 +97,9 @@ pub async fn assess_files(run: &Arc<Run>) -> HashMap<String, Assessment> {
     .collect()
 }
 
-/// retrieve.ts 623-695: a test file shows all its selected source; a
+/// retrieve.ts 623-695: a test file shows all its selected source, and a
 /// Python file's shown source gains the local methods its selected code
-/// may call (and their class headers); a Python test file then loses the
-/// test bodies the judge declines. Omitted files are left alone.
+/// may call (and their class headers). Omitted files are left alone.
 pub async fn present(
     run: &Arc<Run>,
     files: &mut HashMap<String, Selected>,
@@ -135,12 +123,11 @@ pub async fn present(
         else {
             continue;
         };
-        let test = tested(&candidate.path);
-        if test {
+        if tested(&candidate.path) {
             file.excerpts = file.selected_excerpts.clone();
         }
         if units::is_python(&candidate.path) {
-            python.push((candidate, file.clone(), test));
+            python.push((candidate, file.clone()));
         }
     }
     if python.is_empty() {
@@ -150,7 +137,7 @@ pub async fn present(
     let Ok(read) = tokio::task::spawn_blocking(move || {
         python
             .into_iter()
-            .filter_map(|(candidate, mut file, test)| {
+            .filter_map(|(candidate, mut file)| {
                 let snapshot = reader.unchanged(&candidate)?;
                 let mut widened = file.clone();
                 let context = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -159,15 +146,10 @@ pub async fn present(
                 match context {
                     Ok(()) => file = widened,
                     // Optional structural context never discards selected
-                    // evidence; the file keeps its test-body pass.
+                    // evidence.
                     Err(_) => reader.issue("local-call-context"),
                 }
-                let bodies = if test {
-                    test_candidates(&snapshot, &file)
-                } else {
-                    Vec::new()
-                };
-                Some((candidate, file, snapshot, test, bodies))
+                Some((candidate.path, file))
             })
             .collect::<Vec<_>>()
     })
@@ -176,38 +158,7 @@ pub async fn present(
         run.issue("local-call-context");
         return;
     };
-    let (mut inputs, mut offered) = (Vec::new(), Vec::new());
-    for (candidate, file, snapshot, test, bodies) in read {
-        files.insert(candidate.path.clone(), file);
-        if test {
-            inputs.push((candidate, snapshot));
-            offered.extend(bodies);
-        }
-    }
-    offered.sort_by(|a, b| walk::locale_cmp(&a.path, &b.path));
-    let Some(changes) = select_test_bodies(run, offered, &inputs, files).await else {
-        return;
-    };
-    if changes.is_empty() {
-        return;
-    }
-    // Apply only while every input is still the file the judge read.
-    let reader = run.clone();
-    let candidates: Vec<Candidate> = inputs.into_iter().map(|(c, _)| c).collect();
-    let current = tokio::task::spawn_blocking(move || {
-        candidates
-            .iter()
-            .all(|candidate| reader.unchanged(candidate).is_some())
-    })
-    .await
-    .unwrap_or(false);
-    if current {
-        for (path, excerpts) in changes {
-            if let Some(file) = files.get_mut(&path) {
-                file.excerpts = excerpts;
-            }
-        }
-    }
+    files.extend(read);
 }
 
 /// call-context.ts `localCallContext`: with whole-line shown source only,
@@ -281,171 +232,6 @@ fn local_call_context(snapshot: &Snapshot, file: &mut Selected, deadline: Instan
         .collect();
 }
 
-/// test-body-selection.ts's candidates: whole declarations of a parsed
-/// Python file lying inside both a whole-line selection and the shown
-/// source (which must not hold a partial excerpt).
-fn test_candidates(snapshot: &Snapshot, file: &Selected) -> Vec<TestCandidate> {
-    let shown = &file.excerpts;
-    if snapshot.source.len() > MAX_PARSE_BYTES || shown.iter().any(|e| e.partial.is_some()) {
-        return Vec::new();
-    }
-    let syntax = units::inspect(
-        &snapshot.path,
-        &snapshot.source,
-        SOURCE_UNIT_BYTES,
-        MAX_PARSE_BYTES,
-    );
-    if syntax.text {
-        return Vec::new();
-    }
-    let lines: Vec<&str> = snapshot.source.split('\n').collect();
-    syntax
-        .units
-        .into_iter()
-        .filter(|u| {
-            !u.partial
-                && !u.name.ends_with(".context")
-                && file
-                    .selected_lines
-                    .iter()
-                    .any(|r| r.start_line <= u.start_line && r.end_line >= u.end_line)
-                && shown.iter().any(|e| {
-                    e.line_from as usize <= u.start_line && e.line_to as usize >= u.end_line
-                })
-        })
-        .map(|u| TestCandidate {
-            path: snapshot.path.clone(),
-            source: lines[u.start_line - 1..u.end_line].join("\n"),
-            name: u.name,
-            start_line: u.start_line,
-            end_line: u.end_line,
-        })
-        .collect()
-}
-
-/// test-body-selection.ts `selectTestBodies`: ask about `offered` in
-/// batches of at most 32 candidates and 64 000 JSON bytes. `None` when a
-/// batch fails or no body is kept; otherwise each input file whose bodies
-/// the judge declined, with its shown source minus those lines (a line a
-/// kept body covers stays).
-async fn select_test_bodies(
-    run: &Arc<Run>,
-    offered: Vec<TestCandidate>,
-    inputs: &[(Candidate, Snapshot)],
-    files: &HashMap<String, Selected>,
-) -> Option<Vec<(String, Vec<Excerpt>)>> {
-    let mut groups: Vec<Vec<TestCandidate>> = Vec::new();
-    let (mut group, mut bytes) = (Vec::new(), 0);
-    for candidate in offered {
-        let size = walk::json_len(&candidate);
-        if !group.is_empty() && (group.len() >= TEST_BATCH || bytes + size > TEST_BATCH_BYTES) {
-            groups.push(std::mem::take(&mut group));
-            bytes = 0;
-        }
-        group.push(candidate);
-        bytes += size;
-    }
-    if !group.is_empty() {
-        groups.push(group);
-    }
-    let mut decisions: Vec<(TestCandidate, bool)> = Vec::new();
-    let mut index = 0;
-    while index < groups.len() {
-        if run.stopped() {
-            return None;
-        }
-        // An oversized batch of several candidates is halved (jevgrep has
-        // no split here, and no window cap).
-        let halve = |groups: &mut Vec<Vec<TestCandidate>>| {
-            let mut first = groups.remove(index);
-            let second = first.split_off(first.len().div_ceil(2));
-            groups.insert(index, second);
-            groups.insert(index, first);
-        };
-        let request = prompts::test_bodies(&run.query, &groups[index]);
-        let several = groups[index].len() > 1;
-        if prompts::request_bytes(&request) > run.window_cap {
-            if several {
-                halve(&mut groups);
-                continue;
-            }
-            run.issue("request-size");
-            return None;
-        }
-        let scores = match run.call(request).await {
-            Ok(scores) => scores,
-            Err(JudgeError::TooLarge) if several => {
-                halve(&mut groups);
-                continue;
-            }
-            Err(JudgeError::TooLarge) => {
-                run.issue("request-size");
-                return None;
-            }
-            Err(_) => return None, // recorded by `call`
-        };
-        let batch = std::mem::take(&mut groups[index]);
-        index += 1;
-        for (i, candidate) in batch.into_iter().enumerate() {
-            let keep = scores.get(&prompts::key("q", i)).is_some_and(|p| *p > KEEP);
-            decisions.push((candidate, keep));
-        }
-    }
-    // An uninformative all-negative optional pass keeps the presentation.
-    if !decisions.iter().any(|(_, keep)| *keep) {
-        return None;
-    }
-    let mut changes = Vec::new();
-    for (candidate, snapshot) in inputs {
-        let (kept, removed): (Vec<_>, Vec<_>) = decisions
-            .iter()
-            .filter(|(c, _)| c.path == candidate.path)
-            .partition(|(_, keep)| *keep);
-        if removed.is_empty() {
-            continue;
-        }
-        let covers = |bodies: &[&(TestCandidate, bool)], line: usize| {
-            bodies
-                .iter()
-                .any(|(c, _)| c.start_line <= line && line <= c.end_line)
-        };
-        let remove = |line: usize| covers(&removed, line) && !covers(&kept, line);
-        let lines: Vec<&str> = snapshot.source.split('\n').collect();
-        let excerpts = files[&candidate.path]
-            .excerpts
-            .iter()
-            .flat_map(|e| subtract(e.line_from as usize, e.line_to as usize, remove))
-            .map(|r| Excerpt {
-                line_from: r.start_line as u32,
-                line_to: r.end_line as u32,
-                text: lines[r.start_line - 1..r.end_line].join("\n"),
-                partial: None,
-            })
-            .filter(|e| !e.text.trim().is_empty())
-            .collect();
-        changes.push((candidate.path.clone(), excerpts));
-    }
-    Some(changes)
-}
-
-/// `[from, to]` without the lines `remove` names.
-fn subtract(from: usize, to: usize, remove: impl Fn(usize) -> bool) -> Vec<SourceRange> {
-    let (mut kept, mut start) = (Vec::new(), None);
-    for line in from..=to {
-        if remove(line) {
-            if let Some(start) = start.take() {
-                kept.push(range(start, line - 1));
-            }
-        } else if start.is_none() {
-            start = Some(line);
-        }
-    }
-    if let Some(start) = start {
-        kept.push(range(start, to));
-    }
-    kept
-}
-
 /// parser-helpers.mjs `walk`: every named node, depth-first preorder.
 fn preorder(root: Node<'_>) -> Vec<Node<'_>> {
     let (mut nodes, mut stack) = (Vec::new(), vec![root]);
@@ -470,70 +256,6 @@ fn wrapper(node: Node<'_>) -> Node<'_> {
     node.parent()
         .filter(|parent| parent.kind() == "decorated_definition")
         .unwrap_or(node)
-}
-
-/// parser-helpers.mjs `neighborhood` (source.ts `pythonNeighborhood`): for
-/// each method overlapping `ranges`, its class header (at most 40 lines,
-/// before the first member) and the adjacent sibling definitions of at
-/// most 40 lines. Additive only; empty when the source does not parse or
-/// `deadline` passes (the sibling scan is quadratic in a class's members;
-/// jevgrep's abort kills its parser process instead).
-pub fn neighborhood(source: &str, ranges: &[SourceRange], deadline: Instant) -> Vec<SourceRange> {
-    let Some(tree) = units::parse_python(source) else {
-        return Vec::new();
-    };
-    let mut extra = Vec::new();
-    for wrapped in preorder(tree.root_node()) {
-        if wrapped.kind() == "function_definition"
-            && wrapped
-                .parent()
-                .is_some_and(|p| p.kind() == "decorated_definition")
-        {
-            continue;
-        }
-        if py_definition(wrapped).map(|n| n.kind()) != Some("function_definition") {
-            continue;
-        }
-        let Some(owner) = wrapped
-            .parent()
-            .and_then(|block| block.parent())
-            .filter(|owner| owner.kind() == "class_definition")
-        else {
-            continue;
-        };
-        let r = py_range(wrapped);
-        if !ranges
-            .iter()
-            .any(|s| s.start_line <= r.end_line && s.end_line >= r.start_line)
-        {
-            continue;
-        }
-        if Instant::now() >= deadline {
-            return Vec::new();
-        }
-        let siblings: Vec<Node<'_>> = py_body(owner)
-            .into_iter()
-            .filter(|s| py_is_definition(*s))
-            .collect();
-        let start = py_start_line(wrapper(owner));
-        let end = siblings
-            .iter()
-            .map(|s| py_start_line(*s) - 1)
-            .fold(start + NEIGHBOUR_LINES - 1, usize::min);
-        if start <= end {
-            extra.push(range(start, end));
-        }
-        let Some(index) = siblings.iter().position(|s| s.id() == wrapped.id()) else {
-            continue;
-        };
-        for sibling in &siblings[index.saturating_sub(1)..siblings.len().min(index + 2)] {
-            let rr = py_range(*sibling);
-            if sibling.id() != wrapped.id() && rr.end_line < rr.start_line + NEIGHBOUR_LINES {
-                extra.push(rr);
-            }
-        }
-    }
-    extra
 }
 
 /// A class or function the query names (parser-helpers.mjs
@@ -1225,10 +947,6 @@ mod tests {
         Instant::now() + std::time::Duration::from_secs(60)
     }
 
-    fn lines(ranges: &[SourceRange]) -> Vec<(usize, usize)> {
-        ranges.iter().map(|r| (r.start_line, r.end_line)).collect()
-    }
-
     #[test]
     fn query_identifiers_are_unicode_words() {
         let tokens: Vec<&str> = IDENTIFIER
@@ -1331,26 +1049,6 @@ mod tests {
         assert_eq!(clip("aé", 2, false), "a");
         assert_eq!(clip("éa", 2, true), "a");
         assert_eq!(clip("abc", 5, false), "abc");
-    }
-
-    #[test]
-    fn a_selected_method_brings_its_class_header_and_short_neighbours() {
-        let long_body = "        x = 1\n".repeat(45);
-        let source = format!(
-            "class Box:\n    size = 1\n\n    def first(self):\n        return 1\n\n    def second(self):\n        return 2\n\n    @property\n    def third(self):\n        return 3\n\n    def long(self):\n{long_body}\n    def last(self):\n        return 5\n"
-        );
-        // second (7-8): header 1-3, first 4-5, the decorated third 10-12
-        assert_eq!(
-            lines(&neighborhood(&source, &[range(7, 8)], later())),
-            [(1, 3), (4, 5), (10, 12)]
-        );
-        // third: second, but not the 46-line `long`
-        assert_eq!(
-            lines(&neighborhood(&source, &[range(11, 12)], later())),
-            [(1, 3), (7, 8)]
-        );
-        assert!(neighborhood("def a():\n    pass\n", &[range(1, 2)], later()).is_empty());
-        assert!(neighborhood("def broken(:\n", &[range(1, 1)], later()).is_empty());
     }
 
     const HIERARCHY: &str = "class Base:
@@ -1472,15 +1170,5 @@ class Child(Left, External, Right):
         assert!(calls(HIERARCHY, &[range(21, 25)], past).is_empty());
         let bases = HashMap::from([("A".to_string(), vec!["B".to_string()])]);
         assert!(mro("A", &[], &bases, &mut HashMap::new(), past).is_none());
-        let source = "class Box:\n    def a(self):\n        return 1\n\n    def b(self):\n        return 2\n";
-        assert!(!neighborhood(source, &[range(2, 3)], later()).is_empty());
-        assert!(neighborhood(source, &[range(2, 3)], past).is_empty());
-    }
-
-    #[test]
-    fn subtract_splits_around_removed_lines() {
-        let removed = |line: usize| (3..=4).contains(&line) || line == 7;
-        assert_eq!(lines(&subtract(1, 8, removed)), [(1, 2), (5, 6), (8, 8)]);
-        assert!(subtract(3, 4, removed).is_empty());
     }
 }
