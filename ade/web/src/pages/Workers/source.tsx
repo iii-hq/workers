@@ -56,6 +56,18 @@ export function SourceTab(props: Props) {
       />
     </SettingsSection>
   )
+  if (props.declared.source === 'unknown')
+    return (
+      <Split
+        form={
+          <StatusPanel
+            variant="info"
+            headline="This source is not editable here"
+            detail={`${props.declared.name} is declared as ${props.declared.ref}, which is neither a registry package nor a local path. Edit it in the compose file.`}
+          />
+        }
+      />
+    )
   if (kind !== props.declared.source)
     return (
       <Split
