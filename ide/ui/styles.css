@@ -1676,6 +1676,13 @@
   .shui-wt-menu-note.warn { color: var(--color-warn); }
 
   /* timeline view */
+  /* the note under the timeline after a revert */
+  .shui-scm-note {
+    padding: 4px 12px;
+    font: 400 11.5px / 16px var(--font-sans);
+    color: var(--color-ink-faint);
+  }
+  .shui-scm-note.warn { color: var(--color-warn); }
   /* a long history: turns out of view skip layout and paint */
   .shui-timeline-turn { display: flex; flex-direction: column; flex: none; content-visibility: auto; contain-intrinsic-size: auto 120px; }
   .shui-timeline-turn-head {
