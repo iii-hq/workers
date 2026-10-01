@@ -87,8 +87,8 @@ function CloudWorkspace({ host, status, statusError, refreshStatus, narrow, pane
       {(!narrow || composing) && <PageMain className="wa-ui-reader">{composing ? <>
         <header className="wa-ui-detail-header wa-ui-compact-header">{narrow && <IconButton label="Back to Cloud conversations" onClick={leaveChat}><ArrowLeft size={16} /></IconButton>}<div className="wa-ui-heading-copy"><h3 className="wa-ui-title">{selected?.title || selected?.chat_id || 'New Cloud message'}</h3><p className="wa-ui-note wa-ui-identity">{selected ? selected.chat_id : 'Choose a recipient and message type.'}</p></div></header>
         <div className="wa-ui-cloud-reader-body">
-          {selected && <CloudMessages key={selected.chat_id} host={host} chat={selected} />}
-          <CloudComposer key={selected?.chat_id ?? 'new'} host={host} chat={selected} ready={ready} onDirty={onDirty} onSent={chats.refresh} />
+          {selected && <CloudMessages key={`messages:${selected.chat_id}`} host={host} chat={selected} />}
+          <CloudComposer key={`composer:${selected?.chat_id ?? 'new'}`} host={host} chat={selected} ready={ready} onDirty={onDirty} onSent={chats.refresh} />
         </div>
       </> : <EmptyState icon={Cloud} title="Cloud API conversations" description="Select a conversation or write a new message from your business number." action={{ label: 'New message', onClick: () => openChat(null) }} />}</PageMain>}
     </PageBody>
