@@ -54,10 +54,10 @@ export function MessageBrowser({ host, sessionId, connected, narrow, panelSide, 
   }
 
   return <PageBody side={panelSide} className="wa-ui-browser">
-    {(!narrow || !selected) && <PageSidebar label="Conversations" side={panelSide} narrow={narrow} defaultWidth={300} minWidth={220} maxWidth={360} header="Conversations">
+    {(!narrow || !selected) && <PageSidebar label="Conversations" side={panelSide} narrow={narrow} defaultWidth={320} minWidth={240} maxWidth={400} header={<div className="wa-ui-sidebar-heading"><span>Conversations</span><div className="wa-ui-header-actions"><IconButton label={newChat ? 'Close new conversation' : 'New conversation'} aria-expanded={newChat} onClick={() => setNewChat((value) => !value)}><MessageSquarePlus size={16} /></IconButton><IconButton label="Refresh conversations" onClick={list.refresh} disabled={list.loading}><RefreshCw size={16} /></IconButton></div></div>}>
       <div className="wa-ui-list-tools">
         <SearchField aria-label="Search conversations" placeholder="Search conversations" value={query} onChange={setQuery} />
-        <div className="wa-ui-list-actions"><span className="wa-ui-note">{list.items.length.toLocaleString('en-US')} {list.items.length === 1 ? 'conversation' : 'conversations'}</span><IconButton label={newChat ? 'Close new conversation' : 'New conversation'} aria-expanded={newChat} onClick={() => setNewChat((value) => !value)}><MessageSquarePlus size={16} /></IconButton><IconButton label="Refresh conversations" onClick={list.refresh} disabled={list.loading}><RefreshCw size={16} /></IconButton></div>
+        <span className="wa-ui-note">{list.items.length.toLocaleString('en-US')} {list.items.length === 1 ? 'conversation' : 'conversations'}</span>
         {newChat && <form onSubmit={openRecipient} className="wa-ui-stack">
           <Input autoFocus aria-label="New conversation recipient" value={recipient} onChange={(value) => { setRecipient(value); setRecipientError(null) }} placeholder="Phone number or JID" autoComplete="off" />
           {recipientError && <StatusPanel variant="alert" headline={recipientError} />}
@@ -68,9 +68,8 @@ export function MessageBrowser({ host, sessionId, connected, narrow, panelSide, 
       <div className="wa-ui-list">
         {list.loading ? <><Skeleton className="wa-ui-loading" /><Skeleton className="wa-ui-loading" /></> : list.items.length === 0 ? <EmptyState compact icon={MessageCircle} title={query ? 'No conversations found' : 'No conversations yet'} description={query ? 'Try another name or identifier.' : 'Received messages and available WhatsApp history will appear here.'} /> : <List aria-label="Available conversations">{list.items.map((chat) => <ListItem key={chat.chat_id} className="wa-ui-chat-item" selected={selected?.chat_id === chat.chat_id}
           leading={<ChatIdentity chat={chat} />}
-          label={<span className="wa-ui-chat-title">{chat.title || identityLabel(chat.chat_id)}</span>}
+          label={<span className="wa-ui-chat-heading"><span className="wa-ui-chat-title" title={chat.title || identityLabel(chat.chat_id)}>{chat.title || identityLabel(chat.chat_id)}</span>{chat.last_message && <time className="wa-ui-chat-meta" dateTime={new Date(chat.last_message.timestamp_ms).toISOString()} title={new Date(chat.last_message.timestamp_ms).toLocaleString('en-US')}>{formatRelative(chat.last_message.timestamp_ms)}</time>}</span>}
           description={<span className="wa-ui-preview">{chat.last_message ? `${chat.last_message.from_me ? 'You: ' : ''}${messageLabel(chat.last_message)}` : 'No message preview'}</span>}
-          trailing={chat.last_message ? <span className="wa-ui-chat-meta"><time dateTime={new Date(chat.last_message.timestamp_ms).toISOString()} title={new Date(chat.last_message.timestamp_ms).toLocaleString('en-US')}>{formatRelative(chat.last_message.timestamp_ms)}</time></span> : undefined}
           onClick={() => onSelect(chat)} />)}</List>}
         {list.nextCursor && <div className="wa-ui-list-tools"><Button variant="ghost" onClick={list.more} disabled={list.loadingMore}>{list.loadingMore ? 'Loading…' : 'Load more conversations'}</Button></div>}
       </div>
@@ -121,7 +120,21 @@ function MessageReader({ host, sessionId, chat, connected, narrow, onBack, onDir
   const scroll = useRef<HTMLDivElement>(null)
   const followLatest = useRef(true)
   const olderAnchor = useRef<{ height: number; top: number } | null>(null)
+  const readingAnchor = useRef<{ element: HTMLElement; offset: number } | null>(null)
+  const readerSize = useRef<{ width: number; height: number } | null>(null)
   const instance = useId()
+
+  const rememberPosition = () => {
+    const node = scroll.current
+    if (!node) return
+    const size = readerSize.current
+    // A resize can dispatch scroll before its observer restores the reading anchor.
+    if (size && (size.width !== node.clientWidth || size.height !== node.clientHeight)) return
+    followLatest.current = node.scrollHeight - node.scrollTop - node.clientHeight < 96
+    const top = node.getBoundingClientRect().top
+    const first = !followLatest.current && Array.from(node.querySelectorAll<HTMLElement>('.wa-ui-message-entry')).find((entry) => entry.getBoundingClientRect().bottom > top)
+    readingAnchor.current = first ? { element: first, offset: first.getBoundingClientRect().top - top } : null
+  }
 
   useEffect(() => () => { scope.current.invalidate(); historyScope.current.invalidate() }, [])
   useEffect(() => { onDirty(!!draft.trim() || sending); return () => onDirty(false) }, [draft, sending, onDirty])
@@ -132,7 +145,26 @@ function MessageReader({ host, sessionId, chat, connected, narrow, onBack, onDir
       node.scrollTop = olderAnchor.current.top + node.scrollHeight - olderAnchor.current.height
       olderAnchor.current = null
     } else if (followLatest.current) node.scrollTop = node.scrollHeight
+    else {
+      const anchor = readingAnchor.current
+      if (anchor && node.contains(anchor.element)) node.scrollTop += anchor.element.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.offset
+    }
   }, [archive.items])
+  useEffect(() => {
+    const node = scroll.current
+    if (!node) return
+    const resize = new ResizeObserver(() => {
+      readerSize.current = { width: node.clientWidth, height: node.clientHeight }
+      if (olderAnchor.current) return
+      if (followLatest.current) node.scrollTop = node.scrollHeight
+      else {
+        const anchor = readingAnchor.current
+        if (anchor && node.contains(anchor.element)) node.scrollTop += anchor.element.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.offset
+      }
+    })
+    resize.observe(node)
+    return () => resize.disconnect()
+  }, [])
 
   const send = async () => {
     if (!connected || sendBusy.current || historyBusy.current) return
@@ -179,7 +211,7 @@ function MessageReader({ host, sessionId, chat, connected, narrow, onBack, onDir
     <header className="wa-ui-detail-header wa-ui-compact-header">
       {narrow && <IconButton label="Back to conversations" onClick={onBack}><ArrowLeft size={16} /></IconButton>}
       <ChatIdentity chat={chat} header />
-      <div className="wa-ui-heading-copy"><h2 className="wa-ui-title">{chat.title || identityLabel(chat.chat_id)}</h2><span className="wa-ui-note wa-ui-identity" title={chat.chat_id}>{chat.is_group ? 'Group · ' : ''}{identityLabel(chat.chat_id)}</span></div>
+      <div className="wa-ui-heading-copy"><h2 className="wa-ui-title" title={chat.title || identityLabel(chat.chat_id)}>{chat.title || identityLabel(chat.chat_id)}</h2><span className="wa-ui-note wa-ui-identity" title={chat.chat_id}>{chat.is_group ? 'Group · ' : ''}{identityLabel(chat.chat_id)}</span></div>
       <div className="wa-ui-header-actions">
         <IconButton label="Refresh messages" onClick={archive.refresh} disabled={archive.loading}><RefreshCw size={16} /></IconButton>
         <IconButton label={requesting ? 'Requesting older messages' : 'Request older messages'} tooltip={!connected ? 'Connect this account to request older messages.' : archive.items.length === 0 ? 'A stored message is needed before requesting older history.' : 'Request up to 50 older messages from your phone.'} onClick={() => void requestHistory()} disabled={!connected || requesting || sending || archive.items.length === 0} aria-busy={requesting}><History size={16} /></IconButton>
@@ -188,10 +220,10 @@ function MessageReader({ host, sessionId, chat, connected, narrow, onBack, onDir
     {archive.error && <div className="wa-ui-reader-notice"><StatusPanel variant="alert" headline="Could not refresh messages" detail={archive.error} action={<Button variant="ghost" onClick={archive.refresh}>Try again</Button>} /></div>}
     {historyError && <div className="wa-ui-reader-notice"><StatusPanel variant="alert" headline="Could not request history" detail={historyError} action={<Button variant="ghost" onClick={() => setHistoryError(null)}>Dismiss</Button>} /></div>}
     {historyNotice && <div className="wa-ui-reader-notice"><StatusPanel variant="info" headline="History requested" detail={historyNotice} action={<Button variant="ghost" onClick={() => setHistoryNotice(null)}>Dismiss</Button>} /></div>}
-    <div ref={scroll} className="wa-ui-messages" onScroll={() => { const node = scroll.current; if (node) followLatest.current = node.scrollHeight - node.scrollTop - node.clientHeight < 96 }}>
+    <div ref={scroll} className="wa-ui-messages" onScroll={rememberPosition}>
       {archive.loading ? <><Skeleton className="wa-ui-loading" /><Skeleton className="wa-ui-loading" /></> : archive.items.length === 0 ? <EmptyState compact icon={MessageCircle} title="No messages stored yet" description="Messages captured here and received WhatsApp history will appear in this conversation." /> : <>
         {archive.nextCursor && <div className="wa-ui-load-older"><Button variant="ghost" onClick={older} disabled={archive.loadingMore}>{archive.loadingMore ? 'Loading…' : 'Load older messages'}</Button></div>}
-        <div role="log" aria-label={`Messages in ${chat.title || identityLabel(chat.chat_id)}`} aria-live="off">{archive.items.map((message, index) => <div key={messageKey(message)} className="wa-ui-message-entry">
+        <div className="wa-ui-message-thread" role="log" aria-label={`Messages in ${chat.title || identityLabel(chat.chat_id)}`} aria-live="off">{archive.items.map((message, index) => <div key={messageKey(message)} className="wa-ui-message-entry">
           {(index === 0 || dateLabel(archive.items[index - 1].timestamp_ms) !== dateLabel(message.timestamp_ms)) && <div className="wa-ui-message-date">{dateLabel(message.timestamp_ms)}</div>}
           <MessageRow message={message} group={chat.is_group} />
         </div>)}</div>
@@ -201,9 +233,13 @@ function MessageReader({ host, sessionId, chat, connected, narrow, onBack, onDir
     <section className="wa-ui-composer" aria-label="Write a message">
       {!connected && <div className="wa-ui-inline-status" data-tone="warn" role="status"><WifiOff size={16} aria-hidden="true" /><span>Offline · stored messages are available</span><Button variant="ghost" onClick={onGoConnection}>Connect</Button></div>}
       {sendError && <StatusPanel variant="alert" headline="Message not confirmed" detail={sendError} action={<Button variant="ghost" onClick={() => setSendError(null)}>Dismiss</Button>} />}
-      <label htmlFor={`${instance}-composer`} className="wa-ui-composer-label">Message</label>
-      <CodeEditor id={`${instance}-composer`} language="plaintext" value={draft} onChange={(value) => { setDraft(value); setSendError(null); setSent(null) }} disabled={sending} aria-label={`Message to ${chat.title || identityLabel(chat.chat_id)}`} className="wa-ui-compose-editor" placeholder="Write a message…" />
-      <div className="wa-ui-composer-actions"><span className="wa-ui-note">{sent ? 'Submitted. Delivery updates in the conversation.' : 'Text message'}</span><Button onClick={() => void send()} disabled={!connected || sending || requesting || !draft.trim()}><Send size={16} aria-hidden="true" />{sending ? 'Sending…' : 'Send'}</Button></div>
+      <div className="wa-ui-composer-surface">
+        <div className="wa-ui-composer-heading"><label htmlFor={`${instance}-composer`} className="wa-ui-composer-label">Message</label><span className="wa-ui-note">{sent ? 'Submitted. Delivery updates in the conversation.' : 'Text message'}</span></div>
+        <div className="wa-ui-composer-input">
+          <CodeEditor id={`${instance}-composer`} language="plaintext" value={draft} onChange={(value) => { setDraft(value); setSendError(null); setSent(null) }} disabled={sending} aria-label={`Message to ${chat.title || identityLabel(chat.chat_id)}`} className="wa-ui-compose-editor" placeholder="Write a message…" />
+          <Button onClick={() => void send()} disabled={!connected || sending || requesting || !draft.trim()}><Send size={16} aria-hidden="true" />{sending ? 'Sending…' : 'Send'}</Button>
+        </div>
+      </div>
     </section>
     <LiveRegion announcement={announcement} />
   </>

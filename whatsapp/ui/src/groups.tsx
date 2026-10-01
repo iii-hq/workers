@@ -153,10 +153,10 @@ export function GroupBrowser({ host, sessionId, connected, narrow, panelSide, on
   const disconnected = <div className="wa-ui-inline-status" data-tone="warn" role="status"><WifiOff size={16} aria-hidden="true" /><span>{groups ? 'Offline · showing saved group details' : 'Connect this account in Connection to browse groups.'}</span></div>
 
   return <PageBody side={panelSide} className="wa-ui-browser">
-    {(!narrow || !selected) && <PageSidebar label="WhatsApp groups" header="Groups" side={panelSide} narrow={narrow} defaultWidth={300} minWidth={220} maxWidth={360}>
+    {(!narrow || !selected) && <PageSidebar label="WhatsApp groups" header={<div className="wa-ui-sidebar-heading"><span>Groups</span><IconButton label={listLoading ? 'Refreshing groups' : 'Refresh groups'} onClick={() => void refreshGroups()} disabled={!connected || listLoading}><RefreshCw size={16} /></IconButton></div>} side={panelSide} narrow={narrow} defaultWidth={320} minWidth={240} maxWidth={400}>
       <div className="wa-ui-list-tools">
         <SearchField aria-label="Search groups by name or identifier" value={search} onChange={setSearch} placeholder="Search groups" />
-        <div className="wa-ui-list-actions"><span className="wa-ui-note">{groups ? `${visibleGroups.length.toLocaleString('en-US')} ${visibleGroups.length === 1 ? 'group' : 'groups'}` : 'Your account’s groups'}</span><IconButton label={listLoading ? 'Refreshing groups' : 'Refresh groups'} onClick={() => void refreshGroups()} disabled={!connected || listLoading}><RefreshCw size={16} /></IconButton></div>
+        <span className="wa-ui-note">{groups ? `${visibleGroups.length.toLocaleString('en-US')} ${visibleGroups.length === 1 ? 'group' : 'groups'}` : 'Your account’s groups'}</span>
         {!connected && !selected && disconnected}
         {listError && <StatusPanel variant="alert" headline="Could not refresh groups" detail={listError} action={<Button variant="ghost" onClick={() => void refreshGroups()} disabled={!connected || listLoading}>Try again</Button>} />}
       </div>
@@ -179,7 +179,7 @@ export function GroupBrowser({ host, sessionId, connected, narrow, panelSide, on
           </div>
           <div className="wa-ui-header-actions">
             <IconButton label="Refresh group details" onClick={() => void refreshDetail()} disabled={!connected || detailLoading}><RefreshCw size={16} /></IconButton>
-            {narrow ? <IconButton label="Open group messages" onClick={() => onOpenMessages({ chat_id: selected, title: group ? groupName(group) : selected, is_group: true })}><MessageCircle size={16} /></IconButton> : <Button variant="ghost" onClick={() => onOpenMessages({ chat_id: selected, title: group ? groupName(group) : selected, is_group: true })}><MessageCircle size={16} aria-hidden="true" />Messages</Button>}
+            {narrow ? <IconButton label="Open group messages" onClick={() => onOpenMessages({ chat_id: selected, title: group ? groupName(group) : selected, is_group: true })}><MessageCircle size={16} /></IconButton> : <Button onClick={() => onOpenMessages({ chat_id: selected, title: group ? groupName(group) : selected, is_group: true })}><MessageCircle size={16} aria-hidden="true" />Messages</Button>}
           </div>
         </header>
         <div className="wa-ui-detail-body" aria-busy={detailLoading}>
@@ -202,7 +202,7 @@ export function GroupBrowser({ host, sessionId, connected, narrow, panelSide, on
                   const name = participant.username?.trim()
                   const identity = participantIdentity(participant)
                   const administrator = participant.participant_type === 'admin' || participant.participant_type === 'superadmin'
-                  return <ListItem as="div" role="listitem" key={participant.jid} leading={<span className="wa-ui-avatar" aria-hidden="true">{name ? Array.from(name).slice(0, 1).join('').toLocaleUpperCase('en-US') : <UserRound size={16} />}</span>} label={<span title={participant.jid}>{name || identity}</span>} description={name || administrator ? <span className="wa-ui-participant-meta">{name && name !== identity && <span className="wa-ui-mono">{identity}</span>}{administrator && <Badge>{participantRole(participant)}</Badge>}</span> : undefined} />
+                  return <ListItem as="div" role="listitem" key={participant.jid} className="wa-ui-member-item" leading={<span className="wa-ui-avatar" aria-hidden="true">{name ? Array.from(name).slice(0, 1).join('').toLocaleUpperCase('en-US') : <UserRound size={16} />}</span>} label={<span className="wa-ui-chat-title" title={participant.jid}>{name || identity}</span>} description={name && name !== identity ? <span className="wa-ui-participant-meta wa-ui-mono" title={identity}>{identity}</span> : undefined} trailing={administrator ? <Badge>{participantRole(participant)}</Badge> : undefined} />
                 })}</List> : <EmptyState compact title={peopleQuery ? 'No members found' : 'Member list unavailable'} description={peopleQuery ? 'Try another name, phone number or identifier.' : 'WhatsApp did not return members for this group.'} />}
               </div>
             </details>
