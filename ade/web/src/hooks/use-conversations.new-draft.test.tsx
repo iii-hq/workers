@@ -82,6 +82,15 @@ describe('the new chat across a browser restart', () => {
     expect(api.getDraftText(draft.id)).toBe('half a thought')
   })
 
+  it('forgets the text of a new chat that was removed', async () => {
+    await boot()
+    const { id } = newChat()
+    await act(async () => api.setDraftText(id, 'never mind'))
+    await act(async () => api.remove(id))
+    await boot()
+    expect(api.getDraftText(newChat().id)).toBeUndefined()
+  })
+
   it('starts empty once what was typed was sent', async () => {
     await boot()
     const { id } = newChat()

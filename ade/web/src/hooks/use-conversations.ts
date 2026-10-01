@@ -2716,6 +2716,14 @@ export function useConversations(
   const remove = useCallback(
     async (id: string, options?: DeleteSessionTreeOptions): Promise<void> => {
       const conv = conversationsRef.current.find((c) => c.id === id)
+      // A removed new chat takes its saved text with it, never another's.
+      if (
+        conv?.draft &&
+        (draftTextsRef.current.get(id) ?? conv.draftText ?? '') ===
+          loadNewChatDraft()
+      ) {
+        saveNewChatDraft('')
+      }
       // Unknown ids must still reach the idempotent backend: session::deleted
       // can arrive while the dialog is open or before a failed wait is retried.
       const deletedIds = new Set(
