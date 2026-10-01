@@ -38,7 +38,10 @@ pub struct ResolvedSource {
     pub root: PathBuf,
 }
 
-/// When each `(clone dir, ref)` last synced. Holding the lock also
+/// When each `(clone dir, ref)` last synced. A clone dir holds one ref at a
+/// time, so only the ref it currently holds keeps a stamp: every clone or
+/// fetch drops the clone's other refs, and switching the ref back forces a
+/// fetch instead of serving another ref's tree. Holding the lock also
 /// serialises every clone and refresh.
 // ponytail: one global lock; per-clone locks only if several sources ever
 // share one worker.
@@ -106,6 +109,7 @@ async fn from_git(cfg: &TemplatesConfig, refresh: bool) -> Result<ResolvedSource
                 cfg.url, cfg.git_ref
             ))
         })?;
+        synced.retain(|(d, _), _| d != &clone);
         synced.insert(key, Instant::now());
     } else if refresh
         || synced
@@ -114,6 +118,7 @@ async fn from_git(cfg: &TemplatesConfig, refresh: bool) -> Result<ResolvedSource
     {
         match fetch(cfg, &clone).await {
             Ok(()) => {
+                synced.retain(|(d, _), _| d != &clone);
                 synced.insert(key, Instant::now());
             }
             Err(e) => {

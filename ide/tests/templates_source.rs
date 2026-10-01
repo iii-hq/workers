@@ -124,6 +124,45 @@ async fn clones_then_reuses_the_cache_until_a_refresh() {
 }
 
 #[tokio::test]
+async fn switching_the_ref_and_back_never_serves_the_other_branch() {
+    // One clone dir serves every ref, so a freshness stamp left over from
+    // `main` must not let `main` skip the fetch after `dev` replaced the tree.
+    let remote = Remote::new();
+    let cache = tempfile::tempdir().unwrap();
+    let main_sha = git(&remote.work, &["rev-parse", "HEAD"]);
+    git(&remote.work, &["checkout", "-q", "-b", "dev"]);
+    std::fs::write(
+        remote.work.join("iii/template.yaml"),
+        "# dev\ntemplates: []\n",
+    )
+    .unwrap();
+    git(&remote.work, &["add", "-A"]);
+    git(&remote.work, &["commit", "-q", "-m", "dev"]);
+    git(&remote.work, &["push", "-q", remote.url().as_str(), "dev"]);
+    let dev_sha = git(&remote.work, &["rev-parse", "HEAD"]);
+
+    for (git_ref, sha, tag) in [
+        ("main", &main_sha, "one"),
+        ("dev", &dev_sha, "dev"),
+        ("main", &main_sha, "one"),
+    ] {
+        let cfg = TemplatesConfig {
+            git_ref: git_ref.into(),
+            ..remote.cfg(cache.path())
+        };
+        let got = resolve_source(&cfg, false).await.unwrap();
+        assert_eq!(got.info.git_ref.as_deref(), Some(git_ref));
+        assert_eq!(
+            got.info.revision.as_deref(),
+            Some(sha.as_str()),
+            "{git_ref}"
+        );
+        let manifest = std::fs::read_to_string(got.root.join("template.yaml")).unwrap();
+        assert!(manifest.contains(tag), "{git_ref}: {manifest}");
+    }
+}
+
+#[tokio::test]
 async fn unreachable_remote_serves_the_stale_cache_with_a_warning() {
     let remote = Remote::new();
     let cache = tempfile::tempdir().unwrap();
