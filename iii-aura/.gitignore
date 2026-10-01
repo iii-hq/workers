@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+*.profraw
+
+# Node
+node_modules/
+dist/
+
+# Environment / secrets
+.env
+.env.*
+
+# Lock files
+uv.lock
+pnpm-lock.yaml
+package-lock.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# iii engine data
+data/
