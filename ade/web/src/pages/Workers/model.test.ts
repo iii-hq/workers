@@ -7,10 +7,12 @@ import {
   entryYaml,
   groupContainers,
   MASK,
+  parseLogLine,
   settingsPatch,
   shortPath,
   startWaves,
   usualParent,
+  waveLabel,
 } from './model'
 import type { WorkerRow } from './types'
 
@@ -254,5 +256,46 @@ describe('entryYaml', () => {
     })
     expect(yaml).toContain('version: "1.0"')
     expect(yaml).toContain('PORT: "3113"')
+  })
+})
+
+describe('parseLogLine', () => {
+  it('splits a tracing line into local time, level, target and text', () => {
+    const parts = parseLogLine(
+      '2026-10-01T00:22:53.685636Z  INFO llm_router::triggers: trigger subscription registered',
+    )
+    const local = new Date('2026-10-01T00:22:53.685Z')
+    expect(parts).toMatchObject({
+      level: 'INFO',
+      target: 'llm_router::triggers',
+      text: 'trigger subscription registered',
+      stamp: '2026-10-01T00:22:53.685636Z',
+    })
+    expect(parts?.time).toBe(
+      `${String(local.getHours()).padStart(2, '0')}:${String(local.getMinutes()).padStart(2, '0')}:53.685`,
+    )
+  })
+
+  it('leaves anything else raw', () => {
+    expect(parseLogLine('compiling queue v0.1.0')).toBeNull()
+    expect(
+      parseLogLine('\u001b[2m2026-10-01T00:22:53Z\u001b[0m INFO a: b'),
+    ).toBeNull()
+  })
+})
+
+describe('waveLabel', () => {
+  const decl = (name: string, start_after: string[] = []) =>
+    ({ name, start_after }) as unknown as DeclaredContainer
+  const all = [
+    decl('state'),
+    decl('router', ['state']),
+    decl('canvas', ['state']),
+    decl('harness', ['router', 'state', 'gone']),
+  ]
+
+  it('names a single dependency and counts several', () => {
+    expect(waveLabel(['router', 'canvas'], all)).toBe('After state')
+    expect(waveLabel(['harness'], all)).toBe('After 2 containers')
   })
 })

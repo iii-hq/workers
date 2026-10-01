@@ -43,6 +43,7 @@ import {
   dependentsOf,
   draftFrom,
   isRunning,
+  parseLogLine,
   type SettingsDraft,
   settingsPatch,
   shortPath,
@@ -159,7 +160,13 @@ export function ContainerView({
 
   const dependencyPills = (names: string[]) =>
     names.map((dep) => (
-      <Button key={dep} variant="pill" size="sm" onClick={() => onSelect(dep)}>
+      <Button
+        key={dep}
+        variant="pill"
+        size="sm"
+        className="h-7 px-[11px] text-[12px]"
+        onClick={() => onSelect(dep)}
+      >
         <StatusDot
           tone={toneFor(state.get(dep) ?? 'stopped').dot}
           aria-label={state.get(dep) ?? 'not running'}
@@ -192,6 +199,15 @@ export function ContainerView({
           </div>
         </div>
         <div className="wk-actions">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={actions.busy}
+            onClick={() => void lifecycle('restart')}
+          >
+            <RotateCw />
+            Restart
+          </Button>
           {running ? (
             <Button
               variant="ghost"
@@ -213,15 +229,6 @@ export function ContainerView({
               Start
             </Button>
           )}
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={actions.busy}
-            onClick={() => void lifecycle('restart')}
-          >
-            <RotateCw />
-            Restart
-          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <IconButton label={`More actions for ${name}`} variant="ghost">
@@ -262,7 +269,13 @@ export function ContainerView({
         />
       ) : null}
 
-      <dl className="wk-relations">
+      <dl
+        className={
+          after.length || neededBy.length
+            ? 'wk-relations'
+            : 'wk-relations wk-relations-inline'
+        }
+      >
         <Eyebrow as="dt">Starts after</Eyebrow>
         <dd className="wk-pills">
           {after.length ? (
@@ -311,6 +324,8 @@ export function ContainerView({
               api={api}
               actions={actions}
               declared={declared}
+              neededBy={neededBy}
+              total={all.length}
               onOpenSettings={() => setTab('settings')}
             />
           ) : (
@@ -435,11 +450,13 @@ function LogTab({
             <Button
               variant="ghost"
               size="sm"
+              className="wk-follow"
               aria-pressed={follow}
+              aria-label="Follow the log"
               onClick={() => setFollow((on) => !on)}
             >
               <ArrowDownToLine />
-              Follow
+              <span className="wk-follow-label">Follow</span>
             </Button>
             <IconButton
               label="Copy log"
@@ -493,11 +510,31 @@ function LogTab({
           aria-label={`${name} log`}
           aria-busy={!lines}
         >
-          {visible.map((line) => (
-            <div key={line.id} data-stream={line.stream}>
-              <AnsiText text={line.message.replace(/\n$/, '')} />
-            </div>
-          ))}
+          {visible.map((line) => {
+            const text = line.message.replace(/\n$/, '')
+            const parts = parseLogLine(text)
+            return parts ? (
+              <div key={line.id}>
+                <span className="wk-log-time" title={parts.stamp}>
+                  {parts.time}
+                </span>
+                {'  '}
+                <span className="wk-log-level" data-level={parts.level}>
+                  {parts.level.padEnd(5)}
+                </span>
+                {'  '}
+                <span className="wk-log-target">
+                  {parts.target}
+                  {'  '}
+                </span>
+                {parts.text}
+              </div>
+            ) : (
+              <div key={line.id} data-stream={line.stream}>
+                <AnsiText text={text} />
+              </div>
+            )
+          })}
         </pre>
       )}
       <StatusBar end={follow ? 'following' : 'paused'}>

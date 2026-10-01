@@ -1,7 +1,7 @@
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useDebounce } from '@iii-dev/console-ui/hooks'
 import { Folder, Package } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import {
   Dialog,
@@ -35,6 +35,7 @@ export function AddWorkerDialog({
   api,
   actions,
   project,
+  engine,
   onAdded,
 }: {
   open: boolean
@@ -42,6 +43,8 @@ export function AddWorkerDialog({
   api: ComposeApi
   actions: Actions
   project: Project | null
+  /** Workers the engine itself provides, such as configuration. */
+  engine: ReadonlySet<string>
   onAdded: (name: string) => void
 }) {
   const [mode, setMode] = useState<Mode>('registry')
@@ -96,12 +99,18 @@ export function AddWorkerDialog({
             ]}
           />
           {open && mode === 'registry' ? (
-            <RegistryPick api={api} declared={declared} onPlan={setPlan} />
+            <RegistryPick
+              api={api}
+              declared={declared}
+              engine={engine}
+              onPlan={setPlan}
+            />
           ) : null}
           {open && mode === 'path' ? (
             <PathPick
               api={api}
               declared={declared}
+              engine={engine}
               start={localRoot}
               onPlan={setPlan}
             />
@@ -132,30 +141,34 @@ type Plan = {
   summary: string
 } | null
 
+/** A worker's dependencies, split by where each one comes from. */
 function Dependencies({
   deps,
   declared,
+  engine,
+  keptLabel = 'Already here',
 }: {
-  deps: string[]
+  deps: readonly string[]
   declared: Set<string>
+  engine: ReadonlySet<string>
+  keptLabel?: string
 }) {
-  const kept = deps.filter((d) => declared.has(d))
-  const other = deps.filter((d) => !declared.has(d))
+  const rows: [string, string[]][] = [
+    [keptLabel, deps.filter((d) => declared.has(d))],
+    ['From the engine', deps.filter((d) => !declared.has(d) && engine.has(d))],
+    ['Not declared', deps.filter((d) => !declared.has(d) && !engine.has(d))],
+  ]
   if (!deps.length) return null
   return (
     <CardHighlight className="wk-deps">
-      {kept.length ? (
-        <>
-          <Eyebrow as="span">Already here</Eyebrow>
-          <span className="wk-mono">{kept.join(', ')}</span>
-        </>
-      ) : null}
-      {other.length ? (
-        <>
-          <Eyebrow as="span">Not declared</Eyebrow>
-          <span className="wk-mono">{other.join(', ')}</span>
-        </>
-      ) : null}
+      {rows.map(([label, names]) =>
+        names.length ? (
+          <Fragment key={label}>
+            <Eyebrow as="span">{label}</Eyebrow>
+            <span className="wk-mono">{names.join(', ')}</span>
+          </Fragment>
+        ) : null,
+      )}
     </CardHighlight>
   )
 }
@@ -163,10 +176,12 @@ function Dependencies({
 function RegistryPick({
   api,
   declared,
+  engine,
   onPlan,
 }: {
   api: ComposeApi
   declared: Set<string>
+  engine: ReadonlySet<string>
   onPlan: (plan: Plan) => void
 }) {
   const [query, setQuery] = useState('')
@@ -212,7 +227,9 @@ function RegistryPick({
 
   useEffect(() => {
     if (!pick || declared.has(pick.name)) return onPlan(null)
-    const missing = pick.dependencies.filter((d) => !declared.has(d))
+    const missing = pick.dependencies.filter(
+      (d) => !declared.has(d) && !engine.has(d),
+    )
     onPlan({
       name: pick.name,
       input: version ? `${pick.name}@${version}` : pick.name,
@@ -220,7 +237,7 @@ function RegistryPick({
         ? `Compose resolves ${missing.join(', ')} from the registry or the engine.`
         : '',
     })
-  }, [pick, version, declared, onPlan])
+  }, [pick, version, declared, engine, onPlan])
 
   return (
     <>
@@ -283,7 +300,11 @@ function RegistryPick({
               )}
             />
           </div>
-          <Dependencies deps={pick.dependencies} declared={declared} />
+          <Dependencies
+            deps={pick.dependencies}
+            declared={declared}
+            engine={engine}
+          />
         </>
       ) : null}
     </>
@@ -293,11 +314,13 @@ function RegistryPick({
 function PathPick({
   api,
   declared,
+  engine,
   start,
   onPlan,
 }: {
   api: ComposeApi
   declared: Set<string>
+  engine: ReadonlySet<string>
   start: string
   onPlan: (plan: Plan) => void
 }) {
@@ -320,8 +343,10 @@ function PathPick({
 
   const name = found?.manifest ? basename(found.path) : null
   const taken = name ? declared.has(name) : false
-  const kept =
-    found?.manifest?.dependencies.filter((d) => declared.has(d)) ?? []
+  const missing =
+    found?.manifest?.dependencies.filter(
+      (d) => !declared.has(d) && !engine.has(d),
+    ) ?? []
 
   useEffect(() => {
     const deps =
@@ -402,13 +427,19 @@ function PathPick({
             <StatusPanel
               variant="success"
               headline={`iii.worker.yaml found: ${found.manifest.name}${found.manifest.language ? `, ${found.manifest.language}` : ''}`}
-              detail={`The container is named ${name}, after the directory.${kept.length ? ` It starts after ${kept.join(', ')}.` : ''}`}
+              detail={`The container is named ${name}, after the directory.`}
             />
-            {found.manifest.dependencies.some((d) => !declared.has(d)) ? (
+            <Dependencies
+              deps={found.manifest.dependencies}
+              declared={declared}
+              engine={engine}
+              keptLabel="Starts after"
+            />
+            {missing.length ? (
               <StatusPanel
                 variant="warn"
                 headline="Compose does not resolve a local worker's dependencies"
-                detail={`Not in this project: ${found.manifest.dependencies.filter((d) => !declared.has(d)).join(', ')}. Add them first unless the engine provides them.`}
+                detail={`Not in this project: ${missing.join(', ')}. Add them first.`}
               />
             ) : null}
           </>

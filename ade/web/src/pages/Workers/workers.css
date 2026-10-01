@@ -58,7 +58,31 @@
   height: 100%;
   min-height: 0;
   padding: 8px;
+}
+
+/* The filter stays put; the list scrolls under it. */
+.wk-side > .iii-ui-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 2px;
   overflow-y: auto;
+}
+
+/* Two-line rows as dense as the design: name over detail in about 46px. */
+.wk-side .iii-ui-list-group {
+  gap: 2px;
+}
+
+.wk-side .iii-ui-list-item {
+  padding-block: 6px;
+}
+
+.wk-side .iii-ui-list-item__title {
+  line-height: 18px;
+}
+
+.wk-side .iii-ui-list-item__description {
+  line-height: 16px;
 }
 
 /* ── main column ─────────────────────────────────────────────────────── */
@@ -158,6 +182,27 @@
   margin: 0;
 }
 
+/* Nothing on either side: one line, as the design reads it. */
+.wk-relations-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.wk-relations-inline dt:not(:first-child) {
+  margin-left: 12px;
+}
+
+.wk-aside {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
 .wk-facts {
   grid-template-columns: 96px minmax(0, 1fr);
   align-items: baseline;
@@ -187,6 +232,10 @@
   gap: 4px 8px;
 }
 
+.wk-card-foot {
+  margin-top: 12px;
+}
+
 .wk-card-note {
   font-size: 12px;
   font-weight: 400;
@@ -201,7 +250,7 @@
 
 .wk-wave {
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr);
+  grid-template-columns: 180px minmax(0, 1fr);
   align-items: start;
   gap: 12px;
 }
@@ -292,8 +341,36 @@
   font-size: 12px;
   line-height: 1.7;
   font-variant-ligatures: none;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  white-space: pre;
+}
+
+.wk-log-time {
+  color: var(--color-ink-ghost);
+}
+
+.wk-log-level {
+  color: var(--color-ink-ghost);
+}
+
+.wk-log-level[data-level="INFO"] {
+  color: var(--color-ok);
+}
+
+.wk-log-level[data-level="WARN"] {
+  color: var(--color-warn);
+}
+
+.wk-log-level[data-level="ERROR"] {
+  color: var(--color-alert);
+}
+
+.wk-log-target {
+  color: var(--color-ink-faint);
+}
+
+.wk-follow[aria-pressed="true"] {
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
 }
 
 .wk-log [data-stream="stderr"] {
@@ -402,6 +479,8 @@
   grid-template-columns: auto minmax(0, 1fr);
   align-items: baseline;
   gap: 6px 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
 }
 
 /* ── loading ─────────────────────────────────────────────────────────── */
@@ -438,7 +517,8 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .wk-preview {
+  .wk-preview,
+  .wk-aside {
     position: static;
   }
 }
@@ -452,6 +532,40 @@
   .wk-relations {
     grid-template-columns: minmax(0, 1fr);
     gap: 4px;
+  }
+
+  /* Phone: tabs share the width, Restart/Stop sit side by side, Follow is an icon. */
+  .wk-tabs [role="tablist"] {
+    width: 100%;
+  }
+
+  .wk-tabs [role="tab"] {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+
+  .wk-actions {
+    width: 100%;
+  }
+
+  .wk-actions > button:not([aria-haspopup]) {
+    flex: 1 1 0;
+    background: var(--color-surface);
+    color: var(--color-ink);
+  }
+
+  .wk-follow-label,
+  .wk-log-target {
+    display: none;
+  }
+
+  .wk-log {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .wk-log > div + div {
+    margin-top: 4px;
   }
 }
 

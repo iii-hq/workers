@@ -147,6 +147,22 @@ export function startWaves(declared: readonly DeclaredContainer[]): string[][] {
   return waves.filter(Boolean)
 }
 
+/** What a later wave waits for: its one dependency by name, or how many. */
+export function waveLabel(
+  wave: readonly string[],
+  declared: readonly DeclaredContainer[],
+): string {
+  const names = new Set(declared.map((d) => d.name))
+  const deps = new Set(
+    declared
+      .filter((d) => wave.includes(d.name))
+      .flatMap((d) => d.start_after)
+      .filter((dep) => names.has(dep)),
+  )
+  const [only] = deps
+  return deps.size === 1 ? `After ${only}` : `After ${deps.size} containers`
+}
+
 export const dependentsOf = (
   declared: readonly DeclaredContainer[],
   name: string,
@@ -318,5 +334,37 @@ export function entryShape(
     env,
     run: draft ? draft.run.trim() : entry.run,
     config: draft ? draft.config : entry.config_override,
+  }
+}
+
+/* ── Log lines ───────────────────────────────────────────────────────── */
+
+export type LogParts = {
+  /** Local wall-clock time, `HH:MM:SS.mmm`. */
+  time: string
+  /** The timestamp as written, for a title. */
+  stamp: string
+  level: 'TRACE' | 'DEBUG' | 'INFO' | 'WARN' | 'ERROR'
+  target: string
+  text: string
+}
+
+const TRACING =
+  /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?Z\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+(\S+?):\s(.*)$/s
+const two = (n: number) => String(n).padStart(2, '0')
+
+/** Split a `tracing` fmt line; anything else (or a coloured line) stays raw. */
+export function parseLogLine(line: string): LogParts | null {
+  const match = TRACING.exec(line)
+  if (!match) return null
+  const [, seconds, fraction = '', level, target, text] = match
+  const date = new Date(`${seconds}${fraction.slice(0, 4)}Z`)
+  if (Number.isNaN(date.getTime())) return null
+  return {
+    time: `${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3, '0')}`,
+    stamp: `${seconds}${fraction}Z`,
+    level: level as LogParts['level'],
+    target,
+    text: text.trimStart(),
   }
 }

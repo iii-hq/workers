@@ -19,7 +19,7 @@ import {
 } from '@/components/ui/Table'
 import type { ComposeApi, Snapshot } from './compose-api'
 import type { Actions, Latest } from './index'
-import { shortPath, startWaves, toneFor } from './model'
+import { shortPath, startWaves, toneFor, waveLabel } from './model'
 
 type Validation =
   | { ok: true; order: string[]; deferred: string[] }
@@ -45,6 +45,9 @@ export function ProjectView({
   const ready = containers.filter((c) => c.state === 'ready').length
   const failed = containers.filter((c) => c.state === 'failed').length
   const waves = startWaves(project?.containers ?? [])
+  const locals = (project?.containers ?? []).filter(
+    (c) => c.source === 'path',
+  ).length
   const packages = (project?.containers ?? []).filter(
     (c) => c.source === 'package',
   )
@@ -213,7 +216,9 @@ export function ProjectView({
             <div key={wave.join()} className="wk-wave">
               <span className="wk-wave-label">
                 <span className="wk-mono wk-faint">{index + 1}</span>
-                {index === 0 ? 'With the engine' : 'Then'}
+                {index === 0
+                  ? 'With the engine'
+                  : waveLabel(wave, project?.containers ?? [])}
               </span>
               <div className="wk-pills">
                 {wave.map((name) => (
@@ -221,6 +226,7 @@ export function ProjectView({
                     key={name}
                     variant="pill"
                     size="sm"
+                    className="h-7 px-[11px] text-[12px]"
                     onClick={() => onSelect(name)}
                   >
                     <StatusDot
@@ -247,7 +253,8 @@ export function ProjectView({
                 disabled={busy}
                 onClick={() => void update(outdated.map((c) => c.name))}
               >
-                Update {outdated.length}
+                Update {outdated.length} package
+                {outdated.length === 1 ? '' : 's'}
               </Button>
             ) : null}
           </CardHeader>
@@ -311,6 +318,14 @@ export function ProjectView({
                 </TableFrame>
               </TableViewport>
             )}
+            {locals ? (
+              <p className="wk-note wk-card-foot">
+                {locals === 1
+                  ? 'The local-path worker follows its checkout.'
+                  : `The ${locals} local-path workers follow their checkout.`}{' '}
+                Point one elsewhere from its Source tab.
+              </p>
+            ) : null}
           </CardBody>
         </Card>
 
@@ -364,7 +379,7 @@ export function ProjectView({
                           ).length
                         }{' '}
                         of {p.containers?.length ?? 0} ready
-                        {p.file === status.file ? ' · this page' : ''}
+                        {p.file === status.file ? ' (this page)' : ''}
                       </span>
                     </dd>
                   </div>

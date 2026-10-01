@@ -360,6 +360,16 @@ function WorkersPage({
   )
 
   const latest = useLatest(api, data)
+  const engineWorkers = useMemo(
+    () =>
+      new Set(
+        (data?.workers ?? [])
+          .filter((w) => w.managementKind === 'internal')
+          .map((w) => w.name),
+      ),
+    [data?.workers],
+  )
+  const updates = containers.filter((c) => latest.outdated(c.container)).length
   const showMain = !narrow || drilled
   const showSide = !narrow || !drilled
 
@@ -402,7 +412,14 @@ function WorkersPage({
                 aria-current={selection === PROJECT ? 'page' : undefined}
                 leading={<Layers />}
                 label="Project"
-                description={`${ready} of ${containers.length} ready`}
+                description={[
+                  `${ready} of ${containers.length} ready`,
+                  updates
+                    ? `${updates} update${updates === 1 ? '' : 's'}`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
                 trailing={
                   failing ? (
                     <Badge variant="alert">{failing} failed</Badge>
@@ -643,6 +660,7 @@ function WorkersPage({
         api={api}
         actions={actions}
         project={data?.project ?? null}
+        engine={engineWorkers}
         onAdded={(name) => select(name)}
       />
       {dialog}
