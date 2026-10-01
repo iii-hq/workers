@@ -3,13 +3,12 @@ import { formatBytes } from '@iii-dev/console-ui/format'
 import { useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { useEffect, useId, useRef } from 'react'
 import { configNumber, DEFAULTS, isObject, isOpaqueField, withConfigField, type ConfigKey, type ConfigStatus } from './model'
-import { useSetupMotion } from './motion'
 
 const FIELDS: { key: ConfigKey; label: string; description: string; min?: number; max?: number }[] = [
-  { key: 'data_dir', label: 'Data directory', description: 'Stores session credentials and message archives, relative to the worker directory. Changing it does not move existing data.' },
-  { key: 'max_events', label: 'Activity events per session', description: 'Keeps recent connection and message events in memory. Separate from the message archive.', min: 1, max: 100000 },
-  { key: 'max_inbox_messages', label: 'Stored messages per session', description: 'Limits captured messages and received history. Lowering this removes the oldest stored messages.', min: 1, max: 100000 },
-  { key: 'max_sessions', label: 'Session limit', description: 'Applies when creating sessions. Lowering this does not remove existing sessions.', min: 1, max: 1024 },
+  { key: 'data_dir', label: 'Data directory', description: 'Relative to the worker directory. Changing this path does not move existing data.' },
+  { key: 'max_events', label: 'Activity events per session', description: 'Recent session activity kept in memory, separate from the message archive.', min: 1, max: 100000 },
+  { key: 'max_inbox_messages', label: 'Stored messages per session', description: 'Captured messages and received history. Lowering this removes the oldest stored messages.', min: 1, max: 100000 },
+  { key: 'max_sessions', label: 'Session limit', description: 'Limits new sessions; lowering it keeps existing sessions.', min: 1, max: 1024 },
   { key: 'max_media_bytes', label: 'Media limit in bytes', description: 'Maximum size for future media operations.', min: 1, max: 67108864 },
   { key: 'operation_timeout_secs', label: 'Operation timeout', description: 'Seconds allowed for future operations.', min: 1, max: 600 },
   { key: 'shutdown_timeout_secs', label: 'Shutdown timeout', description: 'Seconds allowed when stopping a session.', min: 1, max: 120 },
@@ -41,7 +40,6 @@ function OpaqueField({ value, label, onChange, onReplace, control }: {
 
 export function WhatsAppConfigForm({ host, value, onChange, schema, errors, focusField }: ConfigFormProps & { host: Host }) {
   const root = useRef<HTMLDivElement>(null)
-  useSetupMotion(root)
   const handled = useRef('')
   const focusKey = focusField?.map(String).join('.') ?? ''
   useEffect(() => {
@@ -62,7 +60,7 @@ export function WhatsAppConfigForm({ host, value, onChange, schema, errors, focu
     const shown = current ?? fallback
     return <SettingsField key={item.key} field={item.key} label={item.label} error={errors?.get(`/${item.key}`)}
       description={`${item.description} Default: ${String(fallback)}${item.key === 'max_media_bytes' && typeof shown === 'number' ? ` (${formatBytes(shown)} in this draft)` : ''}.`}
-      meta={<Badge variant={item.key === 'data_dir' || item.key === 'max_events' ? 'warn' : 'default'}>{item.key === 'data_dir' || item.key === 'max_events' ? 'Restart required' : 'Applies live'}</Badge>}
+      meta={item.key === 'data_dir' || item.key === 'max_events' ? <Badge>Restart required</Badge> : undefined}
       controlSize={item.key === 'data_dir' || isOpaqueField(item.key, current) ? 'full' : 'compact'}
       layout={item.key === 'data_dir' ? 'stacked' : 'auto'}
       renderControl={(control) => isOpaqueField(item.key, current)
@@ -78,20 +76,20 @@ export function WhatsAppConfigForm({ host, value, onChange, schema, errors, focu
   const visibleFields = new Set(FIELDS.filter((item) => !properties || item.key in properties).map((item) => `/${item.key}`))
   const unmappedErrors = [...(errors?.entries() ?? [])].filter(([path]) => path && path !== '/' && !visibleFields.has(path)).map(([path, message]) => `${path}: ${message}`)
   return <div ref={root} className="wa-ui-config">
-    <header className="wa-ui-config-intro wa-ui-stack-card">
-      <h2 className="wa-ui-config-heading wa-ui-reveal-text">Keep the history you need.</h2>
-      <p className="wa-ui-connection-copy">Set storage, capacity, and time limits for this WhatsApp worker. Pair accounts separately in the Connection tab.</p>
+    <header className="wa-ui-config-intro">
+      <h2 className="wa-ui-config-heading">Storage and limits</h2>
+      <p className="wa-ui-connection-copy">Choose what to store and set operating limits.</p>
     </header>
     <RuntimeStatus host={host} />
     {!isObject(value) ? <SettingsList><SettingsField field="configuration" label="WhatsApp configuration" description="This entire configuration is a custom value. Replace it only when you are ready to use individual settings." error={rootError} controlSize="full" renderControl={(control) => <OpaqueField control={control} value={value} label="WhatsApp configuration" onChange={onChange} onReplace={() => onChange({})} />} /></SettingsList> : <>
       <div className="wa-ui-config-grid">
-        <SettingsSection className="wa-ui-config-storage" title="Storage & history" description="Credentials and captured conversations stay in the worker's data directory."><SettingsList>{FIELDS.slice(0, 3).map(field)}</SettingsList></SettingsSection>
-        <SettingsSection className="wa-ui-config-capacity" title="Capacity" description="Make room for accounts and media."><SettingsList>{FIELDS.slice(3, 5).map(field)}</SettingsList></SettingsSection>
-        <SettingsSection className="wa-ui-config-timeouts" title="Time limits" description="Give operations enough time to finish."><SettingsList>{FIELDS.slice(5).map(field)}</SettingsList></SettingsSection>
+        <SettingsSection className="wa-ui-config-storage" title="Storage & history" description="Session credentials and message archives stay in the data directory."><SettingsList>{FIELDS.slice(0, 3).map(field)}</SettingsList></SettingsSection>
+        <SettingsSection className="wa-ui-config-capacity" title="Capacity"><SettingsList>{FIELDS.slice(3, 5).map(field)}</SettingsList></SettingsSection>
+        <SettingsSection className="wa-ui-config-timeouts" title="Time limits"><SettingsList>{FIELDS.slice(5).map(field)}</SettingsList></SettingsSection>
       </div>
       {rootError && <StatusPanel variant="alert" headline="Review your configuration" detail={rootError} />}
       {unmappedErrors.length > 0 && <StatusPanel variant="alert" headline="Other values need your attention" detail={unmappedErrors.join('\n')} />}
-      <p className="wa-ui-note wa-ui-config-footer">Leave a field empty to use its default. Save or reset your draft with the controls below; environment references and custom values are preserved.</p>
+      <p className="wa-ui-note wa-ui-config-footer">Saved changes apply live unless marked Restart required. Leave a field empty to use its default.</p>
     </>}
   </div>
 }

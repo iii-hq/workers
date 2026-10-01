@@ -101,15 +101,16 @@ that setting. `--local-config` ignores central edits and reports local mode.
 Keep all application copy, commands, accessibility labels and formatted dates
 in English. User messages, group names and descriptions retain their original
 content. The layout adapts to the pane width; archive details and group metadata
-expand on demand. The configuration form groups storage, capacity and time
-limits while ADE owns saving and resetting the draft.
+expand on demand. Pairing appears before recent activity, with optional connection
+help at the end. The configuration form groups storage, capacity and time limits
+in a single column while ADE owns saving and resetting the draft. Only settings
+that require a worker restart carry a restart marker.
 
 The page optionally loads [Cabinet Grotesk from Fontshare](https://www.fontshare.com/fonts/cabinet-grotesk),
 falling back to local system fonts when offline. The font is requested directly
-from Fontshare's CDN; it is not redistributed in the worker. Scoped GSAP motion
-is limited to connection guidance and the configuration introduction, respects
-reduced-motion preferences, and cleans up when a view closes. Message updates
-are not animated. QR images are generated locally.
+from Fontshare's CDN; it is not redistributed in the worker. Motion is limited
+to control feedback and respects reduced-motion preferences. Content does not
+animate during scrolling or message updates. QR images are generated locally.
 
 Pairing data stays in page memory, expires, and is cleared on session change.
 The activity feed is bounded; the inbox is a separate persistent archive. The send

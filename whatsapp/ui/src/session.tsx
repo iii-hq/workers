@@ -1,11 +1,10 @@
-import { Badge, Button, EmptyState, IconButton, Input, List, ListItem, LiveRegion, SettingsField, Skeleton, StatusPanel, type Host, type PageCommandsApi, type LiveAnnouncement } from '@iii-dev/console-ui'
+import { Badge, Button, EmptyState, Input, List, ListItem, LiveRegion, SettingsField, SettingsList, Skeleton, StatusPanel, type Host, type PageCommandsApi, type LiveAnnouncement } from '@iii-dev/console-ui'
 import { errorMessage, formatDuration, formatRelative } from '@iii-dev/console-ui/format'
 import { useEffect, useId, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, MessageCircle, Play, Smartphone, Square } from 'lucide-react'
+import { ChevronDown, MessageCircle, Play, Square } from 'lucide-react'
 import QRCode from 'qrcode'
 import { eventDetail, pairingIsCurrent, pairingPhone, requestScope, STATUS_LABEL, type PairingCode, type SessionStatus } from './model'
 import { useSession } from './use-session'
-import { useSetupMotion } from './motion'
 
 export function SessionBadge({ status }: { status: SessionStatus }) {
   return <Badge variant={status === 'connected' ? 'ok' : status === 'failed' ? 'alert' : status === 'pairing' || status === 'starting' || status === 'stopping' ? 'warn' : 'default'}>{STATUS_LABEL[status]}</Badge>
@@ -41,46 +40,35 @@ const EVENT_LABELS: Record<string, string> = {
 }
 
 const CONNECTION_COPY: Record<SessionStatus, { title: string; detail: string }> = {
-  stopped: { title: 'Connect on your terms.', detail: 'Start this session to connect an account. Saved credentials are reused when available.' },
-  starting: { title: 'Opening your connection.', detail: 'Keep WhatsApp on your phone nearby. Pairing options appear below if this session needs to link an account.' },
-  pairing: { title: 'Link your WhatsApp account.', detail: 'Scan the QR code or use your phone number to link this session. Choose the pairing method that works for you.' },
-  connected: { title: 'Your account is connected.', detail: 'Open Messages to read available conversations, or Groups to explore the groups this account belongs to.' },
-  disconnected: { title: 'Ready to reconnect.', detail: 'Start the session to reconnect. Your available message archive stays readable while the account is offline.' },
-  stopping: { title: 'Closing the connection.', detail: 'The session is stopping. Its credentials remain saved for the next connection.' },
-  logged_out: { title: 'Link your account again.', detail: 'This session is no longer linked to WhatsApp. Start it and pair your phone to reconnect.' },
-  failed: { title: 'Let’s restore the connection.', detail: 'Check the error and recent activity, then start the session when you are ready to try again.' },
+  stopped: { title: 'Session stopped', detail: 'Start to connect. Saved credentials are reused when available.' },
+  starting: { title: 'Connecting', detail: 'Keep your phone nearby. Pairing options appear below if needed.' },
+  pairing: { title: 'Link your account', detail: 'Scan the QR code or request a pairing code for your phone number.' },
+  connected: { title: 'Account connected', detail: 'Open Messages for available conversations or Groups for joined groups.' },
+  disconnected: { title: 'Session disconnected', detail: 'Start to reconnect. Your available message archive remains readable while offline.' },
+  stopping: { title: 'Stopping session', detail: 'Saved credentials will remain available for the next connection.' },
+  logged_out: { title: 'Account unlinked', detail: 'Start the session, then pair your phone to reconnect.' },
+  failed: { title: 'Connection failed', detail: 'Check the error and recent activity before starting the session again.' },
 }
 
 const CONNECTION_TIPS = [
-  { title: 'Link from your phone.', text: 'In WhatsApp, open Linked devices from Settings on iPhone or the menu on Android. Choose Link a device, then scan the QR code shown here.' },
-  { title: 'Keep your session.', text: 'Stopping a session keeps its saved credentials. Start the same session when you need to reconnect; creating another one is not necessary.' },
-  { title: 'Give history time to arrive.', text: 'Messages shows what this session has captured and the history WhatsApp has shared. Request older history from a conversation; it may arrive later.' },
+  { title: 'Find Linked devices', text: 'In WhatsApp, open Settings on iPhone or the menu on Android. Select Linked devices, then Link a device.' },
+  { title: 'Reuse a saved session', text: 'Stopping keeps saved credentials. Start the same session to reconnect instead of creating another one.' },
+  { title: 'Wait for available history', text: 'Messages shows captured conversations and history shared by WhatsApp. Older history requested from a conversation may arrive later.' },
 ]
 
 function ConnectionHelp() {
-  const [index, setIndex] = useState(0)
-  const tip = CONNECTION_TIPS[index]
-  return <section className="wa-ui-connection-help wa-ui-stack-card" aria-label="Connection help" aria-roledescription="carousel">
-    <div className="wa-ui-help-controls">
-      <span className="wa-ui-note">A little help getting started</span>
-      <div className="wa-ui-help-navigation">
-        <IconButton label="Previous connection tip" onClick={() => setIndex((value) => (value + CONNECTION_TIPS.length - 1) % CONNECTION_TIPS.length)}><ArrowLeft size={16} /></IconButton>
-        <span className="wa-ui-note" aria-label={`Tip ${index + 1} of ${CONNECTION_TIPS.length}`}>{index + 1} / {CONNECTION_TIPS.length}</span>
-        <IconButton label="Next connection tip" onClick={() => setIndex((value) => (value + 1) % CONNECTION_TIPS.length)}><ArrowRight size={16} /></IconButton>
-      </div>
-    </div>
-    <div className="wa-ui-help-slide" aria-live="polite" aria-atomic="true">
-      <Smartphone size={16} aria-hidden="true" />
-      <h3 className="wa-ui-help-title">{tip.title}</h3>
-      <p className="wa-ui-connection-copy">{tip.text}</p>
-    </div>
-  </section>
+  return <details className="wa-ui-connection-help">
+    <summary><span>Connection help</span><ChevronDown size={16} aria-hidden="true" /></summary>
+    <div className="wa-ui-help-items">{CONNECTION_TIPS.map((tip) => <div key={tip.title}>
+      <h4 className="wa-ui-title">{tip.title}</h4>
+      <p className="wa-ui-note">{tip.text}</p>
+    </div>)}</div>
+  </details>
 }
 
 export function SessionDetail({ host, sessionId, refreshList, commands }: {
   host: Host; sessionId: string; refreshList(): void; commands?: PageCommandsApi
 }) {
-  const root = useRef<HTMLDivElement>(null)
   const [operation, setOperation] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const busy = useRef(false)
@@ -93,7 +81,6 @@ export function SessionDetail({ host, sessionId, refreshList, commands }: {
   const [now, setNow] = useState(Date.now())
   const instance = useId()
   const status = session?.status ?? 'stopped'
-  useSetupMotion(root, `${sessionId}:${!!session}:${status}`)
   const canStart = !!session && !error && ['stopped', 'disconnected', 'logged_out', 'failed'].includes(status)
   const canStop = !!session && !['stopped', 'logged_out', 'stopping'].includes(status)
   const pairAllowed = status === 'pairing' && !error && operation !== 'start' && operation !== 'stop'
@@ -156,24 +143,25 @@ export function SessionDetail({ host, sessionId, refreshList, commands }: {
     { id: 'pair-code', title: 'Request pairing code', enabled: () => pairAllowed && !!phone.trim() && !busy.current, run: () => void requestCode() },
   ]), [commands, canStart, canStop, pairAllowed, phone])
 
-  if (!session && loading) return <div ref={root} className="wa-ui-content wa-ui-connection"><Skeleton className="wa-ui-loading" /><Skeleton className="wa-ui-loading" /></div>
-  return <div ref={root} className="wa-ui-content wa-ui-connection">
+  if (!session && loading) return <div className="wa-ui-content wa-ui-connection"><Skeleton className="wa-ui-loading" /><Skeleton className="wa-ui-loading" /></div>
+  return <div className="wa-ui-content wa-ui-connection">
     {error && <StatusPanel variant="alert" headline="Could not refresh this session" detail={error} action={<Button variant="ghost" onClick={refresh}>Try again</Button>} />}
     {actionError && <StatusPanel variant="alert" headline="The operation did not complete" detail={actionError} action={<Button variant="ghost" onClick={() => setActionError(null)}>Dismiss</Button>} />}
     <div className="wa-ui-connection-grid">
       <section className="wa-ui-connection-summary" aria-labelledby={`${instance}-connection`}>
-        <div className="wa-ui-connection-identity"><MessageCircle size={16} aria-hidden="true" /><span className="wa-ui-mono">{sessionId}</span>{session && <SessionBadge status={status} />}</div>
-        <h2 id={`${instance}-connection`} className="wa-ui-connection-title wa-ui-reveal-text">{session ? CONNECTION_COPY[status].title : 'Your connection is unavailable.'}</h2>
-        <p className="wa-ui-connection-copy">{session ? CONNECTION_COPY[status].detail : 'Refresh this session to check its connection and pairing options.'}</p>
-        {session && <>
+        <div className="wa-ui-connection-heading">
+          <div className="wa-ui-connection-identity"><MessageCircle size={16} aria-hidden="true" /><span className="wa-ui-mono">{sessionId}</span>{session && <SessionBadge status={status} />}</div>
+          <h2 id={`${instance}-connection`} className="wa-ui-connection-title">{session ? CONNECTION_COPY[status].title : 'Connection unavailable'}</h2>
+          <p className="wa-ui-connection-copy">{session ? CONNECTION_COPY[status].detail : 'Refresh this session to check its connection and pairing options.'}</p>
+        </div>
+        {session && <div className="wa-ui-connection-actions">
           <div className="wa-ui-actions">
             <Button onClick={() => void lifecycle('start')} disabled={!canStart || !!operation}><Play size={16} aria-hidden="true" />{operation === 'start' ? 'Starting…' : 'Start session'}</Button>
             <Button variant="ghost" onClick={() => void lifecycle('stop')} disabled={!canStop || !!operation}><Square size={16} aria-hidden="true" />{operation === 'stop' ? 'Stopping…' : 'Stop session'}</Button>
           </div>
           <p className="wa-ui-note">Starting connects to WhatsApp. Stopping keeps your credentials.</p>
-        </>}
+        </div>}
       </section>
-      <ConnectionHelp />
 
       {(status === 'pairing' || status === 'starting') && <section className="wa-ui-linking-card" aria-labelledby={`${instance}-pairing`}>
         <header className="wa-ui-linking-header"><h3 id={`${instance}-pairing`} className="wa-ui-title">Choose how to link your phone</h3><p className="wa-ui-note">Use the camera in WhatsApp, or request a code instead.</p></header>
@@ -185,7 +173,7 @@ export function SessionDetail({ host, sessionId, refreshList, commands }: {
           <div className="wa-ui-phone-pairing wa-ui-stack">
             <h4 className="wa-ui-title">Prefer a phone number?</h4>
             <p className="wa-ui-note">Request a code, then choose the option to link with a phone number in WhatsApp on your phone.</p>
-            <SettingsField field="pairing_phone" label="Account phone number" description="Include the country code, without spaces." controlSize="full" layout="stacked" renderControl={(control) => <Input {...control} type="tel" inputMode="tel" autoComplete="off" value={phone} placeholder="+15551234567" disabled={!pairAllowed || operation === 'pair'} onChange={(next) => { pairScope.current.invalidate(); setPhone(next); setPhonePair(null); setActionError(null) }} />} />
+            <SettingsList><SettingsField field="pairing_phone" label="Account phone number" description="Include the country code, without spaces." controlSize="full" layout="stacked" renderControl={(control) => <Input {...control} type="tel" inputMode="tel" autoComplete="off" value={phone} placeholder="+15551234567" disabled={!pairAllowed || operation === 'pair'} onChange={(next) => { pairScope.current.invalidate(); setPhone(next); setPhonePair(null); setActionError(null) }} />} /></SettingsList>
             <Button variant="ghost" onClick={() => void requestCode()} disabled={!pairAllowed || !!operation || !phone.trim()}>{operation === 'pair' ? 'Requesting code…' : 'Request pairing code'}</Button>
             {validPhonePair && <StatusPanel variant="info" headline={<span className="wa-ui-pair-code">{validPhonePair.code}</span>} detail={`Valid for ${formatDuration(validPhonePair.expires_at_ms - now)}. The code clears when it expires or the connection changes.`} />}
           </div>
@@ -195,8 +183,9 @@ export function SessionDetail({ host, sessionId, refreshList, commands }: {
       <section className="wa-ui-activity-panel" aria-labelledby={`${instance}-activity`}>
         <header className="wa-ui-activity-heading"><div><h3 id={`${instance}-activity`} className="wa-ui-title">Recent activity</h3><p className="wa-ui-note">Connection changes, incoming messages, and delivery receipts.</p></div><span className="wa-ui-note">{feed.events.length} events</span></header>
         {feed.truncated && <StatusPanel variant="warn" headline="Some earlier activity is unavailable" detail="Activity is held in memory with a retention limit. This list shows the events still available after a retention gap or restart." />}
-        <div className="wa-ui-activity-list">{feed.events.length === 0 ? <EmptyState compact icon={MessageCircle} title="A quiet start" description="Activity will appear here as the session connects and receives messages. The latest 100 events stay visible." /> : <List aria-label="Recent session activity">{[...feed.events].reverse().map((event) => <ListItem as="div" key={event.sequence} label={EVENT_LABELS[event.kind] ?? event.kind} description={eventDetail(event)} trailing={<time dateTime={new Date(event.timestamp_ms).toISOString()} title={new Date(event.timestamp_ms).toLocaleString('en-US')}>{formatRelative(event.timestamp_ms, now)}</time>} />)}</List>}</div>
+        <div className="wa-ui-activity-list">{feed.events.length === 0 ? <EmptyState compact icon={MessageCircle} title="No recent activity" description="Connection and message events appear here. The latest 100 events stay visible." /> : <List aria-label="Recent session activity">{[...feed.events].reverse().map((event) => <ListItem as="div" key={event.sequence} label={EVENT_LABELS[event.kind] ?? event.kind} description={eventDetail(event)} trailing={<time dateTime={new Date(event.timestamp_ms).toISOString()} title={new Date(event.timestamp_ms).toLocaleString('en-US')}>{formatRelative(event.timestamp_ms, now)}</time>} />)}</List>}</div>
       </section>
+      <ConnectionHelp />
     </div>
     <LiveRegion announcement={announcement} />
   </div>

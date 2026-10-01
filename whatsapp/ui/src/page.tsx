@@ -1,4 +1,4 @@
-import { Button, EmptyState, IconButton, Input, PageHeader, PageShell, Select, SettingsField, Skeleton, StatusBar, StatusPanel, Tabs, TabsContent, TabsList, TabsTrigger, useConfirm, type Host, type PageRenderProps } from '@iii-dev/console-ui'
+import { Button, EmptyState, IconButton, Input, PageHeader, PageShell, Select, SettingsField, SettingsList, Skeleton, StatusBar, StatusPanel, Tabs, TabsContent, TabsList, TabsTrigger, useConfirm, type Host, type PageRenderProps } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState, useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { Cable, MessageCircle, Plus, RefreshCw, Users } from 'lucide-react'
@@ -80,7 +80,7 @@ export function WhatsAppPage({ host, configurationId, paneId, tabId, panelSide, 
   const create = async () => {
     if (busy.current) return
     const id = newId.trim()
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) { setCreateError('Use 1–64 letters, numbers, hyphens or underscores.'); newIdRef.current?.focus(); return }
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) { setCreateError('Use 1-64 letters, numbers, hyphens or underscores.'); newIdRef.current?.focus(); return }
     if (!await navigate(() => setChat(null))) return
     busy.current = true
     const current = scope.current.begin()
@@ -110,12 +110,12 @@ export function WhatsAppPage({ host, configurationId, paneId, tabId, panelSide, 
     <PageHeader className="wa-ui-navigation" icon={<MessageCircle size={16} />} title="WhatsApp" onClose={onRequestClose}
       actions={<><IconButton label="New session" onClick={() => setShowCreate((value) => !value)} disabled={creating}><Plus size={16} /></IconButton><IconButton className="wa-ui-session-refresh" label="Refresh sessions" onClick={list.refresh} disabled={list.loading}><RefreshCw size={16} /></IconButton></>}>
       <div className="wa-ui-account-bar" aria-label="Account and session">
-        <div className="wa-ui-session-select"><Select aria-label="WhatsApp session" value={selected ?? undefined} options={sessions.map((item) => ({ value: item.session_id, label: item.session_id, description: STATUS_LABEL[item.status] }))} onChange={selectSession} placeholder="Choose a session" disabled={creating} /></div>
+        <div className="wa-ui-session-select"><Select aria-label={`WhatsApp session: ${selected ?? 'Choose a session'}`} value={selected ?? undefined} options={sessions.map((item) => ({ value: item.session_id, label: item.session_id, description: STATUS_LABEL[item.status] }))} onChange={selectSession} placeholder="Choose a session" disabled={creating} /></div>
         {session && <span className="wa-ui-account-status"><SessionBadge status={session.status} /></span>}
       </div>
     </PageHeader>
     {(showCreate || (!list.loading && sessions.length === 0)) && <form className="wa-ui-new-session" onSubmit={(event) => { event.preventDefault(); void create() }}>
-      <SettingsField field="session_id" label="Session name" error={createError ?? undefined} description="Create a session, then link your phone in Connection." controlSize="full" renderControl={(control) => <Input {...control} ref={newIdRef} value={newId} onChange={(next) => { setNewId(next); setCreateError(null) }} placeholder="support" maxLength={64} disabled={creating} autoComplete="off" spellCheck={false} />} />
+      <SettingsList><SettingsField field="session_id" label="Session name" error={createError ?? undefined} description="Create a session, then link your phone in Connection." controlSize="full" renderControl={(control) => <Input {...control} ref={newIdRef} value={newId} onChange={(next) => { setNewId(next); setCreateError(null) }} placeholder="support" maxLength={64} disabled={creating} autoComplete="off" spellCheck={false} />} /></SettingsList>
       <Button type="submit" disabled={creating || !newId.trim()}>{creating ? 'Creating…' : 'Create session'}</Button>
     </form>}
     {list.error && <div className="wa-ui-reader-notice"><StatusPanel variant="alert" headline="Could not refresh sessions" detail={list.error} action={<Button variant="ghost" onClick={list.refresh}>Try again</Button>} /></div>}
@@ -125,7 +125,7 @@ export function WhatsAppPage({ host, configurationId, paneId, tabId, panelSide, 
       <TabsContent value="messages" className="wa-ui-tab-content"><MessageBrowser key={accountIdentity} host={host} sessionId={selected} connected={connected} narrow={narrow} panelSide={panelSide} selected={chat} onSelect={selectChat} onDirty={onDirty} onGoConnection={() => selectView('connection')} /></TabsContent>
       <TabsContent value="groups" className="wa-ui-tab-content"><GroupBrowser key={accountIdentity} host={host} sessionId={selected} connected={connected} narrow={narrow} panelSide={panelSide} onOpenMessages={openGroup} /></TabsContent>
       <TabsContent value="connection" className="wa-ui-tab-content wa-ui-connection-scroll"><SessionDetail key={`${selected}:${session?.created_at_ms ?? ''}`} host={host} sessionId={selected} refreshList={list.refresh} commands={commands} /></TabsContent>
-    </Tabs> : list.loading ? <Skeleton className="wa-ui-loading" /> : <EmptyState icon={MessageCircle} title="Your conversations, connected." description="Create a session and link your phone to browse messages and groups." />}
+    </Tabs> : list.loading ? <Skeleton className="wa-ui-loading" /> : <EmptyState icon={MessageCircle} title="Connect a WhatsApp account" description="Create a session and link your phone to browse messages and groups." />}
     <StatusBar aria-label="WhatsApp status">{session ? `${session.session_id} · ${STATUS_LABEL[session.status]}` : 'No session selected'}<span>{view === 'messages' ? 'Session archive' : view === 'groups' ? 'Joined groups' : 'Phone connection'}</span></StatusBar>
     {dialog}
   </PageShell>

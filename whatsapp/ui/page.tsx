@@ -2,7 +2,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import { WhatsAppConfigForm } from './src/configuration'
 import { WhatsAppPage } from './src/page'
-import { loadDisplayFont } from './src/motion'
+import { loadDisplayFont } from './src/font'
 
 export default async function setup(host: Host) {
   loadDisplayFont()

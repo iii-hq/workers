@@ -208,7 +208,7 @@ export function GroupBrowser({ host, sessionId, connected, narrow, panelSide, on
             </details>
           </div> : !detailLoading && <EmptyState compact title="Group details are not loaded" description={connected ? 'Refresh to view this group’s description and members.' : 'Reconnect to view this group’s description and members.'} />}
         </div>
-      </> : <EmptyState icon={Users} title="The people you connect with" description="Choose a group to explore its members, read the description, or open its messages." />}
+      </> : <EmptyState icon={Users} title="Select a group" description="Choose a group to explore its members, read the description, or open its messages." />}
     </PageMain>}
   </PageBody>
 }

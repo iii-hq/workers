@@ -66,7 +66,7 @@ export function MessageBrowser({ host, sessionId, connected, narrow, panelSide, 
       </div>
       {list.error && <div className="wa-ui-list-tools"><StatusPanel variant="alert" headline="Could not load conversations" detail={list.error} action={<Button variant="ghost" onClick={list.refresh}>Try again</Button>} /></div>}
       <div className="wa-ui-list">
-        {list.loading ? <><Skeleton className="wa-ui-loading" /><Skeleton className="wa-ui-loading" /></> : list.items.length === 0 ? <EmptyState compact icon={MessageCircle} title={query ? 'No conversations found' : 'Your conversations start here'} description={query ? 'Try another name or identifier.' : 'Received messages and available WhatsApp history will appear here.'} /> : <List aria-label="Available conversations">{list.items.map((chat) => <ListItem key={chat.chat_id} className="wa-ui-chat-item" selected={selected?.chat_id === chat.chat_id}
+        {list.loading ? <><Skeleton className="wa-ui-loading" /><Skeleton className="wa-ui-loading" /></> : list.items.length === 0 ? <EmptyState compact icon={MessageCircle} title={query ? 'No conversations found' : 'No conversations yet'} description={query ? 'Try another name or identifier.' : 'Received messages and available WhatsApp history will appear here.'} /> : <List aria-label="Available conversations">{list.items.map((chat) => <ListItem key={chat.chat_id} className="wa-ui-chat-item" selected={selected?.chat_id === chat.chat_id}
           leading={<ChatIdentity chat={chat} />}
           label={<span className="wa-ui-chat-title">{chat.title || identityLabel(chat.chat_id)}</span>}
           description={<span className="wa-ui-preview">{chat.last_message ? `${chat.last_message.from_me ? 'You: ' : ''}${messageLabel(chat.last_message)}` : 'No message preview'}</span>}
@@ -77,7 +77,7 @@ export function MessageBrowser({ host, sessionId, connected, narrow, panelSide, 
       {list.coverage && <ArchiveCoverage coverage={list.coverage} />}
     </PageSidebar>}
     {(!narrow || selected) && <PageMain className="wa-ui-reader">
-      {selected ? <MessageReader key={`${sessionId}:${selected.chat_id}`} host={host} sessionId={sessionId} chat={selected} connected={connected} narrow={narrow} onBack={() => onSelect(null)} onDirty={onDirty} onGoConnection={onGoConnection} refreshChats={list.refresh} /> : <EmptyState icon={MessageCircle} title="A conversation, in focus" description="Choose a chat to read and reply, or explore your account’s groups." />}
+      {selected ? <MessageReader key={`${sessionId}:${selected.chat_id}`} host={host} sessionId={sessionId} chat={selected} connected={connected} narrow={narrow} onBack={() => onSelect(null)} onDirty={onDirty} onGoConnection={onGoConnection} refreshChats={list.refresh} /> : <EmptyState icon={MessageCircle} title="Select a conversation" description="Choose a chat to read and reply, or explore your account’s groups." />}
     </PageMain>}
   </PageBody>
 }
