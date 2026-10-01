@@ -1,12 +1,14 @@
 //! Native WhatsApp functions for the iii engine.
 pub mod calls;
 pub mod config;
+pub mod configuration;
 pub mod groups;
 pub mod logging;
 pub mod messaging;
 pub mod registry;
 pub mod service;
 pub mod sessions;
+pub mod ui;
 pub mod validate;
 
 pub fn registry() -> registry::Registry {

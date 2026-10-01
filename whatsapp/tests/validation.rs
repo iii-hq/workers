@@ -54,6 +54,30 @@ fn invalid_limits_and_unknown_config_fields_fail() {
 }
 
 #[test]
+fn configuration_schema_exposes_the_runtime_bounds_and_default_example() {
+    let schema = Config::json_schema();
+    for (field, maximum) in [
+        ("max_sessions", 1024),
+        ("max_media_bytes", 67_108_864),
+        ("max_events", 100_000),
+        ("operation_timeout_secs", 600),
+        ("shutdown_timeout_secs", 120),
+    ] {
+        assert_eq!(schema["properties"][field]["minimum"].as_f64(), Some(1.0));
+        assert_eq!(
+            schema["properties"][field]["maximum"].as_f64(),
+            Some(maximum as f64)
+        );
+    }
+    assert_eq!(schema["properties"]["data_dir"]["minLength"], 1);
+    assert_eq!(
+        schema["example"],
+        serde_json::to_value(Config::default()).unwrap()
+    );
+    assert_eq!(schema["additionalProperties"], false);
+}
+
+#[test]
 fn text_limits_count_utf8_bytes_and_reject_blank_payloads() {
     assert!(validate::text("á", "text", 2).is_ok());
     assert!(validate::text("á", "text", 1).is_err());

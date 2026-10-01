@@ -6,8 +6,9 @@ use iii_sdk::{InitOptions, register_worker, runtime::WorkerMetadata};
 use serde_json::json;
 use whatsapp::{
     config::{self, Config},
-    service,
+    configuration, service,
     sessions::SessionManager,
+    ui,
 };
 
 #[derive(Parser)]
@@ -29,8 +30,20 @@ struct Cli {
     catalog: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // The SDK records function inputs/outputs in telemetry by default, including
+    // pairing codes. Disable payload capture before creating any worker threads;
+    // keep timing/error spans available without account or message contents.
+    // SAFETY: this is the process entrypoint, before Tokio, logging, or the SDK
+    // starts threads that could read or write the process environment.
+    unsafe { std::env::set_var("III_DISABLE_TRACE_PAYLOADS", "1") };
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run_cli())
+}
+
+async fn run_cli() -> Result<()> {
     whatsapp::logging::init();
     let cli = Cli::parse();
     if cli.manifest {
@@ -41,7 +54,8 @@ async fn main() -> Result<()> {
                 "description": env!("CARGO_PKG_DESCRIPTION"), "default_config": Config::default(),
                 "native_client": {"repository":"https://github.com/oxidezap/whatsapp-rust", "revision":"dd0763c4635b353c4ed52def39d030fb2f375f9a"},
                 "runtime": "native binary; no Node, browser or sandbox required",
-                "trigger_types": [service::EVENTS]
+                "trigger_types": [service::EVENTS],
+                "console_ui": {"scope":"whatsapp", "assets":[ui::PAGE_PATH, ui::STYLES_PATH]}
             }))?
         );
         return Ok(());
@@ -53,13 +67,23 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
-    let seed = cli
+    let seed_result = cli
         .config
         .as_ref()
         .map(|path| -> Result<Config> {
             Config::from_yaml(&std::fs::read_to_string(path).context("reading config seed")?)
         })
-        .transpose()?;
+        .transpose();
+    let seed = match seed_result {
+        Ok(seed) => seed,
+        Err(error) if cli.local_config => return Err(error),
+        Err(_) => {
+            tracing::warn!(
+                "Unable to read the optional configuration seed; using central configuration or defaults"
+            );
+            None
+        }
+    };
     let iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {
@@ -84,8 +108,8 @@ async fn run(local: bool, seed: Option<Config>, iii: Arc<iii_sdk::IIIClient>) ->
             id: config::config_id(),
             form_id: config::DEFAULT_CONFIG_ID,
             name: "WhatsApp",
-            description: "Native session storage and resource limits (restart to apply)",
-            schema: serde_json::to_value(schemars::schema_for!(Config))?,
+            description: "WhatsApp session storage, live resource limits and timeouts",
+            schema: Config::json_schema(),
             default_value: serde_json::to_value(Config::default())?,
         };
         iii_config_client::ensure(&iii, &spec, seed.map(serde_json::to_value).transpose()?)
@@ -103,7 +127,10 @@ async fn run(local: bool, seed: Option<Config>, iii: Arc<iii_sdk::IIIClient>) ->
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let manager = SessionManager::open(config)?;
     Arc::new(whatsapp::registry()).install(&iii, manager.clone());
-    let delivery = service::register(iii, manager.clone());
+    let delivery = service::register(iii.clone(), manager.clone());
+    iii_console_ui::register_configuration_identity(&iii, "whatsapp", config::config_id());
+    ui::register(&iii);
+    configuration::register(&iii, &manager, local).await?;
     tracing::info!("WhatsApp functions registered; sessions start only on explicit request");
     #[cfg(unix)]
     let signal = tokio::select! { result = tokio::signal::ctrl_c() => result, _ = terminate.recv() => Ok(()) };

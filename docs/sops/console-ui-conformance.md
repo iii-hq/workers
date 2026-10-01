@@ -66,7 +66,7 @@ migration recipe and order: `docs/plans/2026-09-16-worker-ui-migration.md`.
 
 ## Injectable worker sweep
 
-All 32 checked-in injectable UI packages (`ls -d */ui/package.json`) are
+The checked-in injectable UI packages (`ls -d */ui/package.json`) are
 listed; every one builds with strict lint since 2026-09-17. "Domain adapter" means a local component still adds information
 architecture or semantics; it must compose shared controls/tokens and is not
 permission to fork base hover, selection, tooltip, or selector behavior.
@@ -107,6 +107,7 @@ permission to fork base hover, selection, tooltip, or selector behavior.
 | `voice` | yes | Shared page chrome, `IconButton`, `Button`, `Badge`, `StatusPanel`, `Input`, `Table` family; chat-slot registrations; `lucide-react`, format subpath (`formatBytes`, `errorMessage`), `useCopyFlash`/`copyText`, `StatusDot pulse`, `uiClasses.spin`/`motionPanel` | Microphone capture, live partial transcript pill, segment timestamps |
 | `vscode` | yes | Shared page chrome, `List`/`ListItem`, `IconButton`, `StatusPanel`; `lucide-react` | Embedded VS Code workbench frame |
 | `web` | yes | Minimal shared renderer; container query | HTTP response payload |
+| `whatsapp` | yes | Shared page chrome, session list, controls, configuration fields, overlays, live hooks and pane navigation; instance configuration identity | Native session pairing, local QR image, explicit text-message test and bounded activity feed |
 | `worktree` | yes | Migrated: `useWorkerLive`, `useContainerNarrow`, `lucide-react`, `useCopyFlash`, `IconButton`, `Skeleton`, `uiClasses.spin`, `Eyebrow`, `--color-*-strong`; graph `<svg>` and 10px edge labels allowlisted | Worktree ownership and graph semantics |
 
 ## Native Console sweep
@@ -151,6 +152,7 @@ owns; the registry refuses those at registration. See
 | browser | new session, stop, address bar, ⋮ menu (find in page, zoom, screenshot, print to PDF, device toolbar, import / copy cookies, clear browsing data, diagnostics), device toolbar (viewport presets), responsive live view (tracks the pane), read-only badge, handoff banner (confirm a paused session), Console / Network / Downloads / History panes, annotate (pin / box / arrow tools, colours, undo; pins carry the element under them), send / save / download / clear annotations, saved-sets dialog; setup: open | `N`, `X`, `L`, `Mod+F`, `Mod+=`/`Mod+-`/`Mod+0`, `C`, `Mod+Enter` | sessions, downloads (`browser::downloads::list`), history (`browser::history::list`), cookies (`browser::cookies::list`), diagnostics (`browser::doctor`), saved annotation sets (state scope `annotations`) |
 | sandbox-code-runner | new, run code, refresh; setup: open | `N`, `C`, `R` | sandboxes (`sandbox::list`) |
 | computer | start, stop; setup: open | `N`, `X` | sessions (`computer::sessions::list`) |
+| whatsapp | create session, refresh, connect, stop, focus/send message test, request pairing code; setup: open | `N`, `R`, `S`, `X`, `I` | sessions (`whatsapp::sessions::list`) |
 | worktree | refresh, close detail; setup: open | `R`, `Escape` | worktrees (`worktree::list`) |
 | tailscale | refresh, create link, copy link, open link, stop route, sections 1-7; setup: open | `R`, `N`, `C`, `O`, `X`, `1`-`7` | |
 | compose-ui (page `compose`) | refresh, filter containers, add worker…, validate compose file, sections 1-5 (Topology first); setup: open | `R`, `/`, `N`, `V`, `1`-`5` | containers (`compose::status`) |

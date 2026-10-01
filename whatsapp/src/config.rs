@@ -17,14 +17,23 @@ pub fn config_id() -> &'static str {
     })
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// Persistent native session storage. Changing this requires a worker restart.
+    #[schemars(length(min = 1))]
     pub data_dir: PathBuf,
+    /// Maximum number of sessions; existing sessions survive a lower limit.
+    #[schemars(range(min = 1, max = 1024))]
     pub max_sessions: usize,
+    #[schemars(range(min = 1, max = 67108864))]
     pub max_media_bytes: usize,
+    /// Event retention and broadcast capacity. Changing this requires a worker restart.
+    #[schemars(range(min = 1, max = 100000))]
     pub max_events: usize,
+    #[schemars(range(min = 1, max = 600))]
     pub operation_timeout_secs: u64,
+    #[schemars(range(min = 1, max = 120))]
     pub shutdown_timeout_secs: u64,
 }
 
@@ -42,6 +51,20 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn json_schema() -> serde_json::Value {
+        let mut schema = serde_json::to_value(schemars::schema_for!(Self))
+            .expect("configuration schema is serializable");
+        schema["example"] =
+            serde_json::to_value(Self::default()).expect("default configuration is serializable");
+        schema
+    }
+
+    pub fn from_json(value: &serde_json::Value) -> Result<Self> {
+        let config: Self = serde_json::from_value(value.clone())?;
+        config.validate()?;
+        Ok(config)
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(
             !self.data_dir.as_os_str().is_empty(),

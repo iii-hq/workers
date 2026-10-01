@@ -249,7 +249,7 @@ impl Session {
 }
 
 pub struct SessionManager {
-    config: Config,
+    config: RwLock<Config>,
     sessions: RwLock<BTreeMap<String, Arc<Session>>>,
     broadcast: broadcast::Sender<Event>,
     shutting_down: AtomicBool,
@@ -295,20 +295,34 @@ impl SessionManager {
                 )),
             );
         }
-        ensure!(
-            sessions.len() <= config.max_sessions,
-            "persisted sessions exceed configured session limit"
-        );
         Ok(Arc::new(Self {
-            config,
+            config: RwLock::new(config),
             sessions: RwLock::new(sessions),
             broadcast,
             shutting_down: AtomicBool::new(false),
         }))
     }
 
-    pub fn config(&self) -> &Config {
-        &self.config
+    pub fn config(&self) -> Config {
+        self.config.read().unwrap().clone()
+    }
+
+    /// Apply tuning without moving open SQLite stores or replacing event channels.
+    /// The returned fields retain their boot values until the worker restarts.
+    pub fn apply_config(&self, mut config: Config) -> Result<Vec<String>> {
+        config.validate()?;
+        let mut active = self.config.write().unwrap();
+        let mut restart_required = Vec::new();
+        if config.data_dir != active.data_dir {
+            restart_required.push("data_dir".to_owned());
+            config.data_dir = active.data_dir.clone();
+        }
+        if config.max_events != active.max_events {
+            restart_required.push("max_events".to_owned());
+            config.max_events = active.max_events;
+        }
+        *active = config;
+        Ok(restart_required)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
@@ -336,13 +350,14 @@ impl SessionManager {
     pub async fn create(&self, id: &str) -> Result<SessionSummary> {
         validate_id(id)?;
         let mut sessions = self.sessions.write().unwrap();
+        let config = self.config();
         self.active()?;
         ensure!(!sessions.contains_key(id), "session already exists: {id}");
         ensure!(
-            sessions.len() < self.config.max_sessions,
+            sessions.len() < config.max_sessions,
             "maximum session count reached"
         );
-        let directory = self.config.data_dir.join(id);
+        let directory = config.data_dir.join(id);
         fs::create_dir(&directory).context("create session directory")?;
         let metadata = Metadata {
             session_id: id.to_owned(),
@@ -358,7 +373,7 @@ impl SessionManager {
         let session = Arc::new(Session::from_metadata(
             directory,
             metadata,
-            self.config.max_events,
+            config.max_events,
             self.broadcast.clone(),
         ));
         let summary = session.summary();
@@ -401,7 +416,8 @@ impl SessionManager {
         {
             return Ok(session.summary());
         }
-        let timeout = Duration::from_secs(self.config.shutdown_timeout_secs);
+        let config = self.config();
+        let timeout = Duration::from_secs(config.shutdown_timeout_secs);
         session.stop_locked(&mut lifecycle, timeout).await?;
         let generation = {
             let mut state = session.state.lock().unwrap();
@@ -409,9 +425,8 @@ impl SessionManager {
             state.generation
         };
         session.transition(SessionStatus::Starting, "session.starting")?;
-        let built = tokio::time::timeout(
-            Duration::from_secs(self.config.operation_timeout_secs),
-            async {
+        let built =
+            tokio::time::timeout(Duration::from_secs(config.operation_timeout_secs), async {
                 private_directory(&session.directory)?;
                 let path = session.directory.join("credentials.db");
                 private_file(&path)?;
@@ -443,9 +458,8 @@ impl SessionManager {
                     }
                 }
                 Ok::<_, anyhow::Error>((bot, Arc::downgrade(&store)))
-            },
-        )
-        .await;
+            })
+            .await;
         let (bot, store) = match built {
             Ok(Ok(value)) => value,
             result => {
@@ -505,7 +519,7 @@ impl SessionManager {
 
     pub async fn stop(self: &Arc<Self>, id: &str) -> Result<SessionSummary> {
         let session = self.session(id)?;
-        let timeout = Duration::from_secs(self.config.shutdown_timeout_secs);
+        let timeout = Duration::from_secs(self.config().shutdown_timeout_secs);
         tokio::spawn(async move {
             let mut lifecycle = session.lifecycle.lock().await;
             ensure!(
@@ -568,7 +582,7 @@ impl SessionManager {
             .as_ref()
             .context("session is not running")?;
         let code = tokio::time::timeout(
-            Duration::from_secs(self.config.operation_timeout_secs),
+            Duration::from_secs(self.config().operation_timeout_secs),
             running.client.pair_with_code(PairCodeOptions {
                 phone_number: phone_number.to_owned(),
                 ..Default::default()
@@ -588,8 +602,9 @@ impl SessionManager {
     pub async fn logout(self: &Arc<Self>, id: &str) -> Result<SessionSummary> {
         self.active()?;
         let session = self.session(id)?;
-        let timeout = Duration::from_secs(self.config.shutdown_timeout_secs);
-        let operation_timeout = Duration::from_secs(self.config.operation_timeout_secs);
+        let config = self.config();
+        let timeout = Duration::from_secs(config.shutdown_timeout_secs);
+        let operation_timeout = Duration::from_secs(config.operation_timeout_secs);
         tokio::spawn(async move {
             let mut lifecycle = session.lifecycle.lock().await;
             ensure!(
@@ -627,7 +642,7 @@ impl SessionManager {
             session
                 .stop_locked(
                     &mut lifecycle,
-                    Duration::from_secs(manager.config.shutdown_timeout_secs),
+                    Duration::from_secs(manager.config().shutdown_timeout_secs),
                 )
                 .await?;
             private_directory(&session.directory)?;
@@ -662,7 +677,7 @@ impl SessionManager {
             .events
             .iter()
             .filter(|event| event.sequence > after_sequence)
-            .take(limit.min(self.config.max_events))
+            .take(limit.min(session.max_events))
             .cloned()
             .collect();
         let truncated = state.events.front().map_or(
@@ -684,8 +699,8 @@ impl SessionManager {
         self.shutting_down.store(true, Ordering::Release);
         let sessions: Vec<_> = self.sessions.read().unwrap().values().cloned().collect();
         let mut tasks = tokio::task::JoinSet::new();
+        let timeout = Duration::from_secs(self.config().shutdown_timeout_secs);
         for session in sessions {
-            let timeout = Duration::from_secs(self.config.shutdown_timeout_secs);
             tasks.spawn(async move {
                 let stopped = tokio::time::timeout(timeout, async {
                     let mut lifecycle = session.lifecycle.lock().await;

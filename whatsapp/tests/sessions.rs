@@ -68,6 +68,72 @@ async fn concurrent_creation_enforces_uniqueness_and_capacity() {
 }
 
 #[tokio::test]
+async fn live_session_limit_preserves_existing_accounts_and_survives_restart() {
+    let directory = TempDir::new().unwrap();
+    let initial = config(&directory);
+    let manager = SessionManager::open(initial.clone()).unwrap();
+    manager.create("first").await.unwrap();
+    manager.create("second").await.unwrap();
+    let lower = Config {
+        max_sessions: 1,
+        ..initial.clone()
+    };
+    assert!(manager.apply_config(lower.clone()).unwrap().is_empty());
+    assert!(manager.create("third").await.is_err());
+    assert_eq!(manager.list().await.len(), 2);
+    assert_eq!(
+        manager.get("first").await.unwrap().status,
+        SessionStatus::Stopped
+    );
+    drop(manager);
+
+    let manager = SessionManager::open(lower).unwrap();
+    assert_eq!(manager.list().await.len(), 2);
+    assert!(manager.create("third").await.is_err());
+    manager
+        .apply_config(Config {
+            max_sessions: 3,
+            ..initial
+        })
+        .unwrap();
+    assert!(manager.create("third").await.is_ok());
+}
+
+#[tokio::test]
+async fn structural_reload_keeps_existing_and_new_sessions_on_live_storage_and_event_capacity() {
+    let directory = TempDir::new().unwrap();
+    let initial = config(&directory);
+    let manager = SessionManager::open(initial.clone()).unwrap();
+    manager.create("before").await.unwrap();
+    let next_storage = directory.path().join("next-start");
+    assert_eq!(
+        manager
+            .apply_config(Config {
+                data_dir: next_storage.clone(),
+                max_events: 1,
+                ..initial.clone()
+            })
+            .unwrap(),
+        ["data_dir", "max_events"]
+    );
+    manager.create("after").await.unwrap();
+    for id in ["before", "after"] {
+        assert!(initial.data_dir.join(id).join("metadata.json").is_file());
+        for number in 0..4 {
+            manager
+                .publish(id, "message.sent", json!({"number": number}))
+                .await
+                .unwrap();
+        }
+        let page = manager.events(id, 0, 10).await.unwrap();
+        assert_eq!(page.events.len(), 3);
+        assert!(page.truncated);
+        assert_eq!(page.events[0].data["number"], 1);
+    }
+    assert!(!next_storage.exists());
+}
+
+#[tokio::test]
 async fn deleting_one_session_preserves_other_credentials_and_is_not_resurrected() {
     let directory = TempDir::new().unwrap();
     let manager = SessionManager::open(config(&directory)).unwrap();

@@ -16,6 +16,17 @@ and missing application features.
 
 Rust 1.94 or newer and a native C toolchain are needed at build time for bundled
 SQLite and cryptographic dependencies. The repository release toolchain is 1.97.1.
+Building the embedded ADE page also requires Node and pnpm (the release pins
+Node 22.20.0 and pnpm 11.13.1). `build.rs` builds stale or missing assets; an
+already-built executable needs neither tool. For reproducible frontend builds:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm --dir whatsapp/ui build
+```
+
+Run these from the repository root before the Cargo commands below.
+`SKIP_UI_BUILD=1` uses existing `ui/dist` assets and fails if they are missing.
 
 ```sh
 cd whatsapp
@@ -34,14 +45,49 @@ For isolated development without the configuration worker:
 
 Use `--config file.yaml` for a YAML seed. In normal mode, the central entry
 `whatsapp` is authoritative; `III_CONFIG_NAME` selects another entry for a
-second instance. `III_URL` supplies the engine address. Configuration changes
-apply on restart. [iii.worker.yaml](iii.worker.yaml) contains defaults.
+second instance. `III_URL` supplies the engine address. Resource limits and
+timeouts apply live; `data_dir` and `max_events` require a worker restart.
+[iii.worker.yaml](iii.worker.yaml) contains defaults.
 Give each process its own `data_dir`; sharing live credential databases between
 worker processes is unsupported.
 
 The initial release target is Linux x86_64 GNU. It uses the host's standard
 system libraries; a statically linked musl artifact is not part of this initial
 release declaration.
+
+## ADE interface
+
+The running worker injects a **WhatsApp** page and configuration form into ADE.
+Open `#/worker/whatsapp` on your ADE host (normally
+`http://127.0.0.1:3113/#/worker/whatsapp`). The page has session creation and
+selection, explicit connect/stop actions, a local QR renderer, phone-code
+pairing, a text-message test, and recent activity. Sending requires a connected
+session and an explicit recipient. Opening the page never starts a session.
+
+Use the page's settings action to edit the actual entry for this worker
+instance. `whatsapp::configuration-id` resolves that ID in the worker's
+namespace; the ADE host saves to the configuration service in `default`.
+Environment templates are preserved by the form. Configuration changes are
+re-fetched from the authoritative service; malformed reloads keep the last
+valid settings and appear in `whatsapp::config-status`.
+
+Session/media limits and both timeouts apply to subsequent operations. A lower
+session limit prevents additional creation without deleting existing accounts.
+Changing `data_dir` requires restart because native clients own live SQLite
+credential stores; credentials are not migrated automatically. `max_events`
+requires restart because it sizes both the broadcast channel and session event
+rings. The page reports pending restart fields. Compose `config_override`
+values remain authoritative on startup; remove an override if ADE should own
+that setting. `--local-config` ignores central edits and reports local mode.
+
+Pairing data stays in page memory, expires, and is cleared on session change.
+The activity feed is bounded and is not a persistent chat archive. The send
+result identifies the protocol message; receipts establish later delivery.
+After a send timeout, check activity before sending again.
+
+For UI development, run `pnpm --dir whatsapp/ui watch` and start the worker
+with `III_WHATSAPP_UI_WATCH=/absolute/path/to/whatsapp/ui/dist`. Assets normally
+remain embedded; no frontend server is needed in production.
 
 ## Pair and send
 
@@ -110,6 +156,9 @@ Default retention is 1000 events per session. Individual event envelopes are
 capped at 64 KiB. Callback failures are not retried automatically.
 Only worker-owned diagnostics are logged, even with verbose `RUST_LOG` settings;
 native protocol logs are suppressed because they can contain pairing secrets.
+The executable also disables SDK trace payload capture before starting its
+runtime. Timing and error spans remain available without recording function
+inputs/outputs such as pairing codes and message bodies.
 
 ## Limits and differences from OpenWA
 
@@ -137,6 +186,8 @@ native protocol logs are suppressed because they can contain pairing secrets.
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features
+pnpm --dir ui test
+pnpm --dir ui build
 ```
 
 With an existing native iii engine binary, run the isolated engine integration:
@@ -146,7 +197,8 @@ III_BINARY=/absolute/path/to/iii cargo test --locked --test engine_smoke -- --ig
 ```
 
 It starts an engine on a temporary loopback port, verifies every registered schema,
-exercises offline session metadata through real RPC, and checks SIGTERM. It creates
+exercises offline session metadata, UI delivery and configuration reloads through
+real RPC, and checks SIGTERM. It creates
 no WhatsApp connection and removes its temporary state on completion.
 
 Tests cover storage/lifecycle, event bounds and projections, message construction,
