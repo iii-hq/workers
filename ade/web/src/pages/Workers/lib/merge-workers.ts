@@ -1,6 +1,10 @@
 import type { WorkerSummary } from '@/components/chat/engine/parsers'
 import type { WorkerEntry } from '@/components/chat/worker/parsers'
-import type { ComposeContainer, RawWorkersSnapshot } from '../api/workers'
+import {
+  type ComposeContainer,
+  isEngineLive,
+  type RawWorkersSnapshot,
+} from '../api/workers'
 import {
   isComposeRunning,
   type WorkerConnectionStatus,
@@ -49,7 +53,7 @@ function deriveConnectionStatus(
   supervisor: WorkerEntry | undefined,
   compose: ComposeContainer | undefined,
 ): WorkerConnectionStatus {
-  if (engineStatus?.toLowerCase() === 'connected') return 'connected'
+  if (isEngineLive(engineStatus)) return 'connected'
   if (compose) {
     if (compose.state === 'ready') return 'connected'
     if (compose.state === 'starting') return 'starting'

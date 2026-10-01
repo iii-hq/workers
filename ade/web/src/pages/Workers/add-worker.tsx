@@ -75,8 +75,8 @@ export function AddWorkerDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="wk-dialog">
-        <DialogTitle>Add worker</DialogTitle>
-        <DialogDescription>
+        <DialogTitle className="pr-8 text-[14px]">Add worker</DialogTitle>
+        <DialogDescription className="mt-2 text-[13px] leading-relaxed">
           Declare a worker in the compose file, from the registry or from a
           directory on the daemon host.
         </DialogDescription>

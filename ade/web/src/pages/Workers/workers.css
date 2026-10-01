@@ -181,9 +181,10 @@
 
 .wk-card-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 4px 8px;
 }
 
 .wk-card-note {
@@ -361,6 +362,7 @@
 }
 
 .wk-dialog-body {
+  margin-top: 16px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -370,6 +372,7 @@
 }
 
 .wk-dialog-footer {
+  margin-top: 20px;
   display: flex;
   align-items: center;
   gap: 8px;

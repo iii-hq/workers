@@ -73,6 +73,22 @@ describe('FileDiff', () => {
     })
   })
 
+  it('keys a read-only diff on its text so changed contents render again', () => {
+    renderToStaticMarkup(<FileDiff oldFile={oldFile} newFile={newFile} />)
+    renderToStaticMarkup(
+      <FileDiff
+        oldFile={oldFile}
+        newFile={{ ...newFile, contents: 'const value = 3\n' }}
+      />,
+    )
+
+    const keys = renderedProps.map(
+      (props) => (props.newFile as { cacheKey?: string }).cacheKey,
+    )
+    expect(keys[0]).toBeDefined()
+    expect(keys[0]).not.toBe(keys[1])
+  })
+
   it('keeps the diff read-only while an explicitly requested editor loads', () => {
     const html = renderToStaticMarkup(
       <FileDiff oldFile={oldFile} newFile={newFile} edit onChange={vi.fn()} />,

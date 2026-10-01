@@ -55,6 +55,15 @@ export interface FileDiffProps {
 }
 
 /**
+ * Pierre treats two diffs with the same `cacheKey` as one render and defaults
+ * the key to the file name, so a read-only diff whose text changes would keep
+ * showing its first render. The editor relies on that stable default instead.
+ */
+function keyedByText(file: FileDiffSide): FileDiffSide & { cacheKey: string } {
+  return { ...file, cacheKey: `${file.name}\0${file.contents}` }
+}
+
+/**
  * The console's one file-diff surface — `@pierre/diffs`'s `MultiFileDiff`
  * pinned to the console's diff conventions and following the active theme.
  * The diff is computed from the two full file bodies, so callers never
@@ -140,8 +149,8 @@ export function FileDiff({
 
   const diff = (
     <MultiFileDiff
-      oldFile={oldFile}
-      newFile={newFile}
+      oldFile={editing ? oldFile : keyedByText(oldFile)}
+      newFile={editing ? newFile : keyedByText(newFile)}
       edit={editing}
       editorOptions={editing ? editorOptions : undefined}
       className={cn('[--diffs-font-family:var(--font-code)]', className)}

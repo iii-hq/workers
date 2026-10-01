@@ -95,6 +95,12 @@ export interface RawWorkersSnapshot {
   compose: ComposeStatus | null
 }
 
+/** The engine's own workers (configuration, iii-observability, …) report `available`, not `connected`. */
+export function isEngineLive(status: string | undefined): boolean {
+  const s = status?.toLowerCase()
+  return s === 'connected' || s === 'available'
+}
+
 /** Bounded parallel map — avoids stampeding the engine on large fleets. */
 export async function mapWithConcurrency<T, R>(
   items: T[],
@@ -132,7 +138,7 @@ export async function fetchRawWorkersSnapshot(): Promise<RawWorkersSnapshot> {
   ])
 
   const connected = engineList.workers.filter(
-    (w) => w.status.toLowerCase() === 'connected' && w.name,
+    (w) => isEngineLive(w.status) && w.name,
   )
   const names = connected
     .map((w) => w.name as string)

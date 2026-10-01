@@ -95,8 +95,7 @@ export function ProjectView({
         names.length === 1
           ? `Update ${names[0]} to ${latest.of(names[0])}?`
           : `Update ${names.length} packages?`,
-      description:
-        'Compose resolves them and their dependencies again, and restarts the whole project when what runs changes.',
+      description: `Compose resolves ${names.length === 1 ? 'it and its' : 'them and their'} dependencies again, and restarts the whole project when what runs changes.`,
       details: names.length > 1 ? targets : undefined,
       confirmLabel: 'Update and restart',
     })

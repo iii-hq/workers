@@ -330,7 +330,6 @@ function WorkersPage({
           title: 'Refresh workers',
           detail: 'Read the compose project and the engine again',
           keywords: ['reload', 'fleet'],
-          shortcut: 'R',
           run: live.refresh,
         },
         {
@@ -338,7 +337,6 @@ function WorkersPage({
           title: 'Add worker…',
           detail: 'Declare one from the registry or a local directory',
           keywords: ['compose', 'install', 'registry'],
-          shortcut: 'N',
           run: () => setAdding(true),
         },
         {
@@ -352,7 +350,6 @@ function WorkersPage({
           id: 'filter',
           title: 'Filter workers',
           keywords: ['search', 'find'],
-          shortcut: '/',
           run: () => {
             setDrilled(false)
             window.requestAnimationFrame(() => filterRef.current?.focus())
