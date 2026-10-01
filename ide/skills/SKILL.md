@@ -147,3 +147,7 @@ standalone worker) over the **same jail** (`fs.host_roots`): `coder::info`
 `coder::list-templates` lists the worker templates (`code.templates`: a local
 `dir`, or a cached git clone) with their language and the compose containers
 they need.
+`coder::scaffold-worker { template, name, directory? }` writes one into a
+missing or empty folder whose last segment is `name` (default
+`workers/<name>`), all or nothing, and returns the object to pass to
+`compose::add`.

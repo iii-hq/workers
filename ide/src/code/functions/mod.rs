@@ -18,6 +18,7 @@ pub mod list_templates;
 pub mod move_file;
 pub mod read_file;
 pub mod read_window;
+pub mod scaffold_worker;
 pub mod search;
 pub mod tree;
 pub mod update_file;
@@ -148,6 +149,17 @@ const LIST_TEMPLATES_DESC: &str =
      means the clone could not refresh and is stale. refresh: true \
      re-fetches it now.";
 
+const SCAFFOLD_WORKER_ID: &str = "coder::scaffold-worker";
+const SCAFFOLD_WORKER_DESC: &str =
+    "Create a new iii worker from a coder::list-templates template: write \
+     its files into directory (default workers/<name>; its last folder must \
+     be <name>, C232 otherwise) with the template's name token replaced, \
+     all or nothing; a directory that exists and is not empty fails C233. \
+     Returns the files, a compose object for compose::add (add start_after \
+     and any requires that compose::status does not list) and next_steps. \
+     Paths: relative to the primary root or absolute inside an allowed root \
+     (see coder::info).";
+
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.
 ///
@@ -217,6 +229,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
             LIST_TEMPLATES_ID,
             LIST_TEMPLATES_DESC,
         ),
+        spec::<scaffold_worker::ScaffoldWorkerInput, scaffold_worker::ScaffoldWorkerOutput>(
+            SCAFFOLD_WORKER_ID,
+            SCAFFOLD_WORKER_DESC,
+        ),
     ]
 }
 
@@ -246,7 +262,9 @@ pub fn register_all(iii: &IIIClient, cells: CodeCells) {
     registered += 1;
     register_move_file(iii, cells.clone());
     registered += 1;
-    register_list_templates(iii, cells);
+    register_list_templates(iii, cells.clone());
+    registered += 1;
+    register_scaffold_worker(iii, cells);
     registered += 1;
     debug_assert_eq!(
         registered,
@@ -461,6 +479,28 @@ fn register_list_templates(iii: &IIIClient, cells: CodeCells) {
             }
         })
         .description(LIST_TEMPLATES_DESC),
+    );
+}
+
+fn register_scaffold_worker(iii: &IIIClient, cells: CodeCells) {
+    iii.register_function(
+        SCAFFOLD_WORKER_ID,
+        RegisterFunction::new_async(move |req: scaffold_worker::ScaffoldWorkerInput| {
+            let cells = cells.clone();
+            async move {
+                let resolver = cells.resolver.read().await.clone();
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
+                let cfg = cells.config.read().await.clone();
+                scaffold_worker::handle(resolver, cfg, cells.changes.clone(), req)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(SCAFFOLD_WORKER_DESC)
+        .metadata(serde_json::json!({ "display": true })),
     );
 }
 

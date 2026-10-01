@@ -1,0 +1,111 @@
+{
+  "description": "Create a new iii worker from a coder::list-templates template: write its files into directory (default workers/<name>; its last folder must be <name>, C232 otherwise) with the template's name token replaced, all or nothing; a directory that exists and is not empty fails C233. Returns the files, a compose object for compose::add (add start_after and any requires that compose::status does not list) and next_steps. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
+  "function_id": "coder::scaffold-worker",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "examples": [
+      {
+        "directory": "workers/orders",
+        "name": "orders",
+        "template": "worker-node-ade"
+      }
+    ],
+    "properties": {
+      "directory": {
+        "default": null,
+        "description": "Folder to create the worker in: missing or empty, and its last folder must be `name` (compose names the container after it). Defaults to the template's worker folder for this name (`workers/<name>`).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "name": {
+        "description": "The new worker's name: lowercase kebab-case, 1-63 chars. It replaces the template's name token, so it names the folder, the compose container and the function prefix (`<name>::hello`).",
+        "type": "string"
+      },
+      "template": {
+        "description": "Template id from coder::list-templates.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "template"
+    ],
+    "title": "ScaffoldWorkerInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ScaffoldedFile": {
+        "properties": {
+          "bytes": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Canonical absolute path.",
+            "type": "string"
+          },
+          "revision": {
+            "description": "Revision of the bytes written, as coder::read-file reports it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bytes",
+          "path",
+          "revision"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "compose": {
+        "description": "Container object for `compose::add { workers: [compose] }`: `worker` is the absolute folder path; `start_after` is left to the caller."
+      },
+      "directory": {
+        "description": "Canonical absolute path of the new worker folder.",
+        "type": "string"
+      },
+      "files": {
+        "items": {
+          "$ref": "#/definitions/ScaffoldedFile"
+        },
+        "type": "array"
+      },
+      "name": {
+        "type": "string"
+      },
+      "next_steps": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "requires": {
+        "description": "Compose containers the worker needs (e.g. `http`); add the ones `compose::status` does not list in the same `compose::add`.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "template": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "compose",
+      "directory",
+      "files",
+      "name",
+      "next_steps",
+      "requires",
+      "template"
+    ],
+    "title": "ScaffoldWorkerOutput",
+    "type": "object"
+  }
+}

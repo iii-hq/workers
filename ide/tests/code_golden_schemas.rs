@@ -53,6 +53,7 @@ fn catalog_lists_every_function_in_registration_order() {
             "coder::tree",
             "coder::move",
             "coder::list-templates",
+            "coder::scaffold-worker",
         ]
     );
 }
@@ -285,6 +286,16 @@ fn list_templates_example_round_trips() {
     let input: ide::code::functions::list_templates::ListTemplatesInput =
         example_as("coder::list-templates", 0);
     assert!(input.refresh);
+}
+
+#[test]
+fn scaffold_worker_example_round_trips() {
+    let input: ide::code::functions::scaffold_worker::ScaffoldWorkerInput =
+        example_as("coder::scaffold-worker", 0);
+    assert_eq!(input.template, "worker-node-ade");
+    assert_eq!(input.name, "orders");
+    assert_eq!(input.directory.as_deref(), Some("workers/orders"));
+    assert!(input.fs_scope.is_none());
 }
 
 /// No stale goldens: every file under tests/golden/schemas/ must
