@@ -83,6 +83,7 @@ export function AddWorkerDialog({
         <div className="wk-dialog-body">
           <SegmentedControl
             variant="radio"
+            className="wk-seg"
             aria-label="Where the worker comes from"
             value={mode}
             onChange={(next) => {

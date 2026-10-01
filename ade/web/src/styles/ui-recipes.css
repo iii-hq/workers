@@ -1032,7 +1032,11 @@ a.iii-ui-tree-item {
 }
 
 .iii-ui-segmented__item {
+  display: inline-flex;
   min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
   padding: 0.25rem 0.75rem;
   border: 0;
   border-radius: var(--radius-xs);

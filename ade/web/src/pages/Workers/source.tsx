@@ -46,6 +46,7 @@ export function SourceTab(props: Props) {
       <SettingsSection title="Source">
         <SegmentedControl
           variant="radio"
+          className="wk-seg"
           aria-label="Where the worker comes from"
           value={kind}
           onChange={setKind}
@@ -154,6 +155,7 @@ function PackageSource({ api, actions, declared }: Props) {
       >
         <SegmentedControl
           variant="radio"
+          className="wk-seg"
           aria-label="Version policy"
           value={policy}
           onChange={setPolicy}

@@ -43,6 +43,24 @@ describe('SegmentedControl', () => {
     expect(html).not.toContain('iii-ui-tab__icon')
   })
 
+  it('shows a radio icon only when the option passes one', () => {
+    const html = renderToStaticMarkup(
+      <SegmentedControl
+        value="package"
+        onChange={() => undefined}
+        variant="radio"
+        options={[
+          { value: 'package', label: 'Package', icon: <svg data-icon="" /> },
+          { value: 'path', label: 'Path' },
+        ]}
+        aria-label="Source"
+      />,
+    )
+
+    expect(html.match(/iii-ui-tab__icon/g)).toHaveLength(1)
+    expect(html).toContain('data-icon')
+  })
+
   it('renders icon-only tabs with accessible labels and tooltip triggers', () => {
     const html = renderToStaticMarkup(
       <TooltipProvider delayDuration={0}>

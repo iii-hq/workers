@@ -454,3 +454,8 @@
     gap: 4px;
   }
 }
+
+/* Segmented choices hug their options, as in the design. */
+.wk-seg {
+  align-self: flex-start;
+}
