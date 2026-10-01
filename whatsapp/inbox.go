@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS inbox_messages (row_id INTEGER PRIMARY KEY AUTOINCREM
 CREATE INDEX IF NOT EXISTS inbox_chat_order ON inbox_messages(chat_id,timestamp_ms DESC,row_id DESC);
 CREATE INDEX IF NOT EXISTS inbox_retention_order ON inbox_messages(timestamp_ms DESC,row_id DESC);
 CREATE INDEX IF NOT EXISTS inbox_expiration ON inbox_messages(expires_at_ms) WHERE expires_at_ms IS NOT NULL;
-CREATE TABLE IF NOT EXISTS inbox_external_receipts(message_id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,status TEXT NOT NULL,rank INTEGER NOT NULL,received_at_ms BIGINT NOT NULL,sent_at_ms BIGINT);`
+CREATE TABLE IF NOT EXISTS inbox_external_receipts(message_id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,status TEXT NOT NULL,rank INTEGER NOT NULL,received_at_ms BIGINT NOT NULL,sent_at_ms BIGINT);
+CREATE TABLE IF NOT EXISTS inbox_cloud_event_markers(sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_key TEXT UNIQUE NOT NULL);`
 
 func NewInbox(dir string, limit int) (*Inbox, error) {
 	if limit < 1 || limit > 100000 {
@@ -262,7 +263,7 @@ func (i *Inbox) SetLimit(limit int) error {
 	return nil
 }
 func clearInbox(tx *sql.Tx) error {
-	if _, err := tx.Exec("DELETE FROM inbox_messages; DELETE FROM inbox_chats; DELETE FROM inbox_external_receipts;"); err != nil {
+	if _, err := tx.Exec("DELETE FROM inbox_messages; DELETE FROM inbox_chats; DELETE FROM inbox_external_receipts; DELETE FROM inbox_cloud_event_markers;"); err != nil {
 		return err
 	}
 	_, err := tx.Exec("UPDATE inbox_meta SET capture_started_at_ms=?,last_history_sync_at_ms=NULL,last_history_sync_progress=NULL,retention_truncated=0,account=NULL WHERE id=1", time.Now().UnixMilli())
@@ -316,7 +317,10 @@ func trimInbox(tx *sql.Tx, limit int) error {
 	if _, err = tx.Exec("DELETE FROM inbox_chats WHERE chat_id NOT IN (SELECT chat_id FROM inbox_messages) AND chat_id IN (SELECT chat_id FROM inbox_chats ORDER BY chat_id LIMIT -1 OFFSET ?)", limit); err != nil {
 		return err
 	}
-	_, err = tx.Exec("DELETE FROM inbox_external_receipts WHERE message_id IN (SELECT message_id FROM inbox_external_receipts ORDER BY received_at_ms DESC,message_id DESC LIMIT -1 OFFSET ?)", limit)
+	if _, err = tx.Exec("DELETE FROM inbox_external_receipts WHERE message_id IN (SELECT message_id FROM inbox_external_receipts ORDER BY received_at_ms DESC,message_id DESC LIMIT -1 OFFSET ?)", limit); err != nil {
+		return err
+	}
+	_, err = tx.Exec("DELETE FROM inbox_cloud_event_markers WHERE sequence IN (SELECT sequence FROM inbox_cloud_event_markers ORDER BY sequence DESC LIMIT -1 OFFSET ?)", 5*limit)
 	return err
 }
 func validateInboxMessages(messages []MessageView) ([]MessageView, error) {
@@ -465,16 +469,32 @@ func externalStatusRank(status string) int {
 	return map[string]int{"sent": 1, "failed": 2, "delivered": 3, "read": 4}[status]
 }
 func (i *Inbox) RecordExternal(messages []MessageView, receipts []ExternalReceipt) (int, error) {
+	if _, err := i.recordExternal(messages, receipts, nil); err != nil {
+		return 0, err
+	}
+	return len(messages) + len(receipts), nil
+}
+
+// RecordCloudDelivery atomically archives a webhook and claims its unseen events.
+// Markers suppress retries across restarts; they do not guarantee trigger delivery.
+func (i *Inbox) RecordCloudDelivery(messages []MessageView, receipts []ExternalReceipt, events []CloudEvent) ([]CloudEvent, error) {
+	return i.recordExternal(messages, receipts, events)
+}
+
+func (i *Inbox) recordExternal(messages []MessageView, receipts []ExternalReceipt, events []CloudEvent) ([]CloudEvent, error) {
 	if len(messages)+len(receipts) > 1000 {
-		return 0, errors.New("Cloud API update batch exceeds 1000 items")
+		return nil, errors.New("Cloud API update batch exceeds 1000 items")
+	}
+	if len(events) > 1000 {
+		return nil, errors.New("Cloud API event batch exceeds 1000 items")
 	}
 	prepared, err := validateInboxMessages(messages)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	for n := range prepared {
 		if !strings.HasPrefix(prepared[n].ChatID, "cloud:") {
-			return 0, errors.New("invalid Cloud API chat identifier")
+			return nil, errors.New("invalid Cloud API chat identifier")
 		}
 		prepared[n].Source = "live"
 		if prepared[n].FromMe {
@@ -483,17 +503,18 @@ func (i *Inbox) RecordExternal(messages []MessageView, receipts []ExternalReceip
 	}
 	for _, receipt := range receipts {
 		if !strings.HasPrefix(receipt.ChatID, "cloud:") || receipt.MessageID == "" || len(receipt.MessageID) > 512 || externalStatusRank(receipt.Status) == 0 {
-			return 0, errors.New("invalid Cloud API receipt")
+			return nil, errors.New("invalid Cloud API receipt")
 		}
 		if _, err := canonicalInboxChat(receipt.ChatID); err != nil {
-			return 0, err
+			return nil, err
 		}
 		if receipt.SentAtMS != nil && (receipt.Status != "sent" || *receipt.SentAtMS < 0) {
-			return 0, errors.New("invalid Cloud API sent timestamp")
+			return nil, errors.New("invalid Cloud API sent timestamp")
 		}
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	fresh := []CloudEvent{}
 	err = i.transaction(func(tx *sql.Tx) error {
 		if err := commitInbox(tx, prepared, nil); err != nil {
 			return err
@@ -514,12 +535,26 @@ sent_at_ms=COALESCE(inbox_external_receipts.sent_at_ms,excluded.sent_at_ms)`, r.
 		if _, err := tx.Exec("UPDATE inbox_messages SET timestamp_ms=(SELECT sent_at_ms FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id) WHERE from_me=1 AND EXISTS(SELECT 1 FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id AND r.sent_at_ms IS NOT NULL AND r.sent_at_ms!=inbox_messages.timestamp_ms)"); err != nil {
 			return err
 		}
+		for _, event := range events {
+			key, _ := json.Marshal([]string{event.BusinessAccountID, event.PhoneNumberID, event.Kind, event.MessageID, event.Status})
+			result, err := tx.Exec("INSERT OR IGNORE INTO inbox_cloud_event_markers(event_key) VALUES(?)", string(key))
+			if err != nil {
+				return err
+			}
+			inserted, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if inserted == 1 {
+				fresh = append(fresh, event)
+			}
+		}
 		return trimInbox(tx, i.limit)
 	})
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return len(messages) + len(receipts), nil
+	return fresh, nil
 }
 
 func decodeInboxCursor(encoded, scope, query string) (inboxCursor, error) {

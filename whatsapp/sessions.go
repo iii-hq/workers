@@ -57,16 +57,18 @@ type Session struct {
 	eventEpoch                  uint64
 }
 type Manager struct {
-	tunnel       *DevelopmentTunnel
-	mu           sync.RWMutex
-	config       Config
-	sessions     map[string]*Session
-	cloud        map[string]*Inbox
-	closed       bool
-	shutdownDone chan struct{}
-	shutdownErr  error
-	lock         *os.File
-	EventQueue   chan Event
+	tunnel          *DevelopmentTunnel
+	mu              sync.RWMutex
+	config          Config
+	sessions        map[string]*Session
+	cloud           map[string]*Inbox
+	closed          bool
+	shutdownDone    chan struct{}
+	shutdownErr     error
+	lock            *os.File
+	EventQueue      chan Event
+	CloudEventQueue chan CloudEvent
+	cloudEpoch      uint64
 }
 
 var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -100,7 +102,7 @@ func NewManager(config Config) (*Manager, error) {
 		lock.Close()
 		return nil, err
 	}
-	m := &Manager{config: config, sessions: map[string]*Session{}, cloud: map[string]*Inbox{}, lock: lock, EventQueue: make(chan Event, config.MaxEvents)}
+	m := &Manager{config: config, sessions: map[string]*Session{}, cloud: map[string]*Inbox{}, lock: lock, EventQueue: make(chan Event, config.MaxEvents), CloudEventQueue: make(chan CloudEvent, config.MaxEvents)}
 	entries, err := os.ReadDir(config.DataDir)
 	if err != nil {
 		m.Shutdown(context.Background())
@@ -364,6 +366,9 @@ func (m *Manager) ApplyConfig(next Config) ([]string, error) {
 		if err := box.SetLimit(next.MaxInboxMessages); err != nil {
 			return nil, errors.New("unable to apply Cloud inbox retention")
 		}
+	}
+	if next.Cloud != m.config.Cloud {
+		m.cloudEpoch++
 	}
 	m.config = next
 	return pending, nil

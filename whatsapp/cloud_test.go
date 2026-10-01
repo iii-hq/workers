@@ -225,7 +225,7 @@ func TestCloudWebhookSignatureChallengeAndAccountIsolation(t *testing.T) {
 	delete(private, "from")
 	private["from_user_id"] = "BR.ENT.private123"
 	change := cloudTestChange(private)
-	change["value"].(map[string]any)["statuses"] = []any{map[string]any{"id": "sent", "status": "read", "recipient_user_id": "BR.ENT.private123"}}
+	change["value"].(map[string]any)["statuses"] = []any{map[string]any{"id": "sent", "status": "read", "timestamp": "1700000001", "recipient_user_id": "BR.ENT.private123"}}
 	batch = cloudTestParse(t, cloudTestPayload(change))
 	if batch.messages[0].ChatID != "cloud:BR.ENT.private123" || batch.receipts[0].ChatID != batch.messages[0].ChatID {
 		t.Fatal("BSUID was not preserved")
@@ -282,6 +282,13 @@ func TestCloudWebhookRawSDKChannelAndDuplicatePersistence(t *testing.T) {
 	if err != nil || len(page.Messages) != 1 || page.Messages[0].Text != "Local test café" {
 		t.Fatalf("delivery not persisted: %+v, %v", page, err)
 	}
+	if len(manager.CloudEventQueue) != 1 {
+		t.Fatalf("duplicate webhook published %d events", len(manager.CloudEventQueue))
+	}
+	event := <-manager.CloudEventQueue
+	if event.Kind != "message.received" || event.MessageID != page.Messages[0].MessageID || event.ChatID != "+15551234567" {
+		t.Fatalf("wrong webhook event: %+v", event)
+	}
 	req.Headers["X-Hub-Signature-256"] = "sha256=" + strings.Repeat("0", 64)
 	if receiveCloudWebhook(context.Background(), manager, engineURL, req).StatusCode != 403 {
 		t.Fatal("bad signature accepted")
@@ -292,6 +299,9 @@ func TestCloudWebhookRawSDKChannelAndDuplicatePersistence(t *testing.T) {
 	}
 	if streamCalls.Load() != 3 {
 		t.Fatalf("unexpected channel calls: %d", streamCalls.Load())
+	}
+	if len(manager.CloudEventQueue) != 0 {
+		t.Fatal("rejected webhook published an event")
 	}
 }
 

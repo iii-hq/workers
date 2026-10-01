@@ -147,15 +147,7 @@ func receiveCloudWebhook(parent context.Context, manager *Manager, engineURL str
 	}
 	done := make(chan error, 1)
 	go func() {
-		if manager.Config().Cloud != config.Cloud {
-			done <- errors.New("Cloud configuration changed")
-			return
-		}
-		inbox, err := manager.CloudInbox(config)
-		if err == nil {
-			_, err = inbox.RecordExternal(batch.messages, batch.receipts)
-		}
-		done <- err
+		done <- manager.storeCloudDelivery(config, batch)
 	}()
 	select {
 	case err := <-done:
@@ -171,6 +163,7 @@ func receiveCloudWebhook(parent context.Context, manager *Manager, engineURL str
 type cloudDeliveryBatch struct {
 	messages []MessageView
 	receipts []ExternalReceipt
+	events   []CloudEvent
 }
 
 func cloudObject(value any) (map[string]any, error) {
@@ -322,12 +315,21 @@ func parseCloudDelivery(config CloudConfig, raw []byte) (cloudDeliveryBatch, err
 					if err != nil {
 						return batch, err
 					}
+					if !cloudMessageTypePattern.MatchString(cloudString(message, "type")) {
+						return batch, errors.New("invalid message type")
+					}
 					chat, _ := cloudStorageChatID(sender)
 					view := MessageView{MessageID: id, ChatID: chat, SenderID: sender, TimestampMS: seconds * 1000, Kind: kind, Text: text, Source: "live"}
 					if name, ok := names[sender]; ok {
 						view.SenderName = &name
 					}
 					batch.messages = append(batch.messages, view)
+					data, _ := json.Marshal(message)
+					batch.events = append(batch.events, boundedCloudEvent(CloudEvent{
+						Kind: "message.received", BusinessAccountID: config.BusinessAccountID, PhoneNumberID: config.PhoneNumberID,
+						MessageID: id, ChatID: sender, SenderID: sender, MessageType: cloudString(message, "type"),
+						TimestampMS: seconds * 1000, Text: text, Data: data,
+					}))
 				}
 			}
 			if rawStatuses, exists := value["statuses"]; exists {
@@ -360,15 +362,20 @@ func parseCloudDelivery(config CloudConfig, raw []byte) (cloudDeliveryBatch, err
 					}
 					chat, _ := cloudStorageChatID(recipient)
 					receipt := ExternalReceipt{MessageID: id, ChatID: chat, Status: state}
+					seconds, err := strconv.ParseInt(cloudString(status, "timestamp"), 10, 64)
+					if err != nil || seconds < 0 || seconds > math.MaxInt64/1000 {
+						return batch, errors.New("invalid status timestamp")
+					}
 					if state == "sent" {
-						seconds, err := strconv.ParseInt(cloudString(status, "timestamp"), 10, 64)
-						if err != nil || seconds < 0 || seconds > math.MaxInt64/1000 {
-							return batch, errors.New("invalid sent timestamp")
-						}
 						milliseconds := seconds * 1000
 						receipt.SentAtMS = &milliseconds
 					}
 					batch.receipts = append(batch.receipts, receipt)
+					data, _ := json.Marshal(status)
+					batch.events = append(batch.events, boundedCloudEvent(CloudEvent{
+						Kind: "message.status", BusinessAccountID: config.BusinessAccountID, PhoneNumberID: config.PhoneNumberID,
+						MessageID: id, ChatID: recipient, Status: state, TimestampMS: seconds * 1000, Data: data,
+					}))
 				}
 			}
 		}

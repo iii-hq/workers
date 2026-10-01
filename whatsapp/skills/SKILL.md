@@ -16,4 +16,28 @@ description: Use the WhatsApp worker to manage linked-device sessions, send auth
 
 Return factual operation results and per-participant failures. Treat pairing codes, QR payloads, media keys and message content as sensitive; keep them out of logs. See [README](../README.md) for deployment, resource limits and the complete offline function catalog command.
 
-For Meta Cloud API tasks, use `whatsapp::cloud::*` without a native session. Inspect `cloud::status`; run `cloud::check_connection` only for a requested connection test. Use phone numbers or business-scoped IDs accepted by that function's schema. Send only the authorized text or approved template to the selected recipient. Cloud groups, account provisioning and historical backfill are not implemented. Read captured messages through the Cloud archive functions; native event subscriptions do not deliver Cloud events. Consult the README's Cloud API section when configuring credentials or webhooks.
+## Meta Cloud API
+
+Use `whatsapp::cloud::*` without a native session. Inspect `cloud::status`; run
+`cloud::check_connection` for a requested connection test. Use canonical phone
+numbers with a leading `+` or business-scoped user IDs. Send only the authorized
+text or approved template to the selected recipient. Cloud groups, account
+provisioning and historical backfill are unavailable. For credentials or webhook
+setup, read [Official Meta Cloud API](../README.md#official-meta-cloud-api).
+
+For ongoing Cloud webhook work, subscribe to `whatsapp::cloud::events` in the
+worker's namespace, preserving the callback namespace and binding metadata.
+Read [Filtered Cloud webhook events](../README.md#filtered-cloud-webhook-events)
+before constructing the filter or consuming its payload. Empty or omitted
+`kinds` means only `message.received`; opt into `message.status` explicitly.
+Use the documented account, chat, sender, message-type and status filters to
+limit callbacks to the requested scope. These events carry the original single
+Meta object in `data` and are separate from native session events.
+
+After subscribing, read `cloud::chats::list` and `cloud::messages::list` to
+reconcile retained state and registration gaps. Repeat reconciliation after a
+connection gap or callback failure: Cloud delivery is best effort, deduplicated
+and bounded, with no callback retry or event polling endpoint. An archive is
+current retained state, not a receipt-transition log. Local sends do not emit
+`message.received`; use later webhook statuses to establish delivery, and inspect
+the archive before retrying a send with an uncertain outcome.

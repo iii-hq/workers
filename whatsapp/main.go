@@ -51,7 +51,7 @@ func run() error {
 		return nil
 	}
 	if *manifest {
-		return printJSON(map[string]any{"name": "whatsapp", "version": version, "description": "Native WhatsApp and Meta Cloud API worker", "default_config": DefaultConfig(), "native_client": map[string]string{"repository": "https://github.com/tulir/whatsmeow", "revision": whatsmeowRevision}, "runtime": "standalone Go binary; no Node, browser or sandbox required", "trigger_types": []string{"whatsapp::events"}, "console_ui": map[string]any{"scope": "whatsapp", "assets": []string{"whatsapp/page.js", "whatsapp/styles.css"}}})
+		return printJSON(map[string]any{"name": "whatsapp", "version": version, "description": "Native WhatsApp and Meta Cloud API worker", "default_config": DefaultConfig(), "native_client": map[string]string{"repository": "https://github.com/tulir/whatsmeow", "revision": whatsmeowRevision}, "runtime": "standalone Go binary; no Node, browser or sandbox required", "trigger_types": []string{"whatsapp::events", "whatsapp::cloud::events"}, "console_ui": map[string]any{"scope": "whatsapp", "assets": []string{"whatsapp/page.js", "whatsapp/styles.css"}}})
 	}
 	if *catalog {
 		return printJSON(NewRegistry(nil).Catalog())
@@ -99,6 +99,9 @@ func run() error {
 		}
 	}()
 	if err = registerEvents(ctx, client, manager); err != nil {
+		return err
+	}
+	if err = registerCloudEvents(ctx, client, manager); err != nil {
 		return err
 	}
 	if err = registerCloudWebhooks(client, manager, *url); err != nil {

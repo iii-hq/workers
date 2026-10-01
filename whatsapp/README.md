@@ -107,8 +107,8 @@ Session/media limits and both timeouts apply to subsequent operations. A lower
 session limit prevents additional creation without deleting existing accounts.
 Changing `data_dir` requires restart because native clients own live SQLite
 credential stores; credentials are not migrated automatically. `max_events`
-requires restart because it sizes both the broadcast channel and session event
-rings. The page reports pending restart fields. Compose `config_override`
+requires restart because it sizes the native and Cloud event queues and native
+session event rings. The page reports pending restart fields. Compose `config_override`
 values remain authoritative on startup; remove an override if ADE should own
 that setting. `--local-config` ignores central edits and reports local mode.
 
@@ -231,8 +231,9 @@ iii trigger whatsapp::cloud::tunnel::stop --namespace my-project --json '{}'
 
 Sending is always explicit. Text messages require an open 24-hour customer
 service window and allow up to 4096 characters. Outside that window, choose an
-approved template and supply its required components. **Load templates** reads
-existing templates only. Destinations use international phone numbers with a
+approved template and supply its required components. Selecting **Approved template**
+loads existing templates; text parameters have labeled fields, with **Advanced JSON**
+for other components. Destinations use international phone numbers with a
 leading `+`, or supported business-scoped user IDs; native JIDs are rejected.
 See [text messages](https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/text-messages),
 [templates](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/overview)
@@ -256,10 +257,117 @@ Cloud archives live under `data_dir/.cloud/<phone_number_id>/inbox.db`, separate
 from every native session. They retain webhook messages and worker-submitted
 messages under `max_inbox_messages`; changing the phone ID selects a separate
 archive. They contain message previews and media labels, without media downloads
-or historical backfill. Reading them sends no read receipt. Cloud events are
-available through archive polling, not the native `whatsapp::events` trigger.
+or historical backfill. Reading them sends no read receipt. Subscribe to
+`whatsapp::cloud::events` for filtered webhook notifications and reconcile with
+the archive; native `whatsapp::events` subscriptions remain separate.
 The **Groups** tab continues to use the linked-device integration; this Cloud
 integration does not implement Meta's separate Groups API.
+
+### Filtered Cloud webhook events
+
+Trigger type `whatsapp::cloud::events` delivers one flat event per accepted
+incoming message or delivery-status object after its archive transaction commits:
+
+```json
+{
+  "kind": "message.received",
+  "business_account_id": "123",
+  "phone_number_id": "456",
+  "message_id": "wamid.example",
+  "chat_id": "+15550000001",
+  "sender_id": "+15550000001",
+  "message_type": "text",
+  "text": "Hello",
+  "timestamp_ms": 1700000000000,
+  "data": {
+    "id": "wamid.example",
+    "from": "15550000001",
+    "timestamp": "1700000000",
+    "type": "text",
+    "text": {"body": "Hello"}
+  }
+}
+```
+
+`kind` is `message.received` or `message.status`. Every event includes the account
+IDs, message ID, canonical chat ID and Meta's timestamp in milliseconds.
+`sender_id`, `message_type`, preview `text` and `status` are present when applicable.
+`message_type` retains Meta's raw type, such as `text`, `image` or `interactive`.
+`data` is the original single message/status object, not the entire webhook body.
+Previews normally contain at most 16 KiB. Event envelopes are capped at 64 KiB;
+oversized content uses `data: {"content_omitted":true}` and a preview clipped to
+8 KiB so the JSON-encoded envelope stays bounded. Handle message bodies as private data.
+
+The strict filter accepts these fields; unknown fields are rejected:
+
+| Field | Match |
+|---|---|
+| `kinds` | Event kinds; omitted or empty means only `message.received`. Set `message.status` explicitly to receive receipts. |
+| `chat_ids` | Canonical international phone numbers or business-scoped user IDs. |
+| `sender_ids` | Canonical sender IDs; events without a matching sender are excluded. |
+| `message_types` | Exact raw Meta message types. |
+| `statuses` | Exact values on `message.status` events: `sent`, `delivered`, `read` or `failed`. |
+| `business_account_id` | Exact WABA ID. |
+| `phone_number_id` | Exact Phone Number ID. |
+
+List entries are alternatives (OR); populated fields combine with AND. An empty
+list imposes no restriction, except for the received-only default of `kinds`.
+Each list accepts at most 128 values; the complete filter is limited to 64 KiB.
+Message type names use 1–64 lowercase letters, digits or underscores and start
+with a letter. Account IDs are numeric strings of at most 32 digits.
+Use a leading `+` for contact phone numbers and preserve business-scoped IDs such as
+`BR.ENT.Abc123`. Native JIDs are not valid Cloud filters. A status event usually
+has no sender or message type, so leave those filters empty for receipt subscriptions.
+
+With connected Go SDK clients, register the binding from the WhatsApp worker's
+namespace and specify the callback's namespace explicitly. In this example,
+`subscriptions` is connected in that worker's namespace and `automation` in
+`support`; both clients remain connected for the subscription's lifetime:
+
+```go
+if err := automation.RegisterFunction("support::on-cloud-message", func(ctx context.Context, raw json.RawMessage) (any, error) {
+    var event struct {
+        Kind      string `json:"kind"`
+        MessageID string `json:"message_id"`
+    }
+    if err := json.Unmarshal(raw, &event); err != nil {
+        return nil, err
+    }
+    metadata, _ := iii.MetadataFromContext(ctx)
+    return map[string]any{"message_id": event.MessageID, "metadata": metadata}, nil
+}); err != nil {
+    return err
+}
+filter := json.RawMessage(`{"chat_ids":["+15550000001"],"message_types":["text"]}`)
+metadata := json.RawMessage(`{"workflow":"customer-support"}`)
+if err := subscriptions.RegisterTriggerNamespaced(
+    "support-cloud-messages", "whatsapp::cloud::events",
+    "support::on-cloud-message", "support", filter, metadata,
+); err != nil {
+    return err
+}
+```
+
+The callback receives binding metadata through `iii.MetadataFromContext`,
+separately from the event payload. Callback results do not send WhatsApp messages;
+outbound actions still require an explicit call to a Cloud send function.
+
+Webhook deduplication is persistent in the Cloud archive's SQLite database and
+commits with the message/receipt changes before publication. The latest
+`5 * max_inbox_messages` deduplication entries are retained and cleared with the
+archive. Within that retained history, repeated messages and repeated status
+states publish once. A distinct late status still publishes once even if it
+has a lower rank than the status already shown in the archive. Local sends do
+not emit `message.received`; their subsequent Meta webhook receipts can emit
+`message.status`.
+
+Delivery is best effort through a separate Cloud queue bounded by `max_events`.
+Queue overflow, process shutdown or callback failure can lose a notification;
+there is no outbox, callback retry or Cloud event polling endpoint. Deduplication
+does not guarantee callback delivery. Reconcile application state with
+`cloud::chats::list` and `cloud::messages::list`; the archive records current
+retained state rather than every historical receipt transition. Cloud configuration
+changes invalidate queued events from the previous configuration.
 
 ## Pair and send
 
@@ -391,8 +499,9 @@ schemas. They do not pair an account or send a real WhatsApp message.
 `make generate` to refresh the SDK schema adapters and rerun tests.
 
 Go SDK 0.24.3 cannot advertise trigger filter or event payload schemas to the
-engine. Runtime filter validation remains active; the JSON example under
-[Functions and events](#functions-and-events) defines the subscription contract.
+engine. Runtime filter validation remains active; [Functions and events](#functions-and-events)
+defines the native subscription contract and [Filtered Cloud webhook events](#filtered-cloud-webhook-events)
+defines the Cloud contract.
 
 The optional engine smoke test starts an isolated engine and worker on loopback
 with temporary configuration and storage. Point it at existing local binaries:
@@ -408,7 +517,9 @@ go test -run '^TestEngineSmoke$' -count=1 -v .
 This checks central configuration reloads, runtime schemas, ADE assets, offline
 session lifecycle and event delivery across namespaces. `HTTP_BINARY` is optional;
 when supplied, it also checks webhook verification, raw-body signatures, account
-isolation and duplicate message persistence using synthetic credentials and data.
+isolation, duplicate message persistence, filtered Cloud callbacks, callback
+namespace/metadata and archive visibility before callback delivery using synthetic
+credentials and data.
 A synthetic quick-tunnel provider checks the development controls, shared lease
 isolation, namespace routing and callback changes through the real engine; it
 does not launch cloudflared or expose the test server publicly.
