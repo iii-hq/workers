@@ -9,7 +9,7 @@
    importable from parsers.ts and its node-run tests without touching
    `@iii-dev/console-ui`, whose module entry throws outside the console. */
 
-import * as z from 'zod'
+import * as z from 'zod/mini'
 import {
   collectErrorCandidates,
   contentBlocksText,
@@ -21,29 +21,29 @@ import {
     shell forwards these verbatim for sandbox-target calls. */
 export const errorWireSchema = z.object({
   type: z.string(),
-  code: z.string().regex(/^S\d{3}$/),
+  code: z.string().check(z.regex(/^S\d{3}$/)),
   message: z.string(),
-  docs_url: z.string().optional(),
-  retryable: z.boolean().optional(),
-  fix: z.unknown().optional(),
-  fix_note: z.string().nullable().optional(),
+  docs_url: z.optional(z.string()),
+  retryable: z.optional(z.boolean()),
+  fix: z.optional(z.unknown()),
+  fix_note: z.optional(z.nullable(z.string())),
 })
 export type ErrorWire = z.infer<typeof errorWireSchema>
 
 const denialEnvelopeSchema = z.object({
-  schema_version: z.number().optional(),
-  status: z.string().optional(),
-  denied_by: z.string().optional(),
-  function_id: z.string().optional(),
-  reason: z.string().optional(),
+  schema_version: z.optional(z.number()),
+  status: z.optional(z.string()),
+  denied_by: z.optional(z.string()),
+  function_id: z.optional(z.string()),
+  reason: z.optional(z.string()),
 })
 export type DenialEnvelopeWire = z.infer<typeof denialEnvelopeSchema>
 
 const functionErrorEnvelopeSchema = z.object({
   kind: z.string(),
   message: z.string(),
-  details: z.unknown().optional(),
-  content: z.array(z.unknown()).optional(),
+  details: z.optional(z.unknown()),
+  content: z.optional(z.array(z.unknown())),
 })
 
 export type InvocationError = {

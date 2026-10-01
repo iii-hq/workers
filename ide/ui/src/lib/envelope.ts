@@ -3,7 +3,7 @@
    console's sandbox/parsers.ts when the shell function-trigger family
    moved into this worker's injected UI. */
 
-import * as z from 'zod'
+import * as z from 'zod/mini'
 
 /** `engine/src/protocol.rs::StreamChannelRef` (untagged JSON object). */
 export const streamChannelRefSchema = z.object({
@@ -26,35 +26,37 @@ export type FsEntry = z.infer<typeof fsEntrySchema>
 
 /** `iii-shell-proto::FsMatch`. `path` is canonical; older guests sent
     `file` — the transform peels that legacy spelling. */
-export const fsMatchSchema = z
-  .object({
-    path: z.string().optional(),
-    file: z.string().optional(),
+export const fsMatchSchema = z.pipe(
+  z.object({
+    path: z.optional(z.string()),
+    file: z.optional(z.string()),
     line: z.number(),
     content: z.string(),
-  })
-  .transform((m) => ({
+  }),
+  z.transform((m) => ({
     path: m.path ?? m.file ?? '',
     line: m.line,
     content: m.content,
-  }))
+  })),
+)
 export type FsMatch = z.infer<typeof fsMatchSchema>
 
 /** `iii-shell-proto::FsSedFileResult`. */
-export const fsSedFileResultSchema = z
-  .object({
-    path: z.string().optional(),
-    file: z.string().optional(),
+export const fsSedFileResultSchema = z.pipe(
+  z.object({
+    path: z.optional(z.string()),
+    file: z.optional(z.string()),
     replacements: z.number(),
     success: z.boolean(),
-    error: z.string().nullable().optional(),
-  })
-  .transform((r) => ({
+    error: z.optional(z.nullable(z.string())),
+  }),
+  z.transform((r) => ({
     path: r.path ?? r.file ?? '',
     replacements: r.replacements,
     success: r.success,
     error: r.error ?? null,
-  }))
+  })),
+)
 export type FsSedFileResult = z.infer<typeof fsSedFileResultSchema>
 
 /**
@@ -151,7 +153,7 @@ export function collectErrorCandidates(value: unknown): unknown[] {
 }
 
 export function safeParseRequest<T>(
-  schema: z.ZodType<T>,
+  schema: z.ZodMiniType<T>,
   value: unknown,
 ): T | null {
   const parsed = schema.safeParse(value ?? {})
@@ -159,7 +161,7 @@ export function safeParseRequest<T>(
 }
 
 export function safeParseResponse<T>(
-  schema: z.ZodType<T>,
+  schema: z.ZodMiniType<T>,
   value: unknown,
 ): T | null {
   const parsed = schema.safeParse(unwrapEnvelope(value))

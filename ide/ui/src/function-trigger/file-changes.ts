@@ -1,5 +1,5 @@
 import type { PanelOpenRequest } from '@iii-dev/console-ui'
-import * as z from 'zod'
+import * as z from 'zod/mini'
 
 const CREATE_ID = 'coder::create-file'
 const UPDATE_ID = 'coder::update-file'
@@ -8,10 +8,10 @@ const DELETE_ID = 'coder::delete-file'
 const resultSchema = z.object({
   path: z.string(),
   success: z.boolean(),
-  bytes_written: z.number().optional(),
-  removed: z.boolean().optional(),
-  applied: z.number().optional(),
-  change_id: z.string().optional(),
+  bytes_written: z.optional(z.number()),
+  removed: z.optional(z.boolean()),
+  applied: z.optional(z.number()),
+  change_id: z.optional(z.string()),
 })
 
 const responseSchema = z.object({ results: z.array(resultSchema) })
@@ -25,7 +25,7 @@ const createRequestSchema = z.object({
     z.object({
       path: z.string(),
       content: z.string(),
-      overwrite: z.boolean().optional(),
+      overwrite: z.optional(z.boolean()),
     }),
   ),
 })
