@@ -6,12 +6,15 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use futures_util::stream::{self, StreamExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use tokio::process::Command;
 
 const MAX_CHILDREN: usize = 200;
+/// Checkouts described at once; each costs two short git calls.
+const DESCRIBE_AT_ONCE: usize = 8;
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct InspectInput {
@@ -35,6 +38,10 @@ pub struct Checkout {
     /// This worker's directory inside the checkout.
     pub path: String,
     pub branch: Option<String>,
+    /// Unix seconds of the checkout's HEAD commit.
+    pub committed_at: Option<i64>,
+    /// Tracked files differ from HEAD.
+    pub dirty: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -106,8 +113,9 @@ async fn git(dir: &Path, args: &[&str]) -> Option<String> {
         Command::new("git")
             .arg("-C")
             .arg(dir)
-            // Reading worktrees must never run a repository-configured command.
-            .args(["-c", "core.fsmonitor=false"])
+            // Reading worktrees must never run a repository-configured command,
+            // nor take the index lock another git process may be holding.
+            .args(["--no-optional-locks", "-c", "core.fsmonitor=false"])
             .args(args)
             .output(),
     )
@@ -130,7 +138,7 @@ async fn checkouts(dir: &Path) -> Vec<Checkout> {
     let Some(list) = git(dir, &["worktree", "list", "--porcelain"]).await else {
         return Vec::new();
     };
-    parse_worktrees(&list)
+    let found = parse_worktrees(&list)
         .into_iter()
         // `join("")` would add a trailing slash when the worker is the repository root.
         .map(|(root, branch)| {
@@ -142,11 +150,26 @@ async fn checkouts(dir: &Path) -> Vec<Checkout> {
             (path, branch)
         })
         .filter(|(path, _)| path.join("iii.worker.yaml").is_file())
-        .map(|(path, branch)| Checkout {
-            path: path.to_string_lossy().into_owned(),
-            branch,
-        })
+        .collect::<Vec<_>>();
+    stream::iter(found)
+        .map(|(path, branch)| describe(path, branch))
+        .buffered(DESCRIBE_AT_ONCE)
         .collect()
+        .await
+}
+
+/// When the checkout last moved and whether it holds uncommitted work.
+async fn describe(path: PathBuf, branch: Option<String>) -> Checkout {
+    let (time, status) = tokio::join!(
+        git(&path, &["log", "-1", "--format=%ct"]),
+        git(&path, &["status", "--porcelain", "--untracked-files=no"]),
+    );
+    Checkout {
+        path: path.to_string_lossy().into_owned(),
+        branch,
+        committed_at: time.and_then(|t| t.trim().parse().ok()),
+        dirty: status.map(|s| !s.trim().is_empty()),
+    }
 }
 
 async fn child_workers(dir: &Path) -> Vec<Manifest> {
@@ -221,6 +244,45 @@ mod tests {
         assert_eq!(manifest.name, "memory");
         assert_eq!(manifest.dependencies, ["state", "queue"]);
         assert!(parse_manifest(Path::new("/x"), "language: rust\n").is_none());
+    }
+
+    #[tokio::test]
+    async fn describes_each_checkout_with_its_last_commit_and_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        let worker = repo.join("web");
+        std::fs::create_dir_all(&worker).unwrap();
+        std::fs::write(worker.join("iii.worker.yaml"), "name: web\n").unwrap();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "init"]);
+        run(&["worktree", "add", "-q", "-b", "feat/x", root.path().join("wt").to_str().unwrap()]);
+        std::fs::write(worker.join("iii.worker.yaml"), "name: web\nlanguage: rust\n").unwrap();
+
+        let found = inspect(&InspectInput {
+            path: worker.to_string_lossy().into_owned(),
+            run: None,
+        })
+        .await;
+        assert_eq!(found.checkouts.len(), 2);
+        let main = &found.checkouts[0];
+        assert_eq!(main.branch.as_deref(), Some("main"));
+        assert_eq!(main.dirty, Some(true));
+        assert!(main.committed_at.is_some_and(|t| t > 1_600_000_000));
+        let feature = &found.checkouts[1];
+        assert_eq!(feature.branch.as_deref(), Some("feat/x"));
+        assert_eq!(feature.dirty, Some(false));
+        assert!(feature.path.ends_with("wt/web"));
     }
 
     #[tokio::test]

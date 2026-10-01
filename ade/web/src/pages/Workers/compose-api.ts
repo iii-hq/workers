@@ -120,12 +120,21 @@ export type Manifest = {
   description: string | null
   dependencies: string[]
 }
+export type Checkout = {
+  path: string
+  branch: string | null
+  /** Unix seconds of the checkout's HEAD commit. */
+  committed_at?: number | null
+  /** Tracked files differ from HEAD. */
+  dirty?: boolean | null
+}
+
 export type Inspection = {
   path: string
   exists: boolean
   manifest: Manifest | null
   run_found: boolean | null
-  checkouts: { path: string; branch: string | null }[]
+  checkouts: Checkout[]
   workers: Manifest[]
 }
 

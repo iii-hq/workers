@@ -1,4 +1,5 @@
 import type {
+  Checkout,
   Container,
   ContainerEntry,
   DeclaredContainer,
@@ -167,6 +168,55 @@ export const dependentsOf = (
   declared: readonly DeclaredContainer[],
   name: string,
 ) => declared.filter((d) => d.start_after.includes(name)).map((d) => d.name)
+
+/** Where `query` sits in `text`, for a highlight: before, match, after. */
+export function matchParts(
+  text: string,
+  query: string,
+): [string, string, string] {
+  const needle = query.trim().toLowerCase()
+  const at = needle ? text.toLowerCase().indexOf(needle) : -1
+  return at < 0
+    ? [text, '', '']
+    : [
+        text.slice(0, at),
+        text.slice(at, at + needle.length),
+        text.slice(at + needle.length),
+      ]
+}
+
+export const branchLabel = (checkout: Pick<Checkout, 'branch'>) =>
+  checkout.branch ?? 'detached HEAD'
+
+/**
+ * Checkouts a container can point at (their folder carries its name) apart
+ * from the rest, filtered by branch or folder; the one it runs from first,
+ * then the newest commit first.
+ */
+export function arrangeCheckouts<T extends Checkout>(
+  checkouts: readonly T[],
+  name: string,
+  current: string,
+  query = '',
+): { usable: T[]; other: T[] } {
+  const needle = query.trim().toLowerCase()
+  const sorted = checkouts
+    .filter(
+      (c) =>
+        !needle ||
+        branchLabel(c).toLowerCase().includes(needle) ||
+        shortPath(c.path).toLowerCase().includes(needle),
+    )
+    .sort(
+      (a, b) =>
+        Number(b.path === current) - Number(a.path === current) ||
+        (b.committed_at ?? 0) - (a.committed_at ?? 0),
+    )
+  return {
+    usable: sorted.filter((c) => basename(c.path) === name),
+    other: sorted.filter((c) => basename(c.path) !== name),
+  }
+}
 
 /** The folder most local workers live in, for the add dialog's starting point. */
 export function usualParent(paths: readonly string[]): string | null {

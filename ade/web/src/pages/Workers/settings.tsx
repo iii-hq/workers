@@ -186,6 +186,8 @@ export function SettingsTab({
                 <Select
                   aria-label="Wait for a container"
                   placeholder="Wait for a container…"
+                  // An action to pick from, not an empty field: ink, not the ghost placeholder grey.
+                  className="data-[placeholder]:text-ink"
                   value={undefined}
                   options={waitable.map((other) => ({
                     value: other,
