@@ -58,7 +58,13 @@ export interface GitChange {
 export type GitState =
   | { kind: 'not-a-repo' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; changes: GitChange[] }
+  | {
+      kind: 'ready'
+      changes: GitChange[]
+      /** The read `changes` came from: the commit panel derives its own
+          view from it (`gitUncommittedFrom`) instead of reading again. */
+      status: PorcelainRead
+    }
 
 /** The three useful snapshots exposed by the review UI. */
 export type GitComparisonScope = 'uncommitted' | 'unstaged' | 'staged'
@@ -126,10 +132,19 @@ interface PorcelainEntry {
   renameFrom?: string
 }
 
+/** One `git status` read: the browsed root's prefix in the repository,
+    its records, and the branch the `## ` header names (`HEAD` when
+    detached). */
+interface PorcelainRead {
+  prefix: string
+  entries: PorcelainEntry[]
+  branch: string | null
+}
+
 type PorcelainState =
   | { kind: 'not-a-repo' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; prefix: string; entries: PorcelainEntry[] }
+  | ({ kind: 'ready' } & PorcelainRead)
 
 type RepositoryState =
   | { kind: 'not-a-repo' }
@@ -316,6 +331,16 @@ function parsePorcelain(stdout: string, prefix: string): PorcelainEntry[] | stri
   return entries
 }
 
+/** The branch in `git status --branch`'s header, past its `## `: `main`,
+    `main...origin/main [ahead 1]` (a ref name holds neither `...` nor a
+    space), `No commits yet on main` (older Git: `Initial commit on main`)
+    while HEAD is unborn, and `HEAD (no branch)` when detached, which
+    reads as `HEAD`, the name `git rev-parse --abbrev-ref HEAD` gives it. */
+export function parseBranchHeader(header: string): string | null {
+  const name = header.replace(/^(No commits yet|Initial commit) on /, '')
+  return name.split(/\.\.\.| /)[0] || null
+}
+
 function recreatedAfterStagedDelete(entries: PorcelainEntry[]): Set<string> {
   const deleted = new Set(
     entries
@@ -332,10 +357,14 @@ function recreatedAfterStagedDelete(entries: PorcelainEntry[]): Set<string> {
 async function porcelainStatus(host: Host, root: string): Promise<PorcelainState> {
   // `--untracked-files=all` lists new files individually; `--renames`
   // makes the rename contract explicit rather than depending on config.
+  // `--branch` names the branch in the same read; only its name is used,
+  // so the counts against the upstream, a walk of history, are skipped.
   const [repository, status] = await probed(host, root, [
     'status',
     '--porcelain=v1',
     '-z',
+    '--branch',
+    '--no-ahead-behind',
     '--untracked-files=all',
     '--renames',
     '--',
@@ -349,10 +378,14 @@ async function porcelainStatus(host: Host, root: string): Promise<PorcelainState
     const statusFailure = execFailure(out, 'git status')
     if (statusFailure !== null) return { kind: 'error', message: statusFailure }
 
-    const entries = parsePorcelain(out.stdout, prefix)
+    // The `## ` header is the first record; an unterminated one is left
+    // to the record parser, which reports it.
+    const headerEnd = out.stdout.startsWith('## ') ? out.stdout.indexOf('\0') + 1 : 0
+    const branch = headerEnd === 0 ? null : parseBranchHeader(out.stdout.slice(3, headerEnd - 1))
+    const entries = parsePorcelain(out.stdout.slice(headerEnd), prefix)
     return typeof entries === 'string'
       ? { kind: 'error', message: entries }
-      : { kind: 'ready', prefix, entries }
+      : { kind: 'ready', prefix, entries, branch }
   } catch (error) {
     return { kind: 'error', message: `git execution failed: ${errorMessage(error)}` }
   }
@@ -387,7 +420,9 @@ function statusFromCode(x: string, y: string): GitFileStatus | null {
     subdirectory the `--show-prefix` is stripped to keep the page's
     root-relative vocabulary (the `-- .` pathspec already scopes the
     report to the subtree). An answer that reads like `previous` returns
-    it: what is drawn from it stays put. */
+    it: what is drawn from it stays put. Like means the same records and
+    branch, not only the same changes: the commit panel derives from both
+    status columns, which a change folds into one status. */
 export async function gitChanges(
   host: Host,
   root: string,
@@ -398,6 +433,7 @@ export async function gitChanges(
     return previous?.kind === 'error' && previous.message === state.message ? previous : state
   }
   if (state.kind === 'not-a-repo') return previous?.kind === 'not-a-repo' ? previous : state
+  if (previous?.kind === 'ready' && sameRead(previous.status, state)) return previous
 
   const changes: GitChange[] = []
   const recreated = recreatedAfterStagedDelete(state.entries)
@@ -415,16 +451,40 @@ export async function gitChanges(
     if (entry.renameFrom !== undefined) change.from = entry.renameFrom
     changes.push(change)
   }
-  const last = previous?.kind === 'ready' ? previous : undefined
-  return last !== undefined &&
-    last.changes.length === changes.length &&
-    last.changes.every((change, index) => sameChange(change, changes[index]))
-    ? last
-    : { kind: 'ready', changes }
+  return {
+    kind: 'ready',
+    changes,
+    status: { prefix: state.prefix, entries: state.entries, branch: state.branch },
+  }
 }
 
-function sameChange(a: GitChange, b: GitChange): boolean {
-  return a.path === b.path && a.status === b.status && a.staged === b.staged && a.from === b.from
+function sameRead(a: PorcelainRead, b: PorcelainRead): boolean {
+  return (
+    a.prefix === b.prefix &&
+    a.branch === b.branch &&
+    a.entries.length === b.entries.length &&
+    a.entries.every((entry, index) => {
+      const other = b.entries[index]
+      return (
+        entry.path === other.path &&
+        entry.x === other.x &&
+        entry.y === other.y &&
+        entry.renameFrom === other.renameFrom
+      )
+    })
+  )
+}
+
+/** The commit panel's HEAD → working-copy comparison, drawn from a status
+    `gitChanges` already read: only what its records cannot tell is run
+    (HEAD's diff, a recreated file's bytes). */
+export async function gitUncommittedFrom(
+  host: Host,
+  root: string,
+  state: GitState,
+): Promise<GitComparisonState> {
+  if (state.kind !== 'ready') return state
+  return uncommittedComparison(host, root, state.status.prefix, state.status.entries)
 }
 
 function statusForScope(entry: PorcelainEntry, scope: GitComparisonScope): GitFileStatus | null {

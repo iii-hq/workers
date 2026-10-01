@@ -3,13 +3,14 @@
    them are ticked for the next commit, the current branch, and the verbs
    that act on them. Tracked changes start ticked and unversioned files
    start unticked; a tick survives reloads for as long as the path stays
-   changed. Loaded only while the view is shown, re-read on every git refresh. */
+   changed. Loaded only while the view is shown, from the page's own git
+   status. */
 
 import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { changeSummary, entryPaths } from './commit-tree'
-import { type GitComparisonEntry, gitComparison } from './git'
+import { type GitComparisonEntry, type GitState, gitUncommittedFrom } from './git'
 import { gitCommitChanges, gitDiscard, gitPush, gitStashPush } from './git-actions'
 
 export type SourceControlPhase = 'idle' | 'loading' | 'ready' | 'not-a-repo' | 'error'
@@ -49,33 +50,20 @@ export interface SourceControlState {
   stash: (entries: readonly GitComparisonEntry[], message: string) => Promise<boolean>
 }
 
-interface ExecResponse {
-  exit_code: number | null
-  stdout: string
-}
-
-async function currentBranch(host: Host, root: string): Promise<string | null> {
-  try {
-    const out = await host.iii.trigger<ExecResponse>('shell::exec', {
-      command: 'git',
-      args: ['rev-parse', '--abbrev-ref', 'HEAD'],
-      cwd: root,
-      timeout_ms: 10_000,
-    })
-    if (out.exit_code !== 0) return null
-    const name = out.stdout.trim()
-    return name === '' ? null : name
-  } catch {
-    return null
-  }
-}
-
+/** `page` is the page's own git status from `gitChanges` and the call that
+    reads it again, which bumps `refreshEpoch` while the view is active
+    unless asked to be quiet. The panel derives its view from that status
+    instead of reading git itself, again on a new status object and on
+    every `refreshEpoch`: its own reads (HEAD's diff) may have failed, or
+    moved with file bytes the status does not carry. `onChanged` is
+    expected to read the page's status again. */
 export function useSourceControl(
   host: Host,
   root: string | null,
   refreshEpoch: number,
   active: boolean,
   onChanged: () => void,
+  page: { git: GitState | null; refresh: (options?: { quiet: boolean }) => Promise<unknown> },
 ): SourceControlState {
   const [phase, setPhase] = useState<SourceControlPhase>('idle')
   const [branch, setBranch] = useState<string | null>(null)
@@ -88,29 +76,35 @@ export function useSourceControl(
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<SourceControlState['note']>(null)
   const seqRef = useRef(0)
-  const [reloadEpoch, setReloadEpoch] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
+  const { git: pageGit, refresh: refreshPage } = page
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the epochs are reload triggers
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the epoch is a reload trigger
   useEffect(() => {
-    if (!active || root === null) return
+    // Every run supersedes the read in flight, even one that reads nothing:
+    // the page clears its status on a root switch, and a derive of the last
+    // root's status must not land on the new root.
     const seq = ++seqRef.current
+    if (!active || root === null || pageGit === null) return
     setPhase((current) => (current === 'ready' ? current : 'loading'))
-    void Promise.all([gitComparison(host, root, 'uncommitted'), currentBranch(host, root)])
-      .then(([state, branchName]) => {
+    void gitUncommittedFrom(host, root, pageGit)
+      .then((state) => {
         if (seqRef.current !== seq) return
         setRefreshing(false)
-        setBranch(branchName)
         if (state.kind === 'not-a-repo') {
+          setBranch(null)
           setPhase('not-a-repo')
           setAll([])
           return
         }
+        // A failed read keeps the branch: the commit box starts a fresh
+        // message when the branch changes.
         if (state.kind === 'error') {
           setPhase('error')
           setError(state.message)
           return
         }
+        if (pageGit.kind === 'ready') setBranch(pageGit.status.branch)
         setAll(state.changes)
         // Forget ticks for paths that are no longer changed.
         const live = new Set(state.changes.map((change) => change.path))
@@ -125,7 +119,17 @@ export function useSourceControl(
         setPhase('error')
         setError(errorMessage(err))
       })
-  }, [host, root, refreshEpoch, reloadEpoch, active])
+  }, [host, root, pageGit, refreshEpoch, active])
+
+  // Opening the view reads the page's status again: git's own writes (an
+  // add or a commit made in a terminal) touch only .git, which the
+  // workspace watch does not report. Quietly: the view's tabs just loaded
+  // on mounting, and a changed status reaches this one as a new object.
+  // A status still null is a root's first read, already in flight.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only opening the view reads again
+  useEffect(() => {
+    if (active && pageGit !== null) void refreshPage({ quiet: true })
+  }, [active])
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new root starts from a blank view
   useEffect(() => {
@@ -163,8 +167,10 @@ export function useSourceControl(
 
   const reload = useCallback(() => {
     setRefreshing(true)
-    setReloadEpoch((value) => value + 1)
-  }, [])
+    // The refresh bumps the epoch, so the view derives again even when the
+    // page's status comes back unchanged.
+    void refreshPage()
+  }, [refreshPage])
 
   const perform = useCallback(
     async (label: string, action: () => Promise<string>): Promise<boolean> => {
@@ -179,8 +185,9 @@ export function useSourceControl(
         return false
       } finally {
         setBusy(false)
+        // onChanged reads the page's status again, and the view derives
+        // from what it reads.
         onChanged()
-        setReloadEpoch((value) => value + 1)
       }
     },
     [root, onChanged],

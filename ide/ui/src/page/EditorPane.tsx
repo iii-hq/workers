@@ -12,7 +12,10 @@
    owns its viewport (`fill`), so a file of tens of thousands of lines
    renders only what is on screen; a file over the budget opens as a
    read-only window of its first lines. Raster images stream in bounded
-   chunks into a Blob and never cross the socket as one frame. */
+   chunks into a Blob and never cross the socket as one frame.
+
+   `RevisionPane` shows a file as a commit left it, read-only: nothing in
+   it edits, saves or marks its tab dirty. */
 
 import {
   Button,
@@ -32,6 +35,7 @@ import {
   coderWriteFile,
   joinPath,
 } from './coder'
+import { loadRevisionFile } from './diff-load'
 import { readFileBytes } from './file-bytes'
 import { referenceWarning } from './reference-warning'
 import { ImagePreview } from './image-preview'
@@ -512,16 +516,7 @@ function EditorPaneView({
       </div>
 
       {citationWarning ? <div className="shui-side-note" role="status">{citationWarning}</div> : null}
-      <div
-        className="shui-editor-body"
-        data-keybindings-standdown=""
-        onKeyDownCapture={(event) => {
-          if (!onQuickOpen || !isQuickOpenKey(event, PLATFORM)) return
-          event.preventDefault()
-          event.stopPropagation()
-          onQuickOpen()
-        }}
-      >
+      <div className="shui-editor-body" data-keybindings-standdown="" onKeyDownCapture={quickOpenCapture(onQuickOpen)}>
         {pane.phase === 'loading' ? (
           <div className="shui-side-note">{loadingLabel}</div>
         ) : pane.phase === 'error' ? (
@@ -583,6 +578,134 @@ function EditorPaneView({
 
 /** Memoized: the page re-renders often, and this only when its props change. */
 export const EditorPane = memo(EditorPaneView)
+
+/** The editor body reclaims the go-to-file chord in the capture phase
+    (see `onQuickOpen`). */
+function quickOpenCapture(onQuickOpen: (() => void) | undefined) {
+  return (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!onQuickOpen || !isQuickOpenKey(event, PLATFORM)) return
+    event.preventDefault()
+    event.stopPropagation()
+    onQuickOpen()
+  }
+}
+
+interface RevisionPaneProps {
+  host: Host
+  root: string
+  rootLabel: string
+  relPath: string
+  sha: string
+  /** The tab's id, which keys `cache`. */
+  id: string
+  /** Bodies already read, by tab id: a commit's file never changes, so a
+      tab that comes forward again shows it at once. Page-owned. */
+  cache: Map<string, string>
+  wordWrap?: boolean
+  onRevealDir: (dir: string) => void
+  onClose: () => void
+  onQuickOpen?: () => void
+}
+
+const ignoreEdit = () => {}
+
+function RevisionPaneView({
+  host,
+  root,
+  rootLabel,
+  relPath,
+  sha,
+  id,
+  cache,
+  wordWrap = true,
+  onRevealDir,
+  onClose,
+  onQuickOpen,
+}: RevisionPaneProps) {
+  const [read, setRead] = useState<{ body: string } | { error: string } | null>(() => {
+    const body = cache.get(id)
+    return body === undefined ? null : { body }
+  })
+  // Bumped by "Try again": re-runs the read.
+  const [attempt, setAttempt] = useState(0)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt re-runs the read on demand
+  useEffect(() => {
+    if (cache.has(id)) return
+    let cancelled = false
+    setRead(null)
+    loadRevisionFile(host, root, relPath, sha)
+      .then((body) => {
+        if (cancelled) return
+        cache.set(id, body)
+        setRead({ body })
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setRead({ error: errorMessage(err) })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [host, root, relPath, sha, id, cache, attempt])
+
+  const short = sha.slice(0, 7)
+  return (
+    <div className="shui-main-pane">
+      <div className="shui-editor-head">
+        <Breadcrumbs path={relPath} rootLabel={rootLabel} onSelectDir={onRevealDir} />
+        <span className="shui-ro-note" title={sha}>
+          as of {short}, read-only
+        </span>
+        <span className="spacer" />
+      </div>
+      <div className="shui-editor-body" data-keybindings-standdown="" onKeyDownCapture={quickOpenCapture(onQuickOpen)}>
+        {read === null ? (
+          <div className="shui-side-note">
+            loading {relPath} as of {short}…
+          </div>
+        ) : 'error' in read && read.error === 'binary file' ? (
+          // What `loadRevisionFile` says of bytes that are not text: no retry
+          // reads them any other way.
+          <PaneNotice Icon={FileX} title="Binary file: no text to show" path={relPath} />
+        ) : 'error' in read ? (
+          <PaneNotice
+            Icon={CircleAlert}
+            tone="warn"
+            title="This version could not be opened"
+            path={relPath}
+            detail={read.error}
+            actions={
+              <>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setAttempt((value) => value + 1)}>
+                  <RefreshCw aria-hidden="true" />
+                  Try again
+                </Button>
+                <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+                  <X aria-hidden="true" />
+                  Close tab
+                </Button>
+              </>
+            }
+          />
+        ) : (
+          <CodeEditor
+            value={read.body}
+            onChange={ignoreEdit}
+            language={monacoLangFromPath(relPath)}
+            readOnly
+            aria-label={`${relPath} as of ${short}`}
+            className="shui-editor"
+            fill
+            lineNumbers
+            wordWrap={wordWrap}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Memoized like the editor: the page re-renders often. */
+export const RevisionPane = memo(RevisionPaneView)
 
 function countLines(text: string): number {
   let lines = 1

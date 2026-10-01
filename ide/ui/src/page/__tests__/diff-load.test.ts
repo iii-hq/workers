@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { createTurnCache, loadDiffContents, loadTurnDiff, preImageBody, sameDiffContents, turnFileFor } from '../diff-load'
+import {
+  createTurnCache,
+  loadDiffContents,
+  loadRevisionFile,
+  loadTurnDiff,
+  preImageBody,
+  sameDiffContents,
+  turnFileFor,
+} from '../diff-load'
 import type { SessionTurn } from '../turns'
 
 function exec(overrides: Partial<{ exit_code: number; stdout: string; stderr: string }> = {}) {
@@ -140,6 +148,23 @@ describe('loadDiffContents', () => {
       oldContents: 'a',
       newContents: 'b',
     })
+  })
+})
+
+describe('loadRevisionFile', () => {
+  it('reads the file at the commit from the root, and says when the commit lacks it', async () => {
+    const { host, trigger } = hostWith({
+      'shell::exec': ({ args }) =>
+        (args as string[])[1] === 'abc1234:./../lib/x.ts'
+          ? exec({ stdout: 'then\n' })
+          : exec({ exit_code: 128, stderr: "fatal: path 'gone.ts' does not exist in 'abc1234'" }),
+    })
+    expect(await loadRevisionFile(host, '/r/app', '../lib/x.ts', 'abc1234')).toBe('then\n')
+    expect(trigger).toHaveBeenCalledWith(
+      'shell::exec',
+      expect.objectContaining({ args: ['show', 'abc1234:./../lib/x.ts'], cwd: '/r/app' }),
+    )
+    await expect(loadRevisionFile(host, '/r/app', 'gone.ts', 'abc1234')).rejects.toThrow('not in abc1234')
   })
 })
 

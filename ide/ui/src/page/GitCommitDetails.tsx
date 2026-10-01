@@ -12,12 +12,15 @@
    The bar over the files acts on the selected one, as WebStorm's does:
    show its diff, revert the commit's change to it in the working tree,
    show its history up to the commit. Its eye menu groups the files by
-   folder or lists them flat, and shows or hides the commit under them. A
-   file's context menu holds the rest: its diff in the preview tab or a
+   folder or lists them flat, shows or hides the commit under them, and
+   shows the selected file's diff there instead (WebStorm's diff preview).
+   A file's context menu holds the rest: its diff in the preview tab or a
    new one, compared with the working copy (as the commit left it, or as
-   it was before), its working copy, the commit's change applied again or
-   copied as a patch, and the file as the commit left it. */
+   it was before), its working copy or (read-only) the commit's version of
+   it, the commit's change applied again or copied as a patch, and the
+   working copy put back as the commit left it. */
 
+import type { Host } from '@iii-dev/console-ui'
 import {
   Chip,
   DropdownMenu,
@@ -31,6 +34,7 @@ import {
   Skeleton,
   useConfirm,
 } from '@iii-dev/console-ui'
+import { copyText } from '@iii-dev/console-ui/format'
 import { useSplitDrag } from '@iii-dev/console-ui/hooks'
 import {
   Cherry,
@@ -39,6 +43,7 @@ import {
   ClipboardCopy,
   Copy,
   Eye,
+  FileClock,
   FileDiff,
   FileDown,
   GitCompareArrows,
@@ -49,6 +54,8 @@ import {
 import { type CSSProperties, memo, useRef, useState } from 'react'
 import { type GitAction, menuItems } from './ActionRail'
 import { useContextMenu } from './ContextMenu'
+import { DEFAULT_DIFF_OPTIONS } from './DiffTab'
+import { GitDiffPreview } from './GitDiffPreview'
 import { GitFileList } from './GitFileList'
 import type { CommitDetails, CommitFile } from './git-log-window'
 import { basename } from './paths'
@@ -65,6 +72,8 @@ export interface FilesView {
   grouped: boolean
   /** The commit's message and facts show under them. */
   info: boolean
+  /** The selected file's diff shows under them, in the commit's place. */
+  preview: boolean
 }
 
 /** A file's paths in the commit: a rename's old one too. */
@@ -83,6 +92,8 @@ const SIGNATURES: Readonly<Record<string, string>> = {
 /** Memoized: the Log re-renders on every keystroke in its forms and every
     page of commits; the details only when theirs changed. */
 export const GitCommitDetails = memo(function GitCommitDetails({
+  host,
+  root,
   state,
   selected,
   onOpenFile,
@@ -98,7 +109,10 @@ export const GitCommitDetails = memo(function GitCommitDetails({
   onCommitFiles,
   onCopyPatch,
   onHistory,
+  onOpenRevision,
 }: {
+  host: Host
+  root: string
   state: CommitDetailsState
   selected: string | null
   /** The IDE's folder below the repository's top ('' at the top). */
@@ -123,11 +137,15 @@ export const GitCommitDetails = memo(function GitCommitDetails({
   onCopyPatch(sha: string, paths: string[]): void
   /** The log, narrowed to `paths` and to what `sha` reaches. */
   onHistory(paths: string[], sha: string): void
+  /** The file as commit `sha` left it, read-only. */
+  onOpenRevision(file: CommitFile, sha: string): void
 }) {
   const { details, loading, error, branches } = state
   // The file picked in this commit, and how its folders were last set open.
   const [picked, setPicked] = useState<{ sha: string; path: string } | null>(null)
   const [folders, setFolders] = useState<{ sha: string; seq: number; open: boolean } | null>(null)
+  // The preview's display options, kept from one commit to the next.
+  const [diffOptions, setDiffOptions] = useState(DEFAULT_DIFF_OPTIONS)
   const menu = useContextMenu()
   const { confirm, dialog } = useConfirm()
   const filesRef = useRef<HTMLElement>(null)
@@ -196,6 +214,8 @@ export const GitCommitDetails = memo(function GitCommitDetails({
       confirmLabel: each.status === 'deleted' ? 'Remove' : 'Replace',
       tone: 'danger',
     })
+    // Only its own path, as WebStorm does: a rename's old name may hold
+    // another file by now, and restoring that name would delete it.
     if (ok) onCommitFiles('get', sha, [each.path])
   }
   // One list for the context menu; the bar's buttons run the same actions.
@@ -244,6 +264,14 @@ export const GitCommitDetails = memo(function GitCommitDetails({
       },
     },
     {
+      id: 'revision',
+      label: 'Open repository version',
+      icon: <FileClock aria-hidden />,
+      group: 'open',
+      blocked: each.status === 'deleted' ? 'the commit deleted it' : null,
+      run: () => onOpenRevision(each, sha),
+    },
+    {
       id: 'revert',
       label: 'Revert selected changes',
       icon: <Undo2 aria-hidden />,
@@ -283,13 +311,17 @@ export const GitCommitDetails = memo(function GitCommitDetails({
       run: () => history(each),
     },
   ]
+  // Under the files: the selected file's diff while the preview is on, its
+  // place kept before one is picked so the files do not shrink under the
+  // pointer on the first pick; else the commit.
+  const below = view.preview || view.info
   return (
-    <div className="shui-git-details" data-pane="details" data-info={view.info || undefined}>
+    <div className="shui-git-details" data-pane="details" data-info={below || undefined}>
       <section
         ref={filesRef}
         className="shui-git-files"
         aria-label={`Changed files, ${details.files.length}`}
-        data-sized={(view.info && view.height !== null) || undefined}
+        data-sized={(below && view.height !== null) || undefined}
         style={view.height !== null ? ({ '--files-height': `${view.height}px` } as CSSProperties) : undefined}
       >
         <div className="shui-git-files-bar" role="toolbar" aria-label="Changed files">
@@ -323,8 +355,17 @@ export const GitCommitDetails = memo(function GitCommitDetails({
               </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>Layout</DropdownMenuLabel>
-              <DropdownMenuCheckboxItem checked={view.info} onCheckedChange={(info) => onView({ info })}>
+              {/* The preview sits in the details' place: they come back with it off. */}
+              <DropdownMenuCheckboxItem
+                checked={view.info}
+                disabled={view.preview}
+                onCheckedChange={(info) => onView({ info })}
+              >
                 Show details
+                {view.preview ? <span className="shui-git-faint"> (the diff preview is in their place)</span> : null}
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem checked={view.preview} onCheckedChange={(preview) => onView({ preview })}>
+                Show diff preview
               </DropdownMenuCheckboxItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -355,7 +396,7 @@ export const GitCommitDetails = memo(function GitCommitDetails({
           onOpen={(each) => onOpenFile(each, details)}
         />
       </section>
-      {view.info ? (
+      {below ? (
         <>
           {/* biome-ignore lint/a11y/useSemanticElements: an interactive range separator, not a thematic break */}
           <div
@@ -382,76 +423,97 @@ export const GitCommitDetails = memo(function GitCommitDetails({
               endDrag()
             }}
           />
-          <section className="shui-git-commit-info" aria-label="Commit">
-            <p className="shui-git-info-subject">{subject}</p>
-            {body !== '' ? <p className="shui-git-info-body">{body}</p> : null}
-            {/* One label and one value a row, so nothing wraps into the next line's place. */}
-            <dl className="shui-git-kv">
-              <dt>Hash</dt>
-              <dd>
-                <button
-                  type="button"
-                  className="shui-git-hash"
-                  title="Copy the full hash"
-                  onClick={() => void navigator.clipboard?.writeText(details.sha)}
-                >
-                  {details.sha.slice(0, 10)}
-                  <Copy aria-hidden />
-                </button>
-              </dd>
-              <dt>Author</dt>
-              <dd>
-                {details.author} <span className="shui-git-faint">{details.authorEmail}</span>
-              </dd>
-              <dt>Date</dt>
-              <dd>{when.format(details.authorDate * 1000)}</dd>
-              {committedByOther ? (
-                <>
-                  <dt>Committed by</dt>
-                  <dd>
-                    {details.committer}{' '}
-                    <span className="shui-git-faint">{when.format(details.committerDate * 1000)}</span>
-                  </dd>
-                </>
+          {view.preview && file !== null ? (
+            <GitDiffPreview
+              host={host}
+              root={root}
+              file={file}
+              sha={sha}
+              parent={parent}
+              options={diffOptions}
+              onOptions={setDiffOptions}
+            />
+          ) : view.preview ? (
+            <p className="shui-git-note-line">Select a file to preview its diff.</p>
+          ) : (
+            <section className="shui-git-commit-info" aria-label="Commit">
+              <p className="shui-git-info-subject">{subject}</p>
+              {body !== '' ? <p className="shui-git-info-body">{body}</p> : null}
+              {/* One label and one value a row, so nothing wraps into the next line's place. */}
+              <dl className="shui-git-kv">
+                <dt>Hash</dt>
+                <dd>
+                  <button
+                    type="button"
+                    className="shui-git-hash"
+                    title="Copy the full hash"
+                    onClick={() => void copyText(details.sha)}
+                  >
+                    {details.sha.slice(0, 10)}
+                    <Copy aria-hidden />
+                  </button>
+                </dd>
+                <dt>Author</dt>
+                <dd>
+                  {details.author} <span className="shui-git-faint">{details.authorEmail}</span>
+                </dd>
+                <dt>Date</dt>
+                <dd>{when.format(details.authorDate * 1000)}</dd>
+                {committedByOther ? (
+                  <>
+                    <dt>Committed by</dt>
+                    <dd>
+                      {details.committer}{' '}
+                      <span className="shui-git-faint">{when.format(details.committerDate * 1000)}</span>
+                    </dd>
+                  </>
+                ) : null}
+                {signature !== undefined ? (
+                  <>
+                    <dt>Signature</dt>
+                    <dd>
+                      <Chip>{signature}</Chip>
+                    </dd>
+                  </>
+                ) : null}
+                {branches !== null && branches.total > 0 ? (
+                  <>
+                    <dt>
+                      {branches.total === 1
+                        ? 'In branch'
+                        : `In ${branches.total}${branches.partial ? '+' : ''} branches`}
+                    </dt>
+                    <dd>
+                      {branches.names.join(', ')}
+                      {branches.total > branches.names.length ? ', …' : ''}
+                    </dd>
+                  </>
+                ) : null}
+                <dt>{details.parents.length > 1 ? 'Parents' : 'Parent'}</dt>
+                <dd>
+                  {details.parents.length > 0 ? (
+                    details.parents.map((parent) => (
+                      <button
+                        key={parent}
+                        type="button"
+                        className="shui-git-hash"
+                        onClick={() => onSelectCommit(parent)}
+                      >
+                        {parent.slice(0, 7)}
+                      </button>
+                    ))
+                  ) : (
+                    <span className="shui-git-faint">
+                      {shallow ? 'not fetched (a shallow clone)' : 'none: the first commit'}
+                    </span>
+                  )}
+                </dd>
+              </dl>
+              {details.truncated ? (
+                <p className="shui-git-info-line shui-git-faint">Shown in part: it is large.</p>
               ) : null}
-              {signature !== undefined ? (
-                <>
-                  <dt>Signature</dt>
-                  <dd>
-                    <Chip>{signature}</Chip>
-                  </dd>
-                </>
-              ) : null}
-              {branches !== null && branches.total > 0 ? (
-                <>
-                  <dt>
-                    {branches.total === 1 ? 'In branch' : `In ${branches.total}${branches.partial ? '+' : ''} branches`}
-                  </dt>
-                  <dd>
-                    {branches.names.join(', ')}
-                    {branches.total > branches.names.length ? ', …' : ''}
-                  </dd>
-                </>
-              ) : null}
-              <dt>{details.parents.length > 1 ? 'Parents' : 'Parent'}</dt>
-              <dd>
-                {details.parents.length > 0 ? (
-                  details.parents.map((parent) => (
-                    <button key={parent} type="button" className="shui-git-hash" onClick={() => onSelectCommit(parent)}>
-                      {parent.slice(0, 7)}
-                    </button>
-                  ))
-                ) : (
-                  <span className="shui-git-faint">
-                    {shallow ? 'not fetched (a shallow clone)' : 'none: the first commit'}
-                  </span>
-                )}
-              </dd>
-            </dl>
-            {details.truncated ? (
-              <p className="shui-git-info-line shui-git-faint">Shown in part: it is large.</p>
-            ) : null}
-          </section>
+            </section>
+          )}
         </>
       ) : null}
       {menu.element}

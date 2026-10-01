@@ -28,6 +28,7 @@ function GitToolWindowView({
   onOpenCommitFile,
   onOpenCompareFile,
   onOpenWorkingFile,
+  onOpenRevision,
 }: {
   host: Host
   root: string
@@ -44,6 +45,9 @@ function GitToolWindowView({
   onOpenCompareFile(file: CommitFile, ref: string, from?: string): void
   /** The file in the working tree, by its path below the IDE's folder. */
   onOpenWorkingFile(rel: string): void
+  /** The file as commit `sha` left it (`git show <sha>:<file.path>`), in a
+      read-only editor tab. */
+  onOpenRevision(file: CommitFile, sha: string): void
 }) {
   const ops = useWorktreeOps(host, root, page, true, 'view')
   const target = ops.list?.defaultBranch ?? null
@@ -119,6 +123,7 @@ function GitToolWindowView({
             onOpenCommitFile={onOpenCommitFile}
             onOpenCompareFile={onOpenCompareFile}
             onOpenWorkingFile={onOpenWorkingFile}
+            onOpenRevision={onOpenRevision}
           />
         </TabsContent>
         <TabsContent value="worktrees" forceMount className="shui-git-panel">

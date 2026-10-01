@@ -22,7 +22,7 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { ConfirmDialog, EmptyState } from '@iii-dev/console-ui'
-import { errorMessage } from '@iii-dev/console-ui/format'
+import { copyText, errorMessage } from '@iii-dev/console-ui/format'
 import { usePaneState, useSplitDrag } from '@iii-dev/console-ui/hooks'
 import {
   ArrowDownToLine,
@@ -74,7 +74,7 @@ interface Layout {
 const LAYOUT: Layout = {
   tree: 240,
   details: 320,
-  files: { height: null, grouped: true, info: true },
+  files: { height: null, grouped: true, info: true, preview: false },
   expanded: ['local'],
 }
 
@@ -95,13 +95,14 @@ function normalize(raw: unknown): Layout {
   }
 }
 
-function filesView(raw: unknown): FilesView {
+export function filesView(raw: unknown): FilesView {
   const value = (raw ?? {}) as Partial<FilesView>
   return {
     height:
       typeof value.height === 'number' && Number.isFinite(value.height) ? Math.max(48, Math.round(value.height)) : null,
     grouped: value.grouped !== false,
     info: value.info !== false,
+    preview: value.preview === true,
   }
 }
 
@@ -185,6 +186,7 @@ export function GitLogTab({
   onOpenCommitFile,
   onOpenCompareFile,
   onOpenWorkingFile,
+  onOpenRevision,
 }: {
   host: Host
   root: string
@@ -200,6 +202,8 @@ export function GitLogTab({
   /** Opens a file beside its working copy, as it is at `ref`. */
   onOpenCompareFile(file: CommitFile, ref: string, from?: string): void
   onOpenWorkingFile(rel: string): void
+  /** The file as commit `sha` left it, read-only. */
+  onOpenRevision(file: CommitFile, sha: string): void
 }) {
   const epoch = useWorktreeEpoch()
   const [filter, setFilter] = useState<LogFilter>({})
@@ -212,10 +216,10 @@ export function GitLogTab({
   // rebuilds every row of the tree.
   const expandedKey = layout.expanded.join('\n')
   const expanded = useMemo(() => new Set(expandedKey === '' ? [] : expandedKey.split('\n')), [expandedKey])
-  const { height: filesHeight, grouped: filesGrouped, info: filesInfo } = layout.files
+  const { height: filesHeight, grouped: filesGrouped, info: filesInfo, preview: filesPreview } = layout.files
   const files = useMemo(
-    (): FilesView => ({ height: filesHeight, grouped: filesGrouped, info: filesInfo }),
-    [filesHeight, filesGrouped, filesInfo],
+    (): FilesView => ({ height: filesHeight, grouped: filesGrouped, info: filesInfo, preview: filesPreview }),
+    [filesHeight, filesGrouped, filesInfo, filesPreview],
   )
   const [creating, setCreating] = useState<{ from: string; label: string } | null>(null)
   const [merging, setMerging] = useState<{ branch: string; wt: Worktree | null; draft: MergeDraft } | null>(null)
@@ -643,7 +647,7 @@ export function GitLogTab({
           in: 'menu',
           applies: pointed,
           blocked: ref === null ? 'select a branch or a tag' : null,
-          run: () => void navigator.clipboard?.writeText(name),
+          run: () => void copyText(name),
         },
         {
           id: 'delete',
@@ -697,7 +701,7 @@ export function GitLogTab({
           label: 'Copy hash',
           short: 'Copy',
           icon: <Copy aria-hidden />,
-          run: () => void navigator.clipboard?.writeText(commit.sha),
+          run: () => void copyText(commit.sha),
         },
         {
           id: 'new-branch-here',
@@ -810,8 +814,13 @@ export function GitLogTab({
     (sha: string, paths: string[]) => {
       setHint(null)
       gitCommitPatch(host, root, sha, paths)
-        .then((patch) => navigator.clipboard.writeText(patch))
-        .catch((err: unknown) => setHint(`copy as patch failed: ${errorMessage(err)}`))
+        .then(copyText)
+        .then(
+          (copied) => {
+            if (!copied) setHint('copy as patch failed: the clipboard refused it')
+          },
+          (err: unknown) => setHint(`copy as patch failed: ${errorMessage(err)}`),
+        )
     },
     [host, root],
   )
@@ -1048,11 +1057,13 @@ export function GitLogTab({
               state={working}
               prefix={snapshot?.prefix ?? ''}
               top={here?.path ?? null}
-              onOpen={(file) => onOpenCompareFile(file, comparing.ref)}
+              onOpen={(file) => onOpenCompareFile(file, comparing.ref, file.from)}
               onClose={() => setComparing(null)}
             />
           ) : shows('commit') ? (
             <GitCommitDetails
+              host={host}
+              root={root}
               state={details}
               selected={log.commits.length === 0 && !log.loading ? null : commitSel}
               shallow={snapshot?.shallow ?? false}
@@ -1068,6 +1079,7 @@ export function GitLogTab({
               onCommitFiles={ops.commitFiles}
               onCopyPatch={copyPatch}
               onHistory={showHistory}
+              onOpenRevision={onOpenRevision}
             />
           ) : null}
         </div>

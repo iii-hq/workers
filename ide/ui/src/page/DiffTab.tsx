@@ -85,7 +85,9 @@ export interface DiffTabActions {
 }
 
 interface DiffTabProps {
-  rootLabel: string
+  /** The header's breadcrumbs, with `onRevealDir`: a preview right under
+      its own file list goes without them. */
+  rootLabel?: string
   path: string
   source: DiffSource
   /** The turn's title when the source is a turn. */
@@ -94,7 +96,7 @@ interface DiffTabProps {
   options: DiffOptions
   onOptionsChange: (next: DiffOptions) => void
   onReload: () => void
-  onRevealDir: (dir: string) => void
+  onRevealDir?: (dir: string) => void
   actions: DiffTabActions
   compareRefs?: CompareRefs
   busy?: boolean
@@ -182,7 +184,9 @@ export function DiffTab({
   return (
     <div className="shui-main-pane shui-diff-tab" data-source={source.type}>
       <div className="shui-editor-head">
-        <Breadcrumbs path={path} rootLabel={rootLabel} onSelectDir={onRevealDir} />
+        {rootLabel !== undefined && onRevealDir ? (
+          <Breadcrumbs path={path} rootLabel={rootLabel} onSelectDir={onRevealDir} />
+        ) : null}
         <span className="shui-diff-chip" title={`${sides.old} to ${sides.new}`}>
           {label}
         </span>
@@ -386,9 +390,10 @@ export function DiffTab({
   )
 }
 
-/** The console's FileDiff re-diffs both bodies whenever its file objects
-    are new, which an inline `{ name, contents }` is on every render: this
-    takes the plain values, so an unchanged diff skips the render. */
+/** Takes the plain values, so an unchanged diff skips the render and
+    Pierre's layout pass that comes with it. (An older console's FileDiff
+    also re-diffs whenever its file objects are new, which an inline
+    `{ name, contents }` is on every render.) */
 const StableFileDiff = memo(function StableFileDiff({
   path,
   oldContents,

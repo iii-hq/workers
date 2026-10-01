@@ -3,7 +3,8 @@
  * the worker's own functions. One tab strip holds everything the main
  * pane can show: a file (its real content, editable), a diff (one file
  * against one source: the index, a Harness turn, a revision, a recorded
- * change) and, when docked there, the terminal.
+ * change), a file as a commit left it (read-only) and, when docked there,
+ * the terminal.
  *
  * What a click opens is decided by the sidebar view it comes from:
  * Explorer opens files, Source control opens index diffs (a file can be
@@ -65,7 +66,7 @@ import { createTurnCache, loadDiffContents, sameDiffContents } from './diff-load
 import { type DiffSource, diffSourceFollowsDisk } from './diff-source'
 import { DEFAULT_DIFF_OPTIONS, DiffTab, type DiffOptions, type DiffTabActions, type DiffTabState } from './DiffTab'
 import { EditorTabs } from './EditorTabs'
-import { type EditorCache, EditorPane } from './EditorPane'
+import { type EditorCache, EditorPane, RevisionPane } from './EditorPane'
 import { refreshCleanEditorCacheEntry } from './editor-cache'
 import { copyText } from '@iii-dev/console-ui/format'
 import { createEntry, deleteEntry, duplicateFile, duplicateName, renameEntry } from './file-actions'
@@ -125,6 +126,7 @@ import {
   persistedTabs,
   pinTab,
   restoreTabs,
+  revisionTarget,
   tabFilePaths,
   type TabTarget,
   type TabsState,
@@ -340,6 +342,8 @@ export function ShellExplorerPage({
     return () => registry.releaseAll()
   }, [])
   const diffCacheRef = useRef(new Map<string, DiffCacheEntry>())
+  // What revision tabs read, by tab id (`RevisionPane`).
+  const revisionCacheRef = useRef(new Map<string, string>())
   const [diffVersion, setDiffVersion] = useState(0)
   const [revealLineRequest, setRevealLineRequest] = useState<{
     path: string
@@ -378,6 +382,7 @@ export function ShellExplorerPage({
   const tabVisible = !terminalActive
   const activeFilePath = tabVisible && activeTab?.target.kind === 'file' ? activeTab.target.path : null
   const activeDiff = tabVisible && activeTab?.target.kind === 'diff' ? activeTab.target : null
+  const activeRevision = tabVisible && activeTab?.target.kind === 'revision' ? activeTab.target : null
 
   // ── unsaved work ──
   useEffect(() => {
@@ -520,7 +525,9 @@ export function ShellExplorerPage({
 
   // ── git status (gated on the resolved root) ──
   const gitSeqRef = useRef(0)
-  const refreshGit = useCallback((): Promise<GitState | null> => {
+  // `quiet` leaves the epoch alone: opening Source Control reads the status
+  // again, and the tabs mounting with it have just loaded on their own.
+  const refreshGit = useCallback(({ quiet = false }: { quiet?: boolean } = {}): Promise<GitState | null> => {
     // A callback that outlived a root switch (an async action finishing
     // after the pane moved, e.g. a worktree merge) must not read the old
     // root, nor supersede the refresh of the root now in front.
@@ -532,7 +539,7 @@ export function ShellExplorerPage({
       .then((state) => {
         if (gitSeqRef.current === seq) {
           setGit(state)
-          if (scmActiveRef.current) setGitEpoch((value) => value + 1)
+          if (scmActiveRef.current && !quiet) setGitEpoch((value) => value + 1)
         }
         return state
       })
@@ -540,7 +547,7 @@ export function ShellExplorerPage({
         if (gitSeqRef.current === seq) {
           const message = errorMessage(err)
           setGit((previous) => (previous?.kind === 'error' && previous.message === message ? previous : { kind: 'error', message }))
-          if (scmActiveRef.current) setGitEpoch((value) => value + 1)
+          if (scmActiveRef.current && !quiet) setGitEpoch((value) => value + 1)
         }
         return null
       })
@@ -840,12 +847,18 @@ export function ShellExplorerPage({
         const generation = rootGenerationRef.current
         await renameEntry(host, currentRoot, from, to)
         if (rootGenerationRef.current !== generation || rootRef.current !== currentRoot) return
-        // Open tabs and their drafts follow the file to its new name.
-        const affected = tabsRef.current.tabs.filter((tab) => isUnder(tab.target.path, from))
+        // Open tabs and their drafts follow the file to its new name; a
+        // revision tab, or a diff of fixed sides (a commit, two revisions, a
+        // recorded change), stays: what it reads still has the old one.
+        const affected = tabsRef.current.tabs.filter(
+          (tab) =>
+            (tab.target.kind === 'file' || (tab.target.kind === 'diff' && diffSourceFollowsDisk(tab.target.source))) &&
+            isUnder(tab.target.path, from),
+        )
         for (const tab of affected) {
           const renamed = isDir ? to + tab.target.path.slice(from.length) : to
           const target: TabTarget =
-            tab.target.kind === 'file' ? fileTarget(renamed) : diffTarget(renamed, tab.target.source)
+            tab.target.kind === 'diff' ? diffTarget(renamed, tab.target.source) : fileTarget(renamed)
           if (tab.target.kind === 'file') {
             const oldPath = tab.target.path
             const cached = cacheRef.current.get(oldPath)
@@ -945,7 +958,9 @@ export function ShellExplorerPage({
   // ── source control ──
   const scmActive = sideTab === 'scm'
   scmActiveRef.current = scmActive
-  const scm = useSourceControl(host, root, gitEpoch, scmActive, afterDiskChange)
+  // The Commit tab derives from the page's own git status rather than
+  // reading git again; its actions refresh it through afterDiskChange.
+  const scm = useSourceControl(host, root, gitEpoch, scmActive, afterDiskChange, { git, refresh: refreshGit })
   const compareOpen = tabs.tabs.some((tab) => tab.target.kind === 'diff' && tab.target.source.type === 'compare')
   const compareRefs = useCompareRefs(host, root, compareOpen)
 
@@ -1058,7 +1073,8 @@ export function ShellExplorerPage({
         }
       case 'compare':
         return {
-          openFile,
+          // A file outside the IDE's folder (`../…`) has no tab of its own here.
+          ...(path.startsWith('../') ? {} : { openFile }),
           changeRef: (ref) => {
             const trimmed = ref.trim()
             if (trimmed === '' || trimmed === source.ref) return
@@ -1216,6 +1232,9 @@ export function ShellExplorerPage({
     for (const id of diffCacheRef.current.keys()) {
       if (!openIds.has(id)) diffCacheRef.current.delete(id)
     }
+    for (const id of revisionCacheRef.current.keys()) {
+      if (!openIds.has(id)) revisionCacheRef.current.delete(id)
+    }
   }, [tabs])
   const onFileMissing = useCallback((relPath: string, gone: boolean) => {
     setMissingPaths((prev) => withMissing(prev, relPath, gone))
@@ -1322,6 +1341,7 @@ export function ShellExplorerPage({
         objectUrlsRef.current.releaseAll()
         cacheRef.current.clear()
         diffCacheRef.current.clear()
+        revisionCacheRef.current.clear()
         setRevealLineRequest(null)
         historyRef.current = EMPTY_HISTORY
         setHistoryState({ back: false, forward: false })
@@ -2219,15 +2239,25 @@ export function ShellExplorerPage({
     },
     [openFileTab, narrow, closeGit],
   )
+  const openRevision = useCallback(
+    (file: CommitFile, sha: string) => {
+      showTab((s) => openPinned(s, revisionTarget(file.view, sha)))
+      if (narrow) closeGit()
+    },
+    [showTab, narrow, closeGit],
+  )
   const openPreviewFile = useCallback((rel: string) => openFileTab(rel), [openFileTab])
   const openMatch = useCallback(
     (rel: string, line: number, column: number, pin: boolean) => openFileTab(rel, { pin, line, column }),
     [openFileTab],
   )
   const openQuickOpen = useCallback(() => setQuickOpen(true), [])
-  const closeActiveFile = useCallback(() => {
-    if (activeFilePath !== null) void closeTabId(fileTabId(activeFilePath))
-  }, [activeFilePath, closeTabId])
+  // The Close of the editor and of a revision tab: either is on screen only
+  // while its tab is the active one.
+  const closeActiveTab = useCallback(() => {
+    const active = tabsRef.current.active
+    if (active !== null) void closeTabId(active)
+  }, [closeTabId])
   // The strip's close verbs read the tabs when they run.
   const closeOtherTabs = useCallback(
     (id: string) => closeTabIds(tabsRef.current.tabs.filter((tab) => tab.id !== id).map((tab) => tab.id)),
@@ -2310,7 +2340,13 @@ export function ShellExplorerPage({
         }}
       />
       {header}
-      <div ref={setFrameEl} className={`shui-workspace-frame terminal-${gitOpen ? 'bottom' : terminalDock}`}>
+      {/* A narrow page stacks a right dock under the editor, as a bottom one:
+          decided here, since the frame is the container the stylesheet's
+          narrow rules query, and a container query cannot style its own. */}
+      <div
+        ref={setFrameEl}
+        className={`shui-workspace-frame terminal-${gitOpen || (narrow && terminalDock === 'right') ? 'bottom' : terminalDock}`}
+      >
         {narrow && !collapsed ? (
           <button type="button" className="shui-sidebar-scrim" aria-label="Hide sidebar" onClick={() => setCollapsed(true)} />
         ) : null}
@@ -2561,7 +2597,7 @@ export function ShellExplorerPage({
                 onCompare={compareFile}
                 missing={missingPaths.has(activeFilePath)}
                 onMissing={onFileMissing}
-                onClose={closeActiveFile}
+                onClose={closeActiveTab}
                 onReferenceInChat={referenceInChat}
                 onQuickOpen={openQuickOpen}
               />
@@ -2580,6 +2616,21 @@ export function ShellExplorerPage({
                 actions={diffActions}
                 compareRefs={activeDiff.source.type === 'compare' ? compareRefs : undefined}
                 busy={scm.busy || reverting !== null}
+              />
+            ) : activeRevision !== null && activeTab !== null ? (
+              <RevisionPane
+                key={activeTab.id}
+                host={host}
+                root={root}
+                rootLabel={rootLabel}
+                relPath={activeRevision.path}
+                sha={activeRevision.sha}
+                id={activeTab.id}
+                cache={revisionCacheRef.current}
+                wordWrap={diffOptions.wordWrap}
+                onRevealDir={revealFolder}
+                onClose={closeActiveTab}
+                onQuickOpen={openQuickOpen}
               />
             ) : browsePath !== null ? (
               <WorkspaceBrowser
@@ -2684,6 +2735,7 @@ export function ShellExplorerPage({
               onOpenCommitFile={openCommitFile}
               onOpenCompareFile={openCompareFile}
               onOpenWorkingFile={openWorkingFile}
+              onOpenRevision={openRevision}
             />
           </DockPanel>
         ) : null}

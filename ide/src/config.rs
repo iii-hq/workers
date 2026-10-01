@@ -432,7 +432,8 @@ pub struct EnvConfig {
     /// deny-only, gated solely by the hardcoded dangerous-key list (PATH,
     /// IFS, HOME, LD_*/DYLD_*, GCONV_PATH, BASH_ENV, PYTHONSTARTUP,
     /// NODE_OPTIONS, ...), never by this list. Default: [PATH, HOME, LANG,
-    /// LC_ALL, TERM].
+    /// LC_ALL, TERM]. git fetch/push over SSH needs the agent socket: add
+    /// SSH_AUTH_SOCK.
     #[serde(default = "default_env_allow")]
     pub allow: Vec<String>,
 }

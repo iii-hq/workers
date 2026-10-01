@@ -43,7 +43,8 @@ export function DockPanel({
 }: {
   dock: TerminalDock
   size: number
-  /** The page is narrow: a right dock stacks under the editor at full width. */
+  /** The page is narrow: a right dock stacks under the editor at full width,
+      with no resize handle. */
   narrow?: boolean
   /** Fills the whole frame over the editor, which stays mounted beneath. */
   maximized?: boolean
@@ -58,12 +59,14 @@ export function DockPanel({
 }) {
   const panelRef = useRef<HTMLElement>(null)
   const [resizeBounds, setResizeBounds] = useState({ size, max: 1200 })
-  const docked = dock !== 'editor' && !maximized
+  // A narrow page's right dock takes its size from styles.css, stacked under
+  // the editor at full width: it has no handle, as a drag could not size it.
+  const docked = dock !== 'editor' && !maximized && !(narrow && dock === 'right')
   // A drag sizes the panel here and tells the page once, on release: the
   // page re-rendering on every pointer move would redraw everything else.
   const [dragSize, setDragSize] = useState<number | null>(null)
   const dragSizeRef = useRef<number | null>(null)
-  const style = maximized || (narrow && dock === 'right') ? undefined : dockStyle(dock, dragSize ?? size)
+  const style = docked ? dockStyle(dock, dragSize ?? size) : undefined
 
   useEffect(() => {
     const panel = panelRef.current

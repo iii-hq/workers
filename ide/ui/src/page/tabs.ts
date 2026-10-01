@@ -1,7 +1,8 @@
 /* Editor tab-strip state — VS Code-style preview semantics, as pure
-   transitions so the behavior is unit-testable. A tab shows either a
-   file (its real content, editable) or a diff (one source against one
-   path); both live in the same strip and follow the same rules:
+   transitions so the behavior is unit-testable. A tab shows a file (its
+   real content, editable), a diff (one source against one path) or a
+   file as a commit left it (read-only); all live in the same strip and
+   follow the same rules:
 
    - single click opens a PREVIEW tab (italic): at most one exists, and
      the next preview replaces it
@@ -14,9 +15,12 @@ import { type DiffSource, diffSourceKey, diffSourcePersists, parseDiffSource } f
 export type TabTarget =
   | { kind: 'file'; path: string }
   | { kind: 'diff'; path: string; source: DiffSource }
+  /** `git show <sha>:./<path>`: never edited, never saved. */
+  | { kind: 'revision'; path: string; sha: string }
 
 export interface OpenTab {
-  /** Stable identity: `file:<path>` or `diff:<source>:<path>`. */
+  /** Stable identity: `file:<path>`, `diff:<source>:<path>` or
+      `revision:<sha>:<path>`. */
   id: string
   target: TabTarget
   pinned: boolean
@@ -31,9 +35,14 @@ export interface TabsState {
 export const EMPTY_TABS: TabsState = { tabs: [], active: null }
 
 export function tabIdFor(target: TabTarget): string {
-  return target.kind === 'file'
-    ? `file:${target.path}`
-    : `diff:${diffSourceKey(target.source)}:${target.path}`
+  switch (target.kind) {
+    case 'file':
+      return `file:${target.path}`
+    case 'diff':
+      return `diff:${diffSourceKey(target.source)}:${target.path}`
+    case 'revision':
+      return `revision:${target.sha}:${target.path}`
+  }
 }
 
 export function fileTarget(path: string): TabTarget {
@@ -42,6 +51,10 @@ export function fileTarget(path: string): TabTarget {
 
 export function diffTarget(path: string, source: DiffSource): TabTarget {
   return { kind: 'diff', path, source }
+}
+
+export function revisionTarget(path: string, sha: string): TabTarget {
+  return { kind: 'revision', path, sha }
 }
 
 export function findTab(state: TabsState, id: string): OpenTab | undefined {
@@ -162,18 +175,20 @@ function restoreTarget(raw: Record<string, unknown>): TabTarget | null {
     const source = parseDiffSource(raw.source)
     return source === null ? null : diffTarget(path, source)
   }
+  if (raw.kind === 'revision') {
+    // Hex only: the sha leads a `git show` argument, where a leading dash
+    // would read as an option.
+    return typeof raw.sha === 'string' && /^[0-9a-f]{4,64}$/i.test(raw.sha) ? revisionTarget(path, raw.sha) : null
+  }
   return fileTarget(path)
 }
 
-/** The persisted form: one row per tab, change tabs left out. */
-export function persistedTabs(state: TabsState): { kind: string; path: string; source?: DiffSource; pinned: boolean }[] {
+/** The persisted form: one row per tab (its target and whether it is
+    pinned), change tabs left out. */
+export function persistedTabs(state: TabsState): (TabTarget & { pinned: boolean })[] {
   return state.tabs
-    .filter((t) => t.target.kind === 'file' || diffSourcePersists(t.target.source))
-    .map((t) =>
-      t.target.kind === 'file'
-        ? { kind: 'file', path: t.target.path, pinned: t.pinned }
-        : { kind: 'diff', path: t.target.path, source: t.target.source, pinned: t.pinned },
-    )
+    .filter((t) => t.target.kind !== 'diff' || diffSourcePersists(t.target.source))
+    .map((t) => ({ ...t.target, pinned: t.pinned }))
 }
 
 /** `/a/b/c/d` → `c/d` — the short display form for a project root. */

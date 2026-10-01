@@ -183,8 +183,14 @@ export function useGitLog(
         if (seq !== refSeq.current) return
         const state = live.current
         if (next === null) {
+          // The read of a page still in flight belongs to the dropped
+          // generation and will not clear its own loading.
           state.snapshot = null
           state.generation += 1
+          state.pending = false
+          state.commits = []
+          setLoading(false)
+          setError(null)
           setSnapshot(null)
           setNotRepo(true)
           setCommits([])
@@ -235,6 +241,10 @@ export function useGitLog(
       lastRoot.current = root
       state.snapshot = null
       state.generation += 1
+      state.pending = false
+      state.commits = []
+      setLoading(false)
+      setError(null)
       setSnapshot(null)
       setCommits([])
       setGraph(null)

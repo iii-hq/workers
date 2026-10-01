@@ -6,6 +6,7 @@ import {
   gitDiscard,
   gitFileAtRef,
   gitPush,
+  gitRestoreFrom,
   gitStashPush,
   gitTags,
   gitUnstage,
@@ -294,5 +295,31 @@ describe('retrying a held index lock', () => {
     await vi.runAllTimersAsync()
     await outcome
     expect(moved.calls).toHaveLength(3)
+  })
+})
+
+describe('gitRestoreFrom', () => {
+  it('restores a path the index or the commit knows, from the top', async () => {
+    const { host, calls } = hostWith(reply({ stdout: '/r\n' }), reply({ stdout: 'src/b.ts\0' }), reply())
+    await gitRestoreFrom(host, '/r/sub', 'abc1234', ['src/b.ts'])
+    expect(calls.map((call) => (call as { args: string[]; cwd: string }).args)).toEqual([
+      ['rev-parse', '--show-toplevel'],
+      ['ls-files', '-z', '--with-tree=abc1234', '--', ':(top,literal)src/b.ts'],
+      ['restore', '--source=abc1234', '--worktree', '--', ':(top,literal)src/b.ts'],
+    ])
+    expect(calls[2]).toMatchObject({ cwd: '/r' })
+  })
+
+  it('says a path neither knows is left as is, rather than reporting a restore', async () => {
+    // The commit deleted it and it was made again since, never added.
+    const { host, calls } = hostWith(reply({ stdout: '/r\n' }), reply(), reply({ stdout: 'src/D.ts\0' }))
+    await expect(gitRestoreFrom(host, '/r', 'abc1234', ['src/D.ts'])).rejects.toThrow('D.ts is not tracked: left as is')
+    expect(calls).toHaveLength(3)
+  })
+
+  it('has nothing to do for a path the commit deleted and the working tree has not', async () => {
+    const { host, calls } = hostWith(reply({ stdout: '/r\n' }), reply(), reply())
+    await gitRestoreFrom(host, '/r', 'abc1234', ['src/D.ts'])
+    expect(calls.map((call) => (call as { args: string[] }).args[0])).toEqual(['rev-parse', 'ls-files', 'ls-files'])
   })
 })

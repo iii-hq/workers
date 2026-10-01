@@ -11,16 +11,25 @@ vi.mock('react', async (original) => ({
 
 // What the mocked reads saw: the refs' listing a read finds, how many ran,
 // and the author filter of each first page of the log.
-const git = vi.hoisted(() => ({ signature: 'a', refs: 0, fail: false, pages: [] as Array<string | undefined> }))
+const git = vi.hoisted(() => ({
+  signature: 'a',
+  refs: 0,
+  fail: false,
+  notRepo: false,
+  hold: false,
+  pages: [] as Array<string | undefined>,
+}))
 vi.mock('../git-log-window', async (original) => ({
   ...(await original<typeof import('../git-log-window')>()),
   readRefs: async () => {
     git.refs += 1
     if (git.fail) throw new Error('engine hiccup')
-    return snapshot(git.signature)
+    return git.notRepo ? null : snapshot(git.signature)
   },
   readLogPage: async (_host: Host, _root: string, _tips: string[], filter: LogFilter) => {
     git.pages.push(filter.author)
+    // A page that never comes back: still in flight when the test moves on.
+    if (git.hold) return new Promise<never>(() => {})
     return { commits: [], done: true }
   },
   readCommitDetails: async (_host: Host, _root: string, _prefix: string, sha: string) => commit(sha),
@@ -127,6 +136,25 @@ describe('the log', () => {
     // …and its read, which went well, clears the error the refs read left.
     expect(log.result.error).toBeNull()
     git.fail = false
+    log.unmount()
+  })
+
+  it('stops loading when the folder stops being a repository mid-read', async () => {
+    vi.stubGlobal('window', new EventTarget())
+    vi.stubGlobal('document', new EventTarget())
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+    git.hold = true
+    const log = mount(() => useGitLog(host, '/gone', 0, true, {}, null), undefined)
+    await settle()
+    expect(log.result.loading).toBe(true)
+    // The next refs read finds no repository while the first page still reads.
+    git.notRepo = true
+    log.result.refresh()
+    await settle()
+    expect(log.result.notRepo).toBe(true)
+    expect(log.result.loading).toBe(false)
+    git.hold = false
+    git.notRepo = false
     log.unmount()
   })
 })

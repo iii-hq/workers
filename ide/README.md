@@ -78,6 +78,7 @@ default_timeout_ms: 30000    # applied when the caller omits timeout_ms (code de
 max_output_bytes: 1048576    # 1 MiB; stdout/stderr past this set *_truncated
 env:
   inherit: true              # forward the worker's env to children; per-call dangerous keys still blocked
+  # with inherit: false, git fetch/push over SSH needs the agent socket: add SSH_AUTH_SOCK to allow
   allow: [PATH, HOME, LANG, LC_ALL, TERM]  # forwarded when inherit is false; has no effect on per-call `env` (deny-only — dangerous keys never settable)
 
 # Command policy is deny-only: allow/ask policy lives in the approval-gate.

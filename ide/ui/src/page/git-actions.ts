@@ -6,6 +6,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { coderDelete, joinPath } from './coder'
 import type { GitChange, GitFileStatus } from './git'
+import { basename } from './paths'
 
 interface ExecResponse {
   exit_code: number | null
@@ -386,7 +387,21 @@ export async function gitApplyCommitChanges(
 export async function gitRestoreFrom(host: Host, cwd: string, sha: string, paths: readonly string[]): Promise<void> {
   if (paths.length === 0) return
   const top = await topOf(host, cwd)
-  await run(host, top, ['restore', `--source=${sha}`, '--worktree', '--', ...inRepo(paths)], 'git restore')
+  // A path neither the index nor the commit knows is either gone already
+  // (the commit deleted it, and so does the working tree) or a file made
+  // again since and never added, which is not git's to remove: git restore
+  // refuses both with a bare pathspec error, so tell them apart.
+  const known = await run(host, top, ['ls-files', '-z', `--with-tree=${sha}`, '--', ...inRepo(paths)], 'git ls-files')
+  const listed = new Set(known.stdout.split('\0'))
+  const unknown = paths.filter((path) => !listed.has(path))
+  if (unknown.length > 0) {
+    const others = await run(host, top, ['ls-files', '-z', '--others', '--', ...inRepo(unknown)], 'git ls-files')
+    const onDisk = others.stdout.split('\0').find(Boolean)
+    if (onDisk !== undefined) throw new Error(`${basename(onDisk)} is not tracked: left as is`)
+  }
+  const restorable = paths.filter((path) => listed.has(path))
+  if (restorable.length === 0) return
+  await run(host, top, ['restore', `--source=${sha}`, '--worktree', '--', ...inRepo(restorable)], 'git restore')
 }
 
 export interface GitTagSummary {

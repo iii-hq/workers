@@ -86,9 +86,19 @@ async function gitSide(host: Host, root: string, spec: string): Promise<string |
     }
     throw new Error(detail || `git show exited ${out.exit_code}`)
   }
-  if (out.stdout_truncated) throw new Error('the committed body is larger than the shell output cap')
+  // Binary first: a large binary is cut at the output cap too, and its
+  // first MiB already shows what it is.
   if (out.stdout.includes('\0') || out.stdout.includes('�')) throw new Error('binary file')
+  if (out.stdout_truncated) throw new Error('the committed body is larger than the shell output cap')
   return out.stdout
+}
+
+/** A file as commit `sha` left it, for a read-only tab. `path` is
+    root-relative, with `../` for a file outside the root. */
+export async function loadRevisionFile(host: Host, root: string, path: string, sha: string): Promise<string> {
+  const body = await gitSide(host, root, `${sha}:./${path}`)
+  if (body === null) throw new Error(`the file is not in ${sha.slice(0, 7)}`)
+  return body
 }
 
 /** The working copy as text; null when the file is gone. */

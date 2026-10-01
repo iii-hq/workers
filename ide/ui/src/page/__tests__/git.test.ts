@@ -6,6 +6,8 @@ import {
   gitReadSource,
   gitRecentCommits,
   gitRefs,
+  gitUncommittedFrom,
+  parseBranchHeader,
 } from '../git'
 
 interface ExecReply {
@@ -107,6 +109,8 @@ describe('gitComparison', () => {
         'status',
         '--porcelain=v1',
         '-z',
+        '--branch',
+        '--no-ahead-behind',
         '--untracked-files=all',
         '--renames',
         '--',
@@ -367,7 +371,7 @@ describe('gitComparison', () => {
     })
 
     const explorer = repoHost(status)
-    await expect(gitChanges(explorer.host, '/repo')).resolves.toEqual({
+    await expect(gitChanges(explorer.host, '/repo')).resolves.toMatchObject({
       kind: 'ready',
       changes: [
         {
@@ -396,6 +400,67 @@ describe('gitComparison', () => {
     if (next.kind !== 'ready') throw new Error(`expected a ready state, got ${next.kind}`)
     expect(next).not.toBe(state)
     expect(next.changes.map((change) => change.path)).toEqual(['both.ts', 'added.ts'])
+
+    // Staging the rest of both.ts leaves its change as it was (modified,
+    // staged), but not the HEAD → working-copy view: a new object.
+    const staged = ['M  both.ts', 'A  added.ts'].join('\0') + '\0'
+    const restaged = await gitChanges(repoHost(staged).host, '/repo', next)
+    expect(restaged).not.toBe(next)
+    // So does a branch switch that leaves every record as it was.
+    const onMain = await gitChanges(repoHost(`## main\0${staged}`).host, '/repo', restaged)
+    expect(onMain).not.toBe(restaged)
+    expect(await gitChanges(repoHost(`## main...origin/main [different]\0${staged}`).host, '/repo', onMain)).toBe(
+      onMain,
+    )
+    expect(await gitChanges(repoHost(`## topic\0${staged}`).host, '/repo', onMain)).not.toBe(onMain)
+  })
+
+  it('names the branch from the status header', async () => {
+    expect(parseBranchHeader('main')).toBe('main')
+    expect(parseBranchHeader('feat/v1.2...origin/feat/v1.2 [ahead 1, behind 2]')).toBe('feat/v1.2')
+    expect(parseBranchHeader('main...origin/main [gone]')).toBe('main')
+    expect(parseBranchHeader('No commits yet on main')).toBe('main')
+    expect(parseBranchHeader('No commits yet on main...origin/main [gone]')).toBe('main')
+    expect(parseBranchHeader('Initial commit on trunk')).toBe('trunk')
+    // A detached HEAD keeps the header's chip, named as `rev-parse` names it.
+    expect(parseBranchHeader('HEAD (no branch)')).toBe('HEAD')
+
+    // The header is a record of its own, ahead of the entries.
+    const state = await gitChanges(repoHost('## No commits yet on main\0?? new.ts\0').host, '/repo')
+    expect(state).toMatchObject({
+      kind: 'ready',
+      changes: [{ path: 'new.ts', status: 'untracked' }],
+      status: { branch: 'main', prefix: '' },
+    })
+    await expect(gitChanges(repoHost('## main').host, '/repo')).resolves.toEqual({
+      kind: 'error',
+      message: 'git status returned an incomplete porcelain record',
+    })
+  })
+
+  it('derives the uncommitted comparison from a status already read', async () => {
+    const status = ['## main', 'MM sub/both.ts', '?? sub/new.ts'].join('\0') + '\0'
+    const read = await gitChanges(repoHost(status, 'sub/\n').host, '/repo/sub')
+    // Only HEAD's check and its diff run: no second probe or status.
+    const { host, trigger } = mockedHost(
+      reply({ stdout: `${'a'.repeat(40)}\n` }),
+      reply({ stdout: 'M\0sub/both.ts\0' }),
+    )
+    await expect(gitUncommittedFrom(host, '/repo/sub', read)).resolves.toMatchObject({
+      kind: 'ready',
+      scope: 'uncommitted',
+      changes: [
+        { path: 'both.ts', status: 'modified', x: 'M', y: 'M' },
+        { path: 'new.ts', status: 'untracked' },
+      ],
+    })
+    expect(trigger.mock.calls.map((call) => (call as unknown[])[1])).toMatchObject([
+      { args: ['--no-optional-locks', 'rev-parse', '--verify', '--quiet', 'HEAD'] },
+      { args: expect.arrayContaining(['--no-optional-locks', 'diff', 'HEAD']) },
+    ])
+    // A status that could not be read is the comparison's answer as is.
+    const failed = { kind: 'error', message: 'git status timed out' } as const
+    await expect(gitUncommittedFrom(host, '/repo/sub', failed)).resolves.toBe(failed)
   })
 
   it('returns explicit errors for truncated and malformed status output', async () => {

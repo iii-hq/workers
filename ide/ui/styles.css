@@ -1091,6 +1091,7 @@
   .shui-scm-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .shui-scm-panel[hidden] { display: none; }
   :is(.shui-commit, .shui-stash, .shui-history) { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .shui-commit[hidden] { display: none; }
 
   .shui-commit-toolbar {
     flex: none;
@@ -3253,6 +3254,8 @@
     white-space: nowrap;
   }
   .shui-git-commit-info { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 12px; }
+  /* the diff preview: the selected file's diff tab, in the commit's place */
+  .shui-git-preview { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
   /* the commit's facts: one label and one value a row */
   .shui-git-kv {
     display: grid;
@@ -3401,24 +3404,18 @@
       z-index: 6;
       max-width: 320px;
     }
-    /* (A side-by-side terminal split stacks at this width too: the page's
-       `narrow` has TerminalWorkspace lay it out top to bottom.) */
-    .shui-workspace-frame.terminal-right { flex-direction: column; }
-    /* The page drops the inline width in narrow mode (TerminalPanel `narrow`). */
+    /* A right dock stacks under the editor at full width: the page lays the
+       frame out as for a bottom dock (the frame is this query's container, so
+       no rule here can restyle it), and drops the inline width and the resize
+       handle (DockPanel `narrow`). (A side-by-side terminal split stacks at
+       this width too: the page's `narrow` has TerminalWorkspace lay it out
+       top to bottom.) */
     .shui-terminal-panel[data-terminal-dock="right"] {
       width: 100%;
       height: 45%;
       max-width: none;
       border-left: 0;
       border-top: 1px solid var(--color-edge);
-    }
-    .shui-terminal-panel[data-terminal-dock="right"] > .shui-terminal-resize {
-      top: 0;
-      right: auto;
-      left: 0;
-      width: 100%;
-      height: 7px;
-      cursor: ns-resize;
     }
     .shui-terminal-tab-select { max-width: 92px; }
     .shui-terminal-pane-cwd { display: none; }

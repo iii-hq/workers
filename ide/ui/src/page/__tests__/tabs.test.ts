@@ -13,6 +13,7 @@ import {
   persistedTabs,
   pinTab,
   restoreTabs,
+  revisionTarget,
   tabFilePaths,
   tabIdFor,
   tabsForPath,
@@ -131,6 +132,17 @@ describe('restoreTabs / persistedTabs', () => {
     expect(s.active).toBe('diff:staged:a.ts')
     const withChange = openPinned(s, diffTarget('b.ts', { type: 'change', changeId: 'c1' }))
     expect(persistedTabs(withChange).map((t) => t.path)).toEqual(['a.ts', 'a.ts', 'a.ts'])
+  })
+
+  it('keeps a revision tab across a round trip, and only with a hex sha', () => {
+    let s = openPinned(EMPTY_TABS, revisionTarget('../lib/x.ts', 'abc1234'))
+    // Opening it again lands on the same tab.
+    s = openPinned(s, revisionTarget('../lib/x.ts', 'abc1234'))
+    expect(s.tabs.map((t) => t.id)).toEqual(['revision:abc1234:../lib/x.ts'])
+    const rows = persistedTabs(s)
+    expect(rows).toEqual([{ kind: 'revision', path: '../lib/x.ts', sha: 'abc1234', pinned: true }])
+    expect(restoreTabs(JSON.parse(JSON.stringify(rows)), s.active)).toEqual(s)
+    expect(restoreTabs([{ kind: 'revision', path: 'x.ts', sha: '--output=x', pinned: true }], null)).toEqual(EMPTY_TABS)
   })
 
   it('reads the pre-diff shape as file tabs and a path as the active id', () => {
