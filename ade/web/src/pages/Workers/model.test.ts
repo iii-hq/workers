@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ContainerEntry, DeclaredContainer } from './compose-api'
 import {
+  defaultRun,
   dependentsOf,
   draftFrom,
   entryShape,
@@ -297,5 +298,17 @@ describe('waveLabel', () => {
   it('names a single dependency and counts several', () => {
     expect(waveLabel(['router', 'canvas'], all)).toBe('After state')
     expect(waveLabel(['harness'], all)).toBe('After 2 containers')
+  })
+})
+
+describe('defaultRun', () => {
+  it('offers cargo run of the binary a Rust worker builds, nothing for the rest', () => {
+    expect(defaultRun({ name: 'judge', language: 'rust', bin: null })).toBe(
+      'cargo run --locked --bin judge',
+    )
+    expect(
+      defaultRun({ name: 'judge', language: 'rust', bin: 'judge-typesafe' }),
+    ).toBe('cargo run --locked --bin judge-typesafe')
+    expect(defaultRun({ name: 'web', language: 'node', bin: null })).toBe('')
   })
 })

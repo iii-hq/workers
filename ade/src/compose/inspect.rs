@@ -28,6 +28,11 @@ pub struct Manifest {
     pub language: Option<String>,
     pub description: Option<String>,
     pub dependencies: Vec<String>,
+    /// `scripts.start`: how compose starts the worker when its entry has no
+    /// `run`. Without either, the container cannot start.
+    pub start: Option<String>,
+    /// `bin`: the binary a Rust worker builds.
+    pub bin: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -71,6 +76,12 @@ pub fn parse_manifest(dir: &Path, source: &str) -> Option<Manifest> {
             .flat_map(|deps| deps.keys())
             .filter_map(|key| key.as_str().map(str::to_string))
             .collect(),
+        start: root
+            .get("scripts")
+            .and_then(|scripts| scripts.get("start"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        bin: text("bin"),
     })
 }
 
@@ -220,6 +231,15 @@ mod tests {
         .unwrap();
         assert_eq!(manifest.name, "memory");
         assert_eq!(manifest.dependencies, ["state", "queue"]);
+        assert_eq!(manifest.start, None);
+
+        let started = parse_manifest(
+            Path::new("/w/judge"),
+            "name: judge\nlanguage: rust\nbin: judge-bin\nscripts:\n  start: ./judge\n",
+        )
+        .unwrap();
+        assert_eq!(started.start.as_deref(), Some("./judge"));
+        assert_eq!(started.bin.as_deref(), Some("judge-bin"));
         assert!(parse_manifest(Path::new("/x"), "language: rust\n").is_none());
     }
 

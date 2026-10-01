@@ -119,6 +119,10 @@ export type Manifest = {
   language: string | null
   description: string | null
   dependencies: string[]
+  /** `scripts.start`: how compose starts it when the entry has no `run`. */
+  start: string | null
+  /** `bin`: the binary a Rust worker builds. */
+  bin: string | null
 }
 export type Inspection = {
   path: string

@@ -368,3 +368,17 @@ export function parseLogLine(line: string): LogParts | null {
     text: text.trimStart(),
   }
 }
+
+/** The start command a local worker needs when its manifest has no
+    `scripts.start` (compose fails it with MISSING_START_COMMAND otherwise):
+    for a Rust worker, `cargo run` of its binary, as the hand-written entries
+    do; '' when there is no default to offer. */
+export function defaultRun(manifest: {
+  name: string
+  language: string | null
+  bin: string | null
+}): string {
+  return manifest.language === 'rust'
+    ? `cargo run --locked --bin ${manifest.bin ?? manifest.name}`
+    : ''
+}

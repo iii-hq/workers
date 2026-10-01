@@ -25,7 +25,7 @@ import type {
   RegistryWorker,
 } from './compose-api'
 import type { Actions } from './index'
-import { basename, shortPath, usualParent } from './model'
+import { basename, defaultRun, shortPath, usualParent } from './model'
 
 type Mode = 'registry' | 'path'
 
@@ -327,6 +327,13 @@ function PathPick({
   const [path, setPath] = useState(start)
   const [found, setFound] = useState<Inspection | null>(null)
   const settled = useDebounce(path.trim(), 300)
+  // A manifest with no `scripts.start` gives compose nothing to start: the
+  // entry carries a `run`, a default offered where there is one.
+  const needsRun = Boolean(found?.manifest && !found.manifest.start)
+  const [run, setRun] = useState('')
+  useEffect(() => {
+    setRun(found?.manifest ? defaultRun(found.manifest) : '')
+  }, [found])
 
   useEffect(() => {
     setFound(null)
@@ -353,15 +360,18 @@ function PathPick({
       found?.manifest?.dependencies.filter((d) => declared.has(d)) ?? []
     const key = found?.manifest ? basename(found.path) : null
     if (!found || !key || declared.has(key)) return onPlan(null)
+    const command = run.trim()
+    if (needsRun && !command) return onPlan(null)
     onPlan({
       name: key,
       input: {
         worker: `path://${found.path}`,
         ...(deps.length ? { start_after: deps } : {}),
+        ...(needsRun ? { scripts: { run: command } } : {}),
       },
       summary: `Runs from ${shortPath(found.path)}`,
     })
-  }, [found, declared, onPlan])
+  }, [found, declared, onPlan, needsRun, run])
 
   const available = (found?.workers ?? []).filter(
     (w) => !declared.has(basename(w.path)),
@@ -441,6 +451,30 @@ function PathPick({
                 headline="Compose does not resolve a local worker's dependencies"
                 detail={`Not in this project: ${missing.join(', ')}. Add them first.`}
               />
+            ) : null}
+            {needsRun ? (
+              <>
+                <div className="wk-inline-field">
+                  <label htmlFor="wk-add-run" className={eyebrowClassName}>
+                    Start command
+                  </label>
+                  <Input
+                    id="wk-add-run"
+                    className="wk-mono"
+                    value={run}
+                    onChange={setRun}
+                    placeholder="./target/release/worker"
+                    spellCheck={false}
+                  />
+                </div>
+                {run.trim() ? null : (
+                  <StatusPanel
+                    variant="warn"
+                    headline="No start command"
+                    detail="Its iii.worker.yaml has no scripts.start, so compose needs one here to start it."
+                  />
+                )}
+              </>
             ) : null}
           </>
         )
