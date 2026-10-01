@@ -16,10 +16,21 @@ import {
   Eyebrow,
   type Host,
   JsonHighlight,
+  SegmentedControl,
+  Skeleton,
   StatusDot,
+  Table,
+  TableBody,
+  TableCell,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
 } from '@iii-dev/console-ui'
 import { formatRelative } from '@iii-dev/console-ui/format'
-import { useCallback, useState } from 'react'
+import { ChevronRight, RotateCcw } from 'lucide-react'
+import { Fragment, useCallback, useState } from 'react'
 import {
   type CallRecord,
   listCalls,
@@ -84,20 +95,40 @@ export function ActivityFeed({
   )
   const calls = useResource(load)
   const [open, setOpen] = useState<string | null>(null)
+  const [filter, setFilter] = useState<'all' | 'failed'>('all')
 
   // Trace ticks are frequent under load, so this debounces harder than the
   // catalogue subscriptions do.
   useLiveSignals(host, ['trace'], calls.reload, { debounceMs: 1200 })
 
   if (calls.error) {
-    return <ErrorNote call="engine::traces::spans" message={calls.error} />
+    return (
+      <ErrorNote
+        title="Couldn't read recent calls"
+        call="engine::traces::spans"
+        message={calls.error}
+        onRetry={calls.reload}
+      />
+    )
   }
-  if (calls.data === null) return <Note>Reading recent calls…</Note>
+  if (calls.data === null) {
+    return (
+      <div
+        className="console-catalog-calls-loading"
+        role="status"
+        aria-label="Reading recent calls"
+      >
+        {[0, 1, 2, 3, 4].map((i) => (
+          <Skeleton key={i} className="row" />
+        ))}
+      </div>
+    )
+  }
   if (calls.data.length === 0) {
     return (
       <Note>
-        no recorded calls. This feed follows the trace stream, so a call made
-        from anywhere — the agent, another worker, the trigger tab — appears
+        No recorded calls yet. This list follows the trace stream, so a call
+        made from anywhere (the agent, another worker, the Run tab) shows up
         here as it happens.
       </Note>
     )
@@ -107,32 +138,67 @@ export function ActivityFeed({
   const failures = calls.data.filter((c) => !c.ok).length
   const slowest = calls.data.reduce((max, c) => Math.max(max, c.durationMs), 0)
   const median = medianDuration(calls.data)
+  const shown =
+    filter === 'failed' ? calls.data.filter((c) => !c.ok) : calls.data
 
   return (
     <div className="console-catalog-activity">
-      <div className="console-catalog-activity-summary">
-        <span>{calls.data.length} recent calls</span>
-        <span>median {formatDuration(median)}</span>
-        <span>slowest {formatDuration(slowest)}</span>
-        <span className={failures ? 'console-catalog-invalid' : undefined}>
-          {failures} failed
+      <div className="console-catalog-activity-bar">
+        <SegmentedControl
+          variant="radio"
+          aria-label="Filter calls"
+          value={filter}
+          onChange={setFilter}
+          options={[
+            { value: 'all', label: `All ${calls.data.length}`, icon: false },
+            { value: 'failed', label: `Failed ${failures}`, icon: false },
+          ]}
+        />
+        <span className="console-catalog-activity-summary">
+          median {formatDuration(median)} · slowest {formatDuration(slowest)}
         </span>
       </div>
-      {calls.data.map((call, i) => {
-        // spanId can be empty or duplicated on some backends — the row id
-        // keys AND drives open state, so a collision would open every twin.
-        const rowId = call.spanId || `${call.traceId}:${call.startedAtMs}:${i}`
-        return (
-          <CallRow
-            key={rowId}
-            call={call}
-            now={now}
-            open={open === rowId}
-            onToggle={() => setOpen((prev) => (prev === rowId ? null : rowId))}
-            onReplay={onReplay}
-          />
-        )
-      })}
+      {shown.length === 0 ? (
+        <Note>None of the last {calls.data.length} calls failed.</Note>
+      ) : (
+        <TableViewport className="console-catalog-calls">
+          <TableFrame>
+            <Table density="compact" aria-label="Recent calls">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="status-column">
+                    <span className="console-catalog-sr">Status</span>
+                  </TableHead>
+                  <TableHead>Time</TableHead>
+                  <TableHead className="num">Duration</TableHead>
+                  <TableHead className="input-column">Input</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {shown.map((call, i) => {
+                  // spanId can be empty or duplicated on some backends — the
+                  // row id keys AND drives open state, so a collision would
+                  // open every twin.
+                  const rowId =
+                    call.spanId || `${call.traceId}:${call.startedAtMs}:${i}`
+                  return (
+                    <CallRow
+                      key={rowId}
+                      call={call}
+                      now={now}
+                      open={open === rowId}
+                      onToggle={() =>
+                        setOpen((prev) => (prev === rowId ? null : rowId))
+                      }
+                      onReplay={onReplay}
+                    />
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </TableFrame>
+        </TableViewport>
+      )}
     </div>
   )
 }
@@ -151,54 +217,103 @@ function CallRow({
   onReplay: (input: unknown) => void
 }) {
   return (
-    <div className="console-catalog-call" data-open={open}>
-      <button
-        type="button"
-        className="console-catalog-call-head"
+    <Fragment>
+      <TableRow
+        interactive
+        selected={open}
+        className="console-catalog-call-row"
+        aria-expanded={open}
+        tabIndex={0}
         onClick={onToggle}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            onToggle()
+          }
+        }}
       >
-        <StatusDot tone={call.ok ? 'ok' : 'alert'} />
-        <span className="time">{clockTime(call.startedAtMs)}</span>
-        <span className="ago">{agoLabel(call.startedAtMs, now)}</span>
-        <span className="worker">{call.worker}</span>
-        <span className="duration">{formatDuration(call.durationMs)}</span>
-      </button>
+        <TableCell className="status-column">
+          <StatusDot tone={call.ok ? 'ok' : 'alert'} />
+          <span className="console-catalog-sr">
+            {call.ok ? 'succeeded' : 'failed'}
+          </span>
+        </TableCell>
+        <TableCell className="mono" title={agoLabel(call.startedAtMs, now)}>
+          {clockTime(call.startedAtMs)}
+        </TableCell>
+        <TableCell className="mono num">
+          {formatDuration(call.durationMs)}
+        </TableCell>
+        <TableCell className="mono faint input-column">
+          <span className="console-catalog-call-input">
+            <span className="text">
+              {call.input === undefined ? '—' : oneLine(call.input)}
+            </span>
+            <ChevronRight
+              className="iii-ui-icon caret"
+              data-open={open}
+              aria-hidden
+            />
+          </span>
+        </TableCell>
+      </TableRow>
       {open ? (
-        <div className="console-catalog-call-body">
-          <Eyebrow as="div" className="console-catalog-field-label">
-            input
-            {call.input !== undefined ? (
-              <Button
-                variant="pill"
-                size="sm"
-                onClick={() => onReplay(withoutInjected(call.input))}
-              >
-                replay
-              </Button>
-            ) : null}
-          </Eyebrow>
-          <JsonHighlight
-            code={
-              call.input === undefined ? '(not recorded)' : pretty(call.input)
-            }
-            className="console-catalog-json"
-            wrap
-          />
-          <Eyebrow as="div" className="console-catalog-field-label">
-            Output
-          </Eyebrow>
-          <JsonHighlight
-            code={
-              call.output === undefined ? '(not recorded)' : pretty(call.output)
-            }
-            className="console-catalog-json"
-            wrap
-          />
-          <span className="console-catalog-hint">trace {call.traceId}</span>
-        </div>
+        <TableRow className="console-catalog-call-detail" selected>
+          <TableCell colSpan={4}>
+            <div className="console-catalog-call-body">
+              <div className="call-actions">
+                {call.input !== undefined ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    type="button"
+                    onClick={() => onReplay(withoutInjected(call.input))}
+                  >
+                    <RotateCcw aria-hidden />
+                    Replay in Run
+                  </Button>
+                ) : null}
+                <span className="console-catalog-hint">
+                  trace {call.traceId}
+                </span>
+              </div>
+              <div className="call-payloads">
+                <div className="payload">
+                  <Eyebrow as="div">Input</Eyebrow>
+                  <JsonHighlight
+                    code={
+                      call.input === undefined
+                        ? '(not recorded)'
+                        : pretty(call.input)
+                    }
+                    className="console-catalog-json"
+                    wrap
+                  />
+                </div>
+                <div className="payload">
+                  <Eyebrow as="div">{call.ok ? 'Output' : 'Error'}</Eyebrow>
+                  <JsonHighlight
+                    code={
+                      call.output === undefined
+                        ? '(not recorded)'
+                        : pretty(call.output)
+                    }
+                    className="console-catalog-json"
+                    wrap
+                  />
+                </div>
+              </div>
+            </div>
+          </TableCell>
+        </TableRow>
       ) : null}
-    </div>
+    </Fragment>
   )
+}
+
+function oneLine(value: unknown): string {
+  const flat = (pretty(withoutInjected(value)) || '').replace(/\s+/g, ' ')
+  return flat.length > 120 ? `${flat.slice(0, 117)}…` : flat
 }
 
 function medianDuration(calls: CallRecord[]): number {
