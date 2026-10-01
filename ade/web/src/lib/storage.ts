@@ -117,6 +117,28 @@ export function saveLastThinkingLevel(level: string): void {
   }
 }
 
+const NEW_CHAT_DRAFT_KEY = 'iii-chat-new-draft'
+
+/** What was typed in the new chat: a local draft with no session yet, so
+    nothing on the server holds it. Kept here to outlive the browser; once
+    the chat is sent, its session holds its draft. */
+export function loadNewChatDraft(): string {
+  try {
+    return localStorage.getItem(NEW_CHAT_DRAFT_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export function saveNewChatDraft(text: string): void {
+  try {
+    if (text) localStorage.setItem(NEW_CHAT_DRAFT_KEY, text)
+    else localStorage.removeItem(NEW_CHAT_DRAFT_KEY)
+  } catch {
+    /* best-effort */
+  }
+}
+
 const EDGE_ADD_DISCOVERED_KEY = 'iii-edge-add-discovered'
 
 /**

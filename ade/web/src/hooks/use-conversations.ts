@@ -91,9 +91,11 @@ import {
   loadActiveId,
   loadLastModel,
   loadLastThinkingLevel,
+  loadNewChatDraft,
   saveActiveId,
   saveLastModel,
   saveLastThinkingLevel,
+  saveNewChatDraft,
 } from '@/lib/storage'
 import { releaseConsoleClaimIfAny } from '@/lib/worktree-claims'
 import {
@@ -1545,15 +1547,17 @@ export function useConversations(
       ? [...catalogKeysForValidation].sort().join('\u0001')
       : ''
 
-  const [conversations, setConversations] = useState<Conversation[]>(() => [
+  const [conversations, setConversations] = useState<Conversation[]>(() => {
     /* Always boot with one local draft so the chat surface has something to
        render. Done in the initializer so StrictMode's double-invoke can't
-       create two. */
-    emptyConversation(
+       create two. What was typed in it before the browser closed comes back. */
+    const typed = loadNewChatDraft()
+    const draft = emptyConversation(
       loadLastModel(),
       loadLastThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
-    ),
-  ])
+    )
+    return [typed ? { ...draft, draftText: typed } : draft]
+  })
   const conversationsRef = useRef(conversations)
   conversationsRef.current = conversations
   const [activeId, setActiveId] = useState<string | null>(() => loadActiveId())
@@ -3084,6 +3088,8 @@ export function useConversations(
           // the e2e suite name their own kind when they create theirs.
           kind: 'user',
         })
+        // Sent: the session holds its draft now, not the new chat's slot.
+        saveNewChatDraft('')
         patchConversation(id, (c) => ({
           ...mergeConversationMeta(
             { ...c, draft: false, hydrated: false },
@@ -3184,10 +3190,11 @@ export function useConversations(
   const setDraftText = useCallback(
     (id: string, text: string) => {
       draftTextsRef.current.set(id, text)
-      if (!serverEnabled) return
       const conv = conversationsRef.current.find((c) => c.id === id)
-      // Local drafts have no session yet; their text still lives in the ref
-      // map so in-tab switches keep it.
+      // Local drafts have no session yet; their text lives in the ref map so
+      // in-tab switches keep it, and in localStorage to outlive the browser.
+      if (conv?.draft) saveNewChatDraft(text)
+      if (!serverEnabled) return
       if (!conv || conv.draft) return
       queueDraftSave(id, { text })
     },
