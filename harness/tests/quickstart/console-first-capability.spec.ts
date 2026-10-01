@@ -2,8 +2,8 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { expect, type Page, test } from '@playwright/test'
 
-const MODEL_ID = 'claude-sonnet-5'
-const MODEL_LABEL = /^claude[\s-]+sonnet[\s-]+5$/i
+const MODEL_ID = 'claude-sonnet-5-5'
+const MODEL_LABEL = /^claude[\s-]+sonnet[\s-]+5\.5$/i
 const CAPABILITY_FUNCTION = 'shell::exec'
 const CAPABILITY_OUTPUT_MARKER = 'HARNESS_FIRST_CAPABILITY_OUTPUT'
 const RESPONSE_MARKER = 'HARNESS_FIRST_CAPABILITY_OK'
@@ -40,7 +40,7 @@ async function selectSonnet(page: Page) {
   } else {
     await page.keyboard.press('Escape')
   }
-  await expect(modelPicker).toHaveAccessibleName(/^model:\s*claude[\s-]+sonnet[\s-]+5,/i)
+  await expect(modelPicker).toHaveAccessibleName(/^model:\s*claude[\s-]+sonnet[\s-]+5\.5,/i)
 }
 
 test('completes and reloads the first real Harness capability', async ({ page }) => {

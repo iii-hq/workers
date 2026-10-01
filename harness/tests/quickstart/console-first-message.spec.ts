@@ -2,8 +2,8 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { expect, type Locator, type Page, test } from '@playwright/test'
 
-const ANTHROPIC_MODEL_ID = 'claude-sonnet-5'
-const ANTHROPIC_MODEL_LABEL = /^claude[\s-]+sonnet[\s-]+5$/i
+const ANTHROPIC_MODEL_ID = 'claude-sonnet-5-5'
+const ANTHROPIC_MODEL_LABEL = /^claude[\s-]+sonnet[\s-]+5\.5$/i
 const OPENAI_MODEL_ID = 'gpt-5.6-luna'
 const OPENAI_MODEL_LABEL = /gpt[\s-]*5\.6[\s-]*luna/i
 
@@ -89,7 +89,7 @@ async function persistedChat(
   return chat
 }
 
-test('switches from Sonnet 5 to Luna and starts a new Luna chat', async ({
+test('switches from Sonnet 5.5 to Luna and starts a new Luna chat', async ({
   page,
 }) => {
   const consoleUrl = required('HARNESS_QUICKSTART_CONSOLE_URL')
@@ -105,7 +105,7 @@ test('switches from Sonnet 5 to Luna and starts a new Luna chat', async ({
     page,
     'anthropic',
     ANTHROPIC_MODEL_LABEL,
-    /^model:\s*claude[\s-]+sonnet[\s-]+5,/i,
+    /^model:\s*claude[\s-]+sonnet[\s-]+5\.5,/i,
   )
 
   const firstChat = page.locator('[data-chat-session-id]').first()

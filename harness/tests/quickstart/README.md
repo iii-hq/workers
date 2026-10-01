@@ -28,10 +28,10 @@ It verifies that:
 - the published installer provides a working `iii` CLI;
 - a clean engine starts;
 - the core harness and Console functions register;
-- `ANTHROPIC_API_KEY` exposes exactly `anthropic/claude-sonnet-5` and
+- `ANTHROPIC_API_KEY` exposes exactly `anthropic/claude-sonnet-5-5` and
   `OPENAI_API_KEY` exposes exactly `openai/gpt-5.6-luna`;
 - `console::status` and the Console HTTP root respond;
-- a user can complete a message with Claude Sonnet 5, switch to GPT-5.6 Luna
+- a user can complete a message with Claude Sonnet 5.5, switch to GPT-5.6 Luna
   in the same chat, and complete another message without changing sessions;
 - a user can create a new chat and complete a third message with GPT-5.6 Luna;
 - both successful conversations survive a browser reload and reach durable
