@@ -1451,7 +1451,7 @@ async fn finish_step(
             match record.calls.get(&call.id).map(|c| c.state) {
                 Some(CallState::Done) | Some(CallState::Pending) => continue,
                 Some(CallState::Triggered) => {
-                    append_interrupted(&session, &mut record, call).await?;
+                    append_unreturned(&session, &mut record, call, interrupted_result()).await?;
                     let eid = record_entry_id(&record, &call.id);
                     mark_done(&mut record, &call.id, &eid);
                     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
@@ -1816,19 +1816,64 @@ async fn finish_step(
             // Single invocation chokepoint: subscription control calls are
             // intercepted (trusted session injected); everything else invokes the
             // target. Then the post_trigger chain runs over the result.
-            let raw = crate::functions::subscribe::invoke(
-                deps,
-                &engine,
-                &policy,
+            //
+            // An engine dispatch is raced against `harness::stop`: a target
+            // that never returns would otherwise hold this step, and the
+            // session lock `harness::stop` waits on, until the dispatch
+            // timeout. Interceptions are short and not drop-safe, so they run
+            // uninterrupted.
+            let raw = if crate::functions::subscribe::is_locally_intercepted(
                 &call.function_id,
                 &eff_args,
                 &record.session_id,
-                true, // run_step holds this session's lock
-                Some(crate::functions::subscribe::CallerModel::from_options(
-                    &record.options,
-                )),
-            )
-            .await;
+                true,
+            ) {
+                crate::functions::subscribe::invoke(
+                    deps,
+                    &engine,
+                    &policy,
+                    &call.function_id,
+                    &eff_args,
+                    &record.session_id,
+                    true, // run_step holds this session's lock
+                    Some(crate::functions::subscribe::CallerModel::from_options(
+                        &record.options,
+                    )),
+                )
+                .await
+            } else {
+                let dispatch = {
+                    let (deps, engine, policy) = (deps.clone(), engine.clone(), policy.clone());
+                    let (function_id, args) = (call.function_id.clone(), eff_args.clone());
+                    let (session_id, options) = (record.session_id.clone(), record.options.clone());
+                    async move {
+                        crate::functions::subscribe::invoke(
+                            &deps,
+                            &engine,
+                            &policy,
+                            &function_id,
+                            &args,
+                            &session_id,
+                            true, // as inline: only interceptions read it
+                            Some(crate::functions::subscribe::CallerModel::from_options(
+                                &options,
+                            )),
+                        )
+                        .await
+                    }
+                };
+                match dispatch_unless_stopped(deps.cancels.watch(&record.turn_id), dispatch).await {
+                    Some(raw) => raw,
+                    None => {
+                        append_unreturned(&session, &mut record, call, stopped_result(call))
+                            .await?;
+                        let eid = record_entry_id(&record, &call.id);
+                        mark_done(&mut record, &call.id, &eid);
+                        record.abort = true;
+                        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+                    }
+                }
+            };
             let info_raw = (call.function_id == "engine::functions::info").then(|| raw.clone());
             let post_outcome = deps
                 .hooks
@@ -3042,19 +3087,70 @@ fn retryable_function_result_append_error(error: &HarnessError) -> bool {
             || message.contains("timed out"))
 }
 
-async fn append_interrupted(
-    session: &SessionClient,
-    record: &mut TurnRecord,
-    call: &policy::PlannedCall,
-) -> Result<(), HarnessError> {
-    let data = trigger::ResultData {
+fn interrupted_result() -> trigger::ResultData {
+    trigger::ResultData {
         content: vec![ContentBlock::text(
             "interrupted: executed at most once, result unknown (restart during execution)"
                 .to_string(),
         )],
         is_error: true,
         details: json!({ "error": "interrupted" }),
+    }
+}
+
+/// The result of a call `harness::stop` cut off before its target returned.
+/// The engine cannot reach the worker running it, so the text tells the model
+/// the effects are unknown, not undone.
+fn stopped_result(call: &policy::PlannedCall) -> trigger::ResultData {
+    let msg = format!(
+        "{} was stopped by the user before it returned. Its result was discarded and it may \
+         still be running on its worker: do not assume it completed, and do not assume its \
+         side effects were undone.",
+        call.function_id
+    );
+    trigger::ResultData {
+        content: vec![ContentBlock::text(msg.clone())],
+        is_error: true,
+        details: json!({ "error": "cancelled", "cancelled_by": "user", "message": msg }),
+    }
+}
+
+/// Run one engine dispatch unless `harness::stop` fires first (`None`). The
+/// dispatch runs in its own task, spawned on first poll so an already-fired
+/// stop never starts it. A stop detaches that task instead of dropping it: the
+/// engine has no cancel primitive, and the task still clears the dispatch
+/// witness session-tree deletion waits on once the target replies. A dropped
+/// sender (turn signals cleared) is not a stop.
+async fn dispatch_unless_stopped<F>(
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    dispatch: F,
+) -> Option<trigger::ResultData>
+where
+    F: std::future::Future<Output = trigger::ResultData> + Send + 'static,
+{
+    use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
+    // Carry the step's OTel context into the task (the router::chat idiom) so
+    // the target's span still nests under the turn's trace.
+    let detached = async move {
+        tokio::spawn(dispatch.with_context(Context::current()))
+            .await
+            .unwrap_or_else(|error| {
+                trigger::invocation_error_result(None, format!("dispatch task failed: {error}"))
+            })
     };
+    tokio::select! {
+        biased;
+        Ok(_) = stop.wait_for(|fired| *fired) => None,
+        raw = detached => Some(raw),
+    }
+}
+
+async fn append_unreturned(
+    session: &SessionClient,
+    record: &mut TurnRecord,
+    call: &policy::PlannedCall,
+    data: trigger::ResultData,
+) -> Result<(), HarnessError> {
     let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
     append_function_result(
         session,
@@ -4031,7 +4127,8 @@ mod tests {
 
     use super::{
         call_description, cancel_requested, concrete_allowed_tools, count_model_visible,
-        retryable_function_result_append_error, transient_resume_allowed, turn_step_matches,
+        dispatch_unless_stopped, retryable_function_result_append_error, transient_resume_allowed,
+        turn_step_matches,
     };
 
     #[test]
@@ -5354,5 +5451,72 @@ mod tests {
         );
         let frozen = std::collections::BTreeMap::from([(id.to_string(), Some(frozen_digest))]);
         assert!(stale(Some(&frozen), &live, &all).is_none());
+    }
+
+    fn dispatched(text: &str) -> crate::trigger::ResultData {
+        crate::trigger::ResultData {
+            content: vec![crate::types::content::ContentBlock::text(text)],
+            is_error: false,
+            details: serde_json::Value::Null,
+        }
+    }
+
+    /// Mike's stuck `browser::snapshot`: a target that never returns must not
+    /// hold the turn once `harness::stop` fires, and the detached dispatch
+    /// still finishes (clearing its deletion witness) when the target replies.
+    #[tokio::test]
+    async fn stop_cuts_off_a_hung_dispatch_and_detaches_it() {
+        let (stop, rx) = tokio::sync::watch::channel(false);
+        let (reply, replied) = tokio::sync::oneshot::channel::<()>();
+        let (finished_tx, finished) = tokio::sync::oneshot::channel();
+        let race = tokio::spawn(dispatch_unless_stopped(rx, async move {
+            let _ = replied.await;
+            let _ = finished_tx.send(());
+            dispatched("late")
+        }));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        stop.send_replace(true);
+        let out = tokio::time::timeout(std::time::Duration::from_secs(2), race)
+            .await
+            .expect("a stop must settle a dispatch that never returns")
+            .unwrap();
+        assert!(out.is_none());
+        reply.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), finished)
+            .await
+            .expect("the detached dispatch must run to completion")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_already_fired_stop_never_starts_the_dispatch() {
+        let (_stop, rx) = tokio::sync::watch::channel(true);
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = started.clone();
+        let out = dispatch_unless_stopped(rx, async move {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            dispatched("ran")
+        })
+        .await;
+        assert!(out.is_none());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// No stop, or a cleared signal (dropped sender): the target's own result.
+    #[tokio::test]
+    async fn without_a_stop_the_dispatch_result_comes_back() {
+        let (_stop, rx) = tokio::sync::watch::channel(false);
+        let out = dispatch_unless_stopped(rx, async { dispatched("ok") }).await;
+        assert!(out.is_some_and(|raw| !raw.is_error));
+
+        let (stop, rx) = tokio::sync::watch::channel(false);
+        drop(stop);
+        let out = dispatch_unless_stopped(rx, async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            dispatched("ok")
+        })
+        .await;
+        assert!(out.is_some(), "a dropped sender is not a stop");
     }
 }

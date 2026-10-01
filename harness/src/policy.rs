@@ -79,6 +79,7 @@ pub const CHILD_SKILLS_ALLOW: [&str; 1] = ["directory::skills::get"];
 /// A compiled allow/deny matcher. Fail-closed: a call is allowed only when it
 /// matches an `allow` glob and no `deny` glob; an absent or empty allow-list
 /// denies everything.
+#[derive(Clone)]
 pub struct CompiledPolicy {
     allow: GlobSet,
     deny: GlobSet,
