@@ -175,6 +175,19 @@ async fn unreachable_remote_serves_the_stale_cache_with_a_warning() {
     let warning = stale.info.warning.expect("a stale cache is flagged");
     assert!(warning.contains(&remote.url()), "{warning}");
     assert!(stale.root.join("template.yaml").is_file());
+
+    // The failed attempt is stamped: until the next window nothing fetches
+    // (a hung remote would block every call for GIT_TIMEOUT) and the warning
+    // stays.
+    std::fs::rename(remote.bare.with_extension("gone"), &remote.bare).unwrap();
+    let two = remote.commit("two");
+    let still = resolve_source(&cfg, false).await.unwrap();
+    assert_eq!(still.info.revision, cloned.info.revision);
+    assert_eq!(still.info.warning.as_deref(), Some(warning.as_str()));
+
+    let back = resolve_source(&cfg, true).await.unwrap();
+    assert_eq!(back.info.revision.as_deref(), Some(two.as_str()));
+    assert_eq!(back.info.warning, None);
 }
 
 #[tokio::test]

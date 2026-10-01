@@ -38,15 +38,18 @@ pub struct ResolvedSource {
     pub root: PathBuf,
 }
 
-/// When each `(clone dir, ref)` last synced. A clone dir holds one ref at a
-/// time, so only the ref it currently holds keeps a stamp: every clone or
-/// fetch drops the clone's other refs, and switching the ref back forces a
-/// fetch instead of serving another ref's tree. Holding the lock also
-/// serialises every clone and refresh.
+/// When each `(clone dir, ref)` last tried to sync, and the warning a failed
+/// refresh left. A clone dir holds one ref at a time, so a successful clone
+/// or fetch drops the clone's other refs, and switching the ref back forces
+/// a fetch instead of serving another ref's tree. A failed refresh is stamped
+/// too: the stale copy and its warning are served until the next
+/// `refresh_secs` window, so a hung remote costs one `GIT_TIMEOUT` per window
+/// instead of one per call. Holding the lock also serialises every clone and
+/// refresh.
 // ponytail: one global lock; per-clone locks only if several sources ever
 // share one worker.
-static SYNCED: tokio::sync::Mutex<BTreeMap<(PathBuf, String), Instant>> =
-    tokio::sync::Mutex::const_new(BTreeMap::new());
+type Stamps = BTreeMap<(PathBuf, String), (Instant, Option<String>)>;
+static SYNCED: tokio::sync::Mutex<Stamps> = tokio::sync::Mutex::const_new(BTreeMap::new());
 
 /// Bound on one git command, so a hung network cannot hold the lock forever.
 const GIT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -95,7 +98,6 @@ async fn from_git(cfg: &TemplatesConfig, refresh: bool) -> Result<ResolvedSource
     let clone = iii_worker_paths::resolve_path(&cfg.cache_dir).join(&hash[..8]);
     let key = (clone.clone(), cfg.git_ref.clone());
     let mut synced = SYNCED.lock().await;
-    let mut warning = None;
     if git(&clone, &["rev-parse", "--verify", "--quiet", "HEAD"])
         .await
         .is_err()
@@ -110,25 +112,25 @@ async fn from_git(cfg: &TemplatesConfig, refresh: bool) -> Result<ResolvedSource
             ))
         })?;
         synced.retain(|(d, _), _| d != &clone);
-        synced.insert(key, Instant::now());
+        synced.insert(key.clone(), (Instant::now(), None));
     } else if refresh
         || synced
             .get(&key)
-            .is_none_or(|at| at.elapsed() >= Duration::from_secs(cfg.refresh_secs))
+            .is_none_or(|(at, _)| at.elapsed() >= Duration::from_secs(cfg.refresh_secs))
     {
-        match fetch(cfg, &clone).await {
+        let warning = match fetch(cfg, &clone).await {
             Ok(()) => {
                 synced.retain(|(d, _), _| d != &clone);
-                synced.insert(key, Instant::now());
+                None
             }
-            Err(e) => {
-                warning = Some(format!(
-                    "could not refresh {} @ {}: {e}; serving the cached copy",
-                    cfg.url, cfg.git_ref
-                ))
-            }
-        }
+            Err(e) => Some(format!(
+                "could not refresh {} @ {}: {e}; serving the cached copy",
+                cfg.url, cfg.git_ref
+            )),
+        };
+        synced.insert(key.clone(), (Instant::now(), warning));
     }
+    let warning = synced.get(&key).and_then(|(_, w)| w.clone());
     let revision = git(&clone, &["rev-parse", "HEAD"]).await.ok();
     Ok(ResolvedSource {
         info: TemplateSourceInfo {
