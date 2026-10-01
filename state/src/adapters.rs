@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::structs::StateValue;
 use async_trait::async_trait;
 use iii_helpers::stream::{StreamSetResult, StreamUpdateResult, UpdateOp};
 use redis::{AsyncCommands, Client, aio::ConnectionManager};
@@ -40,7 +41,7 @@ pub enum CompareAndSetOutcome {
 #[async_trait]
 pub trait StateAdapter: Send + Sync + 'static {
     async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<StreamSetResult>;
-    async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<Value>>;
+    async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<StateValue>>;
     async fn delete(&self, scope: &str, key: &str) -> anyhow::Result<()>;
     async fn update(
         &self,
@@ -75,19 +76,7 @@ pub trait StateAdapter: Send + Sync + 'static {
         cfg: &crate::barrier::BarrierConfig,
         event: &Value,
     ) -> anyhow::Result<crate::barrier::Decision>;
-    async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>>;
-    /// Owned references for a handler that serializes once at the SDK boundary.
-    /// KV overrides this without deep clones; other adapters keep their existing
-    /// list semantics and wrap the returned values, never changing wire output.
-    async fn list_snapshot(
-        &self,
-        scope: &str,
-    ) -> anyhow::Result<crate::structs::StateListSnapshot> {
-        Ok(crate::structs::StateListSnapshot(
-            self.list(scope).await?.into_iter().map(Arc::new).collect(),
-        ))
-    }
-
+    async fn list(&self, scope: &str) -> anyhow::Result<Vec<StateValue>>;
     async fn list_keys(&self, scope: &str) -> anyhow::Result<Vec<String>>;
     async fn list_groups(&self) -> anyhow::Result<Vec<String>>;
     /// Only `save_interval_ms` is hot-tunable (kv file_based); default no-op.
@@ -122,7 +111,7 @@ impl StateAdapter for KvStoreAdapter {
             .set(scope.to_string(), key.to_string(), value)
             .await)
     }
-    async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<Value>> {
+    async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<StateValue>> {
         Ok(self.storage.get(scope.to_string(), key.to_string()).await)
     }
     async fn delete(&self, scope: &str, key: &str) -> anyhow::Result<()> {
@@ -167,14 +156,8 @@ impl StateAdapter for KvStoreAdapter {
             .await
             .map_err(|e| anyhow::anyhow!(e))
     }
-    async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>> {
+    async fn list(&self, scope: &str) -> anyhow::Result<Vec<StateValue>> {
         Ok(self.storage.list(scope.to_string()).await)
-    }
-    async fn list_snapshot(
-        &self,
-        scope: &str,
-    ) -> anyhow::Result<crate::structs::StateListSnapshot> {
-        Ok(self.storage.list_snapshot(scope).await)
     }
     async fn list_keys(&self, scope: &str) -> anyhow::Result<Vec<String>> {
         Ok(self.storage.list_keys(scope.to_string()).await)
@@ -825,14 +808,14 @@ impl StateAdapter for RedisAdapter {
         })
     }
 
-    async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<Value>> {
+    async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<StateValue>> {
         let scope_key = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
 
         match conn.hget::<_, _, Option<String>>(&scope_key, &key).await {
-            Ok(Some(s)) => serde_json::from_str(&s)
+            Ok(Some(s)) => serde_json::from_str::<Value>(&s)
                 .map_err(|e| anyhow::anyhow!("Failed to deserialize value from Redis: {}", e))
-                .map(Some),
+                .map(|value| Some(StateValue::from(value))),
             Ok(None) => Ok(None),
             Err(e) => Err(anyhow::anyhow!("Failed to get value from Redis: {}", e)),
         }
@@ -920,7 +903,7 @@ impl StateAdapter for RedisAdapter {
         Ok(())
     }
 
-    async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>> {
+    async fn list(&self, scope: &str) -> anyhow::Result<Vec<StateValue>> {
         let scope_key = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
 
@@ -931,10 +914,10 @@ impl StateAdapter for RedisAdapter {
 
         let mut result = Vec::new();
         for v in values.into_values() {
-            result.push(
-                serde_json::from_str(&v)
+            result.push(StateValue::from(
+                serde_json::from_str::<Value>(&v)
                     .map_err(|e| anyhow::anyhow!("Failed to deserialize value: {}", e))?,
-            );
+            ));
         }
         Ok(result)
     }
@@ -1040,8 +1023,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            a.get("s", "k").await.unwrap(),
-            Some(serde_json::json!({"count": 0}))
+            a.get("s", "k").await.unwrap().as_deref(),
+            Some(&serde_json::json!({"count": 0}))
         );
         let updated = a
             .update(
@@ -1107,8 +1090,11 @@ mod tests {
 
         let reloaded = KvStore::new(Some(config));
         assert_eq!(
-            reloaded.get("claims".into(), "slot".into()).await,
-            Some(serde_json::json!({"owner": "a"}))
+            reloaded
+                .get("claims".into(), "slot".into())
+                .await
+                .as_deref(),
+            Some(&serde_json::json!({"owner": "a"}))
         );
         let barrier = reloaded
             .get("state_barrier".into(), "join".into())
@@ -1149,8 +1135,8 @@ mod tests {
 
         let reloaded = KvStoreAdapter::new(Some(config));
         assert_eq!(
-            reloaded.get("s", "k").await.unwrap(),
-            Some(serde_json::json!({"v": 1}))
+            reloaded.get("s", "k").await.unwrap().as_deref(),
+            Some(&serde_json::json!({"v": 1}))
         );
         std::fs::remove_dir_all(&dir).ok();
     }

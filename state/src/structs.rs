@@ -48,19 +48,38 @@ pub struct StateGetGroupInput {
     pub scope: String,
 }
 
-/// Serialization-only snapshot: the SDK builds the outgoing JSON once, while
-/// the worker retains shared immutable records instead of another deep copy.
-/// Wire shape is the same array returned by legacy state::list.
-#[derive(Debug, Clone, Serialize)]
+/// Immutable read result. Cloning keeps the selected version alive without
+/// copying its JSON tree. Serialization and schema are exactly a raw JSON Value.
+/// The worker has one read path for both direct callers and registered handlers.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(transparent)]
-pub struct StateListSnapshot(pub Vec<std::sync::Arc<Value>>);
+pub struct StateValue(pub std::sync::Arc<Value>);
 
-impl JsonSchema for StateListSnapshot {
+impl From<Value> for StateValue {
+    fn from(value: Value) -> Self {
+        Self(std::sync::Arc::new(value))
+    }
+}
+
+impl AsRef<Value> for StateValue {
+    fn as_ref(&self) -> &Value {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for StateValue {
+    type Target = Value;
+    fn deref(&self) -> &Value {
+        self.as_ref()
+    }
+}
+
+impl JsonSchema for StateValue {
     fn schema_name() -> String {
-        "StateListSnapshot".into()
+        <Value as JsonSchema>::schema_name()
     }
     fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
-        <Vec<Value> as JsonSchema>::json_schema(generator)
+        <Value as JsonSchema>::json_schema(generator)
     }
 }
 

@@ -536,7 +536,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                         StateEventType::Deleted,
                         &input.scope,
                         &input.key,
-                        old.as_ref(),
+                        old.as_deref(),
                         &Value::Null,
                     )
                     .await;
@@ -598,7 +598,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                 let ctx = ctx.clone();
                 async move {
                     reject_reserved_scope(&ctx.private, &input.scope)?;
-                    let values = ctx.adapter.list_snapshot(&input.scope).await.map_err(|e| {
+                    let values = ctx.adapter.list(&input.scope).await.map_err(|e| {
                         Error::Handler(format!("LIST_ERROR: Failed to list values: {e}"))
                     })?;
                     Ok(Some(values))
@@ -869,7 +869,8 @@ pub async fn restore_persisted_claims(
         anyhow::anyhow!("could not read persisted private-namespace claims: {error}")
     })?;
     for value in stored {
-        let Ok(namespace) = serde_json::from_value::<PrivateNamespace>(value.clone()) else {
+        let Ok(namespace) = <PrivateNamespace as serde::Deserialize>::deserialize(value.as_ref())
+        else {
             tracing::error!(?value, "skipping unreadable private-namespace claim");
             continue;
         };
@@ -951,7 +952,7 @@ fn register_private_namespace_functions(
                     require_owned_scope(&ctx.private.owned_scopes(&prefix), &prefix, &input.scope)?;
                     let values = ctx
                         .adapter
-                        .list_snapshot(&input.scope)
+                        .list(&input.scope)
                         .await
                         .map_err(|e| Error::Handler(format!("LIST_ERROR: {e}")))?;
                     Ok(Some(values))
@@ -1041,7 +1042,11 @@ mod private_namespace_tests {
                 new_value: value,
             })
         }
-        async fn get(&self, _: &str, _: &str) -> anyhow::Result<Option<Value>> {
+        async fn get(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> anyhow::Result<Option<crate::structs::StateValue>> {
             unreachable!()
         }
         async fn delete(&self, _: &str, _: &str) -> anyhow::Result<()> {
@@ -1073,7 +1078,7 @@ mod private_namespace_tests {
         ) -> anyhow::Result<crate::barrier::Decision> {
             unreachable!()
         }
-        async fn list(&self, _: &str) -> anyhow::Result<Vec<Value>> {
+        async fn list(&self, _: &str) -> anyhow::Result<Vec<crate::structs::StateValue>> {
             unreachable!()
         }
         async fn list_keys(&self, _: &str) -> anyhow::Result<Vec<String>> {

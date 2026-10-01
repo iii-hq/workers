@@ -10,6 +10,7 @@ use std::{
 
 use indexmap::IndexMap;
 
+use crate::structs::StateValue;
 use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde_json::Value;
@@ -433,17 +434,15 @@ impl KvStore {
         }
     }
 
-    pub async fn get(&self, index: String, key: String) -> Option<Value> {
-        // Select one immutable version while locked, then build the independent
-        // response without holding a read lock over a potentially large clone.
-        let value = self
-            .store
+    /// Return the selected immutable version; callers serialize or inspect it
+    /// directly instead of deep-cloning before the JSON response is built.
+    pub async fn get(&self, index: String, key: String) -> Option<StateValue> {
+        self.store
             .read()
             .await
             .get(&index)
             .and_then(|scope| scope.get(&key))
-            .cloned();
-        value.map(Arc::unwrap_or_clone)
+            .map(|value| StateValue(Arc::clone(value)))
     }
 
     pub async fn delete(&self, index: String, key: String) -> StreamDeleteResult {
@@ -600,27 +599,19 @@ impl KvStore {
         }
     }
 
-    pub async fn list(&self, index: String) -> Vec<Value> {
-        // Membership and insertion order are captured under the lock, but the
-        // compatibility API's owned JSON trees are cloned only after releasing it.
-        let values: Vec<_> = self
-            .store
+    /// Capture membership, order and immutable versions under the read lock.
+    /// Values stay shared until serialization; no second owned-list path exists.
+    pub async fn list(&self, index: String) -> Vec<StateValue> {
+        self.store
             .read()
             .await
             .get(&index)
-            .map_or_else(Vec::new, |scope| scope.values().map(Arc::clone).collect());
-        values.into_iter().map(Arc::unwrap_or_clone).collect()
-    }
-
-    /// Snapshot references for a single serialization at the RPC boundary.
-    /// Existing list callers keep their owned Vec<Value> contract.
-    pub async fn list_snapshot(&self, index: &str) -> crate::structs::StateListSnapshot {
-        let store = self.store.read().await;
-        crate::structs::StateListSnapshot(
-            store
-                .get(index)
-                .map_or_else(Vec::new, |scope| scope.values().map(Arc::clone).collect()),
-        )
+            .map_or_else(Vec::new, |scope| {
+                scope
+                    .values()
+                    .map(|value| StateValue(Arc::clone(value)))
+                    .collect()
+            })
     }
 
     pub async fn list_keys(&self, index: String) -> Vec<String> {
@@ -672,7 +663,7 @@ mod test {
         let kv_store = KvStore::new(Some(config));
 
         let loaded = kv_store.get(index.to_string(), key.to_string()).await;
-        assert_eq!(loaded, Some(data.clone()));
+        assert_eq!(loaded.as_deref(), Some(&data));
 
         let updated = serde_json::json!({"key": "updated"});
         kv_store
@@ -901,7 +892,7 @@ mod test {
         })));
         assert_eq!(
             store.get("users".into(), "user-1".into()).await,
-            Some(serde_json::json!({"name": "Alice"}))
+            Some(StateValue::from(serde_json::json!({"name": "Alice"})))
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1024,7 +1015,10 @@ mod cas_tests {
                 .await,
             NotSwapped { current: json!(2) }
         );
-        assert_eq!(store.get("s".into(), "k".into()).await, Some(json!(2)));
+        assert_eq!(
+            store.get("s".into(), "k".into()).await.as_deref(),
+            Some(&json!(2))
+        );
     }
 
     #[tokio::test]
@@ -1098,7 +1092,7 @@ mod cas_tests {
                     let current = store
                         .get("claims".into(), "counter".into())
                         .await
-                        .unwrap_or(json!(0));
+                        .unwrap_or_else(|| StateValue::from(json!(0)));
                     let next = current.as_u64().unwrap_or(0) + 1;
                     if matches!(
                         store
@@ -1126,8 +1120,11 @@ mod cas_tests {
         assert_eq!(distinct.len(), N, "every claimer must hold its own slot");
         assert_eq!(slots, (1..=N as u64).collect::<Vec<_>>());
         assert_eq!(
-            store.get("claims".into(), "counter".into()).await,
-            Some(json!(N))
+            store
+                .get("claims".into(), "counter".into())
+                .await
+                .as_deref(),
+            Some(&json!(N))
         );
     }
 

@@ -40,7 +40,10 @@ async fn shared_snapshot_survives_replacement_and_delete() {
     assert_eq!(result.new_value, Value::Null);
     store.delete("s".into(), "a".into()).await;
     assert_eq!(snapshot["a"].as_ref(), &initial);
-    assert_eq!(store.list("s".into()).await, vec![Value::Bool(true)]);
+    assert_eq!(
+        store.list("s".into()).await,
+        vec![StateValue::from(Value::Bool(true))]
+    );
     let dir = directory();
     persist_index_to_disk(&dir, "snapshot", &snapshot).unwrap();
     assert_eq!(read_legacy(&dir, "snapshot")["a"], initial);
@@ -230,13 +233,13 @@ async fn failed_scope_does_not_prevent_other_snapshots_and_can_retry() {
 }
 
 #[tokio::test]
-async fn list_snapshot_has_same_wire_json_and_keeps_old_values_after_mutation() {
+async fn list_has_same_wire_json_and_keeps_old_values_after_mutation() {
     let store = in_memory_store();
     let old = serde_json::json!({"p":"x".repeat(65536)});
     store.set("s".into(), "k".into(), old.clone()).await;
-    let snapshot = store.list_snapshot("s").await;
+    let snapshot = store.list("s".into()).await;
     assert!(Arc::ptr_eq(
-        &snapshot.0[0],
+        &snapshot[0].0,
         &store.store.read().await["s"]["k"]
     ));
     store.set("s".into(), "k".into(), Value::Null).await;
@@ -247,13 +250,13 @@ async fn list_snapshot_has_same_wire_json_and_keeps_old_values_after_mutation() 
         serde_json::to_vec(&expected).unwrap()
     );
     assert_eq!(
-        serde_json::to_value(store.list_snapshot("missing").await).unwrap(),
+        serde_json::to_value(store.list("missing".into()).await).unwrap(),
         serde_json::json!([])
     );
 }
 
 #[tokio::test]
-async fn snapshot_crosses_unchanged_sdk_into_async_handler_as_legacy_array() {
+async fn list_crosses_unchanged_sdk_into_async_handler_as_legacy_array() {
     use iii_sdk::iii::IntoAsyncHandler;
     let store = Arc::new(in_memory_store());
     store
@@ -261,7 +264,7 @@ async fn snapshot_crosses_unchanged_sdk_into_async_handler_as_legacy_array() {
         .await;
     let handler = (move |_: Value| {
         let store = store.clone();
-        async move { Ok::<_, iii_sdk::Error>(Some(store.list_snapshot("s").await)) }
+        async move { Ok::<_, iii_sdk::Error>(Some(store.list("s".into()).await)) }
     })
     .into_handler();
     assert_eq!(
@@ -287,15 +290,15 @@ async fn last_response_drop_releases_replaced_and_deleted_values() {
             serde_json::json!({"generation":0,"payload":"b".repeat(65536)}),
         )
         .await;
-    let first = store.list_snapshot("s").await;
-    let weak: Vec<_> = first.0.iter().map(Arc::downgrade).collect();
-    let second = store.list_snapshot("s").await;
+    let first = store.list("s".into()).await;
+    let weak: Vec<_> = first.iter().map(|v| Arc::downgrade(&v.0)).collect();
+    let second = store.list("s".into()).await;
     // Mutation results own old JSON; their own lifetime is tested separately.
     let old_set = store.set("s".into(), "a".into(), Value::Null).await;
     let old_delete = store.delete("s".into(), "b".into()).await;
     assert!(weak.iter().all(|w| w.strong_count() == 2));
-    assert_eq!(first.0[0]["generation"], 0);
-    assert_eq!(second.0[1]["generation"], 0);
+    assert_eq!(first[0].0["generation"], 0);
+    assert_eq!(second[1].0["generation"], 0);
     drop(first);
     assert!(weak.iter().all(|w| w.strong_count() == 1));
     drop(second);
@@ -313,8 +316,8 @@ async fn dropping_store_keeps_inflight_response_valid_until_last_owner() {
     store
         .set("s".into(), "a".into(), serde_json::json!({"id":1}))
         .await;
-    let response = store.list_snapshot("s").await;
-    let weak = Arc::downgrade(&response.0[0]);
+    let response = store.list("s".into()).await;
+    let weak = Arc::downgrade(&response[0].0);
     drop(store);
     assert_eq!(weak.strong_count(), 1);
     assert_eq!(
@@ -339,8 +342,8 @@ async fn cancelled_reader_drops_its_snapshot_without_pinning_old_records() {
     let reader = {
         let store = store.clone();
         tokio::spawn(async move {
-            let snapshot = store.list_snapshot("s").await;
-            ready_tx.send(Arc::downgrade(&snapshot.0[0])).unwrap();
+            let snapshot = store.list("s".into()).await;
+            ready_tx.send(Arc::downgrade(&snapshot[0].0)).unwrap();
             std::future::pending::<()>().await;
             std::hint::black_box(&snapshot);
         })
@@ -355,7 +358,7 @@ async fn cancelled_reader_drops_its_snapshot_without_pinning_old_records() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn full_list_snapshot_conversion_and_writers_keep_each_record_coherent() {
+async fn full_list_conversion_and_writers_keep_each_record_coherent() {
     let store = Arc::new(in_memory_store());
     for id in 0..64 {
         store
@@ -366,8 +369,8 @@ async fn full_list_snapshot_conversion_and_writers_keep_each_record_coherent() {
             )
             .await;
     }
-    let old = store.list_snapshot("s").await;
-    let weak: Vec<_> = old.0.iter().map(Arc::downgrade).collect();
+    let old = store.list("s".into()).await;
+    let weak: Vec<_> = old.iter().map(|v| Arc::downgrade(&v.0)).collect();
     let gate = Arc::new(tokio::sync::Barrier::new(5));
     let mut tasks = tokio::task::JoinSet::new();
     for _ in 0..4 {
@@ -376,7 +379,7 @@ async fn full_list_snapshot_conversion_and_writers_keep_each_record_coherent() {
         tasks.spawn(async move {
             gate.wait().await;
             for _ in 0..20 {
-                let snapshot = store.list_snapshot("s").await;
+                let snapshot = store.list("s".into()).await;
                 let array = serde_json::to_value(&snapshot).unwrap();
                 assert_eq!(array.as_array().unwrap().len(), 64);
                 for (id, value) in array.as_array().unwrap().iter().enumerate() {
@@ -411,7 +414,7 @@ async fn full_list_snapshot_conversion_and_writers_keep_each_record_coherent() {
     while let Some(result) = tasks.join_next().await {
         result.unwrap();
     }
-    assert!(old.0.iter().all(|v| v["generation"] == 0));
+    assert!(old.iter().all(|v| v["generation"] == 0));
     assert!(weak.iter().all(|w| w.strong_count() == 1));
     drop(old);
     assert!(weak.iter().all(|w| w.upgrade().is_none()));
@@ -436,9 +439,14 @@ async fn full_array_conversion_preserves_nulls_numbers_unicode_and_order() {
         store.set("s".into(), i.to_string(), value.clone()).await;
     }
     let owned = store.list("s".into()).await;
-    let shared = store.list_snapshot("s").await;
+    let shared = store.list("s".into()).await;
     let legacy = serde_json::to_value(&owned).unwrap();
-    let moved = Value::Array(owned);
+    let moved = Value::Array(
+        owned
+            .into_iter()
+            .map(|v| Arc::unwrap_or_clone(v.0))
+            .collect(),
+    );
     let converted = serde_json::to_value(&shared).unwrap();
     assert_eq!(legacy, Value::Array(expected));
     assert_eq!(legacy, moved);
@@ -475,8 +483,8 @@ async fn update_reuses_old_tree_unless_a_snapshot_still_owns_it() {
     );
     assert_eq!(result.old_value.unwrap(), original);
     assert_eq!(result.new_value["count"], 1);
-    let snapshot = store.list_snapshot("s").await;
-    let weak = Arc::downgrade(&snapshot.0[0]);
+    let snapshot = store.list("s".into()).await;
+    let weak = Arc::downgrade(&snapshot[0].0);
     let result = store
         .update(
             "s".into(),
@@ -485,7 +493,7 @@ async fn update_reuses_old_tree_unless_a_snapshot_still_owns_it() {
         )
         .await;
     assert!(result.errors.is_empty());
-    assert_eq!(snapshot.0[0]["count"], 1);
+    assert_eq!(snapshot[0].0["count"], 1);
     assert_eq!(result.old_value.unwrap()["count"], 1);
     assert_eq!(result.new_value["count"], 2);
     assert_eq!(weak.strong_count(), 1);
@@ -494,7 +502,7 @@ async fn update_reuses_old_tree_unless_a_snapshot_still_owns_it() {
 }
 
 #[tokio::test]
-async fn owned_get_and_list_remain_independent_and_in_order() {
+async fn materialized_get_and_list_remain_independent_and_in_order() {
     let store = in_memory_store();
     for (key, id) in [("z", 0), ("a", 1), ("m", 2)] {
         store
@@ -505,8 +513,10 @@ async fn owned_get_and_list_remain_independent_and_in_order() {
             )
             .await;
     }
-    let mut first = store.get("s".into(), "z".into()).await.unwrap();
-    let mut values = store.list("s".into()).await;
+    let first_read = store.get("s".into(), "z".into()).await.unwrap();
+    let mut first = first_read.as_ref().clone();
+    let reads = store.list("s".into()).await;
+    let mut values: Vec<Value> = reads.iter().map(|v| v.as_ref().clone()).collect();
     assert_eq!(
         values
             .iter()
@@ -555,7 +565,7 @@ fn clean_flush_does_not_require_a_blocking_thread() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn owned_get_and_list_with_writers_keep_selected_versions_coherent() {
+async fn get_and_list_with_writers_keep_selected_versions_coherent() {
     let store = Arc::new(in_memory_store());
     for id in 0..32 {
         store
@@ -647,7 +657,10 @@ async fn stale_delete_intent_persists_scope_repopulated_before_dirty_mark() {
     store.dirty.write().await.insert("s".into(), stale_delete);
 
     store.flush().await.unwrap();
-    assert_eq!(store.list("s".into()).await, vec![serde_json::json!(2)]);
+    assert_eq!(
+        store.list("s".into()).await,
+        vec![StateValue::from(serde_json::json!(2))]
+    );
     assert_eq!(read_legacy(&dir, "s")["b"], serde_json::json!(2));
     assert_eq!(
         load_store_from_dir(&dir)["s"]["b"],
@@ -690,4 +703,105 @@ async fn stale_upsert_intent_removes_files_for_empty_and_absent_scopes() {
     assert!(store.list("empty".into()).await.is_empty());
     assert!(store.list("absent".into()).await.is_empty());
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn get_and_list_share_the_same_immutable_record_without_deep_copies() {
+    let store = in_memory_store();
+    store
+        .set(
+            "s".into(),
+            "k".into(),
+            serde_json::json!({"payload":"x".repeat(1024*1024)}),
+        )
+        .await;
+    let get = store.get("s".into(), "k".into()).await.unwrap();
+    let list = store.list("s".into()).await;
+    {
+        let map = store.store.read().await;
+        assert!(Arc::ptr_eq(&get.0, &map["s"]["k"]));
+        assert!(Arc::ptr_eq(&get.0, &list[0].0));
+        assert_eq!(
+            get["payload"].as_str().unwrap().as_ptr(),
+            map["s"]["k"]["payload"].as_str().unwrap().as_ptr()
+        );
+    }
+    let weak = Arc::downgrade(&get.0);
+    store.set("s".into(), "k".into(), Value::Null).await;
+    assert_eq!(get["payload"].as_str().unwrap().len(), 1024 * 1024);
+    assert_eq!(weak.strong_count(), 2);
+    drop(list);
+    assert_eq!(weak.strong_count(), 1);
+    drop(get);
+    assert!(weak.upgrade().is_none());
+    assert!(store.get("s".into(), "missing".into()).await.is_none());
+}
+
+#[tokio::test]
+async fn get_crosses_unchanged_sdk_as_original_json_for_every_value_kind() {
+    use iii_sdk::iii::IntoAsyncHandler;
+    let store = Arc::new(in_memory_store());
+    let handler = {
+        let store = store.clone();
+        (move |key: String| {
+            let store = store.clone();
+            async move { Ok::<_, iii_sdk::Error>(store.get("s".into(), key).await) }
+        })
+        .into_handler()
+    };
+    let expected = vec![
+        Value::Null,
+        Value::Bool(true),
+        Value::from(18446744073709551615u64),
+        serde_json::json!(-4),
+        serde_json::json!(1.25),
+        serde_json::json!("中文\n\\\""),
+        serde_json::json!([1, null, false]),
+        serde_json::json!({"a":{"nested":[true]}}),
+    ];
+    for (i, value) in expected.into_iter().enumerate() {
+        store.set("s".into(), i.to_string(), value.clone()).await;
+        assert_eq!(
+            handler(Value::String(i.to_string()), None).await.unwrap(),
+            value
+        );
+    }
+    assert_eq!(
+        handler(Value::String("missing".into()), None)
+            .await
+            .unwrap(),
+        Value::Null
+    );
+    let list = store.list("s".into()).await;
+    assert_eq!(
+        serde_json::to_value(&list)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        8
+    );
+    assert_eq!(
+        schemars::schema_for!(StateValue).schema,
+        schemars::schema_for!(Value).schema
+    );
+}
+
+#[tokio::test]
+async fn delete_can_return_its_shared_pre_delete_value_with_unchanged_event_fields() {
+    let store = in_memory_store();
+    let expected = serde_json::json!({"payload":"x".repeat(65536)});
+    store.set("s".into(), "k".into(), expected.clone()).await;
+    let before = store.get("s".into(), "k".into()).await;
+    drop(store.delete("s".into(), "k".into()).await);
+    assert_eq!(serde_json::to_value(&before).unwrap(), expected);
+    let event = crate::structs::StateEventData {
+        message_type: "state".into(),
+        event_type: crate::structs::StateEventType::Deleted,
+        scope: "s".into(),
+        key: "k".into(),
+        old_value: before.as_deref().cloned(),
+        new_value: Value::Null,
+    };
+    assert_eq!(serde_json::to_value(event).unwrap()["old_value"], expected);
 }
