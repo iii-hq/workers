@@ -9759,5 +9759,194 @@
       "title": "SessionSummary",
       "type": "object"
     }
+  },
+  {
+    "id": "whatsapp::cloud::tunnel::status",
+    "description": "Read the development webhook tunnel state and current verified callback URL",
+    "request_format": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "response_format": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "stopped",
+            "starting",
+            "ready",
+            "reconnecting",
+            "failed",
+            "unavailable"
+          ]
+        },
+        "tunnel_id": {
+          "type": "string",
+          "const": "webhooks"
+        },
+        "public_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "webhook_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "webhook_path": {
+          "type": "string"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "enabled",
+        "status",
+        "tunnel_id",
+        "public_url",
+        "webhook_url",
+        "webhook_path",
+        "error"
+      ]
+    }
+  },
+  {
+    "id": "whatsapp::cloud::tunnel::start",
+    "description": "Acquire or renew this worker’s development webhook tunnel lease",
+    "request_format": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "response_format": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "stopped",
+            "starting",
+            "ready",
+            "reconnecting",
+            "failed",
+            "unavailable"
+          ]
+        },
+        "tunnel_id": {
+          "type": "string",
+          "const": "webhooks"
+        },
+        "public_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "webhook_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "webhook_path": {
+          "type": "string"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "enabled",
+        "status",
+        "tunnel_id",
+        "public_url",
+        "webhook_url",
+        "webhook_path",
+        "error"
+      ]
+    }
+  },
+  {
+    "id": "whatsapp::cloud::tunnel::stop",
+    "description": "Release this worker’s development webhook tunnel lease",
+    "request_format": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "response_format": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "stopped",
+            "starting",
+            "ready",
+            "reconnecting",
+            "failed",
+            "unavailable"
+          ]
+        },
+        "tunnel_id": {
+          "type": "string",
+          "const": "webhooks"
+        },
+        "public_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "webhook_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "webhook_path": {
+          "type": "string"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "enabled",
+        "status",
+        "tunnel_id",
+        "public_url",
+        "webhook_url",
+        "webhook_path",
+        "error"
+      ]
+    }
   }
 ]

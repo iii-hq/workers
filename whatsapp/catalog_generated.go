@@ -499,6 +499,18 @@ type operation123 struct{}
 
 func (operation123) ID() string { return "whatsapp::sessions::stop" }
 
+type operation124 struct{}
+
+func (operation124) ID() string { return "whatsapp::cloud::tunnel::status" }
+
+type operation125 struct{}
+
+func (operation125) ID() string { return "whatsapp::cloud::tunnel::start" }
+
+type operation126 struct{}
+
+func (operation126) ID() string { return "whatsapp::cloud::tunnel::stop" }
+
 var typedInstallers = map[string]func(*iii.Client, *Registry) error{
 	"whatsapp::calls::reject":                     installOperation[operation0],
 	"whatsapp::chats::archive":                    installOperation[operation1],
@@ -624,4 +636,7 @@ var typedInstallers = map[string]func(*iii.Client, *Registry) error{
 	"whatsapp::sessions::qr":                      installOperation[operation121],
 	"whatsapp::sessions::start":                   installOperation[operation122],
 	"whatsapp::sessions::stop":                    installOperation[operation123],
+	"whatsapp::cloud::tunnel::status":             installOperation[operation124],
+	"whatsapp::cloud::tunnel::start":              installOperation[operation125],
+	"whatsapp::cloud::tunnel::stop":               installOperation[operation126],
 }

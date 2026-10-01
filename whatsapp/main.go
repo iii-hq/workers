@@ -98,13 +98,23 @@ func run() error {
 			log.Print("WhatsApp shutdown did not finish cleanly")
 		}
 	}()
-	if err = NewRegistry(manager).Install(client); err != nil {
-		return err
-	}
 	if err = registerEvents(ctx, client, manager); err != nil {
 		return err
 	}
 	if err = registerCloudWebhooks(client, manager, *url); err != nil {
+		return err
+	}
+	if err = registerDevelopmentTunnel(ctx, client, manager); err != nil {
+		return err
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer shutdownCancel()
+		if manager.tunnel.Close(shutdownCtx) != nil {
+			log.Print("Development tunnel shutdown did not finish cleanly; its lease will expire automatically")
+		}
+	}()
+	if err = NewRegistry(manager).Install(client); err != nil {
 		return err
 	}
 	if err = registerUI(client); err != nil {

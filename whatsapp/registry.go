@@ -57,6 +57,7 @@ func NewRegistry(manager *Manager) *Registry {
 	registerGroups(r)
 	registerMessaging(r)
 	registerCloud(r)
+	registerTunnelOperations(r)
 	return r
 }
 

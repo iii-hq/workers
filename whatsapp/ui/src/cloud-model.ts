@@ -14,6 +14,15 @@ export interface CloudStatus {
   webhook_path: string
   webhook_ready: boolean
 }
+export interface CloudTunnelStatus {
+  enabled: boolean
+  status: 'stopped' | 'starting' | 'ready' | 'reconnecting' | 'failed' | 'unavailable'
+  tunnel_id: string
+  public_url: string | null
+  webhook_url: string | null
+  webhook_path: string
+  error: string | null
+}
 export interface CloudConnection {
   phone: { id: string; display_phone_number?: string; verified_name?: string; quality_rating?: string; code_verification_status?: string }
   phone_in_business_account: boolean

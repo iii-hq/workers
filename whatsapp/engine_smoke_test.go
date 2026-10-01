@@ -140,8 +140,10 @@ func TestEngineSmoke(t *testing.T) {
 	}
 	config := DefaultConfig()
 	config.DataDir = filepath.Join(dir, "accounts")
+	var tunnel *smokeTunnelProvider
 	if webhookPort > 0 {
 		config.Cloud = cloudTestConfig().Cloud
+		tunnel = newSmokeTunnelProvider(t, engine, engineURL)
 	}
 	seed := filepath.Join(dir, "whatsapp.yaml")
 	encoded, _ := json.Marshal(config)
@@ -242,6 +244,7 @@ func TestEngineSmoke(t *testing.T) {
 	}
 	if webhookPort > 0 {
 		t.Run("cloud_webhook", func(t *testing.T) { smokeCloudWebhook(t, engine, engineURL, webhookPort) })
+		t.Run("development_tunnel", func(t *testing.T) { smokeDevelopmentTunnel(t, engine, engineURL, tunnel) })
 	}
 	config.DataDir = filepath.Join(dir, "pending-data-dir")
 	encoded, _ = json.Marshal(config)

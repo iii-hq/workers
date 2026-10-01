@@ -7,6 +7,7 @@ import { cloudRecipient, cloudTextError, templateComponents, templateText, type 
 import { mergeChats, mergeMessages, messageKey, messageLabel, messageStatus, type ChatTarget, type MessagePage, type ChatPage } from './inbox-model'
 import { requestScope } from './model'
 import { useInboxPages } from './use-inbox'
+import { CloudTunnel } from './cloud-tunnel'
 
 type Navigate = (action: () => void) => Promise<boolean>
 const FIELD_LABELS: Record<string, string> = { business_account_id: 'business account ID', phone_number_id: 'phone number ID', access_token: 'access token', app_secret: 'app secret', verify_token: 'webhook verify token' }
@@ -73,6 +74,7 @@ function CloudWorkspace({ host, status, statusError, refreshStatus, narrow, pane
         <p className="wa-ui-note">{status.webhook_ready ? 'Webhook verification credentials are set.' : 'Set the app secret and verify token to receive signed webhooks.'} Configure the public callback URL in Meta with this path: <span className="wa-ui-mono">{status.webhook_path}</span>.</p>
         <p className="wa-ui-note">Only messages captured by this worker appear below. Earlier phone history and native phone groups are not imported.</p>
       </div></details>
+      <CloudTunnel host={host} webhookReady={status.enabled && status.webhook_ready && !statusError} />
     </section>
     <PageBody className="wa-ui-browser" side={panelSide}>
       {(!narrow || !composing) && <PageSidebar label="Cloud conversations" side={panelSide} narrow={narrow} defaultWidth={320} minWidth={240} maxWidth={400} header={<div className="wa-ui-sidebar-heading"><span>Conversations</span><div className="wa-ui-header-actions"><IconButton label="New Cloud message" onClick={() => openChat(null)}><MessageSquarePlus size={16} /></IconButton><IconButton label="Refresh Cloud conversations" onClick={chats.refresh} disabled={chats.loading}><RefreshCw size={16} /></IconButton></div></div>}>

@@ -193,6 +193,42 @@ only the configured WABA/phone and acknowledges matching messages after local
 persistence. Repeated deliveries are deduplicated; receipts may arrive before
 the send response. Missing webhook secrets or disabled Cloud API return 503.
 
+### Development webhook URL
+
+In **Cloud API**, select **Start development tunnel** to obtain a complete
+HTTPS callback URL, then **Copy webhook URL** and paste it into the Meta app's
+webhook configuration. Use the same verify token saved in **Configure worker**,
+enable the `messages` field, and subscribe the app to the WABA. Starting a
+tunnel does not register or change the callback in Meta.
+
+The `quick-tunnel` worker must run in the WhatsApp worker's namespace, with
+`cloudflared` installed and its `webhooks` target pointing to the HTTP worker's
+restricted webhook listener (normally `http://127.0.0.1:3112`). Only routes
+explicitly marked `public_webhook` are exposed there. The generated URL is:
+
+```text
+https://<host>.trycloudflare.com/webhooks/whatsapp-cloud/<configuration ID>
+```
+
+The worker owns a separate renewable tunnel lease, so **Stop tunnel** releases
+only WhatsApp's reservation. GitHub and other consumers can keep using the
+same tunnel. The enabled preference is saved privately under `data_dir` and
+resumes after a worker restart. Shutdown releases WhatsApp's lease; unexpected
+termination leaves a bounded lease that expires unless renewed.
+
+The page displays a callback URL only while the tunnel is ready. A recreated
+Quick Tunnel can have a different hostname: copy the new URL into Meta and
+verify it again. Development tunnels are temporary; use a stable HTTPS origin
+for a production callback. Linked-device sessions do not need this tunnel.
+
+The same controls are available as functions; use your deployment namespace:
+
+```sh
+iii trigger whatsapp::cloud::tunnel::start --namespace my-project --json '{}'
+iii trigger whatsapp::cloud::tunnel::status --namespace my-project --json '{}'
+iii trigger whatsapp::cloud::tunnel::stop --namespace my-project --json '{}'
+```
+
 Sending is always explicit. Text messages require an open 24-hour customer
 service window and allow up to 4096 characters. Outside that window, choose an
 approved template and supply its required components. **Load templates** reads
@@ -373,5 +409,8 @@ This checks central configuration reloads, runtime schemas, ADE assets, offline
 session lifecycle and event delivery across namespaces. `HTTP_BINARY` is optional;
 when supplied, it also checks webhook verification, raw-body signatures, account
 isolation and duplicate message persistence using synthetic credentials and data.
+A synthetic quick-tunnel provider checks the development controls, shared lease
+isolation, namespace routing and callback changes through the real engine; it
+does not launch cloudflared or expose the test server publicly.
 The test does not pair an account or call Meta. Without `III_BINARY` and
 `WHATSAPP_BINARY`, it is skipped.

@@ -147,6 +147,17 @@
 [data-iii-ui="whatsapp"] .wa-ui-cloud-setup > summary { display: flex; align-items: center; gap: 8px; width: fit-content; min-height: 32px; font-size: 12px; font-weight: 600; cursor: pointer; list-style: none; }
 [data-iii-ui="whatsapp"] .wa-ui-cloud-setup > summary::-webkit-details-marker { display: none; }
 [data-iii-ui="whatsapp"] .wa-ui-cloud-setup > .wa-ui-stack { padding-top: 12px; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-tunnel { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding-top: 16px; border-top: 1px solid var(--color-edge); }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-tunnel-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-tunnel-heading .wa-ui-title { font-size: 14px; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-tunnel-heading > .wa-ui-heading-copy { min-width: 160px; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-tunnel-url { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-tunnel-label { font-size: 12px; font-weight: 600; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-tunnel-url-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-tunnel-url-row > input { flex: 1; min-width: min(100%, 280px); }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-tunnel-url-row > button { flex-shrink: 0; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-tunnel-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-tunnel-actions:empty { display: none; }
 [data-iii-ui="whatsapp"] .wa-ui-cloud-archive-note { padding: 12px 16px; border-top: 1px solid var(--color-edge); flex-shrink: 0; }
 [data-iii-ui="whatsapp"] .wa-ui-cloud-reader-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 [data-iii-ui="whatsapp"] .wa-ui-cloud-messages { max-height: 440px; min-height: 160px; overflow: auto; padding: 16px 24px; border-bottom: 1px solid var(--color-edge); overscroll-behavior: contain; }

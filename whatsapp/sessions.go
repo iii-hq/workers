@@ -57,6 +57,7 @@ type Session struct {
 	eventEpoch                  uint64
 }
 type Manager struct {
+	tunnel       *DevelopmentTunnel
 	mu           sync.RWMutex
 	config       Config
 	sessions     map[string]*Session

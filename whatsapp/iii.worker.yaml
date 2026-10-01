@@ -10,6 +10,7 @@ tags: [whatsapp, messaging, native, go, groups, cloud-api]
 dependencies:
   configuration: latest
   http: latest
+  quick-tunnel: latest
 config:
   data_dir: data/whatsapp-go
   max_sessions: 32
