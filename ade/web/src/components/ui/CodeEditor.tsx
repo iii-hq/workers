@@ -202,6 +202,10 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
     const fallbackRef = React.useRef<HTMLTextAreaElement>(null)
     const editorRef = React.useRef<monacoNs.editor.IStandaloneCodeEditor>(null)
     const applyingRef = React.useRef(false)
+    // Mirror of the editor's text, kept on every edit and every external
+    // replacement, so the prop sync compares against it instead of
+    // reading the whole buffer back on each keystroke.
+    const editorValueRef = React.useRef<string | null>(null)
     const pendingRevealRef = React.useRef<PendingReveal | null>(null)
     const [ready, setReady] = React.useState(false)
 
@@ -408,6 +412,7 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
             fontFamily: codeFontFamily(),
           })
           editorRef.current = editor
+          editorValueRef.current = latest.current.value
           editor.getModel()?.updateOptions({ tabSize: 2, insertSpaces: true })
 
           // Growing mode sizes the host to the content so the OUTER pane
@@ -424,7 +429,9 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
             if (applyingRef.current) return
             // Read through the ref-captured editor: the latest onChange is
             // re-bound below on every render via this stable dispatcher.
-            onChangeRef.current(editor.getValue())
+            const next = editor.getValue()
+            editorValueRef.current = next
+            onChangeRef.current(next)
           })
           if (!filled) editor.onDidContentSizeChange(fitHeight)
           fitHeight()
@@ -449,6 +456,12 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           })
           editor.onDidChangeCursorSelection((event) => {
             if (!actionsRef.current?.length) return
+            // An outside refill collapses the selection, then restores the
+            // reader's: neither is a selection the person just made.
+            if (applyingRef.current) {
+              hideSelectionBar()
+              return
+            }
             if (programmaticSelectionRef.current) {
               programmaticSelectionRef.current = false
               hideSelectionBar()
@@ -507,12 +520,17 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
     // Prop → editor sync (external value swaps, language, options).
     React.useEffect(() => {
       const editor = editorRef.current
-      if (!ready || !editor) return
-      if (editor.getValue() !== value) {
-        applyingRef.current = true
-        editor.setValue(value)
-        applyingRef.current = false
-      }
+      if (!ready || !editor || value === editorValueRef.current) return
+      // The same editor refilled from outside (an agent rewriting the open
+      // file) keeps the reader's place: setValue alone drops the cursor and
+      // selection and scrolls to the top. Restored positions past the new
+      // end clamp to it. A different file is a fresh editor, at the top.
+      const viewState = editor.saveViewState()
+      applyingRef.current = true
+      editor.setValue(value)
+      editorValueRef.current = value
+      if (viewState) editor.restoreViewState(viewState)
+      applyingRef.current = false
     }, [ready, value])
 
     React.useEffect(() => {

@@ -147,27 +147,65 @@ export function FileDiff({
   }, [editState, onEditStateChange])
   const editing = editState === 'ready'
 
+  // MultiFileDiff re-runs the whole diff whenever either file object or
+  // `options.parseDiffOptions` is a new object (its parse is memoized on
+  // their identity), and callers pass inline `{ name, contents }`: keyed
+  // on their values, an unrelated render or a style or theme switch
+  // reuses the diff it already has. Read-only sides also carry their text
+  // as Pierre's cache key (see keyedByText).
+  const stableOldFile = useMemo(
+    () =>
+      editing
+        ? { name: oldFile.name, contents: oldFile.contents }
+        : keyedByText(oldFile),
+    [oldFile.name, oldFile.contents, editing],
+  )
+  const stableNewFile = useMemo(
+    () =>
+      editing
+        ? { name: newFile.name, contents: newFile.contents }
+        : keyedByText(newFile),
+    [newFile.name, newFile.contents, editing],
+  )
+  const parseDiffOptions = useMemo(
+    () => ({ ignoreWhitespace }),
+    [ignoreWhitespace],
+  )
+  const options = useMemo(
+    () => ({
+      diffStyle,
+      overflow,
+      lineDiffType,
+      collapsed,
+      expandUnchanged,
+      disableFileHeader,
+      parseDiffOptions,
+      theme: DEFAULT_THEMES,
+      themeType: theme,
+    }),
+    [
+      diffStyle,
+      overflow,
+      lineDiffType,
+      collapsed,
+      expandUnchanged,
+      disableFileHeader,
+      parseDiffOptions,
+      theme,
+    ],
+  )
+
   const diff = (
     <MultiFileDiff
-      oldFile={editing ? oldFile : keyedByText(oldFile)}
-      newFile={editing ? newFile : keyedByText(newFile)}
+      oldFile={stableOldFile}
+      newFile={stableNewFile}
       edit={editing}
       editorOptions={editing ? editorOptions : undefined}
       className={cn('[--diffs-font-family:var(--font-code)]', className)}
       // Read-mode diff text takes clicks and selection without input focus;
       // a bare shortcut must not fire from inside it.
       data-keybindings-standdown=""
-      options={{
-        diffStyle,
-        overflow,
-        lineDiffType,
-        collapsed,
-        expandUnchanged,
-        disableFileHeader,
-        parseDiffOptions: { ignoreWhitespace },
-        theme: DEFAULT_THEMES,
-        themeType: theme,
-      }}
+      options={options}
     />
   )
 
