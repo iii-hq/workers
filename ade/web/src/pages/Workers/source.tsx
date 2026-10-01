@@ -503,7 +503,7 @@ function PathSource({
                   disabled={actions.busy}
                   onClick={() => void pointTo(target.path)}
                 >
-                  Point to {shortTarget}
+                  Apply
                 </Button>
               </div>
             </Preview>
