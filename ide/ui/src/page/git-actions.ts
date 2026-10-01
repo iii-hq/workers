@@ -25,10 +25,19 @@ async function git(host: Host, cwd: string, args: string[], timeoutMs = 30_000):
   )
 }
 
+/** Another git process (an agent's, another editor's) holding `index.lock`. */
+export function isIndexLocked(stderr: string): boolean {
+  return /index\.lock|could not write index/i.test(stderr)
+}
+
 function failure(out: ExecResponse, operation: string): string | null {
   if (out.timed_out) return `${operation} timed out`
   if (out.exit_code === null) return `${operation} terminated without an exit code`
-  if (out.exit_code !== 0) return out.stderr.trim() || `${operation} exited ${out.exit_code}`
+  if (out.exit_code !== 0) {
+    const detail = out.stderr.trim()
+    if (isIndexLocked(detail)) return 'another git process is using this repository; try again in a moment'
+    return detail || `${operation} exited ${out.exit_code}`
+  }
   return null
 }
 

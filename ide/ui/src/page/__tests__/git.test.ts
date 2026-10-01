@@ -108,7 +108,7 @@ describe('gitComparison', () => {
     })
     expect(trigger).toHaveBeenNthCalledWith(3, 'shell::exec', {
       command: 'git',
-      args: [
+      args: ['--no-optional-locks', 
         'status',
         '--porcelain=v1',
         '-z',
@@ -434,7 +434,7 @@ describe('gitReadSource', () => {
     ).resolves.toBe('committed\n')
     expect(head.trigger).toHaveBeenCalledWith('shell::exec', {
       command: 'git',
-      args: ['show', 'HEAD:./src/app.ts'],
+      args: ['--no-optional-locks', 'show', 'HEAD:./src/app.ts'],
       cwd: '/repo',
       timeout_ms: 15_000,
     })
@@ -445,7 +445,7 @@ describe('gitReadSource', () => {
     ).resolves.toBe('staged\n')
     expect(index.trigger).toHaveBeenCalledWith('shell::exec', {
       command: 'git',
-      args: ['show', ':./src/app.ts'],
+      args: ['--no-optional-locks', 'show', ':./src/app.ts'],
       cwd: '/repo',
       timeout_ms: 15_000,
     })
@@ -460,7 +460,7 @@ describe('gitReadSource', () => {
     ).resolves.toBe('historical\n')
     expect(revision.trigger).toHaveBeenCalledWith('shell::exec', {
       command: 'git',
-      args: ['show', 'abc123:./src/app.ts'],
+      args: ['--no-optional-locks', 'show', 'abc123:./src/app.ts'],
       cwd: '/repo',
       timeout_ms: 15_000,
     })
@@ -530,7 +530,7 @@ describe('git metadata', () => {
     })
     expect(trigger).toHaveBeenNthCalledWith(3, 'shell::exec', {
       command: 'git',
-      args: ['log', '--max-count=100', '--format=%H%x00%s'],
+      args: ['--no-optional-locks', 'log', '--max-count=100', '--format=%H%x00%s'],
       cwd: '/repo',
       timeout_ms: 15_000,
     })
@@ -583,7 +583,7 @@ describe('git metadata', () => {
     })
     expect(trigger).toHaveBeenNthCalledWith(2, 'shell::exec', {
       command: 'git',
-      args: [
+      args: ['--no-optional-locks', 
         'for-each-ref',
         '--sort=refname',
         '--format=%(refname)%00%(objectname)%00%(HEAD)%00%(symref)',
@@ -626,7 +626,7 @@ describe('gitHeadBaseline', () => {
     ).resolves.toBe('committed\n')
     expect(trigger).toHaveBeenCalledWith('shell::exec', {
       command: 'git',
-      args: ['show', 'HEAD:./app.ts'],
+      args: ['--no-optional-locks', 'show', 'HEAD:./app.ts'],
       cwd: '/root/nested/src',
       timeout_ms: 15_000,
     })

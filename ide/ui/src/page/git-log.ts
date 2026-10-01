@@ -4,7 +4,7 @@
    argv form, cwd-scoped to the browsed root, so nothing is shell-tokenized. */
 
 import type { Host } from '@iii-dev/console-ui'
-import { type GitComparisonEntry, type GitFileStatus, type NameStatusEntry, parseNameStatus } from './git'
+import { type GitComparisonEntry, type GitFileStatus, type NameStatusEntry, parseNameStatus, READ_ONLY } from './git'
 
 interface ExecResponse {
   exit_code: number | null
@@ -18,8 +18,14 @@ interface ExecResponse {
 /** Git's well-known empty tree: the "parent" of a root commit or an unborn HEAD. */
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
+/** Reads only, so never on the index lock (see `READ_ONLY`). */
 function git(host: Host, cwd: string, args: string[]): Promise<ExecResponse> {
-  return host.iii.trigger<ExecResponse>('shell::exec', { command: 'git', args, cwd, timeout_ms: 15_000 })
+  return host.iii.trigger<ExecResponse>('shell::exec', {
+    command: 'git',
+    args: [READ_ONLY, ...args],
+    cwd,
+    timeout_ms: 15_000,
+  })
 }
 
 async function run(host: Host, cwd: string, args: string[], operation: string): Promise<ExecResponse> {

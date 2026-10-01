@@ -7,6 +7,7 @@ import {
   gitPush,
   gitTags,
   gitUnstage,
+  isIndexLocked,
   stashPushArgs,
   statusLetter,
 } from '../git-actions'
@@ -172,5 +173,15 @@ describe('stashPushArgs', () => {
       'a.ts',
       'new.md',
     ])
+  })
+})
+
+describe('index lock failures', () => {
+  it('names a held index lock instead of git\'s bare error', async () => {
+    expect(isIndexLocked('error: could not write index')).toBe(true)
+    expect(isIndexLocked("fatal: Unable to create '/r/.git/index.lock': File exists.")).toBe(true)
+    expect(isIndexLocked('rejected: non-fast-forward')).toBe(false)
+    const { host } = hostWith(reply({ exit_code: 1, stderr: 'error: could not write index' }))
+    await expect(gitPush(host, '/r')).rejects.toThrow('another git process is using this repository')
   })
 })

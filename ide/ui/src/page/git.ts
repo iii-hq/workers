@@ -15,6 +15,12 @@ interface ExecResponse {
   stderr_truncated: boolean
 }
 
+/** Every read here runs with `--no-optional-locks`: these re-run on each
+    file change, and a `git status` that takes `index.lock` to refresh stat
+    data makes a concurrent commit, stash or rollback fail with "could not
+    write index". The worker's own git does the same (`GIT_OPTIONAL_LOCKS=0`). */
+export const READ_ONLY = '--no-optional-locks'
+
 async function git(
   host: Host,
   cwd: string,
@@ -22,7 +28,7 @@ async function git(
 ): Promise<ExecResponse> {
   return host.iii.trigger<ExecResponse>('shell::exec', {
     command: 'git',
-    args,
+    args: [READ_ONLY, ...args],
     cwd,
     timeout_ms: 15_000,
   })

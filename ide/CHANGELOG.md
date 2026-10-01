@@ -158,6 +158,12 @@
 
 ### Fixed
 
+- **Commit, stash and rollback no longer fail with "could not write index".**
+  The page re-reads git on every file change, and its `git status` took
+  `index.lock` to refresh stat data, racing the panel's own commit, stash
+  and rollback. Every read now runs with `--no-optional-locks`, as the
+  worker's own git already did; a lock held by another process says so.
+
 - **A turn waited ~50s on the snapshot of a VM disk image.** The turn
   history photographs the session root before each turn with `git add -A`,
   and its exclude list did not cover `.iii/compose/` — the engine's own
