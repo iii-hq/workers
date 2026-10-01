@@ -144,3 +144,6 @@ standalone worker) over the **same jail** (`fs.host_roots`): `coder::info`
 `coder::move`. Prefer these structured ops over editing files through
 `shell::exec`. They return `C2xx` error codes (distinct from `shell::*`'s
 `S2xx`); protected paths are the shared `code.non_accessible_globs`.
+`coder::list-templates` lists the worker templates (`code.templates`: a local
+`dir`, or a cached git clone) with their language and the compose containers
+they need.

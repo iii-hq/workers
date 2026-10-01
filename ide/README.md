@@ -202,6 +202,7 @@ fully unjailed, regardless of `fs.allow_unjailed`.
 | `coder::list-folder` | Paginated single-folder listing. |
 | `coder::tree` | Recursive depth- and per-folder-bounded directory snapshot. |
 | `coder::create-file` / `coder::update-file` / `coder::delete-file` / `coder::move` | Batched create, line/regex edits, delete, and atomic rename/move. |
+| `coder::list-templates` | The worker templates `coder::scaffold-worker` creates from, with their language and the compose containers they need. Read from `code.templates`: a local `dir`, or a cached shallow clone of `url` at `ref` (`refresh: true` re-fetches it). |
 
 Roots come from `fs.host_roots` (with the cwd+`/tmp` fallback noted above);
 protection globs come from `code.non_accessible_globs` in the shipped

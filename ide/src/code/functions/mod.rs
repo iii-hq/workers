@@ -14,6 +14,7 @@ pub mod create_file;
 pub mod delete_file;
 pub mod info;
 pub mod list_folder;
+pub mod list_templates;
 pub mod move_file;
 pub mod read_file;
 pub mod read_window;
@@ -138,6 +139,15 @@ const MOVE_FILE_DESC: &str = "Move or rename one or more paths; per-entry overwr
      if the delete fails. Paths: relative to the primary root or absolute \
      inside an allowed root (see coder::info).";
 
+const LIST_TEMPLATES_ID: &str = "coder::list-templates";
+const LIST_TEMPLATES_DESC: &str =
+    "List the worker templates coder::scaffold-worker creates from: id, \
+     name, description, language (node | python) and requires (the compose \
+     containers the worker needs, e.g. http). source names where they come \
+     from: a local dir, or a cached git clone with ref and revision; warning \
+     means the clone could not refresh and is stale. refresh: true \
+     re-fetches it now.";
+
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.
 ///
@@ -203,6 +213,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
         ),
         spec::<tree::TreeInput, tree::TreeOutput>(TREE_ID, TREE_DESC),
         spec::<move_file::MoveFileInput, move_file::MoveFileOutput>(MOVE_FILE_ID, MOVE_FILE_DESC),
+        spec::<list_templates::ListTemplatesInput, list_templates::ListTemplatesOutput>(
+            LIST_TEMPLATES_ID,
+            LIST_TEMPLATES_DESC,
+        ),
     ]
 }
 
@@ -230,7 +244,9 @@ pub fn register_all(iii: &IIIClient, cells: CodeCells) {
     registered += 1;
     register_tree(iii, cells.clone());
     registered += 1;
-    register_move_file(iii, cells);
+    register_move_file(iii, cells.clone());
+    registered += 1;
+    register_list_templates(iii, cells);
     registered += 1;
     debug_assert_eq!(
         registered,
@@ -431,6 +447,20 @@ fn register_move_file(iii: &IIIClient, cells: CodeCells) {
             }
         })
         .description(MOVE_FILE_DESC),
+    );
+}
+
+fn register_list_templates(iii: &IIIClient, cells: CodeCells) {
+    iii.register_function(
+        LIST_TEMPLATES_ID,
+        RegisterFunction::new_async(move |req: list_templates::ListTemplatesInput| {
+            let cells = cells.clone();
+            async move {
+                let cfg = cells.config.read().await.clone();
+                list_templates::handle(cfg, req).await.map_err(Error::from)
+            }
+        })
+        .description(LIST_TEMPLATES_DESC),
     );
 }
 
