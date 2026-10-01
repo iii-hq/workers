@@ -304,10 +304,9 @@ export async function openSession(
 ): Promise<void> {
   await page.goto(stack.consoleUrl)
   // Let the Console settle its initial local-draft selection before changing
-  // sessions; otherwise that bootstrap effect can overwrite this click.
-  await expect(
-    page.locator('[role="button"][aria-current="page"]'),
-  ).toHaveCount(1)
+  // sessions; otherwise that bootstrap effect can overwrite this click. The
+  // draft has no sidebar row, but its chat view mounts once it is selected.
+  await expect(page.locator('[data-chat-session-id]')).toHaveCount(1)
   const session = page.getByRole('button', {
     name: `open ${stack.ready.session.title}`,
     exact: true,
