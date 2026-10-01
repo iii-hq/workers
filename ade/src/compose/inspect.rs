@@ -160,16 +160,59 @@ async fn checkouts(dir: &Path) -> Vec<Checkout> {
 
 /// When the checkout last moved and whether it holds uncommitted work.
 async fn describe(path: PathBuf, branch: Option<String>) -> Checkout {
-    let (time, status) = tokio::join!(
-        git(&path, &["log", "-1", "--format=%ct"]),
-        git(&path, &["status", "--porcelain", "--untracked-files=no"]),
+    let (time, dirty) = tokio::join!(
+        // `log.showSignature` would run the repository's `gpg.program`.
+        git(&path, &["log", "-1", "--no-show-signature", "--format=%ct"]),
+        dirty(&path),
     );
     Checkout {
         path: path.to_string_lossy().into_owned(),
         branch,
         committed_at: time.and_then(|t| t.trim().parse().ok()),
-        dirty: status.map(|s| !s.trim().is_empty()),
+        dirty,
     }
+}
+
+/// `git status` runs a filter driver's `clean`/`process` program whenever it
+/// must compare a file's content, so every driver the repository configures
+/// is switched off for the call. Reading the config runs nothing.
+async fn dirty(path: &Path) -> Option<bool> {
+    let keys = git(
+        path,
+        &[
+            "config",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\..+\.(clean|smudge|process)$",
+        ],
+    )
+    .await
+    .unwrap_or_default();
+    let mut args = Vec::new();
+    for key in keys.lines() {
+        let name = key.strip_prefix("filter.")?.rsplit_once('.')?.0;
+        // `-c` splits at the first `=`; a name holding one cannot be overridden.
+        if name.contains('=') {
+            return None;
+        }
+        for field in ["clean", "smudge", "process"] {
+            args.extend(["-c".to_string(), format!("filter.{name}.{field}=")]);
+        }
+        args.extend(["-c".to_string(), format!("filter.{name}.required=false")]);
+    }
+    args.extend(
+        [
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+            // A submodule's own config would get the same chance.
+            "--ignore-submodules=all",
+        ]
+        .map(String::from),
+    );
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let status = git(path, &args).await?;
+    Some(!status.trim().is_empty())
 }
 
 async fn child_workers(dir: &Path) -> Vec<Manifest> {
@@ -294,6 +337,49 @@ mod tests {
         assert_eq!(feature.branch.as_deref(), Some("feat/x"));
         assert_eq!(feature.dirty, Some(false));
         assert!(feature.path.ends_with("wt/web"));
+    }
+
+    #[tokio::test]
+    async fn describing_a_checkout_runs_no_configured_filter() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let marker = root.path().join("ran");
+        let filter = root.path().join("filter.sh");
+        std::fs::write(
+            &filter,
+            format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&filter, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join(".gitattributes"), "*.txt filter=evil\n").unwrap();
+        std::fs::write(repo.join("a.txt"), "hi\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "init"]);
+        let command = format!("{} clean", filter.display());
+        run(&["config", "filter.evil.clean", &command]);
+        run(&["config", "filter.evil.process", &command]);
+        run(&["config", "filter.evil.required", "true"]);
+
+        // Rewritten within the index's second: racily clean, so git must
+        // compare the content and would run the filter to do it.
+        std::fs::write(repo.join("a.txt"), "hi\n").unwrap();
+        assert_eq!(dirty(&repo).await, Some(false));
+        std::fs::write(repo.join("a.txt"), "changed\n").unwrap();
+        assert_eq!(dirty(&repo).await, Some(true));
+        assert!(!marker.exists(), "a repository-configured filter ran");
     }
 
     #[tokio::test]

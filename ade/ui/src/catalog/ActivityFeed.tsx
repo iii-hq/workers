@@ -138,8 +138,17 @@ export function ActivityFeed({
   const failures = calls.data.filter((c) => !c.ok).length
   const slowest = calls.data.reduce((max, c) => Math.max(max, c.durationMs), 0)
   const median = medianDuration(calls.data)
-  const shown =
-    filter === 'failed' ? calls.data.filter((c) => !c.ok) : calls.data
+  // spanId can be empty or duplicated on some backends, and the row id keys
+  // AND drives open state. Ids come from the unfiltered list (so the filter
+  // cannot shift them) and repeats get a suffix (so twins never open together).
+  const seen = new Map<string, number>()
+  const rows = calls.data.map((call) => {
+    const base = call.spanId || `${call.traceId}:${call.startedAtMs}`
+    const repeat = seen.get(base) ?? 0
+    seen.set(base, repeat + 1)
+    return { call, rowId: repeat ? `${base}#${repeat}` : base }
+  })
+  const shown = filter === 'failed' ? rows.filter((row) => !row.call.ok) : rows
 
   return (
     <div className="console-catalog-activity">
@@ -175,25 +184,18 @@ export function ActivityFeed({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {shown.map((call, i) => {
-                  // spanId can be empty or duplicated on some backends — the
-                  // row id keys AND drives open state, so a collision would
-                  // open every twin.
-                  const rowId =
-                    call.spanId || `${call.traceId}:${call.startedAtMs}:${i}`
-                  return (
-                    <CallRow
-                      key={rowId}
-                      call={call}
-                      now={now}
-                      open={open === rowId}
-                      onToggle={() =>
-                        setOpen((prev) => (prev === rowId ? null : rowId))
-                      }
-                      onReplay={onReplay}
-                    />
-                  )
-                })}
+                {shown.map(({ call, rowId }) => (
+                  <CallRow
+                    key={rowId}
+                    call={call}
+                    now={now}
+                    open={open === rowId}
+                    onToggle={() =>
+                      setOpen((prev) => (prev === rowId ? null : rowId))
+                    }
+                    onReplay={onReplay}
+                  />
+                ))}
               </TableBody>
             </Table>
           </TableFrame>
