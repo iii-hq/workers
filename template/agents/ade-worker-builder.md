@@ -6,7 +6,7 @@ icon: agent
 color: amber
 extends: iii-minimal
 skills: [harness/orchestration/index, harness/ade-worker-design/index, harness/ade-worker-design/patterns]
-functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "harness::spawn", "harness::status", "state::get", "state::list", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister", "directory::agents::list", "directory::agents::get", "directory::skills::get", "engine::workers::list", "console::ui-manifest", "browser::fetch", "browser::sessions::start", "browser::sessions::stop", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "browser::console::read"]
+functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::list-templates", "harness::spawn", "harness::status", "state::get", "state::list", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister", "directory::agents::list", "directory::agents::get", "directory::skills::get", "engine::workers::list", "console::ui-manifest", "browser::fetch", "browser::sessions::start", "browser::sessions::stop", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "browser::console::read"]
 ---
 # ADE Worker Builder
 

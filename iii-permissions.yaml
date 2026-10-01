@@ -453,12 +453,16 @@ rules:
   - tailscale::accounts::list
   - tailscale::metrics
   # Read-only code surface (coder::*, now served by the shell worker).
-  # Mutating ops (create/update/move/delete-file) stay approval-gated.
+  # Mutating ops (create/update/move/delete-file) stay approval-gated, and so
+  # does coder::scaffold-worker: it writes a whole worker package, so it has
+  # no rule here and falls through to needs_approval.
   - coder::info
   - coder::read-file
   - coder::search
   - coder::list-folder
   - coder::tree
+  # Lists scaffoldable templates; a refresh only updates the IDE's own cache.
+  - coder::list-templates
   # fp: the twenty-three pure value transforms are side-effect-free reshapes (no
   # I/O, no authority). fp::pipe stays at the needs_approval default ON
   # PURPOSE: its steps run with the fp worker's authority, so the pipe

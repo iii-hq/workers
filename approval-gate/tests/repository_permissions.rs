@@ -89,3 +89,27 @@ fn harness_on_session_deleted_is_denied() {
         Decision::Deny { .. }
     ));
 }
+
+/// Listing templates reads the templates checkout or the IDE's own cache; it
+/// writes nothing in the project, so agents call it without a prompt.
+#[test]
+fn coder_list_templates_is_allowed() {
+    assert!(matches!(
+        repository_permissions().check("coder::list-templates", &json!({}), PermissionMode::Manual),
+        Decision::Allow { .. }
+    ));
+}
+
+/// Scaffolding writes a whole worker package, so it stays approval-gated like
+/// coder::create-file: no rule, the needs_approval default.
+#[test]
+fn coder_scaffold_worker_needs_approval() {
+    assert!(matches!(
+        repository_permissions().check(
+            "coder::scaffold-worker",
+            &json!({ "template": "worker-node-ade", "name": "my-worker" }),
+            PermissionMode::Manual
+        ),
+        Decision::NeedsApproval
+    ));
+}

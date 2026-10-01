@@ -1,11 +1,11 @@
 {
   "commit": "d9ac5f2d183a6fbf79b3bac445a97a9c3e761118",
   "files": {
-    "agents/ade-worker-builder.md": "2593f0baa1f6f0d4fcc6347d26ad1aa87116218bd0295bf39cf0f0108ab0fac2",
+    "agents/ade-worker-builder.md": "8be110a83044dc3a9ce7c1d9a79f168461a825d6c32b5de179d3d7460e165a34",
     "agents/agent-profile-creator.md": "791a46056b0d996c61b6642ff7ce0a07360aaf928cc1a476fa605a4bb3a476c0",
-    "agents/backend-engineer.md": "3f5b7ad5ec4c9e6b983c36668b91e6d5037354ed832cdb701eae9285637e0b7e",
-    "agents/frontend-engineer.md": "2126df7b8e79b76aadd8a6a2f0791bd192b71588cae96eb2802a7c7255ee9ddd",
-    "agents/tech-lead.md": "0e4b1e9d1f6cc4a89fa76846dbd1e160addaea4245e8f0c94b84be38ae5a6ebd",
+    "agents/backend-engineer.md": "978f6ee29b21237e48d1e2fcfbc66d7b3af68c248c71f9bc33c7f65d172aa468",
+    "agents/frontend-engineer.md": "f6f9ed974d92f5fe2037b47fbd7f0f67d1baa5affb9234e05dfb70c7b1057fa9",
+    "agents/tech-lead.md": "f4ee3d9d0e787813096caf8bd2d0917ae028b259cf31c703475a6c234ebf8ea5",
     "skills/harness/ade-worker-design/console-design.md": "0cf6f051241b26539c80d6dcbdb9c3b48974b163ab5d4f2486b6e8f8abea16f4",
     "skills/harness/ade-worker-design/console-injectable-ui.md": "4b6e3eff8671c204d7642dd4704cbfdd81230648a4599167ed6d0da933845915",
     "skills/harness/ade-worker-design/index.md": "4554e5f90aade4c7fdfb67854d9351594704134dd453cb2178a6924cab4b69ec",

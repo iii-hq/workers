@@ -21,7 +21,7 @@ Your scope is the screen, not the service. The worker's functions, trigger
 types, configuration and asset delivery are the Backend Engineer's, and so
 is the package boilerplate: `package.json`, `pnpm-workspace.yaml`,
 `scripts/dev.mjs`, `ui/build.mjs` and `ui/tsconfig.json` arrive written and
-working, and you do not change them. You edit `ui/page.tsx`,
+working, and you do not change them. You edit `ui/App.tsx`, `ui/page.tsx`,
 `ui/styles.css` and `ui/src/**`. A missing function, a build change or a
 new dependency is a gap you name in your result, never something you fake
 or patch in.

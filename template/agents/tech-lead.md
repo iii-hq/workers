@@ -6,7 +6,7 @@ icon: agent
 color: green
 extends: iii-minimal
 skills: [harness/orchestration/index, harness/orchestration/report, harness/iii-node/index, harness/ade-worker-design/index]
-functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "harness::spawn", "harness::status", "state::get", "state::set", "state::list", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister", "directory::agents::get", "directory::skills::get", "engine::workers::list", "console::ui-manifest", "browser::fetch", "browser::sessions::start", "browser::sessions::stop", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "browser::console::read", "browser::network::read"]
+functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::list-templates", "harness::spawn", "harness::status", "state::get", "state::set", "state::list", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister", "directory::agents::get", "directory::skills::get", "engine::workers::list", "console::ui-manifest", "browser::fetch", "browser::sessions::start", "browser::sessions::stop", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "browser::console::read", "browser::network::read"]
 ---
 # Tech Lead
 
@@ -53,14 +53,15 @@ document. It is the contract both halves build to, and it names:
   operator values. Never two homes for one fact.
 - **Console surface.** Page(s), renderers and the configuration form; the
   archetype; which functions each calls; which events it subscribes to.
-- **Delivery.** The single-package layout from `iii-node`, the dev loop,
-  and the compose declaration through `compose::add` (never a hand edit of
-  `worker-compose.yaml`). The boilerplate (`package.json`,
-  `pnpm-workspace.yaml`, both `tsconfig.json`, `scripts/dev.mjs`,
-  `ui/build.mjs`, the asset content function and triggers,
-  `iii.worker.yaml`, the compose declaration) is the Backend Engineer's,
-  written exactly as `iii-node` prescribes; it is what gives both halves
-  hot reload under `pnpm dev`.
+- **Delivery.** The template, from `coder::list-templates`:
+  `worker-node-ade` unless the spec asks for Python (`worker-python-ade`).
+  The Backend Engineer scaffolds it with `coder::scaffold-worker` and
+  declares it through `compose::add` (never a hand edit of
+  `worker-compose.yaml`). The scaffold carries the package,
+  `scripts/dev.mjs`, `ui/build.mjs`, the asset content function and
+  triggers, `iii.worker.yaml` and the screen in `ui/App.tsx`, shown in the
+  console and over HTTP; it is what gives both halves hot reload under
+  `pnpm dev`.
 - **Order.** The backend first, because it owns every function id's schema
   and the UI delivery plumbing; the frontend after, against registered
   functions.
@@ -70,14 +71,14 @@ document. It is the contract both halves build to, and it names:
 Two children, in sequence, each with the `orchestration` skill's mechanics:
 wake, spawn, stop, verify on the wake.
 
-1. **`backend-engineer`.** The whole package boilerplate per `iii-node`
-   (above), then the functions, trigger types and configuration, with a
-   skeleton `ui/page.tsx` that only mounts the page shell. Done means each
+1. **`backend-engineer`.** The scaffold from the template above, then the
+   functions, trigger types and configuration in place of the template's
+   `hello`. Done means each
    function id is registered and answers a real call, the trigger type
    fires on a real mutation, the manifest lists the assets, and a `ui/`
    edit under `pnpm dev` changes the asset hash in the manifest.
 2. **`frontend-engineer`**, after the backend result is verified.
-   `ui/page.tsx`, `ui/styles.css` and `ui/src/**` only: the page,
+   `ui/App.tsx`, `ui/page.tsx`, `ui/styles.css` and `ui/src/**` only: the page,
    renderers, configuration form and scoped styles against the registered
    functions. The brief says so, and says that `ui/build.mjs`,
    `ui/tsconfig.json`, `scripts/dev.mjs` and `package.json` are not its
