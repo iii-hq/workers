@@ -209,6 +209,22 @@ export function composeApi(iii: ExtensionIii, file: () => string | undefined) {
       call<Accepted>('compose::add', withFile({ workers }), 60_000),
     update: (workers: string[]) =>
       call<Accepted>('compose::update', withFile({ workers }), 60_000),
+    /**
+     * New versions for declared packages, through `compose::add`: it rewrites
+     * only `version` and restarts only the containers whose package changed,
+     * where `compose::update` restarts the whole project.
+     */
+    setVersions: (changes: { ref: string; version: string }[]) =>
+      call<Accepted>(
+        'compose::add',
+        withFile({
+          workers: changes.map((change) => ({
+            worker: `package://${change.ref}`,
+            version: change.version,
+          })),
+        }),
+        60_000,
+      ),
     remove: (workers: string[]) =>
       call<Accepted>('compose::remove', withFile({ workers }), 60_000),
     operation: (operation_id: string) =>

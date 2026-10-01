@@ -24,6 +24,7 @@ import type {
 } from './compose-api'
 import type { Actions } from './index'
 import {
+  alsoStarts,
   type EnvDraft,
   entryShape,
   entryYaml,
@@ -109,8 +110,26 @@ export function SettingsTab({
   const waitable = others.filter((other) => !draft.startAfter.includes(other))
 
   const save = async () => {
-    if (await actions.track(`Saving ${name}`, () => api.edit(name, patch)))
-      setAttempt((n) => n + 1)
+    const also = alsoStarts(actions.idle, [name])
+    if (
+      also.length &&
+      !(await actions.confirm({
+        title: `Save ${name}?`,
+        description: `Compose rewrites the entry and restarts ${name}.`,
+        details: also,
+        confirmLabel: 'Save and restart',
+      }))
+    )
+      return
+    if (!(await actions.track(`Saving ${name}`, () => api.edit(name, patch))))
+      return
+    // Compose restarts a local worker whose entry it rewrote, but a package
+    // only when its version changes: restart it here so the edit applies.
+    if (declared?.source === 'package')
+      await actions.run(`Restarting ${name}`, () =>
+        api.lifecycle('restart', name),
+      )
+    setAttempt((n) => n + 1)
   }
 
   return (

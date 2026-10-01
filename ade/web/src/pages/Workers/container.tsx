@@ -40,6 +40,7 @@ import type {
 } from './compose-api'
 import type { Actions } from './index'
 import {
+  alsoStarts,
   dependentsOf,
   draftFrom,
   isRunning,
@@ -145,9 +146,12 @@ export function ContainerView({
     const ok = await actions.confirm({
       title: `Remove ${name}?`,
       description: `Compose takes ${name} and every start_after reference to it out of the compose file, then stops only ${name}.`,
-      details: neededBy.length
-        ? [`No longer waits for it: ${neededBy.join(', ')}`]
-        : undefined,
+      details: [
+        ...(neededBy.length
+          ? [`No longer waits for it: ${neededBy.join(', ')}`]
+          : []),
+        ...alsoStarts(actions.idle, [name]),
+      ],
       confirmLabel: `Remove ${name}`,
       tone: 'danger',
     })

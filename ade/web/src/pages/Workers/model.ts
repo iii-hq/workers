@@ -121,6 +121,26 @@ const CONNECTION_STATE: Record<WorkerConnectionStatus, string> = {
   stopped: 'stopped',
 }
 
+/**
+ * `compose::add` keys a package after its name, so it changes the version of
+ * a container in place only when the container carries that name.
+ */
+export const inPlaceVersion = (
+  declared: Pick<DeclaredContainer, 'name' | 'ref' | 'source'>,
+) => declared.source === 'package' && basename(declared.ref) === declared.name
+
+/**
+ * After an add or a remove Compose brings every declared container up, the
+ * ones stopped on purpose included: name them before the operator agrees.
+ */
+export function alsoStarts(
+  idle: readonly string[],
+  except: readonly string[] = [],
+): string[] {
+  const names = idle.filter((name) => !except.includes(name))
+  return names.length ? [`Also starts ${names.join(', ')}, stopped now`] : []
+}
+
 /** Containers grouped by `start_after` depth: step 1 starts with the engine. */
 export function startWaves(declared: readonly DeclaredContainer[]): string[][] {
   const byName = new Map(declared.map((d) => [d.name, d]))

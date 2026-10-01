@@ -29,11 +29,13 @@ import type {
 } from './compose-api'
 import type { Actions } from './index'
 import {
+  alsoStarts,
   arrangeCheckouts,
   basename,
   branchLabel,
   dirname,
   entryYaml,
+  inPlaceVersion,
   matchParts,
   shortPath,
 } from './model'
@@ -178,16 +180,24 @@ function PackageSource({
 
   const selector = policy === 'pin' ? pick : policy
 
+  const inPlace = inPlaceVersion(declared)
   const update = async () => {
+    if (!selector) return
     const ok = await actions.confirm({
       title: `Update ${declared.name} to ${selector}?`,
-      description:
-        'Compose resolves it and its dependencies again, and restarts the whole project when what runs changes.',
-      confirmLabel: 'Update and restart',
+      description: inPlace
+        ? `Compose installs it and restarts only ${declared.name}; workers that depend on it see it reconnect.`
+        : `${declared.name} is not named after its package, so Compose updates it through the whole project and restarts every container.`,
+      details: alsoStarts(actions.idle, [declared.name]),
+      confirmLabel: inPlace
+        ? `Update ${declared.name}`
+        : 'Update and restart all',
     })
     if (ok)
       await actions.track(`Updating ${declared.name} to ${selector}`, () =>
-        api.update([`${declared.name}@${selector}`]),
+        inPlace
+          ? api.setVersions([{ ref: declared.ref, version: selector }])
+          : api.update([`${declared.name}@${selector}`]),
       )
   }
   const newer = versions
@@ -276,8 +286,16 @@ function PackageSource({
           >
             <StatusPanel
               variant="warn"
-              headline="The whole project restarts"
-              detail={`Compose resolves ${declared.name} ${selector} and its dependencies, then restarts all ${total} containers once when what runs changes, not only ${declared.name}.`}
+              headline={
+                inPlace
+                  ? `Only ${declared.name} restarts`
+                  : 'The whole project restarts'
+              }
+              detail={
+                inPlace
+                  ? `Compose installs ${declared.name} ${selector} and restarts that one container; the other ${total - 1} keep running.`
+                  : `${declared.name} is not named after its package, so Compose updates it through the whole project and restarts all ${total} containers.`
+              }
             />
             <div className="wk-buttons">
               <Button
@@ -354,6 +372,7 @@ function PathSource({
     const ok = await actions.confirm({
       title: `Point ${declared.name} to ${shortPath(path)}?`,
       description: `${declared.name} restarts from that directory. If it does not build or start there, it stays down until you point it back.`,
+      details: alsoStarts(actions.idle, [declared.name]),
       confirmLabel: 'Point and restart',
     })
     if (ok)

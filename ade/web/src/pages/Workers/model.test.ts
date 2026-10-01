@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { ContainerEntry, DeclaredContainer } from './compose-api'
 import {
+  alsoStarts,
   arrangeCheckouts,
   dependentsOf,
   draftFrom,
   entryShape,
   entryYaml,
   groupContainers,
+  inPlaceVersion,
   MASK,
   matchParts,
   parseLogLine,
@@ -343,5 +345,30 @@ describe('matchParts', () => {
     ])
     expect(matchParts('main', 'x')).toEqual(['main', '', ''])
     expect(matchParts('main', ' ')).toEqual(['main', '', ''])
+  })
+})
+
+describe('inPlaceVersion', () => {
+  it('changes a version in place only for a container named after its package', () => {
+    const pkg = (name: string, ref: string) =>
+      ({ name, ref, source: 'package' }) as const
+    expect(inPlaceVersion(pkg('storage', 'api.workers.iii.dev/storage'))).toBe(
+      true,
+    )
+    expect(inPlaceVersion(pkg('db', 'api.workers.iii.dev/database'))).toBe(
+      false,
+    )
+    expect(
+      inPlaceVersion({ name: 'queue', ref: '/w/queue', source: 'path' }),
+    ).toBe(false)
+  })
+})
+
+describe('alsoStarts', () => {
+  it('names the stopped containers an add would bring up, minus the target', () => {
+    expect(alsoStarts(['harness-e2e', 'web'], ['web'])).toEqual([
+      'Also starts harness-e2e, stopped now',
+    ])
+    expect(alsoStarts(['web'], ['web'])).toEqual([])
   })
 })
