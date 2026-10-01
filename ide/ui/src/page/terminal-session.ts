@@ -300,7 +300,8 @@ export function useTerminalSession(
       } catch (error) {
         dispatch({ type: 'failed', error: errorMessage(error) })
       }
-      dispatch({ type: 'frame-applied', sequence: frame.sequence })
+      // The sequence lives in `active` (and the lease): nothing renders it,
+      // so a frame re-renders nothing.
     },
     [appendOutput, paneId, saveLease],
   )

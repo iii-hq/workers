@@ -3,7 +3,7 @@
    console's sandbox/parsers.ts when the shell function-trigger family
    moved into this worker's injected UI. */
 
-import { z } from 'zod'
+import * as z from 'zod'
 
 /** `engine/src/protocol.rs::StreamChannelRef` (untagged JSON object). */
 export const streamChannelRefSchema = z.object({

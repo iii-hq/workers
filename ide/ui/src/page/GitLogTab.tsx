@@ -155,7 +155,9 @@ export function GitLogTab({
   const [treeSel, setTreeSel] = useState<string | null>(null)
   const [commitSel, setCommitSel] = useState<string | null>(null)
   const [stored, setStored] = usePaneState<Layout>(`iii::shell-ui::git::${paneKey}`, LAYOUT)
-  const layout = normalize(stored)
+  // Normalized once per stored value: a fresh `expanded` array each render
+  // would rebuild the tree's open set, and every row with it.
+  const layout = useMemo(() => normalize(stored), [stored])
   const expanded = useMemo(() => new Set(layout.expanded), [layout.expanded])
   const [creating, setCreating] = useState<{ from: string; label: string } | null>(null)
   const [merging, setMerging] = useState<{ branch: string; wt: Worktree | null; draft: MergeDraft } | null>(null)

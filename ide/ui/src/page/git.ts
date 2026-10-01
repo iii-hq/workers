@@ -149,31 +149,56 @@ function execFailure(out: ExecResponse, operation: string): string | null {
   return null
 }
 
-async function probeRepository(host: Host, root: string): Promise<RepositoryState> {
-  try {
-    const probe = await git(host, root, ['rev-parse', '--is-inside-work-tree'])
-    const failure = execFailure(probe, 'git rev-parse')
-    if (failure !== null) {
-      // A normal non-zero rev-parse is the expected non-repository signal;
-      // timeout, truncation, signal termination, and safety failures are not.
-      if (
-        !probe.timed_out &&
-        !probe.stdout_truncated &&
-        !probe.stderr_truncated &&
-        probe.exit_code !== null &&
-        probe.exit_code !== 0
-      ) {
-        const detail = probe.stderr.trim()
-        if (detail === '' || detail.toLowerCase().includes('not a git repository')) {
-          return { kind: 'not-a-repo' }
-        }
-      }
-      return { kind: 'error', message: failure }
-    }
-    return probe.stdout.startsWith('true') ? { kind: 'ready' } : { kind: 'not-a-repo' }
-  } catch (error) {
-    return { kind: 'error', message: `git execution failed: ${errorMessage(error)}` }
+/** The repository probe, run beside the commands that need a repository: one
+    round trip instead of two or three. Outside a repository those commands
+    just fail, and the probe's verdict comes first. */
+async function probed(
+  host: Host,
+  root: string,
+  ...commands: string[][]
+): Promise<[RepositoryState & { prefix?: string }, ...PromiseSettledResult<ExecResponse>[]]> {
+  const [probe, ...rest] = await Promise.allSettled([
+    git(host, root, ['rev-parse', '--is-inside-work-tree', '--show-prefix']),
+    ...commands.map((args) => git(host, root, args)),
+  ])
+  if (probe.status === 'rejected') {
+    return [{ kind: 'error', message: `git execution failed: ${errorMessage(probe.reason)}` }, ...rest]
   }
+  const repository = repositoryOf(probe.value)
+  if (repository.kind !== 'ready') return [repository, ...rest]
+  // `true`, then the prefix: strip rev-parse's line terminator without
+  // corrupting a legal leading space in a directory name.
+  const out = probe.value.stdout
+  return [{ kind: 'ready', prefix: out.slice(out.indexOf('\n') + 1).replace(/\r?\n$/, '') }, ...rest]
+}
+
+/** A command that ran beside the probe: its reply, or its failure thrown. */
+function settled(result: PromiseSettledResult<ExecResponse> | undefined): ExecResponse {
+  if (result === undefined) throw new Error('git was not run')
+  if (result.status === 'rejected') throw result.reason
+  return result.value
+}
+
+function repositoryOf(probe: ExecResponse): RepositoryState {
+  const failure = execFailure(probe, 'git rev-parse')
+  if (failure !== null) {
+    // A normal non-zero rev-parse is the expected non-repository signal;
+    // timeout, truncation, signal termination, and safety failures are not.
+    if (
+      !probe.timed_out &&
+      !probe.stdout_truncated &&
+      !probe.stderr_truncated &&
+      probe.exit_code !== null &&
+      probe.exit_code !== 0
+    ) {
+      const detail = probe.stderr.trim()
+      if (detail === '' || detail.toLowerCase().includes('not a git repository')) {
+        return { kind: 'not-a-repo' }
+      }
+    }
+    return { kind: 'error', message: failure }
+  }
+  return probe.stdout.startsWith('true') ? { kind: 'ready' } : { kind: 'not-a-repo' }
 }
 
 async function checkedGit(
@@ -305,28 +330,22 @@ function recreatedAfterStagedDelete(entries: PorcelainEntry[]): Set<string> {
 }
 
 async function porcelainStatus(host: Host, root: string): Promise<PorcelainState> {
-  const repository = await probeRepository(host, root)
+  // `--untracked-files=all` lists new files individually; `--renames`
+  // makes the rename contract explicit rather than depending on config.
+  const [repository, status] = await probed(host, root, [
+    'status',
+    '--porcelain=v1',
+    '-z',
+    '--untracked-files=all',
+    '--renames',
+    '--',
+    '.',
+  ])
   if (repository.kind !== 'ready') return repository
+  const prefix = repository.prefix ?? ''
 
   try {
-    const prefixOut = await git(host, root, ['rev-parse', '--show-prefix'])
-    const prefixFailure = execFailure(prefixOut, 'git rev-parse --show-prefix')
-    if (prefixFailure !== null) return { kind: 'error', message: prefixFailure }
-    // Strip rev-parse's line terminator without corrupting a legal leading
-    // space in a directory name.
-    const prefix = prefixOut.stdout.replace(/\r?\n$/, '')
-
-    // `--untracked-files=all` lists new files individually; `--renames`
-    // makes the rename contract explicit rather than depending on config.
-    const out = await git(host, root, [
-      'status',
-      '--porcelain=v1',
-      '-z',
-      '--untracked-files=all',
-      '--renames',
-      '--',
-      '.',
-    ])
+    const out = settled(status)
     const statusFailure = execFailure(out, 'git status')
     if (statusFailure !== null) return { kind: 'error', message: statusFailure }
 
@@ -643,9 +662,15 @@ export async function gitComparison(
   if (scope === 'uncommitted') {
     return uncommittedComparison(host, root, state.prefix, state.entries)
   }
+  return comparisonFrom(state.entries, scope)
+}
 
+function comparisonFrom(
+  entries: readonly PorcelainEntry[],
+  scope: 'staged' | 'unstaged',
+): { kind: 'ready'; scope: GitComparisonScope; changes: GitComparisonEntry[] } {
   const changes: GitComparisonEntry[] = []
-  for (const entry of state.entries) {
+  for (const entry of entries) {
     const status = statusForScope(entry, scope)
     if (status === null || status === 'ignored') continue
     // `??` has no index side, and must not leak into the staged scope.
@@ -728,11 +753,18 @@ export async function gitRecentCommits(
   root: string,
   limit = 20,
 ): Promise<GitRecentCommitsState> {
-  const repository = await probeRepository(host, root)
+  const count = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.trunc(limit))) : 20
+  // The log runs beside HEAD's check: an unborn HEAD only fails it.
+  const [repository, headRun, logRun] = await probed(
+    host,
+    root,
+    ['rev-parse', '--verify', '--quiet', 'HEAD'],
+    ['log', `--max-count=${String(count)}`, '--format=%H%x00%s'],
+  )
   if (repository.kind !== 'ready') return repository
 
   try {
-    const head = await git(host, root, ['rev-parse', '--verify', '--quiet', 'HEAD'])
+    const head = settled(headRun)
     if (
       head.exit_code === 1 &&
       !head.timed_out &&
@@ -744,14 +776,7 @@ export async function gitRecentCommits(
     const headFailure = execFailure(head, 'git rev-parse HEAD')
     if (headFailure !== null) return { kind: 'error', message: headFailure }
 
-    const count = Number.isFinite(limit)
-      ? Math.max(1, Math.min(100, Math.trunc(limit)))
-      : 20
-    const out = await git(host, root, [
-      'log',
-      `--max-count=${String(count)}`,
-      '--format=%H%x00%s',
-    ])
+    const out = settled(logRun)
     const failure = execFailure(out, 'git log')
     if (failure !== null) return { kind: 'error', message: failure }
     const commits = parseCommitSummaries(out.stdout)
@@ -796,17 +821,17 @@ function parseRefs(stdout: string): GitRefSummary[] | string {
 /** Local and remote-tracking branch refs. Symbolic aliases such as
     `refs/remotes/origin/HEAD` are omitted so menu entries are unique. */
 export async function gitRefs(host: Host, root: string): Promise<GitRefsState> {
-  const repository = await probeRepository(host, root)
+  const [repository, refsRun] = await probed(host, root, [
+    'for-each-ref',
+    '--sort=refname',
+    '--format=%(refname)%00%(objectname)%00%(HEAD)%00%(symref)',
+    'refs/heads/',
+    'refs/remotes/',
+  ])
   if (repository.kind !== 'ready') return repository
 
   try {
-    const out = await git(host, root, [
-      'for-each-ref',
-      '--sort=refname',
-      '--format=%(refname)%00%(objectname)%00%(HEAD)%00%(symref)',
-      'refs/heads/',
-      'refs/remotes/',
-    ])
+    const out = settled(refsRun)
     const failure = execFailure(out, 'git for-each-ref')
     if (failure !== null) return { kind: 'error', message: failure }
     const refs = parseRefs(out.stdout)

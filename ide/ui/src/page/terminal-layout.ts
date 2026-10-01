@@ -427,7 +427,8 @@ export function reduceTerminalWorkspace(
     }
     case 'pane-focused': {
       const tab = findTabByPaneId(state, action.paneId)
-      if (!tab) return state
+      // A click in the pane that already has focus changes nothing.
+      if (!tab || (state.activeTabId === tab.id && state.focusedPaneId === action.paneId)) return state
       return {
         ...state,
         activeTabId: tab.id,

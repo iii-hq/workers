@@ -113,12 +113,28 @@ function parentListed(
   return true
 }
 
+/** A change that leaves the tree as it is: a modify of a path already there
+    with the same kind. */
+function settledIn(tree: FlatTree, change: TreeChange): boolean {
+  if (change.kind === 'deleted') return false
+  const rel = stripDirSlash(change.rel)
+  if (rel === '') return true
+  const kind = tree.kinds.get(rel)
+  if (kind === 'file') return change.dir !== true
+  if (kind === 'dir') return change.dir === true
+  // Unknown kinds are left alone below too; an unseen path may be a create.
+  return kind !== undefined
+}
+
 /** Apply a burst of watcher events. Creations add the path (and any
     missing ancestors); deletions drop it and, for a folder, everything
     beneath it. Modifications are metadata-only and leave the shape alone.
     Returns the same tree when nothing changed, so React state stays put. */
 export function applyTreeChanges(tree: FlatTree, changes: readonly TreeChange[]): FlatTree {
   if (changes.length === 0) return tree
+  // The common burst (a save, an agent's edits) only modifies files the tree
+  // knows already: nothing to copy.
+  if (changes.every((change) => settledIn(tree, change))) return tree
   const paths = [...tree.paths]
   const kinds = new Map(tree.kinds)
   const loaded = new Set(tree.loaded)
@@ -134,16 +150,20 @@ export function applyTreeChanges(tree: FlatTree, changes: readonly TreeChange[])
       const prefix = `${rel}/`
       const wasKnown = seen.has(fileMarker) || seen.has(dirMarker)
       if (!wasKnown) continue
+      // Only a folder has anything beneath it to sweep.
+      const wasDir = kinds.get(rel) === 'dir' || seen.has(dirMarker)
       seen.delete(fileMarker)
       seen.delete(dirMarker)
       kinds.delete(rel)
       loaded.delete(rel)
-      for (const key of [...kinds.keys()]) {
-        if (key.startsWith(prefix)) {
-          kinds.delete(key)
-          loaded.delete(key)
-          seen.delete(key)
-          seen.delete(`${key}/`)
+      if (wasDir) {
+        for (const key of [...kinds.keys()]) {
+          if (key.startsWith(prefix)) {
+            kinds.delete(key)
+            loaded.delete(key)
+            seen.delete(key)
+            seen.delete(`${key}/`)
+          }
         }
       }
       removedAny = true

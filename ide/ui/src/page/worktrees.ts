@@ -173,9 +173,15 @@ async function readWorktrees(host: Host, cwd: string): Promise<Worktree[]> {
 }
 
 export async function listWorktrees(host: Host, root: string): Promise<WorktreeList> {
-  const worktrees = await readWorktrees(host, root)
-  const defaultBranch = await findDefaultBranch(host, root)
-  const [branches] = await Promise.all([readBranches(host, root, defaultBranch), fillDirty(host, worktrees)])
+  // Two independent chains: the worktrees and their dirty marks, and the
+  // default branch and the branches counted against it.
+  const [worktrees, [defaultBranch, branches]] = await Promise.all([
+    readWorktrees(host, root).then(async (list) => {
+      await fillDirty(host, list)
+      return list
+    }),
+    findDefaultBranch(host, root).then(async (target) => [target, await readBranches(host, root, target)] as const),
+  ])
   await fillHeld(host, worktrees, new Set(branches.map((branch) => branch.name)))
   const byName = new Map(branches.map((branch) => [branch.name, branch]))
   for (const wt of worktrees) {
@@ -201,12 +207,16 @@ async function findDefaultBranch(host: Host, cwd: string): Promise<string | null
     'main',
     'master',
   ]
-  for (const name of names) {
-    if (name === '') continue
-    const local = await git(host, cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`])
-    if (local.exit_code === 0) return name
-  }
-  return null
+  // Which of them exist, in one read; the first in that order wins.
+  const wanted = [...new Set(names.filter((name) => name !== ''))]
+  const found = await git(host, cwd, [
+    'for-each-ref',
+    '--format=%(refname)',
+    ...wanted.map((name) => `refs/heads/${name}`),
+  ])
+  if (found.exit_code !== 0) return null
+  const present = new Set(found.stdout.split('\n'))
+  return wanted.find((name) => present.has(`refs/heads/${name}`)) ?? null
 }
 
 /** Every local branch in a single `for-each-ref`, the most recently

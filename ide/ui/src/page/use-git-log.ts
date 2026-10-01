@@ -242,9 +242,16 @@ export function useGitLog(
   // the file watcher does not see (it leaves `.git` out).
   useEffect(() => {
     if (!active) return
-    const onFocus = () => readRefsNow()
+    // Coming back fires both focus and visibilitychange: one read.
+    let last = 0
+    const once = () => {
+      if (Date.now() - last < 1000) return
+      last = Date.now()
+      readRefsNow()
+    }
+    const onFocus = once
     const onVisible = () => {
-      if (document.visibilityState === 'visible') readRefsNow()
+      if (document.visibilityState === 'visible') once()
     }
     window.addEventListener('focus', onFocus)
     document.addEventListener('visibilitychange', onVisible)

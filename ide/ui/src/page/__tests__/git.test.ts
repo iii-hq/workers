@@ -43,12 +43,7 @@ function mockedHost(...responses: Array<unknown | Error>) {
 }
 
 function repoHost(status: string, prefix = '', ...afterStatus: unknown[]) {
-  return mockedHost(
-    reply({ stdout: 'true\n' }),
-    reply({ stdout: prefix }),
-    reply({ stdout: status }),
-    ...afterStatus,
-  )
+  return mockedHost(reply({ stdout: `true\n${prefix}` }), reply({ stdout: status }), ...afterStatus)
 }
 
 function uncommittedHost(
@@ -106,7 +101,7 @@ describe('gitComparison', () => {
         },
       ],
     })
-    expect(trigger).toHaveBeenNthCalledWith(3, 'shell::exec', {
+    expect(trigger).toHaveBeenNthCalledWith(2, 'shell::exec', {
       command: 'git',
       args: ['--no-optional-locks', 
         'status',
@@ -385,11 +380,7 @@ describe('gitComparison', () => {
   })
 
   it('returns explicit errors for truncated and malformed status output', async () => {
-    const truncated = mockedHost(
-      reply({ stdout: 'true\n' }),
-      reply(),
-      reply({ stdout: ' M partial', stdout_truncated: true }),
-    )
+    const truncated = mockedHost(reply({ stdout: 'true\n' }), reply({ stdout: ' M partial', stdout_truncated: true }))
     await expect(gitComparison(truncated.host, '/repo', 'unstaged')).resolves.toEqual({
       kind: 'error',
       message: 'git status stdout was truncated',
@@ -537,15 +528,17 @@ describe('git metadata', () => {
   })
 
   it('returns no commits for an unborn repository', async () => {
+    // The log runs beside HEAD's check, and fails on an unborn HEAD.
     const { host, trigger } = mockedHost(
       reply({ stdout: 'true\n' }),
       reply({ exit_code: 1 }),
+      reply({ exit_code: 128, stderr: 'fatal: your current branch does not have any commits yet' }),
     )
     await expect(gitRecentCommits(host, '/repo')).resolves.toEqual({
       kind: 'ready',
       commits: [],
     })
-    expect(trigger).toHaveBeenCalledTimes(2)
+    expect(trigger).toHaveBeenCalledTimes(3)
   })
 
   it('lists local and remote refs while omitting symbolic remote HEAD aliases', async () => {

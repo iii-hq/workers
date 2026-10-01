@@ -84,7 +84,6 @@ describe('terminal session state', () => {
       error: null,
       notice: null,
       sessionId: 'session-1',
-      lastSequence: 0,
     })
   })
 

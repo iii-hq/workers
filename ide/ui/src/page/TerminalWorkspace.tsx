@@ -14,6 +14,7 @@ import {
 } from 'react'
 import { TerminalPane } from './TerminalPane'
 import {
+  clampSplitRatio,
   countTerminalPanes,
   MAX_TERMINAL_PANES_PER_TAB,
   MAX_TERMINAL_SESSIONS,
@@ -233,6 +234,17 @@ function TerminalSplit({
   const resize = (ratio: number) => {
     context.dispatch({ type: 'split-resized', splitId: node.id, ratio })
   }
+  // A drag moves the split here and tells the page once, on release.
+  const [dragRatio, setDragRatio] = useState<number | null>(null)
+  const dragRatioRef = useRef<number | null>(null)
+  const commitDrag = () => {
+    const next = dragRatioRef.current
+    if (next === null) return
+    dragRatioRef.current = null
+    resize(next)
+    setDragRatio(null)
+  }
+  const ratio = dragRatio ?? node.ratio
 
   const resizer = useSplitDrag<{ ratio: number; size: number }>({
     horizontal,
@@ -241,7 +253,11 @@ function TerminalSplit({
       const size = horizontal ? rect?.width : rect?.height
       return size ? { ratio: node.ratio, size } : null
     },
-    move: (origin, delta) => resize(origin.ratio + delta / origin.size),
+    move: (origin, delta) => {
+      const next = clampSplitRatio(origin.ratio + delta / origin.size)
+      dragRatioRef.current = next
+      setDragRatio(next)
+    },
     step: (direction) => resize(node.ratio + direction * 0.05),
   })
 
@@ -253,7 +269,7 @@ function TerminalSplit({
     >
       <div
         className="shui-terminal-split-child"
-        style={{ flexBasis: `${node.ratio * 100}%` }}
+        style={{ flexBasis: `${ratio * 100}%` }}
       >
         <TerminalLayoutView node={node.first} context={context} />
       </div>
@@ -266,8 +282,20 @@ function TerminalSplit({
         aria-orientation={horizontal ? 'vertical' : 'horizontal'}
         aria-valuemin={20}
         aria-valuemax={80}
-        aria-valuenow={Math.round(node.ratio * 100)}
+        aria-valuenow={Math.round(ratio * 100)}
         {...resizer}
+        onPointerUp={(event) => {
+          resizer.onPointerUp(event)
+          commitDrag()
+        }}
+        onPointerCancel={(event) => {
+          resizer.onPointerCancel(event)
+          commitDrag()
+        }}
+        onLostPointerCapture={(event) => {
+          resizer.onLostPointerCapture(event)
+          commitDrag()
+        }}
       />
       <div className="shui-terminal-split-child">
         <TerminalLayoutView node={node.second} context={context} />

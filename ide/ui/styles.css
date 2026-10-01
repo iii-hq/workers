@@ -1669,7 +1669,8 @@
   .shui-wt-menu-note.warn { color: var(--color-warn); }
 
   /* timeline view */
-  .shui-timeline-turn { display: flex; flex-direction: column; flex: none; }
+  /* a long history: turns out of view skip layout and paint */
+  .shui-timeline-turn { display: flex; flex-direction: column; flex: none; content-visibility: auto; contain-intrinsic-size: auto 120px; }
   .shui-timeline-turn-head {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;

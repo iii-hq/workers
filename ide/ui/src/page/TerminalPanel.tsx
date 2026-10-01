@@ -6,7 +6,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { type Dispatch, useRef } from 'react'
+import { type Dispatch, memo, useRef } from 'react'
 import { DockPanel } from './DockPanel'
 import type { TerminalDock } from './persist'
 import {
@@ -97,7 +97,7 @@ function DockActions({
   )
 }
 
-export function TerminalPanel(props: TerminalPanelProps) {
+function TerminalPanelView(props: TerminalPanelProps) {
   const { dock, size, onDockChange, onSizeChange, onClose, narrow } = props
   const workspaceRef = useRef<TerminalWorkspaceHandle>(null)
 
@@ -136,3 +136,6 @@ export function TerminalPanel(props: TerminalPanelProps) {
     </DockPanel>
   )
 }
+
+/** Memoized: the page re-renders often, and this only when its props change. */
+export const TerminalPanel = memo(TerminalPanelView)

@@ -23,7 +23,7 @@ import {
   GitBranch,
   Tag,
 } from 'lucide-react'
-import { type CSSProperties, useId, useMemo, useState } from 'react'
+import { type CSSProperties, useDeferredValue, useId, useMemo, useState } from 'react'
 import { glyphOf } from './CommitGraph'
 import type { ContextMenuAnchor } from './ContextMenu'
 import type { RefTreeNode } from './git-log-window'
@@ -100,7 +100,9 @@ export function GitBranchTree({
   onRename?(node: RefTreeNode): void
 }) {
   const [query, setQuery] = useState('')
-  const rows = useMemo(() => visibleRows(nodes, expanded, query), [nodes, expanded, query])
+  // The field answers each key at once; the tree follows when it can.
+  const shownQuery = useDeferredValue(query)
+  const rows = useMemo(() => visibleRows(nodes, expanded, shownQuery), [nodes, expanded, shownQuery])
   const domId = useId()
   const nav = useRowNav<Row>({
     items: rows,

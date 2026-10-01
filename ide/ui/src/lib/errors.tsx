@@ -3,7 +3,7 @@
    function-trigger family moved into this worker's injected UI. */
 
 import { Badge, Eyebrow, TerminalStream } from '@iii-dev/console-ui'
-import { z } from 'zod'
+import * as z from 'zod'
 import type {
   DispatchDenial,
   ErrorDisplay,

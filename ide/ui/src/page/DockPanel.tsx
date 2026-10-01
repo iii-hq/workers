@@ -56,7 +56,11 @@ export function DockPanel({
   const panelRef = useRef<HTMLElement>(null)
   const [resizeBounds, setResizeBounds] = useState({ size, max: 1200 })
   const docked = dock !== 'editor' && !maximized
-  const style = maximized || (narrow && dock === 'right') ? undefined : dockStyle(dock, size)
+  // A drag sizes the panel here and tells the page once, on release: the
+  // page re-rendering on every pointer move would redraw everything else.
+  const [dragSize, setDragSize] = useState<number | null>(null)
+  const dragSizeRef = useRef<number | null>(null)
+  const style = maximized || (narrow && dock === 'right') ? undefined : dockStyle(dock, dragSize ?? size)
 
   useEffect(() => {
     const panel = panelRef.current
@@ -106,13 +110,25 @@ export function DockPanel({
       const panel = event.currentTarget.parentElement
       return { startSize: currentSizeOf(panel), maxSize: maxSizeOf(panel?.parentElement) }
     },
-    move: (origin, delta) => onSizeChange(clampSize(origin.startSize - delta, origin.maxSize)),
+    move: (origin, delta) => {
+      const next = clampSize(origin.startSize - delta, origin.maxSize)
+      dragSizeRef.current = next
+      setDragSize(next)
+    },
     // Up/Left grow the panel: its free edge faces the start of the axis.
     step: (direction, event) => {
       const panel = event.currentTarget.parentElement
       onSizeChange(clampSize(currentSizeOf(panel) + (direction === -1 ? 16 : -16), maxSizeOf(panel?.parentElement)))
     },
   })
+
+  const commitDrag = () => {
+    const next = dragSizeRef.current
+    if (next === null) return
+    dragSizeRef.current = null
+    onSizeChange(next)
+    setDragSize(null)
+  }
 
   return (
     <section
@@ -130,6 +146,18 @@ export function DockPanel({
           tabIndex={0}
           className="shui-terminal-resize"
           {...resizer}
+          onPointerUp={(event) => {
+            resizer.onPointerUp(event)
+            commitDrag()
+          }}
+          onPointerCancel={(event) => {
+            resizer.onPointerCancel(event)
+            commitDrag()
+          }}
+          onLostPointerCapture={(event) => {
+            resizer.onLostPointerCapture(event)
+            commitDrag()
+          }}
           aria-label={`Resize ${dock} ${noun}`}
           aria-orientation={dock === 'bottom' ? 'horizontal' : 'vertical'}
           aria-valuemin={160}

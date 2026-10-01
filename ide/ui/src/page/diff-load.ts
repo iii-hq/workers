@@ -140,6 +140,12 @@ export async function loadTurnDiff(
   }
   let note: DiffNote | undefined
   let oldSide: string | null
+  // The working copy, when the new side needs it, is read beside the old
+  // side's lookup rather than after it.
+  const keptAfter = file.after ? preImageBody(file.after) : null
+  const worktreeRead = file.kind !== 'deleted' && keptAfter === null ? worktreeSide(host, root, rel) : null
+  // An early return below leaves it unread: its failure is nobody's then.
+  worktreeRead?.catch(() => {})
   if (file.before == null && file.kind === 'created') {
     // A creation the watcher saw: no stored pre-image, but the file did
     // not exist before the turn.
@@ -176,12 +182,13 @@ export async function loadTurnDiff(
   let worktreeRevision: string | undefined
   if (file.kind === 'deleted') {
     newSide = ''
-  } else if (file.after) {
-    newSide = preImageBody(file.after)
-    if (newSide === null) {
-      const current = await worktreeSide(host, root, rel)
-      newSide = current.contents
-      worktreeRevision = current.revision
+  } else if (keptAfter !== null) {
+    newSide = keptAfter
+  } else if (worktreeRead !== null) {
+    const current = await worktreeRead
+    newSide = current.contents
+    worktreeRevision = current.revision
+    if (file.after) {
       note = note ?? {
         headline: 'Showing the working copy',
         detail: 'The body after this turn was not kept, so edits made since the turn show up here too.',
@@ -189,9 +196,7 @@ export async function loadTurnDiff(
       }
     }
   } else {
-    const current = await worktreeSide(host, root, rel)
-    newSide = current.contents
-    worktreeRevision = current.revision
+    newSide = ''
   }
   return { oldContents: oldSide, newContents: newSide ?? '', note, worktreeRevision }
 }

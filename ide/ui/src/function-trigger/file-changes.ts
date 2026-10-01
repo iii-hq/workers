@@ -1,5 +1,5 @@
 import type { PanelOpenRequest } from '@iii-dev/console-ui'
-import { z } from 'zod'
+import * as z from 'zod'
 
 const CREATE_ID = 'coder::create-file'
 const UPDATE_ID = 'coder::update-file'

@@ -41,7 +41,7 @@ import {
   WholeWord,
   WrapText,
 } from 'lucide-react'
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { Breadcrumbs } from './Breadcrumbs'
 import { diffLines, diffTotals } from './diff'
 import type { DiffContents, DiffNote } from './diff-load'
@@ -349,31 +349,29 @@ export function DiffTab({
                 change={wholeFile}
                 lines={wholeFile === 'deleted' ? (totals?.del ?? 0) : (totals?.add ?? 0)}
               >
-                <FileDiff
+                <StableFileDiff
                   key="whole-file"
-                  oldFile={{ name: path, contents: contents.oldContents }}
-                  newFile={{ name: path, contents: contents.newContents }}
+                  path={path}
+                  oldContents={contents.oldContents}
+                  newContents={contents.newContents}
                   diffStyle="unified"
-                  overflow={options.wordWrap ? 'wrap' : 'scroll'}
-                  lineDiffType="none"
-                  ignoreWhitespace={options.hideWhitespace}
+                  wordWrap={options.wordWrap}
+                  wordDiffs={false}
+                  hideWhitespace={options.hideWhitespace}
                   expandUnchanged={options.expandUnchanged}
-                  disableFileHeader
-                  className="shui-review-diff"
                 />
               </WholeFileSplit>
             ) : (
-              <FileDiff
+              <StableFileDiff
                 key={options.diffStyle}
-                oldFile={{ name: path, contents: contents.oldContents }}
-                newFile={{ name: path, contents: contents.newContents }}
+                path={path}
+                oldContents={contents.oldContents}
+                newContents={contents.newContents}
                 diffStyle={options.diffStyle}
-                overflow={options.wordWrap ? 'wrap' : 'scroll'}
-                lineDiffType={options.wordDiffs ? 'word-alt' : 'none'}
-                ignoreWhitespace={options.hideWhitespace}
+                wordWrap={options.wordWrap}
+                wordDiffs={options.wordDiffs}
+                hideWhitespace={options.hideWhitespace}
                 expandUnchanged={options.expandUnchanged}
-                disableFileHeader
-                className="shui-review-diff"
               />
             )}
           </>
@@ -382,6 +380,43 @@ export function DiffTab({
     </div>
   )
 }
+
+/** The console's FileDiff re-diffs both bodies whenever its file objects
+    are new, which an inline `{ name, contents }` is on every render: this
+    takes the plain values, so an unchanged diff skips the render. */
+const StableFileDiff = memo(function StableFileDiff({
+  path,
+  oldContents,
+  newContents,
+  diffStyle,
+  wordWrap,
+  wordDiffs,
+  hideWhitespace,
+  expandUnchanged,
+}: {
+  path: string
+  oldContents: string
+  newContents: string
+  diffStyle: 'split' | 'unified'
+  wordWrap: boolean
+  wordDiffs: boolean
+  hideWhitespace: boolean
+  expandUnchanged: boolean
+}) {
+  return (
+    <FileDiff
+      oldFile={{ name: path, contents: oldContents }}
+      newFile={{ name: path, contents: newContents }}
+      diffStyle={diffStyle}
+      overflow={wordWrap ? 'wrap' : 'scroll'}
+      lineDiffType={wordDiffs ? 'word-alt' : 'none'}
+      ignoreWhitespace={hideWhitespace}
+      expandUnchanged={expandUnchanged}
+      disableFileHeader
+      className="shui-review-diff"
+    />
+  )
+})
 
 /** A caveat above a diff that still renders: the console's status row,
     warn when the diff shows more or less than the source promises. */

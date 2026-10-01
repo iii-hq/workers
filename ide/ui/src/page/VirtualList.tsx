@@ -48,7 +48,9 @@ export function VirtualList<T>({
   keepIndex = null,
 }: VirtualListProps<T>) {
   const viewportRef = useRef<HTMLDivElement>(null)
-  const [scrollTop, setScrollTop] = useState(0)
+  // The first row in view, not the pixel offset: a scroll within a row
+  // renders nothing.
+  const [topRow, setTopRow] = useState(0)
   const [height, setHeight] = useState(0)
 
   useLayoutEffect(() => {
@@ -61,6 +63,12 @@ export function VirtualList<T>({
     return () => observer.disconnect()
   }, [])
 
+  // A new row height (a narrow pane's two-line rows) moves the first row.
+  useLayoutEffect(() => {
+    const el = viewportRef.current
+    if (el) setTopRow(Math.floor(el.scrollTop / rowHeight))
+  }, [rowHeight])
+
   useEffect(() => {
     const el = viewportRef.current
     if (!el || scrollToIndex === null || scrollToIndex < 0) return
@@ -71,8 +79,8 @@ export function VirtualList<T>({
   }, [scrollToIndex, rowHeight])
 
   const total = rows.length * rowHeight
-  const first = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan)
-  const last = Math.min(rows.length, Math.ceil((scrollTop + height) / rowHeight) + overscan)
+  const first = Math.max(0, topRow - overscan)
+  const last = Math.min(rows.length, topRow + Math.ceil(height / rowHeight) + 1 + overscan)
   const rangeRef = useRef(onRangeChange)
   rangeRef.current = onRangeChange
   useEffect(() => {
@@ -103,7 +111,7 @@ export function VirtualList<T>({
         else if (listRef) (listRef as React.MutableRefObject<HTMLDivElement | null>).current = node
       }}
       className={className ? `shui-vlist ${className}` : 'shui-vlist'}
-      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      onScroll={(event) => setTopRow(Math.floor(event.currentTarget.scrollTop / rowHeight))}
       role={role}
       aria-label={ariaLabel}
       aria-activedescendant={activeDescendant}

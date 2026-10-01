@@ -400,7 +400,8 @@ export function EditorPane({
     setGotoValue('')
   }
 
-  const lineCount = ready ? draft.split('\n').length : 0
+  // Counted, not split: a split allocates a string per line on every keystroke.
+  const lineCount = useMemo(() => (ready ? countLines(draft) : 0), [ready, draft])
   const loadingLabel =
     pane.phase === 'loading' && pane.progress
       ? `loading image ${formatBytes(pane.progress.received)} of ${formatBytes(pane.progress.total)}…`
@@ -564,4 +565,10 @@ export function EditorPane({
       </div>
     </div>
   )
+}
+
+function countLines(text: string): number {
+  let lines = 1
+  for (let at = text.indexOf('\n'); at !== -1; at = text.indexOf('\n', at + 1)) lines += 1
+  return lines
 }

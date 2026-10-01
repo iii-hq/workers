@@ -76,8 +76,9 @@ export function useHead(host: Host, dir: string | null, refreshKey: string): Hea
       if (cancelled || mine !== latest || reads === null) return
       setProbe({ dir, head: parseHead(...reads) })
     }
+    // Coming back to the tab fires both focus and visibilitychange: one read.
     const reread = () => {
-      if (document.visibilityState === 'visible') void read()
+      if (document.visibilityState === 'visible' && Date.now() - lastRead > 1000) void read()
     }
     // A branch switched right after a read is still read once the wait ends.
     let trailing: ReturnType<typeof setTimeout> | null = null

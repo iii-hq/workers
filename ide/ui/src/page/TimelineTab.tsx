@@ -8,7 +8,7 @@
 
 import { ConfirmDialog, EmptyState, IconButton } from '@iii-dev/console-ui'
 import { Bot, ChevronDown, ChevronRight, FolderTree, List, RefreshCw, Undo2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useState } from 'react'
 import { ChangeEntries } from './ChangeEntries'
 import { readScmViewMode, relativeDisplayPath, writeScmViewMode } from './scm-view'
 import { FileTypeIcon } from './file-type-icon'
@@ -65,7 +65,7 @@ type PendingRevert =
   | { kind: 'turn'; turnId: string; title: string; count: number }
   | { kind: 'file'; turnId: string; path: string }
 
-export function TimelineTab({
+function TimelineTabView({
   turns,
   root,
   hasSession,
@@ -80,6 +80,8 @@ export function TimelineTab({
   onRevertTurn,
   onRevertFile,
 }: TimelineTabProps) {
+  // Stable, so each turn's file tree is built once, not on every render.
+  const pathOf = useCallback((file: { path: string }) => relativeToRoot(file.path, root), [root])
   const [viewMode, setViewMode] = useState(() => readScmViewMode(VIEW_STORAGE_KEY))
   const toggleViewMode = () => {
     const next = viewMode === 'list' ? 'tree' : 'list'
@@ -176,7 +178,7 @@ export function TimelineTab({
                     {turn.files.length === 0 ? (
                       <div className="shui-scm-empty">{running ? 'no file changes yet' : 'no file changes'}</div>
                     ) : (
-                      <ChangeEntries entries={turn.files} mode={viewMode} outsideRoot={root} getPath={(file) => relativeToRoot(file.path, root)} renderEntry={(file, depth) => {
+                      <ChangeEntries entries={turn.files} mode={viewMode} outsideRoot={root} getPath={pathOf} renderEntry={(file, depth) => {
                         const rel = relativeToRoot(file.path, root)
                         const shown = rel ?? relativeDisplayPath(file.path, root)
                         const agentName = file.agent ? (file.agent.name ?? 'sub-agent') : null
@@ -274,3 +276,6 @@ export function TimelineTab({
     </div>
   )
 }
+
+/** Memoized: the page re-renders often, and this only when its props change. */
+export const TimelineTab = memo(TimelineTabView)

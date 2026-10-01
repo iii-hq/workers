@@ -7,7 +7,7 @@
 import type { Host, LiveAnnouncement } from '@iii-dev/console-ui'
 import { LiveRegion, Tabs, TabsContent, TabsList, TabsTrigger, Toolbar, Tooltip } from '@iii-dev/console-ui'
 import { Minus } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { GitLogTab } from './GitLogTab'
 import { GitWorktreesTab } from './GitWorktreesTab'
 import type { CommitDetails, CommitFile } from './git-log-window'
@@ -16,7 +16,7 @@ import { DeleteBranchDialog, RemoveWorktreeDialog, WARNING } from './WorktreeFor
 
 export type GitTab = 'log' | 'worktrees'
 
-export function GitToolWindow({
+function GitToolWindowView({
   host,
   root,
   page,
@@ -156,3 +156,6 @@ export function GitToolWindow({
     </div>
   )
 }
+
+/** Memoized: the page re-renders often, and this only when its props change. */
+export const GitToolWindow = memo(GitToolWindowView)

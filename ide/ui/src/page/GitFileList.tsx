@@ -3,6 +3,7 @@
    group, their folders named from the IDE's (`../ide/src`), as in the
    Timeline. A double click or Enter opens the file's diff. */
 
+import { useMemo } from 'react'
 import { ChangeEntries } from './ChangeEntries'
 import { statusLetter, statusTitle } from './git-actions'
 import type { CommitFile } from './git-log-window'
@@ -22,13 +23,15 @@ export function GitFileList({
   onOpen(file: CommitFile): void
 }) {
   const base = top ?? ''
+  // Kept while the files are: ChangeEntries rebuilds its tree on new entries.
+  const entries = useMemo(() => files.map((file) => ({ path: `${base}/${file.path}`, file })), [files, base])
   return (
     <div className="shui-git-file-list">
       <ChangeEntries
         // The outside group reads absolute paths.
-        entries={files.map((file) => ({ path: `${base}/${file.path}`, file }))}
+        entries={entries}
         mode="tree"
-        getPath={(entry) => entry.file.rel}
+        getPath={relOf}
         outsideRoot={`${base}/${prefix.replace(/\/$/, '')}`}
         renderEntry={({ file }, depth) => (
           <button
@@ -51,3 +54,5 @@ export function GitFileList({
     </div>
   )
 }
+
+const relOf = (entry: { file: CommitFile }) => entry.file.rel

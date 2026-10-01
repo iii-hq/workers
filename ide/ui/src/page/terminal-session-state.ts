@@ -14,7 +14,6 @@ export interface TerminalSessionState {
   error: string | null
   notice: string | null
   sessionId: string | null
-  lastSequence: number
 }
 
 export const REPLAY_TRUNCATION_NOTICE =
@@ -44,10 +43,6 @@ export type TerminalSessionAction =
   | {
       type: 'connecting'
       cwd: string
-    }
-  | {
-      type: 'frame-applied'
-      sequence: number
     }
   | {
       type: 'failed'
@@ -136,7 +131,6 @@ export function createTerminalSessionState(root: string): TerminalSessionState {
     error: null,
     notice: null,
     sessionId: null,
-    lastSequence: 0,
   }
 }
 
@@ -179,11 +173,6 @@ export function reduceTerminalSessionState(
       }
     case 'connecting':
       return createTerminalSessionState(action.cwd)
-    case 'frame-applied':
-      return {
-        ...state,
-        lastSequence: Math.max(state.lastSequence, action.sequence),
-      }
     case 'failed':
       return {
         ...state,

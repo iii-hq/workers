@@ -9,7 +9,7 @@
    importable from parsers.ts and its node-run tests without touching
    `@iii-dev/console-ui`, whose module entry throws outside the console. */
 
-import { z } from 'zod'
+import * as z from 'zod'
 import {
   collectErrorCandidates,
   contentBlocksText,
