@@ -116,7 +116,7 @@ impl StateAdapter for KvStoreAdapter {
     }
     async fn delete(&self, scope: &str, key: &str) -> anyhow::Result<()> {
         self.storage
-            .delete(scope.to_string(), key.to_string())
+            .remove_shared(scope.to_string(), key.to_string())
             .await;
         Ok(())
     }

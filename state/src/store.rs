@@ -445,7 +445,7 @@ impl KvStore {
             .map(|value| StateValue(Arc::clone(value)))
     }
 
-    pub async fn delete(&self, index: String, key: String) -> StreamDeleteResult {
+    pub(crate) async fn remove_shared(&self, index: String, key: String) -> Option<Arc<Value>> {
         let (removed, dirty_op) = {
             let mut store = self.store.write().await;
             let index_map = store.get_mut(&index);
@@ -461,18 +461,13 @@ impl KvStore {
                 } else {
                     None
                 };
-                (
-                    StreamDeleteResult {
-                        old_value: removed.map(Arc::unwrap_or_clone),
-                    },
-                    dirty_op,
-                )
+                (removed, dirty_op)
             } else {
-                (StreamDeleteResult { old_value: None }, None)
+                (None, None)
             }
         };
 
-        if removed.old_value.is_some()
+        if removed.is_some()
             && self.file_store_dir.is_some()
             && let Some(dirty_op) = dirty_op
         {
@@ -480,6 +475,13 @@ impl KvStore {
         }
 
         removed
+    }
+
+    pub async fn delete(&self, index: String, key: String) -> StreamDeleteResult {
+        let removed = self.remove_shared(index, key).await;
+        StreamDeleteResult {
+            old_value: removed.map(Arc::unwrap_or_clone),
+        }
     }
 
     /// Swap `key` from `expected` to `value`, atomically. Returns the observed

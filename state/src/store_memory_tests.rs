@@ -785,6 +785,37 @@ async fn get_crosses_unchanged_sdk_as_original_json_for_every_value_kind() {
         schemars::schema_for!(StateValue).schema,
         schemars::schema_for!(Value).schema
     );
+    assert_eq!(
+        serde_json::to_value(schemars::schema_for!(Option<StateValue>)).unwrap(),
+        serde_json::to_value(schemars::schema_for!(Option<Value>)).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(schemars::schema_for!(Vec<StateValue>)).unwrap(),
+        serde_json::to_value(schemars::schema_for!(Vec<Value>)).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn shared_removal_preserves_held_snapshot_without_cloning() {
+    let store = in_memory_store();
+    let value = serde_json::json!({"payload":"x".repeat(1024 * 1024)});
+    store.set("s".into(), "k".into(), value.clone()).await;
+
+    let held = store.get("s".into(), "k".into()).await.unwrap();
+    let removed = store
+        .remove_shared("s".into(), "k".into())
+        .await
+        .expect("existing key must be removed");
+
+    assert!(Arc::ptr_eq(&held.0, &removed));
+    assert_eq!(held.as_ref(), &value);
+    assert!(store.get("s".into(), "k".into()).await.is_none());
+    assert!(
+        store
+            .remove_shared("s".into(), "missing".into())
+            .await
+            .is_none()
+    );
 }
 
 #[tokio::test]

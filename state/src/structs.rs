@@ -81,6 +81,9 @@ impl JsonSchema for StateValue {
     fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
         <Value as JsonSchema>::json_schema(generator)
     }
+    fn is_referenceable() -> bool {
+        <Value as JsonSchema>::is_referenceable()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
