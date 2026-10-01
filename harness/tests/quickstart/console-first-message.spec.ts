@@ -3,7 +3,7 @@ import path from 'node:path'
 import { expect, type Locator, type Page, test } from '@playwright/test'
 
 const ANTHROPIC_MODEL_ID = 'claude-sonnet-5'
-const ANTHROPIC_MODEL_LABEL = /claude[\s-]+sonnet[\s-]+5/i
+const ANTHROPIC_MODEL_LABEL = /^claude[\s-]+sonnet[\s-]+5$/i
 const OPENAI_MODEL_ID = 'gpt-5.6-luna'
 const OPENAI_MODEL_LABEL = /gpt[\s-]*5\.6[\s-]*luna/i
 
