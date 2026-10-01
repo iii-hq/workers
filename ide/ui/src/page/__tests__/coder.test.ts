@@ -34,6 +34,17 @@ describe('flattenTree', () => {
     ])
   })
 
+  it("lists dot entries but leaves git's own folder out", () => {
+    const flat = flattenTree(
+      node('r', 'dir', [
+        node('.git', 'dir', []),
+        node('.github', 'dir', []),
+        node('.gitignore', 'file'),
+      ]),
+    )
+    expect(flat.paths).toEqual(['.github/', '.gitignore'])
+  })
+
   it('keys kinds by the slash-less path (the open-on-select gate)', () => {
     const flat = flattenTree(
       node('r', 'dir', [node('a', 'dir', [node('b.ts', 'file')])]),

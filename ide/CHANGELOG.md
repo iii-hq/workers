@@ -152,6 +152,12 @@
 
 ### Changed
 
+- **Dot entries show in the explorer by default** (`.github`, `.gitignore`,
+  `.cargo`…), as in other IDEs; the eye in the header still hides them, and
+  git's own `.git` folder stays out. The choice is saved as `hideDotfiles`;
+  a saved `showHidden: false` from before was only the old default and no
+  longer hides them.
+
 - **Renamed: `shell` → `ide`.** The worker name, binary, Cargo package and
   registry entry carry the new name and dependents pin `ide`; the `shell::*`
   function ids, the `shell::changed` trigger, the `shell` configuration entry,

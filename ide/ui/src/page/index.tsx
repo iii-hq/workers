@@ -305,7 +305,8 @@ export function ShellExplorerPage({
   // ── workspace data ──
   // Dot entries are filtered by default (Finder/VS Code convention) —
   // in home-shaped folders they otherwise crowd out every visible name.
-  const [showHidden, setShowHidden] = useState(false)
+  // Dot entries show, as in other IDEs; the eye in the header hides them.
+  const [showHidden, setShowHidden] = useState(true)
   const [git, setGit] = useState<GitState | null>(null)
   // Bumps after a git refresh while Source Control shows: its Commit, Stash
   // and History tabs re-read on it (opening the view reads anyway).
@@ -495,7 +496,7 @@ export function ShellExplorerPage({
           setTabs(restoreTabs(slice.open, slice.active))
           setExpanded(slice.expanded)
         }
-        setShowHidden(restored.showHidden ?? false)
+        setShowHidden(!(restored.hideDotfiles ?? false))
         if (isSideView(restored.sideView)) setSideTab(restored.sideView)
         if (restored.diffOptions) setDiffOptions({ ...DEFAULT_DIFF_OPTIONS, ...restored.diffOptions })
         if (restored.terminalOpen) setTerminalOpen(true)
@@ -1274,7 +1275,7 @@ export function ShellExplorerPage({
       open: slice.open,
       active: slice.active,
       expanded,
-      showHidden,
+      hideDotfiles: showHidden ? undefined : true,
       sideView: sideTab,
       diffOptions,
       terminalOpen,

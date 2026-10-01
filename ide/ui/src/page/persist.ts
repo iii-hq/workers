@@ -52,8 +52,9 @@ export interface TabUiState {
   /** The active sidebar view; absent in legacy saves = explorer. */
   sideView?: string
   diffOptions?: Partial<DiffOptions>
-  /** Files-tab dot-entries toggle; absent in legacy saves = hidden. */
-  showHidden?: boolean
+  /** Files-tab dot entries hidden; absent = shown. It replaces `showHidden`,
+      whose saved `false` was only the old default, never a choice. */
+  hideDotfiles?: boolean
   /** Sidebar width in px from the drag handle; absent = default. */
   sideWidth?: number
   /** Dockable terminal panel; absent in legacy saves = closed at bottom. */
@@ -163,8 +164,8 @@ export async function loadTabUiState(
       raw.diffOptions && typeof raw.diffOptions === 'object' && !Array.isArray(raw.diffOptions)
         ? (raw.diffOptions as Partial<DiffOptions>)
         : undefined,
-    showHidden:
-      typeof raw.showHidden === 'boolean' ? raw.showHidden : undefined,
+    hideDotfiles:
+      typeof raw.hideDotfiles === 'boolean' ? raw.hideDotfiles : undefined,
     sideWidth: typeof raw.sideWidth === 'number' ? raw.sideWidth : undefined,
     terminalOpen,
     terminalDock:
