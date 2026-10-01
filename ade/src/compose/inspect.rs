@@ -266,8 +266,19 @@ mod tests {
         run(&["init", "-q", "-b", "main"]);
         run(&["add", "."]);
         run(&["commit", "-q", "-m", "init"]);
-        run(&["worktree", "add", "-q", "-b", "feat/x", root.path().join("wt").to_str().unwrap()]);
-        std::fs::write(worker.join("iii.worker.yaml"), "name: web\nlanguage: rust\n").unwrap();
+        run(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat/x",
+            root.path().join("wt").to_str().unwrap(),
+        ]);
+        std::fs::write(
+            worker.join("iii.worker.yaml"),
+            "name: web\nlanguage: rust\n",
+        )
+        .unwrap();
 
         let found = inspect(&InspectInput {
             path: worker.to_string_lossy().into_owned(),
