@@ -42,14 +42,14 @@ export function mergeChats(previous: ChatView[], incoming: ChatView[]): ChatView
 }
 
 const KIND_LABELS: Record<string, string> = {
-  image: 'Imagem', video: 'Vídeo', audio: 'Áudio', document: 'Documento', sticker: 'Figurinha',
-  contact: 'Contato', location: 'Localização', reaction: 'Reação', poll: 'Enquete', unknown: 'Mensagem',
-  edited: 'Mensagem editada', revoked: 'Mensagem removida', deleted: 'Mensagem removida',
-  expired: 'Mensagem expirada', ephemeral: 'Mensagem temporária', view_once: 'Mensagem de visualização única',
-  system: 'Aviso', text: 'Mensagem sem texto',
+  image: 'Image', video: 'Video', audio: 'Audio', document: 'Document', sticker: 'Sticker',
+  contact: 'Contact', location: 'Location', reaction: 'Reaction', poll: 'Poll', unknown: 'Message',
+  edited: 'Edited message', revoked: 'Deleted message', deleted: 'Deleted message',
+  expired: 'Expired message', ephemeral: 'Disappearing message', view_once: 'View-once message',
+  system: 'Notice', text: 'Message without text',
 }
 export function messageLabel(message: MessageView): string {
-  return message.text?.trim() ? message.text : KIND_LABELS[message.kind] ?? 'Mensagem sem prévia'
+  return message.text?.trim() ? message.text : KIND_LABELS[message.kind] ?? 'Message without a preview'
 }
 
 export function isMediaMessage(message: MessageView): boolean {
@@ -63,19 +63,19 @@ export function identityLabel(jid: string): string {
 
 export function coverageText(coverage: Coverage): string {
   const received = coverage.last_history_sync_at_ms
-    ? 'Mensagens capturadas e histórico recebido do WhatsApp.'
-    : 'Mensagens capturadas nesta sessão; aguardando histórico disponível do WhatsApp.'
+    ? 'Captured messages and history received from WhatsApp.'
+    : 'Messages captured in this session; awaiting available history from WhatsApp.'
   return coverage.retention_truncated
-    ? `${received} As mais antigas foram removidas pelo limite de ${coverage.message_limit.toLocaleString('pt-BR')} mensagens por sessão.`
+    ? `${received} Older messages were removed because of the ${coverage.message_limit.toLocaleString('en-US')}-message limit per session.`
     : received
 }
 
 export function messageStatus(status: string | null | undefined): string {
   if (!status) return ''
   const known: Record<string, string> = {
-    sent: 'Enviada', submitted: 'Submetida', delivered: 'Entregue', delivery: 'Entregue',
-    read: 'Lida', played: 'Reproduzida', pending: 'Pendente', error: 'Falha no envio', failed: 'Falha no envio',
-    server_ack: 'Recebida pelo servidor',
+    sent: 'Sent', submitted: 'Submitted', delivered: 'Delivered', delivery: 'Delivered',
+    read: 'Read', played: 'Played', pending: 'Pending', error: 'Send failed', failed: 'Send failed',
+    server_ack: 'Received by the server',
   }
   return known[status] ?? status
 }

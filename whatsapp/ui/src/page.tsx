@@ -1,4 +1,4 @@
-import { Button, EmptyState, IconButton, Input, PageHeader, PageShell, Select, SettingsField, Skeleton, StatusBar, StatusPanel, Tabs, TabsContent, TabsList, TabsTrigger, Toolbar, useConfirm, type Host, type PageRenderProps } from '@iii-dev/console-ui'
+import { Button, EmptyState, IconButton, Input, PageHeader, PageShell, Select, SettingsField, Skeleton, StatusBar, StatusPanel, Tabs, TabsContent, TabsList, TabsTrigger, useConfirm, type Host, type PageRenderProps } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState, useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { Cable, MessageCircle, Plus, RefreshCw, Users } from 'lucide-react'
@@ -48,7 +48,7 @@ export function WhatsAppPage({ host, configurationId, paneId, tabId, panelSide, 
     if (selected === null && list.data?.length) setSelected((list.data.find((item) => item.status === 'connected') ?? list.data[0]).session_id)
   }, [list.data, selected, setSelected])
   const onDirty = useCallback((next: boolean) => setDetailDirty(next), [])
-  useEffect(() => { setDirty?.(dirty ? 'Mensagem do WhatsApp' : false); return () => setDirty?.(false) }, [setDirty, dirty])
+  useEffect(() => { setDirty?.(dirty ? 'WhatsApp message' : false); return () => setDirty?.(false) }, [setDirty, dirty])
   useEffect(() => { if (showCreate) newIdRef.current?.focus() }, [showCreate])
   useEffect(() => {
     if (session?.status === 'logged_out') { setChat(null); setDetailDirty(false) }
@@ -59,7 +59,7 @@ export function WhatsAppPage({ host, configurationId, paneId, tabId, panelSide, 
     busy.current = true
     const current = scope.current.begin()
     try {
-      const accepted = !dirty || await confirm({ title: 'Descartar o rascunho da mensagem?', description: 'Ao sair desta conversa, o texto ainda não enviado será descartado. Se um envio já foi solicitado, ele poderá ser concluído.', confirmLabel: 'Descartar rascunho', cancelLabel: 'Continuar editando' })
+      const accepted = !dirty || await confirm({ title: 'Discard this draft?', description: 'Leaving this conversation will discard your unsent text. A send already requested may still complete.', confirmLabel: 'Discard draft', cancelLabel: 'Keep editing' })
       if (accepted && current()) { setDetailDirty(false); action(); return true }
       return false
     } finally { if (current()) busy.current = false }
@@ -80,7 +80,7 @@ export function WhatsAppPage({ host, configurationId, paneId, tabId, panelSide, 
   const create = async () => {
     if (busy.current) return
     const id = newId.trim()
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) { setCreateError('Use de 1 a 64 letras, números, hífens ou sublinhados.'); newIdRef.current?.focus(); return }
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) { setCreateError('Use 1–64 letters, numbers, hyphens or underscores.'); newIdRef.current?.focus(); return }
     if (!await navigate(() => setChat(null))) return
     busy.current = true
     const current = scope.current.begin()
@@ -99,34 +99,34 @@ export function WhatsAppPage({ host, configurationId, paneId, tabId, panelSide, 
     finally { if (current()) { busy.current = false; setCreating(false) } }
   }
   useEffect(() => commands?.register([
-    { id: 'refresh', title: 'Atualizar sessões', shortcut: 'R', run: list.refresh },
-    { id: 'new', title: 'Criar sessão', shortcut: 'N', run: () => setShowCreate(true) },
-    { id: 'messages', title: 'Abrir mensagens', run: () => selectView('messages') },
-    { id: 'groups', title: 'Abrir grupos', run: () => selectView('groups') },
-    { id: 'connection', title: 'Abrir conexão', run: () => selectView('connection') },
+    { id: 'refresh', title: 'Refresh sessions', shortcut: 'R', run: list.refresh },
+    { id: 'new', title: 'Create session', shortcut: 'N', run: () => setShowCreate(true) },
+    { id: 'messages', title: 'Open messages', run: () => selectView('messages') },
+    { id: 'groups', title: 'Open groups', run: () => selectView('groups') },
+    { id: 'connection', title: 'Open connection', run: () => selectView('connection') },
   ]), [commands, list.refresh, dirty, view])
 
   return <PageShell ref={ref} className="wa-ui-shell">
-    <PageHeader icon={<MessageCircle size={16} />} title="WhatsApp" description="Mensagens e grupos" onClose={onRequestClose}
-      actions={<IconButton label="Atualizar sessões" onClick={list.refresh} disabled={list.loading}><RefreshCw size={16} /></IconButton>} />
-    <Toolbar className="wa-ui-account-bar" aria-label="Conta e sessão">
-      <div className="wa-ui-session-select"><Select aria-label="Sessão do WhatsApp" value={selected ?? undefined} options={sessions.map((item) => ({ value: item.session_id, label: item.session_id, description: STATUS_LABEL[item.status] }))} onChange={selectSession} placeholder="Escolha uma sessão" disabled={creating} /></div>
-      {session && <SessionBadge status={session.status} />}
-      <Button variant="ghost" onClick={() => setShowCreate((value) => !value)} disabled={creating}><Plus size={16} aria-hidden="true" />Nova sessão</Button>
-    </Toolbar>
+    <PageHeader className="wa-ui-navigation" icon={<MessageCircle size={16} />} title="WhatsApp" onClose={onRequestClose}
+      actions={<><IconButton label="New session" onClick={() => setShowCreate((value) => !value)} disabled={creating}><Plus size={16} /></IconButton><IconButton className="wa-ui-session-refresh" label="Refresh sessions" onClick={list.refresh} disabled={list.loading}><RefreshCw size={16} /></IconButton></>}>
+      <div className="wa-ui-account-bar" aria-label="Account and session">
+        <div className="wa-ui-session-select"><Select aria-label="WhatsApp session" value={selected ?? undefined} options={sessions.map((item) => ({ value: item.session_id, label: item.session_id, description: STATUS_LABEL[item.status] }))} onChange={selectSession} placeholder="Choose a session" disabled={creating} /></div>
+        {session && <span className="wa-ui-account-status"><SessionBadge status={session.status} /></span>}
+      </div>
+    </PageHeader>
     {(showCreate || (!list.loading && sessions.length === 0)) && <form className="wa-ui-new-session" onSubmit={(event) => { event.preventDefault(); void create() }}>
-      <SettingsField field="session_id" label="Nome da sessão" error={createError ?? undefined} description="Criar salva a sessão. Você inicia e pareia a conta na aba Conexão." controlSize="full" renderControl={(control) => <Input {...control} ref={newIdRef} value={newId} onChange={(next) => { setNewId(next); setCreateError(null) }} placeholder="atendimento" maxLength={64} disabled={creating} autoComplete="off" spellCheck={false} />} />
-      <Button type="submit" disabled={creating || !newId.trim()}>{creating ? 'Criando…' : 'Criar sessão'}</Button>
+      <SettingsField field="session_id" label="Session name" error={createError ?? undefined} description="Create a session, then link your phone in Connection." controlSize="full" renderControl={(control) => <Input {...control} ref={newIdRef} value={newId} onChange={(next) => { setNewId(next); setCreateError(null) }} placeholder="support" maxLength={64} disabled={creating} autoComplete="off" spellCheck={false} />} />
+      <Button type="submit" disabled={creating || !newId.trim()}>{creating ? 'Creating…' : 'Create session'}</Button>
     </form>}
-    {list.error && <div className="wa-ui-reader-notice"><StatusPanel variant="alert" headline="Não foi possível atualizar a sessão" detail={list.error} action={<Button variant="ghost" onClick={list.refresh}>Tentar novamente</Button>} /></div>}
+    {list.error && <div className="wa-ui-reader-notice"><StatusPanel variant="alert" headline="Could not refresh sessions" detail={list.error} action={<Button variant="ghost" onClick={list.refresh}>Try again</Button>} /></div>}
     <div className="wa-ui-runtime"><RuntimeStatus host={host} quietWhenApplied /></div>
     {selected ? <Tabs value={view} onValueChange={(value) => selectView(value as View)} className="wa-ui-tabs">
-      <TabsList className="wa-ui-tab-list" aria-label="WhatsApp"><TabsTrigger value="messages" icon={<MessageCircle size={16} />}>Mensagens</TabsTrigger><TabsTrigger value="groups" icon={<Users size={16} />}>Grupos</TabsTrigger><TabsTrigger value="connection" icon={<Cable size={16} />}>Conexão</TabsTrigger></TabsList>
+      <TabsList className="wa-ui-tab-list" aria-label="WhatsApp"><TabsTrigger value="messages" icon={<MessageCircle size={16} />}>Messages</TabsTrigger><TabsTrigger value="groups" icon={<Users size={16} />}>Groups</TabsTrigger><TabsTrigger value="connection" icon={<Cable size={16} />}>Connection</TabsTrigger></TabsList>
       <TabsContent value="messages" className="wa-ui-tab-content"><MessageBrowser key={accountIdentity} host={host} sessionId={selected} connected={connected} narrow={narrow} panelSide={panelSide} selected={chat} onSelect={selectChat} onDirty={onDirty} onGoConnection={() => selectView('connection')} /></TabsContent>
       <TabsContent value="groups" className="wa-ui-tab-content"><GroupBrowser key={accountIdentity} host={host} sessionId={selected} connected={connected} narrow={narrow} panelSide={panelSide} onOpenMessages={openGroup} /></TabsContent>
       <TabsContent value="connection" className="wa-ui-tab-content wa-ui-connection-scroll"><SessionDetail key={`${selected}:${session?.created_at_ms ?? ''}`} host={host} sessionId={selected} refreshList={list.refresh} commands={commands} /></TabsContent>
-    </Tabs> : list.loading ? <Skeleton className="wa-ui-loading" /> : <EmptyState icon={MessageCircle} title="Conecte uma conta ao WhatsApp" description="Crie uma sessão e pareie a conta na aba Conexão. Depois, acompanhe suas conversas e os grupos dos quais participa." />}
-    <StatusBar aria-label="Estado do WhatsApp">{session ? `${session.session_id} · ${STATUS_LABEL[session.status]}` : 'Nenhuma sessão selecionada'}<span>{view === 'messages' ? 'Arquivo disponível nesta sessão' : view === 'groups' ? 'Grupos dos quais a conta participa' : 'A conexão começa apenas ao escolher Iniciar'}</span></StatusBar>
+    </Tabs> : list.loading ? <Skeleton className="wa-ui-loading" /> : <EmptyState icon={MessageCircle} title="Your conversations, connected." description="Create a session and link your phone to browse messages and groups." />}
+    <StatusBar aria-label="WhatsApp status">{session ? `${session.session_id} · ${STATUS_LABEL[session.status]}` : 'No session selected'}<span>{view === 'messages' ? 'Session archive' : view === 'groups' ? 'Joined groups' : 'Phone connection'}</span></StatusBar>
     {dialog}
   </PageShell>
 }

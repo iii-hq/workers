@@ -1,31 +1,32 @@
-import { Button, Input, RawValueInput, SettingsField, SettingsList, SettingsSection, StatusPanel, type ConfigFormProps, type Host, type JsonValue } from '@iii-dev/console-ui'
+import { Badge, Button, Input, RawValueInput, SettingsField, SettingsList, SettingsSection, StatusPanel, type ConfigFormProps, type Host, type JsonValue } from '@iii-dev/console-ui'
 import { formatBytes } from '@iii-dev/console-ui/format'
 import { useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { useEffect, useId, useRef } from 'react'
 import { configNumber, DEFAULTS, isObject, isOpaqueField, withConfigField, type ConfigKey, type ConfigStatus } from './model'
+import { useSetupMotion } from './motion'
 
 const FIELDS: { key: ConfigKey; label: string; description: string; min?: number; max?: number }[] = [
-  { key: 'data_dir', label: 'Diretório de dados', description: 'Credenciais SQLite e metadados locais de cada sessão. Relativo ao diretório do worker. Alterar exige reiniciar; os dados existentes não são movidos.' },
-  { key: 'max_events', label: 'Eventos retidos por sessão', description: 'Histórico em memória usado pela atividade. Alterar exige reiniciar o worker.', min: 1, max: 100000 },
-  { key: 'max_inbox_messages', label: 'Mensagens armazenadas por sessão', description: 'Limita o arquivo de mensagens capturadas e o histórico recebido. Aplica sem reiniciar; reduzir remove as mensagens mais antigas.', min: 1, max: 100000 },
-  { key: 'max_sessions', label: 'Limite de sessões', description: 'Aplica ao criar novas sessões; reduzir não remove as existentes.', min: 1, max: 1024 },
-  { key: 'max_media_bytes', label: 'Limite de mídia em bytes', description: 'Aplica às próximas operações de mídia.', min: 1, max: 67108864 },
-  { key: 'operation_timeout_secs', label: 'Tempo limite das operações', description: 'Em segundos. Aplica às próximas chamadas.', min: 1, max: 600 },
-  { key: 'shutdown_timeout_secs', label: 'Tempo limite de parada', description: 'Em segundos. Aplica às próximas paradas de sessão.', min: 1, max: 120 },
+  { key: 'data_dir', label: 'Data directory', description: 'Stores session credentials and message archives, relative to the worker directory. Changing it does not move existing data.' },
+  { key: 'max_events', label: 'Activity events per session', description: 'Keeps recent connection and message events in memory. Separate from the message archive.', min: 1, max: 100000 },
+  { key: 'max_inbox_messages', label: 'Stored messages per session', description: 'Limits captured messages and received history. Lowering this removes the oldest stored messages.', min: 1, max: 100000 },
+  { key: 'max_sessions', label: 'Session limit', description: 'Applies when creating sessions. Lowering this does not remove existing sessions.', min: 1, max: 1024 },
+  { key: 'max_media_bytes', label: 'Media limit in bytes', description: 'Maximum size for future media operations.', min: 1, max: 67108864 },
+  { key: 'operation_timeout_secs', label: 'Operation timeout', description: 'Seconds allowed for future operations.', min: 1, max: 600 },
+  { key: 'shutdown_timeout_secs', label: 'Shutdown timeout', description: 'Seconds allowed when stopping a session.', min: 1, max: 120 },
 ]
 
 export function RuntimeStatus({ host, quietWhenApplied = false }: { host: Host; quietWhenApplied?: boolean }) {
   const instance = useId()
   const status = useWorkerLive<ConfigStatus>({ iii: host.iii, triggers: [], pollMs: 10000,
     handlerId: `iii::whatsapp-ui::configuration::${instance}`, fetch: () => host.iii.trigger('whatsapp::config-status') })
-  if (status.error) return <StatusPanel variant="warn" headline="Não foi possível consultar a configuração ativa" detail={status.error} action={<Button variant="ghost" onClick={status.refresh}>Tentar novamente</Button>} />
+  if (status.error) return <StatusPanel variant="warn" headline="Active configuration unavailable" detail={status.error} action={<Button variant="ghost" onClick={status.refresh}>Try again</Button>} />
   if (!status.data) return null
   const current = status.data
-  if (current.last_outcome === 'rejected') return <StatusPanel variant="alert" headline="A última configuração foi rejeitada" detail={`${current.last_error ?? 'O worker manteve a configuração anterior.'} Recargas rejeitadas: ${current.rejected_reloads}.`} action={<Button variant="ghost" onClick={status.refresh}>Verificar novamente</Button>} />
-  if (current.last_outcome === 'restart_required') return <StatusPanel variant="warn" headline="Reinicie o worker para aplicar todas as alterações" detail={`Campos pendentes: ${current.restart_required_fields.join(', ')}. As demais alterações já foram aplicadas. Diretório em uso: ${current.active.data_dir}. Eventos em uso: ${current.active.max_events}.`} />
-  if (current.source === 'local') return <StatusPanel variant="warn" headline="Configuração local em uso" detail="O worker iniciou com --local-config. Alterações salvas no ADE não serão aplicadas até iniciar o worker com a configuração central." action={<Button variant="ghost" onClick={status.refresh}>Verificar novamente</Button>} />
+  if (current.last_outcome === 'rejected') return <StatusPanel variant="alert" headline="Latest configuration rejected" detail={`${current.last_error ?? 'The previous configuration remains active.'} Rejected reloads: ${current.rejected_reloads}.`} action={<Button variant="ghost" onClick={status.refresh}>Check again</Button>} />
+  if (current.last_outcome === 'restart_required') return <StatusPanel variant="warn" headline="Some changes need a worker restart" detail={`Pending: ${current.restart_required_fields.map((key) => FIELDS.find((field) => field.key === key)?.label ?? key).join(', ')}. Other changes are active. Current storage: ${current.active.data_dir}; activity limit: ${current.active.max_events}.`} />
+  if (current.source === 'local') return <StatusPanel variant="warn" headline="Local configuration is active" detail="This worker uses --local-config. Saved ADE changes apply after starting it with central configuration." action={<Button variant="ghost" onClick={status.refresh}>Check again</Button>} />
   if (quietWhenApplied) return null
-  return <p className="wa-ui-note">Configuração central ativa: <span className="wa-ui-mono">{current.id}</span>. Credenciais em <span className="wa-ui-mono">{current.active.data_dir}</span>.</p>
+  return <p className="wa-ui-note">Active configuration: <span className="wa-ui-mono">{current.id}</span>. Session data: <span className="wa-ui-mono">{current.active.data_dir}</span>.</p>
 }
 
 function OpaqueField({ value, label, onChange, onReplace, control }: {
@@ -34,12 +35,13 @@ function OpaqueField({ value, label, onChange, onReplace, control }: {
 }) {
   return typeof value === 'string'
     ? <RawValueInput {...control} label={label} kind={value.includes('${') ? 'environment' : 'custom'} value={value}
-      replacementLabel="Usar valor padrão" onChange={onChange} onUseLiteral={onReplace} />
-    : <div className="wa-ui-stack"><span className="wa-ui-note">Valor personalizado preservado.</span><Button {...control} variant="ghost" onClick={onReplace}>Usar valor padrão</Button></div>
+      replacementLabel="default value" onChange={onChange} onUseLiteral={onReplace} />
+    : <div className="wa-ui-stack"><span className="wa-ui-note">Custom value preserved.</span><Button {...control} variant="ghost" onClick={onReplace}>Use default value</Button></div>
 }
 
 export function WhatsAppConfigForm({ host, value, onChange, schema, errors, focusField }: ConfigFormProps & { host: Host }) {
   const root = useRef<HTMLDivElement>(null)
+  useSetupMotion(root)
   const handled = useRef('')
   const focusKey = focusField?.map(String).join('.') ?? ''
   useEffect(() => {
@@ -59,7 +61,8 @@ export function WhatsAppConfigForm({ host, value, onChange, schema, errors, focu
     const fallback = spec.default ?? DEFAULTS[item.key]
     const shown = current ?? fallback
     return <SettingsField key={item.key} field={item.key} label={item.label} error={errors?.get(`/${item.key}`)}
-      description={`${item.description} Padrão: ${String(fallback)}${item.key === 'max_media_bytes' && typeof shown === 'number' ? ` (${formatBytes(shown)} em uso no rascunho)` : ''}.`}
+      description={`${item.description} Default: ${String(fallback)}${item.key === 'max_media_bytes' && typeof shown === 'number' ? ` (${formatBytes(shown)} in this draft)` : ''}.`}
+      meta={<Badge variant={item.key === 'data_dir' || item.key === 'max_events' ? 'warn' : 'default'}>{item.key === 'data_dir' || item.key === 'max_events' ? 'Restart required' : 'Applies live'}</Badge>}
       controlSize={item.key === 'data_dir' || isOpaqueField(item.key, current) ? 'full' : 'compact'}
       layout={item.key === 'data_dir' ? 'stacked' : 'auto'}
       renderControl={(control) => isOpaqueField(item.key, current)
@@ -75,12 +78,20 @@ export function WhatsAppConfigForm({ host, value, onChange, schema, errors, focu
   const visibleFields = new Set(FIELDS.filter((item) => !properties || item.key in properties).map((item) => `/${item.key}`))
   const unmappedErrors = [...(errors?.entries() ?? [])].filter(([path]) => path && path !== '/' && !visibleFields.has(path)).map(([path, message]) => `${path}: ${message}`)
   return <div ref={root} className="wa-ui-config">
+    <header className="wa-ui-config-intro wa-ui-stack-card">
+      <h2 className="wa-ui-config-heading wa-ui-reveal-text">Keep the history you need.</h2>
+      <p className="wa-ui-connection-copy">Set storage, capacity, and time limits for this WhatsApp worker. Pair accounts separately in the Connection tab.</p>
+    </header>
     <RuntimeStatus host={host} />
-    {!isObject(value) ? <SettingsList><SettingsField field="configuration" label="Configuração do WhatsApp" description="O valor completo é personalizado. Ele só será substituído por uma ação explícita." error={rootError} controlSize="full" renderControl={(control) => <OpaqueField control={control} value={value} label="Configuração do WhatsApp" onChange={onChange} onReplace={() => onChange({})} />} /></SettingsList> : <>
-      <SettingsSection title="Armazenamento e histórico" description="As credenciais e o arquivo de mensagens ficam no diretório de dados do worker, fora da configuração do projeto. Parear uma conta é uma ação separada na página WhatsApp."><SettingsList>{FIELDS.slice(0, 3).map(field)}</SettingsList></SettingsSection>
-      <SettingsSection title="Limites e tempos" description="Alterações válidas são aplicadas sem reiniciar. Deixe um campo vazio para restaurar o padrão."><SettingsList>{FIELDS.slice(3).map(field)}</SettingsList></SettingsSection>
-      {rootError && <StatusPanel variant="alert" headline="Revise a configuração" detail={rootError} />}
-      {unmappedErrors.length > 0 && <StatusPanel variant="alert" headline="Há outros valores que precisam de revisão" detail={unmappedErrors.join('\n')} />}
+    {!isObject(value) ? <SettingsList><SettingsField field="configuration" label="WhatsApp configuration" description="This entire configuration is a custom value. Replace it only when you are ready to use individual settings." error={rootError} controlSize="full" renderControl={(control) => <OpaqueField control={control} value={value} label="WhatsApp configuration" onChange={onChange} onReplace={() => onChange({})} />} /></SettingsList> : <>
+      <div className="wa-ui-config-grid">
+        <SettingsSection className="wa-ui-config-storage" title="Storage & history" description="Credentials and captured conversations stay in the worker's data directory."><SettingsList>{FIELDS.slice(0, 3).map(field)}</SettingsList></SettingsSection>
+        <SettingsSection className="wa-ui-config-capacity" title="Capacity" description="Make room for accounts and media."><SettingsList>{FIELDS.slice(3, 5).map(field)}</SettingsList></SettingsSection>
+        <SettingsSection className="wa-ui-config-timeouts" title="Time limits" description="Give operations enough time to finish."><SettingsList>{FIELDS.slice(5).map(field)}</SettingsList></SettingsSection>
+      </div>
+      {rootError && <StatusPanel variant="alert" headline="Review your configuration" detail={rootError} />}
+      {unmappedErrors.length > 0 && <StatusPanel variant="alert" headline="Other values need your attention" detail={unmappedErrors.join('\n')} />}
+      <p className="wa-ui-note wa-ui-config-footer">Leave a field empty to use its default. Save or reset your draft with the controls below; environment references and custom values are preserved.</p>
     </>}
   </div>
 }

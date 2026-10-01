@@ -35,7 +35,7 @@ describe('recipient addressing matches the native worker contract', () => {
   it('measures text limits in UTF-8 bytes and rejects a blank message', () => {
     expect(validateMessage('  \n ')).toBeTruthy()
     expect(validateMessage('á'.repeat(32768))).toBeNull()
-    expect(validateMessage('á'.repeat(32769))).toContain('65.536')
+    expect(validateMessage('á'.repeat(32769))).toContain('65,536')
   })
 })
 
@@ -78,7 +78,7 @@ describe('activity presentation', () => {
     expect(eventDetail(event(1, { data: { info: { id: 'ABC', source: { sender: '123@lid' } }, message: { extended_text_message: { text: 'Resposta de teste' } } } }))).toBe('123@lid · Resposta de teste · ABC')
   })
   it('preserves routing context when an oversized message body was omitted', () => {
-    expect(eventDetail(event(1, { data: { info: { id: 'ABC', source: { sender: '123@lid' } }, content_omitted: true } }))).toContain('123@lid · Conteúdo omitido pelo limite de tamanho. · ABC')
+    expect(eventDetail(event(1, { data: { info: { id: 'ABC', source: { sender: '123@lid' } }, content_omitted: true } }))).toContain('123@lid · Content omitted because of the size limit. · ABC')
   })
   it('does not display pairing material in an event row', () => {
     expect(eventDetail(event(1, { kind: 'session.qr', data: { code: 'secret', expires_at_ms: 1000 } }))).toBe('')

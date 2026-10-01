@@ -60,7 +60,7 @@ release declaration.
 The running worker injects a **WhatsApp** page and configuration form into ADE.
 Open `#/worker/whatsapp` on your ADE host (normally
 `http://127.0.0.1:3113/#/worker/whatsapp`). The page has session creation and
-selection and three tabs: **Mensagens**, **Grupos** and **Conexão**. Search
+selection and three tabs: **Messages**, **Groups** and **Connection**. Search
 conversations, read stored messages, open participating groups and inspect
 their participants and administrators. The conversation composer sends to the
 selected chat only after an explicit action. Connection controls include
@@ -77,7 +77,7 @@ Stored conversations can be read while disconnected. Participating groups and
 their current membership require a connected session.
 
 The archive starts when this worker version captures messages; it is not a
-complete copy of the phone's history. **Buscar histórico** requests older
+complete copy of the phone's history. **Request older messages** requests older
 messages from the linked phone using an existing message as its anchor. Results
 arrive asynchronously, depend on WhatsApp availability, and remain subject to
 the retention limit. An empty conversation has no anchor to request history.
@@ -97,6 +97,19 @@ requires restart because it sizes both the broadcast channel and session event
 rings. The page reports pending restart fields. Compose `config_override`
 values remain authoritative on startup; remove an override if ADE should own
 that setting. `--local-config` ignores central edits and reports local mode.
+
+Keep all application copy, commands, accessibility labels and formatted dates
+in English. User messages, group names and descriptions retain their original
+content. The layout adapts to the pane width; archive details and group metadata
+expand on demand. The configuration form groups storage, capacity and time
+limits while ADE owns saving and resetting the draft.
+
+The page optionally loads [Cabinet Grotesk from Fontshare](https://www.fontshare.com/fonts/cabinet-grotesk),
+falling back to local system fonts when offline. The font is requested directly
+from Fontshare's CDN; it is not redistributed in the worker. Scoped GSAP motion
+is limited to connection guidance and the configuration introduction, respects
+reduced-motion preferences, and cleans up when a view closes. Message updates
+are not animated. QR images are generated locally.
 
 Pairing data stays in page memory, expires, and is cleared on session change.
 The activity feed is bounded; the inbox is a separate persistent archive. The send

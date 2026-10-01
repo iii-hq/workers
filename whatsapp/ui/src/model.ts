@@ -45,10 +45,10 @@ export function mergeEvents(previous: EventFeed, page: EventPage, sessionId: str
 /** Mirrors validate::jid: aliases normalize, device IDs and opaque LIDs survive. */
 export function normalizeRecipient(raw: string): string {
   const input = raw.trim()
-  if (!input || input.length > 128) throw new Error('Informe um telefone internacional ou JID válido.')
+  if (!input || input.length > 128) throw new Error('Enter a valid international phone number or JID.')
   if (!input.includes('@')) {
     const phone = input.replace(/^\+/, '')
-    if (!/^[0-9]{7,15}$/.test(phone)) throw new Error('Use de 7 a 15 dígitos, com código do país, sem espaços. Ex.: +5511999999999.')
+    if (!/^[0-9]{7,15}$/.test(phone)) throw new Error('Use 7 to 15 digits, including the country code, without spaces. Example: +5511999999999.')
     return `${phone}@s.whatsapp.net`
   }
   const [user, server, extra] = input.split('@')
@@ -60,19 +60,19 @@ export function normalizeRecipient(raw: string): string {
   } else if (server === 'g.us') valid = /^[0-9]+(?:-[0-9]+)?$/.test(user)
   else if (server === 'newsletter') valid = /^[0-9]+$/.test(user)
   else if (server === 'broadcast') valid = user === 'status' || /^[0-9]+$/.test(user)
-  if (!valid || extra !== undefined) throw new Error('JID inválido. Use um telefone internacional ou um JID de contato, grupo, LID, canal ou transmissão.')
+  if (!valid || extra !== undefined) throw new Error('Invalid JID. Use an international phone number or a contact, group, LID, channel, or broadcast JID.')
   return `${user}@${server === 'c.us' ? 's.whatsapp.net' : server}`
 }
 
 export function pairingPhone(raw: string): string {
   const phone = raw.trim().replace(/^\+/, '')
-  if (!/^[0-9]{7,15}$/.test(phone)) throw new Error('Informe o telefone da conta com código do país e 7 a 15 dígitos, sem espaços.')
+  if (!/^[0-9]{7,15}$/.test(phone)) throw new Error('Enter the account phone number with its country code and 7 to 15 digits, without spaces.')
   return phone
 }
 
 export function validateMessage(text: string): string | null {
-  if (!text.trim()) return 'Escreva a mensagem de teste.'
-  if (new TextEncoder().encode(text).length > 65_536) return 'A mensagem excede o limite de 65.536 bytes.'
+  if (!text.trim()) return 'Write a message.'
+  if (new TextEncoder().encode(text).length > 65_536) return 'The message exceeds the 65,536-byte limit.'
   return null
 }
 
@@ -97,7 +97,7 @@ export function eventDetail(event: WorkerEvent): string {
     const message = isObject(data.message) ? data.message : {}
     const extended = isObject(message.extended_text_message) ? message.extended_text_message : {}
     const body = typeof message.conversation === 'string' ? message.conversation : typeof extended.text === 'string' ? extended.text : null
-    return [source.sender, body?.slice(0, 240) ?? (data.content_omitted ? 'Conteúdo omitido pelo limite de tamanho.' : 'Mensagem sem texto.'), info.id].filter((item) => typeof item === 'string' && item.length > 0).join(' · ')
+    return [source.sender, body?.slice(0, 240) ?? (data.content_omitted ? 'Content omitted because of the size limit.' : 'Message without text.'), info.id].filter((item) => typeof item === 'string' && item.length > 0).join(' · ')
   }
   // Pairing events contain expiry metadata only. Never display a QR or code as event data.
   if (event.kind.startsWith('session.')) return typeof data.reason === 'string' ? data.reason : ''
@@ -105,8 +105,8 @@ export function eventDetail(event: WorkerEvent): string {
 }
 
 export const STATUS_LABEL: Record<SessionStatus, string> = {
-  stopped: 'Parada', starting: 'Iniciando', pairing: 'Aguardando pareamento', connected: 'Conectada',
-  disconnected: 'Desconectada', stopping: 'Parando', logged_out: 'Desvinculada', failed: 'Falha',
+  stopped: 'Stopped', starting: 'Starting', pairing: 'Awaiting pairing', connected: 'Connected',
+  disconnected: 'Disconnected', stopping: 'Stopping', logged_out: 'Unlinked', failed: 'Failed',
 }
 
 export const DEFAULTS = {

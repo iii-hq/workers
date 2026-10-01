@@ -37,10 +37,10 @@ describe('conversation summaries', () => {
     expect(next[0].message_count).toBe(3)
   })
   it('labels media without inventing an attachment or a download', () => {
-    expect(messageLabel(message('a', 1, { kind: 'image', text: '' }))).toContain('Imagem')
+    expect(messageLabel(message('a', 1, { kind: 'image', text: '' }))).toContain('Image')
     expect(messageLabel(message('a', 1, { kind: 'document', text: 'Relatório.pdf' }))).toBe('Relatório.pdf')
   })
-  it.each([['expired', 'expirada'], ['view_once', 'visualização única'], ['deleted', 'removida'], ['ephemeral', 'temporária']])('labels %s without fabricating a body', (kind, label) => {
+  it.each([['expired', 'Expired'], ['view_once', 'View-once'], ['deleted', 'Deleted'], ['ephemeral', 'Disappearing']])('labels %s without fabricating a body', (kind, label) => {
     expect(messageLabel(message('a', 1, { kind, text: '' }))).toContain(label)
   })
 })
@@ -48,11 +48,11 @@ describe('conversation summaries', () => {
 describe('honest coverage copy', () => {
   it('does not imply complete WhatsApp history before any history sync', () => {
     const copy = coverageText({ capture_started_at_ms: 1700000000000, message_limit: 10000, retention_truncated: false })
-    expect(copy).toContain('capturadas')
-    expect(copy).toContain('histórico')
-    expect(copy).not.toContain('completo')
+    expect(copy).toContain('captured')
+    expect(copy).toContain('history')
+    expect(copy).not.toContain('complete')
   })
   it('shows retention loss separately from received history', () => {
-    expect(coverageText({ capture_started_at_ms: 1, message_limit: 100, retention_truncated: true, last_history_sync_progress: 50 })).toContain('mais antigas')
+    expect(coverageText({ capture_started_at_ms: 1, message_limit: 100, retention_truncated: true, last_history_sync_progress: 50 })).toContain('Older messages')
   })
 })
