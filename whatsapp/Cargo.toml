@@ -7,7 +7,7 @@ edition = "2024"
 rust-version = "1.94"
 publish = false
 license = "Apache-2.0"
-description = "Native WhatsApp sessions and operations as iii functions, with no Node runtime"
+description = "Native WhatsApp sessions and official Meta Cloud API messaging as iii functions"
 
 [[bin]]
 name = "whatsapp"
@@ -31,6 +31,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 base64 = "0.22"
 async-trait = "0.1"
 diesel = { version = "=2.3.13", features = ["sqlite"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+hmac = "0.13"
+sha2 = "0.11"
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

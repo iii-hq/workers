@@ -113,6 +113,11 @@ export const DEFAULTS = {
   data_dir: 'data/whatsapp', max_sessions: 32, max_media_bytes: 16 * 1024 * 1024,
   max_events: 1000, max_inbox_messages: 10000, operation_timeout_secs: 30, shutdown_timeout_secs: 15,
 } as const
+export const CLOUD_DEFAULTS = {
+  enabled: false, api_version: 'v26.0', business_account_id: '', phone_number_id: '',
+  access_token: '', app_secret: '', verify_token: '',
+} as const
+export type CloudConfigKey = keyof typeof CLOUD_DEFAULTS
 export type ConfigKey = keyof typeof DEFAULTS
 export interface ConfigStatus {
   id: string
@@ -133,6 +138,20 @@ export function withConfigField(value: JsonValue, key: ConfigKey, next: JsonValu
   if (next === undefined) delete copy[key]
   else copy[key] = next
   return copy
+}
+/** Nested edits preserve future fields and never replace an opaque Cloud configuration. */
+export function withCloudField(value: JsonValue, key: CloudConfigKey, next: JsonValue | undefined): JsonValue {
+  if (!isObject(value) || (value.cloud !== undefined && !isObject(value.cloud))) return value
+  const cloud = { ...(isObject(value.cloud) ? value.cloud : {}) }
+  if (next === undefined) delete cloud[key]
+  else cloud[key] = next
+  return { ...value, cloud }
+}
+export function withCloudValue(value: JsonValue, next: JsonValue): JsonValue {
+  return isObject(value) ? { ...value, cloud: next } : value
+}
+export function isOpaqueCloudField(key: CloudConfigKey, value: JsonValue | undefined): boolean {
+  return value !== undefined && (typeof value !== typeof CLOUD_DEFAULTS[key] || (typeof value === 'string' && value.includes('${')))
 }
 export function isOpaqueField(key: ConfigKey, value: JsonValue | undefined): boolean {
   if (value === undefined) return false

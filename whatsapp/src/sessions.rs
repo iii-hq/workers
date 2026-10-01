@@ -254,6 +254,7 @@ impl Session {
 }
 
 pub struct SessionManager {
+    cloud: crate::cloud::CloudService,
     config: RwLock<Config>,
     sessions: RwLock<BTreeMap<String, Arc<Session>>>,
     broadcast: broadcast::Sender<Event>,
@@ -277,6 +278,10 @@ impl SessionManager {
                 .file_name()
                 .into_string()
                 .map_err(|_| anyhow::anyhow!("non-UTF8 session directory"))?;
+            if id == ".cloud" {
+                private_directory(&entry.path())?;
+                continue;
+            }
             validate_id(&id)?;
             let path = entry.path();
             private_directory(&path)?;
@@ -302,6 +307,7 @@ impl SessionManager {
             );
         }
         Ok(Arc::new(Self {
+            cloud: crate::cloud::CloudService::new()?,
             config: RwLock::new(config),
             sessions: RwLock::new(sessions),
             broadcast,
@@ -311,6 +317,10 @@ impl SessionManager {
 
     pub fn config(&self) -> Config {
         self.config.read().unwrap().clone()
+    }
+
+    pub fn cloud(&self) -> &crate::cloud::CloudService {
+        &self.cloud
     }
 
     /// Apply tuning without moving open SQLite stores or replacing event channels.
@@ -331,6 +341,7 @@ impl SessionManager {
             config.max_events = active.max_events;
         }
         if config.max_inbox_messages != active.max_inbox_messages {
+            self.cloud.apply_limit(config.max_inbox_messages)?;
             for session in sessions.values() {
                 session.inbox.set_limit(config.max_inbox_messages)?;
             }
@@ -1056,7 +1067,7 @@ fn now_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-fn private_directory(path: &Path) -> Result<()> {
+pub(crate) fn private_directory(path: &Path) -> Result<()> {
     if !path.exists() {
         fs::create_dir_all(path)?;
     }

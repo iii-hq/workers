@@ -13,11 +13,12 @@ interface ArchiveState<T> {
 }
 
 /** Serial page requests, latest-page refresh, and disposal on account/chat changes. */
-export function useInboxPages<T>({ identity, fetchPage, merge, pollMs = 5000 }: {
+export function useInboxPages<T>({ identity, fetchPage, merge, pollMs = 5000, enabled = true }: {
   identity: string
   fetchPage(cursor?: string): Promise<ArchivePage<T>>
   merge(previous: T[], incoming: T[]): T[]
   pollMs?: number
+  enabled?: boolean
 }) {
   const [state, setState] = useState<ArchiveState<T>>({ items: [], nextCursor: null, coverage: null, loading: true, loadingMore: false, error: null })
   const operations = useRef({ refresh: () => {}, more: () => {} })
@@ -34,7 +35,11 @@ export function useInboxPages<T>({ identity, fetchPage, merge, pollMs = 5000 }: 
     let loadedPages = 1
     let loaded = false
     const api = callbacks.current
-    setState({ items: [], nextCursor: null, coverage: null, loading: true, loadingMore: false, error: null })
+    setState({ items: [], nextCursor: null, coverage: null, loading: enabled, loadingMore: false, error: null })
+    if (!enabled) {
+      operations.current = { refresh: () => {}, more: () => {} }
+      return
+    }
 
     const load = async (append: boolean) => {
       if (!active || busy || (append && !nextCursor)) return
@@ -81,6 +86,6 @@ export function useInboxPages<T>({ identity, fetchPage, merge, pollMs = 5000 }: 
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', visibleRefresh)
     }
-  }, [identity, pollMs])
+  }, [identity, pollMs, enabled])
   return { ...state, refresh, more }
 }

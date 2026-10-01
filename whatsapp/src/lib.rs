@@ -1,5 +1,6 @@
 //! Native WhatsApp functions for the iii engine.
 pub mod calls;
+pub mod cloud;
 pub mod config;
 pub mod configuration;
 pub mod groups;
@@ -19,5 +20,6 @@ pub fn registry() -> registry::Registry {
     inbox::register(&mut registry);
     messaging::register(&mut registry);
     calls::register(&mut registry);
+    cloud::register(&mut registry);
     registry
 }

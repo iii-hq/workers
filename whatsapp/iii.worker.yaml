@@ -5,10 +5,11 @@ deploy: binary
 manifest: Cargo.toml
 bin: whatsapp
 license: Apache-2.0
-description: Native WhatsApp sessions, messages, media, groups and events through whatsapp-rust; no Node or browser runtime.
-tags: [whatsapp, messaging, native, rust, groups]
+description: Native WhatsApp sessions and official Meta Cloud API messaging in one Rust worker; no Node or browser runtime.
+tags: [whatsapp, messaging, native, rust, groups, cloud-api]
 dependencies:
   configuration: latest
+  http: latest
 config:
   data_dir: data/whatsapp
   max_sessions: 32
@@ -17,3 +18,11 @@ config:
   max_inbox_messages: 10000
   operation_timeout_secs: 30
   shutdown_timeout_secs: 15
+  cloud:
+    enabled: false
+    api_version: v26.0
+    business_account_id: ''
+    phone_number_id: ''
+    access_token: ''
+    app_secret: ''
+    verify_token: ''

@@ -1,7 +1,8 @@
 # WhatsApp
 
-A native Rust iii worker using [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust).
-The WhatsApp client, encryption and SQLite storage are embedded in the executable.
+A Rust iii worker supporting both [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust)
+linked devices and the official Meta WhatsApp Cloud API. The native WhatsApp
+client, Cloud API client, encryption and SQLite storage are embedded in the executable.
 There is no Node, Chromium, sidecar process or sandbox requirement. The worker
 connects to an existing iii engine; normal configuration uses the configuration worker.
 
@@ -60,7 +61,7 @@ release declaration.
 The running worker injects a **WhatsApp** page and configuration form into ADE.
 Open `#/worker/whatsapp` on your ADE host (normally
 `http://127.0.0.1:3113/#/worker/whatsapp`). The page has session creation and
-selection and three tabs: **Messages**, **Groups** and **Connection**. Search
+selection and four tabs: **Messages**, **Groups**, **Connection** and **Cloud API**. Search
 conversations, read stored messages, open participating groups and inspect
 their participants and administrators. The conversation composer sends to the
 selected chat only after an explicit action. Connection controls include
@@ -120,6 +121,97 @@ After a send timeout, check activity before sending again.
 For UI development, run `pnpm --dir whatsapp/ui watch` and start the worker
 with `III_WHATSAPP_UI_WATCH=/absolute/path/to/whatsapp/ui/dist`. Assets normally
 remain embedded; no frontend server is needed in production.
+
+## Official Meta Cloud API
+
+The **Cloud API** tab works without a linked-device session. It supports an
+existing WhatsApp Business Platform account: local readiness, an explicit
+read-only connection check, existing templates, text/template sending, and a
+webhook-backed message archive with delivery status. It does not register or
+migrate a number, create templates, or subscribe an app automatically.
+
+In ADE, open **Configure worker** and find **Meta Cloud API**. Enter the existing
+WhatsApp Business Account ID and Phone Number ID, then the access token, Meta
+App Secret, and a verify token of your choice. Enable Cloud API and save.
+Cloud settings apply live. Secret inputs are masked; worker status and debug
+output omit their values. ADE's configuration service remains the authority
+for stored configuration. Prefer environment references in that service:
+
+```yaml
+cloud:
+  enabled: true
+  api_version: v26.0
+  business_account_id: 'YOUR_NUMERIC_WABA_ID'
+  phone_number_id: 'YOUR_NUMERIC_PHONE_NUMBER_ID'
+  access_token: '${WHATSAPP_CLOUD_ACCESS_TOKEN}'
+  app_secret: '${WHATSAPP_META_APP_SECRET}'
+  verify_token: '${WHATSAPP_WEBHOOK_VERIFY_TOKEN}'
+```
+
+Replace both ID placeholders with digits. Environment variables must be
+available to the configuration service that resolves them. A `--local-config`
+YAML seed accepts literal values only. Protect files containing secrets.
+Use a token authorized for the existing account: messaging requires
+`whatsapp_business_messaging`; account, template and subscription inspection
+also needs `whatsapp_business_management`. Follow Meta's
+[getting started guide](https://developers.facebook.com/documentation/business-messaging/whatsapp/get-started)
+for account permissions and production token setup.
+
+Select **Check connection** to inspect the number, WABA membership and subscribed
+apps. This is a read-only check. Readiness only describes local settings; it
+does not prove the token works or the public webhook is reachable.
+
+The worker depends on the iii HTTP worker for its callback. Use a version whose
+HTTP trigger supports `public_webhook` and raw `request_body` streams (verified
+with package 0.22.1). Forward a public HTTPS callback to the HTTP worker's
+restricted webhook listener. The worker registers GET and POST at:
+
+```text
+/webhooks/whatsapp-cloud/<URL-encoded configuration ID>
+```
+
+Copy the exact callback path from the Cloud API tab, prefix your public HTTPS
+origin, and configure it in your Meta app with the same verify token. Subscribe
+the app to the WABA and enable the `messages` webhook field in the Meta dashboard.
+See Meta's [webhook endpoint guide](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/create-webhook-endpoint)
+and [WABA subscriptions API](https://developers.facebook.com/documentation/business-messaging/whatsapp/reference/whatsapp-business-account/subscribed-apps-api).
+The worker answers the plaintext verification challenge and validates
+`X-Hub-Signature-256` against the exact request bytes before parsing. It accepts
+only the configured WABA/phone and acknowledges matching messages after local
+persistence. Repeated deliveries are deduplicated; receipts may arrive before
+the send response. Missing webhook secrets or disabled Cloud API return 503.
+
+Sending is always explicit. Text messages require an open 24-hour customer
+service window and allow up to 4096 characters. Outside that window, choose an
+approved template and supply its required components. **Load templates** reads
+existing templates only. Destinations use international phone numbers with a
+leading `+`, or supported business-scoped user IDs; native JIDs are rejected.
+See [text messages](https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/text-messages),
+[templates](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/overview)
+and [business-scoped user IDs](https://developers.facebook.com/documentation/business-messaging/whatsapp/business-scoped-user-ids).
+
+```sh
+iii trigger whatsapp::cloud::status --json '{}'
+iii trigger whatsapp::cloud::check_connection --json '{}'
+iii trigger whatsapp::cloud::templates::list --json '{"limit":50}'
+iii trigger whatsapp::cloud::messages::send_text --json '{"chat_id":"+15550000001","text":"Hello"}'
+iii trigger whatsapp::cloud::messages::send_template --json '{"chat_id":"+15550000001","name":"hello_world","language":"en_US"}'
+iii trigger whatsapp::cloud::chats::list --json '{}'
+iii trigger whatsapp::cloud::messages::list --json '{"chat_id":"+15550000001"}'
+```
+
+Sends make one request without automatic retry. An `accepted` result means Meta
+accepted submission; later webhooks establish delivery or failure. A timed-out
+send has an uncertain outcome: inspect the archive before repeating it.
+
+Cloud archives live under `data_dir/.cloud/<phone_number_id>/inbox.db`, separate
+from every native session. They retain webhook messages and worker-submitted
+messages under `max_inbox_messages`; changing the phone ID selects a separate
+archive. They contain message previews and media labels, without media downloads
+or historical backfill. Reading them sends no read receipt. Cloud events are
+available through archive polling, not the native `whatsapp::events` trigger.
+The **Groups** tab continues to use the linked-device integration; this Cloud
+integration does not implement Meta's separate Groups API.
 
 ## Pair and send
 
@@ -247,6 +339,17 @@ It starts an engine on a temporary loopback port, verifies every registered sche
 exercises offline session metadata, UI delivery and configuration reloads through
 real RPC, and checks SIGTERM. It creates
 no WhatsApp connection and removes its temporary state on completion.
+
+The Cloud webhook integration additionally needs a standalone HTTP worker:
+
+```sh
+III_BINARY=/absolute/path/to/iii HTTP_BINARY=/absolute/path/to/http \
+  cargo test --locked --test cloud_engine_smoke -- --ignored --nocapture
+```
+
+It starts an isolated loopback HTTP listener and verifies the exact signed body,
+plaintext challenge, duplicate handling, account isolation, safe status and live
+disable behavior. Test credentials are dummy values and it makes no Meta API call.
 
 Tests cover storage/lifecycle, event bounds and projections, message construction,
 addressing, media bounds, strict requests, offline registration and function

@@ -1,17 +1,26 @@
-import { Badge, Button, Input, RawValueInput, SettingsField, SettingsList, SettingsSection, StatusPanel, type ConfigFormProps, type Host, type JsonValue } from '@iii-dev/console-ui'
+import { Badge, Button, Input, RawValueInput, SettingsField, SettingsList, SettingsSection, StatusPanel, Switch, type ConfigFormProps, type Host, type JsonValue } from '@iii-dev/console-ui'
 import { formatBytes } from '@iii-dev/console-ui/format'
 import { useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { useEffect, useId, useRef } from 'react'
-import { configNumber, DEFAULTS, isObject, isOpaqueField, withConfigField, type ConfigKey, type ConfigStatus } from './model'
+import { CLOUD_DEFAULTS, configNumber, DEFAULTS, isObject, isOpaqueCloudField, isOpaqueField, withCloudField, withCloudValue, withConfigField, type CloudConfigKey, type ConfigKey, type ConfigStatus } from './model'
 
 const FIELDS: { key: ConfigKey; label: string; description: string; min?: number; max?: number }[] = [
   { key: 'data_dir', label: 'Data directory', description: 'Relative to the worker directory. Changing this path does not move existing data.' },
   { key: 'max_events', label: 'Activity events per session', description: 'Recent session activity kept in memory, separate from the message archive.', min: 1, max: 100000 },
-  { key: 'max_inbox_messages', label: 'Stored messages per session', description: 'Captured messages and received history. Lowering this removes the oldest stored messages.', min: 1, max: 100000 },
+  { key: 'max_inbox_messages', label: 'Stored messages per account', description: 'Limit per native session or Cloud API number. Lowering this removes the oldest stored messages.', min: 1, max: 100000 },
   { key: 'max_sessions', label: 'Session limit', description: 'Limits new sessions; lowering it keeps existing sessions.', min: 1, max: 1024 },
   { key: 'max_media_bytes', label: 'Media limit in bytes', description: 'Maximum size for future media operations.', min: 1, max: 67108864 },
   { key: 'operation_timeout_secs', label: 'Operation timeout', description: 'Seconds allowed for future operations.', min: 1, max: 600 },
   { key: 'shutdown_timeout_secs', label: 'Shutdown timeout', description: 'Seconds allowed when stopping a session.', min: 1, max: 120 },
+]
+const CLOUD_FIELDS: { key: CloudConfigKey; label: string; description: string; secret?: boolean }[] = [
+  { key: 'enabled', label: 'Enable Cloud API', description: 'Use the official WhatsApp Business Platform alongside native sessions.' },
+  { key: 'business_account_id', label: 'Business account ID', description: 'The WhatsApp Business Account (WABA) that owns your number.' },
+  { key: 'phone_number_id', label: 'Phone number ID', description: 'The Meta ID of your business phone number, separate from its phone digits.' },
+  { key: 'access_token', label: 'Access token', description: 'A token authorized for this WhatsApp Business Account.', secret: true },
+  { key: 'app_secret', label: 'App secret', description: 'Verifies signatures on incoming Meta webhooks.', secret: true },
+  { key: 'verify_token', label: 'Webhook verify token', description: 'A value you choose and also enter when configuring the webhook in Meta.', secret: true },
+  { key: 'api_version', label: 'Graph API version', description: 'Version used for requests to Meta. Default: v26.0.' },
 ]
 
 export function RuntimeStatus({ host, quietWhenApplied = false }: { host: Host; quietWhenApplied?: boolean }) {
@@ -28,13 +37,14 @@ export function RuntimeStatus({ host, quietWhenApplied = false }: { host: Host; 
   return <p className="wa-ui-note">Active configuration: <span className="wa-ui-mono">{current.id}</span>. Session data: <span className="wa-ui-mono">{current.active.data_dir}</span>.</p>
 }
 
-function OpaqueField({ value, label, onChange, onReplace, control }: {
+function OpaqueField({ value, label, onChange, onReplace, control, secret = false }: {
   value: JsonValue; label: string; onChange(value: string): void; onReplace(): void
+  secret?: boolean
   control: Parameters<import('@iii-dev/console-ui').SettingsFieldProps['renderControl']>[0]
 }) {
   return typeof value === 'string'
     ? <RawValueInput {...control} label={label} kind={value.includes('${') ? 'environment' : 'custom'} value={value}
-      replacementLabel="default value" onChange={onChange} onUseLiteral={onReplace} />
+      type={secret ? 'password' : 'text'} autoComplete={secret ? 'new-password' : 'off'} replacementLabel="default value" onChange={onChange} onUseLiteral={onReplace} />
     : <div className="wa-ui-stack"><span className="wa-ui-note">Custom value preserved.</span><Button {...control} variant="ghost" onClick={onReplace}>Use default value</Button></div>
 }
 
@@ -46,11 +56,33 @@ export function WhatsAppConfigForm({ host, value, onChange, schema, errors, focu
     if (!focusKey) { handled.current = ''; return }
     if (handled.current === focusKey) return
     const target = root.current?.querySelector<HTMLElement>(`[data-field="${CSS.escape(focusKey)}"]`)
+      ?? (focusKey.startsWith('cloud.') ? root.current?.querySelector<HTMLElement>('[data-field="cloud"]') : null)
       ?? root.current?.querySelector<HTMLElement>('[data-field="configuration"]')
     if (target) { target.focus(); target.scrollIntoView({ block: 'center' }); handled.current = focusKey }
   }, [focusKey, value])
 
   const properties = isObject(schema?.properties) ? schema.properties : null
+  const cloudProperty = isObject(properties?.cloud) ? properties.cloud : {}
+  const cloudDefinition = typeof cloudProperty.$ref === 'string' ? cloudProperty.$ref.split('/').pop() : undefined
+  const definitions = isObject(schema?.$defs) ? schema.$defs : isObject(schema?.definitions) ? schema.definitions : {}
+  const cloudSchema = cloudDefinition && isObject(definitions[cloudDefinition]) ? definitions[cloudDefinition] : cloudProperty
+  const cloudProperties = isObject(cloudSchema.properties) ? cloudSchema.properties : null
+  const cloud = isObject(value) ? value.cloud : undefined
+  const showCloud = !properties || 'cloud' in properties
+  const cloudField = (item: typeof CLOUD_FIELDS[number]) => {
+    if (cloudProperties && !(item.key in cloudProperties)) return null
+    const current = isObject(cloud) ? cloud[item.key] : undefined
+    const opaque = isOpaqueCloudField(item.key, current)
+    return <SettingsField key={item.key} field={`cloud.${item.key}`} label={item.label} description={item.description}
+      error={errors?.get(`/cloud/${item.key}`)} controlSize={item.key === 'enabled' && !opaque ? 'fit' : 'full'}
+      renderControl={(control) => opaque
+        ? <OpaqueField control={control} label={item.label} value={current!} secret={item.secret} onChange={(next) => onChange(withCloudField(value, item.key, next))} onReplace={() => onChange(withCloudField(value, item.key, undefined))} />
+        : item.key === 'enabled'
+          ? <Switch {...control} checked={current === true} onChange={(event) => onChange(withCloudField(value, item.key, event.target.checked))} />
+          : <Input {...control} type={item.secret ? 'password' : 'text'} value={typeof current === 'string' ? current : ''}
+            placeholder={item.key === 'api_version' ? CLOUD_DEFAULTS.api_version : undefined} autoComplete={item.secret ? 'new-password' : 'off'} spellCheck={false}
+            onChange={(next) => onChange(withCloudField(value, item.key, next || undefined))} />} />
+  }
   const field = (item: typeof FIELDS[number]) => {
     if (properties && !(item.key in properties)) return null
     const current = isObject(value) ? value[item.key] : undefined
@@ -74,15 +106,24 @@ export function WhatsAppConfigForm({ host, value, onChange, schema, errors, focu
   }
   const rootError = errors?.get('') ?? errors?.get('/')
   const visibleFields = new Set(FIELDS.filter((item) => !properties || item.key in properties).map((item) => `/${item.key}`))
+  if (showCloud) {
+    visibleFields.add('/cloud')
+    if (cloud === undefined || isObject(cloud)) for (const item of CLOUD_FIELDS) if (!cloudProperties || item.key in cloudProperties) visibleFields.add(`/cloud/${item.key}`)
+  }
   const unmappedErrors = [...(errors?.entries() ?? [])].filter(([path]) => path && path !== '/' && !visibleFields.has(path)).map(([path, message]) => `${path}: ${message}`)
   return <div ref={root} className="wa-ui-config">
     <header className="wa-ui-config-intro">
-      <h2 className="wa-ui-config-heading">Storage and limits</h2>
-      <p className="wa-ui-connection-copy">Choose what to store and set operating limits.</p>
+      <h2 className="wa-ui-config-heading">WhatsApp configuration</h2>
+      <p className="wa-ui-connection-copy">Connect the Cloud API, choose what to store, and set operating limits.</p>
     </header>
     <RuntimeStatus host={host} />
     {!isObject(value) ? <SettingsList><SettingsField field="configuration" label="WhatsApp configuration" description="This entire configuration is a custom value. Replace it only when you are ready to use individual settings." error={rootError} controlSize="full" renderControl={(control) => <OpaqueField control={control} value={value} label="WhatsApp configuration" onChange={onChange} onReplace={() => onChange({})} />} /></SettingsList> : <>
       <div className="wa-ui-config-grid">
+        {showCloud && <SettingsSection title="Meta Cloud API" description="Use your existing WhatsApp Business Platform account. Environment variables are supported for credentials and other fields."><SettingsList>
+          {cloud !== undefined && !isObject(cloud)
+            ? <SettingsField field="cloud" label="Cloud API configuration" error={errors?.get('/cloud')} description="This custom value is preserved until you choose to replace it with individual fields." controlSize="full" renderControl={(control) => <OpaqueField control={control} value={cloud} label="Cloud API configuration" onChange={(next) => onChange(withCloudValue(value, next))} onReplace={() => onChange(withCloudValue(value, {}))} />} />
+            : CLOUD_FIELDS.map(cloudField)}
+        </SettingsList>{(cloud === undefined || isObject(cloud)) && errors?.get('/cloud') && <StatusPanel variant="alert" headline="Review your Cloud API configuration" detail={errors.get('/cloud')} />}</SettingsSection>}
         <SettingsSection className="wa-ui-config-storage" title="Storage & history" description="Session credentials and message archives stay in the data directory."><SettingsList>{FIELDS.slice(0, 3).map(field)}</SettingsList></SettingsSection>
         <SettingsSection className="wa-ui-config-capacity" title="Capacity"><SettingsList>{FIELDS.slice(3, 5).map(field)}</SettingsList></SettingsSection>
         <SettingsSection className="wa-ui-config-timeouts" title="Time limits"><SettingsList>{FIELDS.slice(5).map(field)}</SettingsList></SettingsSection>

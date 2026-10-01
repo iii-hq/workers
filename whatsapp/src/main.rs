@@ -122,12 +122,17 @@ async fn run_cli() -> Result<()> {
             ..InitOptions::default()
         },
     ));
-    let result = run(cli.local_config, seed, iii.clone()).await;
+    let result = run(cli.local_config, seed, iii.clone(), cli.url).await;
     tokio::task::spawn_blocking(move || iii.shutdown()).await?;
     result
 }
 
-async fn run(local: bool, seed: Option<Config>, iii: Arc<iii_sdk::IIIClient>) -> Result<()> {
+async fn run(
+    local: bool,
+    seed: Option<Config>,
+    iii: Arc<iii_sdk::IIIClient>,
+    engine_url: String,
+) -> Result<()> {
     let config: Config = if local {
         seed.unwrap_or_default()
     } else {
@@ -135,15 +140,15 @@ async fn run(local: bool, seed: Option<Config>, iii: Arc<iii_sdk::IIIClient>) ->
             id: config::config_id(),
             form_id: config::DEFAULT_CONFIG_ID,
             name: "WhatsApp",
-            description: "WhatsApp session storage, live resource limits and timeouts",
+            description: "WhatsApp linked devices, official Cloud API, storage and operating limits",
             schema: Config::json_schema(),
             default_value: serde_json::to_value(Config::default())?,
         };
         iii_config_client::ensure(&iii, &spec, seed.map(serde_json::to_value).transpose()?)
             .await
             .map_err(anyhow::Error::msg)?;
-        serde_json::from_value(
-            iii_config_client::fetch(&iii, spec.id)
+        Config::from_json(
+            &iii_config_client::fetch(&iii, spec.id)
                 .await
                 .map_err(anyhow::Error::msg)?
                 .context("missing whatsapp configuration")?,
@@ -155,6 +160,7 @@ async fn run(local: bool, seed: Option<Config>, iii: Arc<iii_sdk::IIIClient>) ->
     let manager = SessionManager::open(config)?;
     Arc::new(whatsapp::registry()).install(&iii, manager.clone());
     let delivery = service::register(iii.clone(), manager.clone());
+    let cloud_webhooks = whatsapp::cloud::webhook::register(&iii, manager.clone(), engine_url)?;
     iii_console_ui::register_configuration_identity(&iii, "whatsapp", config::config_id());
     ui::register(&iii);
     configuration::register(&iii, &manager, local).await?;
@@ -163,6 +169,9 @@ async fn run(local: bool, seed: Option<Config>, iii: Arc<iii_sdk::IIIClient>) ->
     let signal = tokio::select! { result = tokio::signal::ctrl_c() => result, _ = terminate.recv() => Ok(()) };
     #[cfg(not(unix))]
     let signal = tokio::signal::ctrl_c().await;
+    for route in cloud_webhooks {
+        route.unregister();
+    }
     manager.shutdown().await;
     delivery.abort();
     let _ = delivery.await;

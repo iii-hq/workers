@@ -40,6 +40,14 @@ pub struct MessageView {
     pub status: Option<String>,
 }
 
+/// An official API delivery update, including updates received before the send response.
+#[derive(Clone, Debug)]
+pub struct ExternalReceipt {
+    pub message_id: String,
+    pub chat_id: String,
+    pub status: String,
+}
+
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct Coverage {
     pub capture_started_at_ms: i64,
@@ -221,6 +229,11 @@ impl Inbox {
             CREATE INDEX IF NOT EXISTS inbox_chat_order ON inbox_messages(chat_id,timestamp_ms DESC,row_id DESC);
             CREATE INDEX IF NOT EXISTS inbox_retention_order ON inbox_messages(timestamp_ms DESC,row_id DESC);
             CREATE INDEX IF NOT EXISTS inbox_expiration ON inbox_messages(expires_at_ms) WHERE expires_at_ms IS NOT NULL;")?;
+        connection.batch_execute(
+            "CREATE TABLE IF NOT EXISTS inbox_external_receipts (
+            message_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, status TEXT NOT NULL,
+            rank INTEGER NOT NULL, received_at_ms BIGINT NOT NULL);",
+        )?;
         diesel::sql_query("INSERT OR IGNORE INTO inbox_meta(id,capture_started_at_ms) VALUES(1,?)")
             .bind::<BigInt, _>(now_ms())
             .execute(&mut connection)?;
@@ -310,6 +323,79 @@ impl Inbox {
             limit,
         )?;
         Ok(count)
+    }
+
+    /// Commit normalized Cloud API display data before acknowledging its webhook.
+    /// Replayed messages deduplicate on their source identity and message ID.
+    pub fn record_external(
+        &self,
+        messages: &[MessageView],
+        receipts: &[ExternalReceipt],
+    ) -> Result<usize> {
+        ensure!(
+            messages.len() + receipts.len() <= 1000,
+            "Cloud API update batch exceeds 1000 items"
+        );
+        let mut captured = Vec::with_capacity(messages.len());
+        for message in messages {
+            ensure!(
+                message.chat_id.starts_with("cloud:") && canonical_chat(&message.chat_id).is_some(),
+                "invalid Cloud API chat identifier"
+            );
+            ensure!(
+                !message.message_id.is_empty() && message.message_id.len() <= 512,
+                "invalid Cloud API message identifier"
+            );
+            ensure!(
+                message.timestamp_ms >= 0 && message.sender_id.len() <= 512,
+                "invalid Cloud API message metadata"
+            );
+            let mut view = message.clone();
+            view.text = clipped(&view.text, MAX_TEXT_BYTES);
+            view.kind = clipped(&view.kind, 64);
+            view.source = if view.from_me { "sent" } else { "live" }.into();
+            view.sender_name = view.sender_name.as_deref().map(|name| clipped(name, 512));
+            captured.push(CapturedMessage {
+                view,
+                expires_at_ms: None,
+                edited: false,
+            });
+        }
+        for receipt in receipts {
+            ensure!(
+                receipt.chat_id.starts_with("cloud:") && canonical_chat(&receipt.chat_id).is_some(),
+                "invalid Cloud API receipt recipient"
+            );
+            ensure!(
+                !receipt.message_id.is_empty() && receipt.message_id.len() <= 512,
+                "invalid Cloud API receipt identifier"
+            );
+            ensure!(
+                external_status_rank(&receipt.status).is_some(),
+                "invalid Cloud API delivery status"
+            );
+        }
+        let mut inner = self.inner.lock().unwrap();
+        let limit = inner.limit;
+        let conn = inner.connection.as_mut().context("inbox is closed")?;
+        conn.transaction::<_, anyhow::Error, _>(|conn| {
+            commit(conn, &captured, &[], limit)?;
+            for receipt in receipts {
+                diesel::sql_query("INSERT INTO inbox_external_receipts(message_id,chat_id,status,rank,received_at_ms) VALUES(?,?,?,?,?)
+                    ON CONFLICT(message_id) DO UPDATE SET status=excluded.status,rank=excluded.rank,received_at_ms=excluded.received_at_ms WHERE excluded.rank>inbox_external_receipts.rank")
+                    .bind::<Text,_>(&receipt.message_id).bind::<Text,_>(&receipt.chat_id).bind::<Text,_>(&receipt.status)
+                    .bind::<Integer,_>(external_status_rank(&receipt.status).unwrap()).bind::<BigInt,_>(now_ms()).execute(conn)?;
+            }
+            // A webhook may beat the Graph send response, or use a BSUID instead
+            // of its phone recipient. Message IDs are unique within this account.
+            diesel::sql_query("UPDATE inbox_messages SET status=(SELECT status FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id)
+                WHERE from_me=1 AND EXISTS(SELECT 1 FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id
+                AND r.rank>CASE inbox_messages.status WHEN 'sent' THEN 1 WHEN 'failed' THEN 2 WHEN 'delivered' THEN 3 WHEN 'read' THEN 4 ELSE 0 END)")
+                .execute(conn)?;
+            trim_external_receipts(conn, limit)?;
+            Ok(())
+        })?;
+        Ok(messages.len() + receipts.len())
     }
 
     pub fn list_messages(
@@ -460,10 +546,25 @@ fn trim(conn: &mut SqliteConnection, limit: usize) -> Result<()> {
     }
     // Bound metadata as well, including history chunks with many empty chats.
     diesel::sql_query("DELETE FROM inbox_chats WHERE chat_id NOT IN (SELECT chat_id FROM inbox_messages) AND chat_id IN (SELECT chat_id FROM inbox_chats ORDER BY chat_id LIMIT -1 OFFSET ?)").bind::<BigInt,_>(limit as i64).execute(conn)?;
+    trim_external_receipts(conn, limit)?;
+    Ok(())
+}
+fn external_status_rank(status: &str) -> Option<i32> {
+    match status {
+        "sent" => Some(1),
+        "failed" => Some(2),
+        "delivered" => Some(3),
+        "read" => Some(4),
+        _ => None,
+    }
+}
+fn trim_external_receipts(conn: &mut SqliteConnection, limit: usize) -> Result<()> {
+    diesel::sql_query("DELETE FROM inbox_external_receipts WHERE message_id IN (SELECT message_id FROM inbox_external_receipts ORDER BY received_at_ms DESC,message_id DESC LIMIT -1 OFFSET ?)")
+        .bind::<BigInt,_>(limit as i64).execute(conn)?;
     Ok(())
 }
 fn clear(conn: &mut SqliteConnection) -> Result<()> {
-    conn.transaction::<_,anyhow::Error,_>(|conn|{conn.batch_execute("DELETE FROM inbox_messages; DELETE FROM inbox_chats;")?;diesel::sql_query("UPDATE inbox_meta SET capture_started_at_ms=?,last_history_sync_at_ms=NULL,last_history_sync_progress=NULL,retention_truncated=0,account=NULL WHERE id=1").bind::<BigInt,_>(now_ms()).execute(conn)?;Ok(())})
+    conn.transaction::<_,anyhow::Error,_>(|conn|{conn.batch_execute("DELETE FROM inbox_messages; DELETE FROM inbox_chats; DELETE FROM inbox_external_receipts;")?;diesel::sql_query("UPDATE inbox_meta SET capture_started_at_ms=?,last_history_sync_at_ms=NULL,last_history_sync_progress=NULL,retention_truncated=0,account=NULL WHERE id=1").bind::<BigInt,_>(now_ms()).execute(conn)?;Ok(())})
 }
 
 fn commit(
@@ -704,6 +805,9 @@ impl InboundDurabilityHook for InboxCapture {
 }
 
 fn canonical_chat(value: &str) -> Option<String> {
+    if let Some(recipient) = value.strip_prefix("cloud:") {
+        return crate::cloud::storage_chat_id(recipient).ok();
+    }
     use whatsapp_rust::Server;
     let jid = validate::jid(value).ok()?;
     matches!(jid.server, Server::Pn | Server::Lid | Server::Group)

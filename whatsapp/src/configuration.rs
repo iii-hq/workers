@@ -35,7 +35,7 @@ pub struct ConfigStatus {
     pub last_error: Option<String>,
     pub rejected_reloads: u64,
     pub restart_required_fields: Vec<String>,
-    /// The actual live settings, including retained structural values.
+    /// Live settings, including retained structural values. Cloud secrets are removed.
     pub active: Config,
 }
 
@@ -52,7 +52,7 @@ impl ConfigStatus {
             last_error: None,
             rejected_reloads: 0,
             restart_required_fields: Vec::new(),
-            active: manager.config(),
+            active: manager.config().redacted(),
         }
     }
 }
@@ -128,7 +128,7 @@ fn apply_fetched(
             };
             status.last_error = None;
             status.restart_required_fields = restart_required_fields;
-            status.active = manager.config();
+            status.active = manager.config().redacted();
         }
         Err(error) => {
             status.last_outcome = ReloadOutcome::Rejected;
@@ -143,6 +143,34 @@ fn apply_fetched(
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn operator_status_redacts_cloud_credentials_without_changing_live_config() {
+        let directory = TempDir::new().unwrap();
+        let mut config = Config {
+            data_dir: directory.path().join("sessions"),
+            ..Config::default()
+        };
+        config.cloud.access_token = "private-access-token".into();
+        config.cloud.app_secret = "private-app-secret".into();
+        config.cloud.verify_token = "private-verify-token".into();
+        let manager = SessionManager::open(config.clone()).unwrap();
+        let status = RwLock::new(ConfigStatus::new(&manager, false));
+        apply_fetched(
+            &manager,
+            &status,
+            Ok(Some(serde_json::to_value(&config).unwrap())),
+        );
+        let response = serde_json::to_string(&*status.read().unwrap()).unwrap();
+        for secret in [
+            &config.cloud.access_token,
+            &config.cloud.app_secret,
+            &config.cloud.verify_token,
+        ] {
+            assert!(!response.contains(secret));
+        }
+        assert_eq!(manager.config(), config);
+    }
 
     #[test]
     fn malformed_missing_and_failed_reads_preserve_last_good_runtime_and_report_errors() {
@@ -194,6 +222,7 @@ mod tests {
         let manager = SessionManager::open(initial.clone()).unwrap();
         let status = RwLock::new(ConfigStatus::new(&manager, false));
         let changed = Config {
+            cloud: Default::default(),
             data_dir: directory.path().join("next-start"),
             max_events: 5,
             max_inbox_messages: 50,
