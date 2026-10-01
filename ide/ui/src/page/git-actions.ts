@@ -35,23 +35,39 @@ function failure(out: ExecResponse, operation: string): string | null {
   if (out.exit_code === null) return `${operation} terminated without an exit code`
   if (out.exit_code !== 0) {
     const detail = out.stderr.trim()
-    if (isIndexLocked(detail)) return 'another git process is using this repository; try again in a moment'
+    if (isIndexLocked(detail)) return 'another git process kept this repository locked; try again in a moment'
     return detail || `${operation} exited ${out.exit_code}`
   }
   return null
 }
 
+/** Waits between attempts while another process holds `index.lock`: other
+    editors, agents and terminals in the same repository run git too, and
+    their locks last milliseconds. ~2.5 s in all before giving up. */
+export const LOCK_RETRY_DELAYS_MS = [150, 300, 600, 1500]
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Run one mutating git command. Git takes `index.lock` before it changes
+    anything and gives up untouched when the lock is held, so a lock failure
+    is retried; `safeToRetry` lets a caller veto that when a command may have
+    got further (a stash that already stored its entry). */
 async function run(
   host: Host,
   root: string,
   args: string[],
   operation: string,
   timeoutMs?: number,
+  safeToRetry: () => Promise<boolean> = async () => true,
 ): Promise<ExecResponse> {
-  const out = await git(host, root, args, timeoutMs)
-  const message = failure(out, operation)
-  if (message !== null) throw new Error(message)
-  return out
+  for (let attempt = 0; ; attempt++) {
+    const out = await git(host, root, args, timeoutMs)
+    const message = failure(out, operation)
+    if (message === null) return out
+    const locked = out.exit_code !== 0 && isIndexLocked(out.stderr)
+    if (!locked || attempt >= LOCK_RETRY_DELAYS_MS.length || !(await safeToRetry())) throw new Error(message)
+    await sleep(LOCK_RETRY_DELAYS_MS[attempt])
+  }
 }
 
 /** `git add -A -- <paths>`: stages modifications, additions and
@@ -129,24 +145,14 @@ export async function gitDiscard(
           break
         }
         case 'restore-rename': {
-          await run(
-            host,
-            root,
-            ['restore', '--source=HEAD', '--staged', '--worktree', '--', step.from],
-            'git restore',
-          )
+          await run(host, root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', step.from], 'git restore')
           await gitUnstage(host, root, [step.path])
           const [result] = await coderDelete(host, [joinPath(root, step.path)], false)
           if (result && !result.success) throw new Error(result.error?.message ?? 'delete failed')
           break
         }
         case 'restore':
-          await run(
-            host,
-            root,
-            ['restore', '--source=HEAD', '--staged', '--worktree', '--', step.path],
-            'git restore',
-          )
+          await run(host, root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', step.path], 'git restore')
           break
       }
       results.push({ path: change.path, error: null })
@@ -257,8 +263,24 @@ export function stashPushArgs(request: StashRequest): string[] {
   ]
 }
 
+/** The newest stash's object id, or '' when there is none. */
+async function stashTip(host: Host, root: string): Promise<string> {
+  const out = await git(host, root, ['--no-optional-locks', 'rev-parse', '-q', '--verify', 'refs/stash'])
+  return out.exit_code === 0 ? out.stdout.trim() : ''
+}
+
 export async function gitStashPush(host: Host, root: string, request: StashRequest): Promise<void> {
-  await run(host, root, stashPushArgs(request), 'git stash')
+  // A lock failure is retried only while no new stash entry exists: one that
+  // got as far as storing it must not be stashed a second time.
+  const before = await stashTip(host, root)
+  await run(
+    host,
+    root,
+    stashPushArgs(request),
+    'git stash',
+    undefined,
+    async () => (await stashTip(host, root)) === before,
+  )
 }
 
 /** `git stash apply` or, with `pop`, apply and drop on success. */
@@ -302,12 +324,7 @@ export async function gitTags(host: Host, root: string): Promise<GitTagSummary[]
 /** One side of a compare: the file as committed at `ref`. `null` when the
     path did not exist there (an addition relative to that ref). Throws on
     an unknown ref or binary content. */
-export async function gitFileAtRef(
-  host: Host,
-  root: string,
-  ref: string,
-  path: string,
-): Promise<string | null> {
+export async function gitFileAtRef(host: Host, root: string, ref: string, path: string): Promise<string | null> {
   const out = await git(host, root, ['show', `${ref}:./${path}`])
   if (out.exit_code !== 0) {
     const detail = out.stderr.trim()

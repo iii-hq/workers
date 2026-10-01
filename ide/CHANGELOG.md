@@ -162,7 +162,10 @@
   The page re-reads git on every file change, and its `git status` took
   `index.lock` to refresh stat data, racing the panel's own commit, stash
   and rollback. Every read now runs with `--no-optional-locks`, as the
-  worker's own git already did; a lock held by another process says so.
+  worker's own git already did. A lock held by another process (an agent,
+  another editor, a terminal in the same repository) is waited out: the
+  command runs again after 150 ms, 300 ms, 600 ms and 1.5 s, and a stash
+  only when no new stash entry was stored.
 
 - **A turn waited ~50s on the snapshot of a VM disk image.** The turn
   history photographs the session root before each turn with `git add -A`,
