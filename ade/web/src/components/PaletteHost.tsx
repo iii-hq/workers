@@ -157,6 +157,7 @@ export function PaletteHost({
     })
 
     const chats: PaletteEntry[] = conversations
+      .filter((conversation) => !conversation.draft)
       .slice(0, 40)
       .map((conversation) => ({
         id: `chat:${conversation.id}`,

@@ -28,7 +28,6 @@ import {
   emptyConversation,
   type HydrationRun,
   type HydrationUpsert,
-  isUntouchedDraft,
   markBackgroundedStale,
   markDurableStarted,
   markUnwatchedStale,
@@ -46,6 +45,7 @@ import {
   shouldAcceptReconnectDirectoryRow,
   shouldQueueCompletionBell,
   shouldReplayQueuedCompletion,
+  unsentDraft,
 } from './use-conversations'
 
 function conversation(overrides: Partial<Conversation>): Conversation {
@@ -93,7 +93,6 @@ describe('prefilled chat draft', () => {
       draft: true,
       messages: [],
     })
-    expect(isUntouchedDraft(next)).toBe(false)
   })
 })
 
@@ -2076,39 +2075,33 @@ describe('resolveActiveConversationId', () => {
   })
 })
 
-describe('isUntouchedDraft', () => {
-  it('recognises the chat nobody has written in yet', () => {
-    expect(isUntouchedDraft(conversation({ draft: true, messages: [] }))).toBe(
-      true,
-    )
+describe('unsentDraft', () => {
+  const sent = conversation({
+    id: 'sent',
+    draft: true,
+    messages: [
+      { id: 'm1', role: 'user', content: 'sent', createdAt: 1 },
+    ] as Conversation['messages'],
+  })
+  const real = conversation({ id: 'real', draft: false, messages: [] })
+  const older = conversation({ id: 'older', draft: true, messages: [] })
+  const typed = conversation({
+    id: 'typed',
+    draft: true,
+    messages: [],
+    draftText: 'half a thought',
   })
 
-  it('refuses a draft that already carries work', () => {
-    expect(
-      isUntouchedDraft(
-        conversation({
-          draft: true,
-          messages: [],
-          draftText: 'half a thought',
-        }),
-      ),
-    ).toBe(false)
-    expect(
-      isUntouchedDraft(
-        conversation({
-          draft: true,
-          messages: [
-            { id: 'm1', role: 'user', content: 'sent', createdAt: 1 },
-          ] as Conversation['messages'],
-        }),
-      ),
-    ).toBe(false)
+  it('reuses a hidden draft, typed text and all, over making another', () => {
+    expect(unsentDraft([real, typed, older], 'real')?.id).toBe('typed')
   })
 
-  it('refuses a real session, which is never interchangeable', () => {
-    expect(isUntouchedDraft(conversation({ draft: false, messages: [] }))).toBe(
-      false,
-    )
+  it('prefers the draft in front of you', () => {
+    expect(unsentDraft([typed, older], 'older')?.id).toBe('older')
+  })
+
+  it('never hands back a real session or a draft mid-send', () => {
+    expect(unsentDraft([sent, real], 'real')).toBeUndefined()
   })
 })
 

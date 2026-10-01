@@ -246,14 +246,18 @@ export function emptyConversation(
   }
 }
 
-/** A chat nobody has written in yet: still local, no transcript, no draft
-    text. Two of these are the same chat as far as anyone can tell. */
-export function isUntouchedDraft(conversation: Conversation): boolean {
+/** The chat "new chat" should land on: an unsent local draft, preferring the
+    one in front of you. Drafts never show in the list, so reusing one is the
+    only way back to it. */
+export function unsentDraft(
+  conversations: Conversation[],
+  activeId: string | null,
+): Conversation | undefined {
+  const unsent = (c: Conversation) =>
+    c.draft === true && c.messages.length === 0
   return (
-    conversation.draft === true &&
-    conversation.messages.length === 0 &&
-    (conversation.draftText ?? '') === '' &&
-    (conversation.draftAttachments?.length ?? 0) === 0
+    conversations.find((c) => c.id === activeId && unsent(c)) ??
+    conversations.find(unsent)
   )
 }
 
@@ -2543,16 +2547,14 @@ export function useConversations(
 
   const createNew = useCallback(
     (draft?: { text: string; title?: string }) => {
-      // Asking for a new chat while an untouched one is already open reads as
-      // "nothing happened": the second empty draft is indistinguishable from
-      // the first, and they pile up in the list. Hand back the one in front of
-      // you instead, and put the caret in it.
-      const current = conversations.find(
-        (conversation) => conversation.id === activeId,
-      )
-      if (!draft && current && isUntouchedDraft(current)) {
+      // A chat stays off the list until its first send, so an unsent draft is
+      // the new chat already: hand it back (with whatever was typed in it)
+      // instead of piling up invisible drafts, and put the caret in it.
+      const pending = draft ? undefined : unsentDraft(conversations, activeId)
+      if (pending) {
+        setActiveId(pending.id)
         requestComposerFocus()
-        return current.id
+        return pending.id
       }
       const next = emptyConversation(
         loadLastModel(),
