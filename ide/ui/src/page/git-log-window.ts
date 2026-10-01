@@ -417,7 +417,19 @@ export async function readWorkingDiff(
   prefix: string,
   ref: string,
 ): Promise<{ files: CommitFile[]; truncated: boolean }> {
-  const out = await git(host, root, ['diff', '--name-status', '-z', '-M', '--no-color', '--end-of-options', ref, '--'])
+  // Against the working tree, re-read on every change while it shows: no
+  // optional index lock, or a commit running beside it could fail.
+  const out = await git(host, root, [
+    '--no-optional-locks',
+    'diff',
+    '--name-status',
+    '-z',
+    '-M',
+    '--no-color',
+    '--end-of-options',
+    ref,
+    '--',
+  ])
   if (out.exit_code !== 0) throw failed(out, 'git diff')
   return {
     files: filesOf(out.stdout, out.stdout_truncated).map((file) => placed(prefix, file)),
