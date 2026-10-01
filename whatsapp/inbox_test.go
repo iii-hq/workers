@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -225,6 +226,135 @@ func TestInboxEarlyCloudReceiptsArePersistentMonotonicAndIsolated(t *testing.T) 
 	page, _ = inbox.ListMessages(m.ChatID, "", 10)
 	if *page.Messages[0].Status != "submitted" {
 		t.Fatal("clear retained old receipts")
+	}
+}
+
+func TestInboxUpgradesLegacyReceiptsAndPreservesEarlySentTime(t *testing.T) {
+	dir := t.TempDir()
+	legacy, err := sql.Open("sqlite", filepath.Join(dir, "inbox.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.Exec(`CREATE TABLE inbox_external_receipts(message_id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,status TEXT NOT NULL,rank INTEGER NOT NULL,received_at_ms BIGINT NOT NULL);
+INSERT INTO inbox_external_receipts VALUES('outgoing','cloud:+15551234567','read',4,1700000005000);`)
+	if closeErr := legacy.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := NewInbox(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentAt := int64(1700000000000)
+	_, err = inbox.RecordExternal(nil, []ExternalReceipt{{MessageID: "outgoing", ChatID: "cloud:+15551234567", Status: "sent", SentAtMS: &sentAt}})
+	if closeErr := inbox.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A callback can be committed before the send response is archived, even across a restart.
+	inbox, err = NewInbox(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inbox.Close()
+	message := inboxTestMessage("outgoing", 1700000018000)
+	message.ChatID = "cloud:+15551234567"
+	message.FromMe = true
+	submitted := "submitted"
+	message.Status = &submitted
+	if _, err = inbox.RecordExternal([]MessageView{message}, nil); err != nil {
+		t.Fatal(err)
+	}
+	page, err := inbox.ListMessages(message.ChatID, "", 10)
+	if err != nil || len(page.Messages) != 1 {
+		t.Fatalf("message missing after upgrade: %+v, %v", page, err)
+	}
+	got := page.Messages[0]
+	if got.TimestampMS != sentAt || got.Status == nil || *got.Status != "read" {
+		t.Fatalf("upgrade or early receipt lost: %+v", got)
+	}
+}
+
+func TestInboxMessageSequenceMatchesPaginationAndSurvivesReplay(t *testing.T) {
+	inbox := inboxTestOpen(t, 10)
+	first := inboxTestMessage("z-first", 1700000000000)
+	second := inboxTestMessage("a-second", first.TimestampMS)
+	if err := inbox.Record([]MessageView{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	newest, err := inbox.ListMessages(first.ChatID, "", 1)
+	if err != nil || len(newest.Messages) != 1 || newest.NextCursor == nil || newest.Messages[0].MessageID != second.MessageID {
+		t.Fatalf("bad first page: %+v, %v", newest, err)
+	}
+	older, err := inbox.ListMessages(first.ChatID, *newest.NextCursor, 1)
+	if err != nil || len(older.Messages) != 1 || older.Messages[0].MessageID != first.MessageID {
+		t.Fatalf("bad older page: %+v, %v", older, err)
+	}
+	sequence := func(message MessageView) int64 {
+		t.Helper()
+		raw, _ := json.Marshal(message)
+		var projection struct {
+			Sequence int64 `json:"sequence"`
+		}
+		if err := json.Unmarshal(raw, &projection); err != nil {
+			t.Fatal(err)
+		}
+		return projection.Sequence
+	}
+	newestSequence, olderSequence := sequence(newest.Messages[0]), sequence(older.Messages[0])
+	if olderSequence <= 0 || newestSequence <= olderSequence {
+		t.Fatalf("API must expose its chronological tie order: first=%d, second=%d", olderSequence, newestSequence)
+	}
+	if err := inbox.Record([]MessageView{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := inbox.ListMessages(first.ChatID, "", 10)
+	if err != nil || len(page.Messages) != 2 || sequence(page.Messages[0]) != newestSequence || sequence(page.Messages[1]) != olderSequence {
+		t.Fatalf("replay changed the message order: %+v, %v", page, err)
+	}
+}
+
+func TestInboxExternalReceiptsOnlyCorrectOutgoingSentTimes(t *testing.T) {
+	inbox := inboxTestOpen(t, 10)
+	outgoing := inboxTestMessage("shared-id", 1700000018000)
+	outgoing.ChatID = "cloud:+15551234567"
+	outgoing.FromMe = true
+	incoming := outgoing
+	incoming.FromMe = false
+	incoming.TimestampMS = 1700000005000
+	if _, err := inbox.RecordExternal([]MessageView{outgoing, incoming}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []string{"delivered", "read"} {
+		if _, err := inbox.RecordExternal(nil, []ExternalReceipt{{MessageID: outgoing.MessageID, ChatID: outgoing.ChatID, Status: state}}); err != nil {
+			t.Fatal(err)
+		}
+		page, err := inbox.ListMessages(outgoing.ChatID, "", 10)
+		if err != nil || len(page.Messages) != 2 || page.Messages[0].TimestampMS != outgoing.TimestampMS {
+			t.Fatalf("%s changed the provisional send time: %+v, %v", state, page, err)
+		}
+	}
+	sentAt := int64(1700000000000)
+	if _, err := inbox.RecordExternal(nil, []ExternalReceipt{{MessageID: outgoing.MessageID, ChatID: outgoing.ChatID, Status: "sent", SentAtMS: &sentAt}}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := inbox.ListMessages(outgoing.ChatID, "", 10)
+	if err != nil || len(page.Messages) != 2 || page.Messages[0].FromMe || page.Messages[0].TimestampMS != incoming.TimestampMS || !page.Messages[1].FromMe || page.Messages[1].TimestampMS != sentAt {
+		t.Fatalf("sent receipt changed the wrong identity or failed to restore chronology: %+v, %v", page, err)
+	}
+	invalid := outgoing
+	invalid.MessageID = "rejected-batch"
+	negative := int64(-1)
+	if _, err := inbox.RecordExternal([]MessageView{invalid}, []ExternalReceipt{{MessageID: invalid.MessageID, ChatID: invalid.ChatID, Status: "sent", SentAtMS: &negative}}); err == nil {
+		t.Fatal("negative sent time accepted")
+	}
+	page, err = inbox.ListMessages(outgoing.ChatID, "", 10)
+	if err != nil || len(page.Messages) != 2 {
+		t.Fatalf("invalid receipt partially committed its batch: %+v, %v", page, err)
 	}
 }
 func TestInboxRejectsSymlinksAndSerializesOnlyDisplayFields(t *testing.T) {

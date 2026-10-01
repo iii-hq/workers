@@ -469,10 +469,11 @@ func outwardCloudMessage(m *MessageView) {
 	m.ChatID = strings.TrimPrefix(m.ChatID, "cloud:")
 	m.SenderID = strings.TrimPrefix(m.SenderID, "cloud:")
 }
-func retainCloudSend(inbox *Inbox, sent CloudSentMessage, kind, text string) error {
+func retainCloudSend(inbox *Inbox, sent CloudSentMessage, kind, text string, requestedAt time.Time) error {
 	chat, _ := cloudStorageChatID(sent.ChatID)
 	status := "submitted"
-	_, err := inbox.RecordExternal([]MessageView{{MessageID: sent.MessageID, ChatID: chat, SenderID: "me", FromMe: true, TimestampMS: time.Now().UnixMilli(), Kind: kind, Text: text, Source: "sent", Status: &status}}, nil)
+	// Provisional until the sent webhook supplies Meta's timestamp.
+	_, err := inbox.RecordExternal([]MessageView{{MessageID: sent.MessageID, ChatID: chat, SenderID: "me", FromMe: true, TimestampMS: requestedAt.UnixMilli(), Kind: kind, Text: text, Source: "sent", Status: &status}}, nil)
 	if err != nil {
 		return errors.New("Cloud API accepted the message, but local archival failed; do not resend blindly")
 	}
@@ -556,11 +557,12 @@ func registerCloud(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
+		requestedAt := time.Now()
 		sent, err := client.send(ctx, config, req.ChatID, body)
 		if err != nil {
 			return nil, err
 		}
-		if err = retainCloudSend(inbox, sent, "text", req.Text); err != nil {
+		if err = retainCloudSend(inbox, sent, "text", req.Text, requestedAt); err != nil {
 			return nil, err
 		}
 		return sent, nil
@@ -579,11 +581,12 @@ func registerCloud(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
+		requestedAt := time.Now()
 		sent, err := client.send(ctx, config, req.ChatID, body)
 		if err != nil {
 			return nil, err
 		}
-		if err = retainCloudSend(inbox, sent, "template", fmt.Sprintf("[Template: %s (%s)]", req.Name, req.Language)); err != nil {
+		if err = retainCloudSend(inbox, sent, "template", fmt.Sprintf("[Template: %s (%s)]", req.Name, req.Language), requestedAt); err != nil {
 			return nil, err
 		}
 		return sent, nil

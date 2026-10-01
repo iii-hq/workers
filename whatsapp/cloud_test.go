@@ -294,3 +294,59 @@ func TestCloudWebhookRawSDKChannelAndDuplicatePersistence(t *testing.T) {
 		t.Fatalf("unexpected channel calls: %d", streamCalls.Load())
 	}
 }
+
+func TestCloudSentReceiptCorrectsArchiveTimeWithoutRegressingStatus(t *testing.T) {
+	inbox := inboxTestOpen(t, 10)
+	message := inboxTestMessage("outgoing", 1700000018000)
+	message.ChatID = "cloud:+15551234567"
+	message.FromMe = true
+	submitted := "submitted"
+	message.Status = &submitted
+	if _, err := inbox.RecordExternal([]MessageView{message}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []struct{ state, timestamp string }{{"read", "1700000005"}, {"sent", "1700000000"}, {"delivered", "1700000003"}, {"sent", "1700000000"}} {
+		change := cloudTestChange()
+		delete(change["value"].(map[string]any), "messages")
+		change["value"].(map[string]any)["statuses"] = []any{map[string]any{"id": message.MessageID, "status": status.state, "timestamp": status.timestamp, "recipient_id": "15551234567"}}
+		batch := cloudTestParse(t, cloudTestPayload(change))
+		if _, err := inbox.RecordExternal(batch.messages, batch.receipts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := inbox.ListMessages(message.ChatID, "", 10)
+	if err != nil || len(page.Messages) != 1 {
+		t.Fatalf("message missing: %+v, %v", page, err)
+	}
+	got := page.Messages[0]
+	if got.TimestampMS != 1700000000000 || got.Status == nil || *got.Status != "read" {
+		t.Fatalf("sent time must replace the local clock without regressing read: %+v", got)
+	}
+}
+
+func TestCloudWebhookValidatesSentTimestampsAndKeepsOtherStatusTimesSeparate(t *testing.T) {
+	for _, timestamp := range []any{nil, "", "invalid", "-1", "9223372036854776", "9223372036854775808", float64(1700000000)} {
+		t.Run(fmt.Sprint(timestamp), func(t *testing.T) {
+			change := cloudTestChange(cloudTestMessage("incoming"))
+			change["value"].(map[string]any)["statuses"] = []any{map[string]any{"id": "outgoing", "status": "sent", "timestamp": timestamp, "recipient_id": "15551234567"}}
+			raw, err := json.Marshal(cloudTestPayload(change))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = parseCloudDelivery(cloudTestConfig().Cloud, raw); err == nil {
+				t.Fatal("invalid sent timestamp accepted")
+			}
+		})
+	}
+	for _, state := range []string{"sent", "delivered", "read", "failed"} {
+		change := cloudTestChange(cloudTestMessage("incoming"))
+		change["value"].(map[string]any)["statuses"] = []any{map[string]any{"id": "outgoing", "status": state, "timestamp": "0", "recipient_id": "15551234567"}}
+		batch := cloudTestParse(t, cloudTestPayload(change))
+		if len(batch.receipts) != 1 || (batch.receipts[0].SentAtMS != nil) != (state == "sent") {
+			t.Fatalf("status time misclassified for %s: %+v", state, batch.receipts)
+		}
+		if state == "sent" && *batch.receipts[0].SentAtMS != 0 {
+			t.Fatal("epoch timestamp was not preserved")
+		}
+	}
+}

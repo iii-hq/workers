@@ -20,6 +20,7 @@ import (
 )
 
 type MessageView struct {
+	Sequence    int64   `json:"sequence"`
 	MessageID   string  `json:"message_id"`
 	ChatID      string  `json:"chat_id"`
 	SenderID    string  `json:"sender_id"`
@@ -33,7 +34,10 @@ type MessageView struct {
 	ExpiresAtMS *int64  `json:"-"`
 	Edited      bool    `json:"-"`
 }
-type ExternalReceipt struct{ MessageID, ChatID, Status string }
+type ExternalReceipt struct {
+	MessageID, ChatID, Status string
+	SentAtMS                  *int64
+}
 type Coverage struct {
 	CaptureStartedAtMS      int64  `json:"capture_started_at_ms"`
 	LastHistorySyncAtMS     *int64 `json:"last_history_sync_at_ms"`
@@ -82,7 +86,7 @@ CREATE TABLE IF NOT EXISTS inbox_messages (row_id INTEGER PRIMARY KEY AUTOINCREM
 CREATE INDEX IF NOT EXISTS inbox_chat_order ON inbox_messages(chat_id,timestamp_ms DESC,row_id DESC);
 CREATE INDEX IF NOT EXISTS inbox_retention_order ON inbox_messages(timestamp_ms DESC,row_id DESC);
 CREATE INDEX IF NOT EXISTS inbox_expiration ON inbox_messages(expires_at_ms) WHERE expires_at_ms IS NOT NULL;
-CREATE TABLE IF NOT EXISTS inbox_external_receipts(message_id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,status TEXT NOT NULL,rank INTEGER NOT NULL,received_at_ms BIGINT NOT NULL);`
+CREATE TABLE IF NOT EXISTS inbox_external_receipts(message_id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,status TEXT NOT NULL,rank INTEGER NOT NULL,received_at_ms BIGINT NOT NULL,sent_at_ms BIGINT);`
 
 func NewInbox(dir string, limit int) (*Inbox, error) {
 	if limit < 1 || limit > 100000 {
@@ -124,6 +128,14 @@ func NewInbox(dir string, limit int) (*Inbox, error) {
 	}
 	db.SetMaxOpenConns(1)
 	if _, err = db.Exec(inboxSchema); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	var hasSentTime bool
+	if err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info('inbox_external_receipts') WHERE name='sent_at_ms')").Scan(&hasSentTime); err == nil && !hasSentTime {
+		_, err = db.Exec("ALTER TABLE inbox_external_receipts ADD COLUMN sent_at_ms BIGINT")
+	}
+	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -476,6 +488,9 @@ func (i *Inbox) RecordExternal(messages []MessageView, receipts []ExternalReceip
 		if _, err := canonicalInboxChat(receipt.ChatID); err != nil {
 			return 0, err
 		}
+		if receipt.SentAtMS != nil && (receipt.Status != "sent" || *receipt.SentAtMS < 0) {
+			return 0, errors.New("invalid Cloud API sent timestamp")
+		}
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -484,11 +499,19 @@ func (i *Inbox) RecordExternal(messages []MessageView, receipts []ExternalReceip
 			return err
 		}
 		for _, r := range receipts {
-			if _, err := tx.Exec("INSERT INTO inbox_external_receipts(message_id,chat_id,status,rank,received_at_ms) VALUES(?,?,?,?,?) ON CONFLICT(message_id) DO UPDATE SET status=excluded.status,rank=excluded.rank,received_at_ms=excluded.received_at_ms WHERE excluded.rank>inbox_external_receipts.rank", r.MessageID, r.ChatID, r.Status, externalStatusRank(r.Status), time.Now().UnixMilli()); err != nil {
+			if _, err := tx.Exec(`INSERT INTO inbox_external_receipts(message_id,chat_id,status,rank,received_at_ms,sent_at_ms) VALUES(?,?,?,?,?,?)
+ON CONFLICT(message_id) DO UPDATE SET
+status=CASE WHEN excluded.rank>inbox_external_receipts.rank THEN excluded.status ELSE inbox_external_receipts.status END,
+received_at_ms=CASE WHEN excluded.rank>inbox_external_receipts.rank THEN excluded.received_at_ms ELSE inbox_external_receipts.received_at_ms END,
+rank=MAX(excluded.rank,inbox_external_receipts.rank),
+sent_at_ms=COALESCE(inbox_external_receipts.sent_at_ms,excluded.sent_at_ms)`, r.MessageID, r.ChatID, r.Status, externalStatusRank(r.Status), time.Now().UnixMilli(), r.SentAtMS); err != nil {
 				return err
 			}
 		}
 		if _, err := tx.Exec("UPDATE inbox_messages SET status=(SELECT status FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id) WHERE from_me=1 AND EXISTS(SELECT 1 FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id AND r.rank>CASE inbox_messages.status WHEN 'sent' THEN 1 WHEN 'failed' THEN 2 WHEN 'delivered' THEN 3 WHEN 'read' THEN 4 ELSE 0 END)"); err != nil {
+			return err
+		}
+		if _, err := tx.Exec("UPDATE inbox_messages SET timestamp_ms=(SELECT sent_at_ms FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id) WHERE from_me=1 AND EXISTS(SELECT 1 FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id AND r.sent_at_ms IS NOT NULL AND r.sent_at_ms!=inbox_messages.timestamp_ms)"); err != nil {
 			return err
 		}
 		return trimInbox(tx, i.limit)
@@ -544,6 +567,7 @@ func scanInboxMessage(row interface{ Scan(...any) error }) (MessageView, int64, 
 	var m MessageView
 	var id int64
 	err := row.Scan(&id, &m.MessageID, &m.ChatID, &m.SenderID, &m.SenderName, &m.FromMe, &m.TimestampMS, &m.Kind, &m.Text, &m.Source, &m.Status, &m.ExpiresAtMS, &m.Edited)
+	m.Sequence = id
 	return m, id, err
 }
 func (i *Inbox) ListMessages(chatID, cursor string, limit int) (MessagePage, error) {

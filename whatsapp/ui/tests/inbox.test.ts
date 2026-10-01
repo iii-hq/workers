@@ -21,6 +21,23 @@ describe('message pages and live refresh', () => {
   it('keeps distinct incoming and outgoing identities and stable timestamp ties', () => {
     expect(mergeMessages([], [message('same', 1), message('same', 1, { from_me: true })], '123@s.whatsapp.net')).toHaveLength(2)
   })
+  it('keeps the archive sequence for messages within the same second across pages', () => {
+    const newest = message('a-later', 1000, { sequence: 2 })
+    const oldest = message('z-earlier', 1000, { sequence: 1, from_me: true })
+    const initial = mergeMessages([], [newest], newest.chat_id)
+    const next = mergeMessages(initial, [newest, oldest], newest.chat_id)
+    expect(next.map((item) => item.message_id)).toEqual(['z-earlier', 'a-later'])
+  })
+  it('reorders a provisional send when its confirmed timestamp arrives without duplicating it', () => {
+    const outgoing = message('sent', 18000, { from_me: true, status: 'submitted' })
+    const reply = message('reply', 11000)
+    const initial = mergeMessages([], [reply, outgoing], reply.chat_id)
+    expect(initial.map((item) => item.message_id)).toEqual(['reply', 'sent'])
+    const confirmed = { ...outgoing, timestamp_ms: 0, status: 'read' }
+    const next = mergeMessages(initial, [reply, confirmed], reply.chat_id)
+    expect(next.map((item) => item.message_id)).toEqual(['sent', 'reply'])
+    expect(next[0].status).toBe('read')
+  })
   it('keeps two group senders with the same message id, and reconciles the own-device echo', () => {
     const next = mergeMessages([], [message('same', 1, { sender_id: 'a@lid' }), message('same', 1, { sender_id: 'b@lid' })], '123@s.whatsapp.net')
     expect(next).toHaveLength(2)

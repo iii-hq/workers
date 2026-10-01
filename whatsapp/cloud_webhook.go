@@ -359,7 +359,16 @@ func parseCloudDelivery(config CloudConfig, raw []byte) (cloudDeliveryBatch, err
 						return batch, err
 					}
 					chat, _ := cloudStorageChatID(recipient)
-					batch.receipts = append(batch.receipts, ExternalReceipt{MessageID: id, ChatID: chat, Status: state})
+					receipt := ExternalReceipt{MessageID: id, ChatID: chat, Status: state}
+					if state == "sent" {
+						seconds, err := strconv.ParseInt(cloudString(status, "timestamp"), 10, 64)
+						if err != nil || seconds < 0 || seconds > math.MaxInt64/1000 {
+							return batch, errors.New("invalid sent timestamp")
+						}
+						milliseconds := seconds * 1000
+						receipt.SentAtMS = &milliseconds
+					}
+					batch.receipts = append(batch.receipts, receipt)
 				}
 			}
 		}

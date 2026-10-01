@@ -5,6 +5,7 @@ export interface MessageView {
   sender_name?: string | null
   from_me: boolean
   timestamp_ms: number
+  sequence?: number
   kind: string
   text: string
   source: 'live' | 'history' | 'sent'
@@ -32,7 +33,7 @@ export function mergeMessages(previous: MessageView[], incoming: MessageView[], 
   for (const message of [...previous, ...incoming]) {
     if (message.chat_id === chatId) messages.set(messageKey(message), message)
   }
-  return [...messages.values()].sort((a, b) => a.timestamp_ms - b.timestamp_ms || a.message_id.localeCompare(b.message_id) || Number(a.from_me) - Number(b.from_me))
+  return [...messages.values()].sort((a, b) => a.timestamp_ms - b.timestamp_ms || (a.sequence ?? 0) - (b.sequence ?? 0) || a.message_id.localeCompare(b.message_id) || Number(a.from_me) - Number(b.from_me))
 }
 
 export function mergeChats(previous: ChatView[], incoming: ChatView[]): ChatView[] {
