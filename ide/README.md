@@ -111,6 +111,14 @@ commit_messages:             # the Commit panel's Generate button (read live on 
   model: null                # router model id ("provider::model" or bare); null = the chat's default model, passed by the panel
   thinking: low              # default|minimal|low|medium|high|xhigh; "default" sends no reasoning override
   instructions: ""           # free text appended to the prompt, e.g. "Use Conventional Commits"
+
+code:
+  templates:                 # worker templates for coder::list-templates / coder::scaffold-worker
+    dir: null                # local templates checkout (repo root or its iii/ dir), read on every call; III_TEMPLATE_DIR overrides
+    url: https://github.com/iii-hq/templates.git  # shallow-cloned when dir is unset; III_TEMPLATE_URL overrides
+    ref: main                # branch or tag to clone
+    cache_dir: data/shell/templates  # clone cache; relative paths resolve against III_COMPOSE_DIR
+    refresh_secs: 600        # fetch the clone again after this long (or on coder::list-templates refresh: true)
 ```
 
 ### Zero-config default
