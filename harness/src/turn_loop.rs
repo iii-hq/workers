@@ -607,12 +607,15 @@ async fn generate_step(
     };
     let (stable_prompt, assembly_system_prompt) =
         with_runtime_context(record.options.system_prompt.clone(), &record, &runtime_aid);
-    // Registry-change notice: if the function registry changed since this
-    // session last acknowledged its generation, tell the model its cached
-    // contracts may be stale. First sighting stamps silently.
+    // Registry-change notice: if a function this session may call changed
+    // since it last acknowledged them, tell the model its cached contracts
+    // may be stale. First sighting stamps silently.
+    // ponytail: a broad policy (`*`) still hears every registry change; judging
+    // only the contracts the session fetched (function_contract_ledger) is the upgrade.
+    let current_surface = functions.permitted_fingerprint(&policy);
     let registry_changed = registry_notice(
-        record.functions_generation,
-        current_generation,
+        record.functions_surface,
+        current_surface,
         &policy,
         &functions,
     );
@@ -650,7 +653,7 @@ async fn generate_step(
     .filter_map(|(kind, notice)| Some((kind, notice_message(notice?))))
     .collect();
     let notice_prefix = ids::notice_entry_prefix(&record.turn_id, payload.step);
-    record.functions_generation = Some(current_generation);
+    record.functions_surface = Some(current_surface);
 
     // Resolve the output-contract strategy and build the invocation surface:
     // the exposure-mode tools plus the synthetic submit_result schema when the
@@ -1524,7 +1527,11 @@ async fn finish_step(
             // Fail-closed glob policy first — structural and final. Hooks run
             // only after it passes (a denial never reaches a hook).
             if !policy.allows(&call.function_id) {
-                let data = trigger::denied_result(&call.function_id);
+                let functions = deps.functions().await;
+                let did_you_mean =
+                    trigger::closest_permitted(&call.function_id, &policy, &functions);
+                let data =
+                    trigger::denied_result_with_hint(&call.function_id, did_you_mean.as_deref());
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 append_function_result(
                     &session,
@@ -3667,8 +3674,8 @@ const PRELOADED_STALE_NOTICE_KIND: &str = "preloaded-stale";
 const RUNTIME_CONTEXT_NOTICE_KIND: &str = "runtime-context";
 const HOOK_NOTICE_KIND: &str = "hook";
 
-/// The single-line notice delivered as a tail message when the registry
-/// changed under a session that had already acknowledged an earlier generation.
+/// The single-line notice delivered as a tail message when a function the
+/// session may call changed after it had acknowledged the earlier set.
 const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale.";
 
 /// How either notice tells the model to re-check contracts: name
@@ -3700,16 +3707,19 @@ fn notice_message(text: String) -> Value {
 }
 
 /// Decide the registry-change notice for a step. `None` when the record already
-/// matches the live generation, or is being stamped for the first time; `Some`
-/// only when the registry changed under a session that acknowledged an earlier
-/// generation. The caller stamps `functions_generation = current` regardless.
+/// matches the live permitted surface ([`FunctionsSnapshot::permitted_fingerprint`]),
+/// or is being stamped for the first time; `Some` only when a function the
+/// session may call changed under a session that acknowledged an earlier
+/// surface. The caller stamps `functions_surface = current` regardless.
+///
+/// [`FunctionsSnapshot::permitted_fingerprint`]: crate::discovery::FunctionsSnapshot::permitted_fingerprint
 pub(crate) fn registry_notice(
-    record_gen: Option<u64>,
+    record_surface: Option<u64>,
     current: u64,
     policy: &CompiledPolicy,
     snapshot: &crate::discovery::FunctionsSnapshot,
 ) -> Option<String> {
-    match record_gen {
+    match record_surface {
         Some(g) if g != current => Some(format!(
             "{REGISTRY_CHANGED_NOTICE} {}",
             refetch_hint(policy, snapshot)
@@ -4909,6 +4919,43 @@ mod tests {
         assert!(notice.contains("with engine::functions::info"), "{notice}");
         let blind = super::registry_notice(Some(6), 7, &all, &snap(&[])).unwrap();
         assert!(blind.contains("cannot re-fetch"), "{blind}");
+    }
+
+    #[test]
+    fn registry_notice_ignores_changes_to_functions_the_session_cannot_call() {
+        let exec_only =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["task::exec".into()],
+                ..Default::default()
+            }));
+        let exec = |schema: serde_json::Value| crate::clients::FunctionDescriptor {
+            function_id: "task::exec".into(),
+            description: Some("Run one command".into()),
+            parameters: Some(schema),
+        };
+        let other = crate::clients::FunctionDescriptor {
+            function_id: "other::worker".into(),
+            description: None,
+            parameters: None,
+        };
+        let acknowledged =
+            snap(&[exec(serde_json::json!({"type": "object"}))]).permitted_fingerprint(&exec_only);
+
+        // Another worker registering a function: same permitted surface, no notice.
+        let unrelated = snap(&[exec(serde_json::json!({"type": "object"})), other]);
+        let current = unrelated.permitted_fingerprint(&exec_only);
+        assert!(
+            super::registry_notice(Some(acknowledged), current, &exec_only, &unrelated).is_none()
+        );
+
+        // The permitted function's contract changing: notice.
+        let changed = snap(&[exec(
+            serde_json::json!({"type": "object", "required": ["command"]}),
+        )]);
+        let current = changed.permitted_fingerprint(&exec_only);
+        assert!(
+            super::registry_notice(Some(acknowledged), current, &exec_only, &changed).is_some()
+        );
     }
 
     #[test]

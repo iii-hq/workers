@@ -349,11 +349,12 @@ pub struct TurnRecord {
     /// nest them. Never set alongside `parent`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_parent_session_id: Option<String>,
-    /// Function-registry generation this session last acknowledged; a mismatch
-    /// at generate time appends a registry-change notice so session-cached
-    /// contracts get re-fetched.
+    /// Fingerprint of the functions this session's policy permits, as it last
+    /// acknowledged them; a mismatch at generate time appends a registry-change
+    /// notice so session-cached contracts get re-fetched. Changes to functions
+    /// the session cannot call never reach it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub functions_generation: Option<u64>,
+    pub functions_surface: Option<u64>,
     /// Function contracts whose exact full source result was retained in the
     /// most recently assembled model context for this session.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -528,7 +529,7 @@ pub(crate) mod tests {
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
-            functions_generation: None,
+            functions_surface: None,
             function_contract_ledger: Default::default(),
             failed_calls: Default::default(),
             skill_ack: None,

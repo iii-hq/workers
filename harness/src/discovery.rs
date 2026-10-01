@@ -55,6 +55,19 @@ pub struct FunctionsSnapshot {
     pub internal_ids: BTreeSet<String>,
 }
 
+impl FunctionsSnapshot {
+    /// [`fingerprint_of`] over only the functions `policy` permits: what a
+    /// session can call. A registry change outside that set leaves it equal,
+    /// so it never tells the session its contracts went stale.
+    pub fn permitted_fingerprint(&self, policy: &crate::policy::CompiledPolicy) -> u64 {
+        fingerprint_of(
+            self.functions
+                .iter()
+                .filter(|f| policy.allows(&f.function_id)),
+        )
+    }
+}
+
 /// Hot-swappable function-registry snapshot shared with the turn loop.
 pub type FunctionsCell = Arc<RwLock<Arc<FunctionsSnapshot>>>;
 
@@ -81,9 +94,9 @@ pub fn snapshot_of(functions: Vec<FunctionDescriptor>) -> FunctionsSnapshot {
 /// Content fingerprint over the sorted (id, description, serialized schema)
 /// tuples — stable across reloads of an unchanged registry, so a re-apply of
 /// the same set is a no-op.
-fn fingerprint_of(functions: &[FunctionDescriptor]) -> u64 {
+fn fingerprint_of<'a>(functions: impl IntoIterator<Item = &'a FunctionDescriptor>) -> u64 {
     let mut tuples: Vec<(&str, &str, String)> = functions
-        .iter()
+        .into_iter()
         .map(|f| {
             (
                 f.function_id.as_str(),
