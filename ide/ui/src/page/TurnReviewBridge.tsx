@@ -13,6 +13,7 @@ export function TurnReviewBridge({
   turn,
   turnCache,
   epoch,
+  written,
   sessionId,
   sourceId,
   onSelectFile,
@@ -23,11 +24,13 @@ export function TurnReviewBridge({
   turnCache: { get(turnId: string): Promise<SessionTurn | null>; forget(turnId: string): void }
   /** Bumps when the disk changed; the totals follow. */
   epoch: number
+  /** The absolute paths written since the summary last looked. */
+  written: Set<string>
   sessionId: string | null | undefined
   sourceId: string
   onSelectFile(path: string): void
 }) {
-  const files = useTurnSummary(host, root, turn, turnCache, epoch)
+  const files = useTurnSummary(host, root, turn, turnCache, epoch, written)
   useShellReviewSummaryBridge({ sessionId, sourceId, turnId: turn?.turn_id ?? null, files, onSelectFile })
   return null
 }

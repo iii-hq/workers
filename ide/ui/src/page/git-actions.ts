@@ -131,53 +131,84 @@ export function discardStep(change: Pick<GitChange, 'path' | 'status' | 'staged'
   return { kind: 'restore', path: change.path }
 }
 
-/** Discard working-tree (and index) changes for the given files. Each
-    change is undone on its own so one failure names one file.
-    `keepAdded` only un-adds an added file, leaving it on disk as unversioned
-    (the Rollback dialog's unticked "Delete local copies of added files"). */
+/** Discard working-tree (and index) changes for the given files in a few
+    calls for the lot, in each change's own order: every restore, then
+    every unstage, then every delete. A call that fails is retried file by
+    file, so a failure names its file, and a failed change skips the rest
+    of its steps. `keepAdded` only un-adds an added file, leaving it on disk
+    as unversioned (the Rollback dialog's unticked "Delete local copies of
+    added files"). */
 export async function gitDiscard(
   host: Host,
   root: string,
   changes: readonly Pick<GitChange, 'path' | 'status' | 'staged' | 'from'>[],
   options: { keepAdded?: boolean } = {},
 ): Promise<{ path: string; error: string | null }[]> {
-  const results: { path: string; error: string | null }[] = []
-  for (const change of changes) {
-    const step = discardStep(change)
-    try {
-      switch (step.kind) {
-        case 'delete': {
-          const [result] = await coderDelete(host, [joinPath(root, step.path)], false)
-          if (result && !result.success) throw new Error(result.error?.message ?? 'delete failed')
-          break
-        }
-        case 'unstage-delete': {
-          await gitUnstage(host, root, [step.path])
-          if (options.keepAdded) break
-          const [result] = await coderDelete(host, [joinPath(root, step.path)], false)
-          if (result && !result.success) throw new Error(result.error?.message ?? 'delete failed')
-          break
-        }
-        case 'restore-rename': {
-          await run(host, root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', step.from], 'git restore')
-          await gitUnstage(host, root, [step.path])
-          const [result] = await coderDelete(host, [joinPath(root, step.path)], false)
-          if (result && !result.success) throw new Error(result.error?.message ?? 'delete failed')
-          break
-        }
-        case 'restore':
-          await run(host, root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', step.path], 'git restore')
-          break
-      }
-      results.push({ path: change.path, error: null })
-    } catch (error) {
-      results.push({
-        path: change.path,
-        error: error instanceof Error ? error.message : String(error),
+  const steps = changes.map(discardStep)
+  const failed = new Map<string, string>()
+  await discardBatch(
+    steps.flatMap((step) =>
+      step.kind === 'restore'
+        ? [{ change: step.path, path: step.path }]
+        : step.kind === 'restore-rename'
+          ? [{ change: step.path, path: step.from }]
+          : [],
+    ),
+    async (paths) => {
+      await run(host, root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', ...paths], 'git restore')
+      return []
+    },
+    failed,
+  )
+  await discardBatch(
+    steps
+      .filter((step) => step.kind === 'unstage-delete' || step.kind === 'restore-rename')
+      .map((step) => ({ change: step.path, path: step.path })),
+    async (paths) => {
+      await gitUnstage(host, root, paths)
+      return []
+    },
+    failed,
+  )
+  await discardBatch(
+    steps
+      .filter((step) => step.kind !== 'restore' && !(options.keepAdded && step.kind === 'unstage-delete'))
+      .map((step) => ({ change: step.path, path: step.path })),
+    async (paths) => {
+      const results = await coderDelete(host, paths.map((path) => joinPath(root, path)), false)
+      return paths.map((_, index) => {
+        const result = results[index]
+        return result && !result.success ? (result.error?.message ?? 'delete failed') : null
       })
+    },
+    failed,
+  )
+  return changes.map((change) => ({ path: change.path, error: failed.get(change.path) ?? null }))
+}
+
+/** One discard step over many paths, each tied to the change it undoes.
+    `call` fails outright, or resolves to the failures it can name per path
+    (by index; none listed means none failed). */
+async function discardBatch(
+  targets: readonly { change: string; path: string }[],
+  call: (paths: string[]) => Promise<readonly (string | null)[]>,
+  failed: Map<string, string>,
+): Promise<void> {
+  const live = targets.filter((target) => !failed.has(target.change))
+  if (live.length === 0) return
+  try {
+    const errors = await call(live.map((target) => target.path))
+    live.forEach((target, index) => {
+      const error = errors[index]
+      if (error) failed.set(target.change, error)
+    })
+  } catch (error) {
+    if (live.length === 1) {
+      failed.set(live[0].change, error instanceof Error ? error.message : String(error))
+      return
     }
+    for (const target of live) await discardBatch([target], call, failed)
   }
-  return results
 }
 
 /** Commit what is staged. */

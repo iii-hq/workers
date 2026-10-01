@@ -28,6 +28,12 @@ interface TerminalPanelSharedProps {
   onClose: () => void
   /** The page is narrow: a right dock stacks under the editor at full width. */
   narrow?: boolean
+  /**
+   * Hidden rather than unmounted: the shells stay attached and every pane
+   * keeps its scrollback, where unmounting detached them all and showing the
+   * panel again replayed each one's output from the start.
+   */
+  hidden?: boolean
 }
 
 interface TerminalPanelProps extends TerminalPanelSharedProps {
@@ -98,11 +104,12 @@ function DockActions({
 }
 
 function TerminalPanelView(props: TerminalPanelProps) {
-  const { dock, size, onDockChange, onSizeChange, onClose, narrow } = props
+  const { dock, size, onDockChange, onSizeChange, onClose, narrow, hidden } =
+    props
   const workspaceRef = useRef<TerminalWorkspaceHandle>(null)
 
   return (
-    <DockPanel dock={dock} size={size} narrow={narrow} label="Terminal" noun="terminal" onSizeChange={onSizeChange}>
+    <DockPanel dock={dock} size={size} narrow={narrow} hidden={hidden} label="Terminal" noun="terminal" onSizeChange={onSizeChange}>
       <TerminalWorkspace
         ref={workspaceRef}
         actions={
@@ -128,6 +135,8 @@ function TerminalPanelView(props: TerminalPanelProps) {
         dispatch={props.dispatch}
         root={props.root}
         visible={props.visible}
+        hidden={hidden}
+        narrow={narrow}
         router={props.router}
         leaseStore={props.leaseStore}
         storageKey={props.storageKey}

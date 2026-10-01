@@ -9,7 +9,7 @@
 
 import { Toolbar, Tooltip } from '@iii-dev/console-ui'
 import { Ellipsis } from 'lucide-react'
-import { Fragment, type KeyboardEvent, type ReactNode } from 'react'
+import { Fragment, type KeyboardEvent, memo, type ReactNode } from 'react'
 import type { ContextMenuAnchor, ContextMenuItem } from './ContextMenu'
 
 export interface GitAction {
@@ -86,7 +86,9 @@ function railKeys(bar: boolean) {
   }
 }
 
-export function ActionRail({
+/** Memoized: a caller that keeps its action list while the selection
+    stays skips re-rendering every button. */
+export const ActionRail = memo(function ActionRail({
   label,
   actions,
   bar = false,
@@ -149,7 +151,7 @@ export function ActionRail({
       ) : null}
     </Toolbar>
   )
-}
+})
 
 /** The same actions as context menu rows: those that apply, and with
     `withRail` the rail's own (Fetch, Collapse all) too. A new group starts

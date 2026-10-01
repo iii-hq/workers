@@ -255,7 +255,9 @@ export function refsTree(snapshot: RefsSnapshot, defaultBranch: string | null = 
   const remotes = new Map<string, LogRef[]>()
   for (const ref of byKind('remote')) {
     const remote = ref.name.split('/')[0]
-    remotes.set(remote, [...(remotes.get(remote) ?? []), ref])
+    const group = remotes.get(remote)
+    if (group) group.push(ref)
+    else remotes.set(remote, [ref])
   }
   const current = snapshot.refs.find((ref) => ref.current) ?? null
   return [
@@ -291,7 +293,9 @@ export function labelsBySha(snapshot: RefsSnapshot): Map<string, LogRef[]> {
   const order = (ref: LogRef) => (ref.kind === 'local' ? (ref.current ? 0 : 1) : ref.kind === 'remote' ? 2 : 3)
   const labels = new Map<string, LogRef[]>()
   for (const ref of [...snapshot.refs].sort((a, b) => order(a) - order(b))) {
-    labels.set(ref.sha, [...(labels.get(ref.sha) ?? []), ref])
+    const refs = labels.get(ref.sha)
+    if (refs) refs.push(ref)
+    else labels.set(ref.sha, [ref])
   }
   return labels
 }

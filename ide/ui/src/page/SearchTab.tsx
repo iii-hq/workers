@@ -19,7 +19,7 @@ import {
   WholeWord,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import type { Host } from '@iii-dev/console-ui'
 import { coderSearch } from './coder'
@@ -85,15 +85,10 @@ export function splitGlobs(text: string): string[] {
     .filter((glob) => glob !== '')
 }
 
-export function SearchTab({
-  host,
-  root,
-  request,
-  onOpenMatch,
-  onPreviewFile,
-  onPinFile,
-  onRevealFolder,
-}: SearchTabProps) {
+/** Module-level, so the memoized list sees the same function every render. */
+const rowKey = (row: SearchRow) => row.key
+
+function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinFile, onRevealFolder }: SearchTabProps) {
   const [query, setQuery] = useState('')
   const [matchCase, setMatchCase] = useState(false)
   const [wholeWord, setWholeWord] = useState(false)
@@ -510,7 +505,7 @@ export function SearchTab({
           rows={rows}
           rowHeight={ROW_HEIGHT}
           renderRow={renderRow}
-          rowKey={(row) => row.key}
+          rowKey={rowKey}
           className="shui-search-results"
           scrollToIndex={focusIndex}
           role="tree"
@@ -523,6 +518,9 @@ export function SearchTab({
     </div>
   )
 }
+
+/** Memoized: the page re-renders often, and this only when its props change. */
+export const SearchTab = memo(SearchTabView)
 
 function SearchToggle({
   label,

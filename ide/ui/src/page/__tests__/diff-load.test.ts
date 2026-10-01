@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { createTurnCache, loadDiffContents, loadTurnDiff, preImageBody, turnFileFor } from '../diff-load'
+import { createTurnCache, loadDiffContents, loadTurnDiff, preImageBody, sameDiffContents, turnFileFor } from '../diff-load'
 import type { SessionTurn } from '../turns'
 
 function exec(overrides: Partial<{ exit_code: number; stdout: string; stderr: string }> = {}) {
@@ -240,5 +240,16 @@ describe('commit-panel diff sources', () => {
     })
     const out = await loadDiffContents(host, '/r', 'a.ts', { type: 'revision', from: 'p', to: 'c', label: 'c' }, noTurns)
     expect(out).toMatchObject({ oldContents: '', newContents: 'added\n' })
+  })
+})
+
+describe('sameDiffContents', () => {
+  it('holds for equal sides and caveat, not for any difference', () => {
+    const base = { oldContents: 'a\n', newContents: 'b\n', note: { headline: 'h', tone: 'warn' as const } }
+    expect(sameDiffContents(base, { ...base, note: { ...base.note } })).toBe(true)
+    expect(sameDiffContents(base, { ...base, newContents: 'c\n' })).toBe(false)
+    expect(sameDiffContents(base, { ...base, note: { headline: 'h' } })).toBe(false)
+    expect(sameDiffContents(base, { ...base, note: undefined })).toBe(false)
+    expect(sameDiffContents(base, { ...base, binary: true })).toBe(false)
   })
 })

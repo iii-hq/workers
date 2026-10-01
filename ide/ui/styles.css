@@ -1016,6 +1016,10 @@
     gap: 4px;
     height: 24px;
     padding: 0 8px 0 0;
+    /* Thousands of untracked files stay cheap: rows off screen skip layout
+       and paint. */
+    content-visibility: auto;
+    contain-intrinsic-size: auto 24px;
   }
   .shui-scm-row:hover { background: var(--color-surface-hover); }
   .shui-scm-row.active { background: var(--color-surface-selected); }
@@ -1031,6 +1035,8 @@
     white-space: nowrap;
   }
   .shui-scm-row-main:disabled { cursor: default; }
+  /* inset: the row's content-visibility clips anything drawn outside it */
+  .shui-scm-row-main:focus-visible { outline: 1px solid var(--color-rule-focus); outline-offset: -1px; }
   .shui-scm-row.outside .shui-scm-row-main { color: var(--color-ink-ghost); }
   .shui-scm-row-main .name { flex: none; max-width: 65%; }
   .shui-scm-row[data-status="deleted"] .shui-scm-row-main .name {
@@ -2486,6 +2492,9 @@
     border-left: 1px solid var(--color-edge);
   }
   .shui-terminal-panel[data-terminal-dock="editor"] { flex: 1; width: 100%; height: 100%; }
+  /* hidden, not unmounted: its shells stay attached (`display: flex` above
+     would otherwise override the attribute) */
+  .shui-terminal-panel[hidden] { display: none; }
   /* a narrow page's Git window: over the whole frame, the editor mounted beneath */
   .shui-terminal-panel[data-maximized] {
     position: absolute;
@@ -2571,38 +2580,27 @@
     background: var(--color-bg);
     outline: none;
   }
-  .shui-terminal-layout { flex: 1; min-width: 0; min-height: 0; }
-  .shui-terminal-split {
-    display: flex;
-    width: 100%;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
-  .shui-terminal-split.horizontal { flex-direction: row; }
-  .shui-terminal-split.vertical { flex-direction: column; }
-  .shui-terminal-split-child {
-    flex: 1 1 0;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
+  /* Every tab is laid over the same area, the inactive ones hidden, and its
+     panes and split handles are placed in it by inline percentages
+     (terminalLayoutItems): a pane never moves in the DOM, so it is never
+     remounted by a split, a closed neighbour or a tab switch. */
+  .shui-terminal-layout { position: relative; flex: 1; min-width: 0; min-height: 0; }
+  .shui-terminal-tab-layout { position: absolute; inset: 0; overflow: hidden; }
   .shui-terminal-split-separator {
+    position: absolute;
     z-index: 2;
-    flex: none;
     padding: 0;
     border: 0;
     background: var(--color-edge);
     touch-action: none;
   }
-  .shui-terminal-split.horizontal > .shui-terminal-split-separator { width: 5px; cursor: ew-resize; }
-  .shui-terminal-split.vertical > .shui-terminal-split-separator { height: 5px; cursor: ns-resize; }
+  /* 5px, centred on the line between the two sides (each pane leaves half) */
+  .shui-terminal-split-separator.horizontal { width: 5px; transform: translateX(-50%); cursor: ew-resize; }
+  .shui-terminal-split-separator.vertical { height: 5px; transform: translateY(-50%); cursor: ns-resize; }
   .shui-terminal-split-separator:hover,
   .shui-terminal-split-separator:focus-visible { background: var(--color-rule-focus); outline: none; }
   .shui-terminal-pane-slot {
-    width: 100%;
-    height: 100%;
+    position: absolute;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
@@ -2979,6 +2977,10 @@
     padding: 0 4px 6px;
     outline: none;
   }
+  /* windowed (VirtualList): its rows sit in the scroll space, not in the
+     console tree's flex column, and focus shows on the selected row alone */
+  .shui-vlist.shui-git-tree { display: block; }
+  .shui-vlist.shui-git-tree:focus-visible { box-shadow: none; }
   .shui-git-node { color: var(--color-ink); font-weight: 400; cursor: default; user-select: none; }
   .shui-git-node[data-kind="section"] { font-weight: 600; }
   .shui-git-node[data-remote] { color: var(--color-ink-faint); }
@@ -3392,14 +3394,8 @@
       z-index: 6;
       max-width: 320px;
     }
-    /* A side-by-side split at this width gives each pane a few characters, so
-       panes stack whichever way they were split. */
-    .shui-terminal-split.horizontal { flex-direction: column; }
-    .shui-terminal-split.horizontal > .shui-terminal-split-separator {
-      width: auto;
-      height: 5px;
-      cursor: ns-resize;
-    }
+    /* (A side-by-side terminal split stacks at this width too: the page's
+       `narrow` has TerminalWorkspace lay it out top to bottom.) */
     .shui-workspace-frame.terminal-right { flex-direction: column; }
     /* The page drops the inline width in narrow mode (TerminalPanel `narrow`). */
     .shui-terminal-panel[data-terminal-dock="right"] {

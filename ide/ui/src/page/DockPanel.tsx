@@ -35,6 +35,7 @@ export function DockPanel({
   size,
   narrow,
   maximized = false,
+  hidden = false,
   label,
   noun,
   onSizeChange,
@@ -46,6 +47,8 @@ export function DockPanel({
   narrow?: boolean
   /** Fills the whole frame over the editor, which stays mounted beneath. */
   maximized?: boolean
+  /** Kept mounted out of sight, so what it holds keeps its state. */
+  hidden?: boolean
   /** The panel's accessible name. */
   label: string
   /** What the handle resizes, as it reads in "Resize bottom <noun>". */
@@ -85,13 +88,13 @@ export function DockPanel({
   // assistive tech out of what it hides.
   useEffect(() => {
     const panel = panelRef.current
-    if (!maximized || !panel?.parentElement) return
+    if (!maximized || hidden || !panel?.parentElement) return
     const covered = [...panel.parentElement.children].filter((child) => child !== panel && !child.hasAttribute('inert'))
     for (const child of covered) child.setAttribute('inert', '')
     return () => {
       for (const child of covered) child.removeAttribute('inert')
     }
-  }, [maximized])
+  }, [maximized, hidden])
 
   const maxSizeOf = (frame: Element | null | undefined) => {
     const rect = frame?.getBoundingClientRect()
@@ -136,6 +139,7 @@ export function DockPanel({
       className="shui-terminal-panel"
       data-terminal-dock={dock}
       data-maximized={maximized || undefined}
+      hidden={hidden}
       style={style}
       aria-label={label}
     >

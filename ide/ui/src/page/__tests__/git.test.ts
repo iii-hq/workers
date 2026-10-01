@@ -379,6 +379,25 @@ describe('gitComparison', () => {
     })
   })
 
+  it('keeps the previous state while the status reads the same', async () => {
+    const status = ['MM both.ts', 'A  added.ts', '?? new.ts'].join('\0') + '\0'
+    const state = await gitChanges(repoHost(status).host, '/repo')
+    if (state.kind !== 'ready') throw new Error(`expected a ready state, got ${state.kind}`)
+    expect(state.changes.map((change) => [change.path, change.status, change.staged])).toEqual([
+      ['both.ts', 'modified', true],
+      ['added.ts', 'added', true],
+      ['new.ts', 'untracked', false],
+    ])
+
+    // The same answer keeps the previous object; a new one replaces it.
+    expect(await gitChanges(repoHost(status).host, '/repo', state)).toBe(state)
+    const removed = ['MM both.ts', 'A  added.ts'].join('\0') + '\0'
+    const next = await gitChanges(repoHost(removed).host, '/repo', state)
+    if (next.kind !== 'ready') throw new Error(`expected a ready state, got ${next.kind}`)
+    expect(next).not.toBe(state)
+    expect(next.changes.map((change) => change.path)).toEqual(['both.ts', 'added.ts'])
+  })
+
   it('returns explicit errors for truncated and malformed status output', async () => {
     const truncated = mockedHost(reply({ stdout: 'true\n' }), reply({ stdout: ' M partial', stdout_truncated: true }))
     await expect(gitComparison(truncated.host, '/repo', 'unstaged')).resolves.toEqual({

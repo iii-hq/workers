@@ -10,7 +10,7 @@
 
 import { Tooltip } from '@iii-dev/console-ui'
 import { GitCompareArrows, SquareTerminal, X } from 'lucide-react'
-import { useCallback, useEffect, useRef } from 'react'
+import { memo, useCallback, useEffect, useRef } from 'react'
 import { anchorFromEvent, type ContextMenuItem, useContextMenu } from './ContextMenu'
 import { diffSourceLabel } from './diff-source'
 import { FileTypeIcon } from './file-type-icon'
@@ -50,7 +50,7 @@ interface EditorTabsProps {
   onOpenFile: (path: string) => void
 }
 
-export function EditorTabs({
+function EditorTabsView({
   tabs,
   dirtyPaths,
   missingPaths,
@@ -204,3 +204,6 @@ export function EditorTabs({
     </div>
   )
 }
+
+/** Memoized: the page re-renders often, and this only when its props change. */
+export const EditorTabs = memo(EditorTabsView)

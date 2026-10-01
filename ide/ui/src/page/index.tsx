@@ -61,7 +61,7 @@ import {
   withMissingPaths,
 } from './missing-files'
 import { type CoderInfo, coderInfo, coderReadFile, coderStatFiles, joinPath, workspaceValidate } from './coder'
-import { createTurnCache, loadDiffContents } from './diff-load'
+import { createTurnCache, loadDiffContents, sameDiffContents } from './diff-load'
 import { type DiffSource, diffSourceFollowsDisk } from './diff-source'
 import { DEFAULT_DIFF_OPTIONS, DiffTab, type DiffOptions, type DiffTabActions, type DiffTabState } from './DiffTab'
 import { EditorTabs } from './EditorTabs'
@@ -175,6 +175,7 @@ const SIDEBAR_MAX_WIDTH = 560
 const TERMINAL_BOTTOM_DEFAULT_SIZE = 280
 const TERMINAL_RIGHT_DEFAULT_SIZE = 420
 const LIVE_COALESCE_MS = 400
+const NO_RECENT: readonly string[] = []
 
 function clampTerminalSize(size: number | undefined, fallback: number): number {
   if (size === undefined || !Number.isFinite(size)) return fallback
@@ -266,11 +267,19 @@ export function ShellExplorerPage({
 
   // ── terminal ──
   const [terminalOpen, setTerminalOpen] = useState(false)
+  // Mounted from its first opening on and only hidden after: unmounting
+  // detached every shell. Not before, since mounting spawns a shell per pane.
+  const [terminalMounted, setTerminalMounted] = useState(false)
+  if (terminalOpen && !terminalMounted) setTerminalMounted(true)
   // The Git tool window shares the docked panel with the terminal.
   const [gitOpen, setGitOpen] = useState(false)
   const [gitTab, setGitTab] = useState<GitTab>('log')
   const gitToggleRef = useRef<HTMLButtonElement>(null)
   const [terminalDock, setTerminalDock] = useState<TerminalDock>('bottom')
+  // One tool window in the docked panel at a time: a terminal opening there
+  // takes it from Git (a terminal in an editor tab leaves Git be). Settled
+  // during render, so opening one costs no second pass.
+  if (gitOpen && terminalOpen && terminalDock !== 'editor') setGitOpen(false)
   const [terminalActive, setTerminalActive] = useState(false)
   const [terminalBottomSize, setTerminalBottomSize] = useState(TERMINAL_BOTTOM_DEFAULT_SIZE)
   const [terminalRightSize, setTerminalRightSize] = useState(TERMINAL_RIGHT_DEFAULT_SIZE)
@@ -290,9 +299,12 @@ export function ShellExplorerPage({
   // in home-shaped folders they otherwise crowd out every visible name.
   const [showHidden, setShowHidden] = useState(false)
   const [git, setGit] = useState<GitState | null>(null)
+  // Bumps after a git refresh while Source Control shows: its Commit, Stash
+  // and History tabs re-read on it (opening the view reads anyway).
+  const [gitEpoch, setGitEpoch] = useState(0)
+  const scmActiveRef = useRef(false)
   const gitRef = useRef(git)
   gitRef.current = git
-  const [gitEpoch, setGitEpoch] = useState(0)
   // Bumps whenever the disk (or the index) moved: diff tabs re-read.
   const [diskEpoch, setDiskEpoch] = useState(0)
   const workspaceTree = useWorkspaceTree(host, root, showHidden, rootGenerationRef)
@@ -344,15 +356,18 @@ export function ShellExplorerPage({
   const historyRef = useRef<NavHistory>(EMPTY_HISTORY)
   const [historyState, setHistoryState] = useState({ back: false, forward: false })
   const navigatingRef = useRef(false)
-  const syncHistoryState = useCallback(
-    () => setHistoryState({ back: canGoBack(historyRef.current), forward: canGoForward(historyRef.current) }),
-    [],
-  )
+  const syncHistoryState = useCallback(() => {
+    const back = canGoBack(historyRef.current)
+    const forward = canGoForward(historyRef.current)
+    // Most visits leave both buttons as they were: no render for those.
+    setHistoryState((previous) => (previous.back === back && previous.forward === forward ? previous : { back, forward }))
+  }, [])
 
   // ── turns ──
   const [sessionTurns, setSessionTurns] = useState<readonly SessionTurnSummary[]>([])
   const sessionTurnsSeqRef = useRef(0)
   const sessionTurnsKeyRef = useRef('')
+  const sessionTurnsShapeRef = useRef('')
   const turnCache = useMemo(() => createTurnCache(host, conversationId), [host, conversationId])
   const [timelineNote, setTimelineNote] = useState<string | null>(null)
   const [reverting, setReverting] = useState<string | null>(null)
@@ -511,22 +526,21 @@ export function ShellExplorerPage({
     // root, nor supersede the refresh of the root now in front.
     if (!root || root !== rootRef.current) return Promise.resolve(null)
     const seq = ++gitSeqRef.current
-    return gitChanges(host, root)
+    // An unchanged status comes back as the object already held, so the
+    // tree, the tabs and the launcher skip their redraw.
+    return gitChanges(host, root, gitRef.current)
       .then((state) => {
         if (gitSeqRef.current === seq) {
-          // An unchanged status keeps its object: the tree, the tabs and the
-          // launcher then skip their redecoration. The epoch still bumps for
-          // the views that reload on it.
-          setGit((previous) => (sameGitState(previous, state) ? previous : state))
-          setGitEpoch((value) => value + 1)
+          setGit(state)
+          if (scmActiveRef.current) setGitEpoch((value) => value + 1)
         }
         return state
       })
       .catch((err: unknown) => {
         if (gitSeqRef.current === seq) {
-          setGit({ kind: 'error', message: errorMessage(err) })
-          // Views that reload on the epoch (Source Control) show the failure too.
-          setGitEpoch((value) => value + 1)
+          const message = errorMessage(err)
+          setGit((previous) => (previous?.kind === 'error' && previous.message === message ? previous : { kind: 'error', message }))
+          if (scmActiveRef.current) setGitEpoch((value) => value + 1)
         }
         return null
       })
@@ -559,7 +573,8 @@ export function ShellExplorerPage({
   const refreshSessionTurns = useCallback(() => {
     if (!conversationId) {
       sessionTurnsKeyRef.current = '[]'
-      setSessionTurns([])
+      sessionTurnsShapeRef.current = ''
+      setSessionTurns((previous) => (previous.length === 0 ? previous : []))
       return
     }
     const seq = ++sessionTurnsSeqRef.current
@@ -571,10 +586,27 @@ export function ShellExplorerPage({
         const key = JSON.stringify(turns)
         if (key === sessionTurnsKeyRef.current) return
         sessionTurnsKeyRef.current = key
-        setSessionTurns(turns)
+        // A turn that did not change keeps its object, so the Timeline's
+        // memoized sections skip it.
+        setSessionTurns((previous) => {
+          const byId = new Map(previous.map((turn) => [turn.turn_id, turn]))
+          return turns.map((turn) => {
+            const old = byId.get(turn.turn_id)
+            return old !== undefined && JSON.stringify(old) === JSON.stringify(turn) ? old : turn
+          })
+        })
+        // A running turn keeps gaining files. The record a diff tab cached
+        // before a file landed says the turn never touched it, and a disk
+        // burst alone re-reads that same stale record; the polled list is
+        // what knows better. In the same batch as the list: one render.
+        const shape = turnsShape(turns)
+        if (shape === sessionTurnsShapeRef.current) return
+        sessionTurnsShapeRef.current = shape
+        turnCache.clear()
+        setDiskEpoch((value) => value + 1)
       })
       .catch(() => {})
-  }, [conversationId, host])
+  }, [conversationId, host, turnCache])
   // biome-ignore lint/correctness/useExhaustiveDependencies: turn boundaries are the refresh triggers
   useEffect(() => {
     refreshSessionTurns()
@@ -596,21 +628,6 @@ export function ShellExplorerPage({
     turnCache.clear()
     setDiskEpoch((value) => value + 1)
   }, [harnessTurn.completedAtMs, turnCache])
-  // A running turn keeps gaining files. The record a diff tab cached before
-  // a file landed says the turn never touched it, and a disk burst alone
-  // re-reads that same stale record; the polled list is what knows better.
-  const turnsShape = useMemo(
-    () =>
-      sessionTurns
-        .map((turn) => `${turn.turn_id}:${turn.ended_at ?? ''}:${turn.files.map((file) => `${file.path}${file.kind}`).join(',')}`)
-        .join('\n'),
-    [sessionTurns],
-  )
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the list's shape is the trigger
-  useEffect(() => {
-    turnCache.clear()
-    setDiskEpoch((value) => value + 1)
-  }, [turnsShape, turnCache])
   const turnTitles = useMemo(
     () => new Map(sessionTurns.map((turn, index) => [turn.turn_id, turnTitle(turn, sessionTurns.length - index)] as const)),
     [sessionTurns],
@@ -681,7 +698,7 @@ export function ShellExplorerPage({
       const filePaths = current.tabs
         .filter((tab) => closing.has(tab.id) && tab.target.kind === 'file')
         .map((tab) => tab.target.path)
-      const dirty = filePaths.filter((path) => dirtyPaths.has(path))
+      const dirty = filePaths.filter((path) => dirtyPathsRef.current.has(path))
       if (
         dirty.length > 0 &&
         !(await confirm({
@@ -714,7 +731,7 @@ export function ShellExplorerPage({
       })
       syncHistoryState()
     },
-    [dirtyPaths, dropFileCache, syncHistoryState, confirm],
+    [dropFileCache, syncHistoryState, confirm],
   )
   const closeTabId = useCallback((id: string) => closeTabIds([id]), [closeTabIds])
 
@@ -927,6 +944,7 @@ export function ShellExplorerPage({
 
   // ── source control ──
   const scmActive = sideTab === 'scm'
+  scmActiveRef.current = scmActive
   const scm = useSourceControl(host, root, gitEpoch, scmActive, afterDiskChange)
   const compareOpen = tabs.tabs.some((tab) => tab.target.kind === 'diff' && tab.target.source.type === 'compare')
   const compareRefs = useCompareRefs(host, root, compareOpen)
@@ -964,7 +982,7 @@ export function ShellExplorerPage({
             if (rel !== null) dropFileCache(rel)
           }
         }
-        setDirtyPaths(new Set())
+        setDirtyPaths((previous) => (previous.size === 0 ? previous : new Set()))
         afterRevert()
       }
     },
@@ -983,7 +1001,9 @@ export function ShellExplorerPage({
       epoch: diskEpoch,
       state: previous?.phase === 'ready' ? previous : { phase: 'loading' },
     })
-    setDiffVersion((value) => value + 1)
+    // A diff on screen stays there while it re-reads: only a first load, or
+    // a retry after an error, has something new to show meanwhile.
+    if (previous?.phase !== 'ready') setDiffVersion((value) => value + 1)
     const generation = rootGenerationRef.current
     const target = activeDiff
     void loadDiffContents(host, root, target.path, target.source, turnCache)
@@ -993,6 +1013,10 @@ export function ShellExplorerPage({
         if (rootGenerationRef.current !== generation || rootRef.current !== root) return
         const current = diffCacheRef.current.get(activeDiffId)
         if (current === undefined || current.epoch !== diskEpoch) return
+        // The same two sides read back (a burst elsewhere): nothing to redraw.
+        if (current.state.phase === 'ready' && state.phase === 'ready' && sameDiffContents(current.state.contents, state.contents)) {
+          return
+        }
         diffCacheRef.current.set(activeDiffId, { epoch: diskEpoch, state })
         setDiffVersion((value) => value + 1)
       })
@@ -1068,6 +1092,9 @@ export function ShellExplorerPage({
   // Whether the burst touched a path git tracks: build output alone (target/,
   // dist/) cannot change `git status`.
   const changedTrackedRef = useRef(false)
+  // Absolute paths the bursts wrote since the turn summary last looked: it
+  // reads those files again, and keeps every other row's totals.
+  const summaryWritesRef = useRef(new Set<string>())
 
   const reloadActiveFile = useCallback(() => {
     const currentRoot = rootRef.current
@@ -1122,15 +1149,30 @@ export function ShellExplorerPage({
       applyTreeChanges(treeChanges)
       const openFiles = new Set(tabsRef.current.tabs.filter((tab) => tab.target.kind === 'file').map((tab) => tab.target.path))
       setMissingPaths((prev) => missingAfterChanges(prev, treeChanges, openFiles))
+      // A file tab in the background shows the disk when it comes forward:
+      // its clean buffer goes. A dirty one keeps the user's edits, and a
+      // deleted file's keeps the body a save would put back.
+      const active = activeTabOf(tabsRef.current)
+      for (const change of treeChanges) {
+        const entry = cacheRef.current.get(change.rel)
+        if (entry === undefined || change.kind === 'deleted' || entry.draft !== entry.savedContent) continue
+        if (active?.target.kind === 'file' && active.target.path === change.rel) continue
+        objectUrlsRef.current.release(entry.image)
+        cacheRef.current.delete(change.rel)
+      }
+      // Recorded ahead of the early return below: a turn file under an
+      // ignored path is read again on the next pass, not held stale.
+      for (const abs of changed.keys()) summaryWritesRef.current.add(abs)
       const tracked = changedTrackedRef.current
       changedTrackedRef.current = false
-      if (tracked) afterDiskChange()
-      else {
+      if (!tracked) {
         // Ignored files only: no git refresh, but an open tab on one of
         // them still follows the disk.
         const open = new Set(tabsRef.current.tabs.map((tab) => tab.target.path))
-        if (treeChanges.some((change) => open.has(change.rel))) setDiskEpoch((value) => value + 1)
+        if (!treeChanges.some((change) => open.has(change.rel))) return
       }
+      if (tracked) afterDiskChange()
+      else setDiskEpoch((value) => value + 1)
     }, LIVE_COALESCE_MS)
   }, paneScope)
 
@@ -1163,6 +1205,17 @@ export function ShellExplorerPage({
   useEffect(() => {
     const openFiles = new Set(tabs.tabs.filter((tab) => tab.target.kind === 'file').map((tab) => tab.target.path))
     setMissingPaths((prev) => pruneMissing(prev, openFiles))
+    // A preview replaced in place, or a compare tab moved to another ref,
+    // never went through closeTabIds: what they held goes here.
+    for (const [path, entry] of cacheRef.current) {
+      if (openFiles.has(path)) continue
+      objectUrlsRef.current.release(entry.image)
+      cacheRef.current.delete(path)
+    }
+    const openIds = new Set(tabs.tabs.map((tab) => tab.id))
+    for (const id of diffCacheRef.current.keys()) {
+      if (!openIds.has(id)) diffCacheRef.current.delete(id)
+    }
   }, [tabs])
   const onFileMissing = useCallback((relPath: string, gone: boolean) => {
     setMissingPaths((prev) => withMissing(prev, relPath, gone))
@@ -1283,7 +1336,7 @@ export function ShellExplorerPage({
           })
         }
         const recalled = recallRoot(rootMemoryRef.current, path)
-        setDirtyPaths(new Set())
+        setDirtyPaths((previous) => (previous.size === 0 ? previous : new Set()))
         setMissingPaths(NO_MISSING)
         setTabs(recalled !== null ? restoreTabs(recalled.open, recalled.active) : EMPTY_TABS)
         setExpanded(recalled?.expanded ?? [])
@@ -1684,11 +1737,6 @@ export function ShellExplorerPage({
   const newestTurn = sessionTurns[0] ?? null
 
   // ── terminal verbs ──
-  // One tool window in the docked panel at a time: a terminal opening there
-  // takes it from Git (a terminal in an editor tab leaves Git be).
-  useEffect(() => {
-    if (terminalOpen && terminalDock !== 'editor') setGitOpen(false)
-  }, [terminalOpen, terminalDock])
   const openGit = useCallback(
     (tab?: GitTab) => {
       setGitOpen(true)
@@ -2171,6 +2219,54 @@ export function ShellExplorerPage({
     },
     [openFileTab, narrow, closeGit],
   )
+  const openPreviewFile = useCallback((rel: string) => openFileTab(rel), [openFileTab])
+  const openMatch = useCallback(
+    (rel: string, line: number, column: number, pin: boolean) => openFileTab(rel, { pin, line, column }),
+    [openFileTab],
+  )
+  const openQuickOpen = useCallback(() => setQuickOpen(true), [])
+  const closeActiveFile = useCallback(() => {
+    if (activeFilePath !== null) void closeTabId(fileTabId(activeFilePath))
+  }, [activeFilePath, closeTabId])
+  // The strip's close verbs read the tabs when they run.
+  const closeOtherTabs = useCallback(
+    (id: string) => closeTabIds(tabsRef.current.tabs.filter((tab) => tab.id !== id).map((tab) => tab.id)),
+    [closeTabIds],
+  )
+  const closeTabsRight = useCallback(
+    (id: string) => {
+      const open = tabsRef.current.tabs
+      const index = open.findIndex((tab) => tab.id === id)
+      closeTabIds(open.slice(index + 1).map((tab) => tab.id))
+    },
+    [closeTabIds],
+  )
+  const closeSavedTabs = useCallback(
+    () =>
+      closeTabIds(
+        tabsRef.current.tabs
+          .filter((tab) => tab.target.kind !== 'file' || !dirtyPathsRef.current.has(tab.target.path))
+          .map((tab) => tab.id),
+      ),
+    [closeTabIds],
+  )
+  const closeAllTabs = useCallback(() => closeTabIds(tabsRef.current.tabs.map((tab) => tab.id)), [closeTabIds])
+  const activateTerminal = useCallback(() => setTerminalActive(true), [])
+  const terminalTitle = terminalWorkspace.tabs.find((tab) => tab.id === terminalWorkspace.activeTabId)?.title ?? 'zsh'
+  const editorTerminal = useMemo(
+    () =>
+      terminalOpen && terminalDock === 'editor'
+        ? { title: terminalTitle, active: terminalActive, onActivate: activateTerminal, onClose: closeTerminal }
+        : null,
+    [terminalOpen, terminalDock, terminalTitle, terminalActive, activateTerminal, closeTerminal],
+  )
+  // Read when the overlay opens: the history moves in an effect after the
+  // render that changed the tabs. Closed, it keeps one list, so a tab
+  // change does not redraw it.
+  const recentFiles = useMemo(
+    () => (quickOpen ? tabFilePaths(tabs, recentPaths(historyRef.current, 60), 8) : NO_RECENT),
+    [quickOpen, tabs],
+  )
 
   if (infoError) {
     return (
@@ -2206,6 +2302,7 @@ export function ShellExplorerPage({
         turn={newestTurn}
         turnCache={turnCache}
         epoch={diskEpoch}
+        written={summaryWritesRef.current}
         sessionId={conversationId}
         sourceId={paneKey}
         onSelectFile={(path) => {
@@ -2275,8 +2372,8 @@ export function ShellExplorerPage({
                     reveal={reveal}
                     onRevealed={onRevealed}
                     activePath={tabVisible ? (activeTab?.target.path ?? null) : null}
-                    onActivateFile={(rel) => openFileTab(rel)}
-                    onPinFile={(rel) => openFileTab(rel, { pin: true })}
+                    onActivateFile={openPreviewFile}
+                    onPinFile={openPinnedFile}
                     actions={explorerActions}
                   />
                 ) : sideTab === 'search' ? (
@@ -2284,9 +2381,9 @@ export function ShellExplorerPage({
                     host={host}
                     root={root}
                     request={searchRequest}
-                    onOpenMatch={(rel, line, column, pin) => openFileTab(rel, { pin, line, column })}
-                    onPreviewFile={(rel) => openFileTab(rel)}
-                    onPinFile={(rel) => openFileTab(rel, { pin: true })}
+                    onOpenMatch={openMatch}
+                    onPreviewFile={openPreviewFile}
+                    onPinFile={openPinnedFile}
                     onRevealFolder={revealFolder}
                   />
                 ) : sideTab === 'scm' ? (
@@ -2409,38 +2506,22 @@ export function ShellExplorerPage({
                 tabVisible={tabVisible}
                 gitStatus={tabGitStatus}
                 turnTitles={turnTitles}
-                terminal={
-                  terminalInEditor
-                    ? {
-                        title: terminalWorkspace.tabs.find((tab) => tab.id === terminalWorkspace.activeTabId)?.title ?? 'zsh',
-                        active: terminalActive,
-                        onActivate: () => setTerminalActive(true),
-                        onClose: closeTerminal,
-                      }
-                    : null
-                }
+                terminal={editorTerminal}
                 onActivate={activateTabId}
                 onClose={closeTabId}
                 onPin={pinTabId}
-                onCloseOthers={(id) => closeTabIds(tabs.tabs.filter((tab) => tab.id !== id).map((tab) => tab.id))}
-                onCloseRight={(id) => {
-                  const index = tabs.tabs.findIndex((tab) => tab.id === id)
-                  closeTabIds(tabs.tabs.slice(index + 1).map((tab) => tab.id))
-                }}
-                onCloseSaved={() =>
-                  closeTabIds(
-                    tabs.tabs.filter((tab) => tab.target.kind !== 'file' || !dirtyPaths.has(tab.target.path)).map((tab) => tab.id),
-                  )
-                }
-                onCloseAll={() => closeTabIds(tabs.tabs.map((tab) => tab.id))}
+                onCloseOthers={closeOtherTabs}
+                onCloseRight={closeTabsRight}
+                onCloseSaved={closeSavedTabs}
+                onCloseAll={closeAllTabs}
                 onReveal={revealFolder}
                 onCopyPath={explorerActions.copyPath}
-                onCompare={(path) => compareFile(path)}
-                onOpenFile={(path) => openFileTab(path, { pin: true })}
+                onCompare={compareFile}
+                onOpenFile={openPinnedFile}
               />
             ) : null}
 
-            {terminalInEditor && terminalActive ? (
+            {terminalMounted && terminalDock === 'editor' ? (
               <TerminalPanel
                 state={terminalWorkspace}
                 dispatch={dispatchTerminalWorkspace}
@@ -2456,31 +2537,33 @@ export function ShellExplorerPage({
                 narrow={narrow}
                 onSizeChange={setTerminalBottomSize}
                 onClose={closeTerminal}
+                hidden={!(terminalInEditor && terminalActive)}
               />
-            ) : activeFilePath !== null ? (
+            ) : null}
+            {terminalInEditor && terminalActive ? null : activeFilePath !== null ? (
               <EditorPane
-                // fileBump remounts after an agent-side write to the active
-                // file: the pane rehydrates from the refreshed cache entry.
-                key={`${activeFilePath}:${fileBump}`}
+                // One pane per file: an agent-side write to it (fileBump)
+                // refills this one from the refreshed cache entry in place.
+                key={activeFilePath}
                 host={host}
                 root={root}
                 rootLabel={rootLabel}
                 relPath={activeFilePath}
                 cache={cacheRef.current}
+                cacheEpoch={fileBump}
                 createObjectUrl={objectUrlsRef.current.create}
                 wordWrap={diffOptions.wordWrap}
                 reveal={revealLineRequest?.path === activeFilePath ? revealLineRequest : null}
                 onRevealHandled={onRevealHandled}
                 goToLineSeq={goToLineSeq}
-                onSaved={afterDiskChange}
                 onDirtyChange={onDirtyChange}
                 onRevealDir={revealFolder}
-                onCompare={(path) => compareFile(path)}
+                onCompare={compareFile}
                 missing={missingPaths.has(activeFilePath)}
                 onMissing={onFileMissing}
-                onClose={() => closeTabId(fileTabId(activeFilePath))}
+                onClose={closeActiveFile}
                 onReferenceInChat={referenceInChat}
-                onQuickOpen={() => setQuickOpen(true)}
+                onQuickOpen={openQuickOpen}
               />
             ) : activeDiff !== null ? (
               <DiffTab
@@ -2559,8 +2642,8 @@ export function ShellExplorerPage({
           root={root}
           open={quickOpen}
           onOpenChange={setQuickOpen}
-          recent={tabFilePaths(tabs, recentPaths(historyRef.current, 60), 8)}
-          onOpenFile={(rel) => openFileTab(rel, { pin: true })}
+          recent={recentFiles}
+          onOpenFile={openPinnedFile}
         />
         {confirmDialog}
         <ConfirmDialog
@@ -2603,7 +2686,10 @@ export function ShellExplorerPage({
               onOpenWorkingFile={openWorkingFile}
             />
           </DockPanel>
-        ) : terminalOpen && terminalDock !== 'editor' ? (
+        ) : null}
+        {/* The Git window taking the docked slot hides the terminal, which
+            stays mounted with its shells attached. */}
+        {terminalMounted && terminalDock !== 'editor' ? (
           <TerminalPanel
             state={terminalWorkspace}
             dispatch={dispatchTerminalWorkspace}
@@ -2619,6 +2705,7 @@ export function ShellExplorerPage({
             narrow={narrow}
             onSizeChange={terminalDock === 'bottom' ? setTerminalBottomSize : setTerminalRightSize}
             onClose={closeTerminal}
+            hidden={!terminalOpen || gitOpen}
           />
         ) : null}
       </div>
@@ -2626,20 +2713,10 @@ export function ShellExplorerPage({
   )
 }
 
-function sameGitState(a: GitState | null, b: GitState): boolean {
-  if (a === null || a.kind !== b.kind) return false
-  if (a.kind === 'error' && b.kind === 'error') return a.message === b.message
-  if (a.kind !== 'ready' || b.kind !== 'ready') return true
-  return (
-    a.changes.length === b.changes.length &&
-    a.changes.every((change, index) => {
-      const other = b.changes[index]
-      return (
-        change.path === other.path &&
-        change.status === other.status &&
-        change.staged === other.staged &&
-        change.from === other.from
-      )
-    })
-  )
+/** What a turn list says about the records behind it: which turns, which
+    of them ended, and the files each touched. */
+function turnsShape(turns: readonly SessionTurnSummary[]): string {
+  return turns
+    .map((turn) => `${turn.turn_id}:${turn.ended_at ?? ''}:${turn.files.map((file) => `${file.path}${file.kind}`).join(',')}`)
+    .join('\n')
 }

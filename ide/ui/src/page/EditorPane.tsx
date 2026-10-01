@@ -5,7 +5,8 @@
    File content + unsaved drafts live in a page-owned cache keyed by
    path, so switching editor tabs never discards edits: the pane is
    remounted per file (key=path) and rehydrates from the cache instead
-   of re-reading.
+   of re-reading. A write to the open file refills it in place
+   (`cacheEpoch`), the editor kept.
 
    Sizes: text reads carry an editor-sized budget (8 MiB) and the editor
    owns its viewport (`fill`), so a file of tens of thousands of lines
@@ -22,7 +23,7 @@ import {
   IconButton,
 } from '@iii-dev/console-ui'
 import { CircleAlert, Code, Eye, FileDiff, FileX, FolderOpen, Hash, MessageSquareQuote, RefreshCw, X } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage, formatBytes } from '@iii-dev/console-ui/format'
 import { Breadcrumbs } from './Breadcrumbs'
 import {
@@ -83,16 +84,22 @@ type PaneState =
   | { phase: 'error'; message: string; missing: boolean }
   | { phase: 'ready' }
 
+// Shared, so setting the phase it already has renders nothing.
+const PANE_LOADING: PaneState = { phase: 'loading' }
+const PANE_READY: PaneState = { phase: 'ready' }
+
 interface EditorPaneProps {
   host: Host
   root: string
   rootLabel: string
   relPath: string
   cache: EditorCache
+  /** Bumps when the page refreshed or dropped this file's cache entry (the
+      watcher saw it written, a discard or revert put it back): the pane
+      refills in place. A save needs no word: the watcher reports it. */
+  cacheEpoch?: number
   /** Hands out object URLs for streamed images; the page revokes them. */
   createObjectUrl: (blob: Blob) => string
-  /** Fired after a successful save (the git tab refreshes on it). */
-  onSaved: () => void
   /** Dirty-flag transitions — the page pins the tab on first edit. */
   onDirtyChange: (relPath: string, dirty: boolean) => void
   /** Global review-pane preference; the header toggle overrides it per file. */
@@ -125,19 +132,19 @@ interface EditorPaneProps {
 }
 
 /** Load and edit a cached file, consuming each explicit line reveal once. */
-export function EditorPane({
+function EditorPaneView({
   host,
   root,
   rootLabel,
   relPath,
   cache,
+  cacheEpoch = 0,
   createObjectUrl,
   richPreview = false,
   wordWrap = true,
   reveal = null,
   goToLineSeq = 0,
   onRevealHandled,
-  onSaved,
   onDirtyChange,
   onRevealDir,
   onCompare,
@@ -170,9 +177,11 @@ export function EditorPane({
   const showPreview = previewable && (previewChoice ?? richPreview)
   const [citationWarning, setCitationWarning] = useState<string | null>(null)
   const handledRevealSeq = useRef<number | null>(null)
-  const [pane, setPane] = useState<PaneState>({ phase: 'loading' })
-  const [draft, setDraftState] = useState('')
-  const [savedContent, setSavedContent] = useState('')
+  // A cached file starts ready: switching back to its tab paints no
+  // "loading…" first.
+  const [pane, setPane] = useState<PaneState>(() => (cache.has(relPath) ? PANE_READY : PANE_LOADING))
+  const [draft, setDraftState] = useState(() => cache.get(relPath)?.draft ?? '')
+  const [savedContent, setSavedContent] = useState(() => cache.get(relPath)?.savedContent ?? '')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [gotoOpen, setGotoOpen] = useState(false)
@@ -197,7 +206,7 @@ export function EditorPane({
     [relPath],
   )
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: loadAttempt re-runs the load on demand
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loadAttempt and cacheEpoch re-run the load on demand
   useEffect(() => {
     const seq = ++seqRef.current
     const cancel = () => { seqRef.current += 1 }
@@ -206,10 +215,10 @@ export function EditorPane({
     if (cached) {
       setDraftState(cached.draft)
       setSavedContent(cached.savedContent)
-      setPane({ phase: 'ready' })
+      setPane(PANE_READY)
       return cancel
     }
-    setPane({ phase: 'loading' })
+    setPane(PANE_LOADING)
     const mime = imageMimeFromPath(relPath)
     if (mime) {
       readFileBytes(host, absPath, mime, {
@@ -231,7 +240,7 @@ export function EditorPane({
           cache.set(relPath, fresh)
           setDraftState('')
           setSavedContent('')
-          setPane({ phase: 'ready' })
+          setPane(PANE_READY)
           onMissingRef.current?.(relPath, false)
         })
         .catch((err: unknown) => failLoad(seq, err))
@@ -242,7 +251,7 @@ export function EditorPane({
       cache.set(relPath, fresh)
       setDraftState(fresh.draft)
       setSavedContent(fresh.savedContent)
-      setPane({ phase: 'ready' })
+      setPane(PANE_READY)
       onMissingRef.current?.(relPath, false)
     }
     coderReadFile(host, absPath, { maxOutputBytes: EDITOR_FULL_READ_BUDGET })
@@ -281,7 +290,7 @@ export function EditorPane({
         }
       })
     return cancel
-  }, [host, absPath, relPath, cache, createObjectUrl, failLoad, loadAttempt])
+  }, [host, absPath, relPath, cache, createObjectUrl, failLoad, loadAttempt, cacheEpoch])
 
   const retryLoad = useCallback(() => setLoadAttempt((attempt) => attempt + 1), [])
   // The file came back (the live feed saw it created) while this pane was
@@ -328,8 +337,12 @@ export function EditorPane({
         : undefined,
     [onReferenceInChat, relPath],
   )
+  // The page's counter outlives this pane: a request made before it
+  // mounted (in another file) is not this pane's to answer.
+  const goToLineSeen = useRef(goToLineSeq)
   useEffect(() => {
-    if (goToLineSeq === 0) return
+    if (goToLineSeq === goToLineSeen.current) return
+    goToLineSeen.current = goToLineSeq
     setGotoOpen(true)
     window.requestAnimationFrame(() => gotoInputRef.current?.select())
   }, [goToLineSeq])
@@ -375,13 +388,12 @@ export function EditorPane({
         current.revision = result.revision ?? current.revision
         setSavedContent(body)
         onDirtyChange(relPath, current.draft !== body)
-        onSaved()
       })
       .catch((err: unknown) => {
         setSaveError(errorMessage(err))
       })
       .finally(() => setSaving(false))
-  }, [host, absPath, relPath, cache, saving, missing, onSaved, onDirtyChange])
+  }, [host, absPath, relPath, cache, saving, missing, onDirtyChange])
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -402,6 +414,8 @@ export function EditorPane({
 
   // Counted, not split: a split allocates a string per line on every keystroke.
   const lineCount = useMemo(() => (ready ? countLines(draft) : 0), [ready, draft])
+  // Rendered again only when the body or the file changes.
+  const preview = useMemo(() => (showPreview ? richPreviewNode(relPath, draft) : null), [showPreview, relPath, draft])
   const loadingLabel =
     pane.phase === 'loading' && pane.progress
       ? `loading image ${formatBytes(pane.progress.received)} of ${formatBytes(pane.progress.total)}…`
@@ -545,7 +559,7 @@ export function EditorPane({
         ) : entry?.image ? (
           <ImagePreview src={entry.image} name={relPath} description={entry.size != null ? formatBytes(entry.size) : undefined} />
         ) : showPreview ? (
-          <div className="shui-editor-preview">{richPreviewNode(relPath, draft)}</div>
+          <div className="shui-editor-preview">{preview}</div>
         ) : (
           <CodeEditor
             ref={editorRef}
@@ -566,6 +580,9 @@ export function EditorPane({
     </div>
   )
 }
+
+/** Memoized: the page re-renders often, and this only when its props change. */
+export const EditorPane = memo(EditorPaneView)
 
 function countLines(text: string): number {
   let lines = 1

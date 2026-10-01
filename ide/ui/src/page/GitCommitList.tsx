@@ -9,7 +9,11 @@
    current branch; every subject stays in full ink.
 
    In a narrow pane each row takes two lines: the subject over its author
-   and date. */
+   and date.
+
+   The rows are memoized and hold no handlers of their own (the list
+   around them does), so a new selection re-renders the two rows it moved
+   between. */
 
 import {
   DropdownMenu,
@@ -21,9 +25,10 @@ import {
   uiClasses,
 } from '@iii-dev/console-ui'
 import { CaseSensitive, Check, ChevronDown, RefreshCw, Regex, SlidersHorizontal } from 'lucide-react'
-import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { memo, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { type Glyph, GraphCell, glyphColor, MAX_LANES } from './CommitGraph'
 import type { ContextMenuAnchor } from './ContextMenu'
+import type { GraphRow } from './commit-graph'
 import type { LogCommit, LogFilter, LogRef } from './git-log-window'
 import type { GitLogState } from './use-git-log'
 import { speedMarks, useRowNav } from './use-row-nav'
@@ -31,6 +36,9 @@ import { VirtualList } from './VirtualList'
 
 export const COMMIT_ROW = 24
 const COMMIT_ROW_NARROW = 48
+const TEXT_DEBOUNCE_MS = 300
+const NO_REFS: readonly LogRef[] = []
+const shaOf = (commit: LogCommit) => commit.sha
 
 const DAY = 86_400
 const RANGES: ReadonlyArray<{ label: string; days: number | null }> = [
@@ -118,7 +126,176 @@ function Menu({ label, value, children }: { label: string; value: string | null;
   )
 }
 
-export function GitCommitList({
+/** The text filter's field. What is typed stays here until typing
+    settles, then goes to the log: a keystroke re-renders the field alone. */
+export function FilterText({
+  text,
+  clears = 0,
+  onText,
+}: {
+  text: string
+  /** Counts Clear filters: each one drops what was waiting, even when the
+      text was already empty. */
+  clears?: number
+  onText(text: string): void
+}) {
+  // Null while nothing typed is waiting: the field shows the filter's text.
+  const [draft, setDraft] = useState<string | null>(null)
+  // A text set from elsewhere, or a Clear filters, drops what was waiting.
+  const [shown, setShown] = useState({ text, clears })
+  if (shown.text !== text || shown.clears !== clears) {
+    setShown({ text, clears })
+    setDraft(null)
+  }
+  useEffect(() => {
+    if (draft === null) return
+    const timer = setTimeout(() => {
+      onText(draft)
+      setDraft(null)
+    }, TEXT_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [draft, onText])
+  // The field going first (a narrow pane's row tapped, or Back) still
+  // applies what was waiting.
+  const waiting = useRef<(() => void) | null>(null)
+  waiting.current = draft === null ? null : () => onText(draft)
+  useEffect(() => () => waiting.current?.(), [])
+  return (
+    <SearchField
+      className="shui-git-filter-text"
+      value={draft ?? text}
+      onChange={setDraft}
+      placeholder="Text or hash"
+      aria-label="Filter commits by message or hash"
+      autoComplete="off"
+      spellCheck={false}
+    />
+  )
+}
+
+const CommitRow = memo(function CommitRow({
+  commit,
+  index,
+  id,
+  selected,
+  setSize,
+  row,
+  refs,
+  remotes,
+  ring,
+  head,
+  narrow,
+  rowHeight,
+  lanes,
+  maxLanes,
+  color,
+  query,
+}: {
+  commit: LogCommit
+  index: number
+  id: string
+  selected: boolean
+  setSize: number
+  row: GraphRow | null
+  refs: readonly LogRef[]
+  remotes: ReadonlySet<string>
+  ring: 'here' | 'worktree' | null
+  /** The IDE's HEAD has it. */
+  head: boolean
+  narrow: boolean
+  rowHeight: number
+  lanes: number
+  maxLanes: number
+  color(key: string | null): string
+  /** The speed-search text, marked in the subject. */
+  query: string
+}) {
+  const chips = chipsOf(refs, remotes)
+  const shownChips = narrow ? 1 : 2
+  const refChips = (
+    <>
+      {chips.slice(0, shownChips).map(({ ref, remote }) => (
+        <span
+          key={ref.fullName}
+          className="shui-git-ref"
+          data-kind={ref.kind}
+          data-current={ref.current || undefined}
+          style={{ '--ref-color': color(ref.kind === 'tag' ? null : ref.name) } as React.CSSProperties}
+          title={ref.fullName}
+        >
+          <span className="shui-git-ref-name">{ref.name}</span>
+          {remote !== null ? <span className="shui-git-ref-remote">· {remote}</span> : null}
+        </span>
+      ))}
+      {chips.length > shownChips ? (
+        <span
+          className="shui-git-ref"
+          data-more=""
+          title={chips
+            .slice(shownChips)
+            .map((chip) => chip.ref.name)
+            .join('\n')}
+        >
+          +{chips.length - shownChips}
+        </span>
+      ) : null}
+    </>
+  )
+  const byline = (
+    <>
+      <span className="shui-git-commit-author" title={commit.email}>
+        {commit.author}
+      </span>
+      <span className="shui-git-commit-date">{when.format(commit.date * 1000)}</span>
+    </>
+  )
+  return (
+    // biome-ignore lint/a11y/useFocusableInteractive: the listbox holds focus and names this row through aria-activedescendant
+    <div
+      role="option"
+      id={id}
+      aria-selected={selected}
+      className="shui-git-commit"
+      data-narrow={narrow || undefined}
+      data-head={head ? '' : undefined}
+      aria-setsize={setSize}
+      aria-posinset={index + 1}
+    >
+      <span className="shui-git-commit-graph">
+        {row !== null ? (
+          <GraphCell row={row} height={rowHeight} color={color} ring={ring} lanes={lanes} maxLanes={maxLanes} />
+        ) : null}
+      </span>
+      <span className="shui-git-commit-main">
+        <span className="shui-git-commit-subject">
+          <span className="shui-git-commit-text">
+            {speedMarks(commit.subject, query).map((part, at) =>
+              part.hit ? (
+                <mark key={at} className="shui-git-hit">
+                  {part.text}
+                </mark>
+              ) : (
+                part.text
+              ),
+            )}
+          </span>
+          {narrow ? null : refChips}
+        </span>
+        {narrow ? (
+          <span className="shui-git-commit-byline">
+            {byline}
+            {refChips}
+          </span>
+        ) : null}
+      </span>
+      {narrow ? null : byline}
+    </div>
+  )
+})
+
+/** Memoized: the Log re-renders on every selection, details read and form
+    keystroke; the commits only when what they show changed. */
+export const GitCommitList = memo(function GitCommitList({
   log,
   filter,
   onFilter,
@@ -173,7 +350,11 @@ export function GitCommitList({
   const [scrollTo, setScrollTo] = useState<number | null>(null)
   const domId = useId()
   const authors = useMemo(() => [...new Set(commits.map((commit) => commit.author))].sort().slice(0, 40), [commits])
-  const color = (key: string | null) => glyphColor(glyph(key))
+  const color = useCallback((key: string | null) => glyphColor(glyph(key)), [glyph])
+  const onText = useCallback(
+    (text: string) => onFilter({ ...filter, text: text === '' ? undefined : text }),
+    [filter, onFilter],
+  )
   const nav = useRowNav<LogCommit>({
     items: commits,
     idOf: (commit) => commit.sha,
@@ -228,6 +409,7 @@ export function GitCommitList({
   const onlyFolder = inFolder && filter.paths?.length === 1 && filter.paths[0] === folder
   const pathsValue = !inFolder ? null : onlyFolder ? folder : (filter.paths?.[0]?.split('/').pop() ?? null)
   const [filtersOpen, setFiltersOpen] = useState(false)
+  const [clears, setClears] = useState(0)
   const filtersId = useId()
   const activeFilters = [
     filter.regex === true,
@@ -319,15 +501,7 @@ export function GitCommitList({
     <div className="shui-git-commits" data-pane="commits" style={{ '--head-color': headColor } as React.CSSProperties}>
       {/* biome-ignore lint/a11y/useSemanticElements: a filter bar, not a form: nothing is submitted */}
       <div className="shui-git-filters" role="group" aria-label="Filter the log">
-        <SearchField
-          className="shui-git-filter-text"
-          value={filter.text ?? ''}
-          onChange={(text) => onFilter({ ...filter, text: text === '' ? undefined : text })}
-          placeholder="Text or hash"
-          aria-label="Filter commits by message or hash"
-          autoComplete="off"
-          spellCheck={false}
-        />
+        <FilterText text={filter.text ?? ''} clears={clears} onText={onText} />
         {narrow ? (
           // A narrow pane keeps one row: the filters open below on demand.
           <button
@@ -368,15 +542,21 @@ export function GitCommitList({
           compact
           title="No commits match"
           description="Nothing in this history matches the filters."
-          action={{ label: 'Clear filters', onClick: () => onFilter({}) }}
+          action={{
+            label: 'Clear filters',
+            onClick: () => {
+              setClears((count) => count + 1)
+              onFilter({})
+            },
+          }}
         />
       ) : (
-        // biome-ignore lint/a11y/noStaticElementInteractions: a focus-out listener around the windowed listbox
-        <div className="shui-git-commit-scroll" onBlur={nav.listProps.onBlur}>
+        // biome-ignore lint/a11y/noStaticElementInteractions: the rows' mouse and focus-out listeners around the windowed listbox
+        <div className="shui-git-commit-scroll" onBlur={nav.listProps.onBlur} {...nav.rowEvents}>
           <VirtualList
             rows={commits}
             rowHeight={rowHeight}
-            rowKey={(commit) => commit.sha}
+            rowKey={shaOf}
             className="shui-git-commit-list"
             role="listbox"
             aria-label="Commits"
@@ -390,97 +570,26 @@ export function GitCommitList({
               lastShown.current = last
               nearEnd()
             }}
-            renderRow={(commit, index) => {
-              const row = graph?.[index] ?? null
-              const refs = labels.get(commit.sha) ?? []
-              const chips = chipsOf(refs, remotes)
-              const shownChips = narrow ? 1 : 2
-              const refChips = (
-                <>
-                  {chips.slice(0, shownChips).map(({ ref, remote }) => (
-                    <span
-                      key={ref.fullName}
-                      className="shui-git-ref"
-                      data-kind={ref.kind}
-                      data-current={ref.current || undefined}
-                      style={{ '--ref-color': color(ref.kind === 'tag' ? null : ref.name) } as React.CSSProperties}
-                      title={ref.fullName}
-                    >
-                      <span className="shui-git-ref-name">{ref.name}</span>
-                      {remote !== null ? <span className="shui-git-ref-remote">· {remote}</span> : null}
-                    </span>
-                  ))}
-                  {chips.length > shownChips ? (
-                    <span
-                      className="shui-git-ref"
-                      data-more=""
-                      title={chips
-                        .slice(shownChips)
-                        .map((chip) => chip.ref.name)
-                        .join('\n')}
-                    >
-                      +{chips.length - shownChips}
-                    </span>
-                  ) : null}
-                </>
-              )
-              const byline = (
-                <>
-                  <span className="shui-git-commit-author" title={commit.email}>
-                    {commit.author}
-                  </span>
-                  <span className="shui-git-commit-date">{when.format(commit.date * 1000)}</span>
-                </>
-              )
-              return (
-                // biome-ignore lint/a11y/useFocusableInteractive: the listbox holds focus and names this row through aria-activedescendant
-                <div
-                  role="option"
-                  className="shui-git-commit"
-                  data-narrow={narrow || undefined}
-                  data-head={inHead?.has(commit.sha) ? '' : undefined}
-                  aria-setsize={log.done ? commits.length : -1}
-                  aria-posinset={index + 1}
-                  {...nav.rowProps(index)}
-                >
-                  <span className="shui-git-commit-graph">
-                    {row !== null ? (
-                      <GraphCell
-                        row={row}
-                        height={rowHeight}
-                        color={color}
-                        ring={rings.get(commit.sha) ?? null}
-                        lanes={lanes}
-                        maxLanes={maxLanes}
-                      />
-                    ) : null}
-                  </span>
-                  <span className="shui-git-commit-main">
-                    <span className="shui-git-commit-subject">
-                      <span className="shui-git-commit-text">
-                        {speedMarks(commit.subject, nav.query).map((part, at) =>
-                          part.hit ? (
-                            <mark key={at} className="shui-git-hit">
-                              {part.text}
-                            </mark>
-                          ) : (
-                            part.text
-                          ),
-                        )}
-                      </span>
-                      {narrow ? null : refChips}
-                    </span>
-                    {narrow ? (
-                      <span className="shui-git-commit-byline">
-                        {byline}
-                        {refChips}
-                      </span>
-                    ) : null}
-                  </span>
-                  {narrow ? null : byline}
-                </div>
-              )
-            }}
+            renderRow={(commit, index) => (
+              <CommitRow
+                commit={commit}
+                index={index}
+                id={`${domId}-${index}`}
+                selected={index === nav.activeIndex}
+                setSize={log.done ? commits.length : -1}
+                row={graph?.[index] ?? null}
+                refs={labels.get(commit.sha) ?? NO_REFS}
+                remotes={remotes}
+                ring={rings.get(commit.sha) ?? null}
+                head={inHead?.has(commit.sha) ?? false}
+                narrow={narrow}
+                rowHeight={rowHeight}
+                lanes={lanes}
+                maxLanes={maxLanes}
+                color={color}
+                query={nav.query}
+              />
+            )}
           />
         </div>
       )}
@@ -501,4 +610,4 @@ export function GitCommitList({
       {nav.query !== '' ? <span className="shui-git-speed">{nav.query}</span> : null}
     </div>
   )
-}
+})

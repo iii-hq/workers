@@ -34,6 +34,7 @@ import {
 import {
   type CSSProperties,
   type KeyboardEvent,
+  memo,
   type ReactNode,
   useCallback,
   useEffect,
@@ -198,12 +199,21 @@ export interface WorktreeMenuProps {
   side: 'top' | 'bottom'
 }
 
-export function WorktreeMenu({ host, dir, page, frozen = false, rereadKey = '', side }: WorktreeMenuProps) {
+// Memoized: the IDE's header and the chat's composer render it on every
+// render of theirs, with props that seldom change.
+export const WorktreeMenu = memo(function WorktreeMenu({
+  host,
+  dir,
+  page,
+  frozen = false,
+  rereadKey = '',
+  side,
+}: WorktreeMenuProps) {
   const [open, setOpen] = useState(false)
   const ops = useWorktreeOps(host, dir, page, open, 'menu')
   // Refresh re-reads the chip too, even when it brings no focus change.
   const [refreshes, setRefreshes] = useState(0)
-  const head = useHead(host, dir, `${rereadKey}:${ops.epoch}:${refreshes}`)
+  const head = useHead(host, dir, `${rereadKey}:${refreshes}`)
   const [query, setQuery] = useState('')
   const [merging, setMerging] = useState<MergeDraft | null>(null)
   const [creating, setCreating] = useState(false)
@@ -226,6 +236,9 @@ export function WorktreeMenu({ host, dir, page, frozen = false, rereadKey = '', 
     ops.cancelDeleteBranch()
   }
   const hidden = dir === null || head === null
+  // Worked out again only when the list is, not on each render the chip's
+  // re-reads and the operation notes bring, open or closed.
+  const entries = useMemo(() => (ops.list === null ? [] : entriesOf(ops.list)), [ops.list])
 
   // Frozen (the composer locked), the menu closes: the chat's folder stays
   // put until it unlocks.
@@ -276,7 +289,6 @@ export function WorktreeMenu({ host, dir, page, frozen = false, rereadKey = '', 
     const own = branchOf(wt)
     return list !== null && !wt.main && own !== null && wt.path === worktreePathFor(list.worktrees[0].path, own)
   }
-  const entries = list === null ? [] : entriesOf(list)
   const matches = entries.filter(
     (entry) =>
       lowered === '' ||
@@ -804,4 +816,4 @@ export function WorktreeMenu({ host, dir, page, frozen = false, rereadKey = '', 
       <LiveRegion announcement={announcement} />
     </span>
   )
-}
+})

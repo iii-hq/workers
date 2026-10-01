@@ -9,7 +9,10 @@
    a group or steps into it, ← closes it or climbs to its parent, and
    typing jumps to a matching name. The search field above narrows the tree
    to matching refs, with their groups open. A click on a group's caret
-   opens or closes it. */
+   opens or closes it.
+
+   The rows are windowed, as the log's are: an open Remote or Tags group
+   can hold thousands. */
 
 import { SearchField, uiClasses } from '@iii-dev/console-ui'
 import {
@@ -23,11 +26,12 @@ import {
   GitBranch,
   Tag,
 } from 'lucide-react'
-import { type CSSProperties, useDeferredValue, useId, useMemo, useState } from 'react'
+import { type CSSProperties, memo, useCallback, useDeferredValue, useId, useMemo, useState } from 'react'
 import { glyphOf } from './CommitGraph'
 import type { ContextMenuAnchor } from './ContextMenu'
 import { middle, type RefTreeNode } from './git-log-window'
 import { speedMarks, useRowNav } from './use-row-nav'
+import { VirtualList } from './VirtualList'
 
 interface Row {
   node: RefTreeNode
@@ -42,6 +46,14 @@ interface Row {
 
 const isGroup = (node: RefTreeNode): node is Extract<RefTreeNode, { children: RefTreeNode[] }> =>
   node.kind === 'section' || node.kind === 'folder'
+const idOfRow = (row: Row) => row.node.id
+
+/** A row's height in pixels, for the window: the tree's rows are 1.5rem
+    (2.75rem narrow, styles.css) with the console tree's 1px between them. */
+function rowHeightOf(narrow: boolean): number {
+  const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+  return rem * (narrow ? 2.75 : 1.5) + 1
+}
 
 /** The rows showing: every node whose groups are open. With a query, the
     refs matching it, inside all their groups, opened. */
@@ -66,7 +78,9 @@ function visibleRows(nodes: readonly RefTreeNode[], expanded: ReadonlySet<string
   return rows
 }
 
-export function GitBranchTree({
+/** Memoized: the Log re-renders on every commit picked; the tree only
+    when what it shows changed. */
+export const GitBranchTree = memo(function GitBranchTree({
   nodes,
   defaultBranch,
   remotes,
@@ -80,6 +94,7 @@ export function GitBranchTree({
   onTap,
   onDrill,
   onRename,
+  narrow = false,
 }: {
   nodes: readonly RefTreeNode[]
   defaultBranch: string | null
@@ -98,11 +113,15 @@ export function GitBranchTree({
   onDrill?(node: RefTreeNode): void
   /** F2 on a branch. */
   onRename?(node: RefTreeNode): void
+  /** One pane at a time: rows at touch size. */
+  narrow?: boolean
 }) {
   const [query, setQuery] = useState('')
   // The field answers each key at once; the tree follows when it can.
   const shownQuery = useDeferredValue(query)
   const rows = useMemo(() => visibleRows(nodes, expanded, shownQuery), [nodes, expanded, shownQuery])
+  const rowHeight = useMemo(() => rowHeightOf(narrow), [narrow])
+  const listRef = useCallback((node: HTMLDivElement | null) => node?.setAttribute('data-git-focus', ''), [])
   const domId = useId()
   const nav = useRowNav<Row>({
     items: rows,
@@ -151,7 +170,8 @@ export function GitBranchTree({
   })
 
   return (
-    <div className="shui-git-branches" data-pane="branches">
+    // biome-ignore lint/a11y/noStaticElementInteractions: a focus-out listener around the windowed tree
+    <div className="shui-git-branches" data-pane="branches" onBlur={nav.listProps.onBlur}>
       <SearchField
         className="shui-git-branch-search"
         value={query}
@@ -161,14 +181,19 @@ export function GitBranchTree({
         autoComplete="off"
         spellCheck={false}
       />
-      <div
+      <VirtualList
+        rows={rows}
+        rowHeight={rowHeight}
+        rowKey={idOfRow}
+        className={`${uiClasses.tree} shui-git-tree`}
         role="tree"
         aria-label="Branches"
-        className={`${uiClasses.tree} shui-git-tree`}
-        data-git-focus=""
-        {...nav.listProps}
-      >
-        {rows.map((row, index) => {
+        tabIndex={0}
+        onKeyDown={nav.listProps.onKeyDown}
+        aria-activedescendant={nav.listProps['aria-activedescendant']}
+        keepIndex={nav.activeIndex}
+        listRef={listRef}
+        renderRow={(row, index) => {
           const { node } = row
           const ref = node.kind === 'ref' ? node.ref : node.kind === 'head' ? node.ref : null
           const glyph = ref !== null && ref.kind !== 'tag' ? glyphOf(ref.name, defaultBranch, remotes) : null
@@ -185,7 +210,6 @@ export function GitBranchTree({
           return (
             // biome-ignore lint/a11y/useFocusableInteractive: the tree holds focus and names this row through aria-activedescendant
             <div
-              key={node.id}
               role="treeitem"
               className={`${uiClasses.treeItem} shui-git-node`}
               data-kind={node.kind}
@@ -269,9 +293,9 @@ export function GitBranchTree({
               </span>
             </div>
           )
-        })}
-      </div>
+        }}
+      />
       {nav.query !== '' ? <span className="shui-git-speed">{nav.query}</span> : null}
     </div>
   )
-}
+})

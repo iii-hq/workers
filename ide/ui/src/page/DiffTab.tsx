@@ -124,15 +124,20 @@ export function DiffTab({
   const [menuOpen, setMenuOpen] = useState(false)
   const bodyRef = useRef<HTMLDivElement>(null)
   const contents = state.phase === 'ready' ? state.contents : null
+  // Keyed on the two sides, not on the state object: a reload that reads
+  // the same bodies back does not run the diff again.
+  const text = contents && !contents.binary && !contents.noBaseline ? contents : null
+  const oldText = text?.oldContents
+  const newText = text?.newContents
   const ops = useMemo(
     () =>
-      contents && !contents.binary && !contents.noBaseline
+      oldText !== undefined && newText !== undefined
         ? diffLines(
-            options.hideWhitespace ? normalizedForWhitespace(contents.oldContents) : contents.oldContents,
-            options.hideWhitespace ? normalizedForWhitespace(contents.newContents) : contents.newContents,
+            options.hideWhitespace ? normalizedForWhitespace(oldText) : oldText,
+            options.hideWhitespace ? normalizedForWhitespace(newText) : newText,
           )
         : null,
-    [contents, options.hideWhitespace],
+    [oldText, newText, options.hideWhitespace],
   )
   const totals = useMemo(() => (ops ? diffTotals(ops) : null), [ops])
   const wholeFile: WholeFileChange | null =

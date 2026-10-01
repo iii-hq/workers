@@ -3,13 +3,14 @@
 
    The refs are re-read (a few tens of milliseconds) when anything might
    have moved them: the root, the caller's refresh key, window focus, the
-   tab coming back. When their listing is unchanged nothing else runs;
-   when it changed, the log starts over from the new tips, reading as many
-   rows as were loaded so the view keeps its place. A read that a newer one
+   tab coming back, a new filter or branch. When their listing is unchanged
+   nothing else runs (a new filter's log still starts over, once); when it
+   changed, the log starts over from the new tips, reading as many rows as
+   were loaded so the view keeps its place. A read that a newer one
    superseded is dropped: `shell::exec` cannot be aborted. */
 
 import type { Host } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { emptyGraphState, type GraphRow, type GraphState, layoutPage } from './commit-graph'
 import {
   type CommitDetails,
@@ -29,7 +30,6 @@ import {
 } from './git-log-window'
 
 const PAGE = 1000
-const TEXT_DEBOUNCE_MS = 300
 const DETAILS_DEBOUNCE_MS = 150
 const BRANCHES_DELAY_MS = 300
 const DETAILS_CACHE = 200
@@ -62,7 +62,8 @@ function laneKeys(snapshot: RefsSnapshot): (sha: string) => string | null {
 }
 
 /** `tipRef` is a ref's full name (or 'HEAD') the log is limited to; null
-    for everything. `refreshKey` re-reads the refs whenever it changes. */
+    for everything. `refreshKey` re-reads the refs whenever it changes. The
+    filter applies at once: typed text settles in its field first. */
 export function useGitLog(
   host: Host,
   root: string | null,
@@ -80,22 +81,16 @@ export function useGitLog(
   const [error, setError] = useState<string | null>(null)
   const [refreshes, setRefreshes] = useState(0)
 
-  // The filter as applied: typed text settles for a moment first.
+  // A filter picked again as it was reads nothing.
   const filterKey = JSON.stringify(filter)
-  const [applied, setApplied] = useState(filterKey)
-  const textRef = useRef(filter.text)
-  useEffect(() => {
-    const typed = filter.text !== textRef.current
-    textRef.current = filter.text
-    const timer = setTimeout(() => setApplied(filterKey), typed ? TEXT_DEBOUNCE_MS : 0)
-    return () => clearTimeout(timer)
-  }, [filterKey, filter.text])
 
   // Everything a page read needs, read at call time: a stale closure must
   // not append to a newer generation.
   const live = useRef({
     generation: 0,
     snapshot: null as RefsSnapshot | null,
+    /** The snapshot's lane colours, worked out once rather than per page. */
+    laneKey: (() => null) as (sha: string) => string | null,
     commits: [] as LogCommit[],
     graphState: emptyGraphState as GraphState,
     graph: [] as GraphRow[],
@@ -111,7 +106,7 @@ export function useGitLog(
       const state = live.current
       const current = state.snapshot
       if (root === null || current === null) return
-      const parsed = JSON.parse(applied) as LogFilter
+      const parsed = JSON.parse(filterKey) as LogFilter
       state.pending = true
       setLoading(true)
       try {
@@ -128,7 +123,7 @@ export function useGitLog(
         state.nextSkip = skip + page.commits.length
         state.done = page.done
         if (showsGraph(parsed)) {
-          const laid = layoutPage(skip === 0 ? emptyGraphState : state.graphState, added, laneKeys(current))
+          const laid = layoutPage(skip === 0 ? emptyGraphState : state.graphState, added, state.laneKey)
           state.graphState = laid.state
           state.graph = skip === 0 ? laid.rows : [...state.graph, ...laid.rows]
           setGraph(state.graph)
@@ -156,7 +151,7 @@ export function useGitLog(
         }
       }
     },
-    [host, root, applied, tipRef],
+    [host, root, filterKey, tipRef],
   )
 
   // A new generation: the log starts over from the tips.
@@ -175,11 +170,11 @@ export function useGitLog(
     },
     [load],
   )
-
   // The refs, whenever anything may have moved them.
   const refSeq = useRef(0)
-  // Refresh reads the log again even when the refs did not move.
-  const force = useRef(false)
+  // The log starts over even when the refs did not move: Refresh keeps
+  // the rows loaded, a new filter or branch reads from its first page.
+  const force = useRef<'refresh' | 'filter' | null>(null)
   const readRefsNow = useCallback(() => {
     if (!active || root === null) return
     const seq = ++refSeq.current
@@ -198,15 +193,27 @@ export function useGitLog(
           return
         }
         setNotRepo(false)
-        if (state.snapshot?.signature === next.signature && !force.current) return
-        force.current = false
-        const loaded = state.commits.length
-        state.snapshot = next
-        setSnapshot(next)
+        const moved = state.snapshot?.signature !== next.signature
+        if (!moved && force.current === null) return
+        const loaded = force.current === 'filter' ? 0 : state.commits.length
+        // Unmoved refs keep their snapshot for a new filter: the branch
+        // tree and every chip are built from it.
+        if (moved || force.current === 'refresh') {
+          state.snapshot = next
+          state.laneKey = laneKeys(next)
+          setSnapshot(next)
+        }
+        force.current = null
         restart(loaded)
       },
       (err: unknown) => {
-        if (seq === refSeq.current) setError(err instanceof Error ? err.message : String(err))
+        if (seq !== refSeq.current) return
+        setError(err instanceof Error ? err.message : String(err))
+        // A new filter or branch still applies, from the refs already read.
+        if (force.current === 'filter' && live.current.snapshot !== null) {
+          force.current = null
+          restart(0)
+        }
       },
     )
   }, [host, root, active, restart])
@@ -215,8 +222,11 @@ export function useGitLog(
     readRefsNow()
   }, [readRefsNow, refreshKey, refreshes])
 
-  // The filter or the branch changed: same refs, a new log. A new root
-  // forgets the previous repository instead; its own refs read restarts it.
+  // The filter or the branch changed: a new `restart`, so a new
+  // `readRefsNow` reads the refs above (a commit or a fetch in a terminal
+  // moves them unseen), and the log starts over once they land, whether
+  // or not they moved. A new root forgets the previous repository instead;
+  // its own refs read restarts it.
   const lastRoot = useRef(root)
   const firstRun = useRef(true)
   useEffect(() => {
@@ -235,7 +245,7 @@ export function useGitLog(
       firstRun.current = false
       return
     }
-    if (state.snapshot !== null) restart(0)
+    if (state.snapshot !== null) force.current = 'filter'
   }, [restart, root])
 
   // Coming back to the window: a commit or a fetch in a terminal moves refs
@@ -264,23 +274,22 @@ export function useGitLog(
   const loadMore = useCallback(() => {
     const state = live.current
     if (state.done || state.pending || state.failed || state.snapshot === null) return
+    // A new filter waits for its refs read: its first page comes from there,
+    // not from the old filter's offset.
+    if (force.current === 'filter') return
     void load(state.generation, state.nextSkip, PAGE)
   }, [load])
 
-  return {
-    snapshot,
-    notRepo,
-    commits,
-    graph,
-    done,
-    loading,
-    error,
-    loadMore,
-    refresh: () => {
-      force.current = true
-      setRefreshes((value) => value + 1)
-    },
-  }
+  const refresh = useCallback(() => {
+    force.current = 'refresh'
+    setRefreshes((value) => value + 1)
+  }, [])
+
+  // One object while nothing in it changed: the Log's panes are memoized.
+  return useMemo(
+    () => ({ snapshot, notRepo, commits, graph, done, loading, error, loadMore, refresh }),
+    [snapshot, notRepo, commits, graph, done, loading, error, loadMore, refresh],
+  )
 }
 
 export interface CommitDetailsState {
@@ -288,95 +297,92 @@ export interface CommitDetailsState {
   loading: boolean
   error: string | null
   /** The branches that have the commit, read once the selection rests. */
-  branches: { names: string[]; total: number; partial: boolean } | null
+  branches: Branches | null
+}
+
+type Branches = { names: string[]; total: number; partial: boolean }
+
+/** A read of one commit's details as it landed: the commit, or why not. */
+interface DetailsRead {
+  key: string
+  details: CommitDetails | null
+  error: string | null
+}
+
+// Kept across mounts, so a Git window hidden and shown again has the
+// commits it read; the keys name the root, and all else a read depends on.
+const detailsCache = new Map<string, CommitDetails>()
+const branchesCache = new Map<string, Branches>()
+
+function remember<T>(cache: Map<string, T>, key: string, value: T) {
+  cache.set(key, value)
+  // ponytail: drops the oldest entry; an LRU if revisits matter.
+  if (cache.size > DETAILS_CACHE) cache.delete(cache.keys().next().value as string)
+}
+
+/** What the details pane shows for `key`: the cached commit, else what the
+    last read left if it was for this key; until then it is loading. */
+export function detailsFor(
+  key: string | null,
+  cached: CommitDetails | undefined,
+  read: DetailsRead | null,
+): Omit<CommitDetailsState, 'branches'> {
+  const own = read !== null && read.key === key ? read : null
+  const details = key === null ? null : (cached ?? own?.details ?? null)
+  const error = details === null ? (own?.error ?? null) : null
+  return { details, loading: key !== null && details === null && error === null, error }
 }
 
 /** The selected commit's details, read once the selection settles, and
-    kept for the last few hundred commits looked at. */
+    kept for the last few hundred commits looked at. Each read lands with
+    the key it was for and what shows is worked out from the current key,
+    so a new selection takes a single commit. */
 export function useCommitDetails(
   host: Host,
   root: string | null,
   snapshot: RefsSnapshot | null,
   sha: string | null,
 ): CommitDetailsState {
-  const cache = useRef(new Map<string, CommitDetails>())
-  const branchCache = useRef(new Map<string, { names: string[]; total: number; partial: boolean }>())
-  const [details, setDetails] = useState<CommitDetails | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [branches, setBranches] = useState<CommitDetailsState['branches']>(null)
   const prefix = snapshot?.prefix ?? ''
   const signature = snapshot?.signature ?? ''
   // Each file's folder-relative path depends on the folder: wait for it.
-  const ready = snapshot !== null
-
-  // Another repository's commits are not this one's.
-  const cacheRoot = useRef(root)
-  if (cacheRoot.current !== root) {
-    cacheRoot.current = root
-    cache.current.clear()
-    branchCache.current.clear()
-  }
+  const key = root === null || sha === null || snapshot === null ? null : `${root}\0${prefix}\0${sha}`
+  const branchesKey = root === null || sha === null ? null : `${root}\0${sha}\0${signature}`
+  const [read, setRead] = useState<DetailsRead | null>(null)
+  const [branchesRead, setBranchesRead] = useState<{ key: string; branches: Branches } | null>(null)
 
   useEffect(() => {
-    if (root === null || sha === null || !ready) {
-      setDetails(null)
-      setBranches(null)
-      setError(null)
-      return
-    }
-    const key = `${prefix}\0${sha}`
-    const cached = cache.current.get(key)
-    setDetails(cached ?? null)
-    setError(null)
+    if (key === null || root === null || sha === null || detailsCache.has(key)) return
     let stale = false
-    const timer = cached
-      ? undefined
-      : setTimeout(() => {
-          setLoading(true)
-          readCommitDetails(host, root, prefix, sha).then(
-            (read) => {
-              if (stale) return
-              cache.current.set(key, read)
-              // ponytail: drops the oldest entry; an LRU if revisits matter.
-              if (cache.current.size > DETAILS_CACHE) cache.current.delete(cache.current.keys().next().value as string)
-              setDetails(read)
-              setLoading(false)
-            },
-            (err: unknown) => {
-              if (stale) return
-              setError(err instanceof Error ? err.message : String(err))
-              setLoading(false)
-            },
-          )
-        }, DETAILS_DEBOUNCE_MS)
+    const timer = setTimeout(() => {
+      readCommitDetails(host, root, prefix, sha).then(
+        (details) => {
+          if (stale) return
+          remember(detailsCache, key, details)
+          setRead({ key, details, error: null })
+        },
+        (err: unknown) => {
+          if (!stale) setRead({ key, details: null, error: err instanceof Error ? err.message : String(err) })
+        },
+      )
+    }, DETAILS_DEBOUNCE_MS)
     return () => {
       stale = true
-      if (timer !== undefined) clearTimeout(timer)
+      clearTimeout(timer)
     }
-  }, [host, root, prefix, sha, ready])
+  }, [host, key, root, prefix, sha])
 
   // Which branches have it: a walk over every ref, so only once the
   // selection rests, and again only when the refs moved.
   useEffect(() => {
-    setBranches(null)
-    if (root === null || sha === null) return
-    const key = `${sha}@${signature}`
-    const cached = branchCache.current.get(key)
-    if (cached) {
-      setBranches(cached)
-      return
-    }
+    if (branchesKey === null || root === null || sha === null || branchesCache.has(branchesKey)) return
     let stale = false
     const timer = setTimeout(() => {
       readContainingBranches(host, root, sha).then(
-        (read) => {
+        (branches) => {
           if (stale) return
-          branchCache.current.set(key, read)
-          if (branchCache.current.size > DETAILS_CACHE) {
-            branchCache.current.delete(branchCache.current.keys().next().value as string)
-          }
-          setBranches(read)
+          remember(branchesCache, branchesKey, branches)
+          setBranchesRead({ key: branchesKey, branches })
         },
         () => {},
       )
@@ -385,9 +391,21 @@ export function useCommitDetails(
       stale = true
       clearTimeout(timer)
     }
-  }, [host, root, sha, signature])
+  }, [host, branchesKey, root, sha])
 
-  return { details, loading, error, branches }
+  const cached = key === null ? undefined : detailsCache.get(key)
+  const cachedBranches = branchesKey === null ? undefined : branchesCache.get(branchesKey)
+  // A cache hit is kept as this pane's own read: another pane's reads may
+  // evict it from the shared cache, and nothing here would read it again.
+  // Set while rendering, so React renders again before it commits.
+  if (key !== null && cached !== undefined && read?.details !== cached) setRead({ key, details: cached, error: null })
+  if (branchesKey !== null && cachedBranches !== undefined && branchesRead?.branches !== cachedBranches) {
+    setBranchesRead({ key: branchesKey, branches: cachedBranches })
+  }
+  const { details, loading, error } = detailsFor(key, cached, read)
+  const branches =
+    branchesKey === null ? null : (cachedBranches ?? (branchesRead?.key === branchesKey ? branchesRead.branches : null))
+  return useMemo(() => ({ details, loading, error, branches }), [details, loading, error, branches])
 }
 
 export interface WorkingDiffState {

@@ -41,6 +41,20 @@ export interface DiffContents {
   worktreeRevision?: string
 }
 
+/** Two loads that read back the same sides and say the same about them. */
+export function sameDiffContents(a: DiffContents, b: DiffContents): boolean {
+  return (
+    a.oldContents === b.oldContents &&
+    a.newContents === b.newContents &&
+    a.binary === b.binary &&
+    a.noBaseline === b.noBaseline &&
+    a.worktreeRevision === b.worktreeRevision &&
+    a.note?.headline === b.note?.headline &&
+    a.note?.detail === b.note?.detail &&
+    a.note?.tone === b.note?.tone
+  )
+}
+
 interface ExecResponse {
   exit_code: number | null
   stdout: string

@@ -21,6 +21,7 @@ vi.mock('@iii-dev/console-ui', () => ({
 }))
 
 import {
+  closeTerminalPanes,
   pruneTerminalConnectionCoordinators,
   reconcileTerminalWorkspaceLeases,
   TerminalWorkspace,
@@ -104,6 +105,27 @@ describe('TerminalWorkspace', () => {
     expect(html).toContain('aria-selected="true"')
   })
 
+  it('keeps every tab mounted, the inactive one hidden', () => {
+    const html = renderToStaticMarkup(
+      <TerminalWorkspace
+        state={twoTabWorkspace()}
+        dispatch={() => undefined}
+        root="/repo"
+        visible={false}
+        router={null}
+        leaseStore={null}
+        storageKey="test"
+        connectionCoordinators={new Map()}
+      />,
+    )
+
+    expect(html).toContain('data-terminal-pane-id="pane-1"')
+    expect(html).toContain('data-terminal-pane-id="pane-2"')
+    expect(
+      html.match(/class="shui-terminal-tab-layout" hidden=""/g) ?? [],
+    ).toHaveLength(1)
+  })
+
   it('renders horizontal and vertical split separators', () => {
     const html = renderToStaticMarkup(
       <TerminalWorkspace
@@ -149,6 +171,37 @@ describe('TerminalWorkspace', () => {
 
     expect(reclaimed).toEqual(['orphan-session'])
     expect(warnings).toEqual([])
+  })
+
+  it('closes every pane at once and keeps the ones that failed', async () => {
+    const started: string[] = []
+    const settle = new Map<
+      string,
+      {
+        resolve: (warning: string | null) => void
+        reject: (error: Error) => void
+      }
+    >()
+    const closing = closeTerminalPanes(
+      ['pane-1', 'pane-2', 'pane-3'],
+      (paneId) => {
+        started.push(paneId)
+        return new Promise((resolve, reject) => {
+          settle.set(paneId, { resolve, reject })
+        })
+      },
+    )
+
+    // No close waits for another's shell to die.
+    expect(started).toEqual(['pane-1', 'pane-2', 'pane-3'])
+    settle.get('pane-3')?.resolve(null)
+    settle.get('pane-2')?.reject(new Error('terminal close failed'))
+    settle.get('pane-1')?.resolve('lease storage is full')
+
+    await expect(closing).resolves.toEqual({
+      closed: ['pane-1', 'pane-3'],
+      messages: ['lease storage is full', 'terminal close failed'],
+    })
   })
 
   it('prunes connection coordinators for closed panes', () => {

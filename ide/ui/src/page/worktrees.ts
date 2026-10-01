@@ -175,17 +175,22 @@ async function readWorktrees(host: Host, cwd: string): Promise<Worktree[]> {
 }
 
 export async function listWorktrees(host: Host, root: string): Promise<WorktreeList> {
-  // Two independent chains: the worktrees and their dirty marks, and the
-  // default branch and the branches counted against it.
-  const [worktrees, [defaultBranch, branches]] = await Promise.all([
+  // Two independent chains: the worktrees, their dirty marks and what a
+  // stopped rebase or bisect left in them, and the default branch and the
+  // branches counted against it.
+  const [[worktrees, held], [defaultBranch, branches]] = await Promise.all([
     readWorktrees(host, root).then(async (list) => {
-      await Promise.all([fillDirty(host, list), fillTips(host, root, list)])
-      return list
+      const [, , held] = await Promise.all([fillDirty(host, list), fillTips(host, root, list), readHeld(host, list)])
+      return [list, held] as const
     }),
     findDefaultBranch(host, root).then(async (target) => [target, await readBranches(host, root, target)] as const),
   ])
-  await fillHeld(host, worktrees, new Set(branches.map((branch) => branch.name)))
   const byName = new Map(branches.map((branch) => [branch.name, branch]))
+  // Only a local branch is held: a rebase of a detached HEAD names none.
+  for (const { wt, rebased, bisected } of held) {
+    if (byName.has(rebased)) wt.held = { branch: rebased, by: 'rebase' }
+    else if (byName.has(bisected)) wt.held = { branch: bisected, by: 'bisect' }
+  }
   for (const wt of worktrees) {
     const own = branchOf(wt)
     const branch = own === null ? undefined : byName.get(own)
@@ -199,26 +204,22 @@ export async function listWorktrees(host: Host, root: string): Promise<WorktreeL
     worktree has checked out: that can be any side branch, and merges
     would land on it. */
 async function findDefaultBranch(host: Host, cwd: string): Promise<string | null> {
-  const [remote, init] = await Promise.all([
+  // Which of them exist comes from the local branches, listed alongside
+  // rather than after; the first in that order wins.
+  const [remote, init, found] = await Promise.all([
     git(host, cwd, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']),
     git(host, cwd, ['config', 'init.defaultBranch']),
+    git(host, cwd, ['for-each-ref', '--format=%(refname)', 'refs/heads']),
   ])
+  if (found.exit_code !== 0) return null
   const names = [
     remote.exit_code === 0 ? remote.stdout.trim().replace(/^origin\//, '') : '',
     init.exit_code === 0 ? init.stdout.trim() : '',
     'main',
     'master',
   ]
-  // Which of them exist, in one read; the first in that order wins.
-  const wanted = [...new Set(names.filter((name) => name !== ''))]
-  const found = await git(host, cwd, [
-    'for-each-ref',
-    '--format=%(refname)',
-    ...wanted.map((name) => `refs/heads/${name}`),
-  ])
-  if (found.exit_code !== 0) return null
   const present = new Set(found.stdout.split('\n'))
-  return wanted.find((name) => present.has(`refs/heads/${name}`)) ?? null
+  return names.find((name) => name !== '' && present.has(`refs/heads/${name}`)) ?? null
 }
 
 /** Every local branch in a single `for-each-ref`, the most recently
@@ -247,11 +248,15 @@ async function readBranches(host: Host, cwd: string, target: string | null): Pro
   return branches
 }
 
-/** For each detached worktree, the branch a stopped rebase (its `head-name`)
-    or bisect (`BISECT_START`) holds, read from the worktree's git dir. */
-async function fillHeld(host: Host, worktrees: readonly Worktree[], branches: ReadonlySet<string>): Promise<void> {
+/** For each detached worktree, the names a stopped rebase (its `head-name`)
+    and bisect (`BISECT_START`) left in the worktree's git dir: read before
+    the branches are, so the caller keeps only a name that is one. */
+async function readHeld(
+  host: Host,
+  worktrees: readonly Worktree[],
+): Promise<{ wt: Worktree; rebased: string; bisected: string }[]> {
   const detached = worktrees.filter((wt) => wt.branch === null && !wt.bare && !wt.prunable)
-  await Promise.all(
+  const held = await Promise.all(
     detached.map(async (wt) => {
       const paths = await git(host, wt.path, [
         'rev-parse',
@@ -263,16 +268,14 @@ async function fillHeld(host: Host, worktrees: readonly Worktree[], branches: Re
         '--git-path',
         'BISECT_START',
       ]).catch(() => null)
-      if (paths?.exit_code !== 0) return
+      if (paths?.exit_code !== 0) return null
       const [merge, apply, bisect] = paths.stdout.split('\n')
       const files = await coderReadFiles(host, [merge, apply, bisect]).catch(() => [])
       const read = (path: string) => files.find((file) => file.path === path && file.success)?.content?.trim() ?? ''
-      const rebased = (read(merge) || read(apply)).replace(/^refs\/heads\//, '')
-      const bisected = read(bisect)
-      if (branches.has(rebased)) wt.held = { branch: rebased, by: 'rebase' }
-      else if (branches.has(bisected)) wt.held = { branch: bisected, by: 'bisect' }
+      return { wt, rebased: (read(merge) || read(apply)).replace(/^refs\/heads\//, ''), bisected: read(bisect) }
     }),
   )
+  return held.filter((entry) => entry !== null)
 }
 
 /** Each worktree's last commit, for its row: one `git log` over every head. */

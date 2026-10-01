@@ -386,10 +386,18 @@ function statusFromCode(x: string, y: string): GitFileStatus | null {
     paths are repo-TOPLEVEL-relative, so when the browsed root is a
     subdirectory the `--show-prefix` is stripped to keep the page's
     root-relative vocabulary (the `-- .` pathspec already scopes the
-    report to the subtree). */
-export async function gitChanges(host: Host, root: string): Promise<GitState> {
+    report to the subtree). An answer that reads like `previous` returns
+    it: what is drawn from it stays put. */
+export async function gitChanges(
+  host: Host,
+  root: string,
+  previous: GitState | null = null,
+): Promise<GitState> {
   const state = await porcelainStatus(host, root)
-  if (state.kind !== 'ready') return state
+  if (state.kind === 'error') {
+    return previous?.kind === 'error' && previous.message === state.message ? previous : state
+  }
+  if (state.kind === 'not-a-repo') return previous?.kind === 'not-a-repo' ? previous : state
 
   const changes: GitChange[] = []
   const recreated = recreatedAfterStagedDelete(state.entries)
@@ -407,7 +415,16 @@ export async function gitChanges(host: Host, root: string): Promise<GitState> {
     if (entry.renameFrom !== undefined) change.from = entry.renameFrom
     changes.push(change)
   }
-  return { kind: 'ready', changes }
+  const last = previous?.kind === 'ready' ? previous : undefined
+  return last !== undefined &&
+    last.changes.length === changes.length &&
+    last.changes.every((change, index) => sameChange(change, changes[index]))
+    ? last
+    : { kind: 'ready', changes }
+}
+
+function sameChange(a: GitChange, b: GitChange): boolean {
+  return a.path === b.path && a.status === b.status && a.staged === b.staged && a.from === b.from
 }
 
 function statusForScope(entry: PorcelainEntry, scope: GitComparisonScope): GitFileStatus | null {

@@ -46,7 +46,7 @@ import {
   Pencil,
   Undo2,
 } from 'lucide-react'
-import { type CSSProperties, useRef, useState } from 'react'
+import { type CSSProperties, memo, useRef, useState } from 'react'
 import { type GitAction, menuItems } from './ActionRail'
 import { useContextMenu } from './ContextMenu'
 import { GitFileList } from './GitFileList'
@@ -80,7 +80,9 @@ const SIGNATURES: Readonly<Record<string, string>> = {
   E: 'Signature not checked',
 }
 
-export function GitCommitDetails({
+/** Memoized: the Log re-renders on every keystroke in its forms and every
+    page of commits; the details only when theirs changed. */
+export const GitCommitDetails = memo(function GitCommitDetails({
   state,
   selected,
   onOpenFile,
@@ -130,12 +132,28 @@ export function GitCommitDetails({
   const { confirm, dialog } = useConfirm()
   const filesRef = useRef<HTMLElement>(null)
   const shownHeight = () => filesRef.current?.getBoundingClientRect().height ?? null
+  // A drag sizes the files on their section and keeps the height once, on
+  // release: keeping it on every move re-rendered the whole Log.
+  const dragged = useRef<number | null>(null)
   const drag = useSplitDrag<number>({
     horizontal: false,
     begin: shownHeight,
-    move: (origin, delta) => onView({ height: origin + delta }),
+    move: (origin, delta) => {
+      const files = filesRef.current
+      if (files === null) return
+      const height = Math.max(48, Math.round(origin + delta))
+      dragged.current = height
+      files.style.setProperty('--files-height', `${height}px`)
+      files.setAttribute('data-sized', 'true')
+    },
     step: (direction) => onView({ height: (shownHeight() ?? 0) + direction * 16 }),
   })
+  const endDrag = () => {
+    const height = dragged.current
+    if (height === null) return
+    dragged.current = null
+    onView({ height })
+  }
   if (selected === null) {
     return (
       <div className="shui-git-details" data-pane="details">
@@ -351,6 +369,18 @@ export function GitCommitDetails({
             title="Drag to resize; double-click to fit the files"
             onDoubleClick={() => onView({ height: null })}
             {...drag}
+            onPointerUp={(event) => {
+              drag.onPointerUp(event)
+              endDrag()
+            }}
+            onPointerCancel={(event) => {
+              drag.onPointerCancel(event)
+              endDrag()
+            }}
+            onLostPointerCapture={(event) => {
+              drag.onLostPointerCapture(event)
+              endDrag()
+            }}
           />
           <section className="shui-git-commit-info" aria-label="Commit">
             <p className="shui-git-info-subject">{subject}</p>
@@ -428,4 +458,4 @@ export function GitCommitDetails({
       {dialog}
     </div>
   )
-}
+})

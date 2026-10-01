@@ -14,7 +14,11 @@
 
    A narrow pane shows one pane at a time and drills in: Branches, then a
    branch's Commits, then one Commit, with Back in a header above and the
-   branch actions in a bar along the bottom. */
+   branch actions in a bar along the bottom.
+
+   The panes are memoized, and what this hands them keeps its identity
+   until what it shows changed: a new selection, a details read or a form
+   keystroke re-renders only the panes it concerns. */
 
 import type { Host } from '@iii-dev/console-ui'
 import { ConfirmDialog, EmptyState } from '@iii-dev/console-ui'
@@ -36,10 +40,10 @@ import {
   PenLine,
   Trash2,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActionRail, type GitAction, menuItems } from './ActionRail'
 import { glyphColor, glyphOf } from './CommitGraph'
-import { useContextMenu } from './ContextMenu'
+import { type ContextMenuAnchor, useContextMenu } from './ContextMenu'
 import { GitBranchTree } from './GitBranchTree'
 import { type FilesView, GitCommitDetails } from './GitCommitDetails'
 import { GitCommitList } from './GitCommitList'
@@ -109,24 +113,39 @@ function flatten(nodes: readonly RefTreeNode[], into = new Map<string, RefTreeNo
   return into
 }
 
-/** A drag handle between two panes; `side` says which pane it sizes. */
+/** A drag handle between two panes; `side` says which pane it sizes. A
+    drag sets the width in the grid's `variable` as it moves and keeps it
+    once, on release: keeping it on every move re-rendered the whole Log. */
 function Sash({
   label,
   width,
   side,
+  variable,
   onWidth,
 }: {
   label: string
   width: number
   side: 'left' | 'right'
+  variable: string
   onWidth(next: number): void
 }) {
-  const drag = useSplitDrag<number>({
+  const dragged = useRef<number | null>(null)
+  const drag = useSplitDrag<{ width: number; grid: HTMLElement | null }>({
     horizontal: true,
-    begin: () => width,
-    move: (origin, delta) => onWidth(origin + (side === 'left' ? delta : -delta)),
+    begin: (event) => ({ width, grid: event.currentTarget.parentElement }),
+    move: (origin, delta) => {
+      const next = Math.min(900, Math.max(160, Math.round(origin.width + (side === 'left' ? delta : -delta))))
+      dragged.current = next
+      origin.grid?.style.setProperty(variable, `${next}px`)
+    },
     step: (direction) => onWidth(width + (side === 'left' ? direction : -direction) * 16),
   })
+  const end = () => {
+    const next = dragged.current
+    if (next === null) return
+    dragged.current = null
+    onWidth(next)
+  }
   return (
     // biome-ignore lint/a11y/useSemanticElements: an interactive range separator, not a thematic break
     <div
@@ -139,6 +158,18 @@ function Sash({
       aria-valuemax={900}
       aria-valuenow={width}
       {...drag}
+      onPointerUp={(event) => {
+        drag.onPointerUp(event)
+        end()
+      }}
+      onPointerCancel={(event) => {
+        drag.onPointerCancel(event)
+        end()
+      }}
+      onLostPointerCapture={(event) => {
+        drag.onLostPointerCapture(event)
+        end()
+      }}
     />
   )
 }
@@ -175,10 +206,17 @@ export function GitLogTab({
   const [treeSel, setTreeSel] = useState<string | null>(null)
   const [commitSel, setCommitSel] = useState<string | null>(null)
   const [stored, setStored] = usePaneState<Layout>(`iii::shell-ui::git::${paneKey}`, LAYOUT)
-  // Normalized once per stored value: a fresh `expanded` array each render
-  // would rebuild the tree's open set, and every row with it.
   const layout = useMemo(() => normalize(stored), [stored])
-  const expanded = useMemo(() => new Set(layout.expanded), [layout.expanded])
+  // Kept by content: normalize() makes a new `expanded` array and `files`
+  // object per stored value (a pane dragged wider), and a new open set
+  // rebuilds every row of the tree.
+  const expandedKey = layout.expanded.join('\n')
+  const expanded = useMemo(() => new Set(expandedKey === '' ? [] : expandedKey.split('\n')), [expandedKey])
+  const { height: filesHeight, grouped: filesGrouped, info: filesInfo } = layout.files
+  const files = useMemo(
+    (): FilesView => ({ height: filesHeight, grouped: filesGrouped, info: filesInfo }),
+    [filesHeight, filesGrouped, filesInfo],
+  )
   const [creating, setCreating] = useState<{ from: string; label: string } | null>(null)
   const [merging, setMerging] = useState<{ branch: string; wt: Worktree | null; draft: MergeDraft } | null>(null)
   // A new branch's name, or a branch's new one.
@@ -189,6 +227,7 @@ export function GitLogTab({
   // A look-up an action needed first failed (where a push would go).
   const [hint, setHint] = useState<string | null>(null)
   const menu = useContextMenu()
+  const openMenu = menu.open
   const [stage, setStage] = useState<Stage>('commits')
   // The keyboard follows a drill into its stage, unless focus is elsewhere.
   const paneRef = useRef<HTMLDivElement>(null)
@@ -207,14 +246,33 @@ export function GitLogTab({
   // group leaves it on every branch.
   const tipRef = treeSel?.startsWith('ref:') ? treeSel.slice(4) : treeSel === 'head' ? 'HEAD' : null
   const log = useGitLog(host, root, epoch, active, filter, tipRef)
-  // A branch picked in the tree or the Branch menu ends a "History up to here".
-  const selectNode = useCallback((id: string | null) => {
-    setFilter((prev) => (prev.upTo === undefined ? prev : { ...prev, upTo: undefined }))
-    setTreeSel(id)
-  }, [])
-  const details = useCommitDetails(host, root, log.snapshot, commitSel)
-  const working = useWorkingDiff(host, root, log.snapshot?.prefix ?? null, comparing?.ref ?? null, epoch)
   const snapshot = log.snapshot
+  // Picking a branch selects its tip at once, from the refs: its page may
+  // not be read yet. Picking it again leaves the commit picked alone.
+  const selectTree = useCallback(
+    (id: string | null) => {
+      setTreeSel(id)
+      if (id === treeSel) return
+      const tip =
+        id === 'head'
+          ? (snapshot?.head ?? null)
+          : id?.startsWith('ref:')
+            ? (snapshot?.refs.find((ref) => ref.fullName === id.slice(4))?.sha ?? null)
+            : null
+      if (tip !== null) setCommitSel(tip)
+    },
+    [snapshot, treeSel],
+  )
+  // A branch picked in the tree or the Branch menu ends a "History up to here".
+  const selectNode = useCallback(
+    (id: string | null) => {
+      setFilter((prev) => (prev.upTo === undefined ? prev : { ...prev, upTo: undefined }))
+      selectTree(id)
+    },
+    [selectTree],
+  )
+  const details = useCommitDetails(host, root, snapshot, commitSel)
+  const working = useWorkingDiff(host, root, snapshot?.prefix ?? null, comparing?.ref ?? null, epoch)
 
   const nodes = useMemo(() => (snapshot === null ? [] : refsTree(snapshot, target)), [snapshot, target])
   const nodeById = useMemo(() => flatten(nodes), [nodes])
@@ -259,19 +317,22 @@ export function GitLogTab({
     return out
   }, [ops.list, here?.path])
 
-  const setExpanded = (id: string, open: boolean) =>
-    setStored((prev) => {
-      const current = normalize(prev)
-      const next = new Set(current.expanded)
-      if (open) next.add(id)
-      else next.delete(id)
-      return { ...current, expanded: [...next] }
-    })
+  const setExpanded = useCallback(
+    (id: string, open: boolean) =>
+      setStored((prev) => {
+        const current = normalize(prev)
+        const next = new Set(current.expanded)
+        if (open) next.add(id)
+        else next.delete(id)
+        return { ...current, expanded: [...next] }
+      }),
+    [setStored],
+  )
 
-  // The selected commit. Picking a branch selects its tip at once, from the
-  // refs: its page may not be read yet. A new list keeps the selection while
-  // it is listed, else takes the IDE's HEAD, else the newest; a list that
-  // only grew keeps even an unlisted one (a parent picked in the details).
+  // The selected commit (a branch picked selects its tip: selectTree). A
+  // new list keeps the selection while it is listed, else takes the IDE's
+  // HEAD, else the newest; a list that only grew keeps even an unlisted one
+  // (a parent picked in the details).
   const head = snapshot?.head ?? null
   const tipSha =
     tipRef === null
@@ -279,12 +340,6 @@ export function GitLogTab({
       : tipRef === 'HEAD'
         ? head
         : (snapshot?.refs.find((ref) => ref.fullName === tipRef)?.sha ?? null)
-  const lastTip = useRef<string | null>(null)
-  useEffect(() => {
-    if (lastTip.current === tipRef) return
-    lastTip.current = tipRef
-    if (tipSha !== null) setCommitSel(tipSha)
-  }, [tipRef, tipSha])
   const lastList = useRef<readonly LogCommit[]>([])
   useEffect(() => {
     const before = lastList.current
@@ -351,7 +406,7 @@ export function GitLogTab({
     const slash = name.indexOf('/')
     setExpanded('local', true)
     if (slash > 0) setExpanded(`local/${name.slice(0, slash)}`, true)
-    setTreeSel(`ref:refs/heads/${name}`)
+    selectTree(`ref:refs/heads/${name}`)
   }
   useEffect(() => {
     if (focusBranch !== null) revealBranch(focusBranch.name)
@@ -397,13 +452,21 @@ export function GitLogTab({
     setCreating(null)
     setNaming({ kind, from, label })
   }
+  // The latest push asked for: an earlier one's look-up answering late
+  // must not name its branch.
+  const pushSeq = useRef(0)
   const startPush = (branch: string) => {
     const list = ops.list
     if (list === null) return
+    const seq = ++pushSeq.current
     setHint(null)
     pushTarget(host, list, branch).then(
-      (target) => setPushing({ branch, target }),
-      (err: unknown) => setHint(`push failed: ${errorMessage(err)}`),
+      (target) => {
+        if (seq === pushSeq.current) setPushing({ branch, target })
+      },
+      (err: unknown) => {
+        if (seq === pushSeq.current) setHint(`push failed: ${errorMessage(err)}`)
+      },
     )
   }
   const compareWith = (ref: string) => {
@@ -412,274 +475,371 @@ export function GitLogTab({
   }
 
   const busyWhy = ops.busy ? 'another worktree operation is running' : null
-  const refActions = (node: RefTreeNode | null): GitAction[] => {
-    const ref = node?.kind === 'ref' ? node.ref : node?.kind === 'head' ? node.ref : null
-    const wt = ref === null ? null : worktreeOf(ref)
-    const isLocal = ref?.kind === 'local'
-    const inIde = wt !== null && wt.path === here?.path
-    // A commit to start from: HEAD by its commit, since `HEAD` would
-    // resolve in the repository's main worktree.
-    const pointed = node?.kind === 'ref' || node?.kind === 'head'
-    const name = node?.kind === 'head' ? 'HEAD' : (ref?.name ?? '')
-    const start = node?.kind === 'head' ? head : (ref?.fullName ?? null)
-    const noStart = pointed && start === null ? 'HEAD has no commit yet' : null
-    const upstream =
-      isLocal && ref.upstream !== undefined && !ref.gone
-        ? (snapshot?.refs.find((candidate) => candidate.kind === 'remote' && candidate.name === ref.upstream) ?? null)
-        : null
-    const upNode = upstream === null ? null : (nodeById.get(`ref:${upstream.fullName}`) ?? null)
-    return [
-      {
-        id: 'open',
-        group: 'open',
-        label: ref?.kind === 'remote' ? `Open as ${localNameOf(ref)}` : 'Open',
-        short: 'Open',
-        icon: <FolderInput aria-hidden />,
-        shortcut: 'Enter',
-        primary: true,
-        applies: pointed && ref?.kind !== 'tag',
-        blocked:
-          ref === null || ref.kind === 'tag'
-            ? 'select a branch'
-            : inIde || node?.kind === 'head'
-              ? 'the IDE is on it'
-              : busyWhy,
-        run: () => {
-          if (ref !== null) openRef(ref)
-        },
-      },
-      {
-        id: 'new-branch',
-        group: 'open',
-        label: `New branch from '${name}'…`,
-        short: 'Branch',
-        icon: <GitBranchPlus aria-hidden />,
-        applies: pointed,
-        blocked: !pointed ? 'select a branch, a tag or HEAD' : (noStart ?? busyWhy),
-        run: () => {
-          if (start !== null) startNaming('branch', start, name)
-        },
-      },
-      {
-        id: 'new',
-        group: 'open',
-        label: `New worktree from '${name}'…`,
-        short: 'Worktree',
-        icon: <FolderPlus aria-hidden />,
-        primary: true,
-        applies: pointed,
-        blocked: !pointed ? 'select a branch, a tag or HEAD' : (noStart ?? busyWhy),
-        run: () => {
-          if (start !== null) startNew(start, name)
-        },
-      },
-      {
-        id: 'diff',
-        group: 'compare',
-        label: 'Show diff with working tree',
-        short: 'Diff',
-        icon: <FileDiff aria-hidden />,
-        applies: pointed,
-        blocked: !pointed ? 'select a branch, a tag or HEAD' : noStart,
-        run: () => compareWith(name),
-      },
-      {
-        id: 'update',
-        group: 'sync',
-        label: 'Update',
-        short: 'Update',
-        icon: <ArrowDownToLine aria-hidden />,
-        primary: true,
-        applies: isLocal,
-        blocked: !isLocal
-          ? 'select a local branch'
-          : ref.upstream === undefined
-            ? 'it tracks no remote branch'
-            : ref.gone
-              ? `${ref.upstream} is gone`
-              : busyWhy,
-        run: () => {
-          if (ref !== null) ops.updateBranch(ref.name)
-        },
-      },
-      {
-        id: 'push',
-        group: 'sync',
-        label: 'Push…',
-        short: 'Push',
-        icon: <ArrowUpFromLine aria-hidden />,
-        primary: true,
-        applies: isLocal,
-        blocked: !isLocal ? 'select a local branch' : remotes.size === 0 ? 'no remote to push to' : busyWhy,
-        run: () => {
-          if (ref !== null) startPush(ref.name)
-        },
-      },
-      {
-        id: 'fetch',
-        group: 'sync',
-        label: 'Fetch all remotes',
-        short: 'Fetch',
-        icon: <CloudDownload aria-hidden />,
-        in: 'rail',
-        blocked: remotes.size === 0 ? 'no remote to fetch' : busyWhy,
-        run: ops.fetch,
-      },
-      {
-        id: 'tracked',
-        group: 'sync',
-        label: `Tracked branch '${upstream?.name ?? ''}'`,
-        icon: <Cloud aria-hidden />,
-        in: 'menu',
-        applies: upNode !== null,
-        // The tracked branch's own verbs, as WebStorm lists them.
-        items:
-          upNode === null
-            ? []
-            : refActions(upNode).filter((action) => ['open', 'new-branch', 'new', 'diff', 'copy'].includes(action.id)),
-        run: () => {},
-      },
-      {
-        id: 'merge',
-        group: 'merge',
-        label: `Merge into ${target ?? 'the default branch'}`,
-        short: 'Merge',
-        icon: <GitMerge aria-hidden />,
-        applies: isLocal,
-        blocked: !isLocal ? 'select a local branch' : ref?.name === target ? `it is ${target}` : busyWhy,
-        run: () => {
-          if (ref !== null) openMerge(ref)
-        },
-      },
-      {
-        id: 'rename',
-        group: 'edit',
-        label: 'Rename…',
-        icon: <PenLine aria-hidden />,
-        shortcut: 'F2',
-        in: 'menu',
-        applies: isLocal,
-        blocked: !isLocal
-          ? 'select a local branch'
-          : ref?.name === target
-            ? 'the default branch keeps its name'
-            : busyWhy,
-        run: () => {
-          if (ref !== null) startNaming('rename', ref.name, ref.name)
-        },
-      },
-      {
-        id: 'copy',
-        group: 'edit',
-        label: 'Copy name',
-        icon: <Copy aria-hidden />,
-        in: 'menu',
-        applies: pointed,
-        blocked: ref === null ? 'select a branch or a tag' : null,
-        run: () => void navigator.clipboard?.writeText(name),
-      },
-      {
-        id: 'delete',
-        group: 'delete',
-        label: wt !== null ? 'Remove its worktree' : 'Delete',
-        short: wt !== null ? 'Remove' : 'Delete',
-        icon: <Trash2 aria-hidden />,
-        shortcut: 'Delete',
-        danger: true,
-        applies: isLocal,
-        blocked: !isLocal
-          ? 'select a local branch'
-          : ref?.name === target
-            ? 'the default branch stays'
-            : wt?.main
-              ? 'the main worktree stays'
-              : inIde || ref?.current
+  // Memoized on all it and its helpers (openRef, startPush, …) read.
+  const refActions = useCallback(
+    (node: RefTreeNode | null): GitAction[] => {
+      const ref = node?.kind === 'ref' ? node.ref : node?.kind === 'head' ? node.ref : null
+      const wt = ref === null ? null : worktreeOf(ref)
+      const isLocal = ref?.kind === 'local'
+      const inIde = wt !== null && wt.path === here?.path
+      // A commit to start from: HEAD by its commit, since `HEAD` would
+      // resolve in the repository's main worktree.
+      const pointed = node?.kind === 'ref' || node?.kind === 'head'
+      const name = node?.kind === 'head' ? 'HEAD' : (ref?.name ?? '')
+      const start = node?.kind === 'head' ? head : (ref?.fullName ?? null)
+      const noStart = pointed && start === null ? 'HEAD has no commit yet' : null
+      const upstream =
+        isLocal && ref.upstream !== undefined && !ref.gone
+          ? (snapshot?.refs.find((candidate) => candidate.kind === 'remote' && candidate.name === ref.upstream) ?? null)
+          : null
+      const upNode = upstream === null ? null : (nodeById.get(`ref:${upstream.fullName}`) ?? null)
+      return [
+        {
+          id: 'open',
+          group: 'open',
+          label: ref?.kind === 'remote' ? `Open as ${localNameOf(ref)}` : 'Open',
+          short: 'Open',
+          icon: <FolderInput aria-hidden />,
+          shortcut: 'Enter',
+          primary: true,
+          applies: pointed && ref?.kind !== 'tag',
+          blocked:
+            ref === null || ref.kind === 'tag'
+              ? 'select a branch'
+              : inIde || node?.kind === 'head'
                 ? 'the IDE is on it'
                 : busyWhy,
-        run: () => {
-          if (ref === null) return
-          if (wt !== null) ops.askRemove(wt)
-          else ops.askDeleteBranch(ref.name)
+          run: () => {
+            if (ref !== null) openRef(ref)
+          },
         },
-      },
-      {
-        id: 'collapse',
-        label: 'Collapse all',
-        short: 'Collapse',
-        icon: <ChevronsDownUp aria-hidden />,
-        in: 'rail',
-        end: true,
-        run: () => setStored((prev) => ({ ...normalize(prev), expanded: [] })),
-      },
-    ]
-  }
+        {
+          id: 'new-branch',
+          group: 'open',
+          label: `New branch from '${name}'…`,
+          short: 'Branch',
+          icon: <GitBranchPlus aria-hidden />,
+          applies: pointed,
+          blocked: !pointed ? 'select a branch, a tag or HEAD' : (noStart ?? busyWhy),
+          run: () => {
+            if (start !== null) startNaming('branch', start, name)
+          },
+        },
+        {
+          id: 'new',
+          group: 'open',
+          label: `New worktree from '${name}'…`,
+          short: 'Worktree',
+          icon: <FolderPlus aria-hidden />,
+          primary: true,
+          applies: pointed,
+          blocked: !pointed ? 'select a branch, a tag or HEAD' : (noStart ?? busyWhy),
+          run: () => {
+            if (start !== null) startNew(start, name)
+          },
+        },
+        {
+          id: 'diff',
+          group: 'compare',
+          label: 'Show diff with working tree',
+          short: 'Diff',
+          icon: <FileDiff aria-hidden />,
+          applies: pointed,
+          blocked: !pointed ? 'select a branch, a tag or HEAD' : noStart,
+          run: () => compareWith(name),
+        },
+        {
+          id: 'update',
+          group: 'sync',
+          label: 'Update',
+          short: 'Update',
+          icon: <ArrowDownToLine aria-hidden />,
+          primary: true,
+          applies: isLocal,
+          blocked: !isLocal
+            ? 'select a local branch'
+            : ref.upstream === undefined
+              ? 'it tracks no remote branch'
+              : ref.gone
+                ? `${ref.upstream} is gone`
+                : busyWhy,
+          run: () => {
+            if (ref !== null) ops.updateBranch(ref.name)
+          },
+        },
+        {
+          id: 'push',
+          group: 'sync',
+          label: 'Push…',
+          short: 'Push',
+          icon: <ArrowUpFromLine aria-hidden />,
+          primary: true,
+          applies: isLocal,
+          blocked: !isLocal ? 'select a local branch' : remotes.size === 0 ? 'no remote to push to' : busyWhy,
+          run: () => {
+            if (ref !== null) startPush(ref.name)
+          },
+        },
+        {
+          id: 'fetch',
+          group: 'sync',
+          label: 'Fetch all remotes',
+          short: 'Fetch',
+          icon: <CloudDownload aria-hidden />,
+          in: 'rail',
+          blocked: remotes.size === 0 ? 'no remote to fetch' : busyWhy,
+          run: ops.fetch,
+        },
+        {
+          id: 'tracked',
+          group: 'sync',
+          label: `Tracked branch '${upstream?.name ?? ''}'`,
+          icon: <Cloud aria-hidden />,
+          in: 'menu',
+          applies: upNode !== null,
+          // The tracked branch's own verbs, as WebStorm lists them.
+          items:
+            upNode === null
+              ? []
+              : refActions(upNode).filter((action) =>
+                  ['open', 'new-branch', 'new', 'diff', 'copy'].includes(action.id),
+                ),
+          run: () => {},
+        },
+        {
+          id: 'merge',
+          group: 'merge',
+          label: `Merge into ${target ?? 'the default branch'}`,
+          short: 'Merge',
+          icon: <GitMerge aria-hidden />,
+          applies: isLocal,
+          blocked: !isLocal ? 'select a local branch' : ref?.name === target ? `it is ${target}` : busyWhy,
+          run: () => {
+            if (ref !== null) openMerge(ref)
+          },
+        },
+        {
+          id: 'rename',
+          group: 'edit',
+          label: 'Rename…',
+          icon: <PenLine aria-hidden />,
+          shortcut: 'F2',
+          in: 'menu',
+          applies: isLocal,
+          blocked: !isLocal
+            ? 'select a local branch'
+            : ref?.name === target
+              ? 'the default branch keeps its name'
+              : busyWhy,
+          run: () => {
+            if (ref !== null) startNaming('rename', ref.name, ref.name)
+          },
+        },
+        {
+          id: 'copy',
+          group: 'edit',
+          label: 'Copy name',
+          icon: <Copy aria-hidden />,
+          in: 'menu',
+          applies: pointed,
+          blocked: ref === null ? 'select a branch or a tag' : null,
+          run: () => void navigator.clipboard?.writeText(name),
+        },
+        {
+          id: 'delete',
+          group: 'delete',
+          label: wt !== null ? 'Remove its worktree' : 'Delete',
+          short: wt !== null ? 'Remove' : 'Delete',
+          icon: <Trash2 aria-hidden />,
+          shortcut: 'Delete',
+          danger: true,
+          applies: isLocal,
+          blocked: !isLocal
+            ? 'select a local branch'
+            : ref?.name === target
+              ? 'the default branch stays'
+              : wt?.main
+                ? 'the main worktree stays'
+                : inIde || ref?.current
+                  ? 'the IDE is on it'
+                  : busyWhy,
+          run: () => {
+            if (ref === null) return
+            if (wt !== null) ops.askRemove(wt)
+            else ops.askDeleteBranch(ref.name)
+          },
+        },
+        {
+          id: 'collapse',
+          label: 'Collapse all',
+          short: 'Collapse',
+          icon: <ChevronsDownUp aria-hidden />,
+          in: 'rail',
+          end: true,
+          run: () => setStored((prev) => ({ ...normalize(prev), expanded: [] })),
+        },
+      ]
+    },
+    [busyWhy, head, here?.path, host, narrow, nodeById, ops, remotes, setStored, snapshot, target],
+  )
   const run = (actions: readonly GitAction[], id: string) => {
     const action = actions.find((candidate) => candidate.id === id)
     if (action && (action.blocked ?? null) === null) action.run()
   }
 
-  const commitActions = (commit: LogCommit): GitAction[] => {
-    const refs = (labels.get(commit.sha) ?? []).filter((ref) => ref.kind !== 'tag').slice(0, 3)
-    return [
-      {
-        id: 'copy-hash',
-        group: 'copy',
-        label: 'Copy hash',
-        short: 'Copy',
-        icon: <Copy aria-hidden />,
-        run: () => void navigator.clipboard?.writeText(commit.sha),
-      },
-      {
-        id: 'new-branch-here',
-        group: 'new',
-        label: `New branch from ${commit.sha.slice(0, 7)}…`,
-        short: 'Branch',
-        icon: <GitBranchPlus aria-hidden />,
-        blocked: busyWhy,
-        run: () => startNaming('branch', commit.sha, commit.sha.slice(0, 7)),
-      },
-      {
-        id: 'new-here',
-        group: 'new',
-        label: `New worktree from ${commit.sha.slice(0, 7)}…`,
-        short: 'Worktree',
-        icon: <FolderPlus aria-hidden />,
-        blocked: busyWhy,
-        run: () => startNew(commit.sha, commit.sha.slice(0, 7)),
-      },
-      {
-        id: 'diff-here',
-        group: 'compare',
-        label: 'Show diff with working tree',
-        short: 'Diff',
-        icon: <FileDiff aria-hidden />,
-        run: () => compareWith(commit.sha.slice(0, 12)),
-      },
-      ...refs.map(
-        (ref): GitAction => ({
-          id: `open:${ref.fullName}`,
-          group: 'open',
-          label: `Open ${ref.name}`,
-          short: 'Open',
-          icon: <FolderInput aria-hidden />,
+  const commitActions = useCallback(
+    (commit: LogCommit): GitAction[] => {
+      const refs = (labels.get(commit.sha) ?? []).filter((ref) => ref.kind !== 'tag').slice(0, 3)
+      return [
+        {
+          id: 'copy-hash',
+          group: 'copy',
+          label: 'Copy hash',
+          short: 'Copy',
+          icon: <Copy aria-hidden />,
+          run: () => void navigator.clipboard?.writeText(commit.sha),
+        },
+        {
+          id: 'new-branch-here',
+          group: 'new',
+          label: `New branch from ${commit.sha.slice(0, 7)}…`,
+          short: 'Branch',
+          icon: <GitBranchPlus aria-hidden />,
           blocked: busyWhy,
-          run: () => openRef(ref),
-        }),
-      ),
-    ]
-  }
+          run: () => startNaming('branch', commit.sha, commit.sha.slice(0, 7)),
+        },
+        {
+          id: 'new-here',
+          group: 'new',
+          label: `New worktree from ${commit.sha.slice(0, 7)}…`,
+          short: 'Worktree',
+          icon: <FolderPlus aria-hidden />,
+          blocked: busyWhy,
+          run: () => startNew(commit.sha, commit.sha.slice(0, 7)),
+        },
+        {
+          id: 'diff-here',
+          group: 'compare',
+          label: 'Show diff with working tree',
+          short: 'Diff',
+          icon: <FileDiff aria-hidden />,
+          run: () => compareWith(commit.sha.slice(0, 12)),
+        },
+        ...refs.map(
+          (ref): GitAction => ({
+            id: `open:${ref.fullName}`,
+            group: 'open',
+            label: `Open ${ref.name}`,
+            short: 'Open',
+            icon: <FolderInput aria-hidden />,
+            blocked: busyWhy,
+            run: () => openRef(ref),
+          }),
+        ),
+      ]
+    },
+    [busyWhy, labels, narrow, ops, snapshot],
+  )
 
-  const openCommit = (commit: LogCommit) => {
-    const current = details.details
-    if (current !== null && current.sha === commit.sha) {
-      const first = current.files[0]
-      if (first !== undefined) onOpenCommitFile(first, current)
-    } else {
-      setCommitSel(commit.sha)
+  // Read when a commit is opened, so the list's handler keeps its identity
+  // as the details arrive.
+  const detailsRef = useRef(details.details)
+  detailsRef.current = details.details
+  const openCommit = useCallback(
+    (commit: LogCommit) => {
+      const current = detailsRef.current
+      if (current !== null && current.sha === commit.sha) {
+        const first = current.files[0]
+        if (first !== undefined) onOpenCommitFile(first, current)
+      } else {
+        setCommitSel(commit.sha)
+      }
+    },
+    [onOpenCommitFile],
+  )
+
+  const repoGlyph = useCallback((name: string | null) => glyphOf(name, target, remotes), [target, remotes])
+
+  // The panes' handlers, one function each while what they read holds.
+  const actOnRef = useCallback((node: RefTreeNode) => run(refActions(node), 'open'), [refActions])
+  const deleteRef = useCallback((node: RefTreeNode) => run(refActions(node), 'delete'), [refActions])
+  const renameRef = useCallback((node: RefTreeNode) => run(refActions(node), 'rename'), [refActions])
+  const refMenu = useCallback(
+    (node: RefTreeNode, anchor: ContextMenuAnchor) => openMenu(anchor, menuItems(refActions(node))),
+    [openMenu, refActions],
+  )
+  const commitMenu = useCallback(
+    (commit: LogCommit, anchor: ContextMenuAnchor) => openMenu(anchor, menuItems(commitActions(commit))),
+    [openMenu, commitActions],
+  )
+  const moreMenu = useCallback(
+    (anchor: ContextMenuAnchor, rest: GitAction[]) => openMenu(anchor, menuItems(rest, true)),
+    [openMenu],
+  )
+  const showCommits = useCallback(() => setStage('commits'), [])
+  const showCommit = useCallback(() => setStage('commit'), [])
+  const tapBranch = useCallback(
+    (node: RefTreeNode, open: boolean) => {
+      if (node.kind === 'section' || node.kind === 'folder') setExpanded(node.id, !open)
+      else setStage('commits')
+    },
+    [setExpanded],
+  )
+  const pickBranch = useCallback(
+    (id: string | null) => {
+      selectNode(id)
+      for (let up = id === null ? undefined : parentOf.get(id); up !== undefined; up = parentOf.get(up)) {
+        setExpanded(up, true)
+      }
+    },
+    [selectNode, parentOf, setExpanded],
+  )
+  const selectCommit = useCallback((sha: string | null) => {
+    setComparing(null)
+    setCommitSel(sha)
+  }, [])
+  const setFilesView = useCallback(
+    (patch: Partial<FilesView>) =>
+      setStored((prev) => {
+        const next = normalize(prev)
+        return { ...next, files: filesView({ ...next.files, ...patch }) }
+      }),
+    [setStored],
+  )
+  const copyPatch = useCallback(
+    (sha: string, paths: string[]) => {
+      setHint(null)
+      gitCommitPatch(host, root, sha, paths)
+        .then((patch) => navigator.clipboard.writeText(patch))
+        .catch((err: unknown) => setHint(`copy as patch failed: ${errorMessage(err)}`))
+    },
+    [host, root],
+  )
+  const showHistory = useCallback(
+    (paths: string[], sha: string) => {
+      setFilter((prev) => ({ ...prev, paths, upTo: sha }))
+      setCommitSel(sha)
+      if (narrow) setStage('commits')
+    },
+    [narrow],
+  )
+
+  // With nothing picked in the tree, the rail acts on HEAD's branch (as
+  // WebStorm's toolbar does), so it opens live rather than greyed out.
+  const railNode = selectedNode ?? nodeById.get('head') ?? null
+  // The narrow bar acts on what the stage shows: the commit on its own
+  // stage (one Open, for its first branch), else the branch picked.
+  const selectedCommit = commitSel === null ? null : (log.commits.find((commit) => commit.sha === commitSel) ?? null)
+  const onCommit = narrow && stage === 'commit' && selectedCommit !== null
+  const barCommit = onCommit ? selectedCommit : null
+  const barActions = useMemo((): GitAction[] => {
+    if (barCommit !== null) {
+      const actions = commitActions(barCommit)
+      const open = actions.find((action) => action.id.startsWith('open:'))
+      return actions.filter((action) => !action.id.startsWith('open:') || action === open)
     }
-  }
-
-  const repoGlyph = (name: string | null) => glyphOf(name, target, remotes)
+    return refActions(railNode).filter((action) => !narrow || stage === 'branches' || action.id !== 'collapse')
+  }, [barCommit, commitActions, refActions, railNode, narrow, stage])
 
   if (log.notRepo) {
     return (
@@ -696,36 +856,15 @@ export function GitLogTab({
     )
   }
 
-  // With nothing picked in the tree, the rail acts on HEAD's branch (as
-  // WebStorm's toolbar does), so it opens live rather than greyed out.
-  const railNode = selectedNode ?? nodeById.get('head') ?? null
-  // The narrow bar acts on what the stage shows: the commit on its own
-  // stage (one Open, for its first branch), else the branch picked.
-  const selectedCommit = commitSel === null ? null : (log.commits.find((commit) => commit.sha === commitSel) ?? null)
-  const onCommit = narrow && stage === 'commit' && selectedCommit !== null
-  const barActions = (): GitAction[] => {
-    if (selectedCommit !== null && onCommit) {
-      const actions = commitActions(selectedCommit)
-      const open = actions.find((action) => action.id.startsWith('open:'))
-      return actions.filter((action) => !action.id.startsWith('open:') || action === open)
-    }
-    return refActions(railNode).filter((action) => !narrow || stage === 'branches' || action.id !== 'collapse')
-  }
   const rail = (
     <ActionRail
       label={onCommit ? 'Commit actions' : 'Branch actions'}
-      actions={barActions()}
+      actions={barActions}
       bar={narrow}
-      onMore={(anchor, rest) => menu.open(anchor, menuItems(rest, true))}
+      onMore={moreMenu}
     />
   )
   const shows = (pane: Stage) => !narrow || stage === pane
-  const pickBranch = (id: string | null) => {
-    selectNode(id)
-    for (let up = id === null ? undefined : parentOf.get(id); up !== undefined; up = parentOf.get(up)) {
-      setExpanded(up, true)
-    }
-  }
   const drill = narrow ? (
     <div className="shui-git-drill">
       {stage !== 'branches' ? (
@@ -830,11 +969,15 @@ export function GitLogTab({
         {drill}
         <div
           className="shui-git-log"
-          style={{
-            gridTemplateColumns: narrow
-              ? 'minmax(0, 1fr)'
-              : `${layout.tree}px 5px minmax(240px, 1fr) 5px ${layout.details}px`,
-          }}
+          style={
+            narrow
+              ? { gridTemplateColumns: 'minmax(0, 1fr)' }
+              : ({
+                  '--git-tree': `${layout.tree}px`,
+                  '--git-details': `${layout.details}px`,
+                  gridTemplateColumns: 'var(--git-tree) 5px minmax(240px, 1fr) 5px var(--git-details)',
+                } as CSSProperties)
+          }
         >
           {shows('branches') ? (
             <GitBranchTree
@@ -845,19 +988,13 @@ export function GitLogTab({
               onExpanded={setExpanded}
               selected={treeSel}
               onSelect={selectNode}
-              onAct={(node) => run(refActions(node), 'open')}
-              onDelete={(node) => run(refActions(node), 'delete')}
-              onMenu={(node, anchor) => menu.open(anchor, menuItems(refActions(node)))}
-              onTap={
-                narrow
-                  ? (node, open) => {
-                      if (node.kind === 'section' || node.kind === 'folder') setExpanded(node.id, !open)
-                      else setStage('commits')
-                    }
-                  : undefined
-              }
-              onDrill={narrow ? () => setStage('commits') : undefined}
-              onRename={(node) => run(refActions(node), 'rename')}
+              onAct={actOnRef}
+              onDelete={deleteRef}
+              onMenu={refMenu}
+              onTap={narrow ? tapBranch : undefined}
+              onDrill={narrow ? showCommits : undefined}
+              onRename={renameRef}
+              narrow={narrow}
             />
           ) : null}
           {narrow ? null : (
@@ -865,6 +1002,7 @@ export function GitLogTab({
               label="Resize the branches"
               width={layout.tree}
               side="left"
+              variable="--git-tree"
               onWidth={(tree) =>
                 setStored((prev) => ({ ...normalize(prev), tree: Math.min(900, Math.max(160, tree)) }))
               }
@@ -887,13 +1025,10 @@ export function GitLogTab({
               glyph={repoGlyph}
               rings={rings}
               selected={commitSel}
-              onSelect={(sha) => {
-                setComparing(null)
-                setCommitSel(sha)
-              }}
-              onAct={narrow ? () => setStage('commit') : openCommit}
-              onMenu={(commit, anchor) => menu.open(anchor, menuItems(commitActions(commit)))}
-              onTap={narrow ? () => setStage('commit') : undefined}
+              onSelect={selectCommit}
+              onAct={narrow ? showCommit : openCommit}
+              onMenu={commitMenu}
+              onTap={narrow ? showCommit : undefined}
             />
           ) : null}
           {narrow ? null : (
@@ -901,6 +1036,7 @@ export function GitLogTab({
               label="Resize the commit details"
               width={layout.details}
               side="right"
+              variable="--git-details"
               onWidth={(width) =>
                 setStored((prev) => ({ ...normalize(prev), details: Math.min(900, Math.max(160, width)) }))
               }
@@ -924,28 +1060,14 @@ export function GitLogTab({
               prefix={snapshot?.prefix ?? ''}
               top={here?.path ?? null}
               onSelectCommit={setCommitSel}
-              view={layout.files}
-              onView={(patch) =>
-                setStored((prev) => {
-                  const next = normalize(prev)
-                  return { ...next, files: filesView({ ...next.files, ...patch }) }
-                })
-              }
+              view={files}
+              onView={setFilesView}
               busy={ops.busy}
               onCompare={onOpenCompareFile}
               onEditSource={onOpenWorkingFile}
               onCommitFiles={ops.commitFiles}
-              onCopyPatch={(sha, paths) => {
-                setHint(null)
-                gitCommitPatch(host, root, sha, paths)
-                  .then((patch) => navigator.clipboard.writeText(patch))
-                  .catch((err: unknown) => setHint(`copy as patch failed: ${errorMessage(err)}`))
-              }}
-              onHistory={(paths, sha) => {
-                setFilter((prev) => ({ ...prev, paths, upTo: sha }))
-                setCommitSel(sha)
-                if (narrow) setStage('commits')
-              }}
+              onCopyPatch={copyPatch}
+              onHistory={showHistory}
             />
           ) : null}
         </div>

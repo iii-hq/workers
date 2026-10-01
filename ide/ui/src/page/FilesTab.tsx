@@ -34,7 +34,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FlatTree } from './coder'
 import { anchorFromEvent, type ContextMenuItem, useContextMenu } from './ContextMenu'
 import type { GitFileStatus } from './git'
@@ -105,7 +105,7 @@ interface PendingDelete {
   isDir: boolean
 }
 
-export function FilesTab({
+function FilesTabView({
   tree,
   gitStatus,
   theme,
@@ -240,6 +240,7 @@ export function FilesTab({
     let timer: number | null = null
     const snapshot = () => {
       timer = null
+      if (model.isSearchOpen()) return
       const open = expandedDirectoryPaths(model, dirPaths)
       liveExpandedRef.current = open
       const key = open.join('\n')
@@ -248,6 +249,12 @@ export function FilesTab({
       onExpandedChange(open)
     }
     const unsubscribe = model.subscribe(() => {
+      // A filter expands every folder that holds a match, never-listed
+      // stubs included. Reporting those would list each stub, whose
+      // children can match in turn (a crawl of the workspace), and would
+      // persist the filter's expansion as the user's. The model puts the
+      // user's expansion back when the filter clears; reports resume then.
+      if (model.isSearchOpen()) return
       const open = expandedDirectoryPaths(model, dirPaths)
       liveExpandedRef.current = open
       const known = openDirsRef.current
@@ -678,6 +685,9 @@ export function FilesTab({
     </div>
   )
 }
+
+/** Memoized: the page re-renders often, and this only when its props change. */
+export const FilesTab = memo(FilesTabView)
 
 /** The folder a header-bar "new file" lands in: the focused folder, the
     focused file's folder, or the root. */

@@ -56,8 +56,12 @@ describe('discardStep', () => {
 })
 
 describe('gitDiscard', () => {
-  it('restores tracked files from HEAD and reports per-file failures', async () => {
-    const { host, calls } = hostWith(reply(), reply({ exit_code: 1, stderr: 'error: pathspec nope' }))
+  it('restores tracked files from HEAD and, when the batch fails, reports per-file failures', async () => {
+    const { host, calls } = hostWith(
+      reply({ exit_code: 1, stderr: 'error: pathspec nope' }),
+      reply(),
+      reply({ exit_code: 1, stderr: 'error: pathspec nope' }),
+    )
     const results = await gitDiscard(host, '/r', [
       { path: 'a.ts', status: 'modified', staged: false },
       { path: 'nope.ts', status: 'deleted', staged: false },
@@ -66,11 +70,38 @@ describe('gitDiscard', () => {
       { path: 'a.ts', error: null },
       { path: 'nope.ts', error: 'error: pathspec nope' },
     ])
-    expect(calls[0]).toMatchObject({
+    expect(calls.map((call) => (call as { args: string[] }).args.slice(5))).toEqual([
+      ['a.ts', 'nope.ts'],
+      ['a.ts'],
+      ['nope.ts'],
+    ])
+    expect(calls[1]).toMatchObject({
       command: 'git',
       args: ['restore', '--source=HEAD', '--staged', '--worktree', '--', 'a.ts'],
       cwd: '/r',
     })
+  })
+
+  it('discards many files in one call per step, in each change’s order', async () => {
+    const { host, calls, trigger } = hostWith(reply(), reply(), {
+      results: [{ success: true }, { success: false, error: { code: 'io', message: 'busy' } }, { success: true }],
+    })
+    const results = await gitDiscard(host, '/r', [
+      { path: 'm.ts', status: 'modified', staged: false },
+      { path: 'new.ts', status: 'untracked', staged: false },
+      { path: 'add.ts', status: 'added', staged: true },
+      { path: 'b.ts', status: 'renamed', staged: true, from: 'a.ts' },
+    ])
+    expect(trigger).toHaveBeenCalledTimes(3)
+    expect((calls[0] as { args: string[] }).args.slice(4)).toEqual(['--', 'm.ts', 'a.ts'])
+    expect((calls[1] as { args: string[] }).args).toEqual(['restore', '--staged', '--', 'add.ts', 'b.ts'])
+    expect(calls[2]).toEqual({ paths: ['/r/new.ts', '/r/add.ts', '/r/b.ts'], recursive: false })
+    expect(results).toEqual([
+      { path: 'm.ts', error: null },
+      { path: 'new.ts', error: null },
+      { path: 'add.ts', error: 'busy' },
+      { path: 'b.ts', error: null },
+    ])
   })
 
   it('deletes untracked files through coder::delete-file', async () => {

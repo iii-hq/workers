@@ -87,19 +87,15 @@ export function diffPanelRequest(row: FileChangeRow): PanelOpenRequest {
   }
 }
 
+/** Counts newlines without splitting: a large write stays one pass. */
 function countLines(content: string): number {
   if (content.length === 0) return 0
-  const lines = content.split('\n')
-  return lines.at(-1) === '' ? lines.length - 1 : lines.length
+  let lines = 1
+  for (let at = content.indexOf('\n'); at !== -1; at = content.indexOf('\n', at + 1)) lines++
+  return content.endsWith('\n') ? lines - 1 : lines
 }
 
-function resultAt(output: unknown, index: number) {
-  const parsed = responseSchema.safeParse(output)
-  return parsed.success ? parsed.data.results[index] : undefined
-}
-
-function resultContext(output: unknown, index: number) {
-  const result = resultAt(output, index)
+function resultContext(result: z.infer<typeof resultSchema> | undefined) {
   return {
     ...(result?.path ? { absolutePath: result.path } : {}),
     ...(result?.change_id ? { changeId: result.change_id } : {}),
@@ -107,16 +103,19 @@ function resultContext(output: unknown, index: number) {
 }
 
 export function summarizeFileChanges(functionId: string, input: unknown, output?: unknown): FileChangesSummary | null {
+  // The response is parsed once; each row reads its own result by index.
+  const parsed = responseSchema.safeParse(output)
+  const results = parsed.success ? parsed.data.results : []
   if (functionId === CREATE_ID) {
     const req = createRequestSchema.safeParse(input)
     if (!req.success) return null
     return {
       action: 'created',
       rows: req.data.files.map((file, index) => {
-        const result = resultAt(output, index)
+        const result = results[index]
         return {
           path: file.path,
-          ...resultContext(output, index),
+          ...resultContext(result),
           status: result && !result.success ? 'failed' : file.overwrite ? 'updated' : 'created',
           additions: countLines(file.content),
         }
@@ -130,7 +129,7 @@ export function summarizeFileChanges(functionId: string, input: unknown, output?
     return {
       action: 'updated',
       rows: req.data.files.map((file, index) => {
-        const result = resultAt(output, index)
+        const result = results[index]
         let additions = 0
         let deletions = 0
         let countsKnown = true
@@ -147,7 +146,7 @@ export function summarizeFileChanges(functionId: string, input: unknown, output?
         }
         return {
           path: file.path,
-          ...resultContext(output, index),
+          ...resultContext(result),
           status: result && !result.success ? 'failed' : 'updated',
           additions: countsKnown ? additions : undefined,
           deletions: countsKnown ? deletions : undefined,
@@ -162,10 +161,10 @@ export function summarizeFileChanges(functionId: string, input: unknown, output?
     return {
       action: 'deleted',
       rows: req.data.paths.map((path, index) => {
-        const result = resultAt(output, index)
+        const result = results[index]
         return {
           path,
-          ...resultContext(output, index),
+          ...resultContext(result),
           status: result && !result.success ? 'failed' : result?.removed === false ? 'unchanged' : 'deleted',
         }
       }),

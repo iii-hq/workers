@@ -56,6 +56,14 @@ export interface RowNav {
     onDoubleClick(event: MouseEvent<HTMLElement>): void
     onContextMenu(event: MouseEvent<HTMLElement>): void
   }
+  /** rowProps' mouse handlers, held once by an element around the rows:
+      each finds its row by the row's id. Memoized rows then take no
+      functions, and one selection re-renders two rows, not all of them. */
+  rowEvents: {
+    onClick(event: MouseEvent<HTMLElement>): void
+    onDoubleClick(event: MouseEvent<HTMLElement>): void
+    onContextMenu(event: MouseEvent<HTMLElement>): void
+  }
 }
 
 const MENU_KEY = 'ContextMenu'
@@ -200,6 +208,32 @@ export function useRowNav<T>(options: RowNavOptions<T>): RowNav {
     }
   }
 
+  const click = (index: number) => {
+    const item = items[index]
+    if (item === undefined) return
+    onSelect(idOf(item))
+    onClickRow?.(item)
+  }
+  const doubleClick = (index: number) => {
+    const item = items[index]
+    if (item !== undefined) onAct?.(item)
+  }
+  const contextMenu = (index: number, event: MouseEvent<HTMLElement>) => {
+    const item = items[index]
+    if (item === undefined || !onMenu) return
+    event.preventDefault()
+    onSelect(idOf(item))
+    onMenu(item, { x: event.clientX, y: event.clientY })
+  }
+  // The row an event came from, by the id rowProps gives it; -1 off the rows.
+  const rowOf = (event: MouseEvent<HTMLElement>): number => {
+    for (let node = event.target as HTMLElement | null; node !== null; node = node.parentElement) {
+      if (node.id.startsWith(`${domId}-`)) return Number(node.id.slice(domId.length + 1))
+      if (node === event.currentTarget) break
+    }
+    return -1
+  }
+
   return {
     activeIndex,
     query,
@@ -212,24 +246,15 @@ export function useRowNav<T>(options: RowNavOptions<T>): RowNav {
     rowProps: (index) => ({
       id: `${domId}-${index}`,
       'aria-selected': index === activeIndex,
-      onClick: () => {
-        const item = items[index]
-        if (item === undefined) return
-        onSelect(idOf(item))
-        onClickRow?.(item)
-      },
-      onDoubleClick: () => {
-        const item = items[index]
-        if (item !== undefined) onAct?.(item)
-      },
-      onContextMenu: (event) => {
-        const item = items[index]
-        if (item === undefined || !onMenu) return
-        event.preventDefault()
-        onSelect(idOf(item))
-        onMenu(item, { x: event.clientX, y: event.clientY })
-      },
+      onClick: () => click(index),
+      onDoubleClick: () => doubleClick(index),
+      onContextMenu: (event) => contextMenu(index, event),
     }),
+    rowEvents: {
+      onClick: (event) => click(rowOf(event)),
+      onDoubleClick: (event) => doubleClick(rowOf(event)),
+      onContextMenu: (event) => contextMenu(rowOf(event), event),
+    },
   }
 }
 

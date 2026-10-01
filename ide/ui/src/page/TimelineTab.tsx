@@ -10,7 +10,7 @@ import { ConfirmDialog, EmptyState, IconButton } from '@iii-dev/console-ui'
 import { Bot, ChevronDown, ChevronRight, FolderTree, List, RefreshCw, Undo2 } from 'lucide-react'
 import { memo, useCallback, useEffect, useState } from 'react'
 import { ChangeEntries, treeInset } from './ChangeEntries'
-import { readScmViewMode, relativeDisplayPath, writeScmViewMode } from './scm-view'
+import { readScmViewMode, relativeDisplayPath, type ScmViewMode, writeScmViewMode } from './scm-view'
 import { FileTypeIcon } from './file-type-icon'
 import { basename, dirname } from './paths'
 import { relativeToRoot, type SessionTurnSummary, turnLabel, turnTitle } from './turns'
@@ -104,13 +104,16 @@ function TimelineTabView({
     })
   }, [newest])
 
-  const toggle = (turnId: string) =>
-    setCollapsed((previous) => {
-      const next = new Set(previous)
-      if (next.has(turnId)) next.delete(turnId)
-      else next.add(turnId)
-      return next
-    })
+  const toggle = useCallback(
+    (turnId: string) =>
+      setCollapsed((previous) => {
+        const next = new Set(previous)
+        if (next.has(turnId)) next.delete(turnId)
+        else next.add(turnId)
+        return next
+      }),
+    [],
+  )
 
   return (
     <div className="shui-timeline">
@@ -139,110 +142,25 @@ function TimelineTabView({
       ) : (
         <div className="shui-timeline-list">
           {turns.map((turn, index) => {
-            const open = !collapsed.has(turn.turn_id)
-            const running = runningTurnId === turn.turn_id || turn.ended_at == null
-            const ordinal = turns.length - index
-            const title = turnTitle(turn, ordinal)
-            const meta = turnLabel(turn)
             const activeTurn = activeTurnId === turn.turn_id
             return (
-              <section
+              <TurnSection
                 key={turn.turn_id}
-                className={`shui-timeline-turn${activeTurn ? ' active' : ''}${running ? ' running' : ''}${open ? ' open' : ''}`}
-              >
-                <div className="shui-timeline-turn-head">
-                  <button
-                    type="button"
-                    className="shui-timeline-turn-main"
-                    aria-expanded={open}
-                    onClick={() => toggle(turn.turn_id)}
-                    title={`${title}\n${meta}\n${turn.turn_id}`}
-                  >
-                    {open ? <ChevronDown aria-hidden className="chevron" /> : <ChevronRight aria-hidden className="chevron" />}
-                    <span className="label">{title}</span>
-                    <span className="meta">{meta}</span>
-                    {running ? <span className="pill">running</span> : null}
-                  </button>
-                  <span className="shui-view-actions">
-                    <IconButton
-                      label="Revert this turn"
-                      disabled={reverting !== null || running || turn.file_count === 0}
-                      onClick={() => setPending({ kind: 'turn', turnId: turn.turn_id, title, count: turn.file_count })}
-                    >
-                      <Undo2 aria-hidden />
-                    </IconButton>
-                  </span>
-                </div>
-                {open ? (
-                  <div className="shui-timeline-files">
-                    {turn.files.length === 0 ? (
-                      <div className="shui-scm-empty">{running ? 'no file changes yet' : 'no file changes'}</div>
-                    ) : (
-                      <ChangeEntries entries={turn.files} mode={viewMode} outsideRoot={root} getPath={pathOf} renderEntry={(file, depth) => {
-                        const rel = relativeToRoot(file.path, root)
-                        const shown = rel ?? relativeDisplayPath(file.path, root)
-                        const agentName = file.agent ? (file.agent.name ?? 'sub-agent') : null
-                        const isActive = activeTurn && rel !== null && activePath === rel
-                        return (
-                          <div
-                            key={file.path}
-                            className={`shui-scm-row${isActive ? ' active' : ''}${rel === null ? ' outside' : ''}`}
-                            data-status={kindStatus(file.kind)}
-                            // the main button's own 20px padding is the caret's place
-                            style={viewMode === 'tree' ? { paddingLeft: treeInset(depth) } : undefined}
-                          >
-                            <button
-                              type="button"
-                              className="shui-scm-row-main"
-                              disabled={rel === null}
-                              title={
-                                rel === null
-                                  ? `${file.path} (outside this folder)`
-                                  : agentName
-                                    ? `${file.path}\nchanged by ${agentName}`
-                                    : file.path
-                              }
-                              onClick={() => {
-                                if (rel !== null) onOpenFile(turn.turn_id, rel, false)
-                              }}
-                              onDoubleClick={() => {
-                                if (rel !== null) onOpenFile(turn.turn_id, rel, true)
-                              }}
-                            >
-                              <FileTypeIcon path={shown} className="file-icon" />
-                              <span className="name">{basename(shown)}</span>
-                              {viewMode === 'list' && dirname(shown) ? <span className="dir">{dirname(shown)}</span> : null}
-                              {agentName ? (
-                                <span className="shui-agent-tag" title={`changed by ${agentName}`}>
-                                  <Bot aria-hidden />
-                                  {agentName}
-                                </span>
-                              ) : null}
-                            </button>
-                            <span className="shui-scm-row-actions">
-                              {rel !== null && file.kind !== 'deleted' ? (
-                                <IconButton label="Open the file" onClick={() => onOpenWorkingFile(rel)}>
-                                  <FileTypeIcon path={shown} className="file-icon" />
-                                </IconButton>
-                              ) : null}
-                              <IconButton
-                                label="Revert this file"
-                                disabled={reverting !== null || running}
-                                onClick={() => setPending({ kind: 'file', turnId: turn.turn_id, path: file.path })}
-                              >
-                                <Undo2 aria-hidden />
-                              </IconButton>
-                            </span>
-                            <span className="shui-scm-status" title={kindStatus(file.kind)}>
-                              {kindLetter(file.kind)}
-                            </span>
-                          </div>
-                        )
-                      }} />
-                    )}
-                  </div>
-                ) : null}
-              </section>
+                turn={turn}
+                ordinal={turns.length - index}
+                open={!collapsed.has(turn.turn_id)}
+                running={runningTurnId === turn.turn_id || turn.ended_at == null}
+                activeTurn={activeTurn}
+                activePath={activeTurn ? activePath : null}
+                locked={reverting !== null}
+                viewMode={viewMode}
+                root={root}
+                pathOf={pathOf}
+                onToggle={toggle}
+                onOpenFile={onOpenFile}
+                onOpenWorkingFile={onOpenWorkingFile}
+                onRevert={setPending}
+              />
             )
           })}
         </div>
@@ -277,6 +195,143 @@ function TimelineTabView({
     </div>
   )
 }
+
+/** One turn and its files. Memoized, and given the active file only when
+    it is the active turn, so a poll that changes the running turn or a
+    click on another turn's file leaves the other turns alone. */
+const TurnSection = memo(function TurnSection({
+  turn,
+  ordinal,
+  open,
+  running,
+  activeTurn,
+  activePath,
+  locked,
+  viewMode,
+  root,
+  pathOf,
+  onToggle,
+  onOpenFile,
+  onOpenWorkingFile,
+  onRevert,
+}: {
+  turn: SessionTurnSummary
+  ordinal: number
+  open: boolean
+  running: boolean
+  activeTurn: boolean
+  activePath: string | null
+  /** A revert is under way: none other may start. */
+  locked: boolean
+  viewMode: ScmViewMode
+  root: string
+  pathOf: (file: { path: string }) => string | null
+  onToggle: (turnId: string) => void
+  onOpenFile: (turnId: string, relPath: string, pin: boolean) => void
+  onOpenWorkingFile: (relPath: string) => void
+  onRevert: (pending: PendingRevert) => void
+}) {
+  const title = turnTitle(turn, ordinal)
+  const meta = turnLabel(turn)
+  return (
+    <section
+      className={`shui-timeline-turn${activeTurn ? ' active' : ''}${running ? ' running' : ''}${open ? ' open' : ''}`}
+    >
+      <div className="shui-timeline-turn-head">
+        <button
+          type="button"
+          className="shui-timeline-turn-main"
+          aria-expanded={open}
+          onClick={() => onToggle(turn.turn_id)}
+          title={`${title}\n${meta}\n${turn.turn_id}`}
+        >
+          {open ? <ChevronDown aria-hidden className="chevron" /> : <ChevronRight aria-hidden className="chevron" />}
+          <span className="label">{title}</span>
+          <span className="meta">{meta}</span>
+          {running ? <span className="pill">running</span> : null}
+        </button>
+        <span className="shui-view-actions">
+          <IconButton
+            label="Revert this turn"
+            disabled={locked || running || turn.file_count === 0}
+            onClick={() => onRevert({ kind: 'turn', turnId: turn.turn_id, title, count: turn.file_count })}
+          >
+            <Undo2 aria-hidden />
+          </IconButton>
+        </span>
+      </div>
+      {open ? (
+        <div className="shui-timeline-files">
+          {turn.files.length === 0 ? (
+            <div className="shui-scm-empty">{running ? 'no file changes yet' : 'no file changes'}</div>
+          ) : (
+            <ChangeEntries entries={turn.files} mode={viewMode} outsideRoot={root} getPath={pathOf} renderEntry={(file, depth) => {
+              const rel = relativeToRoot(file.path, root)
+              const shown = rel ?? relativeDisplayPath(file.path, root)
+              const agentName = file.agent ? (file.agent.name ?? 'sub-agent') : null
+              const isActive = activeTurn && rel !== null && activePath === rel
+              return (
+                <div
+                  key={file.path}
+                  className={`shui-scm-row${isActive ? ' active' : ''}${rel === null ? ' outside' : ''}`}
+                  data-status={kindStatus(file.kind)}
+                  // the main button's own 20px padding is the caret's place
+                  style={viewMode === 'tree' ? { paddingLeft: treeInset(depth) } : undefined}
+                >
+                  <button
+                    type="button"
+                    className="shui-scm-row-main"
+                    disabled={rel === null}
+                    title={
+                      rel === null
+                        ? `${file.path} (outside this folder)`
+                        : agentName
+                          ? `${file.path}\nchanged by ${agentName}`
+                          : file.path
+                    }
+                    onClick={() => {
+                      if (rel !== null) onOpenFile(turn.turn_id, rel, false)
+                    }}
+                    onDoubleClick={() => {
+                      if (rel !== null) onOpenFile(turn.turn_id, rel, true)
+                    }}
+                  >
+                    <FileTypeIcon path={shown} className="file-icon" />
+                    <span className="name">{basename(shown)}</span>
+                    {viewMode === 'list' && dirname(shown) ? <span className="dir">{dirname(shown)}</span> : null}
+                    {agentName ? (
+                      <span className="shui-agent-tag" title={`changed by ${agentName}`}>
+                        <Bot aria-hidden />
+                        {agentName}
+                      </span>
+                    ) : null}
+                  </button>
+                  <span className="shui-scm-row-actions">
+                    {rel !== null && file.kind !== 'deleted' ? (
+                      <IconButton label="Open the file" onClick={() => onOpenWorkingFile(rel)}>
+                        <FileTypeIcon path={shown} className="file-icon" />
+                      </IconButton>
+                    ) : null}
+                    <IconButton
+                      label="Revert this file"
+                      disabled={locked || running}
+                      onClick={() => onRevert({ kind: 'file', turnId: turn.turn_id, path: file.path })}
+                    >
+                      <Undo2 aria-hidden />
+                    </IconButton>
+                  </span>
+                  <span className="shui-scm-status" title={kindStatus(file.kind)}>
+                    {kindLetter(file.kind)}
+                  </span>
+                </div>
+              )
+            }} />
+          )}
+        </div>
+      ) : null}
+    </section>
+  )
+})
 
 /** Memoized: the page re-renders often, and this only when its props change. */
 export const TimelineTab = memo(TimelineTabView)

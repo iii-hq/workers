@@ -4,8 +4,9 @@ import { buildChangeTree, type ChangeDirectory, type ScmViewMode } from './scm-v
 
 type PathEntry = { path: string }
 type RenderEntry<T extends PathEntry> = (entry: T, depth: number) => ReactNode
-/** Hover actions for a folder row, given every entry under it (subfolders included). */
-type RenderDirectoryActions<T extends PathEntry> = (entries: T[], directory: ChangeDirectory<T>) => ReactNode
+/** Hover actions for a folder row. `entries` lists every entry under it
+    (subfolders included) when an action runs: rendering never walks the tree. */
+type RenderDirectoryActions<T extends PathEntry> = (entries: () => T[], directory: ChangeDirectory<T>) => ReactNode
 
 /** One tree level: a folder's caret and the gap after it. A file keeps the
     caret's place, so its icon lines up with its sibling folders' icons and a
@@ -76,7 +77,7 @@ function DirectoryRow<T extends PathEntry>({ directory, depth, renderEntry, rend
       <span>{directory.name}</span>
     </button>
   )
-  const actions = renderDirectoryActions ? renderDirectoryActions(directoryEntries(directory), directory) : null
+  const actions = renderDirectoryActions ? renderDirectoryActions(() => directoryEntries(directory), directory) : null
   return (
     <li>
       {actions ? (

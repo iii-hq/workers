@@ -2,7 +2,7 @@
    viewport (plus a margin) mount. Search results and change lists reach
    thousands of rows; this keeps them at a few dozen DOM nodes. */
 
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 export interface VirtualListProps<T> {
   rows: readonly T[]
@@ -30,7 +30,7 @@ export interface VirtualListProps<T> {
   keepIndex?: number | null
 }
 
-export function VirtualList<T>({
+function VirtualListView<T>({
   rows,
   rowHeight,
   overscan = 8,
@@ -49,24 +49,30 @@ export function VirtualList<T>({
 }: VirtualListProps<T>) {
   const viewportRef = useRef<HTMLDivElement>(null)
   // The first row in view, not the pixel offset: a scroll within a row
-  // renders nothing.
+  // renders nothing. Likewise the rows the viewport fits, not its height: a
+  // dock dragged taller renders only when another row fits.
   const [topRow, setTopRow] = useState(0)
-  const [height, setHeight] = useState(0)
+  const [viewRows, setViewRows] = useState(0)
+  const rowHeightRef = useRef(rowHeight)
+  rowHeightRef.current = rowHeight
 
   useLayoutEffect(() => {
     const el = viewportRef.current
     if (!el) return
-    const measure = () => setHeight(el.clientHeight)
+    const measure = () => setViewRows(Math.ceil(el.clientHeight / rowHeightRef.current))
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(el)
     return () => observer.disconnect()
   }, [])
 
-  // A new row height (a narrow pane's two-line rows) moves the first row.
+  // A new row height (a narrow pane's two-line rows) moves the first row,
+  // and changes how many fit.
   useLayoutEffect(() => {
     const el = viewportRef.current
-    if (el) setTopRow(Math.floor(el.scrollTop / rowHeight))
+    if (!el) return
+    setTopRow(Math.floor(el.scrollTop / rowHeight))
+    setViewRows(Math.ceil(el.clientHeight / rowHeight))
   }, [rowHeight])
 
   useEffect(() => {
@@ -80,7 +86,7 @@ export function VirtualList<T>({
 
   const total = rows.length * rowHeight
   const first = Math.max(0, topRow - overscan)
-  const last = Math.min(rows.length, topRow + Math.ceil(height / rowHeight) + 1 + overscan)
+  const last = Math.min(rows.length, topRow + viewRows + 1 + overscan)
   const rangeRef = useRef(onRangeChange)
   rangeRef.current = onRangeChange
   useEffect(() => {
@@ -124,3 +130,7 @@ export function VirtualList<T>({
     </div>
   )
 }
+
+/** Memoized: a caller whose props keep their identity (`renderRow`, `rowKey`)
+    skips re-rendering every mounted row when it re-renders itself. */
+export const VirtualList = memo(VirtualListView) as typeof VirtualListView
