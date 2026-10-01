@@ -25,6 +25,7 @@ import {
   FileDiff,
   FilePlus,
   FolderPlus,
+  PackagePlus,
   Pencil,
   RefreshCw,
   Search,
@@ -68,6 +69,8 @@ export interface ExplorerActions {
   compare: (rel: string) => void
   /** Search the folder's contents in the Search view. */
   findInFolder: (dir: string) => void
+  /** Open the New worker dialog with `dir` as the parent folder. */
+  newWorker: (dir: string) => void
   discard: (rel: string) => void
   refresh: () => void
 }
@@ -506,6 +509,7 @@ function FilesTabView({
     (dir: string): ContextMenuItem[] => [
       { id: 'new-file', label: 'New file…', icon: <FilePlus />, onSelect: () => beginCreate('file', dir) },
       { id: 'new-folder', label: 'New folder…', icon: <FolderPlus />, onSelect: () => beginCreate('folder', dir) },
+      { id: 'new-worker', label: 'New worker…', icon: <PackagePlus />, onSelect: () => actionsRef.current.newWorker(dir) },
       { type: 'separator', id: 's1' },
       { id: 'terminal', label: 'Open in terminal', icon: <SquareTerminal />, onSelect: () => actionsRef.current.openTerminal(dir) },
       { id: 'find', label: 'Find in folder…', icon: <Search />, onSelect: () => actionsRef.current.findInFolder(dir) },
@@ -530,6 +534,13 @@ function FilesTabView({
     (): ContextMenuItem[] => [
       { id: 'new-file', label: 'New file…', icon: <FilePlus />, onSelect: () => beginCreate('file', '') },
       { id: 'new-folder', label: 'New folder…', icon: <FolderPlus />, onSelect: () => beginCreate('folder', '') },
+      // The empty space means the project: workers go where the templates put them.
+      {
+        id: 'new-worker',
+        label: 'New worker…',
+        icon: <PackagePlus />,
+        onSelect: () => actionsRef.current.newWorker('workers'),
+      },
       { type: 'separator', id: 's1' },
       { id: 'terminal', label: 'Open in terminal', icon: <SquareTerminal />, onSelect: () => actionsRef.current.openTerminal('') },
       { id: 'refresh', label: 'Refresh', icon: <RefreshCw />, onSelect: () => actionsRef.current.refresh() },

@@ -1315,6 +1315,27 @@
   .shui-checkout-files { margin: 0; padding: 4px 8px; list-style: none; font: 400 12px / 18px var(--font-mono); color: var(--color-ink); }
   .shui-danger-button:hover { background: color-mix(in srgb, var(--color-alert) 90%, transparent); }
 
+  /* dialog: new worker */
+  .shui-new-worker { display: flex; flex-direction: column; gap: 10px; }
+  .shui-new-worker-source { display: flex; align-items: center; gap: 6px; font: 400 11px / 16px var(--font-mono); color: var(--color-ink-faint); }
+  .shui-new-worker-source > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shui-new-worker-note { margin: 0; font: 400 11px / 16px var(--font-sans); color: var(--color-ink-faint); overflow-wrap: anywhere; }
+  .shui-new-worker-note.warn { color: var(--color-warn); }
+  .shui-new-worker-path { font-family: var(--font-mono); overflow-wrap: anywhere; }
+  .shui-new-worker-status { display: flex; align-items: center; gap: 8px; margin: 0; font: 400 12px / 18px var(--font-sans); color: var(--color-ink); }
+  .shui-new-worker-logs {
+    margin: 0;
+    max-height: 200px;
+    overflow: auto;
+    padding: 8px;
+    border-radius: 6px;
+    background: var(--color-surface);
+    font: 400 11px / 16px var(--font-mono);
+    color: var(--color-ink-faint);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
   /* stash and history lists */
   .shui-log-rows { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
   .shui-log-row { display: flex; align-items: stretch; gap: 6px; min-height: 44px; padding-left: 4px; border-radius: 6px; }
@@ -3569,6 +3590,15 @@
   [data-iii-ui="ide"] .shui-quick-open-input { font-size: 16px; }
   [data-iii-ui="ide"] .shui-quick-open-row { min-height: 48px; }
   [data-iii-ui="ide"] .shui-quick-open-foot { padding-bottom: max(4px, env(safe-area-inset-bottom)); }
+  [data-iii-ui="ide"] .shui-new-worker {
+    inset: 0;
+    width: 100%;
+    max-width: none;
+    height: 100dvh;
+    max-height: none;
+    translate: none;
+    border-radius: 0;
+  }
 }
 
 @keyframes shui-file-change-metric-in {

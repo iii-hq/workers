@@ -74,6 +74,8 @@ import { copyText } from '@iii-dev/console-ui/format'
 import { createEntry, deleteEntry, duplicateFile, duplicateName, renameEntry } from './file-actions'
 import { createObjectUrlRegistry } from './file-bytes'
 import { type ExplorerActions, FilesTab } from './FilesTab'
+import { NewWorkerDialog } from './NewWorkerDialog'
+import { entryFile, type ScaffoldResult } from './new-worker'
 import { type GitChange, type GitState, gitChanges } from './git'
 import type { CommitDetails, CommitFile } from './git-log-window'
 import { gitDiscard } from './git-actions'
@@ -338,6 +340,8 @@ export function ShellExplorerPage({
   const expandedRef = useRef(expanded)
   expandedRef.current = expanded
   const [reveal, setReveal] = useState<string | null>(null)
+  // The New worker dialog's root-relative parent folder; null keeps it closed.
+  const [newWorkerBase, setNewWorkerBase] = useState<string | null>(null)
 
   // ── tabs ──
   const [tabs, setTabs] = useState<TabsState>(EMPTY_TABS)
@@ -810,6 +814,20 @@ export function ShellExplorerPage({
     [ensurePath],
   )
   const onRevealed = useCallback(() => setReveal(null), [])
+  // A scaffolded worker: show its folder and open its entry file, when they
+  // live under the browsed root.
+  const onWorkerCreated = useCallback(
+    (result: ScaffoldResult) => {
+      const currentRoot = rootRef.current
+      if (!currentRoot) return
+      const dir = relativeToRoot(result.directory, currentRoot)
+      if (dir !== null) revealFolder(dir)
+      const entry = entryFile(result.files.map((file) => file.path))
+      const rel = entry === null ? null : relativeToRoot(entry, currentRoot)
+      if (rel !== null) openFileTab(rel, { pin: true })
+    },
+    [revealFolder, openFileTab],
+  )
 
   const onDirtyChange = useCallback((relPath: string, dirty: boolean) => {
     setDirtyPaths((prev) => {
@@ -946,6 +964,7 @@ export function ShellExplorerPage({
       },
       compare: (rel) => compareFile(rel),
       findInFolder,
+      newWorker: setNewWorkerBase,
       discard: (rel) => {
         const change = gitRef.current?.kind === 'ready' ? gitRef.current.changes.find((c) => c.path === rel) : undefined
         if (change) setPendingDiscard(change)
@@ -1774,6 +1793,11 @@ export function ShellExplorerPage({
       dispatchTerminalWorkspace({ type: 'tab-created', tabId: `tab-agent-${stamp}`, paneId: `pane-agent-${stamp}`, root: context.cwd })
       setTerminalOpen(true)
       setTerminalActive(true)
+      return
+    }
+    if (context.type === 'new-worker') {
+      appliedContextRef.current = panelContext.id
+      setNewWorkerBase('workers')
       return
     }
     if (root === null) return
@@ -2774,6 +2798,15 @@ export function ShellExplorerPage({
           recent={recentFiles}
           onOpenFile={openPinnedFile}
         />
+        {newWorkerBase !== null && root !== null ? (
+          <NewWorkerDialog
+            host={host}
+            root={root}
+            baseDir={newWorkerBase}
+            onCreated={onWorkerCreated}
+            onClose={() => setNewWorkerBase(null)}
+          />
+        ) : null}
         {confirmDialog}
         <ConfirmDialog
           open={pendingDiscard !== null}
