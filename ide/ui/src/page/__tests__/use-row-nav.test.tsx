@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { type RowNav, type RowNavOptions, useRowNav } from '../use-row-nav'
+import { pickRows, type RowNav, type RowNavOptions, useRowNav } from '../use-row-nav'
 
 function navFor(options: RowNavOptions<string>): RowNav {
   let nav: RowNav | undefined
@@ -38,7 +38,7 @@ describe('row events held by the list', () => {
 
     nav.rowEvents.onClick(event({ id: '', parentElement: chip }) as never)
     expect(onSelect).toHaveBeenCalledWith('c')
-    expect(onClickRow).toHaveBeenCalledWith('c')
+    expect(onClickRow).toHaveBeenCalledWith('c', expect.objectContaining({ clientX: 3 }))
     nav.rowEvents.onDoubleClick(event(row) as never)
     expect(onAct).toHaveBeenCalledWith('c')
     nav.rowEvents.onContextMenu(event(chip) as never)
@@ -51,5 +51,27 @@ describe('row events held by the list', () => {
     expect(off.preventDefault).not.toHaveBeenCalled()
     expect(onSelect).not.toHaveBeenCalled()
     expect(onMenu).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('pickRows', () => {
+  const order = ['a', 'b', 'c', 'd']
+  const none = new Set<string>()
+
+  it('picks the row alone on a plain click', () => {
+    expect([...pickRows(new Set(['a', 'c']), order, 0, 3, { toggle: false, range: false })]).toEqual(['d'])
+  })
+
+  it('adds or drops a row with the toggle key', () => {
+    const one = pickRows(none, order, -1, 1, { toggle: true, range: false })
+    expect([...one]).toEqual(['b'])
+    expect([...pickRows(one, order, 1, 3, { toggle: true, range: false })]).toEqual(['b', 'd'])
+    expect([...pickRows(one, order, 1, 1, { toggle: true, range: false })]).toEqual([])
+  })
+
+  it('takes the rows from the anchor with Shift, either way, adding to the picked ones with both keys', () => {
+    expect([...pickRows(new Set(['d']), order, 2, 0, { toggle: false, range: true })]).toEqual(['a', 'b', 'c'])
+    expect([...pickRows(new Set(['d']), order, 0, 1, { toggle: true, range: true })]).toEqual(['d', 'a', 'b'])
+    expect([...pickRows(none, order, -1, 2, { toggle: false, range: true })]).toEqual(['c'])
   })
 })

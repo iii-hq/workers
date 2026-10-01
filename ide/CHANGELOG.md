@@ -4,6 +4,41 @@
 
 ### Added
 
+- **Branch actions in the branch menu.** The branch chip's menu opens with
+  Update Project, Push…, New Branch… and Checkout Tag or Revision…, then
+  Recent, Local, Remote and Tags, each part set off by a separator.
+  Resting the pointer on a branch or a tag (or its ›, or →) opens its
+  actions in a menu beside the list, which stays open: Checkout (in place),
+  New Branch from, Checkout and Rebase onto the current branch, Compare
+  with the current branch, Show Diff with Working Tree, Rebase onto, Merge
+  into, New Worktree from, Update, Push…, Tracked Branch, Rename… and
+  Delete, which removes the branch's worktree when it has one (never the
+  one the IDE is in). Tracked Branch opens the remote branch's own actions
+  in a third menu beside, adding Pull Using Rebase/Merge and a Delete on its
+  remote after a confirmation. A tag offers Checkout, New Branch from,
+  Compare, Show Diff, Merge into, New Worktree from, Push to the remote and
+  Delete. Compare with opens an editor tab, "Compare: X and Y", with two
+  logs one over the other (the commits each has that the other lacks), each
+  with its own text, user, date and path filters and the picked commit's
+  files and message beside it. Show Diff with Working Tree opens a Changes
+  view in the sidebar: the files that differ, as a tree under the
+  repository with a count on every folder, a Swap branches that turns every
+  diff the other way, and each file's diff a click away. A checkout that would overwrite local changes lists
+  them and offers Smart Checkout (stashed across it and brought back) or
+  Force Checkout; a remote branch whose local branch has commits of its own
+  offers to drop them or rebase them onto it, and one with none is reset to
+  it and tracks it. The rows lose their merge and delete buttons, and the
+  menu shows only the outcomes of what was asked from it. Clicking a branch
+  row still opens its worktree. A stopped rebase or merge says how to
+  continue or abort.
+- **Remove several worktrees at once.** In the Git window's Worktrees tab,
+  ⌘-click (Ctrl-click off a Mac) and Shift-click pick several worktrees, as
+  in a file manager, and the rail's Remove (or Delete) removes them all
+  after one confirmation that lists what each would lose; one that can't go
+  when its turn comes stays, with why, and the outcome is one line. Neither
+  the main worktree nor the one the IDE is in is removed. Remove is the
+  rail's, the menu's and the Delete key's alone: the rows no longer carry
+  it. Prune, on the rail, drops every worktree whose folder is gone at once.
 - **Commit panel in Source control.** The view becomes a commit panel
   with Commit, Stash and History tabs. Commit lists every uncommitted change
   (HEAD → working copy) in Changes and Unversioned files groups with a tick

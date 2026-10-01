@@ -2,34 +2,41 @@
    composer's project strip, and the IDE's, in its header. The chip names
    the branch the folder is on (● with uncommitted changes), with a worktree
    icon when the folder is a linked worktree. The menu lists the
-   repository's worktrees, to switch into, merge or remove, then its
-   branches without one, each opening its own (worktrunk's `wt switch`), and
-   makes a worktree for a new branch from what is typed (`wt switch -c`).
-   Whatever moves, the chat and the IDE beside it follow. */
+   repository's worktrees, to switch into, then its branches without one,
+   each opening its own (worktrunk's `wt switch`), and makes a worktree for a
+   new branch from what is typed (`wt switch -c`). A row's actions open in
+   a menu beside the list. Whatever moves, the chat and the IDE beside it
+   follow. */
 
 import type { ComposerControlProps, Host, LiveAnnouncement } from '@iii-dev/console-ui'
 import {
+  ConfirmDialog,
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
   IconButton,
   List,
+  ListGroupLabel,
   LiveRegion,
   SearchField,
   uiClasses,
 } from '@iii-dev/console-ui'
 import {
   AlertCircle,
+  ArrowDownToLine,
+  ArrowUpFromLine,
   Check,
   ChevronDown,
   ChevronRight,
+  Cloud,
   FolderGit2,
   GitBranch,
-  GitMerge,
+  GitBranchPlus,
   Loader2,
   Plus,
   RefreshCw,
-  Trash2,
+  Tag,
 } from 'lucide-react'
 import {
   type CSSProperties,
@@ -42,14 +49,16 @@ import {
   useRef,
   useState,
 } from 'react'
+import { BranchPage } from './BranchPage'
+import type { BranchContext, BranchRef, GitWindowRequest } from './branch-menu'
 import { workspaceValidate } from './coder'
+import { type Beside, besideOf, Flyout, useHoverIntent } from './flyout'
 import { basename } from './paths'
 import { useWorktreeOps, type WorktreesPage } from './use-worktree-ops'
 import {
+  BranchNameForm,
+  CheckoutQuestionDialog,
   DeleteBranchDialog,
-  type MergeDraft,
-  MergeForm,
-  mergeable,
   NewWorktreeForm,
   RemoveWorktreeDialog,
   WARNING,
@@ -60,6 +69,7 @@ import {
   type Branch,
   branchOf,
   groupBranches,
+  type PushTarget,
   type Worktree,
   type WorktreeList,
   worktreeAt,
@@ -125,11 +135,26 @@ function describe(head: Head): string {
 
 // A phone keyboard popping up on every tap hides the list it opened for; a
 // menu opened from a keyboard still focuses the filter.
+/** What the actions beside the list are for: a branch, or a worktree on no branch. */
+type PanelTarget = { kind: 'branch'; ref: BranchRef } | { kind: 'worktree'; path: string }
+interface Panel {
+  target: PanelTarget
+  /** The row it is for, as its `data-panel`. */
+  id: string
+  /** Beside the menu; null in place of the list, with no room beside it. */
+  at: Beside | null
+  /** Opened from the keyboard: its first action takes the focus. */
+  focus: boolean
+}
+const removable = (wt: Worktree) => !wt.main && !wt.bare
+
 const FINE_POINTER = typeof window !== 'undefined' && window.matchMedia?.('(pointer: fine)').matches
 
 // ponytail: the 50 most recently committed branches without a worktree; the
 // filter reaches the others. Virtualize the list if scrolling them all is wanted.
 const BRANCH_ROWS = 50
+/** Tags listed before a filter: the newest. */
+const TAG_ROWS = 10
 
 /** `entries` within the cap: every worktree, and branches without one up to
     BRANCH_ROWS; `hidden` counts the branches left out. */
@@ -174,6 +199,16 @@ function entriesOf(list: WorktreeList): Entry[] {
   return entries
 }
 
+/** What a push would do, for its confirmation. */
+export function pushDescription(push: { branch: string; target: PushTarget } | null): string | undefined {
+  if (push === null) return undefined
+  const { target } = push
+  if (target.setUpstream) return `${push.branch} has no upstream yet: ${target.name} becomes it.`
+  if (target.ahead === null) return undefined
+  if (target.ahead === 0) return `${target.name} already has every commit of ${push.branch}.`
+  return `${target.ahead} ${target.ahead === 1 ? 'commit' : 'commits'} to push.`
+}
+
 /** The composer control: the menu for the chat's own folder. */
 export function createWorktreeSwitcher(host: Host) {
   return function WorktreeSwitcher({ sessionId, isStreaming, workingDir, locked }: ComposerControlProps) {
@@ -197,6 +232,9 @@ export interface WorktreeMenuProps {
   rereadKey?: string
   /** Where the menu opens: above the composer, below the IDE's header. */
   side: 'top' | 'bottom'
+  /** Opens the Git window on a comparison; without it (the chat's chip) the
+      branch pages leave out "Compare with" and "Show Diff with Working Tree". */
+  onShowInGit?: (request: GitWindowRequest) => void
 }
 
 // Memoized: the IDE's header and the chat's composer render it on every
@@ -208,6 +246,7 @@ export const WorktreeMenu = memo(function WorktreeMenu({
   frozen = false,
   rereadKey = '',
   side,
+  onShowInGit,
 }: WorktreeMenuProps) {
   const [open, setOpen] = useState(false)
   const ops = useWorktreeOps(host, dir, page, open, 'menu')
@@ -215,8 +254,11 @@ export const WorktreeMenu = memo(function WorktreeMenu({
   const [refreshes, setRefreshes] = useState(0)
   const head = useHead(host, dir, `${rereadKey}:${refreshes}`)
   const [query, setQuery] = useState('')
-  const [merging, setMerging] = useState<MergeDraft | null>(null)
   const [creating, setCreating] = useState(false)
+  // A row's actions: beside the list, or in its place with no room beside it.
+  const [panel, setPanel] = useState<Panel | null>(null)
+  // The top actions that ask for a name: a new branch here, or a tag/revision to check out.
+  const [topForm, setTopForm] = useState<'new-branch' | 'revision' | null>(null)
   // The `prefix/` groups the user opened or closed, per repository; they stay
   // that way across openings of the menu.
   const [toggledGroups, setToggledGroups] = useState<ReadonlyMap<string, boolean>>(() => new Map())
@@ -235,11 +277,22 @@ export const WorktreeMenu = memo(function WorktreeMenu({
     ops.cancelRemove()
     ops.cancelDeleteBranch()
   }
+  const hover = useHoverIntent()
+  const panelRow = useRef<HTMLElement | null>(null)
+  // A form or a file list open among the actions: hovering leaves them be.
+  const settled = useRef(false)
+  const onSettle = useCallback((value: boolean) => {
+    settled.current = value
+  }, [])
   const hidden = dir === null || head === null
   // Worked out again only when the list is, not on each render the chip's
   // re-reads and the operation notes bring, open or closed.
   const entries = useMemo(() => (ops.list === null ? [] : entriesOf(ops.list)), [ops.list])
 
+  // A checkout that stopped to ask: its dialog takes over from the menu.
+  useEffect(() => {
+    if (ops.checkoutQuestion !== null) setOpen(false)
+  }, [ops.checkoutQuestion])
   // Frozen (the composer locked), the menu closes: the chat's folder stays
   // put until it unlocks.
   useEffect(() => {
@@ -276,7 +329,9 @@ export const WorktreeMenu = memo(function WorktreeMenu({
 
   if (hidden) return null
 
-  const { list, busy, note } = ops
+  const { list, busy } = ops
+  // Only what was asked here: an outcome of the Git window's stays there.
+  const note = ops.noteIsMine ? ops.note : null
   const target = list?.defaultBranch ?? null
   const here = list === null ? null : worktreeAt(list.worktrees, dir)
   const needle = query.trim()
@@ -310,8 +365,9 @@ export const WorktreeMenu = memo(function WorktreeMenu({
     setOpen(next)
     if (!next) return
     setQuery('')
-    setMerging(null)
     setCreating(false)
+    setPanel(null)
+    setTopForm(null)
     setUnseen(false)
   }
   const switchTo = (wt: Worktree) => {
@@ -374,6 +430,68 @@ export const WorktreeMenu = memo(function WorktreeMenu({
   // own, which a click switches into; a click on any other branch makes it
   // one. Inside its group a row shows the rest of the name, and is still
   // read out in full.
+  // Every branch row ends in ›, which opens its actions beside the list (→
+  // too, and the pointer resting on the row).
+  const targetOf = (row: HTMLElement): Pick<Panel, 'target' | 'id'> | null => {
+    const id = row.dataset.panel
+    if (id === undefined) return null
+    const name = id.slice(2)
+    if (id.startsWith('w:')) return { target: { kind: 'worktree', path: name }, id }
+    if (id.startsWith('t:')) return { target: { kind: 'branch', ref: { name, remote: false, tag: true } }, id }
+    return { target: { kind: 'branch', ref: { name, remote: id.startsWith('r:') } }, id }
+  }
+  const showPanel = (row: HTMLElement, focus: boolean) => {
+    const found = targetOf(row)
+    const menu = row.closest<HTMLElement>('.shui-wt-menu')
+    if (found === null || menu === null) return
+    const next: Panel = { ...found, at: besideOf(menu, row), focus }
+    panelRow.current = row
+    setTopForm(null)
+    setPanel((open) => (open?.id === next.id && !focus ? open : next))
+  }
+  const closePanel = (refocus: boolean) => {
+    hover.cancel()
+    settled.current = false
+    setPanel(null)
+    if (refocus) panelRow.current?.querySelector<HTMLElement>('[data-list-item]')?.focus()
+  }
+  const rowOf = (element: HTMLElement) => element.closest<HTMLElement>('.shui-wt-row')
+  const moreButton = (name: string) => (
+    <button
+      type="button"
+      className={`${uiClasses.treeItemAction} shui-wt-row-more`}
+      aria-label={`Actions for ${name}`}
+      aria-haspopup="menu"
+      title="Actions"
+      // From the keyboard (Enter or Space), the first action takes the focus.
+      onClick={(event) => {
+        const row = rowOf(event.currentTarget)
+        if (row !== null) showPanel(row, event.detail === 0)
+      }}
+    >
+      <ChevronRight aria-hidden />
+    </button>
+  )
+  const toPanel = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const row = rowOf(event.currentTarget)
+    if (event.key !== 'ArrowRight' || row === null || row.dataset.panel === undefined) return
+    event.preventDefault()
+    showPanel(row, true)
+  }
+  // The row whose actions are open beside the list.
+  const rowData = (id: string | undefined) => ({
+    'data-panel': id,
+    'data-open': (id !== undefined && panel?.id === id && panel.at !== null) || undefined,
+  })
+  // Resting the pointer on a row opens its actions beside the list in place
+  // of the ones open, and on any other row closes them; not while a form or
+  // a file list is open there.
+  const rowsHover = () =>
+    hover.listProps('.shui-wt-row', (row) => {
+      if (settled.current) return
+      if (row !== null && targetOf(row) !== null) showPanel(row, false)
+      else setPanel((open) => (open?.at === null ? open : null))
+    })
   const entryRow = (entry: Entry, depth: number) => {
     const { wt } = entry
     const shown = depth > 0 ? entry.name.slice(entry.name.indexOf('/') + 1) : entry.name
@@ -382,76 +500,30 @@ export const WorktreeMenu = memo(function WorktreeMenu({
         entry.branch?.ahead ? `↑${entry.branch.ahead}` : '',
         entry.branch?.behind ? `↓${entry.branch.behind}` : '',
       ].filter(Boolean)
-      // Merged into, and deleted from, the default branch without a checkout.
-      const own = target !== null && entry.name !== target
-      const key = `branch:${entry.name}`
       return (
-        <div key={key} className="shui-wt-row-with-form">
-          <div className={`${uiClasses.treeItem} shui-wt-row`} style={depthOf(depth)}>
-            <button
-              type="button"
-              data-list-item=""
-              className="shui-wt-row-main"
-              aria-disabled={busy || undefined}
-              aria-label={[entry.name, ...marks].join(', ')}
-              title={`${entry.name}\nNo worktree yet: opens one at ${worktreePathFor(mainPath, entry.name)}`}
-              onClick={() => !busy && createFor(entry.name)}
-            >
-              <span className={uiClasses.treeItemIcon}>
-                <GitBranch aria-hidden />
-              </span>
-              <span className={uiClasses.treeItemLabel}>{shown}</span>
-              {marksOf(false, marks)}
-            </button>
-            {own ? (
-              <span className={uiClasses.treeItemActions}>
-                <button
-                  type="button"
-                  className={uiClasses.treeItemAction}
-                  aria-label={`Merge ${entry.name} into ${target}`}
-                  title={`Merge into ${target}`}
-                  aria-disabled={busy || undefined}
-                  onClick={() => !busy && openBranchMerge(entry.name)}
-                >
-                  <GitMerge aria-hidden />
-                </button>
-                <button
-                  type="button"
-                  className={uiClasses.treeItemAction}
-                  data-tone="alert"
-                  aria-label={`Delete ${entry.name}`}
-                  title="Delete the branch"
-                  aria-disabled={busy || undefined}
-                  onClick={() => {
-                    if (busy) return
-                    // The confirmation is a dialog of its own: the menu gives way.
-                    setOpen(false)
-                    ops.askDeleteBranch(entry.name)
-                  }}
-                >
-                  <Trash2 aria-hidden />
-                </button>
-              </span>
-            ) : null}
-          </div>
-          {merging?.path === key && target ? (
-            // Keys typed in the form stay out of the menu's typeahead.
-            // biome-ignore lint/a11y/noStaticElementInteractions: only keeps typing inside the form
-            <div
-              className="shui-wt-menu-merge"
-              onKeyDown={(event) => event.key !== 'Escape' && event.stopPropagation()}
-            >
-              <MergeForm
-                draft={merging}
-                target={target}
-                busy={busy}
-                worktree={false}
-                onChange={setMerging}
-                onMerge={() => ops.mergeBranch(entry.name, merging, () => setMerging(null))}
-                onCancel={() => setMerging(null)}
-              />
-            </div>
-          ) : null}
+        <div
+          key={`branch:${entry.name}`}
+          className={`${uiClasses.treeItem} shui-wt-row`}
+          style={depthOf(depth)}
+          {...rowData(`b:${entry.name}`)}
+        >
+          <button
+            type="button"
+            data-list-item=""
+            className="shui-wt-row-main"
+            aria-disabled={busy || undefined}
+            aria-label={[entry.name, ...marks].join(', ')}
+            title={`${entry.name}\nNo worktree yet: opens one at ${worktreePathFor(mainPath, entry.name)}`}
+            onClick={() => !busy && createFor(entry.name)}
+            onKeyDown={toPanel}
+          >
+            <span className={uiClasses.treeItemIcon}>
+              <GitBranch aria-hidden />
+            </span>
+            <span className={uiClasses.treeItemLabel}>{shown}</span>
+            {marksOf(false, marks)}
+          </button>
+          {moreButton(entry.name)}
         </div>
       )
     }
@@ -461,86 +533,39 @@ export const WorktreeMenu = memo(function WorktreeMenu({
     const marks = written.filter((mark) => mark !== '●')
     const folder = conventional(wt) ? null : basename(wt.path)
     const name = entry.name === '' ? (wt.bare ? 'bare' : 'detached') : entry.name
-    const removable = !wt.main && !wt.bare
+    // A worktree on no branch has actions only when it can be removed.
+    const panelId = entry.name !== '' ? `b:${entry.name}` : removable(wt) && !current ? `w:${wt.path}` : undefined
     return (
-      <div key={wt.path} className="shui-wt-row-with-form">
-        <div
-          className={`${uiClasses.treeItem} shui-wt-row`}
-          data-selected={current || undefined}
-          style={depthOf(depth)}
+      <div
+        key={wt.path}
+        className={`${uiClasses.treeItem} shui-wt-row`}
+        data-selected={current || undefined}
+        style={depthOf(depth)}
+        {...rowData(panelId)}
+      >
+        <button
+          type="button"
+          data-list-item=""
+          className="shui-wt-row-main"
+          disabled={wt.prunable || wt.bare}
+          aria-disabled={busy || undefined}
+          aria-current={current ? 'true' : undefined}
+          aria-label={[name, folder, wt.dirty ? 'uncommitted changes' : null, ...marks].filter(Boolean).join(', ')}
+          title={titles.join('\n')}
+          onClick={() => !busy && switchTo(wt)}
+          onKeyDown={toPanel}
         >
-          <button
-            type="button"
-            data-list-item=""
-            className="shui-wt-row-main"
-            disabled={wt.prunable || wt.bare}
-            aria-disabled={busy || undefined}
-            aria-current={current ? 'true' : undefined}
-            aria-label={[name, folder, wt.dirty ? 'uncommitted changes' : null, ...marks].filter(Boolean).join(', ')}
-            title={titles.join('\n')}
-            onClick={() => !busy && switchTo(wt)}
-          >
-            <span className={uiClasses.treeItemIcon}>
-              <FolderGit2 aria-hidden />
-            </span>
-            <span className={uiClasses.treeItemLabel}>{entry.name === '' ? name : shown}</span>
-            {marksOf(wt.dirty === true, marks)}
-          </button>
-          <span className={uiClasses.treeItemTrailing}>
-            {folder ? <span className={uiClasses.treeItemMeta}>{folder}</span> : null}
-            {current ? <Check aria-hidden className="shui-wt-row-check" /> : null}
+          <span className={uiClasses.treeItemIcon}>
+            <FolderGit2 aria-hidden />
           </span>
-          {/* The actions are the row's own item, not the trailing's: that one
-              gives way to a long name, and they must not be squeezed out. */}
-          {mergeable(wt, target) || removable ? (
-            <span className={uiClasses.treeItemActions}>
-              {mergeable(wt, target) ? (
-                <button
-                  type="button"
-                  className={uiClasses.treeItemAction}
-                  aria-label={`Merge ${wt.branch} into ${target}`}
-                  title={`Merge into ${target}`}
-                  aria-disabled={busy || undefined}
-                  onClick={() => !busy && openMerge(wt)}
-                >
-                  <GitMerge aria-hidden />
-                </button>
-              ) : null}
-              {removable ? (
-                <button
-                  type="button"
-                  className={uiClasses.treeItemAction}
-                  data-tone="alert"
-                  aria-label={wt.prunable ? `Prune ${basename(wt.path)}` : `Remove ${basename(wt.path)}`}
-                  title={wt.prunable ? 'Prune the worktree' : 'Remove the worktree'}
-                  aria-disabled={busy || undefined}
-                  onClick={() => {
-                    if (busy) return
-                    // The confirmation is a dialog of its own: the menu gives way.
-                    setOpen(false)
-                    ops.askRemove(wt)
-                  }}
-                >
-                  <Trash2 aria-hidden />
-                </button>
-              ) : null}
-            </span>
-          ) : null}
-        </div>
-        {merging?.path === wt.path && target ? (
-          // Keys typed in the form stay out of the menu's typeahead.
-          // biome-ignore lint/a11y/noStaticElementInteractions: only keeps typing inside the form
-          <div className="shui-wt-menu-merge" onKeyDown={(event) => event.key !== 'Escape' && event.stopPropagation()}>
-            <MergeForm
-              draft={merging}
-              target={target}
-              busy={busy}
-              onChange={setMerging}
-              onMerge={() => ops.merge(wt, merging, () => setMerging(null))}
-              onCancel={() => setMerging(null)}
-            />
-          </div>
-        ) : null}
+          <span className={uiClasses.treeItemLabel}>{entry.name === '' ? name : shown}</span>
+          {marksOf(wt.dirty === true, marks)}
+        </button>
+        <span className={uiClasses.treeItemTrailing}>
+          {folder ? <span className={uiClasses.treeItemMeta}>{folder}</span> : null}
+          {current ? <Check aria-hidden className="shui-wt-row-check" /> : null}
+        </span>
+        {panelId === undefined ? null : moreButton(name)}
       </div>
     )
   }
@@ -611,22 +636,272 @@ export const WorktreeMenu = memo(function WorktreeMenu({
     if (lone.hidden > 0) out.push(more('more', lone.hidden, 0))
     return out
   }
-  const openBranchMerge = (branch: string) => {
-    const key = `branch:${branch}`
-    setMerging({ path: key, squash: true, message: '' })
-    void ops
-      .branchMergeMessage(branch)
-      .then((message) =>
-        setMerging((draft) => (draft?.path === key && draft.message === '' ? { ...draft, message } : draft)),
-      )
+  // The folder's own branch: what the top actions and the branch pages act on.
+  const currentBranch = here !== null ? branchOf(here) : head.branch
+  const recentEntries = (list?.recent ?? []).flatMap((name) => entries.filter((entry) => entry.name === name))
+  const remoteMatches = (list?.remotes ?? []).filter((name) => lowered === '' || name.toLowerCase().includes(lowered))
+  const holderOf = (ref: BranchRef) =>
+    ref.remote || ref.tag ? null : (entries.find((entry) => entry.name === ref.name)?.wt ?? null)
+  // Where a tag is pushed: origin, else the first remote.
+  const remoteNames = [...new Set((list?.remotes ?? []).map((name) => name.slice(0, name.indexOf('/'))))]
+  const pushRemote = remoteNames.includes('origin') ? 'origin' : (remoteNames[0] ?? null)
+  const pageContext = (ref: BranchRef): BranchContext => {
+    const holder = holderOf(ref)
+    return {
+      current: currentBranch,
+      defaultBranch: target,
+      upstream:
+        ref.remote || ref.tag ? null : (list?.branches.find((branch) => branch.name === ref.name)?.upstream ?? null),
+      checkedOutIn: holder !== null && holder.path !== here?.path ? basename(holder.path) : null,
+      // The worktree open here is not deleted from under the IDE.
+      worktree: holder !== null && removable(holder) && holder.path !== here?.path ? basename(holder.path) : null,
+      canDiff: onShowInGit !== undefined,
+      remote: pushRemote,
+    }
   }
-  const openMerge = (wt: Worktree) => {
-    setMerging({ path: wt.path, squash: true, message: '' })
-    void ops
-      .mergeMessage(wt)
-      .then((message) =>
-        setMerging((draft) => (draft?.path === wt.path && draft.message === '' ? { ...draft, message } : draft)),
-      )
+  const detachedReason = currentBranch === null ? 'the folder is on a detached HEAD' : undefined
+  const actionRow = (
+    key: string,
+    label: string,
+    Icon: typeof Tag,
+    onClick: () => void,
+    disabled?: string,
+    meta?: string | null,
+  ) => (
+    <div key={key} className={`${uiClasses.treeItem} shui-wt-row`}>
+      <button
+        type="button"
+        data-list-item=""
+        className="shui-wt-row-main"
+        aria-disabled={busy || disabled !== undefined || undefined}
+        title={disabled}
+        onClick={() => !busy && disabled === undefined && onClick()}
+      >
+        <span className={uiClasses.treeItemIcon}>
+          <Icon aria-hidden />
+        </span>
+        <span className={uiClasses.treeItemLabel}>{label}</span>
+      </button>
+      {meta ? (
+        <span className={uiClasses.treeItemTrailing}>
+          <span className={uiClasses.treeItemMeta}>{meta}</span>
+        </span>
+      ) : null}
+    </div>
+  )
+  // The folder's verbs, above the branches; none of them commits.
+  const topActions = () => (
+    <div className="shui-wt-section">
+      {actionRow('update', 'Update Project', ArrowDownToLine, () => ops.updateProject(), detachedReason)}
+      {actionRow(
+        'push',
+        'Push…',
+        ArrowUpFromLine,
+        () => {
+          // The confirmation is a dialog of its own: the menu gives way.
+          setOpen(false)
+          if (currentBranch !== null) ops.askPush(currentBranch)
+        },
+        detachedReason,
+        currentBranch === null
+          ? null
+          : (list?.branches.find((branch) => branch.name === currentBranch)?.upstream ?? null),
+      )}
+      {actionRow('new-branch', 'New Branch…', GitBranchPlus, () => setTopForm('new-branch'))}
+      {actionRow('revision', 'Checkout Tag or Revision…', Tag, () => setTopForm('revision'))}
+    </div>
+  )
+  const remoteRow = (name: string, depth: number) => {
+    const shown = depth > 0 ? name.slice(name.indexOf('/') + 1) : name
+    return (
+      <div
+        key={`remote:${name}`}
+        className={`${uiClasses.treeItem} shui-wt-row`}
+        style={depthOf(depth)}
+        {...rowData(`r:${name}`)}
+      >
+        <button
+          type="button"
+          data-list-item=""
+          className="shui-wt-row-main"
+          aria-label={`${name}, remote branch`}
+          aria-haspopup="menu"
+          title={name}
+          onClick={(event) => {
+            const row = rowOf(event.currentTarget)
+            if (row !== null) showPanel(row, event.detail === 0)
+          }}
+          onKeyDown={toPanel}
+        >
+          <span className={uiClasses.treeItemIcon}>
+            <Cloud aria-hidden />
+          </span>
+          <span className={uiClasses.treeItemLabel}>{shown}</span>
+        </button>
+        {moreButton(name)}
+      </div>
+    )
+  }
+  // Remote branches: filtered, flat; else one group per remote, closed until opened.
+  const remoteRows = (): ReactNode => {
+    if (remoteMatches.length === 0) return null
+    const out: ReactNode[] = []
+    if (lowered !== '') {
+      out.push(...remoteMatches.slice(0, BRANCH_ROWS).map((name) => remoteRow(name, 0)))
+      if (remoteMatches.length > BRANCH_ROWS) out.push(more('more:remote', remoteMatches.length - BRANCH_ROWS, 0))
+    } else {
+      for (const group of groupBranches(remoteMatches.map((name) => ({ name })))) {
+        if (group.prefix === null) {
+          out.push(remoteRow(group.branches[0].name, 0))
+          continue
+        }
+        const key = `${mainPath}\0remote:${group.prefix}`
+        const opened = toggledGroups.get(key) ?? false
+        const toggle = () => setToggledGroups((toggled) => new Map(toggled).set(key, !opened))
+        out.push(
+          <div key={`remote-group:${group.prefix}`} className={`${uiClasses.treeItem} shui-wt-row`} style={depthOf(0)}>
+            <button
+              type="button"
+              data-list-item=""
+              className="shui-wt-row-main"
+              aria-expanded={opened}
+              aria-label={`${group.prefix}, ${group.branches.length} remote branches`}
+              onClick={toggle}
+              onKeyDown={(event) => {
+                if ((event.key === 'ArrowRight' && !opened) || (event.key === 'ArrowLeft' && opened)) {
+                  event.preventDefault()
+                  toggle()
+                }
+              }}
+            >
+              <span className={`${uiClasses.treeItemIcon} shui-wt-row-caret`} data-open={opened || undefined}>
+                <ChevronRight aria-hidden />
+              </span>
+              <span className={uiClasses.treeItemLabel}>{group.prefix}</span>
+            </button>
+            <span className={uiClasses.treeItemTrailing}>
+              <span className={uiClasses.treeItemMeta}>{group.branches.length}</span>
+            </span>
+          </div>,
+        )
+        if (!opened) continue
+        out.push(...group.branches.slice(0, BRANCH_ROWS).map((branch) => remoteRow(branch.name, 1)))
+        if (group.branches.length > BRANCH_ROWS) {
+          out.push(more(`more:remote:${group.prefix}`, group.branches.length - BRANCH_ROWS, 1, ` in ${group.prefix}/`))
+        }
+      }
+    }
+    return (
+      <div className="shui-wt-section">
+        {/* Nothing above it when a filter leaves no local branch. */}
+        {lowered === '' || matches.length > 0 || creatable ? <DropdownMenuSeparator /> : null}
+        <ListGroupLabel>Remote</ListGroupLabel>
+        {out}
+      </div>
+    )
+  }
+  // Tags, the newest first: the first few, the rest by typing.
+  const tagMatches = (list?.tags ?? []).filter((name) => lowered === '' || name.toLowerCase().includes(lowered))
+  const tagRows = (): ReactNode => {
+    if (tagMatches.length === 0) return null
+    const cap = lowered === '' ? TAG_ROWS : BRANCH_ROWS
+    return (
+      <div className="shui-wt-section">
+        {lowered === '' || matches.length > 0 || creatable || remoteMatches.length > 0 ? (
+          <DropdownMenuSeparator />
+        ) : null}
+        <ListGroupLabel>Tags</ListGroupLabel>
+        {tagMatches.slice(0, cap).map((name) => (
+          <div
+            key={`tag:${name}`}
+            className={`${uiClasses.treeItem} shui-wt-row`}
+            style={depthOf(0)}
+            {...rowData(`t:${name}`)}
+          >
+            <button
+              type="button"
+              data-list-item=""
+              className="shui-wt-row-main"
+              aria-label={`${name}, tag`}
+              aria-haspopup="menu"
+              title={name}
+              onClick={(event) => {
+                const row = rowOf(event.currentTarget)
+                if (row !== null) showPanel(row, event.detail === 0)
+              }}
+              onKeyDown={toPanel}
+            >
+              <span className={uiClasses.treeItemIcon}>
+                <Tag aria-hidden />
+              </span>
+              <span className={uiClasses.treeItemLabel}>{name}</span>
+            </button>
+            {moreButton(name)}
+          </div>
+        ))}
+        {tagMatches.length > cap ? more('more:tags', tagMatches.length - cap, 0) : null}
+      </div>
+    )
+  }
+  // A worktree on no branch: removing it is what it offers.
+  const worktreePage = (path: string, back: () => void) => {
+    const wt = list?.worktrees.find((candidate) => candidate.path === path) ?? null
+    return (
+      // biome-ignore lint/a11y/noStaticElementInteractions: Escape and ← step back from anywhere on the page
+      <div
+        className="shui-wt-page"
+        onKeyDown={(event) => {
+          if (event.key !== 'Escape' && event.key !== 'ArrowLeft') return
+          event.preventDefault()
+          event.stopPropagation()
+          back()
+        }}
+      >
+        <List className={`${uiClasses.tree} shui-wt-menu-list`} aria-label={`Actions for ${basename(path)}`}>
+          <div className={`${uiClasses.treeItem} shui-wt-row shui-wt-action`} data-tone="alert">
+            <button
+              type="button"
+              data-list-item=""
+              className="shui-wt-row-main"
+              aria-disabled={busy || wt === null || undefined}
+              onClick={() => {
+                if (busy || wt === null) return
+                // The confirmation is a dialog of its own: the menu gives way.
+                setOpen(false)
+                ops.askRemove(wt)
+              }}
+            >
+              <span className={uiClasses.treeItemLabel}>Delete Worktree '{basename(path)}'…</span>
+            </button>
+          </div>
+        </List>
+      </div>
+    )
+  }
+  const panelBody = (open: Panel) => {
+    const beside = open.at !== null
+    const back = () => (beside ? closePanel(true) : setPanel(null))
+    if (open.target.kind === 'worktree') return worktreePage(open.target.path, back)
+    const ref = open.target.ref
+    const holder = holderOf(ref)
+    return (
+      <BranchPage
+        key={open.id}
+        branch={ref}
+        ctx={pageContext(ref)}
+        worktree={holder !== null && removable(holder) ? holder : null}
+        ops={ops}
+        busy={busy}
+        flyout={beside}
+        onSettle={onSettle}
+        onBack={back}
+        onTracked={(upstream) =>
+          setPanel({ ...open, target: { kind: 'branch', ref: { name: upstream, remote: true } }, id: `r:${upstream}` })
+        }
+        onClose={() => setOpen(false)}
+        onShowInGit={onShowInGit}
+      />
+    )
   }
 
   return (
@@ -688,105 +963,167 @@ export const WorktreeMenu = memo(function WorktreeMenu({
           {/* The menu keeps Tab from moving focus; let it reach the rows and their actions. */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: only lets Tab through to the controls inside */}
           <div className="shui-wt-menu-body" onKeyDown={(event) => event.key === 'Tab' && event.stopPropagation()}>
-            <div className="shui-wt-menu-top">
-              <SearchField
-                className="shui-wt-menu-filter"
-                value={query}
-                onChange={setQuery}
-                onKeyDown={onFilterKeyDown}
-                placeholder="Switch to a branch, or name a new one…"
-                aria-label="Filter branches, or name a new one"
-                ref={filterRef}
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <span className="shui-wt-menu-tools">
-                <IconButton
-                  label={`New worktree from ${target ?? 'HEAD'}`}
-                  variant="ghost"
-                  disabled={busy || list === null}
-                  aria-expanded={creating}
-                  onClick={() => setCreating((value) => !value)}
-                >
-                  <Plus size={16} aria-hidden />
-                </IconButton>
-                <IconButton
-                  label="Refresh"
-                  variant="ghost"
-                  disabled={busy}
-                  onClick={() => {
-                    ops.reload()
-                    setRefreshes((count) => count + 1)
-                  }}
-                >
-                  <RefreshCw size={16} aria-hidden />
-                </IconButton>
-              </span>
-            </div>
-            {note ? (
-              <p className={`shui-wt-menu-note${WARNING.test(note) ? ' warn' : ''}`} role="status">
-                {note}
-              </p>
-            ) : null}
-            {creating && list !== null ? (
-              // Keys typed in the form stay out of the menu's typeahead.
-              // biome-ignore lint/a11y/noStaticElementInteractions: only keeps typing inside the form
-              <div
-                className="shui-wt-menu-create"
-                onKeyDown={(event) => event.key !== 'Escape' && event.stopPropagation()}
-              >
-                {/* Created means moved in: the menu closes, as with the filter. */}
-                <NewWorktreeForm
-                  target={target}
-                  busy={busy}
-                  onCreate={(branch) =>
-                    ops.create(branch, () => {
-                      setCreating(false)
-                      setOpen(false)
-                    })
-                  }
-                  onCancel={() => setCreating(false)}
-                />
-              </div>
-            ) : null}
-            {ops.error !== null ? (
-              <p className="shui-wt-menu-note warn">{ops.error}</p>
-            ) : list === null ? (
-              <p className="shui-wt-menu-note">reading branches…</p>
+            {panel !== null && panel.at === null && list !== null && dir !== null ? (
+              panelBody(panel)
             ) : (
-              <List
-                ref={listRef}
-                className={`${uiClasses.tree} shui-wt-menu-list`}
-                // Touch gets the tree's finger-sized rows, with actions always shown.
-                data-narrow={FINE_POINTER ? undefined : ''}
-                aria-label={`Branches of ${basename(mainPath)}`}
-              >
-                {rows()}
-                {creatable ? (
-                  <div className={`${uiClasses.treeItem} shui-wt-row`} style={depthOf(0)}>
-                    <button
-                      type="button"
-                      data-list-item=""
-                      className="shui-wt-row-main"
-                      aria-disabled={busy || undefined}
-                      title={`${newFolder}, a new branch from ${target ?? 'HEAD'}`}
-                      onClick={() => !busy && createFor(needle)}
+              <>
+                <div className="shui-wt-menu-top">
+                  <SearchField
+                    className="shui-wt-menu-filter"
+                    value={query}
+                    onChange={(value) => {
+                      setQuery(value)
+                      // The rows move: the actions beside go.
+                      setPanel(null)
+                    }}
+                    onKeyDown={onFilterKeyDown}
+                    placeholder="Switch to a branch, or name a new one…"
+                    aria-label="Filter branches, or name a new one"
+                    ref={filterRef}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <span className="shui-wt-menu-tools">
+                    <IconButton
+                      label={`New worktree from ${target ?? 'HEAD'}`}
+                      variant="ghost"
+                      disabled={busy || list === null}
+                      aria-expanded={creating}
+                      onClick={() => setCreating((value) => !value)}
                     >
-                      <span className={uiClasses.treeItemIcon}>
-                        <Plus aria-hidden />
-                      </span>
-                      <span className={uiClasses.treeItemLabel}>New worktree: {needle}</span>
-                    </button>
-                    <span className={uiClasses.treeItemTrailing}>
-                      <span className={uiClasses.treeItemMeta}>from {target ?? 'HEAD'}</span>
-                    </span>
-                  </div>
-                ) : matches.length === 0 ? (
-                  <p className="shui-wt-menu-note">Nothing matches.</p>
+                      <Plus size={16} aria-hidden />
+                    </IconButton>
+                    <IconButton
+                      label="Refresh"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => {
+                        ops.reload()
+                        setRefreshes((count) => count + 1)
+                      }}
+                    >
+                      <RefreshCw size={16} aria-hidden />
+                    </IconButton>
+                  </span>
+                </div>
+                {note ? (
+                  <p className={`shui-wt-menu-note${WARNING.test(note) ? ' warn' : ''}`} role="status">
+                    {note}
+                  </p>
                 ) : null}
-              </List>
+                {creating && list !== null ? (
+                  // Keys typed in the form stay out of the menu's typeahead.
+                  // biome-ignore lint/a11y/noStaticElementInteractions: only keeps typing inside the form
+                  <div
+                    className="shui-wt-menu-create"
+                    onKeyDown={(event) => event.key !== 'Escape' && event.stopPropagation()}
+                  >
+                    {/* Created means moved in: the menu closes, as with the filter. */}
+                    <NewWorktreeForm
+                      target={target}
+                      busy={busy}
+                      onCreate={(branch) =>
+                        ops.create(branch, () => {
+                          setCreating(false)
+                          setOpen(false)
+                        })
+                      }
+                      onCancel={() => setCreating(false)}
+                    />
+                  </div>
+                ) : null}
+                {topForm !== null && list !== null ? (
+                  // Keys typed in the form stay out of the menu's typeahead.
+                  // biome-ignore lint/a11y/noStaticElementInteractions: only keeps typing inside the form
+                  <div
+                    className="shui-wt-menu-create"
+                    onKeyDown={(event) => event.key !== 'Escape' && event.stopPropagation()}
+                  >
+                    {topForm === 'new-branch' ? (
+                      <BranchNameForm
+                        label="New branch"
+                        placeholder={`Branch (Enter to create from ${currentBranch ?? 'HEAD'} and check it out)`}
+                        busy={busy}
+                        onSubmit={(name) => ops.newBranchHere(name, currentBranch ?? 'HEAD', () => setTopForm(null))}
+                        onCancel={() => setTopForm(null)}
+                      />
+                    ) : (
+                      <BranchNameForm
+                        label="Tag or revision to check out"
+                        placeholder="Tag, branch or commit (Enter to check it out, detached)"
+                        busy={busy}
+                        onSubmit={(revision) => ops.checkoutRevision(revision, () => setTopForm(null))}
+                        onCancel={() => setTopForm(null)}
+                      />
+                    )}
+                  </div>
+                ) : null}
+                {ops.error !== null ? (
+                  <p className="shui-wt-menu-note warn">{ops.error}</p>
+                ) : list === null ? (
+                  <p className="shui-wt-menu-note">reading branches…</p>
+                ) : (
+                  <List
+                    ref={listRef}
+                    className={`${uiClasses.tree} shui-wt-menu-list`}
+                    // Touch gets the tree's finger-sized rows, with actions always shown.
+                    data-narrow={FINE_POINTER ? undefined : ''}
+                    aria-label={`Branches of ${basename(mainPath)}`}
+                    {...rowsHover()}
+                    // The actions beside stay level with their row, so a scroll closes them.
+                    onScroll={() => {
+                      if (panel !== null && !settled.current) closePanel(false)
+                    }}
+                  >
+                    {lowered === '' ? topActions() : null}
+                    {lowered === '' && recentEntries.length > 0 ? (
+                      <div className="shui-wt-section">
+                        <DropdownMenuSeparator />
+                        <ListGroupLabel>Recent</ListGroupLabel>
+                        {recentEntries.map((entry) => entryRow(entry, 0))}
+                      </div>
+                    ) : null}
+                    {lowered === '' ? (
+                      <>
+                        <DropdownMenuSeparator />
+                        <ListGroupLabel>Local</ListGroupLabel>
+                      </>
+                    ) : null}
+                    {rows()}
+                    {creatable ? (
+                      <div className={`${uiClasses.treeItem} shui-wt-row`} style={depthOf(0)}>
+                        <button
+                          type="button"
+                          data-list-item=""
+                          className="shui-wt-row-main"
+                          aria-disabled={busy || undefined}
+                          title={`${newFolder}, a new branch from ${target ?? 'HEAD'}`}
+                          onClick={() => !busy && createFor(needle)}
+                        >
+                          <span className={uiClasses.treeItemIcon}>
+                            <Plus aria-hidden />
+                          </span>
+                          <span className={uiClasses.treeItemLabel}>New worktree: {needle}</span>
+                        </button>
+                        <span className={uiClasses.treeItemTrailing}>
+                          <span className={uiClasses.treeItemMeta}>from {target ?? 'HEAD'}</span>
+                        </span>
+                      </div>
+                    ) : matches.length === 0 && remoteMatches.length === 0 && tagMatches.length === 0 ? (
+                      <p className="shui-wt-menu-note">Nothing matches.</p>
+                    ) : null}
+                    {remoteRows()}
+                    {tagRows()}
+                  </List>
+                )}
+              </>
             )}
           </div>
+          {panel?.at && list !== null && dir !== null ? (
+            <Flyout key={panel.id} at={panel.at} focus={panel.focus} onPointerEnter={hover.cancel}>
+              {panelBody(panel)}
+            </Flyout>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
       <DeleteBranchDialog
@@ -798,6 +1135,76 @@ export const WorktreeMenu = memo(function WorktreeMenu({
         }}
         onCancel={() => {
           ops.cancelDeleteBranch()
+          focusChip()
+        }}
+      />
+      <ConfirmDialog
+        open={ops.pushing !== null}
+        onOpenChange={(next) => {
+          if (next) return
+          ops.cancelPush()
+          focusChip()
+        }}
+        title={ops.pushing ? `Push ${ops.pushing.branch} to ${ops.pushing.target.name}?` : 'Push?'}
+        description={pushDescription(ops.pushing)}
+        confirmLabel="Push"
+        onConfirm={() => {
+          ops.confirmPush()
+          focusChip()
+        }}
+        onCancel={() => {
+          ops.cancelPush()
+          focusChip()
+        }}
+      />
+      <ConfirmDialog
+        open={ops.deletingRemote !== null}
+        onOpenChange={(next) => {
+          if (next) return
+          ops.cancelDeleteRemote()
+          focusChip()
+        }}
+        title={ops.deletingRemote ? `Delete ${ops.deletingRemote} from its remote?` : 'Delete the remote branch?'}
+        description="The branch goes from the remote for everyone who fetches it. Local branches stay."
+        tone="danger"
+        confirmLabel="Delete"
+        onConfirm={() => {
+          ops.confirmDeleteRemote()
+          focusChip()
+        }}
+        onCancel={() => {
+          ops.cancelDeleteRemote()
+          focusChip()
+        }}
+      />
+      <CheckoutQuestionDialog
+        question={ops.checkoutQuestion}
+        onAnswer={(answer) => {
+          ops.answerCheckout(answer)
+          focusChip()
+        }}
+        onCancel={() => {
+          ops.cancelCheckout()
+          focusChip()
+        }}
+      />
+      <ConfirmDialog
+        open={ops.deletingTag !== null}
+        onOpenChange={(next) => {
+          if (next) return
+          ops.cancelDeleteTag()
+          focusChip()
+        }}
+        title={`Delete tag ${ops.deletingTag ?? ''}?`}
+        description="The tag goes from this repository; a remote that has it keeps its copy."
+        tone="danger"
+        confirmLabel="Delete"
+        onConfirm={() => {
+          ops.confirmDeleteTag()
+          focusChip()
+        }}
+        onCancel={() => {
+          ops.cancelDeleteTag()
           focusChip()
         }}
       />

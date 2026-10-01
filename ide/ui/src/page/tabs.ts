@@ -8,6 +8,9 @@
      the next preview replaces it
    - double click (or editing the file) PINS the tab — pinned tabs only
      close explicitly
+
+   A comparison of two branches (Compare with) is a tab too: it names no
+   file (`path` is ''), and is not kept across reloads.
 */
 
 import { type DiffSource, diffSourceKey, diffSourcePersists, parseDiffSource } from './diff-source'
@@ -17,6 +20,8 @@ export type TabTarget =
   | { kind: 'diff'; path: string; source: DiffSource }
   /** `git show <sha>:./<path>`: never edited, never saved. */
   | { kind: 'revision'; path: string; sha: string }
+  /** The commits each of two refs (full names) has that the other lacks. */
+  | { kind: 'compare'; path: ''; ref: string; against: string }
 
 export interface OpenTab {
   /** Stable identity: `file:<path>`, `diff:<source>:<path>` or
@@ -42,7 +47,13 @@ export function tabIdFor(target: TabTarget): string {
       return `diff:${diffSourceKey(target.source)}:${target.path}`
     case 'revision':
       return `revision:${target.sha}:${target.path}`
+    case 'compare':
+      return `compare:${target.ref}..${target.against}`
   }
+}
+
+export function compareTarget(ref: string, against: string): TabTarget {
+  return { kind: 'compare', path: '', ref, against }
 }
 
 export function fileTarget(path: string): TabTarget {
@@ -73,7 +84,7 @@ export function tabFilePaths(state: TabsState, ids: readonly string[], limit: nu
   for (const id of ids) {
     if (out.length >= limit) break
     const path = findTab(state, id)?.target.path
-    if (path !== undefined && !out.includes(path)) out.push(path)
+    if (path !== undefined && path !== '' && !out.includes(path)) out.push(path)
   }
   return out
 }
@@ -163,7 +174,8 @@ export function restoreTabs(open: unknown, active: unknown): TabsState {
   }
   const activeId =
     typeof active === 'string'
-      ? (tabs.find((t) => t.id === active) ?? tabs.find((t) => t.target.kind === 'file' && t.target.path === active))?.id ?? null
+      ? ((tabs.find((t) => t.id === active) ?? tabs.find((t) => t.target.kind === 'file' && t.target.path === active))
+          ?.id ?? null)
       : null
   return { tabs, active: activeId ?? tabs[0]?.id ?? null }
 }
@@ -187,6 +199,7 @@ function restoreTarget(raw: Record<string, unknown>): TabTarget | null {
     pinned), change tabs left out. */
 export function persistedTabs(state: TabsState): (TabTarget & { pinned: boolean })[] {
   return state.tabs
+    .filter((t) => t.target.kind !== 'compare')
     .filter((t) => t.target.kind !== 'diff' || diffSourcePersists(t.target.source))
     .map((t) => ({ ...t.target, pinned: t.pinned }))
 }

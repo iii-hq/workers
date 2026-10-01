@@ -52,6 +52,7 @@ import {
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { ActivityBar, SIDE_VIEWS, type SideView } from './ActivityBar'
+import { BranchChangesView } from './BranchChangesView'
 import {
   type MissingPaths,
   missingAfterChanges,
@@ -109,11 +110,14 @@ import { SourceControlTab } from './SourceControlTab'
 import { registerWorktreesPage, type SwitchOutcome, type WorktreesPage } from './use-worktree-ops'
 import { WorktreeMenu } from './WorktreeSwitcher'
 import { DockPanel } from './DockPanel'
+import type { GitWindowRequest } from './branch-menu'
+import { GitCompareTab } from './GitCompareTab'
 import { type GitTab, GitToolWindow } from './GitToolWindow'
 import {
   activateTab,
   activeTab as activeTabOf,
   closeTab,
+  compareTarget,
   cycleTab,
   diffTarget,
   EMPTY_TABS,
@@ -256,6 +260,8 @@ export function ShellExplorerPage({
 
   // ── views and panes ──
   const [sideTab, setSideTab] = useState<SideView>('files')
+  // Show Diff with Working Tree: the full ref the Changes view compares.
+  const [branchChanges, setBranchChanges] = useState<string | null>(null)
   const [browsePath, setBrowsePath] = useState<string | null>(null)
   const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(null)
   const [goToLineSeq, setGoToLineSeq] = useState(0)
@@ -383,6 +389,7 @@ export function ShellExplorerPage({
   const activeFilePath = tabVisible && activeTab?.target.kind === 'file' ? activeTab.target.path : null
   const activeDiff = tabVisible && activeTab?.target.kind === 'diff' ? activeTab.target : null
   const activeRevision = tabVisible && activeTab?.target.kind === 'revision' ? activeTab.target : null
+  const activeCompare = tabVisible && activeTab?.target.kind === 'compare' ? activeTab.target : null
 
   // ── unsaved work ──
   useEffect(() => {
@@ -1768,6 +1775,22 @@ export function ShellExplorerPage({
     },
     [terminalDock, frameEl],
   )
+  // The branch menu's "Compare with" (an editor tab of the two logs) and
+  // "Show Diff with Working Tree" (the Changes view). Stable, so the
+  // memoized menu does not re-render with every render of the page.
+  const showInGit = useCallback(
+    (request: GitWindowRequest) => {
+      if (request.kind === 'diff') {
+        // The Changes view: the files that differ, in the sidebar.
+        setBranchChanges(request.ref)
+        setSideTab('changes')
+        setCollapsed(false)
+        return
+      }
+      showTab((state) => openPinned(state, compareTarget(request.ref, request.against)))
+    },
+    [showTab],
+  )
   const closeGit = useCallback(() => {
     // Focus inside the window would fall to the page body with it, where
     // the pane's keys stop working; its toggle keeps them.
@@ -1982,7 +2005,7 @@ export function ShellExplorerPage({
           enabled: () => tabsRef.current.active !== null,
           run: () => {
             const active = activeTabOf(tabsRef.current)
-            if (active) verbsRef.current.revealFolder(active.target.path)
+            if (active && active.target.kind !== 'compare') verbsRef.current.revealFolder(active.target.path)
           },
         },
         {
@@ -2031,7 +2054,7 @@ export function ShellExplorerPage({
           enabled: () => tabsRef.current.active !== null,
           run: () => {
             const active = activeTabOf(tabsRef.current)
-            if (active) verbsRef.current.compareFile(active.target.path)
+            if (active && active.target.kind !== 'compare') verbsRef.current.compareFile(active.target.path)
           },
         },
         {
@@ -2191,6 +2214,7 @@ export function ShellExplorerPage({
             page={worktreesPage}
             rereadKey={String(harnessTurn.active)}
             side="bottom"
+            onShowInGit={showInGit}
           />
         </span>
       ) : null}
@@ -2370,6 +2394,7 @@ export function ShellExplorerPage({
                 active={sideTab}
                 side={panelSide}
                 badges={activityBadges}
+                changes={branchChanges !== null}
                 onSelect={(view) => {
                   setSideTab(view)
                   setCollapsed(false)
@@ -2382,6 +2407,7 @@ export function ShellExplorerPage({
                 active={sideTab}
                 side={panelSide}
                 badges={activityBadges}
+                changes={branchChanges !== null}
                 onSelect={(view) => {
                   if (view === sideTab && !narrow) {
                     setCollapsed(true)
@@ -2421,6 +2447,20 @@ export function ShellExplorerPage({
                     onPreviewFile={openPreviewFile}
                     onPinFile={openPinnedFile}
                     onRevealFolder={revealFolder}
+                  />
+                ) : sideTab === 'changes' && branchChanges !== null && root !== null ? (
+                  <BranchChangesView
+                    key={branchChanges}
+                    host={host}
+                    root={root}
+                    refName={branchChanges}
+                    refreshKey={gitEpoch}
+                    activeView={activeDiff?.source.type === 'compare' ? activeDiff.path : null}
+                    onOpenDiff={openDiffTab}
+                    onClose={() => {
+                      setBranchChanges(null)
+                      setSideTab('scm')
+                    }}
                   />
                 ) : sideTab === 'scm' ? (
                   <SourceControlTab
@@ -2616,6 +2656,19 @@ export function ShellExplorerPage({
                 actions={diffActions}
                 compareRefs={activeDiff.source.type === 'compare' ? compareRefs : undefined}
                 busy={scm.busy || reverting !== null}
+              />
+            ) : activeCompare !== null && root !== null ? (
+              <GitCompareTab
+                key={activeTab?.id}
+                host={host}
+                root={root}
+                page={worktreesPage}
+                refName={activeCompare.ref}
+                against={activeCompare.against}
+                onOpenCommitFile={openCommitFile}
+                onOpenCompareFile={openCompareFile}
+                onOpenWorkingFile={openWorkingFile}
+                onOpenRevision={openRevision}
               />
             ) : activeRevision !== null && activeTab !== null ? (
               <RevisionPane

@@ -10,12 +10,13 @@
    The terminal, when docked in the editor area, is one more tab. */
 
 import { Tooltip } from '@iii-dev/console-ui'
-import { GitCompareArrows, SquareTerminal, X } from 'lucide-react'
+import { GitBranch, GitCompareArrows, SquareTerminal, X } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef } from 'react'
 import { anchorFromEvent, type ContextMenuItem, useContextMenu } from './ContextMenu'
 import { diffSourceLabel } from './diff-source'
 import { FileTypeIcon } from './file-type-icon'
 import type { GitFileStatus } from './git'
+import { shortRef as shortName } from './git-log-window'
 import { basename } from './paths'
 import type { OpenTab, TabsState } from './tabs'
 
@@ -88,14 +89,35 @@ function EditorTabsView({
       const path = tab.target.path
       // A commit's file outside the IDE's folder: a diff, nothing to open.
       const outside = path.startsWith('../')
+      const closing: ContextMenuItem[] = [
+        { id: 'close', label: 'Close', onSelect: () => onClose(tab.id) },
+        {
+          id: 'close-others',
+          label: 'Close others',
+          disabled: tabs.tabs.length < 2,
+          onSelect: () => onCloseOthers(tab.id),
+        },
+        { id: 'close-right', label: 'Close to the right', disabled: !hasRight, onSelect: () => onCloseRight(tab.id) },
+        { id: 'close-saved', label: 'Close saved', onSelect: onCloseSaved },
+        { id: 'close-all', label: 'Close all', onSelect: onCloseAll },
+      ]
+      // A comparison names no file: closing is all it takes.
+      if (tab.target.kind === 'compare') return closing
       return [
         { id: 'close', label: 'Close', onSelect: () => onClose(tab.id) },
-        { id: 'close-others', label: 'Close others', disabled: tabs.tabs.length < 2, onSelect: () => onCloseOthers(tab.id) },
+        {
+          id: 'close-others',
+          label: 'Close others',
+          disabled: tabs.tabs.length < 2,
+          onSelect: () => onCloseOthers(tab.id),
+        },
         { id: 'close-right', label: 'Close to the right', disabled: !hasRight, onSelect: () => onCloseRight(tab.id) },
         { id: 'close-saved', label: 'Close saved', onSelect: onCloseSaved },
         { id: 'close-all', label: 'Close all', onSelect: onCloseAll },
         { type: 'separator', id: 's1' },
-        ...(!tab.pinned ? [{ id: 'keep', label: 'Keep open', onSelect: () => onPin(tab.id) } satisfies ContextMenuItem] : []),
+        ...(!tab.pinned
+          ? [{ id: 'keep', label: 'Keep open', onSelect: () => onPin(tab.id) } satisfies ContextMenuItem]
+          : []),
         ...(tab.target.kind !== 'file' && !outside
           ? [{ id: 'open-file', label: 'Open the file', onSelect: () => onOpenFile(path) } satisfies ContextMenuItem]
           : []),
@@ -106,7 +128,19 @@ function EditorTabsView({
         { id: 'compare', label: 'Compare with', disabled: outside, onSelect: () => onCompare(path) },
       ]
     },
-    [tabs.tabs, onClose, onCloseOthers, onCloseRight, onCloseSaved, onCloseAll, onPin, onCopyPath, onReveal, onCompare, onOpenFile],
+    [
+      tabs.tabs,
+      onClose,
+      onCloseOthers,
+      onCloseRight,
+      onCloseSaved,
+      onCloseAll,
+      onPin,
+      onCopyPath,
+      onReveal,
+      onCompare,
+      onOpenFile,
+    ],
   )
 
   return (
@@ -128,7 +162,8 @@ function EditorTabsView({
         const missing = isFile && (missingPaths?.has(path) ?? false)
         // A commit's version never changes: the working copy's status is not its own.
         const status = tab.target.kind === 'revision' ? undefined : gitStatus.get(path)
-        const name = basename(path)
+        const compare = tab.target.kind === 'compare' ? tab.target : null
+        const name = compare ? `Compare: ${shortName(compare.ref)} and ${shortName(compare.against)}` : basename(path)
         const revision = tab.target.kind === 'revision' ? tab.target.sha.slice(0, 7) : null
         const label = revision === null ? name : `${name} @ ${revision}`
         const chip =
@@ -163,18 +198,22 @@ function EditorTabsView({
               role="tab"
               aria-selected={active}
               title={
-                missing
-                  ? `${path} (not found on disk)`
-                  : chip
-                    ? `${path} (${chip})`
-                    : revision !== null
-                      ? `${path} @ ${revision} (read-only)`
-                      : path
+                compare
+                  ? `${name}: the commits each has that the other lacks`
+                  : missing
+                    ? `${path} (not found on disk)`
+                    : chip
+                      ? `${path} (${chip})`
+                      : revision !== null
+                        ? `${path} @ ${revision} (read-only)`
+                        : path
               }
               onClick={() => onActivate(tab.id)}
               onDoubleClick={() => onPin(tab.id)}
             >
-              {tab.target.kind === 'diff' ? (
+              {tab.target.kind === 'compare' ? (
+                <GitBranch aria-hidden className="shui-etab-icon diff" />
+              ) : tab.target.kind === 'diff' ? (
                 <GitCompareArrows aria-hidden className="shui-etab-icon diff" />
               ) : (
                 <FileTypeIcon path={path} className="shui-etab-file-icon" />
@@ -201,7 +240,13 @@ function EditorTabsView({
       })}
       {terminal ? (
         <div className={`shui-etab terminal${terminal.active ? ' active' : ''}`}>
-          <button type="button" className="open" role="tab" aria-selected={terminal.active} onClick={terminal.onActivate}>
+          <button
+            type="button"
+            className="open"
+            role="tab"
+            aria-selected={terminal.active}
+            onClick={terminal.onActivate}
+          >
             <SquareTerminal aria-hidden className="shui-etab-icon" />
             <span className="label">{terminal.title}</span>
           </button>

@@ -2,11 +2,11 @@
    share: a row's status marks, the squash-merge form, and the removal
    confirmation that says what a forced removal would also delete. */
 
-import { Button, ConfirmDialog } from '@iii-dev/console-ui'
+import { Button, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogTitle } from '@iii-dev/console-ui'
 import { GitMerge } from 'lucide-react'
 import { useState } from 'react'
 import { basename } from './paths'
-import type { BranchDeletion, MergeOptions, Removal } from './use-worktree-ops'
+import type { BranchDeletion, CheckoutQuestion, ManyRemoval, MergeOptions, Removal } from './use-worktree-ops'
 import type { Worktree } from './worktrees'
 
 const MOD_KEY = typeof navigator !== 'undefined' && navigator.platform.includes('Mac') ? '⌘' : 'Ctrl+'
@@ -234,6 +234,111 @@ export function RemoveWorktreeDialog({
       details={removing ? [removing.wt.path] : undefined}
       confirmLabel="Remove"
       tone={removing?.reason ? 'danger' : 'default'}
+      onConfirm={onConfirm}
+      onCancel={onCancel}
+    />
+  )
+}
+
+/** How many of a checkout's blocked files the dialog lists. */
+const LISTED_FILES = 40
+
+/** A checkout that stopped to ask: Smart Checkout (the local changes
+    stashed across it and brought back) or Force Checkout (dropped); or, for
+    a remote branch whose local branch has commits of its own, drop them or
+    rebase them onto it. */
+export function CheckoutQuestionDialog({
+  question,
+  onAnswer,
+  onCancel,
+}: {
+  question: CheckoutQuestion | null
+  onAnswer: (answer: 'smart' | 'force' | 'drop' | 'rebase') => void
+  onCancel: () => void
+}) {
+  const files = question?.kind === 'overwrite' ? question.files : []
+  return (
+    <Dialog open={question !== null} onOpenChange={(open) => (open ? undefined : onCancel())}>
+      <DialogContent className="shui-rollback-dialog">
+        {question?.kind === 'diverged' ? (
+          <>
+            <DialogTitle>Checkout {question.remoteBranch}?</DialogTitle>
+            <DialogDescription>
+              {question.branch} has {question.ahead} {question.ahead === 1 ? 'commit' : 'commits'}{' '}
+              {question.remoteBranch} lacks. Drop them to reset {question.branch} to it, or rebase them onto it; either
+              way {question.branch} then tracks it.
+            </DialogDescription>
+            <div className="shui-rollback-actions">
+              <Button variant="ghost" size="sm" onClick={onCancel}>
+                Cancel
+              </Button>
+              <Button size="sm" className="shui-danger-button" onClick={() => onAnswer('drop')}>
+                Drop Local Commits
+              </Button>
+              <Button variant="primary" size="sm" onClick={() => onAnswer('rebase')}>
+                Rebase onto Remote
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <DialogTitle>Checkout {question?.target.name ?? ''}?</DialogTitle>
+            <DialogDescription>
+              It would overwrite your local changes to these files. Smart Checkout stashes them, checks out and brings
+              them back; Force Checkout discards them.
+            </DialogDescription>
+            <ul className="shui-rollback-tree shui-checkout-files">
+              {files.slice(0, LISTED_FILES).map((file) => (
+                <li key={file}>{file}</li>
+              ))}
+              {files.length > LISTED_FILES ? <li>and {files.length - LISTED_FILES} more</li> : null}
+            </ul>
+            <div className="shui-rollback-actions">
+              <Button variant="ghost" size="sm" onClick={onCancel}>
+                Cancel
+              </Button>
+              <Button size="sm" className="shui-danger-button" onClick={() => onAnswer('force')}>
+                Force Checkout
+              </Button>
+              <Button variant="primary" size="sm" onClick={() => onAnswer('smart')}>
+                Smart Checkout
+              </Button>
+            </div>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+export function RemoveManyDialog({
+  removing,
+  target,
+  onConfirm,
+  onCancel,
+}: {
+  removing: ManyRemoval | null
+  target: string | null
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  const worktrees = removing?.worktrees ?? []
+  const losing = worktrees.filter(({ reason }) => reason !== null).length
+  return (
+    <ConfirmDialog
+      open={removing !== null}
+      onOpenChange={(open) => {
+        if (!open) onCancel()
+      }}
+      title={`Remove ${worktrees.length} worktrees?`}
+      description={
+        losing === 0
+          ? `Each folder is deleted, and its branch too once ${target ?? 'the default branch'} has it.`
+          : `${losing} of them would lose work, as listed: removing them deletes that too. This cannot be undone.`
+      }
+      details={worktrees.map(({ wt, reason }) => (reason === null ? wt.path : `${wt.path}: ${reason}`))}
+      confirmLabel="Remove"
+      tone={losing === 0 ? 'default' : 'danger'}
       onConfirm={onConfirm}
       onCancel={onCancel}
     />

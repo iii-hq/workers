@@ -1,12 +1,13 @@
 /* The Commit panel's tree: groups, folders and files, each with a tick box
    that includes it in the next commit (a group or folder ticks everything
    under it and shows a dash when only part is ticked). The Rollback dialog
-   renders the same rows to pick what to undo. */
+   renders the same rows to pick what to undo; a comparison (Show Diff with
+   Working Tree) renders them without the tick boxes. */
 
 import { Checkbox, IconButton } from '@iii-dev/console-ui'
 import { Archive, ChevronDown, ChevronRight, Folder, FolderOpen, Undo2 } from 'lucide-react'
 import type { ReactNode } from 'react'
-import type { ChangeRow } from './commit-tree'
+import type { ChangeRow, TreeEntry } from './commit-tree'
 import { FileTypeIcon } from './file-type-icon'
 import type { GitComparisonEntry } from './git'
 import { statusLetter, statusTitle } from './git-actions'
@@ -14,27 +15,25 @@ import { basename } from './paths'
 
 type Tick = 'on' | 'off' | 'mixed'
 
-export function tickState(
-  entries: readonly GitComparisonEntry[],
-  isIncluded: (entry: GitComparisonEntry) => boolean,
-): Tick {
+export function tickState<T extends TreeEntry>(entries: readonly T[], isIncluded: (entry: T) => boolean): Tick {
   const ticked = entries.filter(isIncluded).length
   return ticked === 0 ? 'off' : ticked === entries.length ? 'on' : 'mixed'
 }
 
-interface ChangesTreeProps {
-  rows: readonly ChangeRow[]
-  isIncluded: (entry: GitComparisonEntry) => boolean
-  onInclude: (entries: readonly GitComparisonEntry[], included: boolean) => void
+interface ChangesTreeProps<T extends TreeEntry> {
+  rows: readonly ChangeRow<T>[]
+  /** With both, each row has a tick box. */
+  isIncluded?: (entry: T) => boolean
+  onInclude?: (entries: readonly T[], included: boolean) => void
   onToggleOpen: (key: string) => void
   /** The file whose diff is in front. */
   activePath?: string | null
   /** Click previews the file's diff; double click keeps the tab. */
-  onOpen?: (entry: GitComparisonEntry, pin: boolean) => void
+  onOpen?: (entry: T, pin: boolean) => void
   /** Hover action on tracked rows. */
-  onRollback?: (entries: readonly GitComparisonEntry[]) => void
+  onRollback?: (entries: readonly T[]) => void
   /** Hover action: stash these files. */
-  onStash?: (entries: readonly GitComparisonEntry[]) => void
+  onStash?: (entries: readonly T[]) => void
   busy?: boolean
 }
 
@@ -42,7 +41,7 @@ function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`
 }
 
-export function ChangesTree({
+export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
   rows,
   isIncluded,
   onInclude,
@@ -52,7 +51,8 @@ export function ChangesTree({
   onRollback,
   onStash,
   busy = false,
-}: ChangesTreeProps) {
+}: ChangesTreeProps<T>) {
+  const ticks = isIncluded !== undefined && onInclude !== undefined
   return (
     <div className="shui-ctree">
       {rows.map((row) => {
@@ -68,9 +68,9 @@ export function ChangesTree({
               style={indent}
               selected={activePath === entry.path}
               status={entry.status}
-              tick={isIncluded(entry) ? 'on' : 'off'}
+              tick={ticks ? (isIncluded(entry) ? 'on' : 'off') : null}
               tickLabel={`Include ${name}`}
-              onTick={(on) => onInclude([entry], on)}
+              onTick={(on) => onInclude?.([entry], on)}
               busy={busy}
               caret={<span className="shui-ctree-caret" aria-hidden />}
               main={
@@ -122,9 +122,9 @@ export function ChangesTree({
             key={row.key}
             kind={row.kind}
             style={indent}
-            tick={tickState(row.entries, isIncluded)}
+            tick={ticks ? tickState(row.entries, isIncluded) : null}
             tickLabel={`Include ${row.label}`}
-            onTick={(on) => onInclude(row.entries, on)}
+            onTick={(on) => onInclude?.(row.entries, on)}
             busy={busy}
             caret={
               <button
@@ -194,11 +194,12 @@ function Row({
   actions,
   letter,
 }: {
-  kind: ChangeRow['kind']
+  kind: ChangeRow<TreeEntry>['kind']
   style: React.CSSProperties
   selected?: boolean
   status?: GitComparisonEntry['status']
-  tick: Tick
+  /** null: no tick box. */
+  tick: Tick | null
   tickLabel: string
   onTick: (on: boolean) => void
   busy: boolean
@@ -216,14 +217,16 @@ function Row({
       style={style}
     >
       {caret}
-      <Checkbox
-        className="shui-ctree-tick"
-        checked={tick === 'on'}
-        indeterminate={tick === 'mixed'}
-        disabled={busy}
-        aria-label={tickLabel}
-        onChange={() => onTick(tick !== 'on')}
-      />
+      {tick === null ? null : (
+        <Checkbox
+          className="shui-ctree-tick"
+          checked={tick === 'on'}
+          indeterminate={tick === 'mixed'}
+          disabled={busy}
+          aria-label={tickLabel}
+          onChange={() => onTick(tick !== 'on')}
+        />
+      )}
       {main}
       {actions ? <span className="shui-ctree-actions">{actions}</span> : null}
       {letter}

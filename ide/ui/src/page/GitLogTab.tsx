@@ -404,14 +404,34 @@ export function GitLogTab({
     [basesFor, head, bases],
   )
 
-  // A local branch selected, with its groups open: "Show in Log", or one
-  // just made or renamed (picked before its refs are read).
-  const revealBranch = (name: string) => {
-    const slash = name.indexOf('/')
-    setExpanded('local', true)
-    if (slash > 0) setExpanded(`local/${name.slice(0, slash)}`, true)
-    selectTree(`ref:refs/heads/${name}`)
-  }
+  // A ref selected (HEAD, a branch, a tag), with its groups open: "Show in
+  // Log", one just made or renamed, or a comparison asked from the branch
+  // menu (picked before its refs are read).
+  const revealRef = useCallback(
+    (fullName: string) => {
+      if (fullName === 'HEAD') return selectTree('head')
+      const [, kind = '', ...rest] = fullName.split('/')
+      const name = rest.join('/')
+      const groupOf = (base: string, branch: string) => {
+        const slash = branch.indexOf('/')
+        if (slash > 0) setExpanded(`${base}/${branch.slice(0, slash)}`, true)
+      }
+      if (kind === 'heads') {
+        setExpanded('local', true)
+        groupOf('local', name)
+      } else if (kind === 'remotes') {
+        const remote = rest[0] ?? ''
+        setExpanded('remote', true)
+        setExpanded(`remote/${remote}`, true)
+        groupOf(`remote/${remote}`, rest.slice(1).join('/'))
+      } else if (kind === 'tags') {
+        setExpanded('tag', true)
+      }
+      selectTree(`ref:${fullName}`)
+    },
+    [selectTree, setExpanded],
+  )
+  const revealBranch = (name: string) => revealRef(`refs/heads/${name}`)
   useEffect(() => {
     if (focusBranch !== null) revealBranch(focusBranch.name)
   }, [focusBranch?.seq])

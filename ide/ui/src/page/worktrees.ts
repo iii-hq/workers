@@ -10,6 +10,7 @@
    instead of trusting the list the view loaded, which can be stale. */
 
 import type { Host } from '@iii-dev/console-ui'
+import { parseRecentBranches, readRecentReflog, readRemoteBranches, readTags } from './branch-actions'
 import { coderReadFiles, joinPath, workspaceValidate } from './coder'
 import { git, run } from './git-actions'
 import { basename } from './paths'
@@ -65,6 +66,8 @@ export interface Branch {
   /** Commits ahead of / behind the default branch. Absent when unknown. */
   ahead?: number
   behind?: number
+  /** The remote-tracking branch it follows (`origin/main`), when it has one. */
+  upstream?: string
 }
 
 /** The branches under one `prefix/`, or a lone branch (`prefix` null). */
@@ -108,6 +111,12 @@ export interface WorktreeList {
   defaultBranch: string | null
   /** The worktree holding the browsed folder. */
   current: Worktree | null
+  /** Remote-tracking branches (`origin/main`), the most recently committed first. */
+  remotes: string[]
+  /** Local branches checked out lately in the browsed folder, newest first. */
+  recent: string[]
+  /** Tags, the newest first. */
+  tags: string[]
 }
 
 /** `git worktree list --porcelain -z`: NUL-terminated attribute lines, with
@@ -178,12 +187,15 @@ export async function listWorktrees(host: Host, root: string): Promise<WorktreeL
   // Two independent chains: the worktrees, their dirty marks and what a
   // stopped rebase or bisect left in them, and the default branch and the
   // branches counted against it.
-  const [[worktrees, held], [defaultBranch, branches]] = await Promise.all([
+  const [[worktrees, held], [defaultBranch, branches], remotes, reflog, tags] = await Promise.all([
     readWorktrees(host, root).then(async (list) => {
       const [, , held] = await Promise.all([fillDirty(host, list), fillTips(host, root, list), readHeld(host, list)])
       return [list, held] as const
     }),
     findDefaultBranch(host, root).then(async (target) => [target, await readBranches(host, root, target)] as const),
+    readRemoteBranches(host, root),
+    readRecentReflog(host, root),
+    readTags(host, root),
   ])
   const byName = new Map(branches.map((branch) => [branch.name, branch]))
   // Only a local branch is held: a rebase of a detached HEAD names none.
@@ -196,7 +208,13 @@ export async function listWorktrees(host: Host, root: string): Promise<WorktreeL
     const branch = own === null ? undefined : byName.get(own)
     if (branch?.ahead !== undefined) [wt.ahead, wt.behind] = [branch.ahead, branch.behind]
   }
-  return { worktrees, branches, defaultBranch, current: worktreeAt(worktrees, root) }
+  const current = worktreeAt(worktrees, root)
+  const recent = parseRecentBranches(
+    reflog,
+    branches.map((branch) => branch.name),
+    current === null ? null : branchOf(current),
+  )
+  return { worktrees, branches, defaultBranch, current, remotes, recent, tags }
 }
 
 /** The first local branch among the one `origin/HEAD` names,
@@ -230,18 +248,25 @@ async function readBranches(host: Host, cwd: string, target: string | null): Pro
     git(host, cwd, [
       'for-each-ref',
       '--sort=-committerdate',
-      `--format=%(refname)${counts ? ` %(ahead-behind:refs/heads/${target})` : ''}`,
+      `--format=%(refname)%09%(upstream:short)${counts ? `%09%(ahead-behind:refs/heads/${target})` : ''}`,
       'refs/heads',
     ])
   let out = await read(target !== null)
   if (out.exit_code !== 0 && target !== null) out = await read(false)
   if (out.exit_code !== 0) return []
+  return parseBranches(out.stdout)
+}
+
+/** `for-each-ref` lines of `refname<TAB>upstream[<TAB>ahead behind]`. */
+export function parseBranches(stdout: string): Branch[] {
   const branches: Branch[] = []
-  // Branch names hold no spaces.
-  for (const line of out.stdout.split('\n')) {
-    const [ref, ahead, behind] = line.split(' ')
+  for (const line of stdout.split('\n')) {
+    const [ref, upstream, counts] = line.split('\t')
     if (!ref?.startsWith('refs/heads/')) continue
     const branch: Branch = { name: ref.slice('refs/heads/'.length) }
+    if (upstream) branch.upstream = upstream
+    // Branch names hold no spaces.
+    const [ahead, behind] = counts?.split(' ') ?? []
     if (ahead !== undefined && behind !== undefined) [branch.ahead, branch.behind] = [Number(ahead), Number(behind)]
     branches.push(branch)
   }

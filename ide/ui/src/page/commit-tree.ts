@@ -8,10 +8,14 @@ import { buildChangeTree, type ChangeDirectory } from './scm-view'
 
 export type ChangeGroupId = 'changes' | 'unversioned'
 
-export interface ChangeGroup {
+/** What a row needs of a change: the Commit panel's entries, or a
+    comparison's files (Show Diff with Working Tree). */
+export type TreeEntry = Pick<GitComparisonEntry, 'path' | 'status' | 'renameFrom'>
+
+export interface ChangeGroup<T extends TreeEntry = GitComparisonEntry> {
   id: ChangeGroupId
   label: string
-  entries: readonly GitComparisonEntry[]
+  entries: readonly T[]
 }
 
 interface RowBase {
@@ -20,10 +24,10 @@ interface RowBase {
   depth: number
 }
 
-export type ChangeRow =
-  | (RowBase & { kind: 'group'; label: string; open: boolean; entries: GitComparisonEntry[] })
-  | (RowBase & { kind: 'folder'; label: string; path: string; open: boolean; entries: GitComparisonEntry[] })
-  | (RowBase & { kind: 'file'; entry: GitComparisonEntry; dir: string })
+export type ChangeRow<T extends TreeEntry = GitComparisonEntry> =
+  | (RowBase & { kind: 'group'; label: string; open: boolean; entries: T[] })
+  | (RowBase & { kind: 'folder'; label: string; path: string; open: boolean; entries: T[] })
+  | (RowBase & { kind: 'file'; entry: T; dir: string })
 
 export interface ChangeRowOptions {
   /** Folders ("Group by: Directory"); off lists files with their folder beside them. */
@@ -61,8 +65,11 @@ function dirname(path: string): string {
   return slash === -1 ? '' : path.slice(0, slash)
 }
 
-export function changeRows(groups: readonly ChangeGroup[], options: ChangeRowOptions): ChangeRow[] {
-  const rows: ChangeRow[] = []
+export function changeRows<T extends TreeEntry>(
+  groups: readonly ChangeGroup<T>[],
+  options: ChangeRowOptions,
+): ChangeRow<T>[] {
+  const rows: ChangeRow<T>[] = []
   for (const group of groups) {
     if (group.entries.length === 0) continue
     const groupKey = rowKey(group.id)
@@ -90,7 +97,7 @@ export function changeRows(groups: readonly ChangeGroup[], options: ChangeRowOpt
       }
       continue
     }
-    const walk = (directory: ChangeDirectory<GitComparisonEntry>, depth: number) => {
+    const walk = (directory: ChangeDirectory<T>, depth: number) => {
       for (const child of directory.directories) {
         const folder = folded(child)
         const key = rowKey(group.id, `${folder.path}/`)
@@ -117,12 +124,12 @@ export function changeRows(groups: readonly ChangeGroup[], options: ChangeRowOpt
 }
 
 /** Every group and folder key the rows could show, for Expand all / Collapse all. */
-export function expandableKeys(groups: readonly ChangeGroup[]): string[] {
+export function expandableKeys<T extends TreeEntry>(groups: readonly ChangeGroup<T>[]): string[] {
   const keys: string[] = []
   for (const group of groups) {
     if (group.entries.length === 0) continue
     keys.push(rowKey(group.id))
-    const walk = (directory: ChangeDirectory<GitComparisonEntry>) => {
+    const walk = (directory: ChangeDirectory<T>) => {
       for (const child of directory.directories) {
         const folder = folded(child)
         keys.push(rowKey(group.id, `${folder.path}/`))

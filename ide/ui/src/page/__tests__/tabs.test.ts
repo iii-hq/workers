@@ -3,6 +3,7 @@ import {
   activateTab,
   basename,
   closeTab,
+  compareTarget,
   cycleTab,
   diffTarget,
   EMPTY_TABS,
@@ -40,7 +41,9 @@ describe('tab ids', () => {
     expect(tabIdFor(a)).toBe('file:a.ts')
     expect(tabIdFor(aStaged)).toBe('diff:staged:a.ts')
     expect(tabIdFor(diffTarget('x', { type: 'turn', turnId: 't1' }))).toBe('diff:turn=t1:x')
-    expect(tabIdFor(diffTarget('x', { type: 'compare', ref: 'refs/heads/main' }))).toBe('diff:compare=refs/heads/main:x')
+    expect(tabIdFor(diffTarget('x', { type: 'compare', ref: 'refs/heads/main' }))).toBe(
+      'diff:compare=refs/heads/main:x',
+    )
   })
 })
 
@@ -146,7 +149,13 @@ describe('restoreTabs / persistedTabs', () => {
   })
 
   it('reads the pre-diff shape as file tabs and a path as the active id', () => {
-    const s = restoreTabs([{ path: 'a.ts', pinned: true }, { path: 'b.ts', pinned: false }], 'b.ts')
+    const s = restoreTabs(
+      [
+        { path: 'a.ts', pinned: true },
+        { path: 'b.ts', pinned: false },
+      ],
+      'b.ts',
+    )
     expect(s.tabs.map((t) => t.id)).toEqual(['file:a.ts', 'file:b.ts'])
     expect(s.active).toBe('file:b.ts')
   })
@@ -166,5 +175,20 @@ describe('lastSegments / basename', () => {
   it('basename strips the dirname', () => {
     expect(basename('a/b/c.ts')).toBe('c.ts')
     expect(basename('c.ts')).toBe('c.ts')
+  })
+})
+
+describe('a comparison tab', () => {
+  const compare = compareTarget('refs/heads/feat/x', 'refs/heads/main')
+
+  it('is one tab per pair, named by neither as a file', () => {
+    expect(tabIdFor(compare)).toBe('compare:refs/heads/feat/x..refs/heads/main')
+    const state = openPinned(openPinned(EMPTY_TABS, a), compare)
+    expect(tabFilePaths(state, [tabIdFor(compare), tabIdFor(a)], 5)).toEqual(['a.ts'])
+  })
+
+  it('is not kept across reloads', () => {
+    const state = openPinned(openPinned(EMPTY_TABS, a), compare)
+    expect(persistedTabs(state).map((tab) => tab.kind)).toEqual(['file'])
   })
 })

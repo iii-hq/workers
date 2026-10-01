@@ -111,6 +111,8 @@ export function useGitLog(
       setLoading(true)
       try {
         const tips = parsed.upTo ? [parsed.upTo] : logTips(current, tipRef)
+        // Compare with: what the ref lacks, as `git log <tip> ^<ref>`.
+        if (parsed.notIn !== undefined) tips.push(`^${parsed.notIn}`)
         const [page, found] = await Promise.all([
           readLogPage(host, root, tips, parsed, skip, limit),
           skip === 0 && parsed.text ? findCommit(host, root, parsed.text.trim()) : Promise.resolve(null),

@@ -8,9 +8,9 @@
 import type { Host } from '@iii-dev/console-ui'
 import { coderReadFile, joinPath } from './coder'
 import { type DiffSource, diffSourceLabel } from './diff-source'
+import { imageMimeFromPath } from './file-kinds'
 import { gitHeadBaseline } from './git'
 import { EDITOR_FULL_READ_BUDGET } from './large-file'
-import { imageMimeFromPath } from './file-kinds'
 import { fetchSessionTurn, relativeToRoot, type SessionTurn, type TurnFileRecord, type TurnPreImage } from './turns'
 
 /** What a diff tab says above the diff, or instead of it: a headline in
@@ -73,7 +73,9 @@ async function gitSide(host: Host, root: string, spec: string): Promise<string |
   })
   if (out.exit_code !== 0) {
     const detail = out.stderr.trim()
-    if (/exists on disk, but not in|does not exist in|exists in the index, but not at|but not in the index/.test(detail)) {
+    if (
+      /exists on disk, but not in|does not exist in|exists in the index, but not at|but not in the index/.test(detail)
+    ) {
       return null
     }
     // An index spec (`:./path`) names no revision, and git skips its
@@ -119,7 +121,12 @@ export async function worktreeSide(
   }
 }
 
-function imageOrText(path: string, oldSide: string | null, newSide: string | null, extra: Partial<DiffContents> = {}): DiffContents {
+function imageOrText(
+  path: string,
+  oldSide: string | null,
+  newSide: string | null,
+  extra: Partial<DiffContents> = {},
+): DiffContents {
   if (imageMimeFromPath(path) !== null) {
     return { oldContents: '', newContents: '', binary: true, note: IMAGE_NOTE, ...extra }
   }
@@ -141,12 +148,7 @@ export function turnFileFor(turn: SessionTurn, root: string, rel: string): TurnF
   return turn.files.find((file) => relativeToRoot(file.path, root) === rel) ?? null
 }
 
-export async function loadTurnDiff(
-  host: Host,
-  root: string,
-  rel: string,
-  turn: SessionTurn,
-): Promise<DiffContents> {
+export async function loadTurnDiff(host: Host, root: string, rel: string, turn: SessionTurn): Promise<DiffContents> {
   const file = turnFileFor(turn, root, rel)
   if (file === null) {
     return {
@@ -197,7 +199,8 @@ export async function loadTurnDiff(
       oldSide = committed
       note = {
         headline: 'Compared against the last commit',
-        detail: 'The body before this turn was not kept, so edits made since the commit but before the turn show up here too.',
+        detail:
+          'The body before this turn was not kept, so edits made since the commit but before the turn show up here too.',
         tone: 'warn',
       }
     }
@@ -279,6 +282,18 @@ export async function loadDiffContents(
     case 'compare': {
       const spec = source.from ? `${source.ref}:${source.from}` : `${source.ref}:./${path}`
       const [ref, current] = await Promise.all([gitSide(host, root, spec), worktreeSide(host, root, path)])
+      // Swapped: the working copy is the old side, read-only like the revision.
+      if (source.reverse) {
+        return imageOrText(path, current.contents, ref, {
+          note:
+            ref === null
+              ? {
+                  headline: `Not in ${diffSourceLabel(source)}`,
+                  detail: 'The file does not exist at that revision, so the whole working copy reads as deleted.',
+                }
+              : undefined,
+        })
+      }
       return imageOrText(path, ref, current.contents, {
         worktreeRevision: current.revision,
         note:

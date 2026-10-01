@@ -3,7 +3,8 @@
    through aria-activedescendant: the log is windowed, so its rows cannot
    each take focus.
 
-   A click selects and a double click or Enter acts. The arrows, Home/End
+   A click selects and a double click or Enter acts; a list that takes
+   several rows picks them with `pickRows`. The arrows, Home/End
    and the page keys move. Delete (or Mod+Backspace) deletes. Shift+F10 or
    the menu key opens the row's menu. Typing a few letters jumps to a row
    holding them (speed search): the arrows then step through the matches,
@@ -11,6 +12,7 @@
 
 import { type KeyboardEvent, type MouseEvent, useCallback, useEffect, useRef, useState } from 'react'
 import type { ContextMenuAnchor } from './ContextMenu'
+import { quickOpenPlatform } from './quick-open'
 
 export interface RowNavOptions<T> {
   items: readonly T[]
@@ -25,7 +27,7 @@ export interface RowNavOptions<T> {
   onDelete?(item: T): void
   onMenu?(item: T, anchor: ContextMenuAnchor): void
   /** A click on a row, after it is selected. */
-  onClickRow?(item: T): void
+  onClickRow?(item: T, event: MouseEvent<HTMLElement>): void
   /** Keys a list adds (a tree's ← and →): true when it handled the key. */
   onKey?(event: KeyboardEvent<HTMLElement>, item: T, index: number): boolean
   /** Brings row `index` into view: a windowed list scrolls itself there. */
@@ -208,11 +210,11 @@ export function useRowNav<T>(options: RowNavOptions<T>): RowNav {
     }
   }
 
-  const click = (index: number) => {
+  const click = (index: number, event: MouseEvent<HTMLElement>) => {
     const item = items[index]
     if (item === undefined) return
     onSelect(idOf(item))
-    onClickRow?.(item)
+    onClickRow?.(item, event)
   }
   const doubleClick = (index: number) => {
     const item = items[index]
@@ -246,12 +248,12 @@ export function useRowNav<T>(options: RowNavOptions<T>): RowNav {
     rowProps: (index) => ({
       id: `${domId}-${index}`,
       'aria-selected': index === activeIndex,
-      onClick: () => click(index),
+      onClick: (event) => click(index, event),
       onDoubleClick: () => doubleClick(index),
       onContextMenu: (event) => contextMenu(index, event),
     }),
     rowEvents: {
-      onClick: (event) => click(rowOf(event)),
+      onClick: (event) => click(rowOf(event), event),
       onDoubleClick: (event) => doubleClick(rowOf(event)),
       onContextMenu: (event) => contextMenu(rowOf(event), event),
     },
@@ -268,4 +270,34 @@ export function speedMarks(label: string, query: string): Array<{ text: string; 
     { text: label.slice(at, at + query.length), hit: true },
     { text: label.slice(at + query.length), hit: false },
   ].filter((part) => part.text !== '')
+}
+
+/** How a click picks rows, as in the platform's file manager: ⌘ on a Mac,
+    Ctrl elsewhere, adds or drops a row; Shift takes a range. */
+export function pickKeys(event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }): {
+  toggle: boolean
+  range: boolean
+} {
+  return { toggle: quickOpenPlatform() === 'mac' ? event.metaKey : event.ctrlKey, range: event.shiftKey }
+}
+
+/** A click on row `at` of `order`: a plain one picks that row alone; the
+    toggle key adds or drops it; Shift takes the rows from the anchor
+    (`from`, -1 for none) to it, added to what was picked when the toggle key
+    is held too. */
+export function pickRows(
+  picked: ReadonlySet<string>,
+  order: readonly string[],
+  from: number,
+  at: number,
+  how: { toggle: boolean; range: boolean },
+): Set<string> {
+  if (how.range) {
+    const [first, last] = from === -1 ? [at, at] : [Math.min(from, at), Math.max(from, at)]
+    return new Set([...(how.toggle ? picked : []), ...order.slice(first, last + 1)])
+  }
+  if (!how.toggle) return new Set([order[at]])
+  const next = new Set(picked)
+  if (!next.delete(order[at])) next.add(order[at])
+  return next
 }

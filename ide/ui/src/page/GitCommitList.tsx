@@ -302,6 +302,7 @@ export const GitCommitList = memo(function GitCommitList({
   branchLabel,
   branches,
   onBranch,
+  branchFilter = true,
   seeds,
   headColor,
   narrow = false,
@@ -325,6 +326,8 @@ export const GitCommitList = memo(function GitCommitList({
   branches: ReadonlyArray<{ id: string; name: string }>
   /** Limit the log to a tree node's branch, or null for all of them. */
   onBranch(id: string | null): void
+  /** The Branch filter shows; a comparison's log has none. */
+  branchFilter?: boolean
   /** Where the IDE's HEAD history starts in this log: HEAD itself, or its
       merge bases with the branch shown. */
   seeds: readonly string[]
@@ -437,18 +440,20 @@ export const GitCommitList = memo(function GitCommitList({
       >
         <CaseSensitive aria-hidden />
       </Toggle>
-      <Menu label="Branch" value={branchLabel}>
-        <DropdownMenuItem onSelect={() => onBranch(null)}>
-          All branches
-          {branchLabel === null ? <Check aria-hidden className="shui-git-filter-check" /> : null}
-        </DropdownMenuItem>
-        {branches.map((branch) => (
-          <DropdownMenuItem key={branch.id} onSelect={() => onBranch(branch.id)}>
-            {branch.name}
-            {branchLabel === branch.name ? <Check aria-hidden className="shui-git-filter-check" /> : null}
+      {branchFilter ? (
+        <Menu label="Branch" value={branchLabel}>
+          <DropdownMenuItem onSelect={() => onBranch(null)}>
+            All branches
+            {branchLabel === null ? <Check aria-hidden className="shui-git-filter-check" /> : null}
           </DropdownMenuItem>
-        ))}
-      </Menu>
+          {branches.map((branch) => (
+            <DropdownMenuItem key={branch.id} onSelect={() => onBranch(branch.id)}>
+              {branch.name}
+              {branchLabel === branch.name ? <Check aria-hidden className="shui-git-filter-check" /> : null}
+            </DropdownMenuItem>
+          ))}
+        </Menu>
+      ) : null}
       <Menu label="User" value={filter.author ?? null}>
         <DropdownMenuItem onSelect={() => onFilter({ ...filter, author: undefined })}>Anyone</DropdownMenuItem>
         {authors.map((author) => (
@@ -605,7 +610,7 @@ export const GitCommitList = memo(function GitCommitList({
             : '0 commits'
           : log.error !== null
             ? `${commits.length.toLocaleString()} commits · the next page failed: ${log.error}`
-            : `${commits.length.toLocaleString()}${log.done ? '' : '+'} commits${log.done ? ' · start of history' : ''}${graph === null ? ' · the graph shows without text, user or date filters' : ''}`}
+            : `${commits.length.toLocaleString()}${log.done ? '' : '+'} commits${log.done ? ' · start of history' : ''}${graph === null && (filter.text || filter.author !== undefined || filter.since !== undefined) ? ' · the graph shows without text, user or date filters' : ''}`}
       </p>
       {nav.query !== '' ? <span className="shui-git-speed">{nav.query}</span> : null}
     </div>

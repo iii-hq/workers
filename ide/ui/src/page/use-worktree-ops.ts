@@ -9,10 +9,28 @@
 import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import {
+  CheckoutBlocked,
+  type CheckoutMode,
+  checkoutAndRebase,
+  checkoutBranch,
+  checkoutRemoteAndRebase,
+  checkoutRemoteBranch,
+  checkoutRevision,
+  deleteRemoteBranch,
+  deleteTag,
+  mergeIntoCurrent,
+  newBranchHere,
+  pullInto,
+  pushTag,
+  RemoteDiverged,
+  rebaseCurrent,
+} from './branch-actions'
 import { gitApplyCommitChanges, gitRestoreFrom } from './git-actions'
 import { basename } from './paths'
 import {
   branchMergeMessage,
+  branchOf,
   branchStanding,
   checkRemovable,
   createBranch,
@@ -28,6 +46,7 @@ import {
   type PushTarget,
   pruneWorktrees,
   pushBranch,
+  pushTarget,
   removeWorktree,
   renameBranch,
   switchPath,
@@ -161,6 +180,27 @@ export interface BranchDeletion {
   list: WorktreeList
 }
 
+/** Several worktrees removed at once, each with what forcing its removal
+    would also delete, as the user saw it. */
+export interface ManyRemoval {
+  worktrees: { wt: Worktree; reason: string | null }[]
+  list: WorktreeList
+}
+
+/** What a checkout in place is of. A remote branch whose local branch has
+    commits of its own carries what to do with them once asked. */
+export type CheckoutTarget =
+  | { kind: 'branch'; name: string }
+  | { kind: 'remote'; name: string; resolve?: 'drop' | 'rebase' }
+  | { kind: 'revision'; name: string }
+
+/** A checkout that stopped to ask: local changes it would overwrite (Smart
+    or Force Checkout), or a local branch with commits the remote branch
+    lacks (drop them, or rebase them onto it). */
+export type CheckoutQuestion =
+  | { kind: 'overwrite'; target: CheckoutTarget; files: string[] }
+  | { kind: 'diverged'; target: CheckoutTarget; branch: string; remoteBranch: string; ahead: number }
+
 export type CommitFilesHow = 'revert' | 'cherry-pick' | 'get'
 const HOW_LABEL: Readonly<Record<CommitFilesHow, string>> = {
   revert: 'revert',
@@ -214,6 +254,52 @@ export interface WorktreeOps {
   deletingBranch: BranchDeletion | null
   confirmDeleteBranch(): void
   cancelDeleteBranch(): void
+  /** Opens `removingMany`: several worktrees removed, one confirmation for all. */
+  askRemoveMany(worktrees: readonly Worktree[]): void
+  removingMany: ManyRemoval | null
+  confirmRemoveMany(): void
+  cancelRemoveMany(): void
+  /* In place, in the folder the view is for: each refuses while that folder
+     has unsaved buffers or an agent at work in it. */
+  /** `git switch <branch>`. */
+  checkout(branch: string): void
+  /** A remote branch's local branch, tracking it (made when missing), checked out. */
+  checkoutRemote(remoteBranch: string): void
+  /** A tag or a revision, checked out detached. */
+  checkoutRevision(revision: string, onDone?: () => void): void
+  /** A checkout that stopped to ask; `answerCheckout` runs it again as answered. */
+  checkoutQuestion: CheckoutQuestion | null
+  answerCheckout(answer: 'smart' | 'force' | 'drop' | 'rebase'): void
+  cancelCheckout(): void
+  /** A new branch from `start`, checked out. */
+  newBranchHere(name: string, start: string, onDone?: () => void): void
+  /** Checks `branch` out (a remote one through its local branch), then rebases it onto `onto`. */
+  checkoutAndRebase(branch: string, onto: string, remote?: boolean): void
+  /** The folder's branch rebased onto `onto`. */
+  rebaseCurrent(onto: string): void
+  /** `branch` merged into the folder's branch. */
+  mergeIntoCurrent(branch: string): void
+  /** A remote branch pulled into the folder's branch, by rebase or merge. */
+  pullInto(remoteBranch: string, rebase: boolean): void
+  /** Fetches every remote, then updates the folder's branch from its upstream. */
+  updateProject(): void
+  /** Opens `pushing`: where `branch` would push, and how many commits. */
+  askPush(branch: string): void
+  pushing: { branch: string; target: PushTarget } | null
+  confirmPush(): void
+  cancelPush(): void
+  /** Opens `deletingRemote`: a branch to delete from its remote. */
+  askDeleteRemote(remoteBranch: string): void
+  deletingRemote: string | null
+  confirmDeleteRemote(): void
+  cancelDeleteRemote(): void
+  /** `tag` pushed to `remote`. */
+  pushTag(tag: string, remote: string): void
+  /** Opens `deletingTag`. */
+  askDeleteTag(tag: string): void
+  deletingTag: string | null
+  confirmDeleteTag(): void
+  cancelDeleteTag(): void
 }
 
 /** A worktree the page can move to while `leaving` goes away. */
@@ -257,6 +343,11 @@ export function useWorktreeOps(
   const error = failed !== null && failed.root === root ? failed.message : null
   const [removing, setRemoving] = useState<Removal | null>(null)
   const [deletingBranch, setDeletingBranch] = useState<BranchDeletion | null>(null)
+  const [removingMany, setRemovingMany] = useState<ManyRemoval | null>(null)
+  const [checkoutQuestion, setCheckoutQuestion] = useState<CheckoutQuestion | null>(null)
+  const [deletingTag, setDeletingTag] = useState<string | null>(null)
+  const [pushing, setPushing] = useState<{ branch: string; target: PushTarget } | null>(null)
+  const [deletingRemote, setDeletingRemote] = useState<string | null>(null)
   // The latest removal asked for: an older check answering late must not
   // swap the worktree the open dialog names.
   const askRef = useRef(0)
@@ -319,6 +410,58 @@ export function useWorktreeOps(
         else tell(result, repo, self, { running: false, epoch: operation.epoch + 1 })
         for (const other of new Set([page, ...pages])) other.changed()
       })
+  }
+
+  /** An operation on the folder the view is for, in place: refused while
+      that folder's worktree has unsaved buffers or an agent at work in it,
+      since it rewrites the files under both. `own` is its branch, if any. */
+  const inPlace = (
+    label: string,
+    action: (cwd: string, current: WorktreeList, own: string | null) => Promise<string | undefined>,
+  ) =>
+    perform(label, async (current) => {
+      const cwd = page.root()
+      if (cwd === null) throw new Error('the view has no folder')
+      const here = worktreeAt(current.worktrees, cwd)
+      const refused = here === null ? null : mergeBlocker(here)
+      if (refused !== null) throw new Error(refused)
+      return action(cwd, current, here === null ? null : branchOf(here))
+    })
+  // A checkout that has to ask first leaves no note: its question shows.
+  const runCheckout = (target: CheckoutTarget, mode: CheckoutMode, onDone?: () => void) =>
+    inPlace('checkout', async (cwd, current) => {
+      try {
+        const note =
+          target.kind === 'branch'
+            ? await checkoutBranch(host, cwd, target.name, mode)
+            : target.kind === 'remote'
+              ? await checkoutRemoteBranch(
+                  host,
+                  cwd,
+                  target.name,
+                  current.branches.map((branch) => branch.name),
+                  mode,
+                  target.resolve,
+                )
+              : await checkoutRevision(host, cwd, target.name, mode)
+        onDone?.()
+        return note
+      } catch (err: unknown) {
+        if (err instanceof CheckoutBlocked) {
+          setCheckoutQuestion({ kind: 'overwrite', target, files: err.files })
+          return undefined
+        }
+        if (err instanceof RemoteDiverged) {
+          const { branch, remoteBranch, ahead } = err
+          setCheckoutQuestion({ kind: 'diverged', target, branch, remoteBranch, ahead })
+          return undefined
+        }
+        throw err
+      }
+    })
+  const needBranch = (own: string | null): string => {
+    if (own === null) throw new Error('the folder is on a detached HEAD; check a branch out first')
+    return own
   }
 
   /** The folder in `target` matching the page's own subfolder, if it has one. */
@@ -655,6 +798,158 @@ export function useWorktreeOps(
       askRef.current += 1
       setDeletingBranch(null)
     },
+    askRemoveMany: (worktrees) => {
+      if (list === null) return
+      const current = list
+      const ask = ++askRef.current
+      Promise.all(worktrees.map(async (wt) => ({ wt, reason: await lostWith(current, wt) }))).then(
+        (checked) => {
+          if (askRef.current === ask) setRemovingMany({ worktrees: checked, list: current })
+        },
+        (err: unknown) => {
+          if (askRef.current === ask) {
+            tell(`remove failed: ${errorMessage(err)}`, current.worktrees[0]?.path ?? null, self)
+          }
+        },
+      )
+    },
+    removingMany,
+    confirmRemoveMany: () => {
+      askRef.current += 1
+      const batch = removingMany
+      setRemovingMany(null)
+      if (batch === null) return
+      perform(
+        'remove',
+        async (current, origin) => {
+          // One at a time, each checked again as it comes up: one that
+          // can't go stays, with why, and the rest still go.
+          const done: string[] = []
+          let now = current
+          for (const { wt, reason } of batch.worktrees) {
+            const name = basename(wt.path)
+            try {
+              const why = removalBlocker(wt, origin)
+              const lost = why === null ? await lostWith(now, wt) : null
+              if (why !== null) done.push(`kept ${name}: ${why}`)
+              // Something appeared since the dialog asked: that one stays.
+              else if (lost !== null && lost !== reason) done.push(`kept ${name}: ${lost}`)
+              else done.push(await removeNow(now, wt, origin, lost))
+            } catch (err: unknown) {
+              done.push(`kept ${name}: ${errorMessage(err)}`)
+            }
+            now = await listWorktrees(host, now.worktrees[0].path)
+          }
+          // One line: the count, then only the ones that stayed, with why.
+          const removed = done.filter((line) => line.startsWith('removed ')).length
+          const kept = done.filter((line) => !line.startsWith('removed '))
+          return [`removed ${removed} ${removed === 1 ? 'worktree' : 'worktrees'}`, ...kept].join('; ')
+        },
+        batch.list,
+      )
+    },
+    cancelRemoveMany: () => {
+      askRef.current += 1
+      setRemovingMany(null)
+    },
+    checkout: (branch) => runCheckout({ kind: 'branch', name: branch }, 'plain'),
+    checkoutRemote: (remoteBranch) => runCheckout({ kind: 'remote', name: remoteBranch }, 'plain'),
+    checkoutRevision: (revision, onDone) => runCheckout({ kind: 'revision', name: revision }, 'plain', onDone),
+    checkoutQuestion,
+    answerCheckout: (answer) => {
+      const question = checkoutQuestion
+      setCheckoutQuestion(null)
+      if (question === null) return
+      const { target } = question
+      if (answer === 'smart' || answer === 'force') runCheckout(target, answer)
+      else if (target.kind === 'remote') runCheckout({ ...target, resolve: answer }, 'plain')
+    },
+    cancelCheckout: () => setCheckoutQuestion(null),
+    newBranchHere: (name, start, onDone) =>
+      inPlace('new branch', async (cwd) => {
+        const note = await newBranchHere(host, cwd, name, start)
+        onDone?.()
+        return note
+      }),
+    checkoutAndRebase: (branch, onto, remote = false) =>
+      inPlace('checkout and rebase', (cwd, current) =>
+        remote
+          ? checkoutRemoteAndRebase(
+              host,
+              cwd,
+              branch,
+              onto,
+              current.branches.map((entry) => entry.name),
+            )
+          : checkoutAndRebase(host, cwd, branch, onto),
+      ),
+    rebaseCurrent: (onto) => inPlace('rebase', (cwd, _current, own) => rebaseCurrent(host, cwd, needBranch(own), onto)),
+    mergeIntoCurrent: (branch) =>
+      inPlace('merge', (cwd, _current, own) => mergeIntoCurrent(host, cwd, needBranch(own), branch)),
+    pullInto: (remoteBranch, rebase) =>
+      inPlace('pull', (cwd, _current, own) => pullInto(host, cwd, needBranch(own), remoteBranch, rebase)),
+    updateProject: () =>
+      inPlace('update', async (_cwd, current, own) => {
+        await fetchAll(host, current)
+        const branch = needBranch(own)
+        if (!current.branches.find((entry) => entry.name === branch)?.upstream) {
+          return `fetched every remote; ${branch} tracks no remote branch`
+        }
+        return updateBranch(host, current, branch)
+      }),
+    askPush: (branch) => {
+      if (list === null) return
+      const current = list
+      const ask = ++askRef.current
+      pushTarget(host, current, branch).then(
+        (target) => {
+          if (askRef.current === ask) setPushing({ branch, target })
+        },
+        (err: unknown) => {
+          if (askRef.current === ask) {
+            tell(`push failed: ${errorMessage(err)}`, current.worktrees[0]?.path ?? null, self)
+          }
+        },
+      )
+    },
+    pushing,
+    confirmPush: () => {
+      askRef.current += 1
+      const push = pushing
+      setPushing(null)
+      if (push === null) return
+      perform('push', async (current) => {
+        await pushBranch(host, current, push.branch, push.target)
+        return `pushed ${push.branch} to ${push.target.name}`
+      })
+    },
+    cancelPush: () => {
+      askRef.current += 1
+      setPushing(null)
+    },
+    askDeleteRemote: (remoteBranch) => setDeletingRemote(remoteBranch),
+    deletingRemote,
+    confirmDeleteRemote: () => {
+      const remoteBranch = deletingRemote
+      setDeletingRemote(null)
+      if (remoteBranch === null) return
+      perform('delete', async (current) => {
+        const cwd = page.root() ?? current.worktrees[0]?.path ?? ''
+        return deleteRemoteBranch(host, cwd, remoteBranch)
+      })
+    },
+    cancelDeleteRemote: () => setDeletingRemote(null),
+    pushTag: (tag, remote) =>
+      perform('push', (current) => pushTag(host, page.root() ?? current.worktrees[0]?.path ?? '', remote, tag)),
+    askDeleteTag: (tag) => setDeletingTag(tag),
+    deletingTag,
+    confirmDeleteTag: () => {
+      const tag = deletingTag
+      setDeletingTag(null)
+      if (tag === null) return
+      perform('delete', (current) => deleteTag(host, page.root() ?? current.worktrees[0]?.path ?? '', tag))
+    },
+    cancelDeleteTag: () => setDeletingTag(null),
     askRemove: (wt) => {
       if (list === null) return
       const current = list

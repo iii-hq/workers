@@ -12,7 +12,7 @@ import { GitLogTab } from './GitLogTab'
 import { GitWorktreesTab } from './GitWorktreesTab'
 import type { CommitDetails, CommitFile } from './git-log-window'
 import { useWorktreeOps, type WorktreesPage } from './use-worktree-ops'
-import { DeleteBranchDialog, RemoveWorktreeDialog, WARNING } from './WorktreeForms'
+import { DeleteBranchDialog, RemoveManyDialog, RemoveWorktreeDialog, WARNING } from './WorktreeForms'
 
 export type GitTab = 'log' | 'worktrees'
 
@@ -146,6 +146,18 @@ function GitToolWindowView({
           }}
           onCancel={() => {
             ops.cancelRemove()
+            refocus()
+          }}
+        />
+        <RemoveManyDialog
+          removing={ops.removingMany}
+          target={target}
+          onConfirm={() => {
+            ops.confirmRemoveMany()
+            refocus()
+          }}
+          onCancel={() => {
+            ops.cancelRemoveMany()
             refocus()
           }}
         />

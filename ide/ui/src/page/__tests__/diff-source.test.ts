@@ -65,3 +65,19 @@ describe('diff-source', () => {
     expect(parseDiffSource({ type: 'uncommitted' })).toEqual({ type: 'uncommitted' })
   })
 })
+
+describe('a comparison swapped', () => {
+  const forward = { type: 'compare' as const, ref: 'refs/heads/main' }
+  const swapped = { type: 'compare' as const, ref: 'refs/heads/main', reverse: true as const }
+
+  it('is a tab of its own, with the working copy on the old side', () => {
+    expect(sameDiffSource(forward, swapped)).toBe(false)
+    expect(diffSourceSides(swapped)).toEqual({ old: 'working copy', new: 'main' })
+    expect(diffSourceSides(forward)).toEqual({ old: 'main', new: 'working copy' })
+  })
+
+  it('survives a reload', () => {
+    expect(parseDiffSource(JSON.parse(JSON.stringify(swapped)))).toEqual(swapped)
+    expect(diffSourceKey(forward)).toBe('compare=refs/heads/main')
+  })
+})

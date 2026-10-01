@@ -4,8 +4,11 @@
    marks, with the row's own actions on hover.
 
    A click selects a row, and a double click or Enter opens it: the IDE
-   and the chat move there. The rail on the left and the row's menu act on
-   the selection. The new-worktree and merge forms open above the list,
+   and the chat move there. ⌘-click (Ctrl-click off a Mac) and Shift-click
+   pick several, as in a file manager, for Remove to take them all; the
+   main worktree and the one the IDE is in stay. The rail on the left and
+   the row's menu act on the selection; removing is theirs alone, not the
+   row's. Prune drops every worktree whose folder is gone at once. The new-worktree and merge forms open above the list,
    never inside it: a listbox holds options only. */
 
 import { EmptyState, Skeleton } from '@iii-dev/console-ui'
@@ -14,6 +17,7 @@ import {
   ArrowUp,
   Check,
   Copy,
+  Eraser,
   FolderGit2,
   FolderInput,
   GitBranch,
@@ -23,12 +27,12 @@ import {
   RefreshCw,
   Trash2,
 } from 'lucide-react'
-import { useId, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { ActionRail, type GitAction, menuItems } from './ActionRail'
 import { glyphColor, glyphOf } from './CommitGraph'
 import { useContextMenu } from './ContextMenu'
 import { basename } from './paths'
-import { speedMarks, useRowNav } from './use-row-nav'
+import { pickKeys, pickRows, speedMarks, useRowNav } from './use-row-nav'
 import type { WorktreeOps } from './use-worktree-ops'
 import { type MergeDraft, MergeForm, mergeable, NewWorktreeForm, worktreeMarks } from './WorktreeForms'
 import { branchOf, type Worktree, worktreeAt } from './worktrees'
@@ -36,7 +40,7 @@ import { branchOf, type Worktree, worktreeAt } from './worktrees'
 const day = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' })
 const full = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 /** The actions a wide row shows on hover and when selected. */
-const ROW_ACTIONS = new Set(['open', 'merge', 'remove'])
+const ROW_ACTIONS = new Set(['open', 'merge'])
 
 function Marked({ text, query }: { text: string; query: string }) {
   return (
@@ -74,6 +78,12 @@ export function GitWorktreesTab({
   const [picked, setPicked] = useState<string | null>(null)
   // Nothing picked yet: the worktree the IDE is in.
   const selected = picked ?? here?.path ?? null
+  // The rows ⌘/Ctrl- or Shift-clicked, the active one among them; a plain
+  // click or a move with the keys leaves just the active one.
+  const [many, setMany] = useState<ReadonlySet<string>>(() => new Set())
+  const anchor = useRef<string | null>(null)
+  const pickedRows = items.filter((wt) => many.has(wt.path))
+  const several = pickedRows.length > 1
   const [creating, setCreating] = useState(false)
   const [merging, setMerging] = useState<MergeDraft | null>(null)
   const menu = useContextMenu()
@@ -91,7 +101,13 @@ export function GitWorktreesTab({
 
   const actionsFor = (wt: Worktree | null): GitAction[] => {
     const busyWhy = busy ? 'another worktree operation is running' : null
-    const none = wt === null ? 'select a worktree first' : null
+    // On one of several picked rows, every action but Remove waits for one.
+    const group = several && wt !== null && many.has(wt.path) ? pickedRows : null
+    const none = wt === null ? 'select a worktree first' : group !== null ? 'pick a single worktree' : null
+    // The main worktree and the one the IDE is in are never removed here.
+    const keeps = (candidate: Worktree) => candidate.main || candidate.bare || candidate.path === here?.path
+    const removables = (group ?? []).filter((candidate) => !keeps(candidate))
+    const prunable = items.filter((candidate) => candidate.prunable).length
     const branch = wt === null ? null : branchOf(wt)
     return [
       {
@@ -163,16 +179,45 @@ export function GitWorktreesTab({
           if (wt !== null) void navigator.clipboard?.writeText(wt.path)
         },
       },
+      group !== null
+        ? {
+            id: 'remove',
+            label: `Remove ${removables.length} worktrees`,
+            short: 'Remove',
+            icon: <Trash2 aria-hidden />,
+            shortcut: 'Delete',
+            danger: true,
+            blocked: removables.length === 0 ? 'the main worktree and the one the IDE is in stay' : busyWhy,
+            run: () => {
+              if (removables.length === 1) ops.askRemove(removables[0])
+              else ops.askRemoveMany(removables)
+            },
+          }
+        : {
+            id: 'remove',
+            label: wt?.prunable ? 'Prune' : 'Remove',
+            icon: <Trash2 aria-hidden />,
+            shortcut: 'Delete',
+            danger: true,
+            blocked:
+              none ??
+              (wt?.main || wt?.bare
+                ? 'the main worktree stays'
+                : wt?.path === here?.path
+                  ? 'the IDE is in it'
+                  : busyWhy),
+            run: () => {
+              if (wt !== null) ops.askRemove(wt)
+            },
+          },
       {
-        id: 'remove',
-        label: wt?.prunable ? 'Prune' : 'Remove',
-        icon: <Trash2 aria-hidden />,
-        shortcut: 'Delete',
-        danger: true,
-        blocked: none ?? (wt?.main || wt?.bare ? 'the main worktree stays' : busyWhy),
-        run: () => {
-          if (wt !== null) ops.askRemove(wt)
-        },
+        id: 'prune',
+        label: prunable === 0 ? 'Prune' : `Prune ${prunable} gone ${prunable === 1 ? 'worktree' : 'worktrees'}`,
+        short: 'Prune',
+        icon: <Eraser aria-hidden />,
+        in: 'rail',
+        blocked: prunable === 0 ? 'no worktree has lost its folder' : busyWhy,
+        run: ops.prune,
       },
       {
         id: 'refresh',
@@ -196,10 +241,26 @@ export function GitWorktreesTab({
     labelOf: (wt) => `${basename(wt.path)} ${branchOf(wt) ?? ''}`,
     domId,
     selected,
-    onSelect: setPicked,
+    onSelect: (id) => {
+      setPicked(id)
+      setMany(new Set())
+    },
+    // The click selected the row first; the picked rows come from before it.
+    onClickRow: (wt, event) => {
+      const how = pickKeys(event)
+      const order = items.map((candidate) => candidate.path)
+      const from = order.indexOf(anchor.current ?? selected ?? '')
+      const before = many.size > 0 ? many : new Set(selected === null ? [] : [selected])
+      setMany(pickRows(before, order, from, order.indexOf(wt.path), how))
+      if (!how.range || from === -1) anchor.current = wt.path
+    },
     onAct: (wt) => run(wt, 'open'),
     onDelete: (wt) => run(wt, 'remove'),
-    onMenu: (wt, anchor) => menu.open(anchor, menuItems(actionsFor(wt))),
+    onMenu: (wt, at) => {
+      // Selecting the row for its menu keeps the picked rows it is one of.
+      if (several && many.has(wt.path)) setMany(many)
+      menu.open(at, menuItems(actionsFor(wt)))
+    },
   })
   const current = items.find((wt) => wt.path === selected) ?? null
   const repo = basename(list?.worktrees[0]?.path ?? root)
@@ -258,6 +319,7 @@ export function GitWorktreesTab({
             </div>
             <div
               role="listbox"
+              aria-multiselectable="true"
               aria-label={`Worktrees of ${repo}`}
               className="shui-git-list"
               data-git-focus=""
@@ -300,6 +362,7 @@ export function GitWorktreesTab({
                     data-held={wt.held ? '' : undefined}
                     title={titles.join('\n')}
                     {...nav.rowProps(index)}
+                    aria-selected={several ? many.has(wt.path) : index === nav.activeIndex}
                   >
                     <span className="shui-git-wt-check">{isHere ? <Check aria-hidden /> : null}</span>
                     <FolderGit2

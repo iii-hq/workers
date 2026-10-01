@@ -15,8 +15,9 @@ export type DiffSource =
   | { type: 'turn'; turnId: string }
   /** A revision → working copy, chosen by the user. `from` is the file's
       path at `ref` when it had another name there, relative to the
-      repository's top level. */
-  | { type: 'compare'; ref: string; from?: string }
+      repository's top level. `reverse`: working copy → the revision
+      (Swap branches in a comparison). */
+  | { type: 'compare'; ref: string; from?: string; reverse?: true }
   /** An exact recorded change (`coder::change-diff`) from a chat card. */
   | { type: 'change'; changeId: string }
   /** One revision against another: a commit against its parent, a stash
@@ -40,7 +41,7 @@ export function diffSourceKey(source: DiffSource): string {
     case 'turn':
       return `turn=${source.turnId}`
     case 'compare':
-      return source.from ? `compare=${source.ref}:${source.from}` : `compare=${source.ref}`
+      return `compare=${source.ref}${source.from ? `:${source.from}` : ''}${source.reverse ? ':reverse' : ''}`
     case 'change':
       return `change=${source.changeId}`
     case 'commit':
@@ -89,7 +90,9 @@ export function diffSourceSides(source: DiffSource, turnLabel?: string): { old: 
     case 'turn':
       return { old: `before ${turnLabel ?? 'the turn'}`, new: `after ${turnLabel ?? 'the turn'}` }
     case 'compare':
-      return { old: diffSourceLabel(source), new: 'working copy' }
+      return source.reverse
+        ? { old: 'working copy', new: diffSourceLabel(source) }
+        : { old: diffSourceLabel(source), new: 'working copy' }
     case 'change':
       return { old: 'before the call', new: 'after the call' }
     case 'commit':
@@ -119,22 +122,26 @@ export function parseDiffSource(value: unknown): DiffSource | null {
     case 'unstaged':
       return { type: raw.type }
     case 'revision':
-      return typeof raw.from === 'string' && raw.from !== '' &&
-        typeof raw.to === 'string' && raw.to !== '' &&
-        typeof raw.label === 'string' && raw.label !== ''
+      return typeof raw.from === 'string' &&
+        raw.from !== '' &&
+        typeof raw.to === 'string' &&
+        raw.to !== '' &&
+        typeof raw.label === 'string' &&
+        raw.label !== ''
         ? { type: 'revision', from: raw.from, to: raw.to, label: raw.label }
         : null
     case 'turn':
       return typeof raw.turnId === 'string' && raw.turnId !== '' ? { type: 'turn', turnId: raw.turnId } : null
     case 'compare':
       if (typeof raw.ref !== 'string' || raw.ref === '') return null
-      return typeof raw.from === 'string' && raw.from !== ''
-        ? { type: 'compare', ref: raw.ref, from: raw.from }
-        : { type: 'compare', ref: raw.ref }
+      return {
+        type: 'compare',
+        ref: raw.ref,
+        ...(typeof raw.from === 'string' && raw.from !== '' ? { from: raw.from } : {}),
+        ...(raw.reverse === true ? { reverse: true as const } : {}),
+      }
     case 'change':
-      return typeof raw.changeId === 'string' && raw.changeId !== ''
-        ? { type: 'change', changeId: raw.changeId }
-        : null
+      return typeof raw.changeId === 'string' && raw.changeId !== '' ? { type: 'change', changeId: raw.changeId } : null
     case 'commit': {
       if (typeof raw.sha !== 'string' || !HEX.test(raw.sha)) return null
       if (raw.parent !== null && (typeof raw.parent !== 'string' || !HEX.test(raw.parent))) return null

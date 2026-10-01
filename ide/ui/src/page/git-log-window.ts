@@ -80,6 +80,9 @@ export interface LogFilter {
   /** Only the history this commit (a full hash) reaches: "History up to
       here". It stands in for the branch the log follows. */
   upTo?: string
+  /** Only the commits the branch shown has that this ref (a full name)
+      lacks: "Compare with". */
+  notIn?: string
 }
 
 export interface CommitFile extends NameStatusEntry {
@@ -315,7 +318,18 @@ export function logTips(snapshot: RefsSnapshot, fullName: string | null): string
 /** Only the branch and path filters keep each commit's parents in the
     result; the others leave rows whose lines would lead nowhere. */
 export function showsGraph(filter: LogFilter): boolean {
-  return !filter.text && !filter.author && filter.since === undefined && filter.until === undefined
+  return (
+    !filter.text &&
+    !filter.author &&
+    filter.since === undefined &&
+    filter.until === undefined &&
+    filter.notIn === undefined
+  )
+}
+
+/** `refs/heads/main` as the log names it: `main`. */
+export function shortRef(fullName: string): string {
+  return fullName.replace(/^refs\/(heads|remotes|tags)\//, '')
 }
 
 /** `git log` for one page, reading its tips from stdin. */
