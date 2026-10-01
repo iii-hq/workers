@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,6 +104,83 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 		_, err := smokeTrigger(engine, engineURL, "default", "engine::functions::info", map[string]any{"function_id": callbackID, "namespace": callbackNamespace})
 		return err == nil
 	})
+	// Execute the registration example discovered through the same engine
+	// function used by ADE. Only substitute the user's callback and metadata.
+	info, err := smokeTrigger(engine, engineURL, "default", "engine::triggers::info", map[string]any{"id": "whatsapp::cloud::events", "namespace": smokeNamespace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	description, _ := info["description"].(string)
+	_, example, found := strings.Cut(description, "```json\n")
+	if !found {
+		t.Fatal("Cloud trigger discovery has no JSON registration example")
+	}
+	example, _, found = strings.Cut(example, "\n```")
+	if !found {
+		t.Fatal("Cloud trigger discovery has an incomplete registration example")
+	}
+	var registration map[string]any
+	if err := json.Unmarshal([]byte(example), &registration); err != nil {
+		t.Fatal(err)
+	}
+	if registration["trigger_namespace"] != smokeNamespace {
+		t.Fatalf("Cloud guide did not resolve the provider namespace: %v", registration)
+	}
+	registration["function_id"] = callbackID
+	registration["metadata"].(map[string]any)["binding"] = "discovery"
+	registrationJSON, _ := json.Marshal(registration)
+	// Function-path subscriptions outlive the registering connection. The
+	// callback's namespace differs from the provider's in the discovered guide.
+	guideRegistrar := iii.New(engineURL, iii.WithName("go-smoke-cloud-guide"), iii.WithNamespace(callbackNamespace))
+	if err := guideRegistrar.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer guideRegistrar.Close()
+	// Connect can finish before the SDK announces worker metadata. The engine
+	// must know this connection's namespace before resolving the callback.
+	smokeWait(t, "Cloud guide registrar namespace", func() bool {
+		result, err := smokeTrigger(engine, engineURL, "default", "engine::workers::list", map[string]any{})
+		if err != nil {
+			return false
+		}
+		workers, _ := result["workers"].([]any)
+		for _, row := range workers {
+			worker, _ := row.(map[string]any)
+			if worker["name"] == "go-smoke-cloud-guide" && worker["namespace"] == callbackNamespace {
+				return true
+			}
+		}
+		return false
+	})
+	registered, err := guideRegistrar.Trigger(ctx, iii.TriggerRequest{FunctionID: "engine::register_trigger", Namespace: "default", Data: registrationJSON, Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var binding struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(registered, &binding); err != nil || binding.ID == "" {
+		t.Fatalf("guide registration did not return an id: %s (%v)", registered, err)
+	}
+	t.Cleanup(func() {
+		result, err := smokeTrigger(engine, engineURL, "default", "engine::unregister_trigger", map[string]any{"id": binding.ID})
+		if err != nil || result["removed"] != true {
+			t.Errorf("guide subscription cleanup: %v (%v)", result, err)
+		}
+	})
+	if err := guideRegistrar.Close(); err != nil {
+		t.Fatal(err)
+	}
+	smokeWait(t, "discovered Cloud subscription after registrar disconnect", func() bool {
+		detail, err := smokeTrigger(engine, engineURL, "default", "engine::registered-triggers::info", map[string]any{"id": binding.ID})
+		if err == nil && detail["status"] == "active" {
+			function, _ := detail["function"].(map[string]any)
+			if function["namespace"] != callbackNamespace {
+				t.Fatalf("discovered subscription has wrong callback detail: %v", function)
+			}
+		}
+		return err == nil && detail["status"] == "active"
+	})
 	filters := map[string]map[string]any{
 		"matching":        {"kinds": []string{"message.received"}, "chat_ids": []string{"+15550009999", chatID}, "sender_ids": []string{chatID}, "message_types": []string{"image", "text"}, "business_account_id": "123", "phone_number_id": "456"},
 		"default":         {"chat_ids": []string{chatID}},
@@ -134,7 +212,7 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 				active++
 			}
 		}
-		return active == len(filters)
+		return active == len(filters)+1
 	})
 	status, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::cloud::status", map[string]any{})
 	if err != nil {
@@ -187,7 +265,7 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 	// the queue. Callback completion may still arrive in a different order.
 	post(message(barrierID))
 	expected := map[string]bool{}
-	for _, binding := range []string{"matching", "default"} {
+	for _, binding := range []string{"matching", "default", "discovery"} {
 		for _, id := range []string{firstID, barrierID} {
 			expected[binding+"/"+id+"/"] = true
 		}

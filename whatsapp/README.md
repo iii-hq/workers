@@ -265,6 +265,17 @@ integration does not implement Meta's separate Groups API.
 
 ### Filtered Cloud webhook events
 
+Read the running worker's registration guide with `engine::triggers::info`:
+
+```json
+{"id":"whatsapp::cloud::events","namespace":"messaging"}
+```
+
+Replace `messaging` with the WhatsApp worker's namespace. The returned
+`description` explains registration, filters and payloads. Go SDK 0.24.3's
+public `RegisterTriggerType` API cannot publish trigger filter/payload schemas,
+so those schema fields are unavailable; runtime filter validation still applies.
+
 Trigger type `whatsapp::cloud::events` delivers one flat event per accepted
 incoming message or delivery-status object after its archive transaction commits:
 
@@ -318,6 +329,49 @@ with a letter. Account IDs are numeric strings of at most 32 digits.
 Use a leading `+` for contact phone numbers and preserve business-scoped IDs such as
 `BR.ENT.Abc123`. Native JIDs are not valid Cloud filters. A status event usually
 has no sender or message type, so leave those filters empty for receipt subscriptions.
+
+#### Register through an engine function
+
+Call `engine::register_trigger` from a connection in the callback function's
+namespace. For a callback `support::on-cloud-message` registered in `support`
+and a WhatsApp worker in `messaging`, use a connection in `support` and this input:
+
+```json
+{
+  "trigger_type": "whatsapp::cloud::events",
+  "function_id": "support::on-cloud-message",
+  "trigger_namespace": "messaging",
+  "config": {
+    "chat_ids": ["+15550000001"],
+    "message_types": ["text"]
+  },
+  "metadata": {"workflow": "customer-support"}
+}
+```
+
+`trigger_type` and `function_id` identify the trigger and callback. Supply the
+Cloud filter as `config`, using `{}` for the received-only default. `metadata`
+is optional and travels separately from the event payload. `trigger_namespace`
+selects the trigger **provider**; the callback resolves in the **calling
+connection's namespace**. When `trigger_namespace` is omitted, provider lookup
+tries that connection's namespace and then `default`.
+
+A newly connected Go SDK client must wait until `engine::workers::list` shows
+its name in the intended namespace before calling this function. `Connect`
+can return before worker metadata is announced; an early call can bind the
+callback in `default`.
+
+The function returns `{"id":"<generated-id>"}`. Save that ID and call
+`engine::registered-triggers::info` with `{"id":"<generated-id>"}` to check
+`status: "active"`, the expected `function_id`, and the returned function detail.
+A `pending` registration is waiting for its trigger provider. Registration alone
+does not establish that the callback function is available.
+
+This engine-owned binding survives the caller's disconnection. Remove it with
+`engine::unregister_trigger` and `{"id":"<generated-id>"}`. Removal is idempotent;
+the response's `removed` field reports whether a binding existed.
+
+#### Register through the Go SDK
 
 With connected Go SDK clients, register the binding from the WhatsApp worker's
 namespace and specify the callback's namespace explicitly. In this example,
