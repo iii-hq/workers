@@ -67,7 +67,11 @@ export function BranchPage({
   const trackedRow = useRef<HTMLElement | null>(null)
   const hover = useHoverIntent()
   const settled = form !== null || trackedSettled
-  useEffect(() => onSettle?.(settled), [onSettle, settled])
+  // Gone (a filter typed, Back), the page leaves the menu unsettled.
+  useEffect(() => {
+    onSettle?.(settled)
+    return () => onSettle?.(false)
+  }, [onSettle, settled])
 
   const openTracked = (row: HTMLElement, focus: boolean) => {
     const menu = row.closest<HTMLElement>('.shui-wt-flyout')

@@ -91,6 +91,9 @@ describe('branchActions', () => {
     ])
     expect(remote.find((action) => action.id === 'pull-rebase')?.label).toBe("Pull into 'feat/x' Using Rebase")
     expect(remote.find((action) => action.id === 'delete')?.disabled).toMatch(/default branch/)
+    // Only the remote's own default branch: a nested name ending the same way is not it.
+    const nested = branchActions({ name: 'origin/release/main', remote: true }, ctx({ current: 'feat/x' }))
+    expect(nested.find((action) => action.id === 'delete')?.disabled).toBeUndefined()
   })
 
   it('deletes the worktree a branch is checked out in, this folder its own included', () => {
@@ -256,6 +259,18 @@ describe('branch verbs', () => {
     await checkoutBranch(smart.host, '/r', 'feat/x', 'smart')
     const verbs = smart.calls.filter((args) => !args.includes('refs/stash')).map((args) => args.slice(0, 2).join(' '))
     expect(verbs).toEqual(['stash push', 'switch --quiet', 'stash pop'])
+  })
+
+  it('says where the changes wait when a failed smart checkout cannot bring them back', async () => {
+    let tip = 'old'
+    const stuck = hostAnswering((args) => {
+      if (args.includes('refs/stash')) return reply({ stdout: `${tip}\n` })
+      if (args[0] === 'stash' && args[1] === 'push') tip = 'new'
+      if (args[0] === 'switch') return reply({ exit_code: 128, stderr: 'fatal: invalid reference: feat/x' })
+      if (args[0] === 'stash' && args[1] === 'pop') return reply({ exit_code: 1, stderr: 'CONFLICT' })
+      return reply()
+    })
+    await expect(checkoutBranch(stuck.host, '/r', 'feat/x', 'smart')).rejects.toThrow(/newest stash/)
   })
 
   it('describes a push before it runs', () => {

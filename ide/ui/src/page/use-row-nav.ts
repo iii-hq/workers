@@ -292,12 +292,15 @@ export function pickRows(
   at: number,
   how: { toggle: boolean; range: boolean },
 ): Set<string> {
+  // A row gone between the render and the click picks nothing new.
+  const id = order[at]
+  if (id === undefined) return new Set(picked)
   if (how.range) {
     const [first, last] = from === -1 ? [at, at] : [Math.min(from, at), Math.max(from, at)]
     return new Set([...(how.toggle ? picked : []), ...order.slice(first, last + 1)])
   }
-  if (!how.toggle) return new Set([order[at]])
+  if (!how.toggle) return new Set([id])
   const next = new Set(picked)
-  if (!next.delete(order[at])) next.add(order[at])
+  if (!next.delete(id)) next.add(id)
   return next
 }

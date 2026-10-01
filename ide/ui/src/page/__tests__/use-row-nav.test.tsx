@@ -58,6 +58,10 @@ describe('pickRows', () => {
   const order = ['a', 'b', 'c', 'd']
   const none = new Set<string>()
 
+  it('picks nothing new for a row that is gone', () => {
+    expect([...pickRows(new Set(['a']), order, 0, -1, { toggle: true, range: false })]).toEqual(['a'])
+  })
+
   it('picks the row alone on a plain click', () => {
     expect([...pickRows(new Set(['a', 'c']), order, 0, 3, { toggle: false, range: false })]).toEqual(['d'])
   })

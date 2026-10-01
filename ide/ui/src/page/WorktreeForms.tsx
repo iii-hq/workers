@@ -330,7 +330,7 @@ export function RemoveManyDialog({
       onOpenChange={(open) => {
         if (!open) onCancel()
       }}
-      title={`Remove ${worktrees.length} worktrees?`}
+      title={`Remove ${worktrees.length} ${worktrees.length === 1 ? 'worktree' : 'worktrees'}?`}
       description={
         losing === 0
           ? `Each folder is deleted, and its branch too once ${target ?? 'the default branch'} has it.`

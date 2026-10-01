@@ -116,10 +116,14 @@ async function switchIn(host: Host, cwd: string, args: string[], mode: CheckoutM
   }
   const out = await git(host, cwd, ['switch', '--quiet', ...(mode === 'force' ? ['--force'] : []), ...args], LONG_MS)
   if (out.exit_code !== 0) {
-    // Nothing moved: the changes go back where they were.
-    if (stashed) await git(host, cwd, ['stash', 'pop', '--index'])
+    // Nothing moved: the changes go back where they were, or say where they wait.
+    let kept = ''
+    if (stashed) {
+      const back = await git(host, cwd, ['stash', 'pop', '--index'])
+      if (back.exit_code !== 0) kept = '; your changes stay in the newest stash: pop it in Source control'
+    }
     const files = mode === 'plain' ? overwrittenFiles(`${out.stderr}\n${out.stdout}`) : null
-    throw files === null ? new Error(reason(out, 'git switch')) : new CheckoutBlocked(files)
+    throw files === null ? new Error(`${reason(out, 'git switch')}${kept}`) : new CheckoutBlocked(files)
   }
   if (!stashed) return ''
   const back = await git(host, cwd, ['stash', 'pop'])

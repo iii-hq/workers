@@ -2454,7 +2454,8 @@ export function ShellExplorerPage({
                     host={host}
                     root={root}
                     refName={branchChanges}
-                    refreshKey={gitEpoch}
+                    // Every disk or index change, whichever view is open.
+                    refreshKey={diskEpoch}
                     activeView={activeDiff?.source.type === 'compare' ? activeDiff.path : null}
                     onOpenDiff={openDiffTab}
                     onClose={() => {

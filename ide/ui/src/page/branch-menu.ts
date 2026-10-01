@@ -116,7 +116,8 @@ export function branchActions(ref: BranchRef, ctx: BranchContext): BranchAction[
   if (ref.remote) {
     add('pull-rebase', `Pull into '${current ?? 'HEAD'}' Using Rebase`, 4, { disabled: detached })
     add('pull-merge', `Pull into '${current ?? 'HEAD'}' Using Merge`, 4, { disabled: detached })
-    const defaultUpstream = ctx.defaultBranch !== null && name.endsWith(`/${ctx.defaultBranch}`)
+    // The branch's own name on its remote: `origin/release/main` is not `main`.
+    const defaultUpstream = ctx.defaultBranch !== null && name.slice(name.indexOf('/') + 1) === ctx.defaultBranch
     add('delete', 'Delete', 5, {
       danger: true,
       disabled: defaultUpstream ? `${name} is the default branch on its remote` : undefined,

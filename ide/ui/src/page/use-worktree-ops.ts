@@ -802,14 +802,18 @@ export function useWorktreeOps(
       if (list === null) return
       const current = list
       const ask = ++askRef.current
-      Promise.all(worktrees.map(async (wt) => ({ wt, reason: await lostWith(current, wt) }))).then(
-        (checked) => {
-          if (askRef.current === ask) setRemovingMany({ worktrees: checked, list: current })
-        },
-        (err: unknown) => {
-          if (askRef.current === ask) {
-            tell(`remove failed: ${errorMessage(err)}`, current.worktrees[0]?.path ?? null, self)
-          }
+      // One that git refuses (locked, say) stays, with why; the rest are asked about.
+      void Promise.allSettled(worktrees.map(async (wt) => ({ wt, reason: await lostWith(current, wt) }))).then(
+        (results) => {
+          if (askRef.current !== ask) return
+          const checked = results.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []))
+          const refused = results.flatMap((result, index) =>
+            result.status === 'rejected'
+              ? [`kept ${basename(worktrees[index].path)}: ${errorMessage(result.reason)}`]
+              : [],
+          )
+          if (refused.length > 0) tell(refused.join('; '), current.worktrees[0]?.path ?? null, self)
+          if (checked.length > 0) setRemovingMany({ worktrees: checked, list: current })
         },
       )
     },
@@ -838,7 +842,13 @@ export function useWorktreeOps(
             } catch (err: unknown) {
               done.push(`kept ${name}: ${errorMessage(err)}`)
             }
-            now = await listWorktrees(host, now.worktrees[0].path)
+            try {
+              now = await listWorktrees(host, now.worktrees[0].path)
+            } catch (err: unknown) {
+              // What went already is reported; the rest wait for another try.
+              done.push(`stopped: could not read the worktrees again: ${errorMessage(err)}`)
+              break
+            }
           }
           // One line: the count, then only the ones that stayed, with why.
           const removed = done.filter((line) => line.startsWith('removed ')).length
