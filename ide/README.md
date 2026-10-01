@@ -212,6 +212,11 @@ out explicitly below:
 | `C218` | File exceeds `max_read_bytes`/`max_write_bytes`. | `S218` |
 | `C220` | Path resolves inside a configured root but outside the per-call `scope_root` the session is scoped to. | `S220` |
 | `C221` | Optimistic whole-file save conflict: the file no longer matches `expected_revision`; no bytes were written. | n/a |
+| `C230` | Worker templates unavailable: `code.templates.dir` holds no template manifest, or the templates repo cannot be cloned and no cached copy exists. | n/a |
+| `C231` | `coder::scaffold-worker` named a template that does not exist or has no `worker:` block. | n/a |
+| `C232` | Worker name breaks `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` (1–63 characters), or the scaffold `directory` does not end with the worker name. | n/a |
+| `C233` | Scaffold target directory exists and is not empty; nothing was written. | n/a |
+| `C234` | Invalid template: a bad `template.yaml` or `worker:` block, a `files:` entry that is absolute, contains `..`, is missing or leaves `worker.dir` through a symlink, a worker file that is not UTF-8 text (binary files are not supported), or no `containers.<worker.compose>` in its `worker-compose.yaml`. Nothing was written. | n/a |
 
 No separate install: `iii trigger compose::add worker=ide` brings the whole surface.
 
