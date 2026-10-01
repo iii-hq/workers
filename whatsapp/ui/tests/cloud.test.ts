@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cloudRecipient, cloudTextError, templateComponents, templateText } from '../src/cloud-model'
+import { cloudRecipient, cloudTextError, templateComponents, templateInputs, templateInputComponents, templateText, type CloudTemplate } from '../src/cloud-model'
 import { isOpaqueCloudField, withCloudField, withCloudValue } from '../src/model'
 
 describe('Cloud API addressing stays separate from native JIDs', () => {
@@ -34,6 +34,50 @@ describe('template parameters remain explicit', () => {
   it('bounds pasted parameter JSON and only previews template text', () => {
     expect(() => templateComponents(JSON.stringify([{ text: 'x'.repeat(65536) }]))).toThrow('64 KiB')
     expect(templateText({ id: '1', name: 'update', language: 'en_US', status: 'APPROVED', category: 'UTILITY', components: [{ type: 'BODY', text: 'Hello {{1}}' }, { type: 'BUTTONS', buttons: [{ text: 'Open' }] }] })).toBe('Hello {{1}}')
+  })
+})
+
+describe('guided template parameters', () => {
+  const template = (components: CloudTemplate['components'], parameter_format = 'POSITIONAL'): CloudTemplate => ({ id: '1', name: 'update', language: 'en_US', status: 'APPROVED', category: 'UTILITY', components, parameter_format })
+
+  it('serializes positional header and body fields in numerical order, deduplicating repeated placeholders', () => {
+    const selected = template([{ type: 'HEADER', format: 'TEXT', text: 'Order {{1}}' }, { type: 'BODY', text: '{{2}}: Hello {{1}}. Repeat {{1}}.' }])
+    expect(templateInputs(selected)).toEqual({ advancedRequired: false, fields: [
+      { key: 'header:1', component: 'header', parameter: '1', label: 'Header: 1' },
+      { key: 'body:1', component: 'body', parameter: '1', label: 'Body: 1' },
+      { key: 'body:2', component: 'body', parameter: '2', label: 'Body: 2' },
+    ] })
+    expect(templateInputComponents(selected, { 'header:1': '456', 'body:1': 'Ada', 'body:2': 'Today' })).toEqual([
+      { type: 'header', parameters: [{ type: 'text', text: '456' }] },
+      { type: 'body', parameters: [{ type: 'text', text: 'Ada' }, { type: 'text', text: 'Today' }] },
+    ])
+    expect(() => templateInputComponents(selected, { 'header:1': '456', 'body:1': 'Ada', 'body:2': ' ' })).toThrow('Body: 2')
+  })
+
+  it('sends names for named text header and body parameters', () => {
+    const selected = template([{ type: 'HEADER', format: 'TEXT', text: 'For {{customer}}' }, { type: 'BODY', text: 'Order {{order_id}} for {{customer}}' }], 'NAMED')
+    expect(templateInputComponents(selected, { 'header:customer': 'Ada', 'body:order_id': '123', 'body:customer': 'Ada' })).toEqual([
+      { type: 'header', parameters: [{ type: 'text', parameter_name: 'customer', text: 'Ada' }] },
+      { type: 'body', parameters: [{ type: 'text', parameter_name: 'order_id', text: '123' }, { type: 'text', parameter_name: 'customer', text: 'Ada' }] },
+    ])
+  })
+
+  it('does not invent send parameters for static text, footer or static buttons', () => {
+    const selected = template([{ type: 'BODY', text: 'Your request is ready.' }, { type: 'FOOTER', text: 'Support team' }, { type: 'BUTTONS', buttons: [{ type: 'URL', text: 'Open', url: 'https://example.com' }, { type: 'PHONE_NUMBER', text: 'Call', phone_number: '+15551234567' }, { type: 'QUICK_REPLY', text: 'Thanks' }] }])
+    expect(templateInputs(selected)).toEqual({ advancedRequired: false, fields: [] })
+    expect(templateInputComponents(selected, {})).toBeUndefined()
+  })
+
+  it.each([
+    [{ type: 'HEADER', format: 'IMAGE' }],
+    [{ type: 'BUTTONS', buttons: [{ type: 'URL', url: 'https://example.com/{{1}}', text: 'Open' }] }],
+    [{ type: 'BUTTONS', buttons: [{ type: 'COPY_CODE', text: 'Copy offer code' }] }],
+    [{ type: 'CAROUSEL', cards: [] }],
+    [{ type: 'BODY', text: 'Missing index {{2}}' }],
+  ])('requires explicit JSON for unsupported component structure %j', (component) => {
+    const selected = template([component])
+    expect(templateInputs(selected).advancedRequired).toBe(true)
+    expect(() => templateInputComponents(selected, {})).toThrow('Advanced JSON')
   })
 })
 

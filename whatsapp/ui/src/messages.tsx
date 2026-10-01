@@ -10,7 +10,7 @@ import { useInboxPages } from './use-inbox'
 const dateLabel = (timestamp: number) => new Date(timestamp).toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' })
 const timeLabel = (timestamp: number) => new Date(timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 
-function ChatIdentity({ chat, header = false }: { chat: ChatTarget; header?: boolean }) {
+export function ChatIdentity({ chat, header = false }: { chat: ChatTarget; header?: boolean }) {
   const name = chat.title.trim()
   const initials = name && name !== chat.chat_id && name !== identityLabel(chat.chat_id) && !/^\+?[\d\s()-]+$/.test(name)
     ? name.split(/\s+/).slice(0, 2).map((part) => Array.from(part)[0]).join('').toLocaleUpperCase('en-US')
@@ -81,7 +81,7 @@ export function MessageBrowser({ host, sessionId, connected, narrow, panelSide, 
   </PageBody>
 }
 
-function MessageRow({ message, group }: { message: MessageView; group: boolean }) {
+export function MessageRow({ message, group }: { message: MessageView; group: boolean }) {
   const status = messageStatus(message.status)
   return <article className="wa-ui-message-row" data-outgoing={message.from_me || undefined} aria-label={`${message.from_me ? 'You' : message.sender_name || identityLabel(message.sender_id)}, ${timeLabel(message.timestamp_ms)}`}>
     <div className="wa-ui-message-bubble">

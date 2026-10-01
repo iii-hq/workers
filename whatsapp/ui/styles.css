@@ -138,9 +138,13 @@
 [data-iii-ui="whatsapp"] .wa-ui-pair-code { font: 600 24px/1.5 var(--font-mono); overflow-wrap: anywhere; }
 [data-iii-ui="whatsapp"] .wa-ui-activity-list { max-height: 360px; overflow: auto; overscroll-behavior: contain; }
 [data-iii-ui="whatsapp"] .wa-ui-cloud { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
-[data-iii-ui="whatsapp"] .wa-ui-cloud-status { display: flex; flex-direction: column; gap: 12px; padding: 16px 24px; border-bottom: 1px solid var(--color-edge); flex-shrink: 0; max-height: 44%; overflow: auto; overscroll-behavior: contain; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-status { display: flex; flex-direction: column; padding: 8px 24px; border-bottom: 1px solid var(--color-edge); flex-shrink: 0; max-height: 45%; overflow: hidden; }
 [data-iii-ui="whatsapp"] .wa-ui-cloud-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
-[data-iii-ui="whatsapp"] .wa-ui-cloud-heading > .wa-ui-heading-copy { min-width: 180px; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-status > .wa-ui-cloud-heading { flex-shrink: 0; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-details-toggle { margin-inline-start: auto; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-details-toggle[aria-expanded="true"] > svg { transform: rotate(180deg); }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-details { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-details > .wa-ui-stack { padding-block: 16px; }
 [data-iii-ui="whatsapp"] .wa-ui-cloud-heading .wa-ui-note { margin-top: 4px; }
 [data-iii-ui="whatsapp"] .wa-ui-cloud-result .text-ink-faint { color: var(--color-ink-ghost); }
 [data-iii-ui="whatsapp"] .wa-ui-cloud-setup { min-width: 0; }
@@ -159,11 +163,24 @@
 [data-iii-ui="whatsapp"] .wa-ui-cloud-tunnel-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 [data-iii-ui="whatsapp"] .wa-ui-cloud-tunnel-actions:empty { display: none; }
 [data-iii-ui="whatsapp"] .wa-ui-cloud-archive-note { padding: 12px 16px; border-top: 1px solid var(--color-edge); flex-shrink: 0; }
-[data-iii-ui="whatsapp"] .wa-ui-cloud-reader-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
-[data-iii-ui="whatsapp"] .wa-ui-cloud-messages { max-height: 440px; min-height: 160px; overflow: auto; padding: 16px 24px; border-bottom: 1px solid var(--color-edge); overscroll-behavior: contain; }
-[data-iii-ui="whatsapp"] .wa-ui-cloud-history-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; max-width: 800px; margin: 0 auto 12px; }
-[data-iii-ui="whatsapp"] .wa-ui-cloud-composer { display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 848px; min-width: 0; padding: 24px; margin-inline: auto; }
-[data-iii-ui="whatsapp"] .wa-ui-cloud-composer .wa-ui-compose-editor { min-height: 96px; max-height: 200px; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-reader-body { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-history { display: flex; position: relative; flex: 1; min-height: 0; overflow: hidden; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-messages { flex: 1; min-width: 0; overflow: auto; overflow-anchor: none; padding: 12px 24px 24px; overscroll-behavior: contain; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-jump { position: absolute; bottom: 12px; inset-inline-end: 24px; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-composer { display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; width: 100%; min-width: 0; min-height: min(206px, 100%); max-height: 55%; padding: 12px 24px; border-top: 1px solid var(--color-edge); overflow: hidden; background: var(--color-panel); }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-reader-body[data-new] > .wa-ui-cloud-composer { flex: 1; max-height: none; min-height: 0; border-top: 0; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-composer > .wa-ui-composer-heading,
+[data-iii-ui="whatsapp"] .wa-ui-cloud-send { flex-shrink: 0; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-composer-fields { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 8px; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-textarea { display: block; width: 100%; min-height: 68px; max-height: 160px; padding: 10px 12px; resize: vertical; border: 1px solid var(--color-edge); border-radius: 6px; background: var(--color-panel-raised); color: var(--color-ink); font: inherit; font-size: 15px; line-height: 1.5; caret-color: var(--color-ink); }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-textarea::placeholder { color: var(--color-ink-ghost); }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-textarea:focus-visible { outline: 2px solid var(--color-rule-focus); outline-offset: -2px; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-textarea:disabled { opacity: 0.6; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-parameter-fields { display: grid; gap: 12px; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 13px; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud .wa-ui-note { font-size: 13px; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud .wa-ui-message-meta { font-size: 12px; }
+[data-iii-ui="whatsapp"] .wa-ui-cloud .wa-ui-message-date { font-size: 12px; margin-block: 12px 16px; }
 [data-iii-ui="whatsapp"] .wa-ui-cloud-template-actions,
 [data-iii-ui="whatsapp"] .wa-ui-cloud-send { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 [data-iii-ui="whatsapp"] .wa-ui-cloud-send > button { flex-shrink: 0; }
@@ -189,7 +206,13 @@
   [data-iii-ui="whatsapp"] .wa-ui-composer { padding: 12px; }
   [data-iii-ui="whatsapp"] .wa-ui-cloud-status,
   [data-iii-ui="whatsapp"] .wa-ui-cloud-messages,
-  [data-iii-ui="whatsapp"] .wa-ui-cloud-composer { padding: 16px; }
+  [data-iii-ui="whatsapp"] .wa-ui-cloud-composer { padding: 12px; }
+  [data-iii-ui="whatsapp"] .wa-ui-cloud-composer { min-height: min(232px, 100%); }
+  [data-iii-ui="whatsapp"] .wa-ui-cloud-status { padding-block: 4px; }
+  [data-iii-ui="whatsapp"] .wa-ui-cloud button { min-height: 44px; min-width: 44px; }
+  [data-iii-ui="whatsapp"] .wa-ui-cloud .wa-ui-cloud-textarea,
+  [data-iii-ui="whatsapp"] .wa-ui-cloud input { font-size: 16px; }
+  [data-iii-ui="whatsapp"] .wa-ui-cloud-jump { inset-inline-end: 12px; }
   [data-iii-ui="whatsapp"] .wa-ui-cloud-setup > summary { min-height: 44px; }
 }
 @container (max-width: 30rem) {
@@ -200,4 +223,10 @@
   [data-iii-ui="whatsapp"] .wa-ui-account-bar { gap: 12px; }
   [data-iii-ui="whatsapp"] .wa-ui-header-actions { gap: 4px; }
   [data-iii-ui="whatsapp"] .wa-ui-avatar-header { width: 32px; height: 32px; }
+  [data-iii-ui="whatsapp"] .wa-ui-cloud-status > .wa-ui-cloud-heading { gap: 8px; }
+  [data-iii-ui="whatsapp"] .wa-ui-cloud-details-toggle,
+  [data-iii-ui="whatsapp"] .wa-ui-cloud-help { padding-inline: 8px; }
+  [data-iii-ui="whatsapp"] .wa-ui-cloud-details-toggle > span,
+  [data-iii-ui="whatsapp"] .wa-ui-cloud-help > span,
+  [data-iii-ui="whatsapp"] .wa-ui-cloud-send-shortcut { display: none; }
 }

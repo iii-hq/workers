@@ -3,7 +3,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { act, type ComponentProps, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CloudPanel } from '../src/cloud'
 import type { CloudStatus } from '../src/cloud-model'
 import type { ChatView, MessagePage, MessageView } from '../src/inbox-model'
@@ -44,12 +44,12 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-async function render() {
+async function render(currentStatus = status) {
   vi.useFakeTimers()
   const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
   const pending: Array<Promise<MessagePage>> = []
   const trigger = vi.fn(async (id: string, input: { chat_id?: string; cursor?: string } = {}) => {
-    if (id === 'whatsapp::cloud::status') return status
+    if (id === 'whatsapp::cloud::status') return currentStatus
     if (id === 'whatsapp::cloud::tunnel::status') return { enabled: false, status: 'stopped', tunnel_id: 'webhooks', public_url: null, webhook_url: null, webhook_path: status.webhook_path, error: null }
     if (id === 'whatsapp::cloud::chats::list') return { chats, next_cursor: null, coverage }
     if (id === 'whatsapp::cloud::messages::list') return pending.shift() ?? (input.cursor
@@ -75,13 +75,38 @@ async function render() {
   }
 }
 
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+})
+
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   vi.useRealTimers()
 })
 
 describe('Cloud conversation context', () => {
+  it('collapses completed setup and reveals details without changing the tunnel', async () => {
+    const view = await render()
+    const toggle = view.container.querySelector('[aria-label="Connection details"]')!
+    const panel = view.container.querySelector<HTMLElement>(`[id="${toggle.getAttribute('aria-controls')}"]`)!
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(panel.hidden).toBe(true)
+    await view.click('Connection details')
+    expect(panel.hidden).toBe(false)
+    expect(panel.textContent).toContain('Development webhook')
+    await view.click('Connection details')
+    expect(panel.hidden).toBe(true)
+    expect(view.trigger.mock.calls.every(([id]) => !id.endsWith('::start') && !id.endsWith('::stop'))).toBe(true)
+  })
+
+  it('opens connection details when webhook configuration is incomplete', async () => {
+    const view = await render({ ...status, webhook_ready: false })
+    expect(view.container.querySelector('[aria-label="Connection details"]')?.getAttribute('aria-expanded')).toBe('true')
+    expect(view.container.textContent).toContain('Webhook setup needed')
+  })
+
   it('keeps exactly one history and composer when switching chats repeatedly', async () => {
     const view = await render()
     for (const index of [0, 1, 0, 1, 0]) {

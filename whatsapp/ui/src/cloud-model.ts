@@ -65,3 +65,57 @@ export function templateComponents(raw: string): JsonValue[] | undefined {
 export function templateText(template: CloudTemplate): string {
   return template.components.flatMap((part) => isObject(part) && typeof part.text === 'string' ? [part.text] : []).join('\n\n')
 }
+
+interface TemplateInput {
+  key: string
+  component: 'header' | 'body'
+  parameter: string
+  label: string
+}
+
+/** Only infer text parameters. Other component types remain an explicit JSON choice. */
+export function templateInputs(template: CloudTemplate): { fields: TemplateInput[]; advancedRequired: boolean } {
+  const fields: TemplateInput[] = []
+  const named = template.parameter_format?.toUpperCase() === 'NAMED'
+  let advancedRequired = template.category === 'AUTHENTICATION'
+    || !!template.parameter_format && !['NAMED', 'POSITIONAL'].includes(template.parameter_format.toUpperCase())
+  for (const part of template.components) {
+    if (!isObject(part)) { advancedRequired = true; continue }
+    if (part.type === 'FOOTER') continue
+    if (part.type === 'BUTTONS') {
+      if (!Array.isArray(part.buttons) || !part.buttons.every((button) => isObject(button) && (
+        button.type === 'QUICK_REPLY' || button.type === 'PHONE_NUMBER'
+        || button.type === 'URL' && typeof button.url === 'string' && !button.url.includes('{{')
+      ))) advancedRequired = true
+      continue
+    }
+    if ((part.type !== 'BODY' && part.type !== 'HEADER') || (part.type === 'HEADER' && part.format !== 'TEXT') || typeof part.text !== 'string') {
+      advancedRequired = true
+      continue
+    }
+    const placeholders = [...part.text.matchAll(/{{\s*([^{}]+?)\s*}}/g)].map((match) => match[1].trim())
+    const parameters = [...new Set(placeholders)]
+    if (!named) parameters.sort((a, b) => Number(a) - Number(b))
+    if (parameters.some((parameter, index) => named ? !/^[a-z][a-z0-9_]*$/.test(parameter) : parameter !== String(index + 1))
+      || (part.type === 'HEADER' && parameters.length > 1)) advancedRequired = true
+    const component = part.type === 'HEADER' ? 'header' : 'body'
+    for (const parameter of parameters) fields.push({ key: `${component}:${parameter}`, component, parameter, label: `${component === 'header' ? 'Header' : 'Body'}: ${parameter}` })
+  }
+  return { fields, advancedRequired }
+}
+
+export function templateInputComponents(template: CloudTemplate, values: Record<string, string>): JsonValue[] | undefined {
+  const { fields, advancedRequired } = templateInputs(template)
+  if (advancedRequired) throw new Error('This template needs Advanced JSON components before sending.')
+  const components: JsonValue[] = []
+  for (const component of ['header', 'body'] as const) {
+    const parameters = fields.filter((field) => field.component === component).map((field): JsonValue => {
+      const text = values[field.key] ?? ''
+      if (!text.trim()) throw new Error(`Enter ${field.label} before sending.`)
+      if (template.parameter_format?.toUpperCase() === 'NAMED') return { type: 'text', parameter_name: field.parameter, text }
+      return { type: 'text', text }
+    })
+    if (parameters.length) components.push({ type: component, parameters })
+  }
+  return components.length ? components : undefined
+}
