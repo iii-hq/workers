@@ -621,3 +621,73 @@ async fn owned_get_and_list_with_writers_keep_selected_versions_coherent() {
         result.unwrap();
     }
 }
+
+// A stale delete must not remove a file for a scope repopulated before the
+// delete intent reaches the dirty map. The two halves model the real gap
+// between releasing the store lock and recording the dirty operation.
+#[tokio::test]
+async fn stale_delete_intent_persists_scope_repopulated_before_dirty_mark() {
+    let dir = directory();
+    let store = manual_store(&dir);
+    store
+        .set("s".into(), "a".into(), serde_json::json!(1))
+        .await;
+    store.flush().await.unwrap();
+
+    let stale_delete = {
+        let mut guard = store.store.write().await;
+        let scope = guard.get_mut("s").unwrap();
+        assert!(scope.shift_remove("a").is_some());
+        assert!(scope.is_empty());
+        DirtyOp::Delete
+    };
+    store
+        .set("s".into(), "b".into(), serde_json::json!(2))
+        .await;
+    store.dirty.write().await.insert("s".into(), stale_delete);
+
+    store.flush().await.unwrap();
+    assert_eq!(store.list("s".into()).await, vec![serde_json::json!(2)]);
+    assert_eq!(read_legacy(&dir, "s")["b"], serde_json::json!(2));
+    assert_eq!(
+        load_store_from_dir(&dir)["s"]["b"],
+        Arc::new(serde_json::json!(2))
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+// A stale upsert is only a retry/work marker. The current store decides that
+// an empty or absent scope must remove an obsolete on-disk snapshot.
+#[tokio::test]
+async fn stale_upsert_intent_removes_files_for_empty_and_absent_scopes() {
+    let dir = directory();
+    let store = manual_store(&dir);
+    for scope in ["empty", "absent"] {
+        store
+            .set(scope.into(), "key".into(), serde_json::json!(scope))
+            .await;
+    }
+    store.flush().await.unwrap();
+
+    {
+        let mut guard = store.store.write().await;
+        let scope = guard.get_mut("empty").unwrap();
+        assert!(scope.shift_remove("key").is_some());
+        assert!(scope.is_empty());
+        guard.remove("absent");
+    }
+    {
+        let mut dirty = store.dirty.write().await;
+        dirty.insert("empty".into(), DirtyOp::Upsert);
+        dirty.insert("absent".into(), DirtyOp::Upsert);
+    }
+
+    store.flush().await.unwrap();
+    assert!(!dir.join(index_file_name("empty")).exists());
+    assert!(!dir.join(index_file_name("absent")).exists());
+    assert!(!load_store_from_dir(&dir).contains_key("empty"));
+    assert!(!load_store_from_dir(&dir).contains_key("absent"));
+    assert!(store.list("empty".into()).await.is_empty());
+    assert!(store.list("absent".into()).await.is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}

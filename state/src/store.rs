@@ -382,20 +382,21 @@ impl KvStore {
         let batch = dirty.blocking_write().drain().collect::<Vec<_>>();
         let mut failed = 0usize;
         for (index, op) in batch {
-            let result = match op {
-                DirtyOp::Upsert => {
-                    // Drop the read lock before serializing or touching disk.
-                    let snapshot = store.blocking_read().get(&index).cloned();
-                    match snapshot {
-                        Some(value) => persist_index_to_disk(dir, &index, &value),
-                        None => Ok(()),
-                    }
-                }
-                DirtyOp::Delete => delete_index_from_disk(dir, &index),
+            // DirtyOp records work that must be retried; it may be stale by the
+            // time the flush owns the writer. Derive the disk action from the
+            // current scope so a stale delete cannot remove a live scope, and a
+            // stale upsert cannot resurrect an empty or absent one.
+            let snapshot = store.blocking_read().get(&index).cloned();
+            // Drop the read lock before serializing or touching disk.
+            let result = match snapshot {
+                Some(value) if !value.is_empty() => persist_index_to_disk(dir, &index, &value),
+                _ => delete_index_from_disk(dir, &index),
             };
             if let Err(error) = result {
                 tracing::error!(error = ?error, index = %index, "failed to persist index");
                 failed += 1;
+                // Preserve any newer mutation intent queued after the batch
+                // was drained; otherwise retry this operation next time.
                 requeue(dirty, index, op);
             }
         }
