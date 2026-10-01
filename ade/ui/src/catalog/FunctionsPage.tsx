@@ -1,14 +1,13 @@
 /**
  * The Functions page (page `functions`): a navigation sidebar of every
  * function on the bus — each row led by the `ƒ` tile, grouped by the worker
- * that registered it — and a workspace that is always present: a hero when
- * nothing is selected, the function document (breadcrumb, identity head,
- * overview/invoke/triggers/activity tabs) when one is.
+ * that registered it — and a workspace that is always present: an overview
+ * of the bus when nothing is selected, the function document (toolbar,
+ * masthead, contract/run/bindings/calls tabs) when one is.
  *
- * The document opens on the overview, and the overview is the contract:
- * input schema, output schema, metadata. Selecting a function used to land
- * on the invoke editor, which showed a name, a description, and a JSON box —
- * nothing about the fields that box wanted.
+ * The document opens on the contract: input schema, output schema,
+ * metadata, and how to call it. The masthead carries every identity fact
+ * once (worker, runtime, bindings, last call), so no side rail repeats them.
  *
  * Live, never polled. `engine::functions-available` fires whenever functions
  * are registered or unregistered, so a worker connecting or dying is visible
@@ -18,8 +17,7 @@
  * `engine::functions::list` is the catalogue (one cheap row per function);
  * `engine::functions::info` is fetched per selection, because that is where
  * the schemas live and the fleet has hundreds of functions.
- * `engine::workers::list` rides along for each worker's runtime — the
- * document's "language" fact.
+ * `engine::workers::list` rides along for each worker's runtime.
  *
  * Internal functions are hidden by default: the console's own per-tab
  * handlers and every worker's UI plumbing register as internal, and they
@@ -28,27 +26,51 @@
 
 import {
   Badge,
+  Breadcrumb,
   Button,
   EmptyState,
   Eyebrow,
   type Host,
+  IconButton,
   JsonHighlight,
   type PageCommandsApi,
   PageHeader,
+  SearchField,
+  StatusDot,
+  Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
-  SearchField,
-  StatusDot,
+  Toolbar,
   uiClasses,
 } from '@iii-dev/console-ui'
-import { SquareFunction } from 'lucide-react'
 import {
+  Activity,
+  ArrowLeft,
+  Braces,
+  MessageSquare,
+  Play,
+  RefreshCw,
+  SquareFunction,
+  Zap,
+} from 'lucide-react'
+import {
+  Fragment,
   type MutableRefObject,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
+  useId,
   useRef,
   useState,
 } from 'react'
@@ -65,28 +87,21 @@ import {
   useLiveSignals,
   useResource,
 } from './engine'
-import { InvokePanel } from './InvokePanel'
+import { asCliCommand, InvokePanel } from './InvokePanel'
 import { LastCallMeta, useLiveActivity } from './live'
 import { SchemaTable } from './SchemaTable'
-import { pretty } from './schema'
+import { pretty, templateFromSchema } from './schema'
 import { cronExpression, familyOf, summarize } from './trigger-kinds'
 import {
   CatalogListSkeleton,
   CatalogRow,
   CatalogShell,
-  CatalogWorkspace,
-  Chip,
-  ContextItem,
-  ContextPanel,
   CopyButton,
-  Crumb,
+  CopyIconButton,
   ErrorNote,
-  Facts,
   FamilyGlyph,
   FnGlyph,
   GroupHeader,
-  Hero,
-  IdentityHead,
   LiveDot,
   Note,
   SideCount,
@@ -95,6 +110,8 @@ import {
 
 /** Worker groups always start expanded; there is no noisy bucket. */
 const alwaysOpen = () => true
+
+type DocTab = 'contract' | 'run' | 'bindings' | 'calls'
 
 export function FunctionsPage({
   host,
@@ -112,7 +129,8 @@ export function FunctionsPage({
   const [selected, setSelected] = useState<string | null>(null)
   const groupState = useGroupToggle(alwaysOpen)
   const searchInputRef = useRef<HTMLInputElement>(null)
-  // Set by the mounted InvokePanel (invoke tab only) so Mod+Enter can reach
+  const internalSwitchId = useId()
+  // Set by the mounted InvokePanel (Run tab only) so Mod+Enter can reach
   // its run() without lifting the whole invoke form up to this page.
   const invokeRunRef = useRef<(() => void) | null>(null)
 
@@ -158,6 +176,17 @@ export function FunctionsPage({
     )
     return (worker: string) => byName.get(worker) ?? undefined
   }, [catalog.data])
+
+  // Every worker with at least one listed function, for the overview table.
+  const workerCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const fn of functions ?? []) {
+      counts.set(fn.worker_name, (counts.get(fn.worker_name) ?? 0) + 1)
+    }
+    return [...counts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [functions])
 
   const groups = useMemo(() => {
     const needle = search.trim().toLowerCase()
@@ -241,6 +270,14 @@ export function FunctionsPage({
     [commands, catalog.reload],
   )
 
+  const workerTotal = groups.length
+  const countLine =
+    catalog.data === null
+      ? 'Loading functions…'
+      : search.trim()
+        ? `Showing ${shown} of ${total} functions`
+        : `${total} function${total === 1 ? '' : 's'} · ${workerTotal} worker${workerTotal === 1 ? '' : 's'}`
+
   return (
     <CatalogShell
       side={side}
@@ -251,7 +288,7 @@ export function FunctionsPage({
           title="Functions"
           description={
             <span className="console-catalog-header-desc">
-              Registered functions, grouped by worker
+              Every function on the bus, by worker
             </span>
           }
           onClose={onRequestClose}
@@ -259,56 +296,44 @@ export function FunctionsPage({
           actions={
             <>
               <LiveDot />
-              <Button
-                variant="pill"
-                size="sm"
+              <IconButton
                 type="button"
+                label={catalog.loading ? 'Refreshing…' : 'Refresh catalog'}
                 onClick={catalog.reload}
                 disabled={catalog.loading}
               >
-                {catalog.loading ? 'loading…' : 'refresh'}
-              </Button>
+                <RefreshCw />
+              </IconButton>
             </>
           }
         />
       }
       sideTop={
-        <div className="console-catalog-search-row">
+        <>
           <SearchField
             ref={searchInputRef}
             name="catalog-search"
             className="console-catalog-search"
             value={search}
             onChange={setSearch}
-            placeholder="search functions…"
-            aria-label="search functions"
+            placeholder="Search functions or workers"
+            aria-label="Search functions or workers"
           />
-          <Button
-            variant="pill"
-            size="sm"
-            type="button"
-            className="console-catalog-header-toggle"
-            onClick={() => setShowInternal((v) => !v)}
-            aria-pressed={showInternal}
-            title="include internal functions"
-          >
-            internal
-          </Button>
-        </div>
+          <div className="console-catalog-switch-row">
+            <label htmlFor={internalSwitchId}>Include internal</label>
+            <Switch
+              id={internalSwitchId}
+              checked={showInternal}
+              onChange={(event) => setShowInternal(event.target.checked)}
+            />
+          </div>
+        </>
       }
-      sideFooter={
-        <SideCount>
-          {catalog.data === null
-            ? 'loading functions…'
-            : search.trim()
-              ? `showing ${shown} of ${total} functions`
-              : `${total} total function${total === 1 ? '' : 's'}`}
-        </SideCount>
-      }
+      sideFooter={<SideCount>{countLine}</SideCount>}
       list={
         catalog.error ? (
           <ErrorNote
-            title="couldn't load functions"
+            title="Couldn't load functions"
             call="engine::functions::list"
             message={catalog.error}
             onRetry={catalog.reload}
@@ -318,16 +343,16 @@ export function FunctionsPage({
         ) : shown === 0 ? (
           <EmptyState
             title={
-              search.trim() ? 'nothing matches' : 'no functions registered'
+              search.trim() ? 'Nothing matches' : 'No functions registered'
             }
             description={
               search.trim()
-                ? 'no function id or worker name contains that text.'
-                : 'workers register their functions on connect — start one and it appears here live.'
+                ? 'No function id or worker name contains that text.'
+                : 'Workers register their functions on connect. Start one and it appears here live.'
             }
             action={
               search.trim()
-                ? { label: 'clear search', onClick: () => setSearch('') }
+                ? { label: 'Clear search', onClick: () => setSearch('') }
                 : undefined
             }
           />
@@ -379,34 +404,158 @@ export function FunctionsPage({
             runtimeOf={runtimeOf}
             lastCall={activity.lastCall.get(selected)}
             onBack={() => setSelected(null)}
+            onWorker={(worker) => {
+              setSelected(null)
+              setSearch(worker)
+            }}
             invokeRunRef={invokeRunRef}
           />
         ) : (
-          <Hero
-            glyph={<FnGlyph size="hero" />}
-            eyebrow="function catalog"
-            title="explore registered functions"
-            body="select a function from the sidebar to understand its contract, test it, and follow its recent calls. the catalog updates whenever workers connect or disconnect."
-            items={[
-              {
-                label: 'contract',
-                value: 'input and output schemas in a readable field table',
-              },
-              {
-                label: 'bindings',
-                value: 'the triggers that fire it, and who registered it',
-              },
-              {
-                label: 'test',
-                value:
-                  'trigger with json, copy a cli command, or replay a call',
-              },
-            ]}
+          <FunctionsOverview
+            feed={activity.feed}
+            workers={workerCounts}
+            runtimeOf={runtimeOf}
+            listed={functions}
+            onSelect={setSelected}
+            onWorker={setSearch}
           />
         )
       }
     />
   )
+}
+
+/**
+ * The workspace before a selection: what the bus is doing right now (the
+ * live call feed every row's pulse already reads from) and which workers
+ * serve the catalogue. Both are entry points into the sidebar.
+ */
+function FunctionsOverview({
+  feed,
+  workers,
+  runtimeOf,
+  listed,
+  onSelect,
+  onWorker,
+}: {
+  feed: readonly SpanEvent[]
+  workers: readonly { name: string; count: number }[]
+  runtimeOf: (worker: string) => string | undefined
+  listed: readonly FunctionSummary[] | null
+  onSelect: (functionId: string) => void
+  onWorker: (worker: string) => void
+}) {
+  const known = useMemo(
+    () => new Set((listed ?? []).map((fn) => fn.function_id)),
+    [listed],
+  )
+  const now = Date.now()
+  return (
+    <div className="console-catalog-doc console-fn-overview">
+      <header className="console-fn-overview-head">
+        <h2>Overview</h2>
+        <p>
+          Pick a function to read its contract, run it, or follow its calls.
+          What the bus is doing right now is below.
+        </p>
+      </header>
+      <div className="console-fn-overview-grid">
+        <section className="console-fn-section" aria-label="Recent calls">
+          <div className="console-fn-section-head">
+            <h3>Recent calls</h3>
+            <span className="meta">Live, across every worker</span>
+          </div>
+          {feed.length === 0 ? (
+            <Note>
+              No calls since this page opened. They appear here as the engine
+              records them.
+            </Note>
+          ) : (
+            <ul className="console-fn-feed">
+              {feed.map((span) => (
+                <li key={`${span.functionId}@${span.atMs}`}>
+                  <button
+                    type="button"
+                    className="console-fn-feed-row"
+                    disabled={!known.has(span.functionId)}
+                    onClick={() => onSelect(span.functionId)}
+                  >
+                    <StatusDot tone={span.ok ? 'ok' : 'alert'} />
+                    <span className="fn">{span.functionId}</span>
+                    <span className="worker">{span.worker}</span>
+                    <span className="duration">
+                      {span.durationMs > 0
+                        ? formatDuration(span.durationMs)
+                        : 'running'}
+                    </span>
+                    <span className="ago">{agoLabel(span.atMs, now)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <section className="console-fn-section" aria-label="Workers">
+          <div className="console-fn-section-head">
+            <h3>Workers</h3>
+            <span className="meta">{workers.length} with listed functions</span>
+          </div>
+          <TableViewport>
+            <TableFrame>
+              <Table density="compact" aria-label="Workers">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Worker</TableHead>
+                    <TableHead>Runtime</TableHead>
+                    <TableHead className="num">Functions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {workers.map((worker) => (
+                    <TableRow
+                      key={worker.name}
+                      interactive
+                      tabIndex={0}
+                      title={`Show only ${worker.name}'s functions`}
+                      onClick={() => onWorker(worker.name)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          onWorker(worker.name)
+                        }
+                      }}
+                    >
+                      <TableCell>{worker.name}</TableCell>
+                      <TableCell className="mono faint">
+                        {runtimeOf(worker.name) ?? '—'}
+                      </TableCell>
+                      <TableCell className="mono num">{worker.count}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableFrame>
+          </TableViewport>
+        </section>
+      </div>
+    </div>
+  )
+}
+
+/** `a::b::c` with a break opportunity after every `::`, never mid-word. */
+function breakable(id: string): ReactNode {
+  const parts = id.split('::')
+  return parts.map((part, i) => (
+    <Fragment key={`${i}-${part}`}>
+      {part}
+      {i < parts.length - 1 ? (
+        <>
+          ::
+          <wbr />
+        </>
+      ) : null}
+    </Fragment>
+  ))
 }
 
 function FunctionDocument({
@@ -415,6 +564,7 @@ function FunctionDocument({
   runtimeOf,
   lastCall,
   onBack,
+  onWorker,
   invokeRunRef,
 }: {
   host: Host
@@ -423,6 +573,8 @@ function FunctionDocument({
   runtimeOf: (worker: string) => string | undefined
   lastCall?: SpanEvent
   onBack: () => void
+  /** Leave the document for the list, filtered to one worker. */
+  onWorker: (worker: string) => void
   invokeRunRef: MutableRefObject<(() => void) | null>
 }) {
   const load = useCallback(
@@ -432,258 +584,256 @@ function FunctionDocument({
   const detail = useResource(load)
   // Selecting a function opens on its contract, not on the editor: the first
   // question an operator has is what the function takes and returns, and a
-  // JSON box answers neither. `run function` is one click away in the head.
-  const [tab, setTab] = useState('overview')
+  // JSON box answers neither. Run is one click away in the masthead.
+  const [tab, setTab] = useState<DocTab>('contract')
   const [prefill, setPrefill] = useState<{ value: unknown; nonce: number }>()
 
   useEffect(() => {
-    setTab('overview')
+    setTab('contract')
     setPrefill(undefined)
   }, [functionId])
 
-  // Replaying from the activity feed hands the recorded input to the invoke
+  // Replaying from the calls tab hands the recorded input to the Run
   // editor and moves the operator there — the whole point of the button.
   const replay = useCallback((value: unknown) => {
     setPrefill({ value, nonce: Date.now() })
-    setTab('invoke')
+    setTab('run')
   }, [])
 
-  const language = detail.data ? runtimeOf(detail.data.worker_name) : undefined
+  const data = detail.data
+  const worker = data?.worker_name
+  const language = worker ? runtimeOf(worker) : undefined
+  const bindings = data?.registered_triggers ?? []
+  const compose = host.chat?.compose
 
   return (
-    <CatalogWorkspace
-      context={
-        detail.data ? (
-          <FunctionContext
-            detail={detail.data}
+    <div className="console-catalog-doc console-fn-doc">
+      <Toolbar
+        aria-label="Function"
+        className="console-fn-toolbar"
+        end={
+          <>
+            <CopyIconButton value={functionId} label="Copy function id" />
+            {compose ? (
+              <IconButton
+                type="button"
+                label="Reference in chat"
+                onClick={() => compose({ text: `\`${functionId}\` ` })}
+              >
+                <MessageSquare />
+              </IconButton>
+            ) : null}
+          </>
+        }
+      >
+        <IconButton
+          type="button"
+          className="console-catalog-back"
+          label="Back to functions"
+          onClick={onBack}
+        >
+          <ArrowLeft />
+        </IconButton>
+        <Breadcrumb
+          items={[
+            { label: 'functions', onClick: onBack, key: 'root' },
+            ...(worker
+              ? [{ label: worker, onClick: () => onWorker(worker), key: 'w' }]
+              : []),
+            { label: functionId, key: 'fn' },
+          ]}
+        />
+      </Toolbar>
+
+      <header className="console-fn-head">
+        <div className="title-row">
+          <div className="title-copy">
+            <h2 className="title">{breakable(functionId)}</h2>
+            {data ? (
+              <p className="description">
+                {data.description || 'No description provided.'}
+              </p>
+            ) : null}
+          </div>
+          {data && tab !== 'run' ? (
+            <Button
+              type="button"
+              variant="primary"
+              size="md"
+              className="run"
+              onClick={() => setTab('run')}
+            >
+              <Play aria-hidden />
+              Run
+            </Button>
+          ) : null}
+        </div>
+        {data ? (
+          <FunctionFacts
+            detail={data}
             language={language}
             lastCall={lastCall}
-            onShowTriggers={() => setTab('triggers')}
-            onShowActivity={() => setTab('activity')}
           />
-        ) : undefined
-      }
-    >
-      <div className="console-catalog-doc">
-        <Crumb
-          trail={['functions', detail.data?.worker_name, functionId]}
-          onBack={onBack}
+        ) : null}
+      </header>
+
+      {detail.error ? (
+        <ErrorNote
+          title="Couldn't load function details"
+          call="engine::functions::info"
+          message={detail.error}
+          onRetry={detail.reload}
         />
-        <IdentityHead
-          glyph={<FnGlyph size="lg" />}
-          title={functionId}
-          status="executable function"
-          description={
-            detail.data
-              ? detail.data.description || 'no description provided.'
-              : undefined
-          }
-          chips={
-            detail.data ? (
-              <>
-                <Chip k="worker" v={detail.data.worker_name} />
-                {language ? <Chip k="language" v={language} /> : null}
-                {detail.data.registered_triggers.length > 0 ? (
-                  <Chip
-                    k="triggers"
-                    v={String(detail.data.registered_triggers.length)}
-                  />
-                ) : null}
-              </>
-            ) : null
-          }
-          actions={
-            <>
-              <CopyButton value={functionId} label="copy id" />
-              <Button
-                type="button"
-                variant="pill"
-                size="sm"
-                onClick={() => setTab('invoke')}
-              >
-                run function
-              </Button>
-            </>
-          }
-        />
-        {detail.error ? (
-          <ErrorNote
-            title="couldn't load function details"
-            call="engine::functions::info"
-            message={detail.error}
-            onRetry={detail.reload}
-          />
-        ) : detail.data === null ? (
-          <Note>Loading detail…</Note>
-        ) : (
-          <Tabs
-            value={tab}
-            onValueChange={setTab}
-            className="console-catalog-tabs"
-          >
-            <TabsList>
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="invoke">Trigger</TabsTrigger>
-              <TabsTrigger value="triggers">
-                Triggers
-                {detail.data.registered_triggers.length > 0 ? (
-                  <Badge>{detail.data.registered_triggers.length}</Badge>
-                ) : null}
-              </TabsTrigger>
-              <TabsTrigger value="activity">Activity</TabsTrigger>
-            </TabsList>
-            <TabsContent value="overview">
-              <FunctionOverview detail={detail.data} />
-            </TabsContent>
-            <TabsContent value="invoke">
-              <InvokePanel
-                host={host}
-                functionId={functionId}
-                requestSchema={detail.data.request_schema}
-                prefill={prefill}
-                label="run function"
-                runningLabel="running…"
-                runRef={invokeRunRef}
-              />
-            </TabsContent>
-            <TabsContent value="triggers">
-              <FunctionTriggers detail={detail.data} />
-            </TabsContent>
-            <TabsContent value="activity">
-              <ActivityFeed
-                host={host}
-                functionId={functionId}
-                onReplay={replay}
-              />
-            </TabsContent>
-          </Tabs>
-        )}
-      </div>
-    </CatalogWorkspace>
+      ) : data === null ? (
+        <Note>Loading detail…</Note>
+      ) : (
+        <Tabs
+          value={tab}
+          onValueChange={(value) => setTab(value as DocTab)}
+          className="console-catalog-tabs console-fn-tabs"
+        >
+          <TabsList>
+            <TabsTrigger value="contract" icon={<Braces />}>
+              Contract
+            </TabsTrigger>
+            <TabsTrigger value="run" icon={<Play />}>
+              Run
+            </TabsTrigger>
+            <TabsTrigger value="bindings" icon={<Zap />}>
+              Bindings
+              {bindings.length > 0 ? <Badge>{bindings.length}</Badge> : null}
+            </TabsTrigger>
+            <TabsTrigger value="calls" icon={<Activity />}>
+              Calls
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="contract">
+            <FunctionContract detail={data} onEdit={() => setTab('run')} />
+          </TabsContent>
+          <TabsContent value="run">
+            <InvokePanel
+              host={host}
+              functionId={functionId}
+              requestSchema={data.request_schema}
+              prefill={prefill}
+              label="Run"
+              runningLabel="Running…"
+              runRef={invokeRunRef}
+              layout="split"
+            />
+          </TabsContent>
+          <TabsContent value="bindings">
+            <FunctionTriggers detail={data} />
+          </TabsContent>
+          <TabsContent value="calls">
+            <ActivityFeed
+              host={host}
+              functionId={functionId}
+              onReplay={replay}
+            />
+          </TabsContent>
+        </Tabs>
+      )}
+    </div>
   )
 }
 
-function FunctionContext({
+/**
+ * Every identity fact once, in one line: who serves the function, in what
+ * runtime, what fires it, and when it last ran.
+ */
+function FunctionFacts({
   detail,
   language,
   lastCall,
-  onShowTriggers,
-  onShowActivity,
 }: {
   detail: FunctionDetail
   language?: string
   lastCall?: SpanEvent
-  onShowTriggers: () => void
-  onShowActivity: () => void
 }) {
   const now = new Date()
+  const bindings = detail.registered_triggers
+  const byType = new Map<string, number>()
+  for (const ref of bindings) {
+    byType.set(ref.trigger_type, (byType.get(ref.trigger_type) ?? 0) + 1)
+  }
+  const nextRun = bindings
+    .map((ref) =>
+      cronExpression({
+        id: ref.id,
+        trigger_type: ref.trigger_type,
+        function_id: detail.function_id,
+        worker_name: detail.worker_name,
+        config: ref.config,
+      }),
+    )
+    .map((expression) => (expression ? nextCronRun(expression, now) : null))
+    .filter((d): d is Date => d !== null)
+    .sort((a, b) => a.getTime() - b.getTime())[0]
+
   return (
-    <>
-      <ContextPanel
-        title="related triggers"
-        description={
-          detail.registered_triggers.length === 0
-            ? 'No bindings currently trigger this function.'
-            : `Triggered by ${detail.registered_triggers.length} binding${detail.registered_triggers.length === 1 ? '' : 's'}.`
-        }
-        action={
-          detail.registered_triggers.length > 0
-            ? { label: 'view all', onClick: onShowTriggers }
-            : undefined
-        }
-        wide
-      >
-        {detail.registered_triggers.length === 0 ? (
-          <span className="console-catalog-context-empty">
-            This function runs only when called directly.
-          </span>
-        ) : (
-          detail.registered_triggers.slice(0, 3).map((ref) => {
-            const binding: RegisteredTrigger = {
-              id: ref.id,
-              trigger_type: ref.trigger_type,
-              function_id: detail.function_id,
-              worker_name: detail.worker_name,
-              config: ref.config,
-            }
-            const spec = familyOf(ref.trigger_type)
-            const expression = cronExpression(binding)
-            const next = expression ? nextCronRun(expression, now) : null
-            return (
-              <ContextItem
-                key={ref.id}
-                glyph={<FamilyGlyph family={spec.family} tone={spec.tone} />}
-                title={summarize(binding)}
-                description={ref.trigger_type}
-                meta={next ? `next run ${untilLabel(next, now)}` : spec.label}
-                onClick={onShowTriggers}
-              />
-            )
-          })
-        )}
-      </ContextPanel>
-
-      <ContextPanel title="function details">
-        <Facts
-          items={[
-            { label: 'function id', value: <code>{detail.function_id}</code> },
-            { label: 'worker', value: detail.worker_name },
-            ...(language ? [{ label: 'language', value: language }] : []),
-            {
-              label: 'input schema',
-              value: detail.request_schema !== undefined ? 'defined' : 'none',
-            },
-            {
-              label: 'output schema',
-              value: detail.response_schema !== undefined ? 'defined' : 'none',
-            },
-          ]}
-        />
-      </ContextPanel>
-
-      <ContextPanel
-        title="recent activity"
-        action={
-          lastCall ? { label: 'open feed', onClick: onShowActivity } : undefined
-        }
-      >
-        {lastCall ? (
-          <button
-            type="button"
-            className="console-catalog-context-activity"
-            onClick={onShowActivity}
-          >
-            <StatusDot tone={lastCall.ok ? 'ok' : 'alert'} />
-            <span className="activity-copy">
-              <span>{agoLabel(lastCall.atMs, Date.now())}</span>
-              <span>{lastCall.ok ? 'successful call' : 'failed call'}</span>
+    <dl className="console-fn-facts">
+      <div>
+        <dt>Worker</dt>
+        <dd className="mono">{detail.worker_name}</dd>
+      </div>
+      {language ? (
+        <div>
+          <dt>Runtime</dt>
+          <dd className="mono">{language}</dd>
+        </div>
+      ) : null}
+      <div>
+        <dt>Bindings</dt>
+        <dd>
+          {bindings.length === 0
+            ? 'None, runs only when called'
+            : [...byType.entries()]
+                .map(([type, n]) => `${n} ${type}`)
+                .join(', ')}
+        </dd>
+      </div>
+      {nextRun ? (
+        <div>
+          <dt>Next run</dt>
+          <dd className="mono">{untilLabel(nextRun, now)}</dd>
+        </div>
+      ) : null}
+      <div>
+        <dt>Last call</dt>
+        <dd>
+          {lastCall ? (
+            <span className="last-call">
+              <StatusDot tone={lastCall.ok ? 'ok' : 'alert'} />
+              <span className="mono">
+                {agoLabel(lastCall.atMs, Date.now())} ·{' '}
+                {lastCall.durationMs > 0
+                  ? formatDuration(lastCall.durationMs)
+                  : 'running'}
+              </span>
             </span>
-            <span className="duration">
-              {lastCall.durationMs > 0
-                ? formatDuration(lastCall.durationMs)
-                : 'running'}
-            </span>
-          </button>
-        ) : (
-          <span className="console-catalog-context-empty">
-            No call observed since this page opened.
-          </span>
-        )}
-      </ContextPanel>
-    </>
+          ) : (
+            'None since this page opened'
+          )}
+        </dd>
+      </div>
+    </dl>
   )
 }
 
 /**
  * The function's contract, which is what the operator came to read: the input
  * fields a caller must supply, then the shape that comes back, then whatever
- * metadata the worker attached.
- *
- * Identity facts (id, worker, language) stay in the contextual rail so this
- * surface never repeats them. The rail's "input schema: defined" line is a
- * yes/no; this is the answer to what those fields actually are.
+ * metadata the worker attached — and, beside it on a wide pane, the call
+ * itself as a payload and as a terminal line.
  */
-function FunctionOverview({ detail }: { detail: FunctionDetail }) {
+function FunctionContract({
+  detail,
+  onEdit,
+}: {
+  detail: FunctionDetail
+  onEdit: () => void
+}) {
   const hasMetadata =
     detail.metadata !== undefined &&
     detail.metadata !== null &&
@@ -691,30 +841,69 @@ function FunctionOverview({ detail }: { detail: FunctionDetail }) {
       Array.isArray(detail.metadata) ||
       Object.keys(detail.metadata).length > 0)
 
+  const template = templateFromSchema(detail.request_schema)
+  const command = asCliCommand(detail.function_id, parseOr(template, {}))
+
   return (
-    <div className="console-catalog-overview">
-      <Eyebrow className="console-catalog-field-label">Input schema</Eyebrow>
-      <SchemaTable
-        schema={detail.request_schema}
-        empty="This function registered no input schema."
-      />
-      <Eyebrow className="console-catalog-field-label">Output schema</Eyebrow>
-      <SchemaTable
-        schema={detail.response_schema}
-        empty="This function registered no output schema."
-      />
-      {hasMetadata ? (
-        <>
-          <Eyebrow className="console-catalog-field-label">Metadata</Eyebrow>
+    <div className="console-fn-contract">
+      <div className="contract-main">
+        <SchemaTable
+          label="Input"
+          schema={detail.request_schema}
+          empty="This function registered no input schema."
+        />
+        <SchemaTable
+          label="Output"
+          schema={detail.response_schema}
+          empty="This function registered no output schema."
+        />
+        {hasMetadata ? (
+          <div className="console-catalog-schema">
+            <div className="console-catalog-schema-section">
+              <h3 className="label">Metadata</h3>
+            </div>
+            <JsonHighlight
+              code={pretty(detail.metadata)}
+              className="console-catalog-json"
+              wrap
+            />
+          </div>
+        ) : null}
+      </div>
+      <aside className="console-fn-callit" aria-label="Call this function">
+        <Eyebrow>Call it</Eyebrow>
+        <div className="snippet">
+          <span className="caption">
+            Payload, generated from the input schema
+          </span>
           <JsonHighlight
-            code={pretty(detail.metadata)}
+            code={template}
             className="console-catalog-json"
             wrap
           />
-        </>
-      ) : null}
+        </div>
+        <div className="snippet">
+          <span className="caption">Terminal</span>
+          <code className="cli">{command}</code>
+        </div>
+        <div className="actions">
+          <Button type="button" variant="ghost" size="sm" onClick={onEdit}>
+            <Play aria-hidden />
+            Edit in Run
+          </Button>
+          <CopyButton value={command} label="Copy command" />
+        </div>
+      </aside>
     </div>
   )
+}
+
+function parseOr(text: string, fallback: unknown): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return fallback
+  }
 }
 
 /**
@@ -726,8 +915,7 @@ function FunctionTriggers({ detail }: { detail: FunctionDetail }) {
   if (detail.registered_triggers.length === 0) {
     return (
       <Note>
-        nothing is bound to this function — it runs only when something calls
-        it.
+        Nothing is bound to this function. It runs only when something calls it.
       </Note>
     )
   }
@@ -766,7 +954,7 @@ function FunctionTriggers({ detail }: { detail: FunctionDetail }) {
                 {ref.trigger_type} · {ref.id}
               </span>
               {next ? (
-                <span className="fine">next run {untilLabel(next, now)}</span>
+                <span className="fine">Next run {untilLabel(next, now)}</span>
               ) : null}
               {config !== '{}' ? (
                 <JsonHighlight
@@ -776,6 +964,7 @@ function FunctionTriggers({ detail }: { detail: FunctionDetail }) {
                 />
               ) : null}
             </div>
+            <CopyIconButton value={ref.id} label="Copy binding id" />
           </div>
         )
       })}

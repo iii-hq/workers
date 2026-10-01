@@ -8,6 +8,7 @@
 //! so a crash resumes mid-turn.
 
 pub mod agents;
+pub mod ask;
 pub mod bindings;
 pub mod budget;
 pub mod clients;

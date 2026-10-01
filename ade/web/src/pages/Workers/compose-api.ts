@@ -124,12 +124,21 @@ export type Manifest = {
   /** `bin`: the binary a Rust worker builds. */
   bin: string | null
 }
+export type Checkout = {
+  path: string
+  branch: string | null
+  /** Unix seconds of the checkout's HEAD commit. */
+  committed_at?: number | null
+  /** Tracked files differ from HEAD. */
+  dirty?: boolean | null
+}
+
 export type Inspection = {
   path: string
   exists: boolean
   manifest: Manifest | null
   run_found: boolean | null
-  checkouts: { path: string; branch: string | null }[]
+  checkouts: Checkout[]
   workers: Manifest[]
 }
 
@@ -204,6 +213,22 @@ export function composeApi(iii: ExtensionIii, file: () => string | undefined) {
       call<Accepted>('compose::add', withFile({ workers }), 60_000),
     update: (workers: string[]) =>
       call<Accepted>('compose::update', withFile({ workers }), 60_000),
+    /**
+     * New versions for declared packages, through `compose::add`: it rewrites
+     * only `version` and restarts only the containers whose package changed,
+     * where `compose::update` restarts the whole project.
+     */
+    setVersions: (changes: { ref: string; version: string }[]) =>
+      call<Accepted>(
+        'compose::add',
+        withFile({
+          workers: changes.map((change) => ({
+            worker: `package://${change.ref}`,
+            version: change.version,
+          })),
+        }),
+        60_000,
+      ),
     remove: (workers: string[]) =>
       call<Accepted>('compose::remove', withFile({ workers }), 60_000),
     operation: (operation_id: string) =>

@@ -25,7 +25,13 @@ import type {
   RegistryWorker,
 } from './compose-api'
 import type { Actions } from './index'
-import { basename, defaultRun, shortPath, usualParent } from './model'
+import {
+  alsoStarts,
+  basename,
+  defaultRun,
+  shortPath,
+  usualParent,
+} from './model'
 
 type Mode = 'registry' | 'path'
 
@@ -113,6 +119,13 @@ export function AddWorkerDialog({
               engine={engine}
               start={localRoot}
               onPlan={setPlan}
+            />
+          ) : null}
+          {plan && actions.idle.length ? (
+            <StatusPanel
+              variant="info"
+              headline="Stopped workers start too"
+              detail={`${alsoStarts(actions.idle)[0]}: Compose brings every declared container up after an add.`}
             />
           ) : null}
         </div>

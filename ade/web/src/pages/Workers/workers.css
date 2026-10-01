@@ -573,3 +573,60 @@
 .wk-seg {
   align-self: flex-start;
 }
+
+/* ── checkout picker ─────────────────────────────────────────────────── */
+
+.wk-picker {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.wk-picker > :first-child {
+  margin: 6px;
+}
+
+/* A long worktree list scrolls in place; the search stays on top. */
+.wk-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 296px;
+  padding: 0 4px 4px;
+  overflow-y: auto;
+}
+
+.wk-picker-list .iii-ui-list-item {
+  padding-block: 6px;
+}
+
+.wk-picker-group {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.wk-picker-note {
+  margin: 0;
+  padding: 6px 10px;
+}
+
+.wk-checkout-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wk-dirty {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-warn);
+}
+
+.wk-mark {
+  border-radius: 2px;
+  background: var(--color-accent-muted);
+  color: inherit;
+}

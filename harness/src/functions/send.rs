@@ -1479,6 +1479,8 @@ pub(crate) async fn seed_new(
         dispatch_only_functions: lineage.dispatch_only_functions.clone(),
         validation_retries: 0,
         transient_resumes: 0,
+        ask_step: None,
+        ask_seen_step: None,
         created_at: now,
         updated_at: now,
     };
@@ -2041,6 +2043,8 @@ mod tests {
             dispatch_only_functions: Vec::new(),
             validation_retries: 0,
             transient_resumes: 0,
+            ask_step: None,
+            ask_seen_step: None,
             created_at: 1,
             updated_at: 1,
         }

@@ -1590,6 +1590,59 @@ async fn finish_step(
                 .as_ref()
                 .map_or(&call.arguments, |r| &r.arguments);
 
+            // harness::ask is a harness control like submit_result, not a
+            // dispatched function, so it is answered HERE, before the
+            // pre_trigger chain: an approval hook could only
+            // hold it, and a held call's release re-dispatches it to the
+            // registered handler, which cannot show the card. The session's
+            // allow/deny policy, the repeated-failure breaker and argument
+            // reconciliation above still apply. Decide it (who can answer,
+            // one per step, shape, limits), record the awaiting-answer result
+            // or the refusal, and mark it Done. Never parks; refusals leave the
+            // turn running so the model can react.
+            if call.function_id == crate::functions::ASK_ID {
+                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
+                // One ask per step, persisted on the record so a redelivered
+                // step still refuses a second ask and still ends on the first.
+                let mut data = match gate_ask(&mut record, strategy.is_json(), call_args) {
+                    Ok(req) => crate::ask::awaiting_result(
+                        &record.session_id,
+                        &record.turn_id,
+                        &call.id,
+                        &req,
+                    ),
+                    Err(msg) => crate::ask::refused(&msg),
+                };
+                let mut ask_annotations = serde_json::Map::new();
+                crate::reconcile::settle_result(
+                    deps,
+                    &cfg,
+                    &mut data,
+                    &mut ask_annotations,
+                    reconciled.as_ref().map(|r| r.changes.as_slice()),
+                    &call.function_id,
+                    call_args,
+                )
+                .await;
+                append_function_result(
+                    &session,
+                    &record,
+                    call,
+                    &data,
+                    &entry_id,
+                    &origin_with(&record.turn_id, &ask_annotations),
+                )
+                .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
+                mark_done(&mut record, &call.id, &entry_id);
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                continue;
+            }
+
             // pre_trigger chain: deny / hold / rewrite arguments. Hooks see
             // args ALREADY carrying the filesystem scope stamp so an approver
             // reviews the fs_scope the call will actually run under; the stamp is
@@ -1877,8 +1930,26 @@ async fn finish_step(
     }
 
     // With triggered calls and no submit_result, re-enqueue so the model
-    // reacts to the results.
+    // reacts to the results — unless the step showed a harness::ask card:
+    // then the turn ends on the question and the answer arrives as the
+    // user's next message. A user message already waiting (steering) needs
+    // the model, so that step advances as usual. Steering is only read when
+    // an ask was accepted, so ordinary function steps pay no extra reads.
     if !trigger_calls.is_empty() {
+        let asked_this_step = ask_accepted_this_step(&record);
+        let steering = asked_this_step
+            && (has_user_after_watermark(&session, &record).await?
+                || has_queued(deps, &record).await?);
+        if ends_after_ask(asked_this_step, submit_call.is_some(), steering) {
+            return finalize_with_contract(
+                deps,
+                &session,
+                &mut record,
+                &strategy,
+                &outcome.message,
+            )
+            .await;
+        }
         return advance(deps, &mut record).await;
     }
 
@@ -1888,6 +1959,39 @@ async fn finish_step(
     }
 
     finalize_with_contract(deps, &session, &mut record, &strategy, &outcome.message).await
+}
+
+/// Decide one in-turn `harness::ask` against the record's per-step markers
+/// and record the outcome on the record, which the caller persists. Every
+/// decided ask, accepted or refused, uses up the step's one ask
+/// (`ask_seen_step`), so the model always sees the first refusal instead of
+/// having a second ask accepted over it. Only an accepted ask sets
+/// `ask_step`, the marker that ends the turn on the question.
+fn gate_ask(
+    record: &mut TurnRecord,
+    has_output_contract: bool,
+    args: &Value,
+) -> Result<crate::ask::AskRequest, String> {
+    let already_asked = record.ask_seen_step == Some(record.step);
+    let decision = crate::ask::decide(record.depth, has_output_contract, already_asked, args);
+    record.ask_seen_step = Some(record.step);
+    if decision.is_ok() {
+        record.ask_step = Some(record.step);
+    }
+    decision
+}
+
+/// Whether this step accepted a `harness::ask`, the only kind that ends the
+/// turn on the question.
+fn ask_accepted_this_step(record: &TurnRecord) -> bool {
+    record.ask_step == Some(record.step)
+}
+
+/// Whether a step that accepted a `harness::ask` ends the turn on the
+/// question without another model call: only when no submit_result closes
+/// the step and no user message is waiting (steering needs the model).
+fn ends_after_ask(asked_this_step: bool, has_submit: bool, steering: bool) -> bool {
+    asked_this_step && !has_submit && !steering
 }
 
 fn turn_step_matches(
@@ -3798,6 +3902,76 @@ impl Clone for SessionStreamSink {
 
 #[cfg(test)]
 mod tests {
+    fn valid_ask() -> serde_json::Value {
+        serde_json::json!({ "questions": [ {
+            "header": "Approach",
+            "question": "Pause or end?",
+            "options": [ { "label": "Pause" }, { "label": "End" } ]
+        } ] })
+    }
+
+    #[test]
+    fn a_refused_first_ask_still_counts_toward_one_ask_per_step() {
+        let mut record = crate::types::turn::tests::record();
+        let first = super::gate_ask(&mut record, false, &serde_json::json!({ "questions": [] }));
+        assert!(first.is_err(), "{first:?}");
+        let second = super::gate_ask(&mut record, false, &valid_ask());
+        assert_eq!(
+            second,
+            Err(
+                "only one harness::ask per step; put all your questions (up to 4) in one call"
+                    .into()
+            )
+        );
+        assert!(
+            !super::ask_accepted_this_step(&record),
+            "a step with only refused asks must not end the turn"
+        );
+    }
+
+    #[test]
+    fn an_accepted_ask_refuses_a_second_and_ends_the_turn() {
+        let mut record = crate::types::turn::tests::record();
+        assert!(super::gate_ask(&mut record, false, &valid_ask()).is_ok());
+        let second = super::gate_ask(&mut record, false, &valid_ask());
+        assert_eq!(
+            second,
+            Err(
+                "only one harness::ask per step; put all your questions (up to 4) in one call"
+                    .into()
+            )
+        );
+        assert!(super::ask_accepted_this_step(&record));
+        assert!(super::ends_after_ask(
+            super::ask_accepted_this_step(&record),
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn a_step_with_only_a_refused_ask_does_not_end_the_turn() {
+        let mut record = crate::types::turn::tests::record();
+        // A structured-output turn: no human to answer, so the ask is refused.
+        assert!(super::gate_ask(&mut record, true, &valid_ask()).is_err());
+        assert!(!super::ask_accepted_this_step(&record));
+        assert!(!super::ends_after_ask(
+            super::ask_accepted_this_step(&record),
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn the_ask_markers_belong_to_one_step() {
+        let mut record = crate::types::turn::tests::record();
+        assert!(super::gate_ask(&mut record, false, &serde_json::json!({})).is_err());
+        record.step += 1;
+        assert!(!super::ask_accepted_this_step(&record));
+        assert!(super::gate_ask(&mut record, false, &valid_ask()).is_ok());
+        assert!(super::ask_accepted_this_step(&record));
+    }
+
     #[test]
     fn completed_child_resolves_parent_as_cancelled_when_guarded_or_unknown() {
         use super::parent_resolution_is_cancelled as cancelled;
@@ -3823,6 +3997,27 @@ mod tests {
             .map(|id| (id, None))
             .collect();
         super::preloaded_stale_notice(frozen, snapshot, policy, &live)
+    }
+
+    #[test]
+    fn a_step_ends_on_an_accepted_ask_only_without_submit_or_steering() {
+        // (asked this step, submit_result in the step, steering) -> ends
+        for (asked, submit, steering, ends) in [
+            (true, false, false, true),
+            (true, false, true, false),
+            (true, true, false, false),
+            (true, true, true, false),
+            (false, false, false, false),
+            (false, false, true, false),
+            (false, true, false, false),
+            (false, true, true, false),
+        ] {
+            assert_eq!(
+                super::ends_after_ask(asked, submit, steering),
+                ends,
+                "asked={asked} submit={submit} steering={steering}"
+            );
+        }
     }
 
     fn snap(live: &[crate::clients::FunctionDescriptor]) -> crate::discovery::FunctionsSnapshot {

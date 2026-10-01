@@ -149,6 +149,7 @@ import {
   DEFAULT_SYSTEM_PROMPT_STATE,
   selectionForSend,
   skillSelectionForSend,
+  turnEstablishedFrom,
 } from './system-prompt-selection'
 import { deriveTurnVisualState } from './turn-visual-state'
 import { useModelSwitch } from './use-model-switch'
@@ -1466,9 +1467,15 @@ export function ChatView({
     async (payload: ComposerSubmitPayload) => {
       if (submitBlockedRef.current) return
       const conversationId = conversation.id
-      let turnEstablished = messagesRef.current.some(
-        (message) => message.role === 'assistant',
-      )
+      // Only the session's first send carries the prompt selection and the
+      // agent; the harness inherits them afterwards and refuses a repeated
+      // options.agent (see selectionForSend / agentIdForSend). Gate on a row
+      // a turn produced rather than a user row: if an earlier send failed
+      // before a turn ran, there is nothing to inherit yet and the retry
+      // must carry the prompt again. Function-trigger rows count as well as
+      // assistant text: a turn ran, and a first turn that ends on
+      // harness::ask produces only calls (see turnEstablishedFrom).
+      let turnEstablished = turnEstablishedFrom(messagesRef.current)
       if (imported) {
         const preparing = !isStreaming && !serverWorking
         if (preparing && importStatusPendingRef.current) {

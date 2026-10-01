@@ -231,3 +231,205 @@
   display: block;
   height: 100%;
 }
+
+/* --- harness::ask card ------------------------------------------------ */
+/* The chat feed's display slot. Hierarchy is surfaces only: the card sits on
+   the canvas tone like the metrics card; an option row takes the hover and
+   selected washes. Radios and checkboxes reuse the shared checkbox recipe;
+   only the radio's round shape and dot are drawn here. */
+[data-iii-ui="harness"] .harness-ui-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  font-family: var(--font-sans);
+  color: var(--color-ink);
+}
+[data-iii-ui="harness"] .harness-ui-ask-q {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+[data-iii-ui="harness"] .harness-ui-ask-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: 0 0 4px;
+  padding: 0;
+}
+[data-iii-ui="harness"] .harness-ui-ask-question {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="harness"] .harness-ui-ask-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-ask-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+[data-iii-ui="harness"] .harness-ui-ask-option {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="harness"] .harness-ui-ask-option:hover {
+  background: var(--color-surface-hover);
+}
+/* The chosen option: the neutral selected wash, never accent. */
+[data-iii-ui="harness"] .harness-ui-ask-option:has(input:checked) {
+  background: var(--color-surface-selected);
+}
+[data-iii-ui="harness"] .harness-ui-ask-choice {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+}
+[data-iii-ui="harness"] .harness-ui-ask-choice .iii-ui-checkbox__control {
+  margin-top: 1px;
+}
+[data-iii-ui="harness"] .harness-ui-ask-choice .iii-ui-checkbox__label {
+  overflow-wrap: anywhere;
+}
+/* Under the label text: the box (1.125rem) plus the recipe's gap (0.5rem). */
+[data-iii-ui="harness"] .harness-ui-ask-desc {
+  padding-left: calc(1.125rem + 0.5rem);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="harness"] .harness-ui-ask-radio .iii-ui-checkbox__control {
+  border-radius: 9999px;
+}
+/* A radio matches `:indeterminate` while no radio in its group is checked,
+   and the checkbox recipe paints indeterminate with the accent fill. An
+   unchecked radio keeps the resting box, and the hover wash the recipe
+   withholds from indeterminate boxes. */
+[data-iii-ui="harness"] .harness-ui-ask-radio .iii-ui-checkbox__control:not(:has(input:checked)) {
+  border-color: var(--color-edge);
+  background: var(--color-surface);
+}
+[data-iii-ui="harness"] .harness-ui-ask-radio:hover .iii-ui-checkbox__control:not(:has(input:checked)) {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="harness"] .harness-ui-ask-dot {
+  display: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--color-accent-fg);
+  pointer-events: none;
+}
+[data-iii-ui="harness"] .harness-ui-ask-radio .iii-ui-checkbox__control:has(input:checked) .harness-ui-ask-dot {
+  display: block;
+}
+[data-iii-ui="harness"] .harness-ui-ask-other {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 0;
+}
+[data-iii-ui="harness"] .harness-ui-ask-other-label {
+  flex: none;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+/* `auto` basis: in the narrow column layout a zero basis would collapse the
+   input's height. */
+[data-iii-ui="harness"] .harness-ui-ask-other-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+[data-iii-ui="harness"] .harness-ui-ask-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+[data-iii-ui="harness"] .harness-ui-ask-foot .harness-ui-ask-note {
+  flex: 1;
+  min-width: 0;
+}
+/* Read-only questions (answered, or no composer to send through). */
+[data-iii-ui="harness"] .harness-ui-ask-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui="harness"] .harness-ui-ask-summary-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 2px 8px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-ask-summary-row[data-chosen] {
+  color: var(--color-ink);
+}
+[data-iii-ui="harness"] .harness-ui-ask-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  width: 16px;
+  height: 20px;
+  color: var(--color-ok);
+}
+[data-iii-ui="harness"] .harness-ui-ask-summary-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="harness"] .harness-ui-ask-summary .harness-ui-ask-desc {
+  padding-left: 0;
+}
+[data-iii-ui="harness"] .harness-ui-ask-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+/* Narrow pane (a phone or a narrow split): touch-sized option rows, and the
+   Other field under its label. Same container threshold as the chip. */
+@container (max-width: 30rem) {
+  [data-iii-ui="harness"] .harness-ui-ask-option {
+    min-height: 44px;
+  }
+  [data-iii-ui="harness"] .harness-ui-ask-other {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+}

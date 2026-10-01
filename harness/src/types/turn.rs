@@ -394,6 +394,16 @@ pub struct TurnRecord {
     pub validation_retries: u32,
     #[serde(default)]
     pub transient_resumes: u32,
+    /// The step whose `harness::ask` was accepted (its card is shown). Read
+    /// back to end the turn on the question, also when the step is
+    /// redelivered after a crash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_step: Option<u64>,
+    /// The step in which a `harness::ask` was last decided, accepted OR
+    /// refused. Read back to refuse any further ask in that step (one per
+    /// step), also when the step is redelivered after a crash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_seen_step: Option<u64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -530,9 +540,51 @@ pub(crate) mod tests {
             dispatch_only_functions: Vec::new(),
             validation_retries: 0,
             transient_resumes: 0,
+            ask_step: None,
+            ask_seen_step: None,
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn ask_seen_step_is_omitted_when_unset_and_defaults_on_legacy_records() {
+        let value = serde_json::to_value(record()).unwrap();
+        assert!(value.get("ask_seen_step").is_none(), "{value}");
+
+        let mut legacy = value.clone();
+        legacy.as_object_mut().unwrap().remove("ask_seen_step");
+        let decoded: TurnRecord = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.ask_seen_step, None);
+
+        let seen = TurnRecord {
+            ask_seen_step: Some(4),
+            ..record()
+        };
+        let wire = serde_json::to_value(&seen).unwrap();
+        assert_eq!(wire["ask_seen_step"], json!(4));
+        let decoded: TurnRecord = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded.ask_seen_step, Some(4));
+    }
+
+    #[test]
+    fn ask_step_is_omitted_when_unset_and_defaults_on_legacy_records() {
+        let value = serde_json::to_value(record()).unwrap();
+        assert!(value.get("ask_step").is_none(), "{value}");
+
+        let mut legacy = value.clone();
+        legacy.as_object_mut().unwrap().remove("ask_step");
+        let decoded: TurnRecord = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.ask_step, None);
+
+        let asked = TurnRecord {
+            ask_step: Some(3),
+            ..record()
+        };
+        let wire = serde_json::to_value(&asked).unwrap();
+        assert_eq!(wire["ask_step"], json!(3));
+        let decoded: TurnRecord = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded.ask_step, Some(3));
     }
 
     #[test]

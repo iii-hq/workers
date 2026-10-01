@@ -66,6 +66,15 @@ mod tests {
     }
 
     #[test]
+    fn embedded_page_registers_ask_renderer() {
+        // The `harness::ask` card renderer ships in the bundle (ui/src/ask).
+        assert!(
+            PAGE_JS.contains("harness::ask"),
+            "built page.js must register the harness::ask card renderer"
+        );
+    }
+
+    #[test]
     fn embedded_styles_are_scoped() {
         // esbuild prints the attribute selector unquoted ([data-iii-ui=harness]).
         assert!(

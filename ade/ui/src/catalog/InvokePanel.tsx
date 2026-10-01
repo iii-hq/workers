@@ -21,9 +21,11 @@ import {
   Eyebrow,
   type Host,
   JsonHighlight,
+  KeyCombo,
   StatusDot,
   StatusPanel,
 } from '@iii-dev/console-ui'
+import { Play } from 'lucide-react'
 import {
   type MutableRefObject,
   useEffect,
@@ -35,7 +37,7 @@ import { formatDuration } from './ActivityFeed'
 import { type InvokeOutcome, invoke } from './engine'
 import { schemaFieldNames } from './SchemaTable'
 import { pretty, templateFromSchema } from './schema'
-import { CopyButton } from './widgets'
+import { CopyButton, CopyIconButton } from './widgets'
 
 interface Attempt {
   id: number
@@ -66,7 +68,7 @@ function missingRequired(schema: unknown, payload: unknown): string[] {
  * scalar body copies verbatim and anything nested copies as JSON — which is
  * exactly the difference between a command that runs and one that does not.
  */
-function asCliCommand(functionId: string, payload: unknown): string {
+export function asCliCommand(functionId: string, payload: unknown): string {
   if (!isRecord(payload) || Object.keys(payload).length === 0) {
     return `iii trigger ${functionId}`
   }
@@ -90,6 +92,7 @@ export function InvokePanel({
   hint,
   prefill,
   runRef,
+  layout = 'stacked',
 }: {
   host: Host
   functionId: string
@@ -98,6 +101,9 @@ export function InvokePanel({
   label?: string
   runningLabel?: string
   hint?: string
+  /** `split` puts the request beside the response (the functions page's Run
+      tab); `stacked` is the framed card the triggers page embeds. */
+  layout?: 'stacked' | 'split'
   /** A recorded input pushed in from the activity feed; changes replace the body. */
   prefill?: { value: unknown; nonce: number }
   /** Kept current with this panel's run() while mounted, so the page's
@@ -186,27 +192,35 @@ export function InvokePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  return (
-    <div className="console-catalog-invoke">
+  const split = layout === 'split'
+
+  const request = (
+    <>
       <div className="console-catalog-invoke-head">
         <div>
-          <h3>Trigger function</h3>
+          <h3>{split ? 'Request' : 'Trigger function'}</h3>
           <p className="invoke-description">
-            Provide the input payload and trigger this function.
+            {split
+              ? 'A JSON body; required fields are checked before the call.'
+              : 'Provide the input payload and trigger this function.'}
           </p>
         </div>
         <Button
-          variant="pill"
+          variant={split ? 'ghost' : 'pill'}
           size="sm"
           type="button"
           onClick={reset}
           disabled={running}
         >
-          reset
+          {split ? 'Reset' : 'reset'}
         </Button>
       </div>
       {hint ? <div className="console-catalog-note">{hint}</div> : null}
-      <Eyebrow className="console-catalog-field-label">Input payload (JSON)</Eyebrow>
+      {split ? null : (
+        <Eyebrow className="console-catalog-field-label">
+          Input payload (JSON)
+        </Eyebrow>
+      )}
       <CodeEditor
         value={body}
         onChange={setBody}
@@ -216,73 +230,134 @@ export function InvokePanel({
         aria-label={`request body for ${functionId}`}
       />
       <div className="console-catalog-invoke-foot">
-        <Button type="button" size="sm" onClick={run} disabled={running}>
+        <Button
+          type="button"
+          variant={split ? 'primary' : undefined}
+          size={split ? 'md' : 'sm'}
+          onClick={run}
+          disabled={running}
+        >
+          {split ? <Play aria-hidden /> : null}
           {running ? runningLabel : label}
+          {split ? <KeyCombo binding="Mod+Enter" /> : null}
         </Button>
         <CopyButton
           value={asCliCommand(functionId, safeJson(body))}
-          label="copy iii command"
+          label={split ? 'Copy as command' : 'copy iii command'}
           title="copies this exact call as an `iii trigger …` line to run from the terminal"
         />
         {invalid ? (
           <span className="console-catalog-invalid">{invalid}</span>
         ) : null}
       </div>
+    </>
+  )
 
-      {outcome ? (
-        <div className="console-catalog-result-shell" data-ok={outcome.ok}>
-          <div className="console-catalog-result-head">
-            <span
-              className={
-                outcome.ok ? 'console-catalog-ok' : 'console-catalog-invalid'
-              }
-            >
-              <StatusDot tone={outcome.ok ? 'ok' : 'alert'} />
-              {outcome.ok ? 'success' : 'error'}
-            </span>
-            <span className="result-meta">
-              {latest
-                ? new Date(latest.atMs).toLocaleTimeString(undefined, {
-                    hour12: false,
-                  })
-                : null}
-              <span>{formatDuration(outcome.durationMs)}</span>
-            </span>
-          </div>
-          {outcome.error ? (
-            <StatusPanel variant="alert" headline={outcome.error} />
-          ) : (
-            <JsonHighlight
-              code={pretty(outcome.data) || 'null'}
-              className="console-catalog-result"
-              wrap
+  const response = outcome ? (
+    <div className="console-catalog-result-shell" data-ok={outcome.ok}>
+      <div className="console-catalog-result-head">
+        <span
+          className={
+            outcome.ok ? 'console-catalog-ok' : 'console-catalog-invalid'
+          }
+        >
+          <StatusDot tone={outcome.ok ? 'ok' : 'alert'} />
+          {split
+            ? outcome.ok
+              ? 'Success'
+              : 'Error'
+            : outcome.ok
+              ? 'success'
+              : 'error'}
+        </span>
+        <span className="result-meta">
+          {latest ? clockTime(latest.atMs) : null}
+          <span>{formatDuration(outcome.durationMs)}</span>
+          {split && outcome.ok ? (
+            <CopyIconButton
+              value={pretty(outcome.data) || 'null'}
+              label="Copy response"
             />
-          )}
-        </div>
-      ) : null}
+          ) : null}
+        </span>
+      </div>
+      {outcome.error ? (
+        <StatusPanel variant="alert" headline={outcome.error} />
+      ) : (
+        <JsonHighlight
+          code={pretty(outcome.data) || 'null'}
+          className="console-catalog-result"
+          wrap
+        />
+      )}
+    </div>
+  ) : null
 
-      {attempts.length > 1 ? (
-        <div className="console-catalog-attempts">
-          <Eyebrow className="console-catalog-field-label">This session</Eyebrow>
-          {attempts.slice(1).map((attempt) => (
-            <button
-              key={attempt.id}
-              type="button"
-              className="console-catalog-attempt"
-              onClick={() => setBody(attempt.body)}
-              title="put this body back in the editor"
-            >
-              <StatusDot tone={attempt.outcome.ok ? 'ok' : 'alert'} />
-              <span className="body">{oneLine(attempt.body)}</span>
-              <span className="duration">
-                {Math.round(attempt.outcome.durationMs)}ms
-              </span>
-            </button>
-          ))}
-        </div>
-      ) : null}
+  // The stacked card lists only the earlier attempts (the latest is the
+  // result above it); the split view lists all of them under the editor,
+  // the latest marked, so the history reads as one column.
+  const earlier = split ? attempts : attempts.slice(1)
+  const history =
+    earlier.length > 0 ? (
+      <div className="console-catalog-attempts">
+        <Eyebrow className="console-catalog-field-label">This session</Eyebrow>
+        {earlier.map((attempt) => (
+          <button
+            key={attempt.id}
+            type="button"
+            className="console-catalog-attempt"
+            data-latest={split && attempt.id === latest?.id}
+            onClick={() => setBody(attempt.body)}
+            title="put this body back in the editor"
+          >
+            <StatusDot tone={attempt.outcome.ok ? 'ok' : 'alert'} />
+            {split ? (
+              <span className="time">{clockTime(attempt.atMs)}</span>
+            ) : null}
+            <span className="body">{oneLine(attempt.body)}</span>
+            <span className="duration">
+              {formatDuration(attempt.outcome.durationMs)}
+            </span>
+          </button>
+        ))}
+      </div>
+    ) : null
+
+  if (split) {
+    return (
+      <div className="console-catalog-invoke" data-layout="split">
+        <section className="invoke-column" aria-label="Request">
+          {request}
+          {history}
+        </section>
+        <section className="invoke-column" aria-label="Response">
+          <div className="console-catalog-invoke-head">
+            <div>
+              <h3>Response</h3>
+            </div>
+          </div>
+          {response ?? (
+            <div className="console-catalog-response-empty">
+              Run the function to see what it returns. Each run stays in this
+              session's list, so you can load an earlier body back.
+            </div>
+          )}
+        </section>
+      </div>
+    )
+  }
+
+  return (
+    <div className="console-catalog-invoke">
+      {request}
+      {response}
+      {history}
     </div>
   )
+}
+
+function clockTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, { hour12: false })
 }
 
 function safeJson(text: string): unknown {

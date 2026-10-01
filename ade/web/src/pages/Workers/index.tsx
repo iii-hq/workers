@@ -78,6 +78,8 @@ export type Actions = {
   /** An operation the daemon accepts and runs in the background (add, update, remove, edit). */
   track: (label: string, start: () => Promise<Accepted>) => Promise<boolean>
   confirm: ReturnType<typeof useConfirm>['confirm']
+  /** Declared containers that are stopped or failed: an add or remove starts them. */
+  idle: string[]
 }
 
 function progressDetail(
@@ -211,11 +213,19 @@ function WorkersPage({
   )
 
   const busy = activity?.state === 'running'
+  const idle = useMemo(
+    () =>
+      (data?.status.containers ?? [])
+        .filter((c) => c.state === 'stopped' || c.state === 'failed')
+        .map((c) => c.container),
+    [data?.status.containers],
+  )
 
   const actions: Actions = useMemo(
     () => ({
       busy,
       confirm,
+      idle,
       async run(label, call) {
         setActivity({ label, state: 'running' })
         try {
@@ -265,7 +275,7 @@ function WorkersPage({
         }
       },
     }),
-    [api, busy, confirm, finish],
+    [api, busy, confirm, finish, idle],
   )
 
   const declared = useMemo(

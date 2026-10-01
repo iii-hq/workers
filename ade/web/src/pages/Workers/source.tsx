@@ -1,26 +1,44 @@
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { useDebounce } from '@iii-dev/console-ui/hooks'
-import { Folder, Package } from 'lucide-react'
-import { type ReactNode, useEffect, useState } from 'react'
+import {
+  ChevronDown,
+  ChevronRight,
+  Folder,
+  GitBranch,
+  Package,
+} from 'lucide-react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { FileDiff } from '@/components/ui/FileDiff'
 import { Input } from '@/components/ui/Input'
 import { List, ListItem } from '@/components/ui/List'
 import { SegmentedControl } from '@/components/ui/ModeToggle'
+import { SearchField } from '@/components/ui/SearchField'
 import { Selector } from '@/components/ui/Selector'
 import { SettingsSection } from '@/components/ui/Settings'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { Card, CardBody, CardHeader } from '@/components/ui/Surface'
 import type {
+  Checkout,
   ComposeApi,
   DeclaredContainer,
   Inspection,
   Versions,
 } from './compose-api'
 import type { Actions } from './index'
-import { basename, entryYaml, shortPath } from './model'
+import {
+  alsoStarts,
+  arrangeCheckouts,
+  basename,
+  branchLabel,
+  dirname,
+  entryYaml,
+  inPlaceVersion,
+  matchParts,
+  shortPath,
+} from './model'
 
 type Props = {
   api: ComposeApi
@@ -34,7 +52,6 @@ type Props = {
 }
 
 const FILE = 'worker-compose.yaml'
-const CHECKOUTS = 5
 const KINDS = [
   { value: 'package' as const, label: 'Registry package', icon: <Package /> },
   { value: 'path' as const, label: 'Local path', icon: <Folder /> },
@@ -163,16 +180,24 @@ function PackageSource({
 
   const selector = policy === 'pin' ? pick : policy
 
+  const inPlace = inPlaceVersion(declared)
   const update = async () => {
+    if (!selector) return
     const ok = await actions.confirm({
       title: `Update ${declared.name} to ${selector}?`,
-      description:
-        'Compose resolves it and its dependencies again, and restarts the whole project when what runs changes.',
-      confirmLabel: 'Update and restart',
+      description: inPlace
+        ? `Compose installs it and restarts only ${declared.name}; workers that depend on it see it reconnect.`
+        : `${declared.name} is not named after its package, so Compose updates it through the whole project and restarts every container.`,
+      details: alsoStarts(actions.idle, [declared.name]),
+      confirmLabel: inPlace
+        ? `Update ${declared.name}`
+        : 'Update and restart all',
     })
     if (ok)
       await actions.track(`Updating ${declared.name} to ${selector}`, () =>
-        api.update([`${declared.name}@${selector}`]),
+        inPlace
+          ? api.setVersions([{ ref: declared.ref, version: selector }])
+          : api.update([`${declared.name}@${selector}`]),
       )
   }
   const newer = versions
@@ -261,8 +286,16 @@ function PackageSource({
           >
             <StatusPanel
               variant="warn"
-              headline="The whole project restarts"
-              detail={`Compose resolves ${declared.name} ${selector} and its dependencies, then restarts all ${total} containers once when what runs changes, not only ${declared.name}.`}
+              headline={
+                inPlace
+                  ? `Only ${declared.name} restarts`
+                  : 'The whole project restarts'
+              }
+              detail={
+                inPlace
+                  ? `Compose installs ${declared.name} ${selector} and restarts that one container; the other ${total - 1} keep running.`
+                  : `${declared.name} is not named after its package, so Compose updates it through the whole project and restarts all ${total} containers.`
+              }
             />
             <div className="wk-buttons">
               <Button
@@ -305,7 +338,6 @@ function PathSource({
 }: Props & { source: ReactNode }) {
   const [path, setPath] = useState(declared.ref)
   const [current, setCurrent] = useState<Inspection | null>(null)
-  const [allCheckouts, setAllCheckouts] = useState(false)
   const [target, setTarget] = useState<Inspection | null>(null)
   const settled = useDebounce(path.trim(), 300)
   const moved =
@@ -340,6 +372,7 @@ function PathSource({
     const ok = await actions.confirm({
       title: `Point ${declared.name} to ${shortPath(path)}?`,
       description: `${declared.name} restarts from that directory. If it does not build or start there, it stays down until you point it back.`,
+      details: alsoStarts(actions.idle, [declared.name]),
       confirmLabel: 'Point and restart',
     })
     if (ok)
@@ -372,49 +405,13 @@ function PathSource({
           </SettingsSection>
 
           {current?.checkouts.length ? (
-            <SettingsSection
-              title={`Other checkouts of ${declared.name}`}
-              description="From git worktree list in the current checkout."
-            >
-              <List aria-label={`Checkouts of ${declared.name}`}>
-                {(allCheckouts
-                  ? current.checkouts
-                  : current.checkouts.slice(0, CHECKOUTS)
-                ).map((checkout) => {
-                  const other = basename(checkout.path) !== declared.name
-                  const isCurrent = checkout.path === current.path
-                  return (
-                    <ListItem
-                      key={checkout.path}
-                      selected={checkout.path === settled}
-                      disabled={other}
-                      label={
-                        <span className="wk-mono">
-                          {shortPath(checkout.path)}
-                        </span>
-                      }
-                      description={
-                        other
-                          ? `Would be a new container named ${basename(checkout.path)}`
-                          : (checkout.branch ?? 'detached')
-                      }
-                      trailing={isCurrent ? <Badge>current</Badge> : undefined}
-                      onClick={() => setPath(checkout.path)}
-                    />
-                  )
-                })}
-              </List>
-              {!allCheckouts && current.checkouts.length > CHECKOUTS ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="wk-suggestion"
-                  onClick={() => setAllCheckouts(true)}
-                >
-                  Show all {current.checkouts.length}
-                </Button>
-              ) : null}
-            </SettingsSection>
+            <CheckoutPicker
+              name={declared.name}
+              checkouts={current.checkouts}
+              current={current.path}
+              picked={settled}
+              onPick={setPath}
+            />
           ) : null}
         </>
       }
@@ -503,7 +500,7 @@ function PathSource({
                   disabled={actions.busy}
                   onClick={() => void pointTo(target.path)}
                 >
-                  Point to {shortTarget}
+                  Apply
                 </Button>
               </div>
             </Preview>
@@ -511,5 +508,156 @@ function PathSource({
         </>
       }
     />
+  )
+}
+
+/**
+ * Every git checkout of the worker, searchable by branch or folder. The ones
+ * whose folder carries the container's name can take it; the rest would add
+ * a new container, so they wait, dimmed, behind a toggle.
+ */
+function CheckoutPicker({
+  name,
+  checkouts,
+  current,
+  picked,
+  onPick,
+}: {
+  name: string
+  checkouts: readonly Checkout[]
+  current: string
+  picked: string
+  onPick: (path: string) => void
+}) {
+  const [query, setQuery] = useState('')
+  const [showOther, setShowOther] = useState(false)
+  const list = useRef<HTMLDivElement>(null)
+  const { usable, other } = arrangeCheckouts(checkouts, name, current, query)
+  const filtering = query.trim() !== ''
+  const otherOpen = showOther || (filtering && other.length > 0)
+
+  const row = (checkout: Checkout, canPoint: boolean) => (
+    <ListItem
+      key={checkout.path}
+      selected={canPoint && checkout.path === picked}
+      disabled={!canPoint}
+      leading={<GitBranch />}
+      label={
+        <Highlight
+          className="wk-mono"
+          text={branchLabel(checkout)}
+          query={query}
+        />
+      }
+      description={
+        <Highlight
+          className="wk-mono"
+          // The folder name is the container's for every usable row: show where it is.
+          text={shortPath(canPoint ? dirname(checkout.path) : checkout.path)}
+          query={query}
+        />
+      }
+      trailing={
+        <span className="wk-checkout-meta">
+          {checkout.dirty ? (
+            <span
+              className="wk-dirty"
+              role="img"
+              aria-label="Uncommitted changes"
+              title="Uncommitted changes"
+            />
+          ) : null}
+          {checkout.path === current ? <Badge>current</Badge> : null}
+          {checkout.committed_at ? (
+            <span className="wk-mono wk-faint" title="Last commit">
+              {formatRelative(checkout.committed_at * 1000)}
+            </span>
+          ) : null}
+        </span>
+      }
+      onClick={canPoint ? () => onPick(checkout.path) : undefined}
+    />
+  )
+
+  return (
+    <SettingsSection
+      title={`Checkouts of ${name}`}
+      description="From git worktree list: the one it runs from first, then the newest commit."
+    >
+      <div className="wk-picker">
+        <SearchField
+          aria-label="Find a checkout by branch or folder"
+          placeholder={`Find by branch or folder · ${checkouts.length} checkouts`}
+          value={query}
+          onChange={setQuery}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowDown') return
+            event.preventDefault()
+            list.current
+              ?.querySelector<HTMLElement>('[data-list-item]:not([disabled])')
+              ?.focus()
+          }}
+        />
+        <div ref={list} className="wk-picker-list">
+          {usable.length ? (
+            <List aria-label={`Checkouts of ${name}`}>
+              {usable.map((checkout) => row(checkout, true))}
+            </List>
+          ) : (
+            <p className="wk-note wk-picker-note">
+              No checkout with a <span className="wk-mono">{name}</span> folder
+              matches “{query.trim()}”.
+            </p>
+          )}
+          {other.length ? (
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="wk-picker-group"
+                aria-expanded={otherOpen}
+                onClick={() => setShowOther((open) => !open)}
+              >
+                {otherOpen ? <ChevronDown /> : <ChevronRight />}
+                {filtering
+                  ? `${other.length} more match${other.length === 1 ? '' : 'es'}`
+                  : `${other.length} more`}{' '}
+                in folders with another name
+              </Button>
+              {otherOpen ? (
+                <>
+                  <p className="wk-note wk-picker-note">
+                    Their folder has another name, so pointing here would add a
+                    new container named after it instead of moving {name}.
+                  </p>
+                  <List aria-label={`Other checkouts of ${name}`}>
+                    {other.map((checkout) => row(checkout, false))}
+                  </List>
+                </>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      </div>
+    </SettingsSection>
+  )
+}
+
+function Highlight({
+  text,
+  query,
+  className,
+}: {
+  text: string
+  query: string
+  className?: string
+}) {
+  const [before, hit, after] = matchParts(text, query)
+  return (
+    <span className={className}>
+      {before}
+      {hit ? <mark className="wk-mark">{hit}</mark> : null}
+      {after}
+    </span>
   )
 }

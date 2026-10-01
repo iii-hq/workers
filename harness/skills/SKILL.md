@@ -72,6 +72,11 @@ Consumer-facing:
   turn ever ran. For recovery and guards, not rendering.
 - `harness::spawn` — spawn a sub-agent in a child session. Model-facing (invoked
   through `agent_trigger`), not a consumer entry point.
+- `harness::ask` — put a decision with discrete options to the user as a
+  clickable card (1–4 questions, 2–4 options each). Model-facing (invoked
+  through `agent_trigger`) and answered by the turn loop itself: the turn ends
+  on the question and the answer arrives as the user's next message. Refused
+  in sub-agents, structured-output turns, and for a second ask in one step.
 
 Internal — the harness drives these; never trigger them directly:
 `harness::turn` (the durable loop step), `harness::function::trigger` /

@@ -4,13 +4,14 @@
  * the `console:script` trigger (see src/ui.rs). The stylesheet is its own
  * asset: ../styles.css ships over `console:style` as harness/styles.css.
  *
- * `setup(host)` composes the worker's two console contributions:
+ * `setup(host)` composes the worker's console contributions:
  *
  * - src/context-chip/             — the `context` session chip (live context
  *   window usage). The `chat.registerSessionChip` slot is newer than the
  *   published Host type, so it is feature-detected: an older console simply
  *   gets no chip.
  * - src/function-trigger-message/ — how `harness::metrics` calls render.
+ * - src/ask/                      — the clickable `harness::ask` card.
  *
  * Registrations go through `host` so the loader disposes them on hot
  * reload / worker disconnect.
@@ -18,6 +19,7 @@
 
 import type { ComponentType } from 'react'
 import type { Host } from '@iii-dev/console-ui'
+import { createAskRenderer } from './src/ask'
 import { createContextChip, type SessionChipProps } from './src/context-chip'
 import { createMetricsRenderer } from './src/function-trigger-message'
 
@@ -35,4 +37,5 @@ export default function setup(host: Host) {
   chat?.registerSessionChip?.({ id: 'context', render: createContextChip(host) })
 
   host.functionTriggers.register(createMetricsRenderer())
+  host.functionTriggers.register(createAskRenderer(host))
 }

@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import type { ContainerEntry, DeclaredContainer } from './compose-api'
 import {
+  alsoStarts,
+  arrangeCheckouts,
   defaultRun,
   dependentsOf,
   draftFrom,
   entryShape,
   entryYaml,
   groupContainers,
+  inPlaceVersion,
   MASK,
+  matchParts,
   parseLogLine,
   settingsPatch,
   shortPath,
@@ -298,6 +302,75 @@ describe('waveLabel', () => {
   it('names a single dependency and counts several', () => {
     expect(waveLabel(['router', 'canvas'], all)).toBe('After state')
     expect(waveLabel(['harness'], all)).toBe('After 2 containers')
+  })
+})
+
+describe('arrangeCheckouts', () => {
+  const at = (
+    path: string,
+    committed_at: number,
+    branch: string | null = null,
+  ) => ({ path, branch, committed_at })
+  const all = [
+    at('/w/old/web', 10, 'feat/old'),
+    at('/w/main/web', 30, 'main'),
+    at('/w/web-copy', 50, 'feat/copy'),
+    at('/w/run/web', 20, null),
+  ]
+
+  it('puts the current checkout first, then the newest, and the other folders apart', () => {
+    const { usable, other } = arrangeCheckouts(all, 'web', '/w/run/web')
+    expect(usable.map((c) => c.path)).toEqual([
+      '/w/run/web',
+      '/w/main/web',
+      '/w/old/web',
+    ])
+    expect(other.map((c) => c.path)).toEqual(['/w/web-copy'])
+  })
+
+  it('filters by branch or folder, detached included', () => {
+    expect(arrangeCheckouts(all, 'web', '', 'OLD').usable).toHaveLength(1)
+    expect(arrangeCheckouts(all, 'web', '', 'detached').usable[0]?.path).toBe(
+      '/w/run/web',
+    )
+    expect(arrangeCheckouts(all, 'web', '', 'copy').other).toHaveLength(1)
+  })
+})
+
+describe('matchParts', () => {
+  it('splits around the first case-insensitive match', () => {
+    expect(matchParts('feat/Trends-api', 'trends')).toEqual([
+      'feat/',
+      'Trends',
+      '-api',
+    ])
+    expect(matchParts('main', 'x')).toEqual(['main', '', ''])
+    expect(matchParts('main', ' ')).toEqual(['main', '', ''])
+  })
+})
+
+describe('inPlaceVersion', () => {
+  it('changes a version in place only for a container named after its package', () => {
+    const pkg = (name: string, ref: string) =>
+      ({ name, ref, source: 'package' }) as const
+    expect(inPlaceVersion(pkg('storage', 'api.workers.iii.dev/storage'))).toBe(
+      true,
+    )
+    expect(inPlaceVersion(pkg('db', 'api.workers.iii.dev/database'))).toBe(
+      false,
+    )
+    expect(
+      inPlaceVersion({ name: 'queue', ref: '/w/queue', source: 'path' }),
+    ).toBe(false)
+  })
+})
+
+describe('alsoStarts', () => {
+  it('names the stopped containers an add would bring up, minus the target', () => {
+    expect(alsoStarts(['harness-e2e', 'web'], ['web'])).toEqual([
+      'Also starts harness-e2e, stopped now',
+    ])
+    expect(alsoStarts(['web'], ['web'])).toEqual([])
   })
 })
 

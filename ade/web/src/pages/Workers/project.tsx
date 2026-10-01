@@ -19,7 +19,14 @@ import {
 } from '@/components/ui/Table'
 import type { ComposeApi, Snapshot } from './compose-api'
 import type { Actions, Latest } from './index'
-import { shortPath, startWaves, toneFor, waveLabel } from './model'
+import {
+  alsoStarts,
+  inPlaceVersion,
+  shortPath,
+  startWaves,
+  toneFor,
+  waveLabel,
+} from './model'
 
 type Validation =
   | { ok: true; order: string[]; deferred: string[] }
@@ -93,21 +100,35 @@ export function ProjectView({
 
   const update = async (names: string[]) => {
     const targets = names.map((name) => `${name}@${latest.of(name)}`)
+    const chosen = packages.filter((c) => names.includes(c.name))
+    // In place when every one carries its package's name: only they restart.
+    const inPlace =
+      chosen.length === names.length && chosen.every(inPlaceVersion)
+    const one = names.length === 1
     const ok = await confirm({
-      title:
-        names.length === 1
-          ? `Update ${names[0]} to ${latest.of(names[0])}?`
-          : `Update ${names.length} packages?`,
-      description: `Compose resolves ${names.length === 1 ? 'it and its' : 'them and their'} dependencies again, and restarts the whole project when what runs changes.`,
-      details: names.length > 1 ? targets : undefined,
-      confirmLabel: 'Update and restart',
+      title: one
+        ? `Update ${names[0]} to ${latest.of(names[0])}?`
+        : `Update ${names.length} packages?`,
+      description: inPlace
+        ? `Compose installs ${one ? 'it' : 'them'} and restarts only ${one ? names[0] : `these ${names.length} containers`}; the rest keep running.`
+        : `Compose resolves ${one ? 'it and its' : 'them and their'} dependencies again, and restarts the whole project when what runs changes.`,
+      details: [...(one ? [] : targets), ...alsoStarts(actions.idle, names)],
+      confirmLabel: inPlace ? 'Update' : 'Update and restart all',
     })
     if (!ok) return
     await actions.track(
-      names.length === 1
+      one
         ? `Updating ${names[0]} to ${latest.of(names[0])}`
         : `Updating ${names.length} packages`,
-      () => api.update(targets),
+      () =>
+        inPlace
+          ? api.setVersions(
+              chosen.map((c) => ({
+                ref: c.ref,
+                version: latest.of(c.name) ?? 'latest',
+              })),
+            )
+          : api.update(targets),
     )
   }
 

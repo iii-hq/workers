@@ -232,4 +232,44 @@ mod tests {
         let (_, body) = fs_source::split_frontmatter(raw);
         assert_eq!(body, include_str!("../../harness/prompts/default.txt"));
     }
+
+    /// A decision with discrete options goes through `harness::ask` (a card
+    /// the user clicks), never a question or numbered list written in text;
+    /// the turn ends on it and the answer is the user's next message. Every
+    /// bundled base identity teaches it, so profiles that extend `default`
+    /// (or its `iii-minimal` alias) learn it without restating it.
+    #[test]
+    fn bundled_prompts_teach_asking_the_user() {
+        let body_of = |id: &str| {
+            let (_, body) = fs_source::split_frontmatter(bundled_agent_raw(id).unwrap());
+            body.to_string()
+        };
+        let bodies = [
+            (
+                "system prompt iii-minimal",
+                bundled_system_prompt("iii-minimal").unwrap().body,
+            ),
+            ("agent default", body_of("default")),
+            ("agent iii", body_of("iii")),
+        ];
+        for (name, body) in bodies {
+            let normalized = body.replace('\n', " ");
+            assert!(
+                body.contains("## Asking the user"),
+                "{name} has no `## Asking the user` section"
+            );
+            assert!(
+                body.contains("harness::ask"),
+                "{name} never teaches how to ask the user to choose"
+            );
+            assert!(
+                normalized.contains("the answer arrives as the user's next message"),
+                "{name} never says where the answer to harness::ask arrives"
+            );
+            assert!(
+                normalized.contains("do not also write the question in text"),
+                "{name} lets the model repeat the question in text"
+            );
+        }
+    }
 }

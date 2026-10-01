@@ -1,0 +1,185 @@
+{
+  "function_id": "harness::ask",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AskOption": {
+        "properties": {
+          "description": {
+            "description": "Optional one-line explanation shown under the label.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "description": "The choice as the user sees and sends it, 1-80 characters, unique within its question.",
+            "maxLength": 80,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
+      },
+      "AskQuestion": {
+        "properties": {
+          "header": {
+            "description": "Short chip label such as `Approach`, 1-16 characters; prefixes the answer line (`Approach: <label>`).",
+            "maxLength": 16,
+            "minLength": 1,
+            "type": "string"
+          },
+          "multi_select": {
+            "default": false,
+            "description": "Let the user pick several options (checkboxes) instead of one.",
+            "type": "boolean"
+          },
+          "options": {
+            "description": "2-4 discrete choices; do not add an \"Other\" option, the UI adds a free-text one.",
+            "items": {
+              "$ref": "#/definitions/AskOption"
+            },
+            "maxItems": 4,
+            "minItems": 2,
+            "type": "array"
+          },
+          "question": {
+            "description": "The full question text shown above the options.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "header",
+          "options",
+          "question"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "questions": {
+        "description": "1-4 questions shown together on one card; the answer arrives as the user's next message, one line per question.",
+        "items": {
+          "$ref": "#/definitions/AskQuestion"
+        },
+        "maxItems": 4,
+        "minItems": 1,
+        "type": "array"
+      }
+    },
+    "required": [
+      "questions"
+    ],
+    "title": "AskRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AskOption": {
+        "properties": {
+          "description": {
+            "description": "Optional one-line explanation shown under the label.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "description": "The choice as the user sees and sends it, 1-80 characters, unique within its question.",
+            "maxLength": 80,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
+      },
+      "AskQuestion": {
+        "properties": {
+          "header": {
+            "description": "Short chip label such as `Approach`, 1-16 characters; prefixes the answer line (`Approach: <label>`).",
+            "maxLength": 16,
+            "minLength": 1,
+            "type": "string"
+          },
+          "multi_select": {
+            "default": false,
+            "description": "Let the user pick several options (checkboxes) instead of one.",
+            "type": "boolean"
+          },
+          "options": {
+            "description": "2-4 discrete choices; do not add an \"Other\" option, the UI adds a free-text one.",
+            "items": {
+              "$ref": "#/definitions/AskOption"
+            },
+            "maxItems": 4,
+            "minItems": 2,
+            "type": "array"
+          },
+          "question": {
+            "description": "The full question text shown above the options.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "header",
+          "options",
+          "question"
+        ],
+        "type": "object"
+      },
+      "AskStatus": {
+        "oneOf": [
+          {
+            "description": "The card is shown; the answer arrives as the user's next message.",
+            "enum": [
+              "awaiting_answer"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "What an accepted ask records as its result `details`: the card the UI draws and the ids it uses to tell an open question from an answered one.",
+    "properties": {
+      "question_id": {
+        "description": "The function-call id of this ask.",
+        "type": "string"
+      },
+      "questions": {
+        "description": "The questions as shown, in request order.",
+        "items": {
+          "$ref": "#/definitions/AskQuestion"
+        },
+        "type": "array"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/AskStatus"
+      },
+      "turn_id": {
+        "description": "The turn that asked; once the session's current turn differs, the question has been answered.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "question_id",
+      "questions",
+      "session_id",
+      "status",
+      "turn_id"
+    ],
+    "title": "AskResponse",
+    "type": "object"
+  }
+}
