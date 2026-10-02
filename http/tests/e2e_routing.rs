@@ -50,6 +50,45 @@ async fn multiple_path_params_are_extracted() {
 
 #[tokio::test]
 #[serial]
+async fn brace_path_param_is_extracted() {
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
+    let boot = worker::start_http_worker(iii.clone()).await;
+    backend::register_echo_backend(&iii, "/tasks/{tid}", "GET").await;
+    common::wait_for_route(&boot.routes, "GET", "/tasks/:tid").await;
+
+    let url = format!("http://{}/tasks/123", boot.local_addr);
+    let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let v: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(v["path_params"]["tid"], "123");
+
+    boot.shutdown().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn multiple_brace_path_params_are_extracted() {
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
+    let boot = worker::start_http_worker(iii.clone()).await;
+    backend::register_echo_backend(&iii, "/users/{userId}/tasks/{tid}", "GET").await;
+    common::wait_for_route(&boot.routes, "GET", "/users/:userId/tasks/:tid").await;
+
+    let url = format!("http://{}/users/alice/tasks/42", boot.local_addr);
+    let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let v: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(v["path_params"]["userId"], "alice");
+    assert_eq!(v["path_params"]["tid"], "42");
+
+    boot.shutdown().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn query_params_are_parsed() {
     let Some(iii) = engine::get_or_init().await else {
         return;

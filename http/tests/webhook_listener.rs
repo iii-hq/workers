@@ -428,3 +428,46 @@ async fn failed_webhook_boot_releases_prepared_normal_listener() {
     assert_closed(normal).await;
     engine.shutdown().await;
 }
+
+#[tokio::test]
+async fn brace_parameter_route_serves_and_extracts_path_params() {
+    let (engine, boot) = start(false).await;
+    let id = "test::get:users_tasks".to_string();
+    engine.iii.register_function(
+        id.clone(),
+        RegisterFunction::new_async(|req: HttpRequest| async move {
+            Ok::<Value, Error>(json!({
+                "body": {
+                    "path_params": req.path_params,
+                    "path": req.path,
+                }
+            }))
+        })
+        .description("Test backend")
+        .response_format(json!({"type": "object"})),
+    );
+    let trigger_config = json!({
+        "api_path": "/users/{userId}/tasks/{tid}",
+        "http_method": "GET",
+    });
+    let _trigger = engine
+        .iii
+        .register_trigger(RegisterTriggerInput::new("http", id, trigger_config))
+        .unwrap();
+    common::wait_for_route(&boot.routes, "GET", "/users/:userId/tasks/:tid").await;
+
+    let normal = boot.local_addr;
+    let http = client();
+    let resp = http
+        .get(format!("http://{normal}/users/alice/tasks/42"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["path_params"]["userId"], "alice");
+    assert_eq!(body["path_params"]["tid"], "42");
+
+    boot.shutdown().await;
+    engine.shutdown().await;
+}

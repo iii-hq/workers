@@ -145,6 +145,31 @@ fn default_http_method() -> String {
     "GET".to_string()
 }
 
+/// Normalizes OpenAPI-style whole-segment path parameters (`/tasks/{tid}`) to
+/// the internal colon format (`/tasks/:tid`).
+pub fn normalize_api_path(path: &str) -> String {
+    path.split('/')
+        .map(|segment| {
+            if segment.starts_with('{') && segment.ends_with('}') && segment.len() > 2 {
+                let inner = &segment[1..segment.len() - 1];
+                if !inner.contains('{') && !inner.contains('}') {
+                    return format!(":{inner}");
+                }
+            }
+            segment.to_string()
+        })
+        .collect::<Vec<String>>()
+        .join("/")
+}
+
+fn deserialize_api_path<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Ok(normalize_api_path(&s))
+}
+
 /// Configuration carried by an `http` trigger instance, as read from the
 /// trigger's `config` value.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -153,6 +178,7 @@ pub struct HttpTriggerConfig {
     /// opt-in only; the default keeps existing routes on the normal listener.
     #[serde(default)]
     pub public_webhook: bool,
+    #[serde(deserialize_with = "deserialize_api_path")]
     pub api_path: String,
     #[serde(default = "default_http_method")]
     pub http_method: String,
@@ -331,6 +357,45 @@ mod tests {
     fn http_trigger_config_requires_api_path() {
         let result: Result<HttpTriggerConfig, _> = serde_json::from_value(json!({}));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn normalize_api_path_converts_openapi_brace_parameters() {
+        assert_eq!(normalize_api_path("/tasks/{tid}"), "/tasks/:tid");
+        assert_eq!(
+            normalize_api_path("/users/{userId}/tasks/{tid}"),
+            "/users/:userId/tasks/:tid"
+        );
+    }
+
+    #[test]
+    fn normalize_api_path_preserves_colon_parameters_and_static_routes() {
+        assert_eq!(normalize_api_path("/tasks/:tid"), "/tasks/:tid");
+        assert_eq!(normalize_api_path("/tasks/toggle"), "/tasks/toggle");
+        assert_eq!(normalize_api_path("/"), "/");
+        assert_eq!(normalize_api_path(""), "");
+    }
+
+    #[test]
+    fn normalize_api_path_preserves_malformed_braces() {
+        assert_eq!(normalize_api_path("/tasks/{tid{foo"), "/tasks/{tid{foo");
+        assert_eq!(normalize_api_path("/tasks/{tid"), "/tasks/{tid");
+        assert_eq!(normalize_api_path("/tasks/tid}"), "/tasks/tid}");
+        assert_eq!(normalize_api_path("/tasks/{}"), "/tasks/{}");
+    }
+
+    #[test]
+    fn http_trigger_config_deserialization_normalizes_brace_path() {
+        let cfg: HttpTriggerConfig =
+            serde_json::from_value(json!({"api_path": "/tasks/{tid}"})).unwrap();
+        assert_eq!(cfg.api_path, "/tasks/:tid");
+    }
+
+    #[test]
+    fn http_trigger_config_deserialization_preserves_path_without_leading_slash() {
+        let cfg: HttpTriggerConfig =
+            serde_json::from_value(json!({"api_path": "tasks/{tid}"})).unwrap();
+        assert_eq!(cfg.api_path, "tasks/:tid");
     }
 
     // =========================================================================
