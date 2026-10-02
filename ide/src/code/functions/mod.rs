@@ -151,21 +151,20 @@ const LIST_TEMPLATES_DESC: &str =
 
 const SCAFFOLD_WORKER_ID: &str = "coder::scaffold-worker";
 const SCAFFOLD_WORKER_DESC: &str =
-    "Create a new iii worker from a coder::list-templates template: write \
-     its files into directory (default workers/<name>; its last folder must \
-     be <name>, C232 otherwise) with the template's name token replaced, \
-     all or nothing; a directory that exists and is not empty fails C233. \
-     start: true also adds it to the stack in this call (compose::add with \
-     the worker, its start_after and its missing requires) and returns \
-     operation_id and started (or start_error, files kept): to be \
-     woken when it is up, register a trigger on an operation_id you pick and \
-     pass it here. A container already named <name> fails C235 before any \
-     write. Without start, returns the files, compose_add, compose and \
-     next_steps; compose_add is the compose::add payload: send it whole, \
-     adding start_after to its workers entry and, for each requires that \
-     compose::status does not list, one more entry in workers; never move its entry's fields to the top level \
-     (top-level scripts are ignored) or use the bare worker string form, \
-     which drops the scripts. Paths: relative to the primary root or \
+    "Create a new iii worker from a coder::list-templates template and start \
+     it: write its files into directory (default workers/<name>; its last \
+     folder must be <name>, C232 otherwise) with the template's name token \
+     replaced, all or nothing (a directory that exists and is not empty fails \
+     C233), then add it to the stack in the same call (compose::add with the \
+     worker, its start_after and the requires the stack lacks) and return \
+     operation_id and started, or start_error with the files kept. A \
+     container already named <name> fails C235 before any write. To be woken \
+     when it is up, register a trigger on an operation_id you pick and pass \
+     it here. start: false writes the files only; send the returned \
+     compose_add whole to compose::add, adding start_after to its workers \
+     entry and one entry per missing requires (never move its fields to the \
+     top level, where scripts are ignored, or use the bare worker string \
+     form, which drops them). Paths: relative to the primary root or \
      absolute inside an allowed root (see coder::info).";
 
 /// One function's complete agent-facing wire surface: id, registration

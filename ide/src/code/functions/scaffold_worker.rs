@@ -42,11 +42,12 @@ pub struct ScaffoldWorkerInput {
     /// (`workers/<name>`).
     #[serde(default)]
     pub directory: Option<String>,
-    /// Also add the worker to the stack in this call: compose::add with the
-    /// worker and each requires that compose::status does not list, then
-    /// return its operation_id. A container with this name already in the
-    /// stack fails C235 before any file is written.
-    #[serde(default)]
+    /// Add the worker to the stack in this call (default true): compose::add
+    /// with the worker and each requires that compose::status does not list,
+    /// then return its operation_id. A container with this name already in
+    /// the stack fails C235 before any file is written. false writes the
+    /// files only.
+    #[serde(default = "start_by_default")]
     pub start: bool,
     /// With start: the compose::add operation id. Pick one and register a
     /// trigger on it before this call to be woken when it ends; compose
@@ -61,6 +62,10 @@ pub struct ScaffoldWorkerInput {
     #[serde(default)]
     #[schemars(skip)]
     pub fs_scope: Option<crate::fs::FsScope>,
+}
+
+fn start_by_default() -> bool {
+    true
 }
 
 // examples are wire-contract; goldens pin them.
@@ -153,12 +158,15 @@ async fn scaffold_and_start(
     }
     let operation_id = req.operation_id.take();
     let start_after = std::mem::take(&mut req.start_after);
-    let status = trigger
-        .trigger("compose::status", json!({}))
-        .await
-        .map_err(|e| {
-            format!("start: true needs compose::status, which failed ({e}); nothing was written")
-        })?;
+    let status = match trigger.trigger("compose::status", json!({})).await {
+        Ok(status) => status,
+        // No stack to read (no compose daemon): the files still go, unstarted.
+        Err(e) => {
+            let mut out = scaffold(resolver, cfg, journal, root, req).await?;
+            out.start_error = Some(format!("compose::status failed, so it was not added: {e}"));
+            return Ok(out);
+        }
+    };
     let declared: HashSet<&str> = status["containers"]
         .as_array()
         .into_iter()
@@ -169,7 +177,7 @@ async fn scaffold_and_start(
         return Err(err_to_string(CoderError::ContainerExists(format!(
             "the stack already has a container named {name}, and adding this worker would \
              repoint it at the new folder; nothing was written. Pick another name, or \
-             scaffold without start.",
+             pass start: false.",
             name = req.name
         ))));
     }
@@ -608,6 +616,10 @@ mod tests {
                 .unwrap()
                 .push((function_id.to_string(), payload));
             match function_id {
+                // A `declared` of ["!"] stands for a stack that cannot be read.
+                "compose::status" if self.declared == ["!"] => {
+                    Err(iii_sdk::errors::Error::Runtime("no compose daemon".into()))
+                }
                 "compose::status" => Ok(json!({
                     "containers": self.declared.iter().map(|c| json!({ "container": c })).collect::<Vec<_>>()
                 })),
@@ -750,7 +762,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn without_start_the_stack_is_not_touched() {
+    async fn start_is_the_default_on_the_wire() {
+        let req: ScaffoldWorkerInput =
+            serde_json::from_value(json!({ "template": "worker-node-ade", "name": "orders" }))
+                .unwrap();
+        assert!(req.start);
+        let req: ScaffoldWorkerInput = serde_json::from_value(
+            json!({ "template": "worker-node-ade", "name": "orders", "start": false }),
+        )
+        .unwrap();
+        assert!(!req.start);
+    }
+
+    #[tokio::test]
+    async fn start_without_a_readable_stack_still_writes_the_files() {
+        let env = Env::new(&[]);
+        let stub = stub(vec!["!"], Ok(json!({})));
+        let out = env.start(&stub, start_input("orders")).await.unwrap();
+        assert!(env.root().join("workers/orders/src/index.ts").is_file());
+        assert!(out.operation_id.is_none() && out.started.is_empty());
+        assert!(
+            out.start_error
+                .as_deref()
+                .is_some_and(|e| e.contains("no compose daemon")),
+            "{out:?}"
+        );
+        assert_eq!(stub.calls.lock().unwrap().len(), 1, "no compose::add");
+    }
+
+    #[tokio::test]
+    async fn start_false_leaves_the_stack_alone() {
         let env = Env::new(&[]);
         let stub = stub(vec!["orders"], Ok(json!({})));
         let out = env

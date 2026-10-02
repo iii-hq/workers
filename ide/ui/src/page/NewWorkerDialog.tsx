@@ -147,6 +147,8 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
         template: picked,
         name,
         directory: directory.startsWith('/') ? directory : joinPath(root, directory),
+        // Files only: "Add to stack" below adds it, with its progress and Retry.
+        start: false,
       })
       .then((result) => {
         dispatch({ type: 'created', result })

@@ -716,19 +716,27 @@ pub(crate) async fn invoke_target_classified(
     function_id: &str,
     arguments: &Value,
 ) -> (ResultData, bool) {
-    if let Some(denied) = project_wide_compose_denial(function_id, arguments)
-        .or_else(|| scaffold_start_denial(function_id, arguments, policy, engine.compose_scoped()))
-    {
+    let (arguments, start_note) =
+        match scaffold_start_gate(function_id, arguments, policy, engine.compose_scoped()) {
+            StartGate::Pass => (arguments.clone(), None),
+            StartGate::Deny(denied) => return (denied, false),
+            StartGate::FilesOnly(arguments, note) => (arguments, Some(note)),
+        };
+    if let Some(denied) = project_wide_compose_denial(function_id, &arguments) {
         return (denied, false);
     }
-    match engine.dispatch(function_id, arguments.clone()).await {
+    match engine.dispatch(function_id, arguments).await {
         Ok(mut value) => {
             if function_id == "engine::functions::list" {
                 post_filter_discovery(&mut value, policy);
             } else if function_id == "engine::functions::info" {
                 post_filter_info(&mut value, policy);
             }
-            (normalized_result(value), false)
+            let mut result = normalized_result(value);
+            if let Some(note) = start_note {
+                result.content.push(ContentBlock::text(note));
+            }
+            (result, false)
         }
         Err(e) => {
             let outcome_unknown = e.outcome_unknown;
@@ -831,36 +839,61 @@ pub(crate) fn project_wide_compose_denial(
     ))
 }
 
-/// The `is_error` result for `coder::scaffold-worker` with `start: true`
-/// when the ide's compose::add would not be this session's: the ide runs it
-/// under its own permissions, in its own stack. So it is refused when the
-/// policy does not allow compose::add (the flag must not widen it), and when
-/// this harness routes compose::* to another project (`scoped`).
-pub(crate) fn scaffold_start_denial(
+/// What the turn does with a `coder::scaffold-worker` call, whose `start`
+/// (default true) has the ide run compose::add under its own permissions,
+/// in its own stack.
+pub(crate) enum StartGate {
+    Pass,
+    /// An explicit `start: true` this session cannot have.
+    Deny(ResultData),
+    /// No `start` given and this session cannot start: the call goes with
+    /// `start: false`, and the note joins its result.
+    FilesOnly(Value, String),
+}
+
+/// A session may start a scaffold only if it may call compose::add itself
+/// (the flag must not widen its policy) and its compose::* calls go to the
+/// ide's own stack (`scoped` is a harness routing them to another project).
+pub(crate) fn scaffold_start_gate(
     function_id: &str,
     arguments: &Value,
     policy: &CompiledPolicy,
     scoped: bool,
-) -> Option<ResultData> {
-    if function_id != crate::clients::engine::SCAFFOLD_WORKER
-        || arguments.get("start") != Some(&Value::Bool(true))
-    {
-        return None;
+) -> StartGate {
+    if function_id != crate::clients::engine::SCAFFOLD_WORKER {
+        return StartGate::Pass;
     }
-    let message = if !policy.allows("compose::add") {
-        "coder::scaffold-worker with start: true runs compose::add, which this session may \
-         not call. Call it without start to write the files only, or ask for compose::add."
+    let why = if !policy.allows("compose::add") {
+        "it runs compose::add, which this session may not call"
     } else if scoped {
-        "coder::scaffold-worker with start: true adds to the ide's own stack, and this \
-         session's compose::* calls go to another project. Call it without start, then send \
-         its compose_add to compose::add."
+        "it adds to the ide's own stack, and this session's compose::* calls go to another project"
     } else {
-        return None;
+        return StartGate::Pass;
     };
-    Some(invocation_error_result(
-        Some("scaffold_start_denied".to_string()),
-        message.to_string(),
-    ))
+    match arguments.get("start") {
+        Some(Value::Bool(false)) => StartGate::Pass,
+        None => {
+            let mut files_only = arguments.clone();
+            if let Some(object) = files_only.as_object_mut() {
+                object.insert("start".to_string(), Value::Bool(false));
+            }
+            StartGate::FilesOnly(
+                files_only,
+                format!(
+                    "[harness] Not started ({why}): only the files were written. Send its \
+                     compose_add to compose::add where that is allowed."
+                ),
+            )
+        }
+        // true, or a value the ide would refuse anyway: never dispatched.
+        Some(_) => StartGate::Deny(invocation_error_result(
+            Some("scaffold_start_denied".to_string()),
+            format!(
+                "coder::scaffold-worker with start: true is refused here: {why}. Pass \
+                 start: false to write the files only."
+            ),
+        )),
+    }
 }
 
 pub(crate) fn invocation_error_result(code: Option<String>, message: String) -> ResultData {
@@ -1219,17 +1252,50 @@ mod tests {
     /// does not grant through the ide's own permissions.
     #[test]
     fn a_starting_scaffold_needs_compose_add() {
-        let start = json!({ "template": "worker-node-ade", "name": "orders", "start": true });
         let id = "coder::scaffold-worker";
-        let denied = scaffold_start_denial(id, &start, &pol(&["coder::*"]), false)
-            .expect("start without compose::add must be refused");
-        assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
+        let explicit = json!({ "template": "worker-node-ade", "name": "orders", "start": true });
+        let default = json!({ "template": "worker-node-ade", "name": "orders" });
+        let opt_out = json!({ "template": "worker-node-ade", "name": "orders", "start": false });
+        let coder_only = pol(&["coder::*"]);
         let allowed = pol(&["coder::*", "compose::add"]);
-        assert!(scaffold_start_denial(id, &start, &allowed, false).is_none());
+
+        let StartGate::Deny(denied) = scaffold_start_gate(id, &explicit, &coder_only, false) else {
+            panic!("an explicit start without compose::add must be refused");
+        };
+        assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
+        // The default start degrades to the files only, with a note.
+        let StartGate::FilesOnly(sent, note) =
+            scaffold_start_gate(id, &default, &coder_only, false)
+        else {
+            panic!("a defaulted start without compose::add must go files-only");
+        };
+        assert_eq!(sent, opt_out);
+        assert!(note.contains("Not started"), "{note}");
+        assert!(matches!(
+            scaffold_start_gate(id, &opt_out, &coder_only, false),
+            StartGate::Pass
+        ));
+        assert!(matches!(
+            scaffold_start_gate(id, &explicit, &allowed, false),
+            StartGate::Pass
+        ));
+        assert!(matches!(
+            scaffold_start_gate(id, &default, &allowed, false),
+            StartGate::Pass
+        ));
         // A harness that routes compose::* elsewhere: the ide would add to the wrong stack.
-        assert!(scaffold_start_denial(id, &start, &allowed, true).is_some());
-        let files_only = json!({ "template": "worker-node-ade", "name": "orders" });
-        assert!(scaffold_start_denial(id, &files_only, &pol(&["coder::*"]), true).is_none());
+        assert!(matches!(
+            scaffold_start_gate(id, &explicit, &allowed, true),
+            StartGate::Deny(_)
+        ));
+        assert!(matches!(
+            scaffold_start_gate(id, &default, &allowed, true),
+            StartGate::FilesOnly(..)
+        ));
+        assert!(matches!(
+            scaffold_start_gate(id, &opt_out, &allowed, true),
+            StartGate::Pass
+        ));
     }
 
     /// Prevents: the self-inflicted restart — a project-wide `compose::restart`

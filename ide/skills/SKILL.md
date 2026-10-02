@@ -147,14 +147,16 @@ standalone worker) over the **same jail** (`fs.host_roots`): `coder::info`
 `coder::list-templates` lists the worker templates (`code.templates`: a local
 `dir`, or a cached git clone) with their language and the compose containers
 they need.
-`coder::scaffold-worker { template, name, directory? }` writes one into a
-missing or empty folder whose last segment is `name` (default
-`workers/<name>`), all or nothing, and returns `compose_add`, the
-`compose::add` payload to send whole, adding `start_after` to its entry and
-missing `requires` as more entries (never the bare `worker` string form,
-which drops the scripts). With `start: true` (plus `operation_id` and
-`start_after`) it does that `compose::add` itself in the same call: a name
-the stack already has fails `C235` before any write, and the result carries
-`operation_id` and `started`, or `start_error` with the files kept. It adds
-to the stack the ide runs in, so the harness refuses `start` to a session
-without `compose::add`, or whose `compose::*` calls go to another project.
+`coder::scaffold-worker { template, name, directory?, operation_id?, start_after? }`
+writes one into a missing or empty folder whose last segment is `name`
+(default `workers/<name>`), all or nothing, then adds it to the stack in the
+same call (`compose::add` with the worker, its `start_after` and the
+`requires` the stack lacks): a name the stack already has fails `C235`
+before any write, and the result carries `operation_id` and `started`, or
+`start_error` with the files kept. `start: false` writes the files only and
+returns `compose_add`, the `compose::add` payload to send whole, adding
+`start_after` to its entry and missing `requires` as more entries (never the
+bare `worker` string form, which drops the scripts). It adds to the stack
+the ide runs in, so a harness session without `compose::add`, or whose
+`compose::*` calls go to another project, gets the files only (an explicit
+`start: true` is refused there).
