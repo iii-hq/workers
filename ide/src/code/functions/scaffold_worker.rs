@@ -3,8 +3,8 @@
 //! are written into a missing or empty folder named after the worker, with
 //! the name token replaced in paths and contents, through
 //! `coder::create-file`'s journalled write path (executable bit kept), all
-//! or nothing. The result carries the container object for `compose::add`;
-//! registering the worker is the caller's call.
+//! or nothing. The result carries the `compose::add` payload and its container
+//! object; registering the worker is the caller's call.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -64,6 +64,10 @@ pub struct ScaffoldWorkerOutput {
     /// (the bare `worker` string form drops its scripts): `worker` is the
     /// absolute folder path; `start_after` is left to the caller.
     pub compose: serde_json::Value,
+    /// The compose::add payload, ready to send as is; append start_after and
+    /// any requires that compose::status does not list to its workers entry
+    /// or array.
+    pub compose_add: serde_json::Value,
     /// Compose containers the worker needs (e.g. `http`); add the ones
     /// `compose::status` does not list in the same `compose::add`.
     pub requires: Vec<String>,
@@ -285,6 +289,7 @@ fn plan(
         directory: target.display().to_string(),
         // Filled in once the files are written.
         files: Vec::new(),
+        compose_add: serde_json::json!({ "workers": [&compose] }),
         compose,
         requires: template.worker.requires.clone(),
         next_steps: template
@@ -447,6 +452,7 @@ mod tests {
                 "environment": { "WORKER_NAME": "orders" }
             })
         );
+        assert_eq!(out.compose_add["workers"][0], out.compose);
         assert_eq!(out.requires, ["http"]);
         assert_eq!(out.next_steps, ["Call: iii trigger orders::hello"]);
     }
