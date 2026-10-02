@@ -3,6 +3,7 @@ import {
   addToStack,
   defaultDirectory,
   entryFile,
+  formatElapsed,
   type ListTemplatesResult,
   MAX_POLLS,
   NEW_WORKER_INITIAL,
@@ -13,9 +14,11 @@ import {
   type ScaffoldResult,
   type StackPhase,
   sourceLabel,
+  stackSteps,
   templateChoices,
   type Trigger,
   validateWorkerName,
+  workerFunctions,
 } from '../new-worker'
 
 const LIST: ListTemplatesResult = {
@@ -209,6 +212,38 @@ const status = (...rows: Array<[string, string, string?]>) => ({
 })
 const accepted = (id: string) => ({ operation_id: id, requested: 1, status: 'accepted' })
 const noWait = async () => {}
+
+describe('stackSteps', () => {
+  const at = (step: NewWorkerState['step'], phase: StackPhase = 'installing') =>
+    stackSteps({ ...NEW_WORKER_INITIAL, step, phase }).map((s) => `${s.label}:${s.state}`)
+
+  it('follows Add to stack and names the step a failure stopped at', () => {
+    expect(at('result')).toEqual(['Install:pending', 'Start:pending'])
+    expect(at('adding')).toEqual(['Installing…:active', 'Start:pending'])
+    expect(at('adding', 'starting')).toEqual(['Installed:done', 'Starting…:active'])
+    expect(at('running', 'starting')).toEqual(['Installed:done', 'Running:live'])
+    expect(at('failed')).toEqual(['Install failed:failed', 'Start:pending'])
+    expect(at('failed', 'starting')).toEqual(['Installed:done', 'Did not start:failed'])
+  })
+})
+
+describe('formatElapsed', () => {
+  it('counts seconds, then minutes and padded seconds', () => {
+    expect([0, 8_400, 59_999, 65_000, 600_000].map(formatElapsed)).toEqual(['0s', '8s', '59s', '1m 05s', '10m 00s'])
+  })
+})
+
+describe('workerFunctions', () => {
+  it('keeps the worker’s own ids, sorted, and not a prefix-sharing worker’s', () => {
+    const entries = [
+      { function_id: 'orders::hello' },
+      { function_id: 'orders-v2::hello' },
+      { function_id: 'state::get' },
+      { function_id: 'orders::archive', description: 'Archive one' },
+    ]
+    expect(workerFunctions(entries, 'orders').map((f) => f.function_id)).toEqual(['orders::archive', 'orders::hello'])
+  })
+})
 
 describe('addToStack', () => {
   it('adds the worker with the missing http, then follows it to ready', async () => {

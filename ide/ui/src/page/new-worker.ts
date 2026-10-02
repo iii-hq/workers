@@ -106,7 +106,9 @@ export const NEW_WORKER_INITIAL: NewWorkerState = {
   owned: false,
 }
 
-const withAdePage = (template: TemplateInfo) => template.id.endsWith('-ade')
+/** The -ade templates register an ADE page with the worker's name as its id. */
+export const hasAdePage = (templateId: string) => templateId.endsWith('-ade')
+const withAdePage = (template: TemplateInfo) => hasAdePage(template.id)
 
 /** The template to create from: `template` while the list still has it, else
     the first -ade one, else the first. */
@@ -166,6 +168,55 @@ export function newWorkerReducer(state: NewWorkerState, action: NewWorkerAction)
         ? { ...state, step: 'failed', error: action.error, logs: action.logs, owned: action.owned }
         : state
   }
+}
+
+/* ── the result's progress ───────────────────────────────────────────── */
+
+/** `live` is the last step's ongoing state: the worker runs. */
+export type StepState = 'done' | 'live' | 'active' | 'pending' | 'failed'
+
+export interface ProgressStep {
+  label: string
+  state: StepState
+}
+
+/** Install and Start, the two steps after the files: where "Add to stack"
+    is, and which of them a failure stopped at. */
+export function stackSteps({ step, phase }: NewWorkerState): [ProgressStep, ProgressStep] {
+  const installed: ProgressStep = { label: 'Installed', state: 'done' }
+  const start: ProgressStep = { label: 'Start', state: 'pending' }
+  switch (step) {
+    case 'running':
+      return [installed, { label: 'Running', state: 'live' }]
+    case 'adding':
+      return phase === 'installing'
+        ? [{ label: 'Installing…', state: 'active' }, start]
+        : [installed, { label: 'Starting…', state: 'active' }]
+    case 'failed':
+      return phase === 'installing'
+        ? [{ label: 'Install failed', state: 'failed' }, start]
+        : [installed, { label: 'Did not start', state: 'failed' }]
+    default:
+      return [{ label: 'Install', state: 'pending' }, start]
+  }
+}
+
+/** `8s`, `1m 05s`. */
+export function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
+}
+
+/** One row of engine::functions::list, which leaves internal functions out. */
+export interface FunctionEntry {
+  function_id: string
+  description?: string | null
+}
+
+/** The worker's own functions: its `<name>::` ids, in id order. */
+export function workerFunctions(entries: FunctionEntry[], name: string): FunctionEntry[] {
+  return entries.filter((entry) => entry.function_id.startsWith(`${name}::`)).sort((a, b) => a.function_id.localeCompare(b.function_id))
 }
 
 /* ── Add to stack ───────────────────────────────────────────────────── */

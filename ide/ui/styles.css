@@ -1360,7 +1360,52 @@
     white-space: nowrap;
     vertical-align: bottom;
   }
-  .shui-new-worker-status { display: flex; align-items: center; gap: 8px; margin: 0; font: 400 12px / 18px var(--font-sans); color: var(--color-ink); overflow-wrap: anywhere; }
+  .shui-new-worker-steps { display: flex; flex-direction: column; gap: 10px; margin: 6px 0 4px; padding: 0; list-style: none; }
+  .shui-new-worker-step {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: 10px;
+    font: 400 13px / 18px var(--font-sans);
+    color: var(--color-ink);
+  }
+  .shui-new-worker-step-mark { display: grid; place-items: center; width: 16px; height: 16px; }
+  .shui-new-worker-step-mark > svg { width: 16px; height: 16px; }
+  .shui-new-worker-step[data-state="done"] .shui-new-worker-step-mark { color: var(--color-ok); }
+  .shui-new-worker-step[data-state="failed"] .shui-new-worker-step-mark { color: var(--color-alert); }
+  .shui-new-worker-step[data-state="pending"] { color: var(--color-ink-faint); }
+  .shui-new-worker-step[data-state="pending"] .shui-new-worker-step-mark { opacity: 0.4; }
+  .shui-new-worker-step-detail {
+    font: 400 11px / 16px var(--font-mono);
+    color: var(--color-ink-faint);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .shui-new-worker-step-failure { display: flex; flex-direction: column; gap: 8px; grid-column: 2 / -1; margin-top: 6px; min-width: 0; }
+  .shui-new-worker-functions { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  .shui-new-worker-functions > h3 { margin: 0; }
+  .shui-new-worker-function-list {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--color-edge);
+    border-radius: 6px;
+    list-style: none;
+  }
+  .shui-new-worker-function { display: flex; align-items: center; gap: 4px; padding: 6px 6px 6px 12px; }
+  .shui-new-worker-function + .shui-new-worker-function { border-top: 1px solid var(--color-edge); }
+  .shui-new-worker-function-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+  .shui-new-worker-function-id { font: 400 12px / 18px var(--font-mono); color: var(--color-ink); overflow-wrap: anywhere; }
+  .shui-new-worker-function-description {
+    overflow: hidden;
+    font: 400 11px / 16px var(--font-sans);
+    color: var(--color-ink-faint);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shui-new-worker .shui-text-dialog-actions { flex-wrap: wrap; }
   .shui-new-worker-logs {
     margin: 0;
     max-height: 200px;

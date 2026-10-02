@@ -1,7 +1,8 @@
 /* "New worker…": a template, a name and a parent folder go to
    coder::scaffold-worker as `<folder>/<name>`; by default the worker is then
    added to the stack (compose::add) and followed until it runs, else the
-   result offers "Add to stack". The steps and the stack calls live in
+   result offers "Add to stack". The result shows the three steps, then the
+   worker's functions and its pages. The steps and the stack calls live in
    new-worker.ts, which the tests drive. Mounted while open, so every opening
    starts from a fresh template list and empty fields. */
 
@@ -19,12 +20,17 @@ import {
   StatusDot,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { Check, ExternalLink, RefreshCw } from 'lucide-react'
-import { type MouseEvent, useCallback, useEffect, useId, useReducer, useRef, useState } from 'react'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { Check, Copy, ExternalLink, LayoutPanelLeft, MessageSquarePlus, RefreshCw, X } from 'lucide-react'
+import { type MouseEvent, type ReactNode, useCallback, useEffect, useId, useReducer, useRef, useState } from 'react'
 import { joinPath } from './coder'
 import {
   addToStack,
   defaultDirectory,
+  entryFile,
+  type FunctionEntry,
+  formatElapsed,
+  hasAdePage,
   LANGUAGE_LABEL,
   type Language,
   type ListTemplatesResult,
@@ -32,10 +38,14 @@ import {
   newWorkerReducer,
   pickTemplate,
   type ScaffoldResult,
+  type ProgressStep,
+  type StepState,
   sourceLabel,
+  stackSteps,
   type Trigger,
   templateChoices,
   validateWorkerName,
+  workerFunctions,
 } from './new-worker'
 
 /** The http worker's default port; the -ade templates serve their public
@@ -114,7 +124,9 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
   const directory = defaultDirectory(folder.trim(), name || 'my-worker')
   const ready = state.step === 'form' && picked !== undefined && name !== '' && nameError === null
 
+  const addedAt = useRef(0)
   const add = (result: ScaffoldResult, owned: boolean) => {
+    addedAt.current = Date.now()
     dispatch({ type: 'add' })
     const trigger: Trigger = <T,>(functionId: string, payload: Record<string, unknown>) =>
       mounted.current ? host.iii.trigger<T>(functionId, payload) : Promise.reject<T>(new Error('the dialog closed'))
@@ -146,6 +158,25 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
 
   const result = state.result
   const publicHref = result ? `http://${window.location.hostname}:${HTTP_PORT}/${result.name}` : null
+
+  // The clock beside the step in progress: installs can take a minute.
+  const [now, setNow] = useState(0)
+  useEffect(() => {
+    if (state.step !== 'adding') return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [state.step])
+
+  // Once it runs, what it registered (functions::list leaves internal ones out).
+  const [functions, setFunctions] = useState<FunctionEntry[] | null>(null)
+  const runningName = state.step === 'running' ? result?.name : undefined
+  useEffect(() => {
+    if (!runningName) return
+    host.iii
+      .trigger<{ functions: FunctionEntry[] }>('engine::functions::list', {})
+      .then(({ functions: all }) => setFunctions(workerFunctions(all, runningName)), () => setFunctions([]))
+  }, [host, runningName])
 
   // Opens the public page in the browser worker's console page; the browser
   // worker runs beside the http worker, so it opens 127.0.0.1. Without one, on
@@ -301,31 +332,54 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
         ) : (
           <>
             <DialogDescription>
-              {result.files.length} {result.files.length === 1 ? 'file' : 'files'} created in{' '}
+              {templates.find((t) => t.id === result.template)?.name ?? result.template} in{' '}
               <span className="shui-new-worker-path">{result.directory}</span>
             </DialogDescription>
-            {state.step === 'adding' ? (
-              <p className="shui-new-worker-status" role="status">
-                <StatusDot tone="accent" pulse />
-                {state.phase === 'installing' ? 'Installing…' : 'Starting…'}
-              </p>
-            ) : state.step === 'running' ? (
-              <p className="shui-new-worker-status" role="status">
-                <StatusDot tone="ok" />
-                Running
-              </p>
-            ) : state.step === 'failed' ? (
-              <>
-                <p className="shui-new-worker-status" role="alert">
-                  <StatusDot tone="alert" />
-                  Did not start: {state.error}
-                </p>
-                {state.logs.length > 0 ? <pre className="shui-new-worker-logs">{state.logs.join('\n')}</pre> : null}
-              </>
-            ) : (
-              <p className="shui-new-worker-note">Not in the stack yet: add it to run it.</p>
-            )}
+            <ResultSteps
+              files={result.files.length}
+              entry={entryLabel(result)}
+              steps={stackSteps(state)}
+              elapsed={state.step === 'adding' ? formatElapsed(now - addedAt.current) : null}
+              failure={
+                state.step === 'failed' ? (
+                  <>
+                    <p className="shui-new-worker-note warn">{state.error}</p>
+                    {state.logs.length > 0 ? <pre className="shui-new-worker-logs">{state.logs.join('\n')}</pre> : null}
+                  </>
+                ) : null
+              }
+            />
+            {state.step === 'result' ? (
+              <p className="shui-new-worker-note">Not in the stack yet: add it to install and start it.</p>
+            ) : null}
+            {state.step === 'running' && functions && functions.length > 0 ? (
+              <WorkerFunctions
+                functions={functions}
+                onTry={
+                  host.chat?.openDraft
+                    ? (id) => {
+                        host.chat?.openDraft?.({ text: `Call ${id} and show me what it returns.`, title: `Try ${id}` })
+                        onClose()
+                      }
+                    : undefined
+                }
+              />
+            ) : null}
             <div className="shui-text-dialog-actions">
+              {state.step === 'running' && hasAdePage(result.template) && host.panels ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    host.panels?.open({ pageId: result.name })
+                    onClose()
+                  }}
+                >
+                  <LayoutPanelLeft aria-hidden />
+                  Open admin page
+                </Button>
+              ) : null}
               {state.step === 'running' && result.requires.includes('http') && publicHref ? (
                 <Button asChild variant="ghost" size="sm">
                   <a href={publicHref} target="_blank" rel="noreferrer" onClick={openInBrowser}>
@@ -358,5 +412,91 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
         )}
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** The entry file onCreated opened, relative to the worker's folder. */
+function entryLabel(result: ScaffoldResult): string | null {
+  const entry = entryFile(result.files.map((file) => file.path))
+  return entry?.startsWith(`${result.directory}/`) ? entry.slice(result.directory.length + 1) : entry
+}
+
+const STEP_TONE = { live: 'ok', active: 'accent', pending: 'ink' } as const
+
+function StepMark({ state }: { state: StepState }) {
+  if (state === 'done') return <Check aria-hidden />
+  if (state === 'failed') return <X aria-hidden />
+  return <StatusDot tone={STEP_TONE[state]} pulse={state === 'active'} />
+}
+
+/** Create, Install, Start: done, in progress (with its clock), waiting or failed. */
+function ResultSteps({
+  files,
+  entry,
+  steps: [install, start],
+  elapsed,
+  failure,
+}: {
+  files: number
+  entry: string | null
+  steps: [ProgressStep, ProgressStep]
+  elapsed: string | null
+  failure: ReactNode
+}) {
+  const rows = [
+    { key: 'files', label: `Created ${files} ${files === 1 ? 'file' : 'files'}`, state: 'done' as const, detail: entry && `${entry} is open` },
+    { key: 'install', ...install, detail: install.state === 'active' ? elapsed : null },
+    { key: 'start', ...start, detail: start.state === 'active' ? elapsed : null },
+  ]
+  return (
+    <ol className="shui-new-worker-steps" aria-live="polite">
+      {rows.map((row) => (
+        <li key={row.key} className="shui-new-worker-step" data-state={row.state}>
+          <span className="shui-new-worker-step-mark">
+            <StepMark state={row.state} />
+          </span>
+          <span className="shui-new-worker-step-label">{row.label}</span>
+          {row.detail ? <span className="shui-new-worker-step-detail">{row.detail}</span> : null}
+          {row.state === 'failed' ? <div className="shui-new-worker-step-failure">{failure}</div> : null}
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+/** What the running worker registered: copy an id, or try it in a chat draft. */
+function WorkerFunctions({ functions, onTry }: { functions: FunctionEntry[]; onTry?: (id: string) => void }) {
+  const headingId = useId()
+  return (
+    <section className="shui-new-worker-functions" aria-labelledby={headingId}>
+      <h3 id={headingId} className="shui-text-dialog-label">
+        {functions.length === 1 ? 'Its function' : `Its ${functions.length} functions`}
+      </h3>
+      <ul className="shui-new-worker-function-list">
+        {functions.map((fn) => (
+          <FunctionRow key={fn.function_id} fn={fn} onTry={onTry} />
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+function FunctionRow({ fn, onTry }: { fn: FunctionEntry; onTry?: (id: string) => void }) {
+  const { state, copy } = useCopyFlash(fn.function_id)
+  return (
+    <li className="shui-new-worker-function">
+      <span className="shui-new-worker-function-text">
+        <span className="shui-new-worker-function-id">{fn.function_id}</span>
+        {fn.description ? <span className="shui-new-worker-function-description">{fn.description}</span> : null}
+      </span>
+      <IconButton label={state === 'copied' ? 'Copied' : `Copy ${fn.function_id}`} variant="ghost" onClick={copy}>
+        {state === 'copied' ? <Check aria-hidden /> : <Copy aria-hidden />}
+      </IconButton>
+      {onTry ? (
+        <IconButton label={`Try ${fn.function_id} in a chat`} variant="ghost" onClick={() => onTry(fn.function_id)}>
+          <MessageSquarePlus aria-hidden />
+        </IconButton>
+      ) : null}
+    </li>
   )
 }
