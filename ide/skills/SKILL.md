@@ -152,4 +152,8 @@ missing or empty folder whose last segment is `name` (default
 `workers/<name>`), all or nothing, and returns `compose_add`, the
 `compose::add` payload to send whole, adding `start_after` to its entry and
 missing `requires` as more entries (never the bare `worker` string form,
-which drops the scripts).
+which drops the scripts). With `start: true` (plus `operation_id` and
+`start_after`) it does that `compose::add` itself in the same call: a name
+the stack already has fails `C235` before any write, and the result carries
+`operation_id` and `started`, or `start_error` with the files kept. The
+session needs `compose::add` for `start`.

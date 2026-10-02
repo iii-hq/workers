@@ -115,6 +115,11 @@ pub enum CoderError {
     #[error("C234: {0}")]
     #[serde(rename = "C234")]
     InvalidTemplate(String),
+
+    /// `start: true` and the stack already has a container with this name.
+    #[error("C235: {0}")]
+    #[serde(rename = "C235")]
+    ContainerExists(String),
 }
 
 impl CoderError {
@@ -141,6 +146,7 @@ impl CoderError {
             CoderError::InvalidWorkerName(_) => "C232",
             CoderError::TargetNotEmpty(_) => "C233",
             CoderError::InvalidTemplate(_) => "C234",
+            CoderError::ContainerExists(_) => "C235",
         }
     }
 
@@ -161,7 +167,8 @@ impl CoderError {
             | CoderError::UnknownTemplate(m)
             | CoderError::InvalidWorkerName(m)
             | CoderError::TargetNotEmpty(m)
-            | CoderError::InvalidTemplate(m) => m,
+            | CoderError::InvalidTemplate(m)
+            | CoderError::ContainerExists(m) => m,
         }
     }
 
@@ -353,11 +360,12 @@ mod tests {
             CoderError::InvalidWorkerName("a".into()),
             CoderError::TargetNotEmpty("a".into()),
             CoderError::InvalidTemplate("a".into()),
+            CoderError::ContainerExists("a".into()),
         ]
         .iter()
         .map(CoderError::code)
         .collect();
-        assert_eq!(codes, ["C230", "C231", "C232", "C233", "C234"]);
+        assert_eq!(codes, ["C230", "C231", "C232", "C233", "C234", "C235"]);
     }
 
     /// DRIFT PREVENTION: `to_wire_error()` (structured per-entry form)

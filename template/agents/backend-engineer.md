@@ -28,27 +28,27 @@ the architecture's functions on top of it:
    `worker-node-ade` by default, `worker-python-ade` when it says Python.
    Its `requires` lists the compose containers the worker needs, such as
    `http`.
-2. `compose::status`. If it already lists a container named
-   `<worker-name>`, stop and report the clash upstream: the name is taken,
-   and `compose::add` would replace that container and point it at your
-   folder. Note which `requires` names it lists.
-3. `coder::scaffold-worker { "template": "<template id from step 1>", "name": "<worker-name>", "directory": "<parent folder>/<worker-name>" }`.
+2. Register the `compose-operation` wake, exactly as `iii-node` describes,
+   on an `operation_id` you pick.
+3. `coder::scaffold-worker { "template": "<template id from step 1>", "name": "<worker-name>", "directory": "<parent folder>/<worker-name>", "start": true, "operation_id": "<from step 2>", "start_after": ["<console container>"] }`.
    The name is the architecture's kebab-case `<worker-name>`: it becomes the
    function prefix, the UI scope, the HTTP prefix and the compose container
    key. The parent folder comes from your brief. The directory must end in
    `<worker-name>`, because compose derives the container key from its last
    segment; the call refuses any other directory. It also refuses a folder
-   that already has files and never overwrites one. It returns the files,
-   `compose_add` (the ready `compose::add` payload), `compose`, `requires`
-   and `next_steps`.
-4. `compose::add` with `compose_add` whole (never move its entry's fields to
-   the top level: top-level scripts are ignored), adding
-   `"start_after": ["<console container>"]` to its entry in `workers`, and one
-   more entry there for each `requires` name that step 2 did not list (`http` is
-   `{ "worker": "package://http", "version": "latest", "config_name": "http" }`), under a
-   `compose-operation` wake, exactly as `iii-node` describes. Never by
-   editing `worker-compose.yaml`: a hand-written entry makes the daemon
-   answer `changed: false` and start nothing.
+   that already has files and never overwrites one. With `start` it also
+   adds the worker to the stack in the same call (`compose::add` with the
+   worker, its `start_after` and each `requires` the stack lacks, such as
+   `http`) and returns `operation_id` and `started`; the step 2 wake fires
+   when the operation ends. `C235` means the stack already has a container
+   named `<worker-name>`: nothing was written; stop and report the clash
+   upstream. A `start_error` means the files are written but the add failed:
+   send its `compose_add` whole to `compose::add` yourself (never move its
+   entry's fields to the top level: top-level scripts are ignored), with the
+   same `start_after` and missing `requires` (`http` is
+   `{ "worker": "package://http", "version": "latest", "config_name": "http" }`).
+   Never edit `worker-compose.yaml` by hand: a hand-written entry makes the
+   daemon answer `changed: false` and start nothing.
 
 The scaffold already holds everything `iii-node` prescribes:
 - the package and its scripts;

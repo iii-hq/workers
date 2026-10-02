@@ -1,5 +1,5 @@
 {
-  "description": "Create a new iii worker from a coder::list-templates template: write its files into directory (default workers/<name>; its last folder must be <name>, C232 otherwise) with the template's name token replaced, all or nothing; a directory that exists and is not empty fails C233. Returns the files, compose_add, compose and next_steps. compose_add is the compose::add payload: send it whole, adding start_after to its workers entry and, for each requires that compose::status does not list, one more entry in workers; never move its entry's fields to the top level (top-level scripts are ignored) or use the bare worker string form, which drops the scripts. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
+  "description": "Create a new iii worker from a coder::list-templates template: write its files into directory (default workers/<name>; its last folder must be <name>, C232 otherwise) with the template's name token replaced, all or nothing; a directory that exists and is not empty fails C233. start: true also adds it to the stack in this call (compose::add with the worker, its start_after and its missing requires) and returns operation_id and started (or start_error, files kept): to be woken when it is up, register a trigger on an operation_id you pick and pass it here. A container already named <name> fails C235 before any write. Without start, returns the files, compose_add, compose and next_steps; compose_add is the compose::add payload: send it whole, adding start_after to its workers entry and, for each requires that compose::status does not list, one more entry in workers; never move its entry's fields to the top level (top-level scripts are ignored) or use the bare worker string form, which drops the scripts. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
   "function_id": "coder::scaffold-worker",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -22,6 +22,27 @@
       "name": {
         "description": "The new worker's name: lowercase kebab-case, 1-63 chars. It replaces the template's name token, so it names the folder, the compose container and the function prefix (`<name>::hello`).",
         "type": "string"
+      },
+      "operation_id": {
+        "default": null,
+        "description": "With start: the compose::add operation id. Pick one and register a trigger on it before this call to be woken when it ends; compose picks one when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "start": {
+        "default": false,
+        "description": "Also add the worker to the stack in this call: compose::add with the worker and each requires that compose::status does not list, then return its operation_id. A container with this name already in the stack fails C235 before any file is written.",
+        "type": "boolean"
+      },
+      "start_after": {
+        "default": [],
+        "description": "With start: containers the worker starts after (its compose entry's start_after), e.g. the console's.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "template": {
         "description": "Template id from coder::list-templates.",
@@ -88,8 +109,29 @@
         },
         "type": "array"
       },
+      "operation_id": {
+        "description": "With start: compose::add's operation (follow it with compose::operation, or a trigger registered on its id).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "requires": {
         "description": "Compose containers the worker needs (e.g. `http`); add the ones `compose::status` does not list in the same `compose::add`.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "start_error": {
+        "description": "With start: why compose::add failed. The files are written; send compose_add to compose::add to add the worker.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "started": {
+        "description": "With start: the containers compose::add was asked to add, the worker first.",
         "items": {
           "type": "string"
         },
@@ -107,6 +149,7 @@
       "name",
       "next_steps",
       "requires",
+      "started",
       "template"
     ],
     "title": "ScaffoldWorkerOutput",

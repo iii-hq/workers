@@ -56,9 +56,9 @@ document. It is the contract both halves build to, and it names:
 - **Delivery.** The template, from `coder::list-templates`:
   `worker-node-ade` unless the spec asks for Python (`worker-python-ade`).
   The Backend Engineer scaffolds it with `coder::scaffold-worker` and
-  declares it through `compose::add`, sending the scaffold's `compose_add`
-  whole with `start_after` and any missing `requires` inside `workers` (never
-  a hand edit of `worker-compose.yaml`). The scaffold carries the package,
+  `start: true`, which declares it through `compose::add` in the same call
+  with `start_after` and any missing `requires` (never a hand edit of
+  `worker-compose.yaml`). The scaffold carries the package,
   `scripts/dev.mjs`, `ui/build.mjs`, the asset content function and
   triggers, `iii.worker.yaml`, the ADE page in `ui/WorkerPage.tsx` and the
   plainer standalone page in `ui/App.tsx`, served over HTTP; it is what

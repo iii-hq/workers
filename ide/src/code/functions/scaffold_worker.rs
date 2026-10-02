@@ -4,14 +4,17 @@
 //! the name token replaced in paths and contents, through
 //! `coder::create-file`'s journalled write path (executable bit kept), all
 //! or nothing. The result carries the `compose::add` payload and its container
-//! object; registering the worker is the caller's call.
+//! object; registering the worker is the caller's call, or this one's with
+//! `start: true` (compose::add, returning its operation_id).
 
+use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use crate::code::change_journal::ChangeJournal;
 use crate::code::config::CoderConfig;
@@ -21,6 +24,7 @@ use crate::code::path::PathResolver;
 use crate::code::templates::{
     compose_entry, load_worker_templates, replace_token, resolve_source, validate_worker_name,
 };
+use crate::triggers::TriggerFwd;
 
 // examples are wire-contract; goldens pin them.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -38,10 +42,35 @@ pub struct ScaffoldWorkerInput {
     /// (`workers/<name>`).
     #[serde(default)]
     pub directory: Option<String>,
+    /// Also add the worker to the stack in this call: compose::add with the
+    /// worker and each requires that compose::status does not list, then
+    /// return its operation_id. A container with this name already in the
+    /// stack fails C235 before any file is written.
+    #[serde(default)]
+    pub start: bool,
+    /// With start: the compose::add operation id. Pick one and register a
+    /// trigger on it before this call to be woken when it ends; compose
+    /// picks one when omitted.
+    #[serde(default)]
+    pub operation_id: Option<String>,
+    /// With start: containers the worker starts after (its compose entry's
+    /// start_after), e.g. the console's.
+    #[serde(default)]
+    pub start_after: Vec<String>,
     /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
     pub fs_scope: Option<crate::fs::FsScope>,
+    /// Internal: the compose file the harness routes compose::* to; omitted
+    /// from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub compose_file: Option<String>,
+    /// Internal: the compose namespace the harness routes compose::* to;
+    /// omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub compose_namespace: Option<String>,
 }
 
 // examples are wire-contract; goldens pin them.
@@ -73,6 +102,18 @@ pub struct ScaffoldWorkerOutput {
     /// `compose::status` does not list in the same `compose::add`.
     pub requires: Vec<String>,
     pub next_steps: Vec<String>,
+    /// With start: compose::add's operation (follow it with
+    /// compose::operation, or a trigger registered on its id).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    /// With start: the containers compose::add was asked to add, the worker
+    /// first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub started: Vec<String>,
+    /// With start: why compose::add failed. The files are written; send
+    /// compose_add to compose::add to add the worker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_error: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -88,6 +129,7 @@ pub async fn handle(
     resolver: Arc<PathResolver>,
     cfg: Arc<CoderConfig>,
     journal: ChangeJournal,
+    trigger: Arc<dyn TriggerFwd>,
     req: ScaffoldWorkerInput,
 ) -> Result<ScaffoldWorkerOutput, String> {
     // Before the template source: a bad name never costs a clone.
@@ -96,7 +138,94 @@ pub async fn handle(
     let source = resolve_source(&cfg.templates.clone().with_env(), false)
         .await
         .map_err(err_to_string)?;
-    scaffold(resolver, cfg, journal, source.root, req).await
+    scaffold_and_start(resolver, cfg, journal, &*trigger, source.root, req).await
+}
+
+/// The http worker the -ade templates require, as their own
+/// worker-compose.yaml declares it.
+fn http_container() -> Value {
+    json!({ "worker": "package://http", "version": "latest", "config_name": "http" })
+}
+
+/// `scaffold`, and with `start` the stack around it: compose::status before
+/// any write (a name the stack has fails C235), compose::add after.
+async fn scaffold_and_start(
+    resolver: Arc<PathResolver>,
+    cfg: Arc<CoderConfig>,
+    journal: ChangeJournal,
+    trigger: &dyn TriggerFwd,
+    root: PathBuf,
+    mut req: ScaffoldWorkerInput,
+) -> Result<ScaffoldWorkerOutput, String> {
+    if !req.start {
+        return scaffold(resolver, cfg, journal, root, req).await;
+    }
+    // Where the harness routes compose::*, so this call adds to the same stack.
+    let mut route = serde_json::Map::new();
+    if let Some(file) = req.compose_file.take() {
+        route.insert("file".into(), file.into());
+    }
+    if let Some(namespace) = req.compose_namespace.take() {
+        route.insert("namespace".into(), namespace.into());
+    }
+    let operation_id = req.operation_id.take();
+    let start_after = std::mem::take(&mut req.start_after);
+    let status = trigger
+        .trigger("compose::status", Value::Object(route.clone()))
+        .await
+        .map_err(|e| {
+            format!("start: true needs compose::status, which failed ({e}); nothing was written")
+        })?;
+    let declared: HashSet<&str> = status["containers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["container"].as_str())
+        .collect();
+    if declared.contains(req.name.as_str()) {
+        return Err(err_to_string(CoderError::ContainerExists(format!(
+            "the stack already has a container named {name}, and adding this worker would \
+             repoint it at the new folder; nothing was written. Pick another name, or \
+             scaffold without start.",
+            name = req.name
+        ))));
+    }
+
+    let mut out = scaffold(resolver, cfg, journal, root, req).await?;
+    let mut entry = out.compose.clone();
+    if !start_after.is_empty() {
+        entry["start_after"] = start_after.into();
+    }
+    let mut workers = vec![entry];
+    let mut started = vec![out.name.clone()];
+    for need in out
+        .requires
+        .iter()
+        .filter(|r| !declared.contains(r.as_str()))
+    {
+        workers.push(if need == "http" {
+            http_container()
+        } else {
+            need.clone().into()
+        });
+        started.push(need.clone());
+    }
+    let mut payload = route;
+    payload.insert("workers".into(), workers.into());
+    if let Some(id) = operation_id {
+        payload.insert("operation_id".into(), id.into());
+    }
+    match trigger
+        .trigger("compose::add", Value::Object(payload))
+        .await
+    {
+        Ok(added) => {
+            out.operation_id = added["operation_id"].as_str().map(String::from);
+            out.started = started;
+        }
+        Err(e) => out.start_error = Some(format!("compose::add failed: {e}")),
+    }
+    Ok(out)
 }
 
 /// Everything after the name check (spec §3.3 steps 2-7). `root` is the
@@ -298,6 +427,9 @@ fn plan(
             .iter()
             .map(|step| replace_token(step, token, name))
             .collect(),
+        operation_id: None,
+        started: Vec::new(),
+        start_error: None,
     };
     Ok((out, files))
 }
@@ -396,7 +528,12 @@ mod tests {
             template: template.into(),
             name: name.into(),
             directory: directory.map(Into::into),
+            start: false,
+            operation_id: None,
+            start_after: Vec::new(),
             fs_scope: None,
+            compose_file: None,
+            compose_namespace: None,
         }
     }
 
@@ -461,6 +598,173 @@ mod tests {
         assert_eq!(out.next_steps, ["Call: iii trigger orders::hello"]);
     }
 
+    /// Answers compose::status with `declared` and compose::add with
+    /// `added` (an Err fails it), recording every call.
+    struct StubCompose {
+        declared: Vec<&'static str>,
+        added: Result<Value, String>,
+        calls: std::sync::Mutex<Vec<(String, Value)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl TriggerFwd for StubCompose {
+        async fn trigger(
+            &self,
+            function_id: &str,
+            payload: Value,
+        ) -> Result<Value, iii_sdk::errors::Error> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((function_id.to_string(), payload));
+            match function_id {
+                "compose::status" => Ok(json!({
+                    "containers": self.declared.iter().map(|c| json!({ "container": c })).collect::<Vec<_>>()
+                })),
+                "compose::add" => self.added.clone().map_err(iii_sdk::errors::Error::Runtime),
+                other => panic!("unexpected {other}"),
+            }
+        }
+    }
+
+    impl Env {
+        async fn start(
+            &self,
+            stub: &StubCompose,
+            req: ScaffoldWorkerInput,
+        ) -> Result<ScaffoldWorkerOutput, String> {
+            scaffold_and_start(
+                self.resolver.clone(),
+                self.cfg.clone(),
+                ChangeJournal::default(),
+                stub,
+                self.templates.path().to_path_buf(),
+                req,
+            )
+            .await
+        }
+    }
+
+    fn stub(declared: Vec<&'static str>, added: Result<Value, String>) -> StubCompose {
+        StubCompose {
+            declared,
+            added,
+            calls: Default::default(),
+        }
+    }
+
+    fn start_input(name: &str) -> ScaffoldWorkerInput {
+        ScaffoldWorkerInput {
+            start: true,
+            operation_id: Some("add-orders-1".into()),
+            compose_file: Some("/stack/worker-compose.yaml".into()),
+            compose_namespace: Some("proj".into()),
+            ..input("worker-node-ade", name, None)
+        }
+    }
+
+    #[tokio::test]
+    async fn start_adds_the_worker_and_its_missing_requires_where_the_harness_routes() {
+        let env = Env::new(&[]);
+        let stub = stub(
+            vec!["state"],
+            Ok(json!({ "operation_id": "add-orders-1", "status": "accepted" })),
+        );
+        let out = env.start(&stub, start_input("orders")).await.unwrap();
+
+        assert_eq!(out.operation_id.as_deref(), Some("add-orders-1"));
+        assert_eq!(out.started, ["orders", "http"]);
+        assert!(out.start_error.is_none());
+        assert!(env.root().join("workers/orders/src/index.ts").is_file());
+        let calls = stub.calls.lock().unwrap();
+        let route = json!({ "file": "/stack/worker-compose.yaml", "namespace": "proj" });
+        assert_eq!(calls[0], ("compose::status".to_string(), route));
+        assert_eq!(
+            calls[1],
+            (
+                "compose::add".to_string(),
+                json!({
+                    "file": "/stack/worker-compose.yaml",
+                    "namespace": "proj",
+                    "operation_id": "add-orders-1",
+                    "workers": [out.compose, http_container()],
+                })
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn start_leaves_out_requires_the_stack_already_runs() {
+        let env = Env::new(&[]);
+        let stub = stub(vec!["http"], Ok(json!({ "operation_id": "op-9" })));
+        let out = env.start(&stub, start_input("orders")).await.unwrap();
+        assert_eq!(out.started, ["orders"]);
+        assert_eq!(out.operation_id.as_deref(), Some("op-9"));
+        let calls = stub.calls.lock().unwrap();
+        assert_eq!(calls[1].1["workers"], json!([out.compose]));
+    }
+
+    #[tokio::test]
+    async fn start_puts_start_after_on_the_worker_entry_only() {
+        let env = Env::new(&[]);
+        let stub = stub(vec![], Ok(json!({ "operation_id": "op" })));
+        let req = ScaffoldWorkerInput {
+            start_after: vec!["console".into()],
+            ..start_input("orders")
+        };
+        let out = env.start(&stub, req).await.unwrap();
+        let calls = stub.calls.lock().unwrap();
+        let workers = &calls[1].1["workers"];
+        assert_eq!(workers[0]["start_after"], json!(["console"]));
+        assert_eq!(workers[1], http_container());
+        assert!(
+            out.compose.get("start_after").is_none(),
+            "compose stays the bare entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_refuses_a_name_the_stack_has_before_any_write() {
+        let env = Env::new(&[]);
+        let stub = stub(vec!["orders"], Ok(json!({})));
+        let err = env.start(&stub, start_input("orders")).await.unwrap_err();
+        assert_eq!(code(&err), "C235");
+        assert!(!env.root().join("workers/orders").exists());
+        assert_eq!(stub.calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn start_keeps_the_files_and_reports_a_failed_add() {
+        let env = Env::new(&[]);
+        let stub = stub(vec![], Err("daemon unavailable".into()));
+        let out = env.start(&stub, start_input("orders")).await.unwrap();
+        assert!(out.operation_id.is_none() && out.started.is_empty());
+        assert!(
+            out.start_error
+                .as_deref()
+                .is_some_and(|e| e.contains("daemon unavailable")),
+            "{out:?}"
+        );
+        assert!(env.root().join("workers/orders/src/index.ts").is_file());
+    }
+
+    #[tokio::test]
+    async fn without_start_the_stack_is_not_touched() {
+        let env = Env::new(&[]);
+        let stub = stub(vec!["orders"], Ok(json!({})));
+        let out = env
+            .start(&stub, input("worker-node-ade", "orders", None))
+            .await
+            .unwrap();
+        assert!(out.operation_id.is_none() && out.started.is_empty());
+        assert!(stub.calls.lock().unwrap().is_empty());
+        let wire = serde_json::to_value(&out).unwrap();
+        assert!(
+            wire.get("operation_id").is_none() && wire.get("started").is_none(),
+            "{wire}"
+        );
+    }
+
     #[tokio::test]
     async fn keeps_the_executable_bit_of_template_scripts() {
         let env = Env::new(&[]);
@@ -519,6 +823,7 @@ mod tests {
             env.resolver.clone(),
             env.cfg.clone(),
             ChangeJournal::default(),
+            Arc::new(stub(vec![], Ok(json!({})))),
             input("worker-node-ade", "Orders_1", None),
         )
         .await

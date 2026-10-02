@@ -155,13 +155,18 @@ const SCAFFOLD_WORKER_DESC: &str =
      its files into directory (default workers/<name>; its last folder must \
      be <name>, C232 otherwise) with the template's name token replaced, \
      all or nothing; a directory that exists and is not empty fails C233. \
-     Returns the files, compose_add, compose and next_steps. compose_add is \
-     the compose::add payload: send it whole, adding start_after to its \
-     workers entry and, for each requires that compose::status does not \
-     list, one more entry in workers; never move its entry's fields to the \
-     top level (top-level scripts are ignored) or use the bare worker \
-     string form, which drops the scripts. Paths: relative to the primary \
-     root or absolute inside an allowed root (see coder::info).";
+     start: true also adds it to the stack in this call (compose::add with \
+     the worker, its start_after and its missing requires) and returns \
+     operation_id and started (or start_error, files kept): to be \
+     woken when it is up, register a trigger on an operation_id you pick and \
+     pass it here. A container already named <name> fails C235 before any \
+     write. Without start, returns the files, compose_add, compose and \
+     next_steps; compose_add is the compose::add payload: send it whole, \
+     adding start_after to its workers entry and, for each requires that \
+     compose::status does not list, one more entry in workers; never move its entry's fields to the top level \
+     (top-level scripts are ignored) or use the bare worker string form, \
+     which drops the scripts. Paths: relative to the primary root or \
+     absolute inside an allowed root (see coder::info).";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.
@@ -486,10 +491,14 @@ fn register_list_templates(iii: &IIIClient, cells: CodeCells) {
 }
 
 fn register_scaffold_worker(iii: &IIIClient, cells: CodeCells) {
+    // `start: true` calls compose::status and compose::add.
+    let trigger: std::sync::Arc<dyn crate::triggers::TriggerFwd> =
+        std::sync::Arc::new(crate::triggers::IiiTriggerFwd::new(iii.clone()));
     iii.register_function(
         SCAFFOLD_WORKER_ID,
         RegisterFunction::new_async(move |req: scaffold_worker::ScaffoldWorkerInput| {
             let cells = cells.clone();
+            let trigger = trigger.clone();
             async move {
                 let resolver = cells.resolver.read().await.clone();
                 let resolver = resolver.session_scoped(
@@ -497,7 +506,7 @@ fn register_scaffold_worker(iii: &IIIClient, cells: CodeCells) {
                     crate::fs::scope_grants(req.fs_scope.as_ref()),
                 );
                 let cfg = cells.config.read().await.clone();
-                scaffold_worker::handle(resolver, cfg, cells.changes.clone(), req)
+                scaffold_worker::handle(resolver, cfg, cells.changes.clone(), trigger.clone(), req)
                     .await
                     .map_err(Error::from)
             }
