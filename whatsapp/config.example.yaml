@@ -6,6 +6,8 @@ max_events: 1000
 max_inbox_messages: 10000
 operation_timeout_secs: 30
 shutdown_timeout_secs: 15
+# Cloud settings can also come from worker environment variables; see README.md.
+# Environment values override these fields at runtime and are not saved here.
 cloud:
   enabled: false
   api_version: v26.0

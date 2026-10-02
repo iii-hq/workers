@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/coder/websocket v1.8.15
-	github.com/iii-hq/iii/sdk/packages/go/iii v0.24.3
+	github.com/iii-hq/iii/sdk/packages/go/iii v0.24.6-rc.1.0.20261002194513-a075c6e40389
 	github.com/invopop/jsonschema v0.14.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	go.mau.fi/whatsmeow v0.0.0-20260929112325-8b41cfe6d9c4

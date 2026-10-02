@@ -81,11 +81,13 @@ func run() error {
 		return errors.New("unable to connect to iii engine")
 	}
 	config := seed
-	if !*local {
+	if *local {
+		config, err = runtimeConfig(seed)
+	} else {
 		config, err = ensureConfig(ctx, client, seed)
-		if err != nil {
-			return err
-		}
+	}
+	if err != nil {
+		return err
 	}
 	manager, err := NewManager(config)
 	if err != nil {

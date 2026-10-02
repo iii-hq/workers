@@ -66,7 +66,7 @@ func (c Config) Validate() error {
 	return c.Cloud.Validate()
 }
 func (c Config) Redacted() Config { c.Cloud = c.Cloud.Redacted(); return c }
-func parseConfigJSON(data []byte) (Config, error) {
+func decodeConfigJSON(data []byte) (Config, error) {
 	c := DefaultConfig()
 	var value any
 	if json.Unmarshal(data, &value) != nil || compiledConfigSchema.Validate(value) != nil {
@@ -84,8 +84,21 @@ func parseConfigJSON(data []byte) (Config, error) {
 	if err := d.Decode(&trailing); err != io.EOF {
 		return c, errors.New("invalid WhatsApp configuration structure")
 	}
-	return c, c.Validate()
+	return c, nil
 }
+
+// Central values have already been expanded by the configuration worker. Only
+// apply the named process overrides; never interpolate the received strings.
+func parseConfigJSON(data []byte) (Config, error) {
+	c, err := decodeConfigJSON(data)
+	if err != nil {
+		return c, err
+	}
+	return runtimeConfig(c)
+}
+
+// Validate the seed with runtime overrides, but return its original values so
+// environment credentials cannot be persisted by configuration::ensure.
 func parseConfigYAML(data []byte) (Config, error) {
 	c := DefaultConfig()
 	d := yaml.NewDecoder(bytes.NewReader(data))
@@ -101,7 +114,12 @@ func parseConfigYAML(data []byte) (Config, error) {
 	if err != nil {
 		return c, errors.New("invalid WhatsApp configuration structure")
 	}
-	return parseConfigJSON(encoded)
+	c, err = decodeConfigJSON(encoded)
+	if err != nil {
+		return c, err
+	}
+	_, err = runtimeConfig(c)
+	return c, err
 }
 func ConfigID() string {
 	if s := strings.TrimSpace(os.Getenv("III_CONFIG_NAME")); s != "" {
@@ -168,18 +186,19 @@ func ensureConfig(ctx context.Context, client *iii.Client, seed Config) (Config,
 }
 
 type ConfigStatus struct {
-	ID                    string   `json:"id"`
-	Source                string   `json:"source"`
-	LastOutcome           string   `json:"last_outcome"`
-	LastError             *string  `json:"last_error"`
-	RejectedReloads       uint64   `json:"rejected_reloads"`
-	RestartRequiredFields []string `json:"restart_required_fields"`
-	Active                Config   `json:"active"`
+	ID                    string            `json:"id"`
+	Source                string            `json:"source"`
+	LastOutcome           string            `json:"last_outcome"`
+	LastError             *string           `json:"last_error"`
+	RejectedReloads       uint64            `json:"rejected_reloads"`
+	RestartRequiredFields []string          `json:"restart_required_fields"`
+	EnvironmentOverrides  map[string]string `json:"environment_overrides"`
+	Active                Config            `json:"active"`
 }
 
 func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, local bool) error {
 	var mu sync.Mutex
-	status := ConfigStatus{ID: ConfigID(), Source: "central", LastOutcome: "applied", RestartRequiredFields: []string{}, Active: m.Config().Redacted()}
+	status := ConfigStatus{ID: ConfigID(), Source: "central", LastOutcome: "applied", RestartRequiredFields: []string{}, EnvironmentOverrides: cloudEnvironmentOverrides(), Active: m.Config().Redacted()}
 	if local {
 		status.Source = "local"
 	}
@@ -214,6 +233,7 @@ func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, 
 			status.LastOutcome = "restart_required"
 		}
 		status.RestartRequiredFields = pending
+		status.EnvironmentOverrides = cloudEnvironmentOverrides()
 		status.Active = m.Config().Redacted()
 	}
 	if err := client.RegisterFunction("whatsapp::on-config-change", func(ctx context.Context, _ json.RawMessage) (any, error) {

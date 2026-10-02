@@ -126,6 +126,7 @@ export interface ConfigStatus {
   last_error: string | null
   rejected_reloads: number
   restart_required_fields: string[]
+  environment_overrides?: Record<string, string>
   active: Record<ConfigKey, string | number>
 }
 export type JsonObject = { [key: string]: JsonValue }

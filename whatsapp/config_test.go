@@ -10,6 +10,7 @@ import (
 )
 
 func TestConfigDefaultsAndStrictSecretSafeParsing(t *testing.T) {
+	clearCloudEnvironment(t)
 	for _, tc := range []struct {
 		name  string
 		parse func([]byte) (Config, error)

@@ -1,7 +1,7 @@
 import { Badge, Button, Input, RawValueInput, SettingsField, SettingsList, SettingsSection, StatusPanel, Switch, type ConfigFormProps, type Host, type JsonValue } from '@iii-dev/console-ui'
 import { formatBytes } from '@iii-dev/console-ui/format'
 import { useWorkerLive } from '@iii-dev/console-ui/hooks'
-import { useEffect, useId, useRef } from 'react'
+import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { CLOUD_DEFAULTS, configNumber, DEFAULTS, isObject, isOpaqueCloudField, isOpaqueField, withCloudField, withCloudValue, withConfigField, type CloudConfigKey, type ConfigKey, type ConfigStatus } from './model'
 
 const FIELDS: { key: ConfigKey; label: string; description: string; min?: number; max?: number }[] = [
@@ -13,14 +13,14 @@ const FIELDS: { key: ConfigKey; label: string; description: string; min?: number
   { key: 'operation_timeout_secs', label: 'Operation timeout', description: 'Seconds allowed for future operations.', min: 1, max: 600 },
   { key: 'shutdown_timeout_secs', label: 'Shutdown timeout', description: 'Seconds allowed when stopping a session.', min: 1, max: 120 },
 ]
-const CLOUD_FIELDS: { key: CloudConfigKey; label: string; description: string; secret?: boolean }[] = [
-  { key: 'enabled', label: 'Enable Cloud API', description: 'Use the official WhatsApp Business Platform alongside native sessions.' },
-  { key: 'business_account_id', label: 'Business account ID', description: 'The WhatsApp Business Account (WABA) that owns your number.' },
-  { key: 'phone_number_id', label: 'Phone number ID', description: 'The Meta ID of your business phone number, separate from its phone digits.' },
-  { key: 'access_token', label: 'Access token', description: 'A token authorized for this WhatsApp Business Account.', secret: true },
-  { key: 'app_secret', label: 'App secret', description: 'Verifies signatures on incoming Meta webhooks.', secret: true },
-  { key: 'verify_token', label: 'Webhook verify token', description: 'A value you choose and also enter when configuring the webhook in Meta.', secret: true },
-  { key: 'api_version', label: 'Graph API version', description: 'Version used for requests to Meta. Default: v26.0.' },
+const CLOUD_FIELDS: { key: CloudConfigKey; label: string; description: string; environment: string; secret?: boolean }[] = [
+  { key: 'enabled', label: 'Enable Cloud API', description: 'Use the official WhatsApp Business Platform alongside native sessions.', environment: 'WHATSAPP_CLOUD_ENABLED' },
+  { key: 'business_account_id', label: 'Business account ID', description: 'The WhatsApp Business Account (WABA) that owns your number.', environment: 'WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID' },
+  { key: 'phone_number_id', label: 'Phone number ID', description: 'The Meta ID of your business phone number, separate from its phone digits.', environment: 'WHATSAPP_CLOUD_PHONE_NUMBER_ID' },
+  { key: 'access_token', label: 'Access token', description: 'A token authorized for this WhatsApp Business Account.', environment: 'WHATSAPP_CLOUD_ACCESS_TOKEN', secret: true },
+  { key: 'app_secret', label: 'App secret', description: 'Verifies signatures on incoming Meta webhooks.', environment: 'WHATSAPP_META_APP_SECRET', secret: true },
+  { key: 'verify_token', label: 'Webhook verify token', description: 'A value you choose and also enter when configuring the webhook in Meta.', environment: 'WHATSAPP_WEBHOOK_VERIFY_TOKEN', secret: true },
+  { key: 'api_version', label: 'Graph API version', description: 'Version used for requests to Meta. Default: v26.0.', environment: 'WHATSAPP_CLOUD_API_VERSION' },
 ]
 
 export function RuntimeStatus({ host, quietWhenApplied = false }: { host: Host; quietWhenApplied?: boolean }) {
@@ -30,11 +30,16 @@ export function RuntimeStatus({ host, quietWhenApplied = false }: { host: Host; 
   if (status.error) return <StatusPanel variant="warn" headline="Active configuration unavailable" detail={status.error} action={<Button variant="ghost" onClick={status.refresh}>Try again</Button>} />
   if (!status.data) return null
   const current = status.data
-  if (current.last_outcome === 'rejected') return <StatusPanel variant="alert" headline="Latest configuration rejected" detail={`${current.last_error ?? 'The previous configuration remains active.'} Rejected reloads: ${current.rejected_reloads}.`} action={<Button variant="ghost" onClick={status.refresh}>Check again</Button>} />
-  if (current.last_outcome === 'restart_required') return <StatusPanel variant="warn" headline="Some changes need a worker restart" detail={`Pending: ${current.restart_required_fields.map((key) => FIELDS.find((field) => field.key === key)?.label ?? key).join(', ')}. Other changes are active. Current storage: ${current.active.data_dir}; activity limit: ${current.active.max_events}.`} />
-  if (current.source === 'local') return <StatusPanel variant="warn" headline="Local configuration is active" detail="This worker uses --local-config. Saved ADE changes apply after starting it with central configuration." action={<Button variant="ghost" onClick={status.refresh}>Check again</Button>} />
-  if (quietWhenApplied) return null
-  return <p className="wa-ui-note">Active configuration: <span className="wa-ui-mono">{current.id}</span>. Session data: <span className="wa-ui-mono">{current.active.data_dir}</span>.</p>
+  let outcome: ReactNode = null
+  if (current.last_outcome === 'rejected') outcome = <StatusPanel variant="alert" headline="Latest configuration rejected" detail={`${current.last_error ?? 'The previous configuration remains active.'} Rejected reloads: ${current.rejected_reloads}.`} action={<Button variant="ghost" onClick={status.refresh}>Check again</Button>} />
+  else if (current.last_outcome === 'restart_required') outcome = <StatusPanel variant="warn" headline="Some changes need a worker restart" detail={`Pending: ${current.restart_required_fields.map((key) => FIELDS.find((field) => field.key === key)?.label ?? key).join(', ')}. Other changes are active. Current storage: ${current.active.data_dir}; activity limit: ${current.active.max_events}.`} />
+  else if (current.source === 'local') outcome = <StatusPanel variant="warn" headline="Local configuration is active" detail="This worker uses --local-config. Saved ADE changes apply after starting it with central configuration." action={<Button variant="ghost" onClick={status.refresh}>Check again</Button>} />
+  else if (!quietWhenApplied) outcome = <p className="wa-ui-note">Active configuration: <span className="wa-ui-mono">{current.id}</span>. Session data: <span className="wa-ui-mono">{current.active.data_dir}</span>.</p>
+  const overrides = Object.entries(current.environment_overrides ?? {})
+  return <>{outcome}{overrides.length > 0 && <StatusPanel variant="info" headline="Cloud API uses environment overrides" detail={<>
+    <p>Saved changes do not affect these fields while their environment variables are set. Update the worker environment and restart the worker to change them.</p>
+    <details><summary>View overridden fields ({overrides.length})</summary><ul>{overrides.map(([field, variable]) => <li key={field}>{CLOUD_FIELDS.find((item) => `cloud.${item.key}` === field)?.label ?? field}: <code>{variable}</code></li>)}</ul></details>
+  </>} />}</>
 }
 
 function OpaqueField({ value, label, onChange, onReplace, control, secret = false }: {
@@ -73,7 +78,7 @@ export function WhatsAppConfigForm({ host, value, onChange, schema, errors, focu
     if (cloudProperties && !(item.key in cloudProperties)) return null
     const current = isObject(cloud) ? cloud[item.key] : undefined
     const opaque = isOpaqueCloudField(item.key, current)
-    return <SettingsField key={item.key} field={`cloud.${item.key}`} label={item.label} description={item.description}
+    return <SettingsField key={item.key} field={`cloud.${item.key}`} label={item.label} description={`${item.description} Worker environment: ${item.environment}.`}
       error={errors?.get(`/cloud/${item.key}`)} controlSize={item.key === 'enabled' && !opaque ? 'fit' : 'full'}
       renderControl={(control) => opaque
         ? <OpaqueField control={control} label={item.label} value={current!} secret={item.secret} onChange={(next) => onChange(withCloudField(value, item.key, next))} onReplace={() => onChange(withCloudField(value, item.key, undefined))} />
@@ -119,7 +124,7 @@ export function WhatsAppConfigForm({ host, value, onChange, schema, errors, focu
     <RuntimeStatus host={host} />
     {!isObject(value) ? <SettingsList><SettingsField field="configuration" label="WhatsApp configuration" description="This entire configuration is a custom value. Replace it only when you are ready to use individual settings." error={rootError} controlSize="full" renderControl={(control) => <OpaqueField control={control} value={value} label="WhatsApp configuration" onChange={onChange} onReplace={() => onChange({})} />} /></SettingsList> : <>
       <div className="wa-ui-config-grid">
-        {showCloud && <SettingsSection title="Meta Cloud API" description="Use your existing WhatsApp Business Platform account. Environment variables are supported for credentials and other fields."><SettingsList>
+        {showCloud && <SettingsSection title="Meta Cloud API" description="Use your existing WhatsApp Business Platform account. Worker environment values override saved fields and require a worker restart to change."><SettingsList>
           {cloud !== undefined && !isObject(cloud)
             ? <SettingsField field="cloud" label="Cloud API configuration" error={errors?.get('/cloud')} description="This custom value is preserved until you choose to replace it with individual fields." controlSize="full" renderControl={(control) => <OpaqueField control={control} value={cloud} label="Cloud API configuration" onChange={(next) => onChange(withCloudValue(value, next))} onReplace={() => onChange(withCloudValue(value, {}))} />} />
             : CLOUD_FIELDS.map(cloudField)}
@@ -130,7 +135,7 @@ export function WhatsAppConfigForm({ host, value, onChange, schema, errors, focu
       </div>
       {rootError && <StatusPanel variant="alert" headline="Review your configuration" detail={rootError} />}
       {unmappedErrors.length > 0 && <StatusPanel variant="alert" headline="Other values need your attention" detail={unmappedErrors.join('\n')} />}
-      <p className="wa-ui-note wa-ui-config-footer">Saved changes apply live unless marked Restart required. Leave a field empty to use its default.</p>
+      <p className="wa-ui-note wa-ui-config-footer">Saved changes apply live unless a field is controlled by the environment or marked Restart required. Leave a field empty to use its default.</p>
     </>}
   </div>
 }

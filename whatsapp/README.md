@@ -7,9 +7,10 @@ There is no Node, Chromium, sidecar process or sandbox requirement. The worker
 connects to an existing iii engine; normal configuration uses the configuration worker.
 
 The dependency is pinned to
-`8b41cfe6d9c4` (`v0.0.0-20260929112325-8b41cfe6d9c4`). `go.mod` records the iii Go SDK
-`v0.24.3`; this development branch uses a [local SDK workspace](#link-the-local-go-sdk)
-for the new trigger schema API.
+`8b41cfe6d9c4` (`v0.0.0-20260929112325-8b41cfe6d9c4`). The iii Go SDK is pinned
+to merged commit `a075c6e40389` (`v0.24.6-rc.1.0.20261002194513-a075c6e40389`),
+which includes the trigger schema API. A local SDK workspace is optional for SDK
+development.
 This is a native function API, not an HTTP-compatible deployment of OpenWA.
 [openwa-rust-coverage.json](openwa-rust-coverage.json) is the historical Rust/OpenWA
 comparison, not a declaration of Go support. Use `--catalog` for the supported Go API.
@@ -19,11 +20,12 @@ comparison, not a declaration of Go support. Use `--catalog` for the supported G
 Use Go 1.27.1 on Linux. SQLite uses the pure-Go `modernc.org/sqlite` driver;
 the binary builds with `CGO_ENABLED=0` and requires no C toolchain. ADE bundles
 are checked in under `assets/`, so a fresh Go build needs neither Node nor pnpm.
-Set up the [local SDK workspace](#link-the-local-go-sdk) before building.
+Use `GOWORK=off` to build with the dependencies pinned in `go.mod`, regardless
+of any local Go workspace.
 
 ```sh
 cd whatsapp
-make build
+GOWORK=off make build
 ./bin/whatsapp --manifest
 ./bin/whatsapp --catalog
 ./bin/whatsapp --url ws://127.0.0.1:49134
@@ -36,7 +38,7 @@ Node and pnpm versions, then rebuild and copy the embedded bundles:
 ```sh
 pnpm install --frozen-lockfile
 make -C whatsapp ui
-make -C whatsapp build
+GOWORK=off make -C whatsapp build
 ```
 
 For isolated development without the configuration worker:
@@ -148,24 +150,80 @@ migrate a number, create templates, or subscribe an app automatically.
 In ADE, open **Configure worker** and find **Meta Cloud API**. Enter the existing
 WhatsApp Business Account ID and Phone Number ID, then the access token, Meta
 App Secret, and a verify token of your choice. Enable Cloud API and save.
-Cloud settings apply live. Secret inputs are masked; worker status and debug
-output omit their values. ADE's configuration service remains the authority
-for stored configuration. Prefer environment references in that service:
+Saved Cloud settings apply live unless overridden by the worker environment.
+Secret inputs are masked; worker status and debug output omit their values.
+
+### Worker environment configuration
+
+Set the following variables in the WhatsApp worker's environment. They work
+with both central ADE configuration and `--local-config`:
+
+| Environment variable | Configuration field | Accepted value |
+| --- | --- | --- |
+| `WHATSAPP_CLOUD_ENABLED` | `cloud.enabled` | Exactly `true` or `false` |
+| `WHATSAPP_CLOUD_API_VERSION` | `cloud.api_version` | A Graph API version, such as `v26.0` |
+| `WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID` | `cloud.business_account_id` | Numeric WABA ID |
+| `WHATSAPP_CLOUD_PHONE_NUMBER_ID` | `cloud.phone_number_id` | Numeric Meta phone number ID |
+| `WHATSAPP_CLOUD_ACCESS_TOKEN` | `cloud.access_token` | Token authorized for the WABA |
+| `WHATSAPP_META_APP_SECRET` | `cloud.app_secret` | Meta app secret for webhook signatures |
+| `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | `cloud.verify_token` | Token you also enter in Meta's webhook settings |
+
+For iii Compose, add an uncommitted environment file to the WhatsApp container:
 
 ```yaml
-cloud:
-  enabled: true
-  api_version: v26.0
-  business_account_id: 'YOUR_NUMERIC_WABA_ID'
-  phone_number_id: 'YOUR_NUMERIC_PHONE_NUMBER_ID'
-  access_token: '${WHATSAPP_CLOUD_ACCESS_TOKEN}'
-  app_secret: '${WHATSAPP_META_APP_SECRET}'
-  verify_token: '${WHATSAPP_WEBHOOK_VERIFY_TOKEN}'
+containers:
+  whatsapp:
+    worker: path://../whatsapp
+    env_file:
+      - ./whatsapp.env
 ```
 
-Replace both ID placeholders with digits. Environment variables must be
-available to the configuration service that resolves them. A `--local-config`
-YAML seed accepts literal values only. Protect files containing secrets.
+Example `whatsapp.env` (replace the example IDs and credentials):
+
+```dotenv
+WHATSAPP_CLOUD_ENABLED=true
+WHATSAPP_CLOUD_API_VERSION=v26.0
+WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID=123456789012345
+WHATSAPP_CLOUD_PHONE_NUMBER_ID=987654321098765
+WHATSAPP_CLOUD_ACCESS_TOKEN=your-access-token
+WHATSAPP_META_APP_SECRET=your-app-secret
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=your-webhook-verify-token
+```
+
+Keep the file outside version control and restrict access, for example with
+`chmod 600 whatsapp.env`. Compose's `environment` mapping or exported process
+variables can supply the same names. Restart the WhatsApp worker after changing
+its deployment environment.
+
+A defined variable overrides its corresponding saved or local field. An unset
+variable preserves that field's configured value or default. An empty value is
+an explicit override, not a fallback; normal validation still applies. For
+example, an empty enable flag is invalid, and an enabled Cloud API needs IDs
+and an access token. Values are used as supplied, without recursive `${...}`
+expansion; numeric IDs remain exact strings.
+
+Environment values are applied only at runtime and are never written back by
+the worker to central configuration or its YAML seed. Existing saved secrets
+are not automatically removed. ADE and `whatsapp::config-status` show which
+fields are overridden and their variable names, without exposing secret values.
+Saved edits to those fields take effect only after removing the corresponding
+environment override and restarting the worker.
+
+### Central environment references and local files
+
+ADE also preserves `${VAR}` and `${VAR:default}` references in stored
+configuration. These are expanded by the configuration service using the
+**engine process environment**, not the WhatsApp container's `env_file`.
+Standalone references can be coerced into YAML scalar types: a numeric ID may
+become a number and fail the required string schema. Prefer the direct worker
+variables above for Cloud IDs and credentials.
+
+When moving variables from the engine environment to the worker environment,
+remove unused central references: central configuration must load successfully
+before worker overrides can apply. Local YAML files continue to accept literal
+configuration values; `${...}` interpolation is not performed on local files.
+Protect any local files containing credentials.
+
 Use a token authorized for the existing account: messaging requires
 `whatsapp_business_messaging`; account, template and subscription inspection
 also needs `whatsapp_business_management`. Follow Meta's
@@ -201,7 +259,8 @@ the send response. Missing webhook secrets or disabled Cloud API return 503.
 In **Cloud API**, select **Start development tunnel** to obtain a complete
 HTTPS callback URL, then **Copy webhook URL** and paste it into the Meta app's
 webhook configuration. Use the same verify token saved in **Configure worker**,
-enable the `messages` field, and subscribe the app to the WABA. Starting a
+or supplied through `WHATSAPP_WEBHOOK_VERIFY_TOKEN` when that override is set.
+Enable the `messages` field and subscribe the app to the WABA. Starting a
 tunnel does not register or change the callback in Meta.
 
 The `quick-tunnel` worker must run in the WhatsApp worker's namespace, with
@@ -541,35 +600,12 @@ have `recipient_fanout: null` because whatsmeow does not expose those counters.
 
 ## Validation
 
-### Link the local Go SDK
-
-Cloud trigger discovery uses `RegisterTriggerTypeOptions` from the SDK branch
-`feat/go-trigger-type-schemas`. Until that API is available in a published SDK
-version, link the SDK checkout with a temporary Go workspace. From this worker's
-directory, using the Go version declared in `go.mod`:
-
 ```sh
-WHATSAPP_MODULE_DIR="$PWD"
-III_GO_SDK_DIR=/path/to/iii-worktree/sdk/packages/go/iii
-WHATSAPP_WORKSPACE_DIR="$(mktemp -d)"
-(
-  cd "$WHATSAPP_WORKSPACE_DIR"
-  GOWORK=off go work init "$WHATSAPP_MODULE_DIR" "$III_GO_SDK_DIR"
-)
-export GOWORK="$WHATSAPP_WORKSPACE_DIR/go.work"
-go list -m -json github.com/iii-hq/iii/sdk/packages/go/iii
-```
-
-The reported `Dir` must point at the local SDK checkout. Keep `GOWORK` set for
-the build and validation commands below. This leaves `go.mod` and `go.sum`
-unchanged; no absolute local paths are committed to the dependency files.
-
-```sh
-make test
-go vet ./...
-go test -race ./...
+GOWORK=off make test
+GOWORK=off go vet ./...
+GOWORK=off go test -race ./...
 pnpm --dir ui test
-make ui build
+GOWORK=off make ui build
 ```
 
 Tests cover storage/lifecycle, event bounds and projections, message construction,
@@ -582,15 +618,41 @@ schemas. They do not pair an account or send a real WhatsApp message.
 contract. [Filtered Cloud webhook events](#filtered-cloud-webhook-events) defines
 the Cloud contract, also exposed as structured schemas through trigger discovery.
 
+### Link the local Go SDK (optional)
+
+To test SDK changes before updating the pinned dependency, link a local checkout
+with a temporary Go workspace. From this worker's directory, using the Go version
+declared in `go.mod`:
+
+```sh
+WHATSAPP_MODULE_DIR="$PWD"
+III_GO_SDK_DIR=/path/to/iii-worktree/sdk/packages/go/iii
+WHATSAPP_WORKSPACE_DIR="$(mktemp -d)"
+(
+  cd "$WHATSAPP_WORKSPACE_DIR"
+  GOWORK=off go work init "$WHATSAPP_MODULE_DIR" "$III_GO_SDK_DIR"
+)
+export GOWORK="$WHATSAPP_WORKSPACE_DIR/go.work"
+go list -m -json github.com/iii-hq/iii/sdk/packages/go/iii
+go test -race ./...
+make build
+```
+
+The reported `Dir` must point at the local SDK checkout. This leaves `go.mod`
+and `go.sum` unchanged; no absolute local paths are committed. Use `GOWORK=off`
+again to build or test the pinned dependency.
+
+### Isolated engine smoke test
+
 The optional engine smoke test starts an isolated engine and worker on loopback
 with temporary configuration and storage. Point it at existing local binaries:
 
 ```sh
-go build -o /tmp/whatsapp-go-smoke .
+GOWORK=off go build -o /tmp/whatsapp-go-smoke .
 III_BINARY=/path/to/iii \
 WHATSAPP_BINARY=/tmp/whatsapp-go-smoke \
 HTTP_BINARY=/path/to/http \
-go test -run '^TestEngineSmoke$' -count=1 -v .
+GOWORK=off go test -run '^(TestEngineSmoke|TestCloudEnvironmentEngine)$' -count=1 -v .
 ```
 
 This checks central configuration reloads, runtime schemas, ADE assets, offline

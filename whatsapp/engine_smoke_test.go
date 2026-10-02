@@ -100,6 +100,7 @@ func TestEngineSmoke(t *testing.T) {
 	if engine == "" || worker == "" {
 		t.Skip("set III_BINARY and WHATSAPP_BINARY for isolated loopback integration")
 	}
+	clearCloudEnvironment(t)
 	dir := t.TempDir()
 	socket, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
