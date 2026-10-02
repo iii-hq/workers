@@ -21,6 +21,7 @@ import type { Host, PageRenderProps } from '@iii-dev/console-ui'
 import { createShellTriggerRenderer } from './src/function-trigger'
 import { createAgentRunRenderer } from './src/function-trigger/AgentRunView'
 import { createFileChangesRenderer } from './src/function-trigger/FileChangesView'
+import { createFindRelevantRenderer } from './src/function-trigger/FindRelevantView'
 import { ShellExplorerPage } from './src/page'
 import { registerShellPalette } from './src/page/palette'
 import { ShellTurnSummary } from './src/page/ShellTurnSummary'
@@ -48,6 +49,7 @@ export default function setup(host: Host) {
   // one control here instead of the same button in every agent worker.
   host.functionTriggers.register(createAgentRunRenderer(host))
   host.functionTriggers.register(createFileChangesRenderer(host))
+  host.functionTriggers.register(createFindRelevantRenderer(host))
   host.functionTriggers.register(createShellTriggerRenderer())
 
   host.chat?.registerTurnSummary?.({

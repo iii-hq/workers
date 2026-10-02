@@ -14,6 +14,9 @@ vi.mock('../../function-trigger/AgentRunView', () => ({
 vi.mock('../../function-trigger/FileChangesView', () => ({
   createFileChangesRenderer: () => ({}),
 }))
+vi.mock('../../function-trigger/FindRelevantView', () => ({
+  createFindRelevantRenderer: () => ({}),
+}))
 vi.mock('../index', () => ({ ShellExplorerPage: () => null }))
 vi.mock('../ShellTurnSummary', () => ({ ShellTurnSummary: () => null }))
 vi.mock('../WorktreeSwitcher', () => ({ createWorktreeSwitcher: () => () => null }))

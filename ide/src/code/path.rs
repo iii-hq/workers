@@ -328,10 +328,17 @@ impl PathResolver {
     /// denylist exactly as it does to `non_accessible_globs`: a denylisted
     /// path must be indistinguishable from a missing one.
     fn deny_check(&self, path: &str, canon: &Path) -> Result<(), CoderError> {
-        if self.denylist_canon.iter().any(|d| canon.starts_with(d)) {
+        if self.is_denied(canon) {
             return Err(CoderError::not_found_or_denied(path));
         }
         Ok(())
+    }
+
+    /// True when the canonical `canon` sits under an `fs.denylist_paths`
+    /// entry. A walk under a canonical root that never follows links yields
+    /// canonical entries, so it can prune with this per entry.
+    pub fn is_denied(&self, canon: &Path) -> bool {
+        self.denylist_canon.iter().any(|d| canon.starts_with(d))
     }
 
     /// Path's location relative to its CONTAINING root as a forward-slash

@@ -511,6 +511,37 @@ async fn two_callers_share_four_permits_including_complete_body_read() {
     assert_eq!(ok(right).2.requests, 8);
     assert_eq!(server.observed.peak.load(Ordering::SeqCst), 4);
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_concurrency_bounds_every_caller_and_follows_a_resize() {
+    let server = Server::start(|b| {
+        let mut r = Reply::ok(answer(b));
+        r.delay_ms = 40;
+        r
+    })
+    .await;
+    let base = server.client();
+    let first = base.with_concurrency(2);
+    let second = base
+        .with_api_key(Some("rotated-test-credential"))
+        .with_concurrency(2);
+    let (left, right) = tokio::join!(
+        first.evaluate(request(6), DEFAULT_MODEL),
+        second.evaluate(request(6), DEFAULT_MODEL)
+    );
+    assert_eq!(ok(left).2.requests, 6);
+    assert_eq!(ok(right).2.requests, 6);
+    assert_eq!(server.observed.peak.load(Ordering::SeqCst), 2);
+
+    server.observed.peak.store(0, Ordering::SeqCst);
+    let wider = base.with_concurrency(8);
+    assert_eq!(
+        ok(wider.evaluate(request(16), DEFAULT_MODEL).await)
+            .2
+            .requests,
+        16
+    );
+    assert_eq!(server.observed.peak.load(Ordering::SeqCst), 8);
+}
 #[tokio::test]
 async fn known_usage_survives_atomic_failure_and_cancels_unsent_work() {
     let server = Server::start(|b| {

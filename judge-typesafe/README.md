@@ -85,6 +85,7 @@ model: jev-latest               # Default unless a call supplies its own model.
 max_request_bytes: 8388608      # Maximum JSON bytes per upstream evaluation.
 max_response_bytes: 8388608     # Maximum bytes per upstream response.
 max_timeout_ms: 300000          # Whole-call timeout ceiling in milliseconds.
+concurrency: 4                  # TypeSafe requests in flight across every caller (1-64).
 ```
 
 A nonblank configured key overrides the worker's environment key. Clearing it

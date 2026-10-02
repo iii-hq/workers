@@ -83,3 +83,26 @@ async fn apply_replaces_snapshot_and_rejects_invalid_model() {
     );
     assert_eq!(cell.read().await.model, "another-model");
 }
+
+#[test]
+fn concurrency_defaults_to_four_and_accepts_one_to_sixty_four() {
+    assert_eq!(JevConfig::default().concurrency, 4);
+    assert_eq!(JevConfig::default().to_json()["concurrency"], 4);
+    let schema = &JevConfig::json_schema()["properties"]["concurrency"];
+    assert_eq!(schema["minimum"].as_f64(), Some(1.0));
+    assert_eq!(schema["maximum"].as_f64(), Some(64.0));
+    for value in [1, 16, 64] {
+        let config = JevConfig::from_json(&json!({ "concurrency": value })).unwrap();
+        assert_eq!(config.concurrency, value);
+    }
+    for value in [
+        json!(0),
+        json!(65),
+        json!(-1),
+        json!(2.5),
+        json!("8"),
+        json!(null),
+    ] {
+        assert!(JevConfig::from_json(&json!({ "concurrency": value })).is_err());
+    }
+}

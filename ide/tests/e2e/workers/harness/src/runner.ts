@@ -22,6 +22,7 @@ import { CONCURRENCY_CASES } from './cases-concurrency.ts';
 import { SANDBOX_BREAK_CASES } from './cases-sandbox-break.ts';
 import { VULN_REPRO_CASES } from './cases-vuln-repro.ts';
 import { VULN_REPRO_JAILED_CASES } from './cases-vuln-repro-jailed.ts';
+import { FIND_RELEVANT_CASES } from './cases-find-relevant.ts';
 
 interface CaseResult {
   case: string;
@@ -153,6 +154,7 @@ export class Runner {
             ...CONCURRENCY_CASES,
             ...SANDBOX_BREAK_CASES,
             ...VULN_REPRO_CASES,
+            ...FIND_RELEVANT_CASES,
           ];
     for (const c of allCases) {
       record(await this.runCase(c));

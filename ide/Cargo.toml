@@ -15,6 +15,14 @@ iii-sdk = "=0.23.0"
 iii-worker-paths = { path = "../crates/worker-paths" }
 iii-helpers = "=0.23.0"
 iii-console-ui = { path = "../crates/console-ui" }
+# Typed judge::evaluate messages for coder::find-relevant (no SDK, no transport).
+judge-contract = { path = "../crates/judge-contract" }
+# Declaration units for coder::find-relevant (same pins as lsp/Cargo.toml).
+tree-sitter = "0.24"
+tree-sitter-typescript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-rust = "0.23"
+tree-sitter-go = "0.23"
 # Filesystem watch behind the shell::changed trigger type (FSEvents/inotify).
 notify = "8"
 schemars = { version = "0.8", features = ["uuid1"] }

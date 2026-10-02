@@ -848,7 +848,7 @@ fn charge(remaining: &mut u64, cost: usize) -> bool {
     true
 }
 
-fn build_globset(patterns: &[String]) -> Result<Option<globset::GlobSet>, CoderError> {
+pub(crate) fn build_globset(patterns: &[String]) -> Result<Option<globset::GlobSet>, CoderError> {
     if patterns.is_empty() {
         return Ok(None);
     }

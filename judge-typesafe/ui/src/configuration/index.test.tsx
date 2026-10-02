@@ -12,7 +12,10 @@ const limits = [
   ['max_request_bytes', 8388608],
   ['max_response_bytes', 8388608],
   ['max_timeout_ms', 300000],
+  ['concurrency', 4],
 ] as const
+/** A valid large edit per field: concurrency stops at 64. */
+const large = (field: string) => (field === 'concurrency' ? 64 : 16777216)
 
 // The console provides these components via its import map. Mirror the public
 // contract so the form can run without a live console or configuration store.
@@ -201,6 +204,7 @@ describe('JevConfigForm', () => {
       max_request_bytes: 16777216,
       max_response_bytes: 4194304,
       max_timeout_ms: 60000,
+      concurrency: 8,
       future: { keep: true },
     })
     const { html, onChange } = render(value)
@@ -208,8 +212,8 @@ describe('JevConfigForm', () => {
     expect(changes.has(field)).toBe(true)
     changes.get(field)?.('1')
     expect(onChange).toHaveBeenLastCalledWith({ ...value, [field]: 1 })
-    changes.get(field)?.('16777216')
-    expect(onChange).toHaveBeenLastCalledWith({ ...value, [field]: 16777216 })
+    changes.get(field)?.(String(large(field)))
+    expect(onChange).toHaveBeenLastCalledWith({ ...value, [field]: large(field) })
   })
 
   it.each(limits)('clears %s to restore the worker default', (field) => {
@@ -226,6 +230,12 @@ describe('JevConfigForm', () => {
     for (const invalid of ['0', '-1', '1.5', 'NaN', 'Infinity', '1e999', '9007199254740993', ' ']) {
       changes.get(field)?.(invalid)
     }
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('keeps concurrency above 64 out of configuration', () => {
+    const { onChange } = render({ concurrency: 8 })
+    changes.get('concurrency')?.('65')
     expect(onChange).not.toHaveBeenCalled()
   })
 

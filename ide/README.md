@@ -193,6 +193,7 @@ fully unjailed, regardless of `fs.allow_unjailed`.
 | `coder::search` | Literal/regex content + path search with context lines, bounded by match/byte budgets. `respect_gitignore: true` skips what `.gitignore` hides; `fuzzy_paths: true` ranks path matches quick-open style, best first. |
 | `coder::list-folder` | Paginated single-folder listing. |
 | `coder::tree` | Recursive depth- and per-folder-bounded directory snapshot. |
+| `coder::find-relevant` | Judge-ranked discovery for behavioural questions (a port of [jevgrep](https://github.com/dzhng/jevgrep)): returns files best first with verbatim excerpts and line ranges. **Egress:** sends the query, root-relative paths and file text to the session's judge provider (`judge::evaluate`; hosted `judge-typesafe` by default), never protected, ignored or secret-looking files nor hidden entries below `path`; binary and private-key files show by name only. A `'!coder::find-relevant'` deny rule in `iii-permissions.yaml`, above its allow entry, takes it from agents; the IDE's Search tab calls it directly. See [below](#judge-ranked-discovery-coderfind-relevant). |
 | `coder::create-file` / `coder::update-file` / `coder::delete-file` / `coder::move` | Batched create, line/regex edits, delete, and atomic rename/move. |
 
 Roots come from `fs.host_roots` (with the cwd+`/tmp` fallback noted above);
@@ -214,6 +215,67 @@ out explicitly below:
 | `C221` | Optimistic whole-file save conflict: the file no longer matches `expected_revision`; no bytes were written. | n/a |
 
 No separate install: `iii trigger compose::add worker=ide` brings the whole surface.
+
+### Judge-ranked discovery (`coder::find-relevant`)
+
+`coder::find-relevant { query, path?, exclude_globs?, timeout_ms? }` walks
+`path` (default `.`) folder by folder, asking the judge jevgrep's yes/no
+relevance questions and descending only into what it admits, then picks
+excerpts from the admitted files. The judge is optional: the worker does
+not depend on it, and a missing or failing judge is a typed result, not an
+error.
+
+| `status` | Meaning |
+|---|---|
+| `complete` | Every admitted branch was explored. |
+| `incomplete` | Partial coverage: the deadline hit, the judge token budget ran out, a request failed or was too large, or a walk limit was reached. `issues` counts each kind and `reason` names a stop; narrow `path` and retry. |
+| `unavailable` | No judge answered (not deployed, no key, paused after a recent outage, or a context window under 8192 tokens). Use `coder::search`. |
+
+- **Budget.** `timeout_ms` (default 120000, max 280000, below the harness's
+  300 s dispatch timeout) bounds the whole ask; each judge call gets at most
+  20 s of it. Excerpts share a 128 KiB source budget, and the whole result
+  stays under the harness's 256 KiB result cap as the harness counts it
+  (the JSON plus the JSON again as text, so escaping counts twice). The
+  file list takes up to half of that cap, leads up to half of the rest, and
+  excerpts the remainder, best files first; a file whose excerpts did not
+  fit sets `source_omitted`. Files or leads cut from the tail count a
+  `resource_limit` in `issues`. An excerpt with `partial`
+  holds only that byte span of its lines (inside a line over 24000 bytes).
+- **Latency and judge cost.** An ask makes one judge call per batch of
+  folders, files or declarations, so time and judge tokens grow with the
+  folder: a component folder takes seconds and well under 2M judge input
+  tokens, while a repository-root ask on a large monorepo takes minutes and
+  can pass 20M (about $1 at TypeSafe's $0.042 per million). Point `path` at
+  the subtree the question is about.
+- **Judge token budget.** `code.find_relevant_judge_token_budget` (default
+  3000000, 0 = unlimited, hot-reloaded) caps the judge input tokens one ask
+  may spend. Past it the ask starts no new judge call and returns
+  `incomplete` with reason `token_budget` and what it found so far. Calls
+  already scheduled (up to about twice `code.find_relevant_judge_slots`,
+  including ones queued for a slot) still go out, so the total can pass
+  the budget by that many calls.
+- **Shared slots.** At most `code.find_relevant_judge_slots` judge calls
+  (default 3, hot-reloaded) are in flight across the whole worker (every
+  ask, every session). `judge-typesafe` serves `concurrency` requests at a
+  time (default 4); keep the slots one or more below it so the harness and
+  `iii-directory` judge calls stay responsive, and raise both together to
+  speed up asks. An outage pauses calls to that provider for 30 s.
+- **What leaves the host.** Paths relative to `path`, never the host
+  layout. The walk skips `non_accessible_globs`, `fs.denylist_paths`,
+  gitignored entries, hidden entries below `path` (any dot-name, even one
+  an ignore file whitelists; `path` itself may be a dot-folder, so do not
+  point it at one holding tokens), dependency and build folders
+  (`node_modules`, `vendor`, `target`, `dist`, …) and secret-named files
+  (`.env`/`.env.*`, `id_rsa`-style keys, `credentials(.json)`,
+  `secrets.{json,yaml,yml}`, `.netrc`/`.npmrc`/`.pypirc`,
+  `*.pem`/`*.key`/`*.p12`/`*.pfx`). The text of files holding a private key
+  (PEM or armored PGP) and of binary or non-UTF-8 files is never sent,
+  though their names can appear in a folder's preview. Tokens hard-coded in
+  ordinary source files, and the query itself, still go to the provider. A
+  `'!coder::find-relevant'` rule in `iii-permissions.yaml` above its allow
+  entry (first match wins) takes the function from agents only: the IDE's
+  Search tab (Ask) calls it directly, outside the harness's permission
+  gate.
 
 ## Terminal sessions (`shell::pty::*`)
 

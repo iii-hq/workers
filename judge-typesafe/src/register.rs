@@ -40,6 +40,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) {
                     .with_caller_id(caller.as_deref())
                     .with_api_key(snapshot.api_key.as_deref())
                     .with_limits(snapshot.execution_limits())
+                    .with_concurrency(snapshot.concurrency)
                     .evaluate(request, &snapshot.model)
                     .await,
             )
@@ -74,6 +75,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) {
                     .with_caller_id(caller.as_deref())
                     .with_api_key(snapshot.api_key.as_deref())
                     .with_limits(snapshot.execution_limits())
+                    .with_concurrency(snapshot.concurrency)
                     .list_models(request)
                     .await,
             )
