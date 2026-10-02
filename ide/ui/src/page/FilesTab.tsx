@@ -600,6 +600,9 @@ function FilesTabView({
             <IconButton label="New folder" onClick={() => beginCreate('folder', dirOfFocus(model))}>
               <FolderPlus aria-hidden />
             </IconButton>
+            <IconButton label="New worker" onClick={() => actionsRef.current.newWorker(dirOfFocus(model) || 'workers')}>
+              <PackagePlus aria-hidden />
+            </IconButton>
             <IconButton label="Refresh explorer" onClick={() => actions.refresh()}>
               <RefreshCw aria-hidden />
             </IconButton>
