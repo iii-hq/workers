@@ -2,8 +2,8 @@
 Feature: context::assemble — the model-ready context pipeline
 
   Contract (context-manager.md § context::assemble): media-normalize -> cap
-  results (always) -> age-prune (always) -> (if over) compact -> (if still
-  over) emergency -> overflow. The response reports what actually happened (`applied`),
+  results (always) -> (if over) age-prune -> (if still over) compact -> (if
+  still over) emergency -> overflow. The response reports what actually happened (`applied`),
   the budget it fit into (`usable`), and how the model was resolved.
   Every successful response fits its reported usable budget. Busy
   leases, failed summarisers, disabled passes, and irreducible inputs

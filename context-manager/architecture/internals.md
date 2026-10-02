@@ -100,10 +100,11 @@ flowchart TD
 Load-bearing details:
 
 1. **Order is fixed: media-normalize → cap → prune → compact.** Media
-   normalization, cap, and prune are all unconditional: they run on every call,
-   no longer gated on being over `usable`, so even a within-budget request can
-   have images replaced, a single oversized result capped, or an aged output
-   pruned. Before accounting, a known catalog model receives image placeholders
+   normalization and cap are unconditional: they run on every call, so even a
+   within-budget request can have images replaced or a single oversized result
+   capped. Prune runs only once the request is over `usable`: it rewrites
+   results an earlier request already sent, which costs the provider's prompt
+   cache from that result on. Before accounting, a known catalog model receives image placeholders
    unless it explicitly declares vision support; a known vision model ages tool
    images after the next assistant response and user images when a later user
    turn follows a response. Inline limits and unresolved models keep images.

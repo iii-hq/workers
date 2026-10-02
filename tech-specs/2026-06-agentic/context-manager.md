@@ -61,8 +61,8 @@ usable = max(0, (input_limit ?? (context_window - max_output_tokens)) - reserved
 `thinking_budget` is `thinking_budgets[thinking_level]` when the caller passes
 `options.thinking_level` and the model declares budgets, else 0 — this is how assemble leaves room
 for the reasoning tokens a thinking tier consumes. A 200k model with defaults yields ~180k usable; a
-32k model yields ~12k. Compaction triggers when running tokens cross `usable`; capping and pruning
-now run on every call, before that check.
+32k model yields ~12k. Capping runs on every call; pruning runs only once running tokens cross
+`usable`, and compaction only if they are still over after it.
 
 ## Structural invariants
 
