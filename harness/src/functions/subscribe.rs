@@ -1457,7 +1457,12 @@ fn start_after_approval(arguments: &Value, verdict: Result<Verdict, String>) -> 
             format!("the approval gate could not be asked about its compose::add ({problem})")
         }
     };
-    trigger::start_refused(arguments, &why)
+    trigger::start_refused(
+        arguments,
+        &why,
+        "Then send its compose_add to compose::add yourself: that call goes through approval, \
+         where a human can allow it.",
+    )
 }
 
 /// The function a starting `coder::scaffold-worker` runs inside the ide.

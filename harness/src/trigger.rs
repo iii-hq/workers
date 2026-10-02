@@ -865,6 +865,7 @@ pub(crate) fn scaffold_start_gate(
     start_refused(
         arguments,
         "it runs compose::add, which this session may not call",
+        "Adding it to the stack needs compose::add: ask for it, or for someone who has it to send the compose_add.",
     )
 }
 
@@ -877,7 +878,8 @@ pub(crate) fn scaffold_starts(function_id: &str, arguments: &Value) -> bool {
 
 /// A start this session cannot have: a defaulted one goes files-only, an
 /// explicit one is refused.
-pub(crate) fn start_refused(arguments: &Value, why: &str) -> StartGate {
+/// `next` is the step that does add the worker, for the agent to take.
+pub(crate) fn start_refused(arguments: &Value, why: &str, next: &str) -> StartGate {
     match arguments.get("start") {
         Some(Value::Bool(false)) => StartGate::Pass,
         None => {
@@ -887,18 +889,15 @@ pub(crate) fn start_refused(arguments: &Value, why: &str) -> StartGate {
             }
             StartGate::FilesOnly(
                 files_only,
-                format!(
-                    "[harness] Not started ({why}): only the files were written. Send its \
-                     compose_add to compose::add where that is allowed."
-                ),
+                format!("[harness] Not started ({why}): only the files were written. {next}"),
             )
         }
         // true, or a value the ide would refuse anyway: never dispatched.
         Some(_) => StartGate::Deny(invocation_error_result(
             Some("scaffold_start_denied".to_string()),
             format!(
-                "coder::scaffold-worker with start: true is refused here: {why}. Pass \
-                 start: false to write the files only."
+                "coder::scaffold-worker with start: true is refused here: {why}. Call it with \
+                 start: false to write the files only. {next}"
             ),
         )),
     }
