@@ -16,7 +16,8 @@
 //! turn completes, letting the last coalesced burst land. Git internals,
 //! this worker's own temp files, the turn store itself, and gitignored
 //! paths stay out of the record; gitignored trees and symlinks are not
-//! watched at all, and a root with too many directories goes unobserved.
+//! watched at all, and of a root with too many directories only those
+//! nearest the top are.
 //!
 //! Two chats working in one workspace watch the same files, and a watch
 //! cannot tell who wrote. So a write is recorded under a session only when
@@ -40,6 +41,10 @@ use crate::turns::TurnLog;
 
 /// Raw OS events batch this long before folding into the record.
 const COALESCE_MS: u64 = 250;
+/// Directories a turn's watch may hold, one inotify watch each, out of a
+/// per-user budget shared with editors and every other watcher. A bigger
+/// root is watched breadth-first up to it.
+const MAX_WATCHED_DIRS: usize = 4_096;
 /// How long a watch outlives its turn, so the final burst still lands.
 const GRACE_MS: u64 = 1_200;
 /// How long the pre-trigger hook waits for a new watch to go live — well
@@ -110,8 +115,10 @@ impl TurnObservers {
         if !root.is_dir() {
             return;
         }
-        self.ensure_with(session_id, turn_id, root, DirWatch::open)
-            .await;
+        self.ensure_with(session_id, turn_id, root, |root, tx| {
+            DirWatch::open(root, tx, MAX_WATCHED_DIRS, false)
+        })
+        .await;
     }
 
     /// `ensure` with the watch setup handed in. The setup walks the root on
@@ -481,8 +488,12 @@ mod tests {
     /// next tree that fits goes unwatched.
     #[tokio::test]
     async fn trees_renamed_or_deleted_mid_turn_stop_counting() {
+        // Breadth-first and by name, the tree's last directory is the first
+        // to go unwatched when gone ones keep counting.
+        const WIDE: usize = MAX_WATCHED_DIRS / 2 + 10;
+        let last = (0..WIDE).map(|i| format!("d{i}")).max().unwrap();
         let wide = |at: &Path| {
-            for i in 0..crate::events::MAX_WATCHED_DIRS / 2 + 10 {
+            for i in 0..WIDE {
                 std::fs::create_dir_all(at.join(format!("d{i}"))).unwrap();
             }
         };
@@ -497,7 +508,7 @@ mod tests {
 
         std::fs::rename(root.join("big"), root.join("big2")).unwrap();
         tokio::time::sleep(Duration::from_millis(COALESCE_MS * 4)).await;
-        let file = root.join("big2/d0/a.txt");
+        let file = root.join("big2").join(&last).join("a.txt");
         std::fs::write(&file, "a").unwrap();
         assert!(
             observed(&observers, |path| path == file).await,
@@ -516,7 +527,7 @@ mod tests {
         wide(&dir.path().join("staged"));
         std::fs::rename(dir.path().join("staged"), root.join("big3")).unwrap();
         tokio::time::sleep(Duration::from_millis(COALESCE_MS * 4)).await;
-        let file = root.join("big3/d0/b.txt");
+        let file = root.join("big3").join(&last).join("b.txt");
         std::fs::write(&file, "b").unwrap();
         assert!(
             observed(&observers, |path| path == file).await,
