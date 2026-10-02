@@ -10,6 +10,8 @@ export interface CoderInfo {
   /** Canonical absolute allowed roots; index 0 is the primary root. */
   base_paths: string[]
   primary_root: string
+  /** Protected paths: listed, never read or written (`.env`, keys). */
+  non_accessible_globs?: string[]
 }
 
 export interface WorkspaceValidateResponse {

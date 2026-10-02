@@ -25,7 +25,7 @@ import {
   type Host,
   IconButton,
 } from '@iii-dev/console-ui'
-import { CircleAlert, Code, Eye, FileDiff, FileX, FolderOpen, Hash, MessageSquareQuote, RefreshCw, X } from 'lucide-react'
+import { CircleAlert, Code, Eye, FileDiff, FileX, FolderOpen, Hash, Lock, MessageSquareQuote, RefreshCw, X } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage, formatBytes } from '@iii-dev/console-ui/format'
 import { Breadcrumbs } from './Breadcrumbs'
@@ -84,8 +84,9 @@ export type EditorCache = Map<string, EditorCacheEntry>
 
 type PaneState =
   | { phase: 'loading'; progress?: { received: number; total: number } }
-  /** `missing`: the worker cannot see the file (deleted or moved). */
-  | { phase: 'error'; message: string; missing: boolean }
+  /** `missing`: the worker cannot see the file (deleted or moved);
+      `locked`: it is one of the protected paths, which it never reads. */
+  | { phase: 'error'; message: string; missing: boolean; locked?: boolean }
   | { phase: 'ready' }
 
 // Shared, so setting the phase it already has renders nothing.
@@ -124,6 +125,9 @@ interface EditorPaneProps {
   missing?: boolean
   /** What this pane's own read found out about the file. */
   onMissing?: (relPath: string, missing: boolean) => void
+  /** One of the worker's protected paths (`.env`, keys): its read fails
+      like a missing file's, and the pane says why instead. */
+  protectedPath?: boolean
   /** Close this tab (the way out of a file that is gone). */
   onClose?: () => void
   /** Offer "Reference in chat" on a selection: the chosen lines go to the
@@ -155,6 +159,7 @@ function EditorPaneView({
   onQuickOpen,
   missing = false,
   onMissing,
+  protectedPath = false,
   onClose,
   onReferenceInChat,
 }: EditorPaneProps) {
@@ -196,6 +201,8 @@ function EditorPaneView({
   const [loadAttempt, setLoadAttempt] = useState(0)
   const onMissingRef = useRef(onMissing)
   onMissingRef.current = onMissing
+  const protectedRef = useRef(protectedPath)
+  protectedRef.current = protectedPath
 
   const entry = cache.get(relPath)
 
@@ -203,8 +210,11 @@ function EditorPaneView({
     (seq: number, err: unknown) => {
       if (seqRef.current !== seq) return
       const raw = errorMessage(err)
-      const gone = isMissingFileError(raw)
-      setPane({ phase: 'error', message: loadErrorMessage(raw), missing: gone })
+      const unreadable = isMissingFileError(raw)
+      // A protected file is there; the worker just never reads it.
+      const locked = unreadable && protectedRef.current
+      const gone = unreadable && !locked
+      setPane({ phase: 'error', message: loadErrorMessage(raw), missing: gone, locked })
       onMissingRef.current?.(relPath, gone)
     },
     [relPath],
@@ -521,14 +531,22 @@ function EditorPaneView({
           <div className="shui-side-note">{loadingLabel}</div>
         ) : pane.phase === 'error' ? (
           <PaneNotice
-            Icon={pane.missing ? FileX : CircleAlert}
-            tone={pane.missing ? 'neutral' : 'warn'}
-            title={pane.missing ? 'This file is no longer here' : 'This file could not be opened'}
+            Icon={pane.locked ? Lock : pane.missing ? FileX : CircleAlert}
+            tone={pane.locked || pane.missing ? 'neutral' : 'warn'}
+            title={
+              pane.locked
+                ? 'Protected file'
+                : pane.missing
+                  ? 'This file is no longer here'
+                  : 'This file could not be opened'
+            }
             path={relPath}
             detail={
-              pane.missing
-                ? 'It was deleted or moved outside the editor. The tab stays until you close it, in case the file comes back.'
-                : pane.message
+              pane.locked
+                ? "It matches the IDE's protected paths (Settings › IDE), which keep secrets such as .env files and keys out of reach, agents' included, so it is not opened here. The terminal can still read it."
+                : pane.missing
+                  ? 'It was deleted or moved outside the editor. The tab stays until you close it, in case the file comes back.'
+                  : pane.message
             }
             actions={
               <>

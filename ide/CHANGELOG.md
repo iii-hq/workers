@@ -200,6 +200,14 @@
 
 ### Fixed
 
+- **A protected file says so instead of "no longer here".** A file on the
+  worker's protected paths (`code.non_accessible_globs`: `.env`, `.env.*`,
+  keys, `secrets/`) is listed but never read, by agents or by the IDE, and
+  its read fails exactly like a missing file's. The editor now tells them
+  apart by the globs `coder::info` reports: it shows "Protected file" with
+  where the list lives (Settings › IDE) and that the terminal can still read
+  it, and the tab is no longer struck through as if the file were gone.
+
 - **Commit, stash and rollback no longer fail with "could not write index".**
   The page re-reads git on every file change, and its `git status` took
   `index.lock` to refresh stat data, racing the panel's own commit, stash

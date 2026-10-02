@@ -53,6 +53,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { ActivityBar, SIDE_VIEWS, type SideView } from './ActivityBar'
 import { BranchChangesView } from './BranchChangesView'
+import { isProtectedPath } from './protected-paths'
 import {
   type MissingPaths,
   missingAfterChanges,
@@ -182,6 +183,7 @@ const TERMINAL_BOTTOM_DEFAULT_SIZE = 280
 const TERMINAL_RIGHT_DEFAULT_SIZE = 420
 const LIVE_COALESCE_MS = 400
 const NO_RECENT: readonly string[] = []
+const NO_GLOBS: readonly string[] = []
 
 function clampTerminalSize(size: number | undefined, fallback: number): number {
   if (size === undefined || !Number.isFinite(size)) return fallback
@@ -340,6 +342,13 @@ export function ShellExplorerPage({
   // Open file tabs whose file is gone from disk (`missing-files.ts`), and
   // the persisted folder that was gone when the pane came back.
   const [missingPaths, setMissingPaths] = useState<MissingPaths>(NO_MISSING)
+  // A protected file (`.env`, keys) reads like a missing one, but it is
+  // there: its tab is not struck through, and its pane says why it is shut.
+  const protectedGlobs = info?.non_accessible_globs ?? NO_GLOBS
+  const shownMissing = useMemo(() => {
+    const kept = [...missingPaths].filter((path) => !isProtectedPath(path, protectedGlobs))
+    return kept.length === missingPaths.size ? missingPaths : new Set(kept)
+  }, [missingPaths, protectedGlobs])
   const [missingRoot, setMissingRoot] = useState<string | null>(null)
   const missingRootRef = useRef<string | null>(null)
   const cacheRef = useRef<EditorCache>(new Map())
@@ -2581,7 +2590,7 @@ export function ShellExplorerPage({
               <EditorTabs
                 tabs={tabs}
                 dirtyPaths={dirtyPaths}
-                missingPaths={missingPaths}
+                missingPaths={shownMissing}
                 tabVisible={tabVisible}
                 gitStatus={tabGitStatus}
                 turnTitles={turnTitles}
@@ -2638,7 +2647,8 @@ export function ShellExplorerPage({
                 onDirtyChange={onDirtyChange}
                 onRevealDir={revealFolder}
                 onCompare={compareFile}
-                missing={missingPaths.has(activeFilePath)}
+                missing={shownMissing.has(activeFilePath)}
+                protectedPath={isProtectedPath(activeFilePath, protectedGlobs)}
                 onMissing={onFileMissing}
                 onClose={closeActiveTab}
                 onReferenceInChat={referenceInChat}
