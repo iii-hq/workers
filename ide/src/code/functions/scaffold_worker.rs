@@ -64,9 +64,10 @@ pub struct ScaffoldWorkerOutput {
     /// (the bare `worker` string form drops its scripts): `worker` is the
     /// absolute folder path; `start_after` is left to the caller.
     pub compose: serde_json::Value,
-    /// The compose::add payload, ready to send as is; append start_after and
-    /// any requires that compose::status does not list to its workers entry
-    /// or array.
+    /// The compose::add payload: send it whole (do not move its entry's
+    /// fields to the top level, where scripts are ignored), adding
+    /// start_after and any requires that compose::status does not list
+    /// inside its workers.
     pub compose_add: serde_json::Value,
     /// Compose containers the worker needs (e.g. `http`); add the ones
     /// `compose::status` does not list in the same `compose::add`.
@@ -452,7 +453,10 @@ mod tests {
                 "environment": { "WORKER_NAME": "orders" }
             })
         );
-        assert_eq!(out.compose_add["workers"][0], out.compose);
+        assert_eq!(
+            out.compose_add,
+            serde_json::json!({ "workers": [out.compose] })
+        );
         assert_eq!(out.requires, ["http"]);
         assert_eq!(out.next_steps, ["Call: iii trigger orders::hello"]);
     }
