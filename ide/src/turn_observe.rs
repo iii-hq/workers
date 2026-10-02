@@ -34,7 +34,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
 use crate::events::{
-    ignored_under, is_git_internal, is_noise_kind, is_own_temp, kind_of, merge_kinds, resolve_kind,
+    ignored_under, is_git_internal, is_own_temp, kind_of, merge_kinds, resolve_kind,
     watch_new_dirs, DirWatch,
 };
 use crate::turns::TurnLog;
@@ -273,9 +273,6 @@ async fn pump(
         let mut born: HashSet<String> = HashSet::new();
         let mut new_dirs: HashMap<PathBuf, bool> = HashMap::new();
         let mut fold = |event: notify::Event| {
-            if is_noise_kind(&event.kind) {
-                return;
-            }
             let kind = kind_of(&event.kind);
             for p in &event.paths {
                 if is_git_internal(p) || is_own_temp(p) || p.starts_with(&store_dir) {
@@ -314,19 +311,17 @@ async fn pump(
                 () = &mut window => break,
             }
         }
-        if !new_dirs.is_empty() {
-            let Some((grown, found)) = watch_new_dirs(&root, watch, new_dirs).await else {
-                return;
-            };
-            watch = grown;
-            for file in found
-                .iter()
-                .filter(|p| !is_own_temp(p) && !p.starts_with(&store_dir))
-            {
-                let key = file.to_string_lossy().into_owned();
-                born.insert(key.clone());
-                batch.insert(key, "created");
-            }
+        let Some((grown, found)) = watch_new_dirs(&root, watch, new_dirs).await else {
+            return;
+        };
+        watch = grown;
+        for file in found
+            .iter()
+            .filter(|p| !is_own_temp(p) && !p.starts_with(&store_dir))
+        {
+            let key = file.to_string_lossy().into_owned();
+            born.insert(key.clone());
+            batch.insert(key, "created");
         }
         if batch.is_empty() {
             continue;

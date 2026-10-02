@@ -508,9 +508,11 @@ watch: the first starts it, the last to unregister (or the console GC'ing
 a closed tab's binding) tears it down. The watch puts one OS watch on each
 directory, `.git` and symlinks left out, and gitignored trees too unless
 the binding sets `include_ignored: true`. It takes at most 32768
-directories, breadth-first from the root: on a bigger tree, changes deeper
-down go unreported and the worker logs a warning once; the binding is
-never refused. `config.path` goes
+directories (a sixteenth of the host's `fs.inotify.max_user_watches` when
+that is less), breadth-first from the root: on a bigger tree, changes
+deeper down go unreported and the worker logs a warning once; the binding
+is never refused. On macOS one recursive FSEvents watch covers the whole
+tree instead. `config.path` goes
 through the same path policy as every `coder::*` call — jail containment
 (`fs.host_roots`), the operator denylist, canonicalization — and must be
 a directory: watching a tree is a read of every filename under it, so a
