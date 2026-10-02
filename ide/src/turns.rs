@@ -1775,7 +1775,7 @@ pub fn register(
                         (input.session_id.as_deref(), input.turn_id.as_deref())
                     {
                         let root = session_root(input.metadata.as_ref());
-                        observers.ensure(session_id, turn_id, root.as_deref());
+                        observers.ensure(session_id, turn_id, root.as_deref()).await;
                     }
                     log.on_pre_trigger(input).await;
                     Ok::<HookOutput, Error>(HookOutput::default())

@@ -11,10 +11,12 @@
 //! version when one exists and says "nothing to diff" quietly otherwise.
 //!
 //! The watch starts on the first hooked call of a turn — the pre-trigger
-//! hook is an awaited barrier, so the watcher is live before that call can
-//! write — and stops a grace window after the turn completes, letting the
-//! last coalesced burst land. Git internals, this worker's own temp files,
-//! the turn store itself, and gitignored paths stay out of the record.
+//! hook is an awaited barrier, so on a root that walks in time the watcher
+//! is live before that call can write — and stops a grace window after the
+//! turn completes, letting the last coalesced burst land. Git internals,
+//! this worker's own temp files, the turn store itself, and gitignored
+//! paths stay out of the record; gitignored trees and symlinks are not
+//! watched at all, and a root with too many directories goes unobserved.
 //!
 //! Two chats working in one workspace watch the same files, and a watch
 //! cannot tell who wrote. So a write is recorded under a session only when
@@ -29,9 +31,11 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use notify::{RecursiveMode, Watcher};
+use tokio::sync::mpsc::Sender;
 
 use crate::events::{
-    ignored_under, is_git_internal, is_noise_kind, is_own_temp, kind_of, merge_kinds, resolve_kind,
+    ignored_under, in_repo, is_git_internal, is_noise_kind, is_own_temp, kind_of, merge_kinds,
+    plain_ignores, resolve_kind,
 };
 use crate::turns::TurnLog;
 
@@ -39,6 +43,16 @@ use crate::turns::TurnLog;
 const COALESCE_MS: u64 = 250;
 /// How long a watch outlives its turn, so the final burst still lands.
 const GRACE_MS: u64 = 1_200;
+/// How long the pre-trigger hook waits for a new watch to go live — well
+/// under the harness hook timeout. A root slower to walk lets the call
+/// through unobserved (hook pre-images and the turn's snapshots still
+/// cover it) while the walk finishes off the runtime.
+const SETUP_WAIT_MS: u64 = 1_000;
+/// Directories one root may put under watch, one inotify watch each, out
+/// of a per-user budget (8192 by default on older kernels) shared with
+/// editors and every other watcher. A root with more outside its
+/// .gitignore goes unobserved; a new tree that would cross it, unwatched.
+const MAX_WATCHED_DIRS: usize = 4_096;
 
 struct ObserverEntry {
     turn_id: String,
@@ -85,9 +99,10 @@ impl TurnObservers {
     }
 
     /// Make sure a watch covers this session's root for this turn. Called
-    /// from the awaited pre/post hooks, so by the time a hooked call runs
-    /// the watcher is already live.
-    pub fn ensure(self: &Arc<Self>, session_id: &str, turn_id: &str, root: Option<&str>) {
+    /// from the awaited pre-trigger hook, so by the time a hooked call runs
+    /// the watcher is live — unless the root takes over `SETUP_WAIT_MS` to
+    /// walk.
+    pub async fn ensure(self: &Arc<Self>, session_id: &str, turn_id: &str, root: Option<&str>) {
         let Some(root) = root else { return };
         let root = Path::new(root);
         if !root.is_absolute() {
@@ -101,48 +116,72 @@ impl TurnObservers {
         if !root.is_dir() {
             return;
         }
+        self.ensure_with(session_id, turn_id, root, DirWatch::open)
+            .await;
+    }
 
-        let mut entries = self.lock();
-        if let Some(entry) = entries.get_mut(session_id) {
-            if entry.root == root {
-                entry.turn_id = turn_id.to_string();
-                return;
+    /// `ensure` with the watch setup handed in. The setup walks the root on
+    /// a blocking thread: the SDK runs every handler on one runtime thread,
+    /// and a walk there, or under `entries`, froze the whole worker. The
+    /// entry goes in first, so a later call of the turn finds the setup in
+    /// flight instead of walking again.
+    async fn ensure_with(
+        self: &Arc<Self>,
+        session_id: &str,
+        turn_id: &str,
+        root: PathBuf,
+        open: impl FnOnce(&Path, Sender<notify::Event>) -> Option<DirWatch> + Send + 'static,
+    ) {
+        let (live, ready) = tokio::sync::oneshot::channel::<()>();
+        {
+            let mut entries = self.lock();
+            if let Some(entry) = entries.get_mut(session_id) {
+                if entry.root == root {
+                    entry.turn_id = turn_id.to_string();
+                    return;
+                }
+                entries.remove(session_id);
             }
-            entries.remove(session_id);
+            let this = Arc::clone(self);
+            let (session, turn, watch_root) =
+                (session_id.to_string(), turn_id.to_string(), root.clone());
+            let task = tokio::spawn(async move {
+                let (tx, rx) = tokio::sync::mpsc::channel::<notify::Event>(1024);
+                let walk_root = watch_root.clone();
+                let Ok(Some(watch)) =
+                    tokio::task::spawn_blocking(move || open(&walk_root, tx)).await
+                else {
+                    return;
+                };
+                tracing::info!(
+                    session_id = %session,
+                    turn_id = %turn,
+                    root = %watch_root.display(),
+                    dirs = watch.dirs,
+                    "turn observe: watch started"
+                );
+                let _ = live.send(());
+                pump(this, session, watch_root, watch, rx).await;
+            });
+            entries.insert(
+                session_id.to_string(),
+                ObserverEntry {
+                    turn_id: turn_id.to_string(),
+                    root,
+                    task,
+                },
+            );
         }
-
-        let (tx, rx) = tokio::sync::mpsc::channel::<notify::Event>(1024);
-        let mut watcher = match notify::recommended_watcher(move |res| {
-            if let Ok(event) = res {
-                let _ = tx.try_send(event);
-            }
-        }) {
-            Ok(w) => w,
-            Err(e) => {
-                tracing::warn!(error = %e, "turn observe: watcher start failed");
-                return;
-            }
-        };
-        if let Err(e) = watcher.watch(&root, RecursiveMode::Recursive) {
-            tracing::warn!(error = %e, root = %root.display(), "turn observe: watch failed");
-            return;
+        if tokio::time::timeout(Duration::from_millis(SETUP_WAIT_MS), ready)
+            .await
+            .is_err()
+        {
+            tracing::info!(
+                session_id,
+                turn_id,
+                "turn observe: watch still starting; the call goes ahead"
+            );
         }
-        tracing::info!(session_id, turn_id, root = %root.display(), "turn observe: watch started");
-        let task = tokio::spawn(pump(
-            Arc::clone(self),
-            session_id.to_string(),
-            root.clone(),
-            watcher,
-            rx,
-        ));
-        entries.insert(
-            session_id.to_string(),
-            ObserverEntry {
-                turn_id: turn_id.to_string(),
-                root,
-                task,
-            },
-        );
     }
 
     /// A turn ended: keep its watch alive for the grace window, then tear
@@ -215,13 +254,104 @@ impl TurnObservers {
     }
 }
 
+/// A bounded workspace watch: one non-recursive OS watch per directory
+/// kept. notify's recursive inotify watch walks every directory under the
+/// root, symlinks followed and gitignored trees included; on a monorepo
+/// root that held the worker for 44 s and nearly every inotify watch the
+/// user had.
+struct DirWatch {
+    watcher: notify::RecommendedWatcher,
+    dirs: usize,
+}
+
+impl DirWatch {
+    /// Blocking. `None` when the watcher will not start or the root has
+    /// too many directories to observe.
+    fn open(root: &Path, tx: Sender<notify::Event>) -> Option<Self> {
+        let watcher = notify::recommended_watcher(move |res| {
+            if let Ok(event) = res {
+                let _ = tx.try_send(event);
+            }
+        });
+        let mut watch = match watcher {
+            Ok(watcher) => Self { watcher, dirs: 0 },
+            Err(e) => {
+                tracing::warn!(error = %e, "turn observe: watcher start failed");
+                return None;
+            }
+        };
+        watch.add_tree(root, root).then_some(watch)
+    }
+
+    /// Blocking: watch `dir` and the directories `watch_dirs` keeps under
+    /// it. False, with nothing watched, when that would cross
+    /// `MAX_WATCHED_DIRS`.
+    fn add_tree(&mut self, root: &Path, dir: &Path) -> bool {
+        let Some(dirs) = watch_dirs(root, dir, MAX_WATCHED_DIRS.saturating_sub(self.dirs)) else {
+            tracing::warn!(
+                root = %root.display(),
+                dir = %dir.display(),
+                cap = MAX_WATCHED_DIRS,
+                "turn observe: too many directories to watch; this tree goes unobserved \
+                 (hook pre-images and snapshots still cover the turn)"
+            );
+            return false;
+        };
+        for dir in dirs {
+            match self.watcher.watch(&dir, RecursiveMode::NonRecursive) {
+                Ok(()) => self.dirs += 1,
+                // Out of inotify watches: the rest would fail too.
+                Err(e) if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) => {
+                    tracing::warn!(error = %e, root = %root.display(), "turn observe: watch failed");
+                    break;
+                }
+                // Gone since the walk, or unreadable: nothing to watch.
+                Err(_) => {}
+            }
+        }
+        true
+    }
+}
+
+/// The directories a watch keeps from `dir` down, by `root`'s ignore
+/// rules: gitignored trees (outside a repository, what `ignored_under`
+/// ignores), `.git` and symlinks stay out. `None` past `cap`; the walk
+/// stops there.
+fn watch_dirs(root: &Path, dir: &Path, cap: usize) -> Option<Vec<PathBuf>> {
+    let plain = if in_repo(root) {
+        None
+    } else {
+        plain_ignores(root)
+    };
+    let mut walker = ignore::WalkBuilder::new(dir);
+    walker
+        .follow_links(false)
+        .hidden(false)
+        .ignore(false)
+        .filter_entry(move |entry| {
+            entry.file_type().is_some_and(|t| t.is_dir())
+                && entry.file_name() != ".git"
+                && !plain
+                    .as_ref()
+                    .is_some_and(|m| m.matched(entry.path(), true).is_ignore())
+        });
+    let mut dirs = Vec::new();
+    for entry in walker.build().flatten() {
+        if dirs.len() == cap {
+            return None;
+        }
+        dirs.push(entry.into_path());
+    }
+    Some(dirs)
+}
+
 /// Coalesce raw events and fold each batch into the session's current turn.
-/// Owns the watcher: aborting this task tears the watch down.
+/// Owns the watch: aborting this task tears it down.
 async fn pump(
     observers: Arc<TurnObservers>,
     session_id: String,
     root: PathBuf,
-    _watcher: notify::RecommendedWatcher,
+    mut watch: DirWatch,
     mut rx: tokio::sync::mpsc::Receiver<notify::Event>,
 ) {
     let store_dir = observers.store_dir.clone();
@@ -231,6 +361,7 @@ async fn pump(
         };
         let mut batch: HashMap<String, &'static str> = HashMap::new();
         let mut born: HashSet<String> = HashSet::new();
+        let mut new_dirs: HashSet<String> = HashSet::new();
         let mut fold = |event: notify::Event| {
             if is_noise_kind(&event.kind) {
                 return;
@@ -244,6 +375,11 @@ async fn pump(
                     continue;
                 }
                 if kind != "deleted" && p.is_dir() {
+                    // Made or moved in under a watched directory: a
+                    // recursive watch would cover it, so this one does.
+                    if !p.is_symlink() {
+                        new_dirs.insert(p.to_string_lossy().into_owned());
+                    }
                     continue;
                 }
                 let key = p.to_string_lossy().into_owned();
@@ -267,6 +403,12 @@ async fn pump(
                 },
                 () = &mut window => break,
             }
+        }
+        if !new_dirs.is_empty() {
+            let Some(grown) = watch_new_dirs(&root, watch, new_dirs).await else {
+                return;
+            };
+            watch = grown;
         }
         if batch.is_empty() {
             continue;
@@ -294,6 +436,25 @@ async fn pump(
             .fold_observed(&session_id, &turn_id, &root_str, changes)
             .await;
     }
+}
+
+/// Watch the trees of directories new under the root, gitignored ones
+/// left out. Off the runtime: a tree copied in can be big.
+async fn watch_new_dirs(
+    root: &Path,
+    mut watch: DirWatch,
+    dirs: HashSet<String>,
+) -> Option<DirWatch> {
+    let ignored = ignored_set(root, dirs.iter()).await;
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        for dir in dirs.iter().filter(|dir| !ignored.contains(*dir)) {
+            watch.add_tree(&root, Path::new(dir));
+        }
+        watch
+    })
+    .await
+    .ok()
 }
 
 /// The subset of `paths` that git ignores under `root`. A root that is not
@@ -338,6 +499,121 @@ mod tests {
 
     fn change(path: &str) -> Vec<(String, &'static str)> {
         vec![(path.to_string(), "modified")]
+    }
+
+    fn kept(root: &Path, cap: usize) -> Option<Vec<String>> {
+        let mut names: Vec<String> = watch_dirs(root, root, cap)?
+            .iter()
+            .map(|dir| {
+                dir.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        Some(names)
+    }
+
+    #[test]
+    fn the_watch_walk_leaves_out_ignored_trees_git_and_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        for sub in [".git/objects", ".github", "src/deep", "target/debug"] {
+            std::fs::create_dir_all(repo.join(sub)).unwrap();
+        }
+        std::fs::write(repo.join(".gitignore"), "target/\n").unwrap();
+        std::os::unix::fs::symlink(repo.join("src"), repo.join("link")).unwrap();
+        assert_eq!(
+            kept(&repo, 100).unwrap(),
+            ["", ".github", "src", "src/deep"]
+        );
+        // Outside a repository: what `ignored_under` ignores there.
+        let plain = dir.path().join("plain");
+        for sub in ["node_modules/pkg", ".iii/state", "app"] {
+            std::fs::create_dir_all(plain.join(sub)).unwrap();
+        }
+        assert_eq!(kept(&plain, 100).unwrap(), ["", "app"]);
+    }
+
+    #[test]
+    fn the_watch_walk_gives_up_past_its_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        for sub in ["a", "b", "c"] {
+            std::fs::create_dir_all(dir.path().join(sub)).unwrap();
+        }
+        assert_eq!(kept(dir.path(), 4).unwrap().len(), 4);
+        assert!(kept(dir.path(), 3).is_none());
+    }
+
+    /// The SDK runs handlers on one current-thread runtime, as this test
+    /// does: a setup that hangs must not hold the hook past its bound, and
+    /// a second call of the turn must not start another.
+    #[tokio::test]
+    async fn a_slow_watch_setup_does_not_hold_the_hook() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Instant;
+        let dir = tempfile::tempdir().unwrap();
+        let observers = observers_in(dir.path());
+        let setups = Arc::new(AtomicUsize::new(0));
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let slow = {
+            let setups = setups.clone();
+            move |_: &Path, _| {
+                setups.fetch_add(1, Ordering::SeqCst);
+                let _ = gate.recv_timeout(Duration::from_secs(10));
+                None
+            }
+        };
+        let started = Instant::now();
+        observers
+            .ensure_with("s1", "t1", dir.path().to_path_buf(), slow)
+            .await;
+        assert!(started.elapsed() < Duration::from_millis(SETUP_WAIT_MS + 1_000));
+
+        let again = {
+            let setups = setups.clone();
+            move |_: &Path, _| {
+                setups.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(SETUP_WAIT_MS * 2));
+                None
+            }
+        };
+        let started = Instant::now();
+        observers
+            .ensure_with("s1", "t1", dir.path().to_path_buf(), again)
+            .await;
+        assert!(started.elapsed() < Duration::from_millis(SETUP_WAIT_MS / 2));
+        assert_eq!(setups.load(Ordering::SeqCst), 1);
+        drop(release);
+    }
+
+    #[tokio::test]
+    async fn a_directory_made_mid_turn_is_watched_too() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("w")).unwrap();
+        let root = dir.path().join("w").canonicalize().unwrap();
+        let observers = observers_in(dir.path());
+        observers
+            .ensure("s1", "t1", Some(&root.to_string_lossy()))
+            .await;
+        std::fs::create_dir_all(root.join("new/deeper")).unwrap();
+        tokio::time::sleep(Duration::from_millis(COALESCE_MS * 4)).await;
+        let file = root.join("new/deeper/a.txt");
+        std::fs::write(&file, "a").unwrap();
+        let file = file.to_string_lossy().into_owned();
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let record = observers.log.load("s1").await.unwrap();
+            if record
+                .turns
+                .iter()
+                .any(|turn| turn.files.iter().any(|f| f.path == file))
+            {
+                return;
+            }
+        }
+        panic!("a write in a directory made mid-turn was never observed");
     }
 
     #[tokio::test]

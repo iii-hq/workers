@@ -184,21 +184,10 @@ pub(crate) async fn ignored_under<'a>(
     root: &Path,
     paths: impl Iterator<Item = &'a String> + Clone,
 ) -> HashSet<String> {
-    // A watch root inside a repository (any ancestor owns a `.git`) is git's
-    // domain too: `git -C root check-ignore` resolves the containing
-    // repository and its parent .gitignore rules from a subdirectory.
-    if root.ancestors().any(|dir| dir.join(".git").exists()) {
+    if in_repo(root) {
         return git_ignored(root, paths).await;
     }
-    let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
-    for line in ["data/", "config/", ".iii/", "node_modules/", ".git/"] {
-        let _ = builder.add_line(None, line);
-    }
-    let gitignore = root.join(".gitignore");
-    if gitignore.is_file() {
-        let _ = builder.add(&gitignore);
-    }
-    let Ok(matcher) = builder.build() else {
+    let Some(matcher) = plain_ignores(root) else {
         return HashSet::new();
     };
     paths
@@ -210,6 +199,27 @@ pub(crate) async fn ignored_under<'a>(
         })
         .cloned()
         .collect()
+}
+
+/// A watch root inside a repository (any ancestor owns a `.git`) is git's
+/// domain too: `git -C root check-ignore` resolves the containing
+/// repository and its parent .gitignore rules from a subdirectory.
+pub(crate) fn in_repo(root: &Path) -> bool {
+    root.ancestors().any(|dir| dir.join(".git").exists())
+}
+
+/// What a root outside any repository ignores: its `.gitignore` plus the
+/// built-in engine-owned directories.
+pub(crate) fn plain_ignores(root: &Path) -> Option<ignore::gitignore::Gitignore> {
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+    for line in ["data/", "config/", ".iii/", "node_modules/", ".git/"] {
+        let _ = builder.add_line(None, line);
+    }
+    let gitignore = root.join(".gitignore");
+    if gitignore.is_file() {
+        let _ = builder.add(&gitignore);
+    }
+    builder.build().ok()
 }
 
 /// The subset of root-relative `paths` git ignores under `root`. A root
