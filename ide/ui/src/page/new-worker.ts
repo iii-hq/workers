@@ -8,6 +8,8 @@ import { joinRel, stripDirSlash } from './paths'
 
 export type Language = 'node' | 'python'
 
+export const LANGUAGE_LABEL: Record<Language, string> = { node: 'Node', python: 'Python' }
+
 /** One entry of coder::list-templates (ide/src/code/functions/list_templates.rs). */
 export interface TemplateInfo {
   id: string
@@ -104,18 +106,23 @@ export const NEW_WORKER_INITIAL: NewWorkerState = {
   owned: false,
 }
 
+const withAdePage = (template: TemplateInfo) => template.id.endsWith('-ade')
+
 /** The template to create from: `template` while the list still has it, else
-    the first -ade one, else the first. '' counts as unset: Radix's native
-    select reports it when its value is set before the options exist. */
+    the first -ade one, else the first. */
 export function pickTemplate(template: string | undefined, templates: TemplateInfo[]): string | undefined {
   if (template && templates.some((t) => t.id === template)) return template
-  return (templates.find((t) => t.id.endsWith('-ade')) ?? templates[0])?.id
+  return (templates.find(withAdePage) ?? templates[0])?.id
 }
 
-/** The template Select's placeholder: it shows whenever nothing is picked. */
-export function templatePlaceholder(state: NewWorkerState): string {
-  if (state.step === 'loading') return 'Loading…'
-  return state.list?.templates.length ? 'Choose a template' : 'No templates'
+/** The dialog's choices for one language: the -ade ones (the default pick)
+    first, each titled without the language the switch above already names. */
+export function templateChoices(templates: TemplateInfo[], language: Language) {
+  const suffix = ` (${LANGUAGE_LABEL[language]})`
+  return templates
+    .filter((t) => t.language === language)
+    .sort((a, b) => Number(withAdePage(b)) - Number(withAdePage(a)))
+    .map((t) => ({ ...t, title: t.name.endsWith(suffix) ? t.name.slice(0, -suffix.length) : t.name }))
 }
 
 export type NewWorkerAction =

@@ -13,7 +13,7 @@ import {
   type ScaffoldResult,
   type StackPhase,
   sourceLabel,
-  templatePlaceholder,
+  templateChoices,
   type Trigger,
   validateWorkerName,
 } from '../new-worker'
@@ -97,7 +97,6 @@ describe('pickTemplate', () => {
 
   it('keeps a pick that is listed, else falls back to the first -ade template, else the first', () => {
     expect(pickTemplate(undefined, templates)).toBe('worker-node-ade')
-    // Radix's native select reports '' while its options are not yet mounted.
     expect(pickTemplate('', templates)).toBe('worker-node-ade')
     expect(pickTemplate('worker-python', templates)).toBe('worker-python')
     // A pick that a Refresh dropped from the list.
@@ -107,14 +106,28 @@ describe('pickTemplate', () => {
   })
 })
 
-describe('templatePlaceholder', () => {
-  it('says Loading while loading, Choose a template once some loaded, No templates when none', () => {
-    expect(templatePlaceholder(NEW_WORKER_INITIAL)).toBe('Loading…')
-    expect(templatePlaceholder({ ...NEW_WORKER_INITIAL, step: 'form', list: LIST })).toBe('Choose a template')
-    expect(templatePlaceholder({ ...NEW_WORKER_INITIAL, step: 'form', list: { ...LIST, templates: [] } })).toBe(
-      'No templates',
-    )
-    expect(templatePlaceholder({ ...NEW_WORKER_INITIAL, step: 'form', error: 'boom' })).toBe('No templates')
+describe('templateChoices', () => {
+  const info = (id: string, name: string, language: 'node' | 'python') => ({
+    id,
+    name,
+    description: '',
+    language,
+    requires: [],
+  })
+
+  it('lists one language, -ade first, titled without the language', () => {
+    const templates = [
+      info('worker-python', 'Worker (Python)', 'python'),
+      info('worker-python-ade', 'Worker with ADE page (Python)', 'python'),
+      info('worker-node', 'Worker (Node)', 'node'),
+      info('custom', 'Custom', 'python'),
+    ]
+    expect(templateChoices(templates, 'python').map((t) => [t.id, t.title])).toEqual([
+      ['worker-python-ade', 'Worker with ADE page'],
+      ['worker-python', 'Worker'],
+      ['custom', 'Custom'],
+    ])
+    expect(templateChoices(templates, 'node').map((t) => t.title)).toEqual(['Worker'])
   })
 })
 

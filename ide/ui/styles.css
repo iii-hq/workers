@@ -1317,12 +1317,50 @@
 
   /* dialog: new worker */
   .shui-new-worker { display: flex; flex-direction: column; gap: 10px; }
-  .shui-new-worker-source { display: flex; align-items: center; gap: 6px; font: 400 11px / 16px var(--font-mono); color: var(--color-ink-faint); }
+  .shui-new-worker-form { display: flex; flex-direction: column; gap: 18px; margin-top: 6px; }
+  .shui-new-worker-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .shui-new-worker-field-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .shui-new-worker-templates {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--color-edge);
+    border-radius: 6px;
+  }
+  .shui-new-worker-template {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: background-color var(--motion-duration-fast) var(--motion-ease-standard);
+  }
+  .shui-new-worker-template + .shui-new-worker-template { border-top: 1px solid var(--color-edge); }
+  .shui-new-worker-template:hover { background: var(--color-surface-hover); }
+  .shui-new-worker-template:has(:checked) { background: var(--color-surface-selected); }
+  .shui-new-worker-template:has(:focus-visible) { outline: 2px solid var(--color-rule-focus); outline-offset: -2px; }
+  .shui-new-worker-template-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+  .shui-new-worker-template-title { font: 500 13px / 18px var(--font-sans); color: var(--color-ink); }
+  .shui-new-worker-template-description { font: 400 12px / 17px var(--font-sans); color: var(--color-ink-faint); text-wrap: pretty; }
+  .shui-new-worker-template-check { flex: none; width: 16px; height: 16px; margin-top: 1px; color: var(--color-accent); opacity: 0; }
+  .shui-new-worker-template:has(:checked) .shui-new-worker-template-check { opacity: 1; }
+  .shui-new-worker-templates-empty { margin: 0; padding: 14px 12px; font: 400 12px / 17px var(--font-sans); color: var(--color-ink-faint); }
+  .shui-new-worker-source { display: flex; align-items: center; gap: 4px; margin-top: -2px; font: 400 11px / 16px var(--font-mono); color: var(--color-ink-faint); }
   .shui-new-worker-source > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .shui-new-worker-note { margin: 0; font: 400 11px / 16px var(--font-sans); color: var(--color-ink-faint); overflow-wrap: anywhere; }
   .shui-new-worker-note.warn { color: var(--color-warn); }
   .shui-new-worker-path { font-family: var(--font-mono); overflow-wrap: anywhere; }
-  .shui-new-worker-status { display: flex; align-items: center; gap: 8px; margin: 0; font: 400 12px / 18px var(--font-sans); color: var(--color-ink); }
+  /* A function id never breaks at its hyphens; a very long one is clipped. */
+  .shui-new-worker-token {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    font-family: var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+  .shui-new-worker-status { display: flex; align-items: center; gap: 8px; margin: 0; font: 400 12px / 18px var(--font-sans); color: var(--color-ink); overflow-wrap: anywhere; }
   .shui-new-worker-logs {
     margin: 0;
     max-height: 200px;
