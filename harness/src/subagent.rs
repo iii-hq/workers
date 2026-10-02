@@ -1038,7 +1038,7 @@ mod tests {
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
-            functions_surface: None,
+            functions_acknowledged: None,
             function_contract_ledger: Default::default(),
             failed_calls: Default::default(),
             skill_ack: None,

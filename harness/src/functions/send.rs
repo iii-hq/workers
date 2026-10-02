@@ -1447,7 +1447,7 @@ pub(crate) async fn seed_new(
     let lineage = lineage.for_seed(prior);
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
-    let functions_surface = prior.and_then(|record| record.functions_surface);
+    let functions_acknowledged = prior.and_then(|record| record.functions_acknowledged.clone());
     let function_contract_ledger = carried_contract_ledger(prior);
     let skill_ack = prior.and_then(|record| record.skill_ack.clone());
     let skills_started = prior.is_some_and(|record| record.skills_started);
@@ -1466,7 +1466,7 @@ pub(crate) async fn seed_new(
         calls: Default::default(),
         parent: lineage.parent.clone(),
         display_parent_session_id: lineage.display_parent_session_id.clone(),
-        functions_surface,
+        functions_acknowledged,
         function_contract_ledger,
         // Per turn: a new message may have changed what failed before.
         failed_calls: Default::default(),
@@ -2028,7 +2028,7 @@ mod tests {
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
-            functions_surface: Some(generation),
+            functions_acknowledged: Some(vec![generation as u32]),
             function_contract_ledger: Default::default(),
             failed_calls: Default::default(),
             skill_ack: Some(crate::types::turn::SkillAck {
@@ -2171,7 +2171,7 @@ mod tests {
 
         let selected = latest_seed_record(&stale, Some(&final_record));
 
-        assert_eq!(selected.functions_surface, Some(2));
+        assert_eq!(selected.functions_acknowledged, Some(vec![2]));
         assert_eq!(selected.skill_ack.as_ref().unwrap().generation, 2);
         assert!(selected.skills_started);
         assert!(std::ptr::eq(selected, &final_record));

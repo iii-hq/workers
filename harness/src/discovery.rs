@@ -56,15 +56,20 @@ pub struct FunctionsSnapshot {
 }
 
 impl FunctionsSnapshot {
-    /// [`fingerprint_of`] over only the functions `policy` permits: what a
-    /// session can call. A registry change outside that set leaves it equal,
-    /// so it never tells the session its contracts went stale.
-    pub fn permitted_fingerprint(&self, policy: &crate::policy::CompiledPolicy) -> u64 {
-        fingerprint_of(
-            self.functions
-                .iter()
-                .filter(|f| policy.allows(&f.function_id)),
-        )
+    /// One digest per function `policy` permits, sorted: what a session can
+    /// call, each contract on its own. Comparing two of these tells a
+    /// function that changed or left (a contract the session may hold went
+    /// stale) from one that only joined (nothing the session holds changed).
+    pub fn permitted_digests(&self, policy: &crate::policy::CompiledPolicy) -> Vec<u32> {
+        let mut digests: Vec<u32> = self
+            .functions
+            .iter()
+            .filter(|f| policy.allows(&f.function_id))
+            .map(|f| fingerprint_of(std::iter::once(f)) as u32)
+            .collect();
+        digests.sort_unstable();
+        digests.dedup();
+        digests
     }
 }
 

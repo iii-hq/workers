@@ -607,15 +607,17 @@ async fn generate_step(
     };
     let (stable_prompt, assembly_system_prompt) =
         with_runtime_context(record.options.system_prompt.clone(), &record, &runtime_aid);
-    // Registry-change notice: if a function this session may call changed
-    // since it last acknowledged them, tell the model its cached contracts
-    // may be stale. First sighting stamps silently.
-    // ponytail: a broad policy (`*`) still hears every registry change; judging
-    // only the contracts the session fetched (function_contract_ledger) is the upgrade.
-    let current_surface = functions.permitted_fingerprint(&policy);
+    // Registry-change notice: if a function this session may call changed or
+    // left since it last acknowledged them, tell the model its cached
+    // contracts may be stale. First sighting stamps silently, and so does a
+    // function that only joined (no contract the session holds changed; the
+    // session's own function registering as its first step stamps hit that).
+    // ponytail: a broad policy (`*`) still hears every change to any function;
+    // judging only the contracts the session fetched (function_contract_ledger) is the upgrade.
+    let current_surface = functions.permitted_digests(&policy);
     let registry_changed = registry_notice(
-        record.functions_surface,
-        current_surface,
+        record.functions_acknowledged.as_deref(),
+        &current_surface,
         &policy,
         &functions,
     );
@@ -653,7 +655,7 @@ async fn generate_step(
     .filter_map(|(kind, notice)| Some((kind, notice_message(notice?))))
     .collect();
     let notice_prefix = ids::notice_entry_prefix(&record.turn_id, payload.step);
-    record.functions_surface = Some(current_surface);
+    record.functions_acknowledged = Some(current_surface);
 
     // Resolve the output-contract strategy and build the invocation surface:
     // the exposure-mode tools plus the synthetic submit_result schema when the
@@ -3706,26 +3708,29 @@ fn notice_message(text: String) -> Value {
     })
 }
 
-/// Decide the registry-change notice for a step. `None` when the record already
-/// matches the live permitted surface ([`FunctionsSnapshot::permitted_fingerprint`]),
-/// or is being stamped for the first time; `Some` only when a function the
-/// session may call changed under a session that acknowledged an earlier
-/// surface. The caller stamps `functions_surface = current` regardless.
+/// Decide the registry-change notice for a step. `None` while every function
+/// the session acknowledged is still live and unchanged
+/// ([`FunctionsSnapshot::permitted_digests`]), or when it is being stamped for
+/// the first time; `Some` only when one it may call changed or left. A function
+/// that only joined the permitted set is no staleness: nothing the session
+/// fetched before describes it. The caller stamps the current digests regardless.
 ///
-/// [`FunctionsSnapshot::permitted_fingerprint`]: crate::discovery::FunctionsSnapshot::permitted_fingerprint
+/// [`FunctionsSnapshot::permitted_digests`]: crate::discovery::FunctionsSnapshot::permitted_digests
 pub(crate) fn registry_notice(
-    record_surface: Option<u64>,
-    current: u64,
+    acknowledged: Option<&[u32]>,
+    current: &[u32],
     policy: &CompiledPolicy,
     snapshot: &crate::discovery::FunctionsSnapshot,
 ) -> Option<String> {
-    match record_surface {
-        Some(g) if g != current => Some(format!(
+    let stale = acknowledged?
+        .iter()
+        .any(|digest| current.binary_search(digest).is_err());
+    stale.then(|| {
+        format!(
             "{REGISTRY_CHANGED_NOTICE} {}",
             refetch_hint(policy, snapshot)
-        )),
-        _ => None,
-    }
+        )
+    })
 }
 
 /// The frozen preloaded ids the cached snapshot cannot vouch for: frozen
@@ -4899,6 +4904,14 @@ mod tests {
         ));
     }
 
+    fn exec_fn(id: &str, schema: serde_json::Value) -> crate::clients::FunctionDescriptor {
+        crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            description: Some("Run one command".into()),
+            parameters: Some(schema),
+        }
+    }
+
     #[test]
     fn registry_notice_stamps_silently_then_fires_on_mismatch() {
         let all = crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
@@ -4910,14 +4923,14 @@ mod tests {
             .internal_ids
             .insert("engine::functions::info".to_string());
         // First sighting (None): stamp, no notice.
-        assert!(super::registry_notice(None, 7, &all, &with_info).is_none());
-        // Acknowledged generation still current: no notice.
-        assert!(super::registry_notice(Some(7), 7, &all, &with_info).is_none());
-        // Registry moved on: notice fires, with the same re-fetch rule as the
-        // preloaded-stale notice.
-        let notice = super::registry_notice(Some(6), 7, &all, &with_info).unwrap();
+        assert!(super::registry_notice(None, &[7], &all, &with_info).is_none());
+        // Acknowledged functions still current: no notice.
+        assert!(super::registry_notice(Some(&[7]), &[7], &all, &with_info).is_none());
+        // An acknowledged function changed or left: notice fires, with the same
+        // re-fetch rule as the preloaded-stale notice.
+        let notice = super::registry_notice(Some(&[6]), &[7], &all, &with_info).unwrap();
         assert!(notice.contains("with engine::functions::info"), "{notice}");
-        let blind = super::registry_notice(Some(6), 7, &all, &snap(&[])).unwrap();
+        let blind = super::registry_notice(Some(&[6]), &[7], &all, &snap(&[])).unwrap();
         assert!(blind.contains("cannot re-fetch"), "{blind}");
     }
 
@@ -4928,34 +4941,66 @@ mod tests {
                 allow: vec!["task::exec".into()],
                 ..Default::default()
             }));
-        let exec = |schema: serde_json::Value| crate::clients::FunctionDescriptor {
-            function_id: "task::exec".into(),
-            description: Some("Run one command".into()),
-            parameters: Some(schema),
-        };
         let other = crate::clients::FunctionDescriptor {
             function_id: "other::worker".into(),
             description: None,
             parameters: None,
         };
-        let acknowledged =
-            snap(&[exec(serde_json::json!({"type": "object"}))]).permitted_fingerprint(&exec_only);
+        let acknowledged = snap(&[exec_fn("task::exec", serde_json::json!({"type": "object"}))])
+            .permitted_digests(&exec_only);
 
         // Another worker registering a function: same permitted surface, no notice.
-        let unrelated = snap(&[exec(serde_json::json!({"type": "object"})), other]);
-        let current = unrelated.permitted_fingerprint(&exec_only);
+        let unrelated = snap(&[
+            exec_fn("task::exec", serde_json::json!({"type": "object"})),
+            other,
+        ]);
+        let current = unrelated.permitted_digests(&exec_only);
         assert!(
-            super::registry_notice(Some(acknowledged), current, &exec_only, &unrelated).is_none()
+            super::registry_notice(Some(&acknowledged), &current, &exec_only, &unrelated).is_none()
         );
 
         // The permitted function's contract changing: notice.
-        let changed = snap(&[exec(
+        let changed = snap(&[exec_fn(
+            "task::exec",
             serde_json::json!({"type": "object", "required": ["command"]}),
         )]);
-        let current = changed.permitted_fingerprint(&exec_only);
+        let current = changed.permitted_digests(&exec_only);
         assert!(
-            super::registry_notice(Some(acknowledged), current, &exec_only, &changed).is_some()
+            super::registry_notice(Some(&acknowledged), &current, &exec_only, &changed).is_some()
         );
+    }
+
+    /// The E2E race behind the notice that survived scoping (kanban_c1, PR
+    /// #1292 validation): the session's own function registers just before
+    /// its first step, the registry cache catches up one step late, and the
+    /// function seems to "change" at step 1. It only joined: no contract the
+    /// session holds went stale. Once acknowledged, changing or leaving does.
+    #[test]
+    fn a_function_joining_the_permitted_set_is_no_staleness() {
+        let broad =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*".into()],
+                ..Default::default()
+            }));
+        let exec = || {
+            exec_fn(
+                "kanban_eval_ab12::exec",
+                serde_json::json!({"type": "object"}),
+            )
+        };
+        let lagging = snap(&[]).permitted_digests(&broad);
+        let caught_up = snap(&[exec()]);
+        let current = caught_up.permitted_digests(&broad);
+        assert!(super::registry_notice(Some(&lagging), &current, &broad, &caught_up).is_none());
+
+        let gone = snap(&[]);
+        assert!(super::registry_notice(
+            Some(&current),
+            &gone.permitted_digests(&broad),
+            &broad,
+            &gone
+        )
+        .is_some());
     }
 
     #[test]
