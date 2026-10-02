@@ -649,10 +649,16 @@ fn register_sessions_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     async move {
                         let (headless, console_entries) = match &live {
                             Some(session) => {
-                                let (url, title) =
-                                    futures::join!(session.page.url(), session.page.get_title());
+                                // Chromium holds Runtime.evaluate while a
+                                // navigation is pending: a tab still loading
+                                // keeps its recorded title instead of
+                                // holding up the whole list.
+                                let (url, title) = futures::join!(
+                                    session.page.url(),
+                                    timeout(Duration::from_secs(2), session.page.get_title())
+                                );
                                 let url = url.ok().flatten().unwrap_or_default();
-                                let title = title.ok().flatten();
+                                let title = title.ok().and_then(|t| t.ok()).flatten();
                                 if !tab.attached || !url.is_empty() {
                                     tab.set_location(&url, title.as_deref());
                                 }

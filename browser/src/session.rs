@@ -792,6 +792,9 @@ pub struct Session {
     pub exec_state: Mutex<serde_json::Value>,
     /// Serializes explicit navigation, execute, and file-input attachment.
     pub navigation_lock: tokio::sync::Mutex<()>,
+    /// Held while chromiumoxide has a `Page.navigate` of this tab in hand;
+    /// see `navigate_page`.
+    page_navigation: Arc<tokio::sync::Mutex<()>>,
     /// Loud policy denial captured by the session navigation gate for the
     /// explicit navigation or execute call currently holding the lock.
     navigation_error: Mutex<Option<String>>,
@@ -861,11 +864,35 @@ impl Session {
             .map_err(|e| format!("navigation failed: {e}"))
     }
 
+    /// `Page.navigate`, handed to chromiumoxide only once it has let go of
+    /// the tab's previous one. chromiumoxide runs one navigation per tab and
+    /// lets go of it only when it loads or at its own fixed 30 s deadline;
+    /// one handed over meanwhile waits in its queue and is sent whenever that
+    /// happens, long after a caller that gave up on it has moved on. Dropping
+    /// this future before the hand-over sends nothing; after it, the
+    /// navigation keeps the tab until chromiumoxide lets go of it.
     async fn navigate_page(&self, url: &str) -> Result<Option<String>, CdpError> {
-        let result = self
-            .page
-            .execute(cdp_page::NavigateParams::new(url))
-            .await?;
+        let held = self.page_navigation.clone().lock_owned().await;
+        let page = self.page.clone();
+        let params = cdp_page::NavigateParams::new(url);
+        let navigation = tokio::spawn(async move {
+            let _held = held;
+            let navigate = page.execute(params);
+            tokio::pin!(navigate);
+            // chromiumoxide checks its deadline only when its handler wakes:
+            // wake it just past the deadline instead of whenever some other
+            // call or event does.
+            let wait =
+                std::time::Duration::from_millis(chromiumoxide::handler::REQUEST_TIMEOUT + 500);
+            if let Ok(result) = tokio::time::timeout(wait, &mut navigate).await {
+                return result;
+            }
+            let _ = page.url().await;
+            tokio::time::timeout(wait, navigate)
+                .await
+                .unwrap_or(Err(CdpError::Timeout))
+        });
+        let result = navigation.await.map_err(|_| CdpError::NoResponse)??;
         Ok(result.result.error_text.clone())
     }
 
@@ -873,10 +900,12 @@ impl Session {
     /// dev server: an `https://` url on a loopback or private host that fails
     /// the TLS handshake (the server speaks plain HTTP) is retried over
     /// `http://` when that scheme is allowed; then the wait for the load.
-    /// `budget` bounds the whole call: past it, or past chromiumoxide's own
-    /// fixed 30 s wait for the load, the navigation goes on in the tab and
-    /// the call reports it timed out. Returns the url that ended up loading,
-    /// Chromium's error text, if any, and whether the load timed out.
+    /// `budget` bounds the whole call, including the wait for a navigation
+    /// the tab is still busy with: past it, or past chromiumoxide's own fixed
+    /// 30 s wait for the load, the call reports it timed out, and a
+    /// navigation already handed to chromiumoxide goes on in the tab. Returns
+    /// the url that ended up loading, Chromium's error text, if any, and
+    /// whether the load timed out.
     pub async fn navigate_like_a_browser(
         &self,
         url: &str,
@@ -1571,6 +1600,7 @@ impl Sessions {
             inflight: Mutex::new(HashMap::new()),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
+            page_navigation: Arc::default(),
             navigation_error: Mutex::new(None),
             upload_dirs: Mutex::new(Vec::new()),
             upload_counter: AtomicU64::new(0),
@@ -1912,6 +1942,7 @@ impl Sessions {
             inflight: Mutex::new(HashMap::new()),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
+            page_navigation: Arc::default(),
             navigation_error: Mutex::new(None),
             upload_dirs: Mutex::new(Vec::new()),
             upload_counter: AtomicU64::new(0),

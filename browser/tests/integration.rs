@@ -1972,13 +1972,145 @@ async fn a_stalled_load_times_out_on_budget_and_keeps_the_tab() {
     assert_eq!(opened["timed_out"], true, "{opened}");
     let stalled_id = opened["session_id"].as_str().expect("id").to_string();
 
-    // Both tabs are still open, their loads still running. (Chromium holds
-    // Runtime.evaluate while a navigation is pending, so no page reads.)
+    // Chromium holds Runtime.evaluate while a navigation is pending: a tab
+    // still loading must not hold up the tab list's title reads.
+    let started = std::time::Instant::now();
+    let listed = timeout(
+        Duration::from_secs(10),
+        call("browser::sessions::list", json!({})),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("sessions::list hung behind a loading tab"))
+    .expect("list");
+    eprintln!("sessions::list took {:?}", started.elapsed());
+    let listed_ids: Vec<_> = listed["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .filter_map(|s| s["session_id"].as_str())
+        .collect();
+    assert!(listed_ids.contains(&stalled_id.as_str()), "{listed}");
+
+    // Both tabs are still open, their loads still running.
     for sid in [id, stalled_id] {
         let stopped = call("browser::sessions::stop", json!({ "session_id": sid }))
             .await
             .expect("stop");
         assert_eq!(stopped["was_running"], true, "{stopped}");
     }
+    client.shutdown_async().await;
+}
+
+/// A loopback server answering every path with a small page and recording
+/// the paths it was asked for.
+fn serve_recording() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..n]);
+            if let Some(path) = request.split_whitespace().nth(1) {
+                log.lock().unwrap().push(path.to_string());
+            }
+            const PAGE: &str = "<!doctype html><title>fast</title><p>fast";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{PAGE}",
+                PAGE.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (format!("http://{addr}"), seen)
+}
+
+/// chromiumoxide runs one `Page.navigate` per tab at a time and gives up on
+/// one only at its own fixed 30 s. A navigation abandoned at `timeout_ms`
+/// is still its current one, so a later navigate queued behind it, returned
+/// `timed_out`, and was then sent to the tab long after, replacing whatever
+/// page the caller had moved on to. A navigation that times out must never
+/// reach the tab, and the tab must take a new one once chromiumoxide has
+/// let go of the abandoned one.
+#[tokio::test]
+async fn a_navigation_that_timed_out_never_reaches_the_tab_later() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    sleep(Duration::from_millis(500)).await;
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let client = &client;
+        async move {
+            timeout(
+                Duration::from_secs(90),
+                client.trigger(TriggerRequest {
+                    function_id: function_id.into(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(80_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+        }
+    };
+    let stalled = serve_stalled();
+    let (site, seen) = serve_recording();
+
+    let opened = call("browser::sessions::start", json!({}))
+        .await
+        .expect("start");
+    let id = opened["session_id"].as_str().expect("id").to_string();
+    let started = std::time::Instant::now();
+    let nav = call(
+        "browser::navigate",
+        json!({ "session_id": id, "url": stalled, "timeout_ms": 2_000 }),
+    )
+    .await
+    .expect("stalled navigate");
+    assert_eq!(nav["timed_out"], true, "{nav}");
+
+    // chromiumoxide still holds the stalled navigation: this one cannot
+    // start inside its budget, and must not start after it either.
+    let nav = call(
+        "browser::navigate",
+        json!({ "session_id": id, "url": format!("{site}/early"), "timeout_ms": 3_000 }),
+    )
+    .await
+    .expect("early navigate");
+    eprintln!("early navigate at {:?}: {nav}", started.elapsed());
+    assert_eq!(nav["timed_out"], true, "{nav}");
+
+    let nav = call(
+        "browser::navigate",
+        json!({ "session_id": id, "url": format!("{site}/second"), "timeout_ms": 45_000 }),
+    )
+    .await
+    .expect("second navigate");
+    eprintln!("second navigate done at {:?}: {nav}", started.elapsed());
+    assert_eq!(nav["ok"], true, "{nav}");
+    assert_eq!(nav["timed_out"], false, "{nav}");
+    assert_eq!(nav["url"], format!("{site}/second"), "{nav}");
+
+    sleep(Duration::from_millis(500)).await;
+    let href = call(
+        "browser::evaluate",
+        json!({ "session_id": id, "expression": "location.href" }),
+    )
+    .await
+    .expect("evaluate");
+    assert_eq!(href["value"], format!("{site}/second"), "{href}");
+    let seen = seen.lock().unwrap().clone();
+    assert!(!seen.iter().any(|p| p == "/early"), "{seen:?}");
+
+    call("browser::sessions::stop", json!({ "session_id": id }))
+        .await
+        .expect("stop");
     client.shutdown_async().await;
 }
