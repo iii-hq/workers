@@ -61,7 +61,8 @@ document. It is the contract both halves build to, and it names:
   `scripts/dev.mjs`, `ui/build.mjs`, the asset content function and
   triggers, `iii.worker.yaml`, the ADE page in `ui/WorkerPage.tsx` and the
   plainer standalone page in `ui/App.tsx`, served over HTTP; it is what
-  gives both halves hot reload under `pnpm dev`.
+  gives both halves hot reload (`pnpm dev` in the Node template,
+  `watchfiles` plus `pnpm build` in `ui/` in the Python one).
 - **Order.** The backend first, because it owns every function id's schema
   and the UI delivery plumbing; the frontend after, against registered
   functions.
@@ -73,24 +74,27 @@ wake, spawn, stop, verify on the wake.
 
 1. **`backend-engineer`.** The scaffold from the template above, then the
    functions, trigger types and configuration in place of the template's
-   `hello`. Done means each
-   function id is registered and answers a real call, the trigger type
-   fires on a real mutation, the manifest lists the assets, and a `ui/`
-   edit under `pnpm dev` changes the asset hash in the manifest.
+   `hello`, keeping `<worker>::info`, which the ADE page's "Open outside
+   console" button reads. Done means each function id is registered and
+   answers a real call, the trigger type fires on a real mutation, the
+   manifest lists the assets, and a `ui/` edit, once rebuilt (`pnpm dev`;
+   Python: `pnpm build` in `ui/`), changes the asset hash in the manifest.
 2. **`frontend-engineer`**, after the backend result is verified.
    `ui/WorkerPage.tsx`, `ui/App.tsx`, `ui/page.tsx`, `ui/styles.css` and
    `ui/src/**` only: the page, renderers, configuration form and scoped
    styles against the registered functions. The brief says so, and says
    that `ui/build.mjs`, `ui/tsconfig.json`, `scripts/dev.mjs` and
-   `package.json` are not its to change. It also says that the ADE page, `ui/WorkerPage.tsx`, is
-   console-native, built from `@iii-dev/console-ui` and calling through
-   `host.iii`, with an "Open outside console" button that links to the
-   `web_url` of the worker's `<worker>::info`, while `ui/App.tsx` is the
-   standalone page over the HTTP API: React, `lucide-react` and its scoped
-   CSS only, nothing from `@iii-dev/console-ui` except `import type`. Done
-   means the surface renders in the running console at phone, narrow-split
-   and wide widths, in both themes, with the manifest free of warnings, and
-   the button opens the standalone page at
+   `package.json` are not its to change. It also says that the ADE page,
+   `ui/WorkerPage.tsx`, is console-native, built from `@iii-dev/console-ui`
+   and calling through `host.iii`, with an "Open outside console" button
+   that links to the `web_url` of the worker's `<worker>::info`, while
+   `ui/App.tsx` is the standalone page over the HTTP API: React,
+   `lucide-react` and its scoped CSS only, nothing from
+   `@iii-dev/console-ui` except `import type`, with the ADE-only components
+   in `ui/WorkerPage.tsx` or in `ui/src/**` modules `App` never imports.
+   Done means the surface renders in the running console at phone,
+   narrow-split and wide widths, in both themes, with the manifest free of
+   warnings, and the button opens the standalone page at
    `http://127.0.0.1:3111/<worker-name>`, which renders and answers.
 
 Each brief names the spec path, the project root, the worker directory, the

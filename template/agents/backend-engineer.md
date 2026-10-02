@@ -62,8 +62,10 @@ The scaffold already holds everything `iii-node` prescribes:
   outside console" URL.
 
 Replace the template's `hello` function, and its entry in the HTTP API
-allowlist, with the architecture's functions. The `iii-node` conventions
-still apply to every edit.
+allowlist, with the architecture's functions, and keep `<worker>::info`: the
+ADE page loads it for its "Open outside console" button, and without it the
+button disappears with no error. The `iii-node` conventions still apply to
+every edit.
 
 The Frontend Engineer edits only `ui/WorkerPage.tsx`, `ui/App.tsx`,
 `ui/page.tsx`, `ui/styles.css` and `ui/src/**`. If it ever needs a change
@@ -144,8 +146,9 @@ A green build proves nothing about a runtime contract.
 6. For the UI delivery, `console::ui-manifest` lists the worker's asset
    paths with hashes and an empty `warnings` array.
 7. For the dev loop, prove hot reload: with the worker running under
-   `pnpm dev`, touch `ui/styles.css`, read the manifest again and see the
-   style asset's hash change; touch a `src/` file and see the worker
+   `pnpm dev` (the Python template: `watchfiles`, plus `pnpm build` in `ui/`
+   after the edit), touch `ui/styles.css`, read the manifest again and see
+   the style asset's hash change; touch a `src/` file and see the worker
    reconnect with its functions still registered.
 
 ## Workflow

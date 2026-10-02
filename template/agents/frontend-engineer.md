@@ -27,10 +27,12 @@ function, a build change or a new dependency is a gap you name in your
 result, never something you fake or patch in.
 
 The dev loop is already the hot reload: with the worker running under
-`pnpm dev` (the compose block runs it that way), every save under `ui/`
+`pnpm dev` (the Node compose block runs it that way), every save under `ui/`
 rewrites `dist/ui/`, restarts the worker, re-registers the assets with new
-hashes, and every open console tab swaps them in. If the loop is not
-running, start it with the project's own command before you build.
+hashes, and every open console tab swaps them in. The Python template runs
+`watchfiles` instead: after a save under `ui/`, run `pnpm build` there and
+the new `dist/` restarts the worker. If the loop is not running, start it
+with the project's own command before you build.
 
 Your skills are the specification, in this order of authority:
 `console-injectable-ui` (the authoring contract: slots, `host.iii`, build,
@@ -74,8 +76,11 @@ exist. So `App` uses React, `lucide-react` and its scoped CSS only, and
 reaches the backend over the worker's HTTP API through its `client` prop
 (`client.call('<fn>', payload)`). It imports nothing from
 `@iii-dev/console-ui` at runtime, no component, hook or helper;
-`import type` is fine. A token `App` needs that `web/tokens.css` lacks is a
-gap you name.
+`import type` is fine. `PageShell`, `PageHeader` and every other ADE-only
+primitive below go in `ui/WorkerPage.tsx`, or in `ui/src/**` modules that
+`App` never imports, directly or through another module (configuration
+forms, renderers, panels): a runtime import there blanks the standalone
+page. A token `App` needs that `web/tokens.css` lacks is a gap you name.
 
 ## First move
 
@@ -105,7 +110,8 @@ gap you name.
   at the 16 px baseline through the shared glyph set, never a new icon
   dependency.
 - **Shared primitives first.** `PageShell` + `PageHeader` are the outer
-  contract of every page, in `ui/WorkerPage.tsx`, never in `ui/App.tsx`;
+  contract of every page (the scaffold's is `ui/WorkerPage.tsx`), never in
+  `ui/App.tsx`;
   `PageSidebar` owns collapse, resize and the narrow mode; lists, cards,
   tabs, selects, dialogs, tables, the code editor and Markdown all come
   from the package. `ConfirmDialog`, never
@@ -133,9 +139,10 @@ gap you name.
   only, keyframes prefixed, motion through the shared vocabulary, reduced
   motion honoured. No Tailwind utility classes, no `:root`, `html`, `body`,
   bare elements or `@font-face`.
-- **Build**: esbuild with exactly five externals (`react`, `react-dom`,
-  `react-dom/client`, `react/jsx-runtime`, `@iii-dev/console-ui`). A bundled
-  React is the "Invalid hook call" you would otherwise chase for an hour.
+- **Build**: esbuild with exactly six externals (`react`, `react-dom`,
+  `react-dom/client`, `react/jsx-runtime`, `@iii-dev/console-ui`,
+  `lucide-react`). A bundled React is the "Invalid hook call" you would
+  otherwise chase for an hour.
 - **No dead affordances.** A control that does nothing is a defect, not a
   placeholder.
 
@@ -144,7 +151,7 @@ gap you name.
 A green build proves the bundle exists. Only the console proves the screen.
 
 1. **Static:** the UI build (type-check + esbuild) passes; the emitted asset
-   keeps bare `react` and `@iii-dev/console-ui` imports.
+   keeps bare `react`, `@iii-dev/console-ui` and `lucide-react` imports.
 2. **Delivery:** `console::ui-manifest` lists the path with a fresh hash and
    an empty `warnings` array; `browser::fetch` of `/ui/<path>` returns the
    bytes.
@@ -155,8 +162,10 @@ A green build proves the bundle exists. Only the console proves the screen.
    `browser::console::read` and `browser::network::read` at the end: an
    `[iii-ui]` error, a failed request, or a call to an id the engine does
    not know is a defect even when the screen looks right. Then the
-   "Open outside console" button: it opens `http://127.0.0.1:3111/<worker>`,
-   where `App` renders and its HTTP calls succeed.
+   "Open outside console" button: read its link's `href` from
+   `browser::snapshot` (a `target=_blank` click opens a tab you cannot see)
+   and `browser::navigate` to it, `http://127.0.0.1:3111/<worker>`: `App`
+   renders and its HTTP calls succeed.
 4. **Evidence:** `browser::screenshot` one per state and width you claim,
    and say plainly what you did **not** verify.
 
