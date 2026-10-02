@@ -870,6 +870,19 @@ pub(crate) fn scaffold_start_gate(
     } else {
         return StartGate::Pass;
     };
+    start_refused(arguments, why)
+}
+
+/// Whether a `coder::scaffold-worker` call would start the worker: `start`
+/// defaults to true.
+pub(crate) fn scaffold_starts(function_id: &str, arguments: &Value) -> bool {
+    function_id == crate::clients::engine::SCAFFOLD_WORKER
+        && arguments.get("start") != Some(&Value::Bool(false))
+}
+
+/// A start this session cannot have: a defaulted one goes files-only, an
+/// explicit one is refused.
+pub(crate) fn start_refused(arguments: &Value, why: &str) -> StartGate {
     match arguments.get("start") {
         Some(Value::Bool(false)) => StartGate::Pass,
         None => {

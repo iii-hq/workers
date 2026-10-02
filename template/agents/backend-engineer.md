@@ -42,7 +42,8 @@ the architecture's functions on top of it:
    `http`) and returns `operation_id` and `started`; the step 2 wake fires
    when the operation ends. `C235` means the stack already has a container
    named `<worker-name>`: nothing was written; stop and report the clash
-   upstream. A `start_error` means the files are written but the add failed:
+   upstream. A `start_error`, or a note that it was not started (the add
+   needs approval, for one), means the files are written but not added:
    send its `compose_add` whole to `compose::add` yourself, with the step 2
    `operation_id` so the wake still fires (never move its entry's fields to
    the top level: top-level scripts are ignored), and the same `start_after`

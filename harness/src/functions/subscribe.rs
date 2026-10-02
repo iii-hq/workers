@@ -258,6 +258,20 @@ pub async fn invoke(
     if function_id == REGISTER_TRIGGER_ID {
         return intercept_register(deps, arguments, session_id, caller, policy).await;
     }
+    let files_only;
+    let mut start_note = None;
+    let arguments =
+        match scaffold_start_approval(deps, engine, policy, function_id, arguments, session_id)
+            .await
+        {
+            trigger::StartGate::Pass => arguments,
+            trigger::StartGate::Deny(denied) => return denied,
+            trigger::StartGate::FilesOnly(args, note) => {
+                files_only = args;
+                start_note = Some(note);
+                &files_only
+            }
+        };
     let witness = match super::delete_session_tree::begin_dispatch(deps, session_id, function_id)
         .await
     {
@@ -272,7 +286,7 @@ pub async fn invoke(
         session_id,
         caller_holds_session_lock,
     );
-    let (result, outcome_unknown) = if let Some(request) = send {
+    let (mut result, outcome_unknown) = if let Some(request) = send {
         (intercept_send(deps, request, session_id).await, false)
     } else {
         match function_id {
@@ -304,6 +318,9 @@ pub async fn invoke(
         if let Err(error) = super::delete_session_tree::end_dispatch(deps, &witness).await {
             return trigger::invocation_error_result(Some(error.code().into()), error.to_string());
         }
+    }
+    if let (Some(note), false) = (start_note, result.is_error) {
+        result.content.push(ContentBlock::text(note));
     }
     trigger::cap_result(result, deps.cfg().await.max_result_bytes)
 }
@@ -1025,6 +1042,13 @@ async fn resolve_target(
             approval_allows_unattended(deps, &target.function_id, session_id, &arguments)
                 .await
                 .map_err(HarnessError::InvalidRequest)?;
+            // A fired scaffold can start (its payload is projected only then),
+            // running a compose::add no approval hook sees.
+            if target.function_id == crate::clients::engine::SCAFFOLD_WORKER {
+                approval_allows_unattended(deps, COMPOSE_ADD_ID, session_id, &json!({}))
+                    .await
+                    .map_err(HarnessError::InvalidRequest)?;
+            }
             Ok(target)
         }
     }
@@ -1334,6 +1358,41 @@ pub(crate) async fn approval_allows_unattended(
     session_id: &str,
     arguments: &Value,
 ) -> Result<(), String> {
+    match approval_verdict(deps, target, session_id, arguments).await {
+        Ok(Verdict::Allow) => Ok(()),
+        Ok(Verdict::Withheld { verdict, reason }) => Err(format!(
+            "`{target}` is `{verdict}` for this session: {reason}. A trigger-fired call runs \
+             outside any turn and cannot ask for approval, so it cannot be bound. Call it \
+             yourself on a woken turn, or have an operator allow it."
+        )),
+        Err(problem) => {
+            tracing::warn!(target, error = %problem, "approval probe failed; refusing the binding");
+            Err(format!(
+                "could not check whether `{target}` needs approval ({problem}); refusing to \
+                 bind a reaction that would run unattended"
+            ))
+        }
+    }
+}
+
+/// What the approval gate would decide, without a pending record.
+enum Verdict {
+    /// `allow`, or no approval gate on the bus.
+    Allow,
+    Withheld {
+        verdict: String,
+        reason: String,
+    },
+}
+
+/// Ask `approval::evaluate` (side-effect-free). Open ONLY when the gate is
+/// absent; an undetermined verdict is an `Err`, which callers fail closed.
+async fn approval_verdict(
+    deps: &Deps,
+    target: &str,
+    session_id: &str,
+    arguments: &Value,
+) -> Result<Verdict, String> {
     let resp = deps
         .iii
         .trigger(TriggerRequest {
@@ -1343,45 +1402,72 @@ pub(crate) async fn approval_allows_unattended(
             timeout_ms: Some(deps.cfg().await.dispatch_timeout_ms),
         })
         .await;
-
     let resp = match resp {
         Ok(v) => v,
         Err(e) => {
             let msg = e.to_string();
             if is_function_absent(&msg) {
-                tracing::debug!(
-                    target,
-                    "approval-gate absent; binding a call reaction without an approval probe"
-                );
-                return Ok(());
+                tracing::debug!(target, "approval-gate absent; no approval probe");
+                return Ok(Verdict::Allow);
             }
-            tracing::warn!(target, error = %msg, "approval probe failed; refusing the binding");
-            return Err(format!(
-                "could not check whether `{target}` needs approval ({msg}); refusing to bind a \
-                 reaction that would run unattended"
-            ));
+            return Err(msg);
         }
     };
-
     match resp.get("verdict").and_then(Value::as_str) {
-        Some("allow") => Ok(()),
-        Some(other) => {
-            let reason = resp
+        Some("allow") => Ok(Verdict::Allow),
+        Some(other) => Ok(Verdict::Withheld {
+            verdict: other.to_string(),
+            reason: resp
                 .get("reason")
                 .and_then(Value::as_str)
-                .unwrap_or("no reason given");
-            Err(format!(
-                "`{target}` is `{other}` for this session: {reason}. A trigger-fired call runs \
-                 outside any turn and cannot ask for approval, so it cannot be bound. Call it \
-                 yourself on a woken turn, or have an operator allow it."
-            ))
-        }
-        None => Err(format!(
-            "the approval gate returned no verdict for `{target}`; refusing to bind a reaction \
-             that would run unattended"
-        )),
+                .unwrap_or("no reason given")
+                .to_string(),
+        }),
+        None => Err("the approval gate returned no verdict".to_string()),
     }
 }
+
+/// A scaffold that starts runs compose::add inside the ide, where no approval
+/// hook sees it. So the turn asks the approval gate about compose::add for
+/// this session first; anything but `allow` is a start this turn cannot have
+/// (files only, or refused), and the agent's own compose::add then goes
+/// through the gate, held for a human like any other. Policy and compose
+/// routing are the dispatch gate's (`trigger::scaffold_start_gate`).
+pub(crate) async fn scaffold_start_approval(
+    deps: &Deps,
+    engine: &EngineClient,
+    policy: &CompiledPolicy,
+    function_id: &str,
+    arguments: &Value,
+    session_id: &str,
+) -> trigger::StartGate {
+    if !trigger::scaffold_starts(function_id, arguments)
+        || !policy.allows(COMPOSE_ADD_ID)
+        || engine.compose_scoped()
+    {
+        return trigger::StartGate::Pass;
+    }
+    let verdict = approval_verdict(deps, COMPOSE_ADD_ID, session_id, &json!({})).await;
+    start_after_approval(arguments, verdict)
+}
+
+/// The turn's decision on a starting scaffold, given what the approval gate
+/// said about its compose::add.
+fn start_after_approval(arguments: &Value, verdict: Result<Verdict, String>) -> trigger::StartGate {
+    let why = match verdict {
+        Ok(Verdict::Allow) => return trigger::StartGate::Pass,
+        Ok(Verdict::Withheld { verdict, reason }) => {
+            format!("its compose::add is `{verdict}` for this session ({reason})")
+        }
+        Err(problem) => {
+            format!("the approval gate could not be asked about its compose::add ({problem})")
+        }
+    };
+    trigger::start_refused(arguments, &why)
+}
+
+/// The function a starting `coder::scaffold-worker` runs inside the ide.
+pub(crate) const COMPOSE_ADD_ID: &str = "compose::add";
 
 fn approval_probe_payload(session_id: &str, target: &str, arguments: &Value) -> Value {
     json!({
@@ -2560,6 +2646,60 @@ pub(crate) mod tests {
         assert!(validate_call_target("coder::read-file", &coder_only).is_ok());
         let with_add = policy_allowing(&["coder::*", "compose::add"]);
         assert!(validate_call_target("coder::scaffold-worker", &with_add).is_ok());
+    }
+
+    /// Prevents: a starting scaffold whose compose::add the approval gate
+    /// would hold running unseen inside the ide. Only `allow` (or no gate)
+    /// lets the start through; otherwise the agent's own compose::add goes
+    /// through the gate.
+    #[test]
+    fn a_scaffold_starts_only_when_its_compose_add_is_approved() {
+        let default = json!({ "template": "worker-node-ade", "name": "orders" });
+        let explicit = json!({ "template": "worker-node-ade", "name": "orders", "start": true });
+        let held = || {
+            Ok(Verdict::Withheld {
+                verdict: "hold".into(),
+                reason: "no rule matched".into(),
+            })
+        };
+
+        assert!(matches!(
+            start_after_approval(&default, Ok(Verdict::Allow)),
+            trigger::StartGate::Pass
+        ));
+        let trigger::StartGate::FilesOnly(sent, note) = start_after_approval(&default, held())
+        else {
+            panic!("a held compose::add must leave a defaulted start files-only");
+        };
+        assert_eq!(sent["start"], json!(false));
+        assert!(
+            note.contains("`hold`") && note.contains("Not started"),
+            "{note}"
+        );
+        let trigger::StartGate::Deny(denied) = start_after_approval(&explicit, held()) else {
+            panic!("an explicit start with a held compose::add must be refused");
+        };
+        assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
+        // An undetermined verdict fails closed.
+        assert!(matches!(
+            start_after_approval(&default, Err("timeout".into())),
+            trigger::StartGate::FilesOnly(..)
+        ));
+    }
+
+    #[test]
+    fn only_a_scaffold_without_start_false_starts() {
+        let id = "coder::scaffold-worker";
+        assert!(trigger::scaffold_starts(id, &json!({ "name": "a" })));
+        assert!(trigger::scaffold_starts(
+            id,
+            &json!({ "name": "a", "start": true })
+        ));
+        assert!(!trigger::scaffold_starts(
+            id,
+            &json!({ "name": "a", "start": false })
+        ));
+        assert!(!trigger::scaffold_starts("coder::create-file", &json!({})));
     }
 
     /// A call re-entering the harness's control plane is refused even when the
