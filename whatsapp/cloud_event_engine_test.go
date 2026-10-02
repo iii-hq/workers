@@ -12,6 +12,7 @@ import (
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+	validate "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // Exercise the HTTP worker, Cloud archive and trigger router together. The
@@ -48,11 +49,13 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 	type callback struct {
 		binding string
 		event   eventPayload
+		payload json.RawMessage
 		err     error
 	}
 	received := make(chan callback, 64)
 	if err := consumer.RegisterFunction(callbackID, func(callCtx context.Context, raw json.RawMessage) (any, error) {
 		var result callback
+		result.payload = raw
 		result.err = json.Unmarshal(raw, &result.event)
 		metadata, ok := iii.MetadataFromContext(callCtx)
 		var route struct {
@@ -110,6 +113,10 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Validate using the schemas actually advertised by the locally linked
+	// SDK, including every callback received below, not only the source files.
+	configSchema := compileDiscoveredCloudSchema(t, info["configuration_schema"])
+	eventSchema := compileDiscoveredCloudSchema(t, info["request_schema"])
 	description, _ := info["description"].(string)
 	_, example, found := strings.Cut(description, "```json\n")
 	if !found {
@@ -125,6 +132,9 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 	}
 	if registration["trigger_namespace"] != smokeNamespace {
 		t.Fatalf("Cloud guide did not resolve the provider namespace: %v", registration)
+	}
+	if err := configSchema.Validate(registration["config"]); err != nil {
+		t.Fatalf("discovered registration example does not satisfy its schema: %v", err)
 	}
 	registration["function_id"] = callbackID
 	registration["metadata"].(map[string]any)["binding"] = "discovery"
@@ -194,6 +204,13 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 	}
 	for name, filter := range filters {
 		config, _ := json.Marshal(filter)
+		var value any
+		if err := json.Unmarshal(config, &value); err != nil {
+			t.Fatal(err)
+		}
+		if err := configSchema.Validate(value); err != nil {
+			t.Fatalf("valid %s filter does not satisfy advertised schema: %v", name, err)
+		}
 		metadata, _ := json.Marshal(map[string]string{"binding": name})
 		if err := registrar.RegisterTriggerNamespaced("cloud-smoke-"+name, "whatsapp::cloud::events", callbackID, callbackNamespace, config, metadata); err != nil {
 			t.Fatal(err)
@@ -282,6 +299,13 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 				t.Fatal(result.err)
 			}
 			event := result.event
+			var value any
+			if err := json.Unmarshal(result.payload, &value); err != nil {
+				t.Fatal(err)
+			}
+			if err := eventSchema.Validate(value); err != nil {
+				t.Fatalf("callback does not satisfy advertised schema: %v", err)
+			}
 			key := result.binding + "/" + event.MessageID + "/" + event.Status
 			if !expected[key] {
 				t.Fatalf("unexpected or duplicate Cloud callback: %s (%s)", key, event.Kind)
@@ -306,4 +330,21 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 		t.Fatalf("unexpected extra Cloud callback: %+v", extra)
 	case <-time.After(250 * time.Millisecond):
 	}
+}
+
+func compileDiscoveredCloudSchema(t *testing.T, document any) *validate.Schema {
+	t.Helper()
+	if document == nil {
+		t.Fatal("Cloud trigger discovery did not advertise a schema")
+	}
+	compiler := validate.NewCompiler()
+	const id = "https://whatsapp.test/discovered.schema.json"
+	if err := compiler.AddResource(id, document); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return schema
 }

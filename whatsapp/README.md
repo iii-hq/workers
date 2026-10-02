@@ -7,7 +7,9 @@ There is no Node, Chromium, sidecar process or sandbox requirement. The worker
 connects to an existing iii engine; normal configuration uses the configuration worker.
 
 The dependency is pinned to
-`8b41cfe6d9c4` (`v0.0.0-20260929112325-8b41cfe6d9c4`), with the iii Go SDK `v0.24.3`.
+`8b41cfe6d9c4` (`v0.0.0-20260929112325-8b41cfe6d9c4`). `go.mod` records the iii Go SDK
+`v0.24.3`; this development branch uses a [local SDK workspace](#link-the-local-go-sdk)
+for the new trigger schema API.
 This is a native function API, not an HTTP-compatible deployment of OpenWA.
 [openwa-rust-coverage.json](openwa-rust-coverage.json) is the historical Rust/OpenWA
 comparison, not a declaration of Go support. Use `--catalog` for the supported Go API.
@@ -17,6 +19,7 @@ comparison, not a declaration of Go support. Use `--catalog` for the supported G
 Use Go 1.27.1 on Linux. SQLite uses the pure-Go `modernc.org/sqlite` driver;
 the binary builds with `CGO_ENABLED=0` and requires no C toolchain. ADE bundles
 are checked in under `assets/`, so a fresh Go build needs neither Node nor pnpm.
+Set up the [local SDK workspace](#link-the-local-go-sdk) before building.
 
 ```sh
 cd whatsapp
@@ -272,9 +275,9 @@ Read the running worker's registration guide with `engine::triggers::info`:
 ```
 
 Replace `messaging` with the WhatsApp worker's namespace. The returned
-`description` explains registration, filters and payloads. Go SDK 0.24.3's
-public `RegisterTriggerType` API cannot publish trigger filter/payload schemas,
-so those schema fields are unavailable; runtime filter validation still applies.
+`description` explains registration, filters and payloads. `configuration_schema`
+describes the accepted filters and `request_schema` describes each callback event.
+Runtime filter validation still applies.
 
 Trigger type `whatsapp::cloud::events` delivers one flat event per accepted
 incoming message or delivery-status object after its archive transaction commits:
@@ -538,6 +541,29 @@ have `recipient_fanout: null` because whatsmeow does not expose those counters.
 
 ## Validation
 
+### Link the local Go SDK
+
+Cloud trigger discovery uses `RegisterTriggerTypeOptions` from the SDK branch
+`feat/go-trigger-type-schemas`. Until that API is available in a published SDK
+version, link the SDK checkout with a temporary Go workspace. From this worker's
+directory, using the Go version declared in `go.mod`:
+
+```sh
+WHATSAPP_MODULE_DIR="$PWD"
+III_GO_SDK_DIR=/path/to/iii-worktree/sdk/packages/go/iii
+WHATSAPP_WORKSPACE_DIR="$(mktemp -d)"
+(
+  cd "$WHATSAPP_WORKSPACE_DIR"
+  GOWORK=off go work init "$WHATSAPP_MODULE_DIR" "$III_GO_SDK_DIR"
+)
+export GOWORK="$WHATSAPP_WORKSPACE_DIR/go.work"
+go list -m -json github.com/iii-hq/iii/sdk/packages/go/iii
+```
+
+The reported `Dir` must point at the local SDK checkout. Keep `GOWORK` set for
+the build and validation commands below. This leaves `go.mod` and `go.sum`
+unchanged; no absolute local paths are committed to the dependency files.
+
 ```sh
 make test
 go vet ./...
@@ -552,10 +578,9 @@ schemas. They do not pair an account or send a real WhatsApp message.
 `make catalog` prints the registered schemas. After changing `catalog.json`, run
 `make generate` to refresh the SDK schema adapters and rerun tests.
 
-Go SDK 0.24.3 cannot advertise trigger filter or event payload schemas to the
-engine. Runtime filter validation remains active; [Functions and events](#functions-and-events)
-defines the native subscription contract and [Filtered Cloud webhook events](#filtered-cloud-webhook-events)
-defines the Cloud contract.
+[Functions and events](#functions-and-events) defines the native subscription
+contract. [Filtered Cloud webhook events](#filtered-cloud-webhook-events) defines
+the Cloud contract, also exposed as structured schemas through trigger discovery.
 
 The optional engine smoke test starts an isolated engine and worker on loopback
 with temporary configuration and storage. Point it at existing local binaries:

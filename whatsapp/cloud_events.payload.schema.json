@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://whatsapp.invalid/cloud-events/payload.schema.json",
+  "title": "WhatsApp Cloud event",
+  "description": "One verified Cloud API message or delivery status, published after archive commit. This is the callback payload, not the entire webhook. Delivery is best effort; reconcile with the Cloud archive when necessary.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["kind", "business_account_id", "phone_number_id", "message_id", "chat_id", "timestamp_ms", "data"],
+  "properties": {
+    "kind": {"enum": ["message.received", "message.status"]},
+    "business_account_id": {
+      "description": "Meta WhatsApp Business Account ID that received the webhook.",
+      "type": "string",
+      "pattern": "^[0-9]{1,32}$"
+    },
+    "phone_number_id": {
+      "description": "Meta Phone Number ID, not the displayed telephone number.",
+      "type": "string",
+      "pattern": "^[0-9]{1,32}$"
+    },
+    "message_id": {"description": "Original Meta message ID.", "type": "string", "minLength": 1, "maxLength": 512},
+    "chat_id": {
+      "description": "Normalized sender for incoming messages, or recipient for delivery status events. No internal cloud: prefix.",
+      "$ref": "#/$defs/identity"
+    },
+    "sender_id": {"description": "Normalized sender; present only for message.received.", "$ref": "#/$defs/identity"},
+    "message_type": {
+      "description": "Exact raw Meta message type; present only for message.received. May include future types that the archive preview cannot render.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "text": {
+      "description": "Optional message preview, limited to 16 KiB of UTF-8 text, or 8 KiB if data must be omitted to bound the event. Omitted when empty.",
+      "type": "string",
+      "maxLength": 16384
+    },
+    "status": {"description": "Delivery state; present only for message.status.", "enum": ["sent", "delivered", "read", "failed"]},
+    "timestamp_ms": {"description": "Meta's event timestamp converted from Unix seconds to Unix milliseconds, not local receipt time.", "type": "integer", "minimum": 0},
+    "data": {
+      "description": "Original individual Meta message or status object. If the serialized event would exceed 64 KiB, replaced with {\"content_omitted\":true}; text is also clipped to 8 KiB. This object is not the webhook envelope.",
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {"kind": {"const": "message.received"}, "status": false},
+      "required": ["sender_id", "message_type"]
+    },
+    {
+      "properties": {"kind": {"const": "message.status"}, "sender_id": false, "message_type": false, "text": false},
+      "required": ["status"]
+    }
+  ],
+  "$defs": {
+    "identity": {"type": "string", "pattern": "^(\\+[1-9][0-9]{6,14}|[A-Z]{2}\\.(ENT\\.)?[A-Za-z0-9]{1,128})$"}
+  },
+  "examples": [
+    {
+      "kind": "message.received",
+      "business_account_id": "123456789",
+      "phone_number_id": "987654321",
+      "message_id": "wamid.example",
+      "chat_id": "+15551234567",
+      "sender_id": "+15551234567",
+      "message_type": "text",
+      "text": "Hello",
+      "timestamp_ms": 1790870400000,
+      "data": {"from": "15551234567", "id": "wamid.example", "timestamp": "1790870400", "type": "text", "text": {"body": "Hello"}}
+    },
+    {
+      "kind": "message.status",
+      "business_account_id": "123456789",
+      "phone_number_id": "987654321",
+      "message_id": "wamid.example",
+      "chat_id": "+15551234567",
+      "status": "read",
+      "timestamp_ms": 1790870460000,
+      "data": {"id": "wamid.example", "recipient_id": "15551234567", "timestamp": "1790870460", "status": "read"}
+    }
+  ]
+}

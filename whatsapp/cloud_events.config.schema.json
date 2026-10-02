@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://whatsapp.invalid/cloud-events/config.schema.json",
+  "title": "WhatsApp Cloud event filters",
+  "description": "Configuration for whatsapp::cloud::events. All fields are optional. Fields combine with AND; values within a list combine with OR. Empty or null lists apply no restriction, except kinds, which defaults to incoming messages. The worker also enforces a 64 KiB serialized configuration limit.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "kinds": {
+      "description": "Event kinds to receive. Omitted, empty or null means message.received only. Select message.status explicitly for delivery receipts.",
+      "type": ["array", "null"],
+      "maxItems": 128,
+      "items": {"enum": ["message.received", "message.status"]},
+      "default": ["message.received"]
+    },
+    "chat_ids": {
+      "description": "Conversation identities: international phone numbers or Meta business-scoped user IDs. Phone formatting is normalized to +digits. For status events this is the recipient. Native WhatsApp JIDs, group JIDs and internal cloud: archive IDs are not supported.",
+      "type": ["array", "null"],
+      "maxItems": 128,
+      "items": {"$ref": "#/$defs/identity"},
+      "examples": [["+15551234567"], ["BR.ENT.customer42"]]
+    },
+    "sender_ids": {
+      "description": "Sender identities, using the same normalization as chat_ids. Status events have no sender and cannot match a nonempty sender_ids filter.",
+      "type": ["array", "null"],
+      "maxItems": 128,
+      "items": {"$ref": "#/$defs/identity"}
+    },
+    "message_types": {
+      "description": "Exact raw Meta message types, such as text, image, interactive or contacts. Future type names are allowed. Status events have no message type and cannot match a nonempty message_types filter.",
+      "type": ["array", "null"],
+      "maxItems": 128,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+      "examples": [["text", "interactive"]]
+    },
+    "statuses": {
+      "description": "Delivery states. Set kinds to include message.status; a status filter does not change the default kind. Incoming messages have no status and cannot match a nonempty statuses filter.",
+      "type": ["array", "null"],
+      "maxItems": 128,
+      "items": {"enum": ["sent", "delivered", "read", "failed"]},
+      "examples": [["delivered", "read"]]
+    },
+    "business_account_id": {
+      "description": "Exact Meta WhatsApp Business Account ID. Omitted, empty or null means no account restriction.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9]{0,32}$",
+      "examples": ["123456789"]
+    },
+    "phone_number_id": {
+      "description": "Exact Meta Phone Number ID, not the displayed telephone number. Omitted, empty or null means no phone restriction.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9]{0,32}$",
+      "examples": ["987654321"]
+    }
+  },
+  "$defs": {
+    "identity": {
+      "type": "string",
+      "description": "The worker validates and normalizes this value. International phone numbers must contain 7 to 15 digits, beginning with a nonzero digit; an initial +, spaces, parentheses and hyphens are accepted. Business-scoped user IDs use a two-letter uppercase prefix, a dot, optional ENT., and 1 to 128 letters or digits. Surrounding whitespace is ignored."
+    }
+  },
+  "examples": [
+    {},
+    {"chat_ids": ["+15551234567"], "message_types": ["text", "interactive"]},
+    {"kinds": ["message.status"], "chat_ids": ["+15551234567"], "statuses": ["read", "failed"]}
+  ]
+}

@@ -18,12 +18,14 @@ import (
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
 
-// The SDK's public registration API only exposes a description. Keep the
-// registration guide discoverable through engine::triggers::info until it also
-// supports the trigger config and callback schemas available on the protocol.
-//
 //go:embed cloud_events.md
 var cloudEventGuide string
+
+//go:embed cloud_events.config.schema.json
+var cloudEventConfigSchema []byte
+
+//go:embed cloud_events.payload.schema.json
+var cloudEventPayloadSchema []byte
 
 func cloudEventDescription(namespace string) string {
 	encoded, _ := json.Marshal(namespace)
@@ -212,7 +214,10 @@ func (r *CloudEventRouter) deliver(ctx context.Context, event CloudEvent, curren
 
 func registerCloudEvents(ctx context.Context, client *iii.Client, manager *Manager) error {
 	router := &CloudEventRouter{}
-	if err := client.RegisterTriggerType("whatsapp::cloud::events", cloudEventDescription(Namespace()), router); err != nil {
+	if err := client.RegisterTriggerType("whatsapp::cloud::events", cloudEventDescription(Namespace()), router, iii.RegisterTriggerTypeOptions{
+		TriggerRequestFormat: cloudEventConfigSchema,
+		CallRequestFormat:    cloudEventPayloadSchema,
+	}); err != nil {
 		return err
 	}
 	go func() {
