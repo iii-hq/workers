@@ -104,6 +104,14 @@ export const NEW_WORKER_INITIAL: NewWorkerState = {
   owned: false,
 }
 
+/** The template to create from: `template` while the list still has it, else
+    the first -ade one, else the first. '' counts as unset: Radix's native
+    select reports it when its value is set before the options exist. */
+export function pickTemplate(template: string | undefined, templates: TemplateInfo[]): string | undefined {
+  if (template && templates.some((t) => t.id === template)) return template
+  return (templates.find((t) => t.id.endsWith('-ade')) ?? templates[0])?.id
+}
+
 /** The template Select's placeholder: it shows whenever nothing is picked. */
 export function templatePlaceholder(state: NewWorkerState): string {
   if (state.step === 'loading') return 'Loading…'

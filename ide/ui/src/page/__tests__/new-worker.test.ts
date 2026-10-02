@@ -9,6 +9,7 @@ import {
   type NewWorkerAction,
   type NewWorkerState,
   newWorkerReducer,
+  pickTemplate,
   type ScaffoldResult,
   type StackPhase,
   sourceLabel,
@@ -87,6 +88,22 @@ describe('sourceLabel', () => {
     expect(sourceLabel({ kind: 'dir', location: '/home/me/templates/iii', revision: null, warning: null })).toBe(
       'local: /home/me/templates/iii',
     )
+  })
+})
+
+describe('pickTemplate', () => {
+  const info = (id: string, language: 'node' | 'python') => ({ id, name: id, description: '', language, requires: [] })
+  const templates = [info('worker-python', 'python'), info('worker-node-ade', 'node')]
+
+  it('keeps a pick that is listed, else falls back to the first -ade template, else the first', () => {
+    expect(pickTemplate(undefined, templates)).toBe('worker-node-ade')
+    // Radix's native select reports '' while its options are not yet mounted.
+    expect(pickTemplate('', templates)).toBe('worker-node-ade')
+    expect(pickTemplate('worker-python', templates)).toBe('worker-python')
+    // A pick that a Refresh dropped from the list.
+    expect(pickTemplate('gone', templates)).toBe('worker-node-ade')
+    expect(pickTemplate(undefined, templates.slice(0, 1))).toBe('worker-python')
+    expect(pickTemplate('worker-python', [])).toBeUndefined()
   })
 })
 

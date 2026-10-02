@@ -27,6 +27,7 @@ import {
   type ListTemplatesResult,
   NEW_WORKER_INITIAL,
   newWorkerReducer,
+  pickTemplate,
   type ScaffoldResult,
   sourceLabel,
   templatePlaceholder,
@@ -81,7 +82,7 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
   useEffect(() => load(false), [load])
 
   const templates = state.list?.templates ?? []
-  const picked = template ?? (templates.find((t) => t.id.endsWith('-ade')) ?? templates[0])?.id
+  const picked = pickTemplate(template, templates)
   const groups = (['node', 'python'] as const)
     .map((language) => ({
       label: language === 'node' ? 'Node' : 'Python',
