@@ -43,9 +43,10 @@ the architecture's functions on top of it:
    when the operation ends. `C235` means the stack already has a container
    named `<worker-name>`: nothing was written; stop and report the clash
    upstream. A `start_error` means the files are written but the add failed:
-   send its `compose_add` whole to `compose::add` yourself (never move its
-   entry's fields to the top level: top-level scripts are ignored), with the
-   same `start_after` and missing `requires` (`http` is
+   send its `compose_add` whole to `compose::add` yourself, with the step 2
+   `operation_id` so the wake still fires (never move its entry's fields to
+   the top level: top-level scripts are ignored), and the same `start_after`
+   and missing `requires` (`http` is
    `{ "worker": "package://http", "version": "latest", "config_name": "http" }`).
    Never edit `worker-compose.yaml` by hand: a hand-written entry makes the
    daemon answer `changed: false` and start nothing.

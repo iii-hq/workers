@@ -149,7 +149,6 @@
       "name",
       "next_steps",
       "requires",
-      "started",
       "template"
     ],
     "title": "ScaffoldWorkerOutput",

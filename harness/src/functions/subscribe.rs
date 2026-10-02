@@ -1301,6 +1301,15 @@ fn validate_call_target(target: &str, policy: &CompiledPolicy) -> Result<(), Str
              only call functions you can call yourself"
         ));
     }
+    // A reaction's payload is fixed or projected only at fire time, where
+    // `start: true` would run compose::add with the ide's authority; so the
+    // target needs compose::add whatever the payload says now.
+    if target == crate::clients::engine::SCAFFOLD_WORKER && !policy.allows("compose::add") {
+        return Err(format!(
+            "`{target}` as a reaction needs compose::add as well: its `start: true` runs \
+             compose::add, and a fired payload can set it. Call it from a turn instead"
+        ));
+    }
     Ok(())
 }
 
@@ -2537,6 +2546,20 @@ pub(crate) mod tests {
         assert!(validate_call_target("", &policy)
             .unwrap_err()
             .contains("must name the function"));
+    }
+
+    /// Prevents: a binding or post-turn validator on coder::scaffold-worker
+    /// whose fired payload sets `start: true`, running compose::add with the
+    /// ide's authority for a session that may not call it (both fire paths
+    /// dispatch raw, outside the turn's scaffold_start_denial).
+    #[test]
+    fn a_scaffold_reaction_needs_compose_add() {
+        let coder_only = policy_allowing(&["coder::*"]);
+        let err = validate_call_target("coder::scaffold-worker", &coder_only).unwrap_err();
+        assert!(err.contains("needs compose::add"), "unhelpful error: {err}");
+        assert!(validate_call_target("coder::read-file", &coder_only).is_ok());
+        let with_add = policy_allowing(&["coder::*", "compose::add"]);
+        assert!(validate_call_target("coder::scaffold-worker", &with_add).is_ok());
     }
 
     /// A call re-entering the harness's control plane is refused even when the

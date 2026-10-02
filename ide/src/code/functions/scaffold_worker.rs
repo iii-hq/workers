@@ -61,16 +61,6 @@ pub struct ScaffoldWorkerInput {
     #[serde(default)]
     #[schemars(skip)]
     pub fs_scope: Option<crate::fs::FsScope>,
-    /// Internal: the compose file the harness routes compose::* to; omitted
-    /// from published schema.
-    #[serde(default)]
-    #[schemars(skip)]
-    pub compose_file: Option<String>,
-    /// Internal: the compose namespace the harness routes compose::* to;
-    /// omitted from published schema.
-    #[serde(default)]
-    #[schemars(skip)]
-    pub compose_namespace: Option<String>,
 }
 
 // examples are wire-contract; goldens pin them.
@@ -108,7 +98,7 @@ pub struct ScaffoldWorkerOutput {
     pub operation_id: Option<String>,
     /// With start: the containers compose::add was asked to add, the worker
     /// first.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub started: Vec<String>,
     /// With start: why compose::add failed. The files are written; send
     /// compose_add to compose::add to add the worker.
@@ -148,7 +138,8 @@ fn http_container() -> Value {
 }
 
 /// `scaffold`, and with `start` the stack around it: compose::status before
-/// any write (a name the stack has fails C235), compose::add after.
+/// any write (a name the stack has fails C235), compose::add after. Both go
+/// to the stack this ide runs in: a caller cannot point them elsewhere.
 async fn scaffold_and_start(
     resolver: Arc<PathResolver>,
     cfg: Arc<CoderConfig>,
@@ -160,18 +151,10 @@ async fn scaffold_and_start(
     if !req.start {
         return scaffold(resolver, cfg, journal, root, req).await;
     }
-    // Where the harness routes compose::*, so this call adds to the same stack.
-    let mut route = serde_json::Map::new();
-    if let Some(file) = req.compose_file.take() {
-        route.insert("file".into(), file.into());
-    }
-    if let Some(namespace) = req.compose_namespace.take() {
-        route.insert("namespace".into(), namespace.into());
-    }
     let operation_id = req.operation_id.take();
     let start_after = std::mem::take(&mut req.start_after);
     let status = trigger
-        .trigger("compose::status", Value::Object(route.clone()))
+        .trigger("compose::status", json!({}))
         .await
         .map_err(|e| {
             format!("start: true needs compose::status, which failed ({e}); nothing was written")
@@ -210,7 +193,7 @@ async fn scaffold_and_start(
         });
         started.push(need.clone());
     }
-    let mut payload = route;
+    let mut payload = serde_json::Map::new();
     payload.insert("workers".into(), workers.into());
     if let Some(id) = operation_id {
         payload.insert("operation_id".into(), id.into());
@@ -314,6 +297,15 @@ fn plan(
     let token = template.worker.name.as_str();
     let name = req.name.as_str();
     let fs_scope = req.fs_scope.as_ref();
+    // compose keys containers by name: the worker cannot share one with a
+    // container it requires.
+    if template.worker.requires.iter().any(|r| r == name) {
+        return Err(CoderError::InvalidWorkerName(format!(
+            "{name} is also a container template {} requires, and the stack cannot hold \
+             two containers named {name}. Pick another name.",
+            template.id
+        )));
+    }
 
     let directory = req
         .directory
@@ -532,8 +524,6 @@ mod tests {
             operation_id: None,
             start_after: Vec::new(),
             fs_scope: None,
-            compose_file: None,
-            compose_namespace: None,
         }
     }
 
@@ -657,14 +647,12 @@ mod tests {
         ScaffoldWorkerInput {
             start: true,
             operation_id: Some("add-orders-1".into()),
-            compose_file: Some("/stack/worker-compose.yaml".into()),
-            compose_namespace: Some("proj".into()),
             ..input("worker-node-ade", name, None)
         }
     }
 
     #[tokio::test]
-    async fn start_adds_the_worker_and_its_missing_requires_where_the_harness_routes() {
+    async fn start_adds_the_worker_and_its_missing_requires() {
         let env = Env::new(&[]);
         let stub = stub(
             vec!["state"],
@@ -677,15 +665,12 @@ mod tests {
         assert!(out.start_error.is_none());
         assert!(env.root().join("workers/orders/src/index.ts").is_file());
         let calls = stub.calls.lock().unwrap();
-        let route = json!({ "file": "/stack/worker-compose.yaml", "namespace": "proj" });
-        assert_eq!(calls[0], ("compose::status".to_string(), route));
+        assert_eq!(calls[0], ("compose::status".to_string(), json!({})));
         assert_eq!(
             calls[1],
             (
                 "compose::add".to_string(),
                 json!({
-                    "file": "/stack/worker-compose.yaml",
-                    "namespace": "proj",
                     "operation_id": "add-orders-1",
                     "workers": [out.compose, http_container()],
                 })
@@ -731,6 +716,22 @@ mod tests {
         assert_eq!(code(&err), "C235");
         assert!(!env.root().join("workers/orders").exists());
         assert_eq!(stub.calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_name_its_template_requires_is_c232_before_any_write() {
+        let env = Env::new(&[]);
+        let err = env.run("worker-node-ade", "http", None).await.unwrap_err();
+        assert_eq!(code(&err), "C232", "{err}");
+        assert!(!env.root().join("workers").exists());
+        let stub = stub(vec![], Ok(json!({})));
+        let err = env.start(&stub, start_input("http")).await.unwrap_err();
+        assert_eq!(code(&err), "C232", "{err}");
+        assert_eq!(
+            stub.calls.lock().unwrap().len(),
+            1,
+            "status only, no compose::add"
+        );
     }
 
     #[tokio::test]

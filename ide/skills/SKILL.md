@@ -155,5 +155,6 @@ missing `requires` as more entries (never the bare `worker` string form,
 which drops the scripts). With `start: true` (plus `operation_id` and
 `start_after`) it does that `compose::add` itself in the same call: a name
 the stack already has fails `C235` before any write, and the result carries
-`operation_id` and `started`, or `start_error` with the files kept. The
-session needs `compose::add` for `start`.
+`operation_id` and `started`, or `start_error` with the files kept. It adds
+to the stack the ide runs in, so the harness refuses `start` to a session
+without `compose::add`, or whose `compose::*` calls go to another project.
