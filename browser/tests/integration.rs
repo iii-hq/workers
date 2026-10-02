@@ -1762,3 +1762,223 @@ async fn run_waits_for_the_submit_it_triggered_and_matches_inputs_by_field() {
     call("browser::sessions::stop", json!({ "session_id": sid })).await;
     client.shutdown_async().await;
 }
+
+/// A page that registers a network-first service worker at `/sw.js`, the
+/// shape of the console's own. The worker has a fetch handler, so Chromium
+/// must start it for every navigation in its scope.
+fn serve_service_worker_site() -> String {
+    const PAGE: &str = "<!doctype html><title>sw</title>\
+        <script>navigator.serviceWorker.register('/sw.js')</script><p>sw page</p>";
+    const WORKER: &str = "self.addEventListener('install', () => self.skipWaiting());\n\
+        self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));\n\
+        self.addEventListener('fetch', (e) => {\n\
+          if (e.request.mode === 'navigate') e.respondWith(fetch(e.request));\n\
+        });\n";
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut stream = stream;
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]);
+                let (kind, body) = if request.starts_with("GET /sw.js") {
+                    ("text/javascript", WORKER)
+                } else {
+                    ("text/html; charset=utf-8", PAGE)
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            });
+        }
+    });
+    format!("http://{addr}/")
+}
+
+/// A server that accepts every connection and never answers: a document
+/// load that cannot finish.
+fn serve_stalled() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming().flatten() {
+            held.push(stream);
+        }
+    });
+    format!("http://{addr}/")
+}
+
+/// chromiumoxide auto-attaches child targets with waitForDebuggerOnStart
+/// and then resumes and detaches a service worker back to back, which leaves
+/// it paused: a navigation that has to start a registered service worker
+/// hung until Chromium killed the worker (60-90 s) and failed at
+/// chromiumoxide's fixed 30 s, and a fresh registration never finished
+/// installing. The worker must start unpaused.
+#[tokio::test]
+async fn navigation_through_a_registered_service_worker_loads_promptly() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    sleep(Duration::from_millis(500)).await;
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let client = &client;
+        async move {
+            timeout(
+                Duration::from_secs(60),
+                client.trigger(TriggerRequest {
+                    function_id: function_id.into(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(50_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+        }
+    };
+    let site = serve_service_worker_site();
+
+    let first = call("browser::sessions::start", json!({}))
+        .await
+        .expect("start");
+    let first_id = first["session_id"].as_str().expect("id").to_string();
+    let nav = call(
+        "browser::navigate",
+        json!({ "session_id": first_id, "url": site, "timeout_ms": 20_000 }),
+    )
+    .await
+    .expect("first navigate");
+    assert_eq!(nav["ok"], true, "{nav}");
+    let ready = call(
+        "browser::evaluate",
+        json!({
+            "session_id": first_id,
+            "expression": "(async () => { \
+                for (const end = Date.now() + 15000; Date.now() < end;) { \
+                  const r = await navigator.serviceWorker.getRegistration(); \
+                  if (r && r.active && r.active.state === 'activated') return 'activated'; \
+                  await new Promise(s => setTimeout(s, 100)); \
+                } \
+                return 'not ready'; })()",
+            "timeout_ms": 20_000,
+        }),
+    )
+    .await
+    .expect("evaluate");
+    assert_eq!(ready["value"], "activated", "{ready}");
+
+    // Closing the only tab closes the browser: the registration stays in
+    // the profile, the worker no longer runs, and the next load starts it.
+    call("browser::sessions::stop", json!({ "session_id": first_id }))
+        .await
+        .expect("stop");
+    let second = call("browser::sessions::start", json!({}))
+        .await
+        .expect("start again");
+    let second_id = second["session_id"].as_str().expect("id").to_string();
+    let started = std::time::Instant::now();
+    let nav = call(
+        "browser::navigate",
+        json!({ "session_id": second_id, "url": site, "timeout_ms": 20_000 }),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    eprintln!("navigation through the service worker took {elapsed:?}: {nav:?}");
+    let nav = nav.expect("second navigate");
+    assert_eq!(nav["ok"], true, "{nav}");
+    assert_eq!(nav["timed_out"], false, "{nav}");
+    assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+    let controlled = call(
+        "browser::evaluate",
+        json!({
+            "session_id": second_id,
+            "expression": "navigator.serviceWorker.controller !== null",
+        }),
+    )
+    .await
+    .expect("evaluate controller");
+    assert_eq!(controlled["value"], true, "{controlled}");
+
+    call(
+        "browser::sessions::stop",
+        json!({ "session_id": second_id }),
+    )
+    .await
+    .expect("stop");
+    client.shutdown_async().await;
+}
+
+/// `timeout_ms` bounds the whole navigation, not only the wait after it: a
+/// load that cannot finish answers `timed_out: true` on time and leaves the
+/// tab open, and `sessions::start` keeps such a tab instead of closing it.
+#[tokio::test]
+async fn a_stalled_load_times_out_on_budget_and_keeps_the_tab() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    sleep(Duration::from_millis(500)).await;
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let client = &client;
+        async move {
+            timeout(
+                Duration::from_secs(60),
+                client.trigger(TriggerRequest {
+                    function_id: function_id.into(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(50_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+        }
+    };
+    let stalled = serve_stalled();
+
+    let opened = call("browser::sessions::start", json!({}))
+        .await
+        .expect("start");
+    let id = opened["session_id"].as_str().expect("id").to_string();
+    let started = std::time::Instant::now();
+    let nav = call(
+        "browser::navigate",
+        json!({ "session_id": id, "url": stalled, "timeout_ms": 2_000 }),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    eprintln!("stalled navigate with timeout_ms 2000 took {elapsed:?}: {nav:?}");
+    let nav = nav.expect("navigate");
+    assert_eq!(nav["timed_out"], true, "{nav}");
+    assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+
+    // sessions::start has no timeout_ms: the default budget bounds its load.
+    let started = std::time::Instant::now();
+    let opened = call("browser::sessions::start", json!({ "url": stalled })).await;
+    eprintln!(
+        "stalled sessions::start took {:?}: {opened:?}",
+        started.elapsed()
+    );
+    let opened = opened.expect("start on a stalled url");
+    assert_eq!(opened["timed_out"], true, "{opened}");
+    let stalled_id = opened["session_id"].as_str().expect("id").to_string();
+
+    // Both tabs are still open, their loads still running. (Chromium holds
+    // Runtime.evaluate while a navigation is pending, so no page reads.)
+    for sid in [id, stalled_id] {
+        let stopped = call("browser::sessions::stop", json!({ "session_id": sid }))
+            .await
+            .expect("stop");
+        assert_eq!(stopped["was_running"], true, "{stopped}");
+    }
+    client.shutdown_async().await;
+}

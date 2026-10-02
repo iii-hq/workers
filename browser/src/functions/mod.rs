@@ -585,7 +585,7 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     sessions::check_scheme(&config, url).map_err(handler_err)?;
                     ensure_origin_permission(&config, url, OriginPermission::Access)?;
                 }
-                let (session, error) = sx
+                let (session, error, timed_out) = sx
                     .open(OpenRequest {
                         url: req.url,
                         headful: req.headful,
@@ -621,6 +621,7 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     headless: session.headless,
                     read_only: session.read_only,
                     incognito: session.incognito,
+                    timed_out,
                     error,
                 })
             }
@@ -807,22 +808,22 @@ fn register_navigate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 session.clear_navigation_error();
 
                 let allow_http = cfg.allowed_schemes.iter().any(|s| s == "http");
-                let navigation = session.navigate_like_a_browser(&req.url, allow_http).await;
+                let navigation = session
+                    .navigate_like_a_browser(&req.url, allow_http, wait)
+                    .await;
                 if let Some(policy_error) = session.take_navigation_error() {
                     return Err(handler_err(policy_error));
                 }
-                let (_, error) = navigation.map_err(handler_err)?;
-                // An error page is committed already; only a real load waits.
-                let timed_out = error.is_none()
-                    && timeout(wait, session.page.wait_for_navigation())
-                        .await
-                        .is_err();
-                if let Some(policy_error) = session.take_navigation_error() {
-                    return Err(handler_err(policy_error));
-                }
+                let (_, error, timed_out) = navigation.map_err(handler_err)?;
 
                 let url = session.page.url().await.ok().flatten().unwrap_or(req.url);
-                let title = session.page.get_title().await.ok().flatten();
+                // Chromium leaves Runtime.evaluate unanswered while the
+                // navigation is still pending: a timed-out load has no title.
+                let title = if timed_out {
+                    None
+                } else {
+                    session.page.get_title().await.ok().flatten()
+                };
                 session.tab.commit_location(&url, title.as_deref());
                 if session.tab.persists() {
                     sx.persist();

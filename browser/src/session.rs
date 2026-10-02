@@ -27,6 +27,7 @@ use chromiumoxide::cdp::browser_protocol::network as cdp_network;
 use chromiumoxide::cdp::browser_protocol::page as cdp_page;
 use chromiumoxide::cdp::browser_protocol::target as cdp_target;
 use chromiumoxide::cdp::js_protocol::runtime;
+use chromiumoxide::error::CdpError;
 use chromiumoxide::Page;
 use futures::StreamExt;
 use schemars::JsonSchema;
@@ -855,32 +856,53 @@ impl Session {
     /// the tab shows that page. The error text is returned for the caller to
     /// report; only a broken CDP connection is an `Err`.
     pub async fn navigate(&self, url: &str) -> Result<Option<String>, String> {
+        self.navigate_page(url)
+            .await
+            .map_err(|e| format!("navigation failed: {e}"))
+    }
+
+    async fn navigate_page(&self, url: &str) -> Result<Option<String>, CdpError> {
         let result = self
             .page
             .execute(cdp_page::NavigateParams::new(url))
-            .await
-            .map_err(|e| format!("navigation failed: {e}"))?;
+            .await?;
         Ok(result.result.error_text.clone())
     }
 
     /// `navigate`, plus the fallback a browser's address bar gives a local
     /// dev server: an `https://` url on a loopback or private host that fails
     /// the TLS handshake (the server speaks plain HTTP) is retried over
-    /// `http://` when that scheme is allowed. Returns the url that ended up
-    /// loading and Chromium's error text, if any.
+    /// `http://` when that scheme is allowed; then the wait for the load.
+    /// `budget` bounds the whole call: past it, or past chromiumoxide's own
+    /// fixed 30 s wait for the load, the navigation goes on in the tab and
+    /// the call reports it timed out. Returns the url that ended up loading,
+    /// Chromium's error text, if any, and whether the load timed out.
     pub async fn navigate_like_a_browser(
         &self,
         url: &str,
         allow_http: bool,
-    ) -> Result<(String, Option<String>), String> {
-        let error = self.navigate(url).await?;
-        if let (true, Some(err)) = (allow_http, error.as_deref()) {
-            if let Some(plain) = http_fallback_url(url, err) {
-                let error = self.navigate(&plain).await?;
-                return Ok((plain, error));
+        budget: std::time::Duration,
+    ) -> Result<(String, Option<String>, bool), String> {
+        let navigation = async {
+            let mut loaded = url.to_string();
+            let mut error = self.navigate_page(url).await?;
+            if let (true, Some(err)) = (allow_http, error.as_deref()) {
+                if let Some(plain) = http_fallback_url(url, err) {
+                    error = self.navigate_page(&plain).await?;
+                    loaded = plain;
+                }
             }
+            // An error page is committed already; only a real load waits.
+            if error.is_none() {
+                let _ = self.page.wait_for_navigation().await;
+            }
+            Ok((loaded, error))
+        };
+        match tokio::time::timeout(budget, navigation).await {
+            Ok(Ok((loaded, error))) => Ok((loaded, error, false)),
+            Err(_) | Ok(Err(CdpError::Timeout)) => Ok((url.to_string(), None, true)),
+            Ok(Err(e)) => Err(format!("navigation failed: {e}")),
         }
-        Ok((url.to_string(), error))
     }
 
     pub fn create_upload_dir(&self) -> Result<PathBuf, String> {
@@ -1336,11 +1358,13 @@ impl Sessions {
     /// Open a new tab: create its record, open its page, and (when asked)
     /// navigate it. An origin-policy denial closes the tab again and fails
     /// the open; a network-level failure leaves Chromium's error page in the
-    /// tab and is reported through `open_error`.
+    /// tab and is reported through `open_error`, and a load still running
+    /// after the default navigation timeout keeps the tab and reports
+    /// `timed_out`.
     pub async fn open(
         self: &Arc<Self>,
         request: OpenRequest,
-    ) -> Result<(Arc<Session>, Option<String>), String> {
+    ) -> Result<(Arc<Session>, Option<String>, bool), String> {
         let downloads_dir = if request.incognito {
             None
         } else {
@@ -1387,22 +1411,23 @@ impl Sessions {
             }
         };
         let mut open_error = None;
+        let mut timed_out = false;
         if let Some(url) = request.url.as_deref() {
             session.clear_navigation_error();
-            let allow_http = self
-                .config
-                .load()
-                .allowed_schemes
-                .iter()
-                .any(|s| s == "http");
-            let navigation = session.navigate_like_a_browser(url, allow_http).await;
+            let cfg = self.config.load_full();
+            let allow_http = cfg.allowed_schemes.iter().any(|s| s == "http");
+            let budget = std::time::Duration::from_millis(cfg.default_timeout_ms);
+            let navigation = session
+                .navigate_like_a_browser(url, allow_http, budget)
+                .await;
             if let Some(policy_error) = session.take_navigation_error() {
                 self.stop(&id, "stopped").await;
                 return Err(policy_error);
             }
             match navigation {
-                Ok((loaded, error)) => {
+                Ok((loaded, error, load_timed_out)) => {
                     open_error = error;
+                    timed_out = load_timed_out;
                     tab.set_location(&loaded, None);
                 }
                 Err(error) => {
@@ -1411,7 +1436,7 @@ impl Sessions {
                 }
             }
         }
-        Ok((session, open_error))
+        Ok((session, open_error, timed_out))
     }
 
     /// The live session for a tab, opening its page again if it sleeps.
@@ -2728,6 +2753,21 @@ async fn spawn_event_pumps(
 ) -> Result<Vec<tokio::task::JoinHandle<()>>, String> {
     let mut tasks = Vec::new();
     let page = &session.page;
+    // chromiumoxide auto-attaches child targets (service workers, workers,
+    // OOPIFs) with waitForDebuggerOnStart, then resumes a service worker and
+    // detaches from it back to back: the resume is lost and the worker stays
+    // paused, holding every navigation it intercepts until Chromium kills it.
+    // Re-arm auto-attach without the pause; chromiumoxide sends its own once,
+    // while initializing the page, before it hands the page over.
+    let _ = page
+        .execute(
+            cdp_target::SetAutoAttachParams::builder()
+                .auto_attach(true)
+                .wait_for_debugger_on_start(false)
+                .flatten(true)
+                .build()?,
+        )
+        .await;
     let main_frame = page
         .mainframe()
         .await
