@@ -711,6 +711,7 @@ async fn generate_step(
         new_notices,
         generation_input_tokens,
         generation_max_output_tokens,
+        assembly_pruned,
     ) = loop {
         let assembled = match assemble_context(
             deps,
@@ -895,6 +896,7 @@ async fn generate_step(
                 new_notices,
                 final_request_tokens,
                 max_output_tokens,
+                assembled.pruned,
             );
         }
         if reassembled {
@@ -1062,6 +1064,39 @@ async fn generate_step(
         snapshot.prompt_surface_digest = surface_digest.clone();
         snapshot.prompt_sections_fallback = sections_fallback.map(str::to_string);
     }
+    // A prefix-matching provider cache (DeepSeek) stops reusing at the first
+    // row an earlier request already sent and this one changed: name it.
+    let prefix_change = crate::context_snapshot::prefix_change(
+        &record.session_id,
+        gen_system_prompt.as_deref(),
+        &gen_messages,
+    );
+    // What rewrote it, as far as the harness can tell: row 0 is the system
+    // prompt (a compaction summary, a prompt change); any other row on a
+    // step whose assembly pruned is the prune.
+    let prefix_cause = prefix_change
+        .as_ref()
+        .and_then(|change| match change.index {
+            0 => Some("system_prompt"),
+            _ if assembly_pruned => Some("prune"),
+            _ => None,
+        });
+    if let Some(change) = &prefix_change {
+        tracing::warn!(
+            session_id = %record.session_id,
+            turn_id = %record.turn_id,
+            step = payload.step,
+            index = change.index,
+            prev_len = change.prev_len,
+            role = %change.role,
+            call_id = change.call_id.as_deref().unwrap_or("-"),
+            offset = ?change.offset,
+            cause = prefix_cause.unwrap_or("-"),
+            before = %change.before,
+            after = %change.after,
+            "request rewrote an already-sent context row; the provider prompt cache stops reusing there"
+        );
+    }
     let params = ChatParams {
         request_id: format!("{}:{}", record.turn_id, payload.step),
         session_id: record.session_id.clone(),
@@ -1185,26 +1220,54 @@ async fn generate_step(
             .as_ref()
             .and_then(|u| u.cost_usd)
             .unwrap_or(0.0);
-        snapshot.session_cost_usd = match crate::context_snapshot::get(
-            &deps.iii,
-            &record.session_id,
-            cfg.session_timeout_ms,
-        )
-        .await
-        {
-            Ok(prev) => {
-                let prior_cost = prev.and_then(|p| p.session_cost_usd).unwrap_or(0.0);
-                Some(prior_cost + step_cost)
-            }
-            Err(error) => {
-                tracing::warn!(
-                    session_id = %record.session_id,
-                    %error,
-                    "prior context snapshot read failed; session cost total unknown this step"
-                );
-                None
-            }
-        };
+        let prior =
+            crate::context_snapshot::get(&deps.iii, &record.session_id, cfg.session_timeout_ms)
+                .await;
+        if let Err(error) = &prior {
+            tracing::warn!(
+                session_id = %record.session_id,
+                %error,
+                "prior context snapshot read failed; session cost total unknown this step"
+            );
+        }
+        snapshot.session_cost_usd = prior.as_ref().ok().map(|prev| {
+            prev.as_ref()
+                .and_then(|p| p.session_cost_usd)
+                .unwrap_or(0.0)
+                + step_cost
+        });
+        snapshot.prefix_divergences = prior
+            .ok()
+            .flatten()
+            .map(|p| p.prefix_divergences)
+            .unwrap_or_default();
+        let provider_note = outcome
+            .message
+            .warnings
+            .iter()
+            .flatten()
+            .find(|w| w.starts_with(crate::context_snapshot::PROVIDER_PREFIX_NOTE))
+            .cloned();
+        if prefix_change.is_some() || provider_note.is_some() {
+            snapshot
+                .prefix_divergences
+                .push(crate::context_snapshot::PrefixDivergenceV1 {
+                    turn_id: record.turn_id.clone(),
+                    step: payload.step,
+                    index: prefix_change.as_ref().map(|c| c.index as u64),
+                    prev_len: prefix_change.as_ref().map(|c| c.prev_len as u64),
+                    role: prefix_change.as_ref().map(|c| c.role.clone()),
+                    call_id: prefix_change.as_ref().and_then(|c| c.call_id.clone()),
+                    cause: prefix_cause.map(str::to_string),
+                    provider_note,
+                    cache_read: snapshot.usage.as_ref().and_then(|u| u.cache_read),
+                });
+            let overflow = snapshot
+                .prefix_divergences
+                .len()
+                .saturating_sub(crate::context_snapshot::MAX_PREFIX_DIVERGENCES);
+            snapshot.prefix_divergences.drain(..overflow);
+        }
         crate::context_snapshot::exactify(
             snapshot,
             &router,
@@ -3336,6 +3399,7 @@ async fn assemble_context(
         summarized,
         summarized_head_tokens,
         breakdown: out.breakdown,
+        pruned: out.applied.pruned,
     })
 }
 
@@ -3458,6 +3522,7 @@ fn build_context_snapshot(
         usage: None,
         prompt_surface_digest: None,
         prompt_sections_fallback: None,
+        prefix_divergences: Vec::new(),
         timestamp: AgentMessage::now_ms(),
     }
 }
@@ -3609,6 +3674,9 @@ struct Assembled {
     summarized: bool,
     summarized_head_tokens: Option<u64>,
     breakdown: Option<crate::clients::context::AssembleBreakdown>,
+    /// context-manager pruned or reduced function results to fit the budget
+    /// this step, rewriting rows an earlier request may have sent.
+    pruned: bool,
 }
 
 struct ContextAssemblyInputs<'a> {
