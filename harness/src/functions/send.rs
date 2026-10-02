@@ -1431,6 +1431,20 @@ fn carried_contract_ledger(
     ledger
 }
 
+/// The function digests a new turn starts from. They are only comparable
+/// under the policy they were taken with: a send that changes
+/// `options.functions` starts unstamped (the next step stamps silently)
+/// instead of reading the functions the new policy denies as gone. The policy
+/// change itself reaches the model as the runtime-context notice.
+fn carried_functions_acknowledged(
+    prior: Option<&TurnRecord>,
+    options: &TurnOptions,
+) -> Option<Vec<u32>> {
+    prior
+        .filter(|record| record.options.functions == options.functions)
+        .and_then(|record| record.functions_acknowledged.clone())
+}
+
 pub(crate) async fn seed_new(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -1447,7 +1461,7 @@ pub(crate) async fn seed_new(
     let lineage = lineage.for_seed(prior);
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
-    let functions_acknowledged = prior.and_then(|record| record.functions_acknowledged.clone());
+    let functions_acknowledged = carried_functions_acknowledged(prior, &options);
     let function_contract_ledger = carried_contract_ledger(prior);
     let skill_ack = prior.and_then(|record| record.skill_ack.clone());
     let skills_started = prior.is_some_and(|record| record.skills_started);
@@ -2162,6 +2176,26 @@ mod tests {
             spawned.display_parent_session_id.as_deref(),
             Some("s_new_parent")
         );
+    }
+
+    #[test]
+    fn function_acknowledgements_carry_only_under_the_same_policy() {
+        let prior = terminal_record_with_skill_state(2, true);
+        let same = prior.options.clone();
+        assert_eq!(
+            super::carried_functions_acknowledged(Some(&prior), &same),
+            Some(vec![2])
+        );
+        let narrowed = options_with(Some(FunctionPolicy {
+            allow: vec!["state::get".into()],
+            ..Default::default()
+        }));
+        assert_ne!(narrowed.functions, prior.options.functions);
+        assert_eq!(
+            super::carried_functions_acknowledged(Some(&prior), &narrowed),
+            None
+        );
+        assert_eq!(super::carried_functions_acknowledged(None, &same), None);
     }
 
     #[test]
