@@ -60,8 +60,9 @@ pub struct ScaffoldWorkerOutput {
     /// Canonical absolute path of the new worker folder.
     pub directory: String,
     pub files: Vec<ScaffoldedFile>,
-    /// Container object for `compose::add { workers: [compose] }`: `worker`
-    /// is the absolute folder path; `start_after` is left to the caller.
+    /// Container object to pass whole in `compose::add { workers: [compose] }`
+    /// (the bare `worker` string form drops its scripts): `worker` is the
+    /// absolute folder path; `start_after` is left to the caller.
     pub compose: serde_json::Value,
     /// Compose containers the worker needs (e.g. `http`); add the ones
     /// `compose::status` does not list in the same `compose::add`.

@@ -149,5 +149,5 @@ standalone worker) over the **same jail** (`fs.host_roots`): `coder::info`
 they need.
 `coder::scaffold-worker { template, name, directory? }` writes one into a
 missing or empty folder whose last segment is `name` (default
-`workers/<name>`), all or nothing, and returns the object to pass to
-`compose::add`.
+`workers/<name>`), all or nothing, and returns the container object to pass
+whole in `compose::add { workers: [compose] }`.

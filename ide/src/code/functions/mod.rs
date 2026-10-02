@@ -155,8 +155,10 @@ const SCAFFOLD_WORKER_DESC: &str =
      its files into directory (default workers/<name>; its last folder must \
      be <name>, C232 otherwise) with the template's name token replaced, \
      all or nothing; a directory that exists and is not empty fails C233. \
-     Returns the files, a compose object for compose::add (add start_after \
-     and any requires that compose::status does not list) and next_steps. \
+     Returns the files, a compose object and next_steps. Pass compose as a \
+     container in compose::add { workers: [compose, ...] } (add start_after \
+     and any requires that compose::status does not list); the bare worker \
+     string form would drop its scripts. \
      Paths: relative to the primary root or absolute inside an allowed root \
      (see coder::info).";
 
