@@ -104,6 +104,12 @@ export const NEW_WORKER_INITIAL: NewWorkerState = {
   owned: false,
 }
 
+/** The template Select's placeholder: it shows whenever nothing is picked. */
+export function templatePlaceholder(state: NewWorkerState): string {
+  if (state.step === 'loading') return 'Loading…'
+  return state.list?.templates.length ? 'Choose a template' : 'No templates'
+}
+
 export type NewWorkerAction =
   | { type: 'load' }
   | { type: 'listed'; list: ListTemplatesResult }

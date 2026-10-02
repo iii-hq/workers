@@ -29,6 +29,7 @@ import {
   newWorkerReducer,
   type ScaffoldResult,
   sourceLabel,
+  templatePlaceholder,
   type Trigger,
   validateWorkerName,
 } from './new-worker'
@@ -162,7 +163,7 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
                 value={picked}
                 groups={groups}
                 onChange={setTemplate}
-                placeholder={state.step === 'loading' ? 'Loading…' : 'No templates'}
+                placeholder={templatePlaceholder(state)}
                 disabled={templates.length === 0}
               />
               <label className="shui-text-dialog-label" htmlFor={nameId}>

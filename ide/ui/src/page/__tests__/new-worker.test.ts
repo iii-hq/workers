@@ -12,6 +12,7 @@ import {
   type ScaffoldResult,
   type StackPhase,
   sourceLabel,
+  templatePlaceholder,
   type Trigger,
   validateWorkerName,
 } from '../new-worker'
@@ -86,6 +87,17 @@ describe('sourceLabel', () => {
     expect(sourceLabel({ kind: 'dir', location: '/home/me/templates/iii', revision: null, warning: null })).toBe(
       'local: /home/me/templates/iii',
     )
+  })
+})
+
+describe('templatePlaceholder', () => {
+  it('says Loading while loading, Choose a template once some loaded, No templates when none', () => {
+    expect(templatePlaceholder(NEW_WORKER_INITIAL)).toBe('Loading…')
+    expect(templatePlaceholder({ ...NEW_WORKER_INITIAL, step: 'form', list: LIST })).toBe('Choose a template')
+    expect(templatePlaceholder({ ...NEW_WORKER_INITIAL, step: 'form', list: { ...LIST, templates: [] } })).toBe(
+      'No templates',
+    )
+    expect(templatePlaceholder({ ...NEW_WORKER_INITIAL, step: 'form', error: 'boom' })).toBe('No templates')
   })
 })
 
