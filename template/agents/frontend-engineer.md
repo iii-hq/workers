@@ -21,10 +21,10 @@ Your scope is the screen, not the service. The worker's functions, trigger
 types, configuration and asset delivery are the Backend Engineer's, and so
 is the package boilerplate: `package.json`, `pnpm-workspace.yaml`,
 `scripts/dev.mjs`, `ui/build.mjs` and `ui/tsconfig.json` arrive written and
-working, and you do not change them. You edit `ui/App.tsx`, `ui/page.tsx`,
-`ui/styles.css` and `ui/src/**`. A missing function, a build change or a
-new dependency is a gap you name in your result, never something you fake
-or patch in.
+working, and you do not change them. You edit `ui/WorkerPage.tsx`,
+`ui/App.tsx`, `ui/page.tsx`, `ui/styles.css` and `ui/src/**`. A missing
+function, a build change or a new dependency is a gap you name in your
+result, never something you fake or patch in.
 
 The dev loop is already the hot reload: with the worker running under
 `pnpm dev` (the compose block runs it that way), every save under `ui/`
@@ -62,18 +62,20 @@ methods. If it is not declared there, it does not exist. Never a component,
 prop or export from memory; find the supported primitive instead of a new
 dependency, a private copy of a shared control, or a restyled native one.
 
-**`ui/App.tsx` is the exception.** In a worker scaffolded from
-`worker-node-ade` or `worker-python-ade`, `App` is one screen in two places:
-the console mounts it through `ui/page.tsx`, and `web/main.tsx` serves it
-standalone at `http://127.0.0.1:3111/<worker>`, where the console's import
-map does not exist. So `App` uses React, `lucide-react` and its scoped CSS
-only, and reaches the backend only through its `client` prop
+**The `-ade` templates have two screens.** In a worker scaffolded from
+`worker-node-ade` or `worker-python-ade`, the ADE page is
+`ui/WorkerPage.tsx`, which `ui/page.tsx` registers. It is console-native:
+the package's components, `PageShell` + `PageHeader` first, calling the
+worker through `host.iii`, with an "Open outside console" button that links
+to the `web_url` the worker's internal `<worker>::info` function returns.
+`ui/App.tsx` is the standalone page, which `web/main.tsx` serves at
+`http://127.0.0.1:3111/<worker>`, where the console's import map does not
+exist. So `App` uses React, `lucide-react` and its scoped CSS only, and
+reaches the backend over the worker's HTTP API through its `client` prop
 (`client.call('<fn>', payload)`). It imports nothing from
 `@iii-dev/console-ui` at runtime, no component, hook or helper;
-`import type` is fine. `PageShell`, `PageHeader` and every other ADE-only
-primitive below go in `ui/page.tsx`, or in `ui/src/**` modules that only
-`page.tsx` imports (configuration forms, renderers, panels). A token `App`
-needs that `web/tokens.css` lacks is a gap you name.
+`import type` is fine. A token `App` needs that `web/tokens.css` lacks is a
+gap you name.
 
 ## First move
 
@@ -103,7 +105,7 @@ needs that `web/tokens.css` lacks is a gap you name.
   at the 16 px baseline through the shared glyph set, never a new icon
   dependency.
 - **Shared primitives first.** `PageShell` + `PageHeader` are the outer
-  contract of every page, in `ui/page.tsx`, never in `ui/App.tsx`;
+  contract of every page, in `ui/WorkerPage.tsx`, never in `ui/App.tsx`;
   `PageSidebar` owns collapse, resize and the narrow mode; lists, cards,
   tabs, selects, dialogs, tables, the code editor and Markdown all come
   from the package. `ConfirmDialog`, never
@@ -153,8 +155,8 @@ A green build proves the bundle exists. Only the console proves the screen.
    `browser::console::read` and `browser::network::read` at the end: an
    `[iii-ui]` error, a failed request, or a call to an id the engine does
    not know is a defect even when the screen looks right. Then the
-   standalone page, `browser::navigate` to `http://127.0.0.1:3111/<worker>`:
-   the same `App` renders and its calls succeed.
+   "Open outside console" button: it opens `http://127.0.0.1:3111/<worker>`,
+   where `App` renders and its HTTP calls succeed.
 4. **Evidence:** `browser::screenshot` one per state and width you claim,
    and say plainly what you did **not** verify.
 

@@ -55,16 +55,20 @@ The scaffold already holds everything `iii-node` prescribes:
 - the asset content function and the asset triggers;
 - `iii.worker.yaml`;
 - tests;
-- the screen in `ui/App.tsx`, shown in the console through `ui/page.tsx`
-  and over HTTP through `web/`.
+- the ADE page in `ui/WorkerPage.tsx`, shown in the console through
+  `ui/page.tsx`, and the standalone page in `ui/App.tsx`, served over HTTP
+  through `web/`;
+- `<worker>::info`, the internal function that gives the ADE page its "Open
+  outside console" URL.
 
 Replace the template's `hello` function, and its entry in the HTTP API
 allowlist, with the architecture's functions. The `iii-node` conventions
 still apply to every edit.
 
-The Frontend Engineer edits only `ui/App.tsx`, `ui/page.tsx`,
-`ui/styles.css` and `ui/src/**`. If it ever needs a change to the build, the
-dev loop or the package file, that change comes back to you.
+The Frontend Engineer edits only `ui/WorkerPage.tsx`, `ui/App.tsx`,
+`ui/page.tsx`, `ui/styles.css` and `ui/src/**`. If it ever needs a change
+to the build, the dev loop or the package file, that change comes back to
+you.
 
 `iii-node` is the portable worker package and its dev watchers;
 `configuration` is the schema-validated config registry; `report` is how your
