@@ -156,12 +156,12 @@ const SCAFFOLD_WORKER_DESC: &str =
      be <name>, C232 otherwise) with the template's name token replaced, \
      all or nothing; a directory that exists and is not empty fails C233. \
      Returns the files, compose_add, compose and next_steps. compose_add is \
-     the compose::add payload: send it whole, adding start_after and any \
-     requires that compose::status does not list inside its workers; never \
-     move its entry's fields to the top level (top-level scripts are \
-     ignored) or use the bare worker string form, which drops the scripts. \
-     Paths: relative to the primary root or absolute inside an allowed root \
-     (see coder::info).";
+     the compose::add payload: send it whole, adding start_after to its \
+     workers entry and, for each requires that compose::status does not \
+     list, one more entry in workers; never move its entry's fields to the \
+     top level (top-level scripts are ignored) or use the bare worker \
+     string form, which drops the scripts. Paths: relative to the primary \
+     root or absolute inside an allowed root (see coder::info).";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

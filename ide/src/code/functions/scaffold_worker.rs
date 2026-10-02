@@ -66,8 +66,8 @@ pub struct ScaffoldWorkerOutput {
     pub compose: serde_json::Value,
     /// The compose::add payload: send it whole (do not move its entry's
     /// fields to the top level, where scripts are ignored), adding
-    /// start_after and any requires that compose::status does not list
-    /// inside its workers.
+    /// start_after to its workers entry and, for each requires that
+    /// compose::status does not list, one more entry in workers.
     pub compose_add: serde_json::Value,
     /// Compose containers the worker needs (e.g. `http`); add the ones
     /// `compose::status` does not list in the same `compose::add`.

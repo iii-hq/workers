@@ -1,5 +1,5 @@
 {
-  "description": "Create a new iii worker from a coder::list-templates template: write its files into directory (default workers/<name>; its last folder must be <name>, C232 otherwise) with the template's name token replaced, all or nothing; a directory that exists and is not empty fails C233. Returns the files, compose_add, compose and next_steps. compose_add is the compose::add payload: send it whole, adding start_after and any requires that compose::status does not list inside its workers; never move its entry's fields to the top level (top-level scripts are ignored) or use the bare worker string form, which drops the scripts. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
+  "description": "Create a new iii worker from a coder::list-templates template: write its files into directory (default workers/<name>; its last folder must be <name>, C232 otherwise) with the template's name token replaced, all or nothing; a directory that exists and is not empty fails C233. Returns the files, compose_add, compose and next_steps. compose_add is the compose::add payload: send it whole, adding start_after to its workers entry and, for each requires that compose::status does not list, one more entry in workers; never move its entry's fields to the top level (top-level scripts are ignored) or use the bare worker string form, which drops the scripts. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
   "function_id": "coder::scaffold-worker",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -67,7 +67,7 @@
         "description": "Container object to pass whole in `compose::add { workers: [compose] }` (the bare `worker` string form drops its scripts): `worker` is the absolute folder path; `start_after` is left to the caller."
       },
       "compose_add": {
-        "description": "The compose::add payload: send it whole (do not move its entry's fields to the top level, where scripts are ignored), adding start_after and any requires that compose::status does not list inside its workers."
+        "description": "The compose::add payload: send it whole (do not move its entry's fields to the top level, where scripts are ignored), adding start_after to its workers entry and, for each requires that compose::status does not list, one more entry in workers."
       },
       "directory": {
         "description": "Canonical absolute path of the new worker folder.",

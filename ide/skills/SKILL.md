@@ -150,5 +150,6 @@ they need.
 `coder::scaffold-worker { template, name, directory? }` writes one into a
 missing or empty folder whose last segment is `name` (default
 `workers/<name>`), all or nothing, and returns `compose_add`, the
-`compose::add` payload to send as is (never the bare `worker` string form,
+`compose::add` payload to send whole, adding `start_after` to its entry and
+missing `requires` as more entries (never the bare `worker` string form,
 which drops the scripts).

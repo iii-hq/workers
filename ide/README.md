@@ -203,7 +203,7 @@ fully unjailed, regardless of `fs.allow_unjailed`.
 | `coder::tree` | Recursive depth- and per-folder-bounded directory snapshot. |
 | `coder::create-file` / `coder::update-file` / `coder::delete-file` / `coder::move` | Batched create, line/regex edits, delete, and atomic rename/move. |
 | `coder::list-templates` | The worker templates `coder::scaffold-worker` creates from, with their language and the compose containers they need. Read from `code.templates`: a local `dir`, or a cached shallow clone of `url` at `ref` (`refresh: true` re-fetches it). |
-| `coder::scaffold-worker` | Create a worker from a template in a missing or empty folder whose last segment is the worker name (default `workers/<name>`), all or nothing, with the template's name token replaced in paths and text, and return `compose_add`, the `compose::add` payload to send as is (`{ workers: [compose] }`; the bare `worker` string form drops the scripts). Writes go through the `coder::create-file` path and show in the turn summary. |
+| `coder::scaffold-worker` | Create a worker from a template in a missing or empty folder whose last segment is the worker name (default `workers/<name>`), all or nothing, with the template's name token replaced in paths and text, and return `compose_add`, the `compose::add` payload to send whole, adding `start_after` to its entry and missing `requires` as more entries (`{ workers: [compose] }`; the bare `worker` string form drops the scripts). Writes go through the `coder::create-file` path and show in the turn summary. |
 
 Roots come from `fs.host_roots` (with the cwd+`/tmp` fallback noted above);
 protection globs come from `code.non_accessible_globs` in the shipped
