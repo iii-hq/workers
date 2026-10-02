@@ -32,10 +32,26 @@ export function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${source}$`)
 }
 
-/** Whether a root-relative path is one of the protected ones.
-    ponytail: matched against the IDE-root-relative path; a glob anchored
-    to another base path (no leading `**`) can miss. */
-export function isProtectedPath(rel: string | null, globs: readonly string[]): boolean {
-  if (rel === null || rel === '') return false
-  return globs.some((glob) => globToRegExp(glob).test(rel))
+/** The path as the worker matches it: relative to the first base path
+    holding it, else (unjailed, outside every base path) the absolute path
+    without its leading slash. */
+export function workerRelative(abs: string, basePaths: readonly string[]): string {
+  for (const base of basePaths) {
+    const prefix = base.endsWith('/') ? base : `${base}/`
+    if (abs.startsWith(prefix)) return abs.slice(prefix.length)
+  }
+  return abs.replace(/^\/+/, '')
+}
+
+/** Whether a file of the IDE's folder `root` (by its path below it) is one
+    of the protected ones, matched the way the worker matches it. */
+export function isProtectedPath(
+  rel: string | null,
+  globs: readonly string[],
+  root: string | null,
+  basePaths: readonly string[],
+): boolean {
+  if (rel === null || rel === '' || root === null || globs.length === 0) return false
+  const path = workerRelative(root.endsWith('/') ? `${root}${rel}` : `${root}/${rel}`, basePaths)
+  return path !== '' && globs.some((glob) => globToRegExp(glob).test(path))
 }

@@ -264,6 +264,13 @@ export function ShellExplorerPage({
   const [sideTab, setSideTab] = useState<SideView>('files')
   // Show Diff with Working Tree: the full ref the Changes view compares.
   const [branchChanges, setBranchChanges] = useState<string | null>(null)
+  // Another folder is another repository: the comparison was the last one's.
+  const [comparedRoot, setComparedRoot] = useState(root)
+  if (comparedRoot !== root) {
+    setComparedRoot(root)
+    setBranchChanges(null)
+    if (sideTab === 'changes') setSideTab('scm')
+  }
   const [browsePath, setBrowsePath] = useState<string | null>(null)
   const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(null)
   const [goToLineSeq, setGoToLineSeq] = useState(0)
@@ -345,10 +352,15 @@ export function ShellExplorerPage({
   // A protected file (`.env`, keys) reads like a missing one, but it is
   // there: its tab is not struck through, and its pane says why it is shut.
   const protectedGlobs = info?.non_accessible_globs ?? NO_GLOBS
+  const basePaths = info?.base_paths ?? NO_GLOBS
+  const isProtected = useCallback(
+    (path: string | null) => isProtectedPath(path, protectedGlobs, root, basePaths),
+    [protectedGlobs, root, basePaths],
+  )
   const shownMissing = useMemo(() => {
-    const kept = [...missingPaths].filter((path) => !isProtectedPath(path, protectedGlobs))
+    const kept = [...missingPaths].filter((path) => !isProtected(path))
     return kept.length === missingPaths.size ? missingPaths : new Set(kept)
-  }, [missingPaths, protectedGlobs])
+  }, [missingPaths, isProtected])
   const [missingRoot, setMissingRoot] = useState<string | null>(null)
   const missingRootRef = useRef<string | null>(null)
   const cacheRef = useRef<EditorCache>(new Map())
@@ -2648,7 +2660,7 @@ export function ShellExplorerPage({
                 onRevealDir={revealFolder}
                 onCompare={compareFile}
                 missing={shownMissing.has(activeFilePath)}
-                protectedPath={isProtectedPath(activeFilePath, protectedGlobs)}
+                protectedPath={isProtected(activeFilePath)}
                 onMissing={onFileMissing}
                 onClose={closeActiveTab}
                 onReferenceInChat={referenceInChat}
