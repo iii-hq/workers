@@ -255,6 +255,9 @@ struct ComposeScope {
     file: Option<String>,
 }
 
+/// Scaffolds a worker; with `start: true` it also runs compose::add.
+pub(crate) const SCAFFOLD_WORKER: &str = "coder::scaffold-worker";
+
 impl ComposeScope {
     fn from_env() -> Self {
         Self {
@@ -284,6 +287,27 @@ impl ComposeScope {
             }
             // The engine built-in stays in its own namespace; only the lookup
             // target is scoped. A compose file is not an introspection argument.
+            return (payload, None);
+        }
+        if function_id == SCAFFOLD_WORKER {
+            // `start: true` runs compose::add inside the ide: it adds to the
+            // same stack as this session's own compose::* calls. The fields
+            // are internal, so a caller's own values never pass.
+            if let Some(arguments) = payload.as_object_mut() {
+                arguments.remove("compose_file");
+                arguments.remove("compose_namespace");
+                if arguments.get("start") == Some(&Value::Bool(true)) {
+                    if let Some(file) = &self.file {
+                        arguments.insert("compose_file".to_string(), Value::String(file.clone()));
+                    }
+                    if let Some(namespace) = &self.namespace {
+                        arguments.insert(
+                            "compose_namespace".to_string(),
+                            Value::String(namespace.clone()),
+                        );
+                    }
+                }
+            }
             return (payload, None);
         }
         if !function_id.starts_with("compose::") {
@@ -554,6 +578,37 @@ mod tests {
         assert_eq!(payload["worker"], "database");
         assert_eq!(payload["file"], "/srv/app/worker-compose.yaml");
         assert_eq!(payload["namespace"], "compose-daemon");
+    }
+
+    #[test]
+    fn a_starting_scaffold_adds_to_the_supervised_project() {
+        let scope = ComposeScope {
+            namespace: Some("compose-daemon".to_string()),
+            file: Some("/srv/app/worker-compose.yaml".to_string()),
+        };
+        let (payload, prepared_namespace) = scope.prepare(
+            SCAFFOLD_WORKER,
+            json!({ "name": "orders", "start": true, "compose_file": "/tmp/other.yaml" }),
+        );
+        assert_eq!(prepared_namespace, None);
+        assert_eq!(payload["compose_file"], "/srv/app/worker-compose.yaml");
+        assert_eq!(payload["compose_namespace"], "compose-daemon");
+
+        // Without start, or without a shared scope, a caller's routing is dropped.
+        let (payload, _) = scope.prepare(
+            SCAFFOLD_WORKER,
+            json!({ "name": "orders", "compose_file": "/tmp/other.yaml", "compose_namespace": "x" }),
+        );
+        assert_eq!(payload, json!({ "name": "orders" }));
+        let unscoped = ComposeScope {
+            namespace: None,
+            file: None,
+        };
+        let (payload, _) = unscoped.prepare(
+            SCAFFOLD_WORKER,
+            json!({ "name": "orders", "start": true, "compose_file": "/tmp/other.yaml" }),
+        );
+        assert_eq!(payload, json!({ "name": "orders", "start": true }));
     }
 
     #[test]

@@ -716,7 +716,9 @@ pub(crate) async fn invoke_target_classified(
     function_id: &str,
     arguments: &Value,
 ) -> (ResultData, bool) {
-    if let Some(denied) = project_wide_compose_denial(function_id, arguments) {
+    if let Some(denied) = project_wide_compose_denial(function_id, arguments)
+        .or_else(|| scaffold_start_denial(function_id, arguments, policy))
+    {
         return (denied, false);
     }
     match engine.dispatch(function_id, arguments.clone()).await {
@@ -826,6 +828,28 @@ pub(crate) fn project_wide_compose_denial(
     Some(invocation_error_result(
         Some("compose_project_scope_denied".to_string()),
         message,
+    ))
+}
+
+/// The `is_error` result for `coder::scaffold-worker` with `start: true` in
+/// a session that may not call compose::add: the ide runs that compose::add
+/// under its own permissions, so the flag must not widen this session's.
+pub(crate) fn scaffold_start_denial(
+    function_id: &str,
+    arguments: &Value,
+    policy: &CompiledPolicy,
+) -> Option<ResultData> {
+    if function_id != crate::clients::engine::SCAFFOLD_WORKER
+        || arguments.get("start") != Some(&Value::Bool(true))
+        || policy.allows("compose::add")
+    {
+        return None;
+    }
+    Some(invocation_error_result(
+        Some("scaffold_start_denied".to_string()),
+        "coder::scaffold-worker with start: true runs compose::add, which this session may \
+         not call. Call it without start to write the files only, or ask for compose::add."
+            .to_string(),
     ))
 }
 
@@ -1179,6 +1203,23 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         }))
+    }
+
+    /// Prevents: `start: true` laundering a compose::add the session's policy
+    /// does not grant through the ide's own permissions.
+    #[test]
+    fn a_starting_scaffold_needs_compose_add() {
+        let start = json!({ "template": "worker-node-ade", "name": "orders", "start": true });
+        let denied = scaffold_start_denial("coder::scaffold-worker", &start, &pol(&["coder::*"]))
+            .expect("start without compose::add must be refused");
+        assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
+        let allowed = pol(&["coder::*", "compose::add"]);
+        assert!(scaffold_start_denial("coder::scaffold-worker", &start, &allowed).is_none());
+        let files_only = json!({ "template": "worker-node-ade", "name": "orders" });
+        assert!(
+            scaffold_start_denial("coder::scaffold-worker", &files_only, &pol(&["coder::*"]))
+                .is_none()
+        );
     }
 
     /// Prevents: the self-inflicted restart — a project-wide `compose::restart`
