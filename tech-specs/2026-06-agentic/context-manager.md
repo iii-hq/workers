@@ -96,7 +96,8 @@ Whatever capping, pruning, or compaction does, the returned context must still b
 - `context::compact` — Summarise older history into a single compaction summary and return the
   preserved tail. Transient: the caller uses the result; the session keeps its full transcript.
 - `context::prune` — Replace eligible old function outputs without summarising. The cheap policy
-  pass, run on every call (not just when over budget).
+  pass `context::assemble` runs first once a request is over budget; under budget it never runs, since
+  rewriting results the provider already cached costs more than the tokens it frees.
 - `context::count-tokens` — Estimate token usage for a set of messages (+ optional invocation schema /
   system) vs a model.
 
@@ -146,7 +147,7 @@ in [README.md § Cross-cutting contracts](README.md#cross-cutting-contracts).
 ### `context::assemble`
 
 Build a model-ready context. Applies, in this order: media-normalize -> cap oversized single
-results (always) -> prune aged function outputs (always) -> (if over budget) compact the head ->
+results (always) -> (if over budget) prune aged function outputs -> (if still over) compact the head ->
 (if still over) emergency-reduce -> return the budgeted list, or a structured overflow if nothing fits. A
 successful response has the hard postcondition `token_count <= usable`.
 
