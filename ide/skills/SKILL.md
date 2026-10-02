@@ -157,8 +157,7 @@ before any write, and the result carries `operation_id` and `started`, or
 returns `compose_add`, the `compose::add` payload to send whole, adding
 `start_after` to its entry and missing `requires` as more entries (never the
 bare `worker` string form, which drops the scripts). It adds to the stack
-the ide runs in, so a harness session without `compose::add`, whose
-`compose::*` calls go to another project, or whose `compose::add` the
-approval gate would not allow outright gets the files only, with a note (an
-explicit `start: true` is refused there); its own `compose::add` then goes
-through approval as usual.
+the ide runs in, so a harness session without `compose::add`, or whose
+`compose::add` the approval gate would not allow outright, gets the files
+only, with a note (an explicit `start: true` is refused there); its own
+`compose::add` then goes through approval as usual.

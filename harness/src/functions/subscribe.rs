@@ -261,9 +261,7 @@ pub async fn invoke(
     let files_only;
     let mut start_note = None;
     let arguments =
-        match scaffold_start_approval(deps, engine, policy, function_id, arguments, session_id)
-            .await
-        {
+        match scaffold_start_approval(deps, policy, function_id, arguments, session_id).await {
             trigger::StartGate::Pass => arguments,
             trigger::StartGate::Deny(denied) => return denied,
             trigger::StartGate::FilesOnly(args, note) => {
@@ -1431,20 +1429,16 @@ async fn approval_verdict(
 /// hook sees it. So the turn asks the approval gate about compose::add for
 /// this session first; anything but `allow` is a start this turn cannot have
 /// (files only, or refused), and the agent's own compose::add then goes
-/// through the gate, held for a human like any other. Policy and compose
-/// routing are the dispatch gate's (`trigger::scaffold_start_gate`).
+/// through the gate, held for a human like any other. Policy is the
+/// dispatch gate's (`trigger::scaffold_start_gate`).
 pub(crate) async fn scaffold_start_approval(
     deps: &Deps,
-    engine: &EngineClient,
     policy: &CompiledPolicy,
     function_id: &str,
     arguments: &Value,
     session_id: &str,
 ) -> trigger::StartGate {
-    if !trigger::scaffold_starts(function_id, arguments)
-        || !policy.allows(COMPOSE_ADD_ID)
-        || engine.compose_scoped()
-    {
+    if !trigger::scaffold_starts(function_id, arguments) || !policy.allows(COMPOSE_ADD_ID) {
         return trigger::StartGate::Pass;
     }
     let verdict = approval_verdict(deps, COMPOSE_ADD_ID, session_id, &json!({})).await;

@@ -95,12 +95,6 @@ pub struct EngineClient {
 }
 
 impl EngineClient {
-    /// Whether this harness routes compose::* to another project
-    /// (III_COMPOSE_FILE / III_COMPOSE_NAMESPACE).
-    pub(crate) fn compose_scoped(&self) -> bool {
-        self.compose.file.is_some() || self.compose.namespace.is_some()
-    }
-
     pub fn new(iii: Arc<IIIClient>, timeout_ms: u64) -> Self {
         Self {
             iii,

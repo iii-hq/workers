@@ -716,12 +716,11 @@ pub(crate) async fn invoke_target_classified(
     function_id: &str,
     arguments: &Value,
 ) -> (ResultData, bool) {
-    let (arguments, start_note) =
-        match scaffold_start_gate(function_id, arguments, policy, engine.compose_scoped()) {
-            StartGate::Pass => (arguments.clone(), None),
-            StartGate::Deny(denied) => return (denied, false),
-            StartGate::FilesOnly(arguments, note) => (arguments, Some(note)),
-        };
+    let (arguments, start_note) = match scaffold_start_gate(function_id, arguments, policy) {
+        StartGate::Pass => (arguments.clone(), None),
+        StartGate::Deny(denied) => return (denied, false),
+        StartGate::FilesOnly(arguments, note) => (arguments, Some(note)),
+    };
     if let Some(denied) = project_wide_compose_denial(function_id, &arguments) {
         return (denied, false);
     }
@@ -851,26 +850,22 @@ pub(crate) enum StartGate {
     FilesOnly(Value, String),
 }
 
-/// A session may start a scaffold only if it may call compose::add itself
-/// (the flag must not widen its policy) and its compose::* calls go to the
-/// ide's own stack (`scoped` is a harness routing them to another project).
+/// A session may start a scaffold only if it may call compose::add itself:
+/// the flag must not widen its policy. (The ide adds to its own stack, which
+/// compose gives every container it supervises, the harness included, as
+/// the same III_COMPOSE_FILE / III_COMPOSE_NAMESPACE.)
 pub(crate) fn scaffold_start_gate(
     function_id: &str,
     arguments: &Value,
     policy: &CompiledPolicy,
-    scoped: bool,
 ) -> StartGate {
-    if function_id != crate::clients::engine::SCAFFOLD_WORKER {
+    if function_id != crate::clients::engine::SCAFFOLD_WORKER || policy.allows("compose::add") {
         return StartGate::Pass;
     }
-    let why = if !policy.allows("compose::add") {
-        "it runs compose::add, which this session may not call"
-    } else if scoped {
-        "it adds to the ide's own stack, and this session's compose::* calls go to another project"
-    } else {
-        return StartGate::Pass;
-    };
-    start_refused(arguments, why)
+    start_refused(
+        arguments,
+        "it runs compose::add, which this session may not call",
+    )
 }
 
 /// Whether a `coder::scaffold-worker` call would start the worker: `start`
@@ -1272,43 +1267,28 @@ mod tests {
         let coder_only = pol(&["coder::*"]);
         let allowed = pol(&["coder::*", "compose::add"]);
 
-        let StartGate::Deny(denied) = scaffold_start_gate(id, &explicit, &coder_only, false) else {
+        let StartGate::Deny(denied) = scaffold_start_gate(id, &explicit, &coder_only) else {
             panic!("an explicit start without compose::add must be refused");
         };
         assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
         // The default start degrades to the files only, with a note.
-        let StartGate::FilesOnly(sent, note) =
-            scaffold_start_gate(id, &default, &coder_only, false)
+        let StartGate::FilesOnly(sent, note) = scaffold_start_gate(id, &default, &coder_only)
         else {
             panic!("a defaulted start without compose::add must go files-only");
         };
         assert_eq!(sent, opt_out);
         assert!(note.contains("Not started"), "{note}");
-        assert!(matches!(
-            scaffold_start_gate(id, &opt_out, &coder_only, false),
-            StartGate::Pass
-        ));
-        assert!(matches!(
-            scaffold_start_gate(id, &explicit, &allowed, false),
-            StartGate::Pass
-        ));
-        assert!(matches!(
-            scaffold_start_gate(id, &default, &allowed, false),
-            StartGate::Pass
-        ));
-        // A harness that routes compose::* elsewhere: the ide would add to the wrong stack.
-        assert!(matches!(
-            scaffold_start_gate(id, &explicit, &allowed, true),
-            StartGate::Deny(_)
-        ));
-        assert!(matches!(
-            scaffold_start_gate(id, &default, &allowed, true),
-            StartGate::FilesOnly(..)
-        ));
-        assert!(matches!(
-            scaffold_start_gate(id, &opt_out, &allowed, true),
-            StartGate::Pass
-        ));
+        for args in [&opt_out, &explicit, &default] {
+            let policy = if args == &opt_out {
+                &coder_only
+            } else {
+                &allowed
+            };
+            assert!(
+                matches!(scaffold_start_gate(id, args, policy), StartGate::Pass),
+                "{args}"
+            );
+        }
     }
 
     /// Prevents: the self-inflicted restart — a project-wide `compose::restart`
