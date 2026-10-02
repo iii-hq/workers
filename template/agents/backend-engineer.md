@@ -38,11 +38,13 @@ the architecture's functions on top of it:
    key. The parent folder comes from your brief. The directory must end in
    `<worker-name>`, because compose derives the container key from its last
    segment; the call refuses any other directory. It also refuses a folder
-   that already has files and never overwrites one. It returns the files, a
-   ready `compose` object, `requires` and `next_steps`.
-4. `compose::add` with that `compose` object plus
-   `"start_after": ["<console container>"]`, and one more entry for each
-   `requires` name that step 2 did not list (`http` is
+   that already has files and never overwrites one. It returns the files,
+   `compose_add` (the ready `compose::add` payload), `compose`, `requires`
+   and `next_steps`.
+4. `compose::add` with `compose_add` whole (never move its entry's fields to
+   the top level: top-level scripts are ignored), adding
+   `"start_after": ["<console container>"]` to its entry in `workers`, and one
+   more entry there for each `requires` name that step 2 did not list (`http` is
    `{ "worker": "package://http", "version": "latest", "config_name": "http" }`), under a
    `compose-operation` wake, exactly as `iii-node` describes. Never by
    editing `worker-compose.yaml`: a hand-written entry makes the daemon
