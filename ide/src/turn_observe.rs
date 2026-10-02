@@ -30,12 +30,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
-use notify::{RecursiveMode, Watcher};
 use tokio::sync::mpsc::Sender;
 
 use crate::events::{
-    ignored_under, in_repo, is_git_internal, is_noise_kind, is_own_temp, kind_of, merge_kinds,
-    plain_ignores, resolve_kind,
+    ignored_under, is_git_internal, is_noise_kind, is_own_temp, kind_of, merge_kinds, resolve_kind,
+    watch_new_dirs, DirWatch,
 };
 use crate::turns::TurnLog;
 
@@ -48,11 +47,6 @@ const GRACE_MS: u64 = 1_200;
 /// through unobserved (hook pre-images and the turn's snapshots still
 /// cover it) while the walk finishes off the runtime.
 const SETUP_WAIT_MS: u64 = 1_000;
-/// Directories one root may put under watch, one inotify watch each, out
-/// of a per-user budget (8192 by default on older kernels) shared with
-/// editors and every other watcher. A root with more outside its
-/// .gitignore goes unobserved; a new tree that would cross it, unwatched.
-const MAX_WATCHED_DIRS: usize = 4_096;
 
 struct ObserverEntry {
     turn_id: String,
@@ -157,7 +151,7 @@ impl TurnObservers {
                     session_id = %session,
                     turn_id = %turn,
                     root = %watch_root.display(),
-                    dirs = watch.dirs,
+                    dirs = watch.watched.len(),
                     "turn observe: watch started"
                 );
                 let _ = live.send(());
@@ -254,97 +248,6 @@ impl TurnObservers {
     }
 }
 
-/// A bounded workspace watch: one non-recursive OS watch per directory
-/// kept. notify's recursive inotify watch walks every directory under the
-/// root, symlinks followed and gitignored trees included; on a monorepo
-/// root that held the worker for 44 s and nearly every inotify watch the
-/// user had.
-struct DirWatch {
-    watcher: notify::RecommendedWatcher,
-    dirs: usize,
-}
-
-impl DirWatch {
-    /// Blocking. `None` when the watcher will not start or the root has
-    /// too many directories to observe.
-    fn open(root: &Path, tx: Sender<notify::Event>) -> Option<Self> {
-        let watcher = notify::recommended_watcher(move |res| {
-            if let Ok(event) = res {
-                let _ = tx.try_send(event);
-            }
-        });
-        let mut watch = match watcher {
-            Ok(watcher) => Self { watcher, dirs: 0 },
-            Err(e) => {
-                tracing::warn!(error = %e, "turn observe: watcher start failed");
-                return None;
-            }
-        };
-        watch.add_tree(root, root).then_some(watch)
-    }
-
-    /// Blocking: watch `dir` and the directories `watch_dirs` keeps under
-    /// it. False, with nothing watched, when that would cross
-    /// `MAX_WATCHED_DIRS`.
-    fn add_tree(&mut self, root: &Path, dir: &Path) -> bool {
-        let Some(dirs) = watch_dirs(root, dir, MAX_WATCHED_DIRS.saturating_sub(self.dirs)) else {
-            tracing::warn!(
-                root = %root.display(),
-                dir = %dir.display(),
-                cap = MAX_WATCHED_DIRS,
-                "turn observe: too many directories to watch; this tree goes unobserved \
-                 (hook pre-images and snapshots still cover the turn)"
-            );
-            return false;
-        };
-        for dir in dirs {
-            match self.watcher.watch(&dir, RecursiveMode::NonRecursive) {
-                Ok(()) => self.dirs += 1,
-                // Out of inotify watches: the rest would fail too.
-                Err(e) if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) => {
-                    tracing::warn!(error = %e, root = %root.display(), "turn observe: watch failed");
-                    break;
-                }
-                // Gone since the walk, or unreadable: nothing to watch.
-                Err(_) => {}
-            }
-        }
-        true
-    }
-}
-
-/// The directories a watch keeps from `dir` down, by `root`'s ignore
-/// rules: gitignored trees (outside a repository, what `ignored_under`
-/// ignores), `.git` and symlinks stay out. `None` past `cap`; the walk
-/// stops there.
-fn watch_dirs(root: &Path, dir: &Path, cap: usize) -> Option<Vec<PathBuf>> {
-    let plain = if in_repo(root) {
-        None
-    } else {
-        plain_ignores(root)
-    };
-    let mut walker = ignore::WalkBuilder::new(dir);
-    walker
-        .follow_links(false)
-        .hidden(false)
-        .ignore(false)
-        .filter_entry(move |entry| {
-            entry.file_type().is_some_and(|t| t.is_dir())
-                && entry.file_name() != ".git"
-                && !plain
-                    .as_ref()
-                    .is_some_and(|m| m.matched(entry.path(), true).is_ignore())
-        });
-    let mut dirs = Vec::new();
-    for entry in walker.build().flatten() {
-        if dirs.len() == cap {
-            return None;
-        }
-        dirs.push(entry.into_path());
-    }
-    Some(dirs)
-}
-
 /// Coalesce raw events and fold each batch into the session's current turn.
 /// Owns the watch: aborting this task tears it down.
 async fn pump(
@@ -361,7 +264,7 @@ async fn pump(
         };
         let mut batch: HashMap<String, &'static str> = HashMap::new();
         let mut born: HashSet<String> = HashSet::new();
-        let mut new_dirs: HashSet<String> = HashSet::new();
+        let mut new_dirs: HashMap<PathBuf, bool> = HashMap::new();
         let mut fold = |event: notify::Event| {
             if is_noise_kind(&event.kind) {
                 return;
@@ -378,7 +281,7 @@ async fn pump(
                     // Made or moved in under a watched directory: a
                     // recursive watch would cover it, so this one does.
                     if !p.is_symlink() {
-                        new_dirs.insert(p.to_string_lossy().into_owned());
+                        *new_dirs.entry(p.clone()).or_default() |= kind == "created";
                     }
                     continue;
                 }
@@ -405,10 +308,18 @@ async fn pump(
             }
         }
         if !new_dirs.is_empty() {
-            let Some(grown) = watch_new_dirs(&root, watch, new_dirs).await else {
+            let Some((grown, found)) = watch_new_dirs(&root, watch, new_dirs).await else {
                 return;
             };
             watch = grown;
+            for file in found
+                .iter()
+                .filter(|p| !is_own_temp(p) && !p.starts_with(&store_dir))
+            {
+                let key = file.to_string_lossy().into_owned();
+                born.insert(key.clone());
+                batch.insert(key, "created");
+            }
         }
         if batch.is_empty() {
             continue;
@@ -436,25 +347,6 @@ async fn pump(
             .fold_observed(&session_id, &turn_id, &root_str, changes)
             .await;
     }
-}
-
-/// Watch the trees of directories new under the root, gitignored ones
-/// left out. Off the runtime: a tree copied in can be big.
-async fn watch_new_dirs(
-    root: &Path,
-    mut watch: DirWatch,
-    dirs: HashSet<String>,
-) -> Option<DirWatch> {
-    let ignored = ignored_set(root, dirs.iter()).await;
-    let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        for dir in dirs.iter().filter(|dir| !ignored.contains(*dir)) {
-            watch.add_tree(&root, Path::new(dir));
-        }
-        watch
-    })
-    .await
-    .ok()
 }
 
 /// The subset of `paths` that git ignores under `root`. A root that is not
@@ -499,51 +391,6 @@ mod tests {
 
     fn change(path: &str) -> Vec<(String, &'static str)> {
         vec![(path.to_string(), "modified")]
-    }
-
-    fn kept(root: &Path, cap: usize) -> Option<Vec<String>> {
-        let mut names: Vec<String> = watch_dirs(root, root, cap)?
-            .iter()
-            .map(|dir| {
-                dir.strip_prefix(root)
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect();
-        names.sort();
-        Some(names)
-    }
-
-    #[test]
-    fn the_watch_walk_leaves_out_ignored_trees_git_and_symlinks() {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        for sub in [".git/objects", ".github", "src/deep", "target/debug"] {
-            std::fs::create_dir_all(repo.join(sub)).unwrap();
-        }
-        std::fs::write(repo.join(".gitignore"), "target/\n").unwrap();
-        std::os::unix::fs::symlink(repo.join("src"), repo.join("link")).unwrap();
-        assert_eq!(
-            kept(&repo, 100).unwrap(),
-            ["", ".github", "src", "src/deep"]
-        );
-        // Outside a repository: what `ignored_under` ignores there.
-        let plain = dir.path().join("plain");
-        for sub in ["node_modules/pkg", ".iii/state", "app"] {
-            std::fs::create_dir_all(plain.join(sub)).unwrap();
-        }
-        assert_eq!(kept(&plain, 100).unwrap(), ["", "app"]);
-    }
-
-    #[test]
-    fn the_watch_walk_gives_up_past_its_cap() {
-        let dir = tempfile::tempdir().unwrap();
-        for sub in ["a", "b", "c"] {
-            std::fs::create_dir_all(dir.path().join(sub)).unwrap();
-        }
-        assert_eq!(kept(dir.path(), 4).unwrap().len(), 4);
-        assert!(kept(dir.path(), 3).is_none());
     }
 
     /// The SDK runs handlers on one current-thread runtime, as this test
@@ -601,19 +448,97 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(COALESCE_MS * 4)).await;
         let file = root.join("new/deeper/a.txt");
         std::fs::write(&file, "a").unwrap();
-        let file = file.to_string_lossy().into_owned();
+        assert!(
+            observed(&observers, |path| path == file).await,
+            "a write in a directory made mid-turn was never observed"
+        );
+    }
+
+    /// `cargo new`, `tar x`, `mkdir -p out && build > out/x` write into a
+    /// directory before its watch can exist: the walk that adds the watch
+    /// finds those files.
+    #[tokio::test]
+    async fn a_file_written_into_a_new_directory_at_once_is_observed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("w")).unwrap();
+        let root = dir.path().join("w").canonicalize().unwrap();
+        let observers = observers_in(dir.path());
+        observers
+            .ensure("s1", "t1", Some(&root.to_string_lossy()))
+            .await;
+        std::fs::create_dir(root.join("new")).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let file = root.join("new/a.txt");
+        std::fs::write(&file, "a").unwrap();
+        assert!(
+            observed(&observers, |path| path == file).await,
+            "a write right after its directory was made was never observed"
+        );
+    }
+
+    /// A renamed tree is watched again under its new name and a deleted
+    /// one is gone: neither may keep counting against the cap, or the
+    /// next tree that fits goes unwatched.
+    #[tokio::test]
+    async fn trees_renamed_or_deleted_mid_turn_stop_counting() {
+        let wide = |at: &Path| {
+            for i in 0..crate::events::MAX_WATCHED_DIRS / 2 + 10 {
+                std::fs::create_dir_all(at.join(format!("d{i}"))).unwrap();
+            }
+        };
+        let dir = tempfile::tempdir().unwrap();
+        wide(&dir.path().join("w/big"));
+        let root = dir.path().join("w").canonicalize().unwrap();
+        let observers = observers_in(dir.path());
+        observers
+            .ensure("s1", "t1", Some(&root.to_string_lossy()))
+            .await;
+        tokio::time::sleep(Duration::from_millis(COALESCE_MS * 2)).await;
+
+        std::fs::rename(root.join("big"), root.join("big2")).unwrap();
+        tokio::time::sleep(Duration::from_millis(COALESCE_MS * 4)).await;
+        let file = root.join("big2/d0/a.txt");
+        std::fs::write(&file, "a").unwrap();
+        assert!(
+            observed(&observers, |path| path == file).await,
+            "a write in a renamed tree was never observed"
+        );
+
+        // The deletion fills turn t1 (a directory gone reads as a deleted
+        // path): the tree moved in next lands in t2.
+        std::fs::remove_dir_all(root.join("big2")).unwrap();
+        let big2 = root.join("big2");
+        assert!(observed(&observers, |path| path.starts_with(&big2)).await);
+        tokio::time::sleep(Duration::from_millis(COALESCE_MS * 2)).await;
+        observers
+            .ensure("s1", "t2", Some(&root.to_string_lossy()))
+            .await;
+        wide(&dir.path().join("staged"));
+        std::fs::rename(dir.path().join("staged"), root.join("big3")).unwrap();
+        tokio::time::sleep(Duration::from_millis(COALESCE_MS * 4)).await;
+        let file = root.join("big3/d0/b.txt");
+        std::fs::write(&file, "b").unwrap();
+        assert!(
+            observed(&observers, |path| path == file).await,
+            "a write in a tree moved in after a deleted one was never observed"
+        );
+    }
+
+    /// Whether a turn of `s1` records a path `wanted` takes, polled for up
+    /// to 5 s.
+    async fn observed(observers: &Arc<TurnObservers>, wanted: impl Fn(&Path) -> bool) -> bool {
         for _ in 0..50 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let record = observers.log.load("s1").await.unwrap();
             if record
                 .turns
                 .iter()
-                .any(|turn| turn.files.iter().any(|f| f.path == file))
+                .any(|turn| turn.files.iter().any(|f| wanted(Path::new(&f.path))))
             {
-                return;
+                return true;
             }
         }
-        panic!("a write in a directory made mid-turn was never observed");
+        false
     }
 
     #[tokio::test]
