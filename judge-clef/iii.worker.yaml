@@ -1,0 +1,17 @@
+iii: v1
+name: judge-clef
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: judge-clef
+tags: [evaluation, judge, clef, llama.cpp, noul, choice, score, local, gpu]
+description: clef provider for the judge hub (judge-clef::evaluate, judge-clef::models::list, judge-clef::cancel) — Cloudflare's Clef-Flash decision model (a Qwen3.5-9B backbone GGUF and its joint schema head) downloaded from the Hugging Face Hub and run in-process, the backbone through llama.cpp and the joint schema head in candle on the CPU, deciding every question of an evaluation together in one forward pass; picks Metal (macOS), Vulkan (Linux, when a driver is present) or the CPU automatically; no API key or external service.
+config:
+  model: clef-flash
+  threads: 8
+  context_tokens: 16384
+  max_request_bytes: 8388608
+  max_timeout_ms: 300000
+dependencies:
+  configuration: "latest"

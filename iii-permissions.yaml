@@ -140,6 +140,8 @@ rules:
   - '!judge-decider::on-judge-config-change'
   - '!judge-laya::on-config-change'
   - '!judge-laya::on-judge-config-change'
+  - '!judge-clef::on-config-change'
+  - '!judge-clef::on-judge-config-change'
   - '!directory::on-judge-config-change'
   - '!judge-typesafe::on-config-change'
   - '!session::on-config-change'

@@ -71,9 +71,9 @@ See the [mixed Noul/Choice/Score example](reference.md#evaluate),
 
 **Settings → Workers → judge** selects the default provider from the workers
 registered as `judge-<provider>` (seeded from `JUDGE_PROVIDER`, else `typesafe`).
-Four ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV),
-[`judge-decider`](../judge-decider/), [`judge-semif`](../judge-semif/) and
-[`judge-laya`](../judge-laya/) (open models running inside the worker); a request may name its own with a top-level
+Five ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV),
+[`judge-decider`](../judge-decider/), [`judge-semif`](../judge-semif/),
+[`judge-laya`](../judge-laya/) and [`judge-clef`](../judge-clef/) (open models running inside the worker); a request may name its own with a top-level
 `provider`. Between the two sits
 the calling session's provider: the console's composer (beside the model
 picker) stores it as the session's `judge_provider` metadata, the harness

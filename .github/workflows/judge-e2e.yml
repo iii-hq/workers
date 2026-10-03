@@ -9,6 +9,7 @@ on:
       - 'judge-typesafe/**'
       - 'judge-semif/**'
       - 'judge-decider/**'
+      - 'judge-clef/**'
       - 'crates/llama-runtime/**'
       - 'crates/judge-contract/**'
       - 'crates/config-client/**'
@@ -67,6 +68,7 @@ jobs:
             judge
             judge-laya
             judge-typesafe
+            judge-clef
             crates/judge-contract
 
       - name: Setup pnpm
@@ -81,15 +83,16 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Install UI dependencies
-        run: pnpm --filter '@iii-workers/judge-ui...' --filter '@iii-workers/judge-laya-ui...' --filter '@iii-workers/judge-typesafe-ui...' --filter '@iii-workers/judge-semif-ui...' --filter '@iii-workers/judge-decider-ui...' install --frozen-lockfile 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/ui-install.log"
+        run: pnpm --filter '@iii-workers/judge-ui...' --filter '@iii-workers/judge-laya-ui...' --filter '@iii-workers/judge-typesafe-ui...' --filter '@iii-workers/judge-semif-ui...' --filter '@iii-workers/judge-decider-ui...' --filter '@iii-workers/judge-clef-ui...' install --frozen-lockfile 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/ui-install.log"
 
-      - name: UI Vitest (judge, judge-laya, judge-typesafe, judge-semif, judge-decider)
+      - name: UI Vitest (judge, judge-laya, judge-typesafe, judge-semif, judge-decider, judge-clef)
         run: |
           pnpm --dir judge/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-ui-test.log"
           pnpm --dir judge-laya/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-laya-ui-test.log"
           pnpm --dir judge-typesafe/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-typesafe-ui-test.log"
           pnpm --dir judge-semif/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-semif-ui-test.log"
           pnpm --dir judge-decider/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-decider-ui-test.log"
+          pnpm --dir judge-clef/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-clef-ui-test.log"
 
       - name: Build real embedded UI assets
         run: |
@@ -98,10 +101,11 @@ jobs:
           pnpm --dir judge-typesafe/ui build 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-typesafe-ui-build.log"
           pnpm --dir judge-semif/ui build 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-semif-ui-build.log"
           pnpm --dir judge-decider/ui build 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-decider-ui-build.log"
+          pnpm --dir judge-clef/ui build 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-clef-ui-build.log"
           # Reuse these assets in both Cargo feature variants.
           echo 'SKIP_UI_BUILD=1' >> "$GITHUB_ENV"
 
-      # judge-semif and judge-decider compile llama.cpp (cmake), its bindings (bindgen: libclang)
+      # judge-semif, judge-decider, judge-laya and judge-clef compile llama.cpp (cmake), its bindings (bindgen: libclang)
       # and the runtime-loaded Vulkan backend module (headers + glslc).
       - name: Provision llama.cpp build tools
         run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
@@ -119,7 +123,7 @@ jobs:
           test "$(awk '{print $NF}' "$JUDGE_E2E_REPORT_DIR/engine-version.log")" = "${III_RELEASE_TAG#iii/v}"
           echo "III_ENGINE_BIN=$BIN_DIR/iii" >> "$GITHUB_ENV"
 
-      - name: Real-engine tests (6 local mocked cases)
+      - name: Real-engine tests (7 local mocked cases)
         run: bash .github/scripts/judge-e2e.sh
 
       - name: Upload test logs

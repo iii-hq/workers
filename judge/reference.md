@@ -50,7 +50,7 @@ with a top-level `provider` string (lowercase letters, digits and hyphens, at
 most 64 bytes). A provider that is not registered on the engine returns
 `{"status":"error","code":"provider_unavailable"}`.
 
-Local providers (`judge-decider`, `judge-semif`, `judge-laya`) always register
+Local providers (`judge-decider`, `judge-semif`, `judge-laya`, `judge-clef`) always register
 their functions and load their model on demand. The default `provider` keeps its
 model loaded; any other one loads it on the first request that names it (or
 whose session picked it) and releases it (memory and VRAM included) after 10
@@ -60,7 +60,8 @@ while the load goes on for the next one, and a failed load answers
 `provider_unavailable` with its `provider_error` and `retry_after_ms` (30 s).
 `preload_all: true` keeps every local provider loaded instead, so no request
 waits; each holds its memory (on a GPU, about 6 GB for decider or SemIf and
-1.5 GB for laya). Hosted providers such as `judge-typesafe` are unaffected.
+1.5 GB for laya; clef holds its backbone GGUF on the GPU and its joint schema
+head in host memory). Hosted providers such as `judge-typesafe` are unaffected.
 
 Credentials, default model and execution limits belong to the provider worker.
 For TypeSafe, open **Settings → Workers → judge-typesafe** in the Console or read
@@ -266,7 +267,7 @@ probability or legend keys, missing answers and mismatched types/IDs fail the
 whole batch. The worker returns provider scores and confidence without
 recalculating them. Choose a caller-specific decision threshold; JEV imposes
 no eligibility threshold. The local providers (`judge-decider`, `judge-semif`,
-`judge-laya`) compute `confidence` from their probabilities as TypeSafe
+`judge-laya`, `judge-clef`) compute `confidence` from their probabilities as TypeSafe
 defines it (`judge_contract::confidence`): `(n·p_max − 1) / (n − 1)` for a
 Choice, 0 for a uniform distribution and 1 for all mass on one option; for a
 Score, 1 − the expected distance from the likeliest level over the mean
