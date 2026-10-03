@@ -73,7 +73,8 @@ pub struct SkillContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<String>,
     /// `harness_prompt` key of `baseline`'s text. Stored records carry only
-    /// this; `state::get_turn` fills `baseline` back in from it.
+    /// this, as `"baseline": {"$ref": ..}` (`state::put_turn`);
+    /// `state::get_turn` fills `baseline` back in from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline_ref: Option<String>,
 }
@@ -117,7 +118,8 @@ pub struct TurnOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     /// `harness_prompt` key of `system_prompt`'s text. Stored records carry
-    /// only this; `state::get_turn` fills `system_prompt` back in from it.
+    /// only this, as `"system_prompt": {"$ref": ..}` (`state::put_turn`);
+    /// `state::get_turn` fills `system_prompt` back in from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt_ref: Option<String>,
     /// Legacy-only attribution for skill bodies previously frozen from

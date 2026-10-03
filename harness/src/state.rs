@@ -189,11 +189,11 @@ pub async fn get_turn(
     timeout_ms: u64,
 ) -> Result<Option<TurnRecord>, HarnessError> {
     let v = state_get(iii, TURN_SCOPE, session_id, timeout_ms).await?;
-    if v.is_null() {
+    let Some(mut record) =
+        parse_stored_turn(v).map_err(|e| HarnessError::State(format!("turn record parse: {e}")))?
+    else {
         return Ok(None);
-    }
-    let mut record: TurnRecord = serde_json::from_value(v)
-        .map_err(|e| HarnessError::State(format!("turn record parse: {e}")))?;
+    };
     hydrate(iii, &mut record, timeout_ms).await?;
     Ok(Some(record))
 }
@@ -221,8 +221,9 @@ pub async fn put_turn(
     for (digest, text) in dehydrate(&mut stored) {
         store_prompt_body(iii, &digest, &text, timeout_ms).await?;
     }
-    let value = serde_json::to_value(&stored)
+    let mut value = serde_json::to_value(&stored)
         .map_err(|e| HarnessError::State(format!("turn record serialize: {e}")))?;
+    refs_to_stored(&mut value);
     let written =
         set_retrying_timeout(iii, TURN_SCOPE, &record.session_id, value, timeout_ms).await;
     mark_turn_changed(&record.session_id);
@@ -257,6 +258,42 @@ pub(crate) const PROMPT_SCOPE: &str = "harness_prompt";
 pub(crate) fn prompt_digest(text: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("sha256:{:x}", Sha256::digest(text.as_bytes()))
+}
+
+/// Where each ref sits in a stored record: `{"$ref": <digest>}` in its
+/// text's own field. A harness from before refs parses that field as an
+/// optional string and ignores unknown fields, so a ref under a field of its
+/// own would read there as "no prompt": the session would run without its
+/// prompt, and that harness's next write would drop the ref for good. An
+/// object where it expects a string fails its parse instead.
+const STORED_REFS: [(&str, &str, &str); 2] = [
+    ("/options", "system_prompt", "system_prompt_ref"),
+    ("/options/skill_context", "baseline", "baseline_ref"),
+];
+
+fn refs_to_stored(record: &mut Value) {
+    for (at, text, slot) in STORED_REFS {
+        if let Some(fields) = record.pointer_mut(at).and_then(Value::as_object_mut) {
+            if let Some(digest) = fields.remove(slot) {
+                fields.insert(text.to_owned(), json!({ "$ref": digest }));
+            }
+        }
+    }
+}
+
+/// A stored turn record (`None` for null), its refs moved back to their own
+/// fields ([`refs_to_stored`] undone).
+fn parse_stored_turn(mut record: Value) -> serde_json::Result<Option<TurnRecord>> {
+    for (at, text, slot) in STORED_REFS {
+        if let Some(fields) = record.pointer_mut(at).and_then(Value::as_object_mut) {
+            if let Some(digest) = fields.get_mut(text).and_then(|t| t.get_mut("$ref")) {
+                let digest = digest.take();
+                fields.remove(text);
+                fields.insert(slot.to_owned(), digest);
+            }
+        }
+    }
+    serde_json::from_value(record)
 }
 
 /// The record's frozen texts, each with its `harness_prompt` ref.
@@ -300,12 +337,19 @@ async fn hydrate(
     Ok(())
 }
 
-/// How long this process trusts that a body it wrote is still stored. It must
-/// stay under the body collector's grace period (24 h): a body this process
-/// skips rewriting was written less than this long ago, so its `created_at`
-/// keeps the collector off it while a new record starts referencing it, and
-/// a body the collector did delete is written again.
-const KNOWN_BODY_TTL_MS: i64 = 12 * 60 * 60 * 1000;
+/// How long this process trusts, without asking the store, that a body it
+/// wrote is still there; its next write after that stores the body again.
+/// Short on purpose. The store can lose a body behind this process (a reset,
+/// or a crash between its scope files: the state worker flushes scopes in no
+/// fixed order), and [`BODY_CACHE`] hides the loss from this process's reads
+/// until a restart. Writing the body again within minutes mends every record
+/// that references it. Cost: one body write per prompt in use per window.
+///
+/// It also keeps the `created_at` of a body a new record starts referencing
+/// within minutes of now, far under the collector's grace. The collector must
+/// still not delete a body whose `created_at` moved after it read it: a
+/// rewrite can land between its read and its delete.
+const KNOWN_BODY_TTL_MS: i64 = 5 * 60 * 1000;
 
 /// Digests this process wrote, with when.
 static KNOWN_BODIES: std::sync::Mutex<BTreeMap<String, i64>> =
@@ -425,7 +469,7 @@ async fn read_listed_turn(
     timeout_ms: u64,
 ) -> Result<Option<TurnRecord>, HarnessError> {
     let value = state_get(iii, TURN_SCOPE, key, timeout_ms).await?;
-    Ok(serde_json::from_value(value).unwrap_or_else(|e| {
+    Ok(parse_stored_turn(value).unwrap_or_else(|e| {
         tracing::warn!(session_id = %key, error = %e, "skipping unparseable turn record");
         None
     }))
@@ -1180,8 +1224,12 @@ mod tests {
     type Store = std::sync::Arc<std::sync::Mutex<BTreeMap<(String, String), Value>>>;
     type Calls = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
+    /// A prompt body the fake engine refuses to store.
+    const REJECTED_BODY: &str = "fake_state rejects this body";
+
     /// A store-backed fake engine serving `state::{get,set,delete,list_keys}`
-    /// over every scope. Logs each call as `"<function> <scope>/<key>"`.
+    /// over every scope. Logs each call as `"<function> <scope>/<key>"`. A
+    /// `state::set` of [`REJECTED_BODY`] fails.
     async fn fake_state() -> (IIIClient, Store, Calls, tokio::task::JoinHandle<()>) {
         use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message;
@@ -1206,6 +1254,8 @@ mod tests {
                 seen.lock()
                     .unwrap()
                     .push(format!("{function} {scope}/{key}"));
+                let rejected =
+                    function == "state::set" && msg["data"]["value"]["body"] == REJECTED_BODY;
                 let result = {
                     let mut db = db.lock().unwrap();
                     let at = (scope.clone(), key);
@@ -1213,6 +1263,7 @@ mod tests {
                         "state::list_keys" => json!({ "keys": db.keys()
                             .filter(|(s, _)| *s == scope).map(|(_, k)| k).collect::<Vec<_>>() }),
                         "state::get" => db.get(&at).cloned().unwrap_or(Value::Null),
+                        "state::set" if rejected => Value::Null,
                         "state::set" => {
                             db.insert(at, msg["data"]["value"].clone());
                             json!({})
@@ -1224,8 +1275,13 @@ mod tests {
                         _ => Value::Null,
                     }
                 };
-                let reply = json!({ "type": "invocationresult", "function_id": function,
-                    "invocation_id": msg["invocation_id"], "result": result });
+                let mut reply = json!({ "type": "invocationresult", "function_id": function,
+                    "invocation_id": msg["invocation_id"] });
+                if rejected {
+                    reply["error"] = json!({ "code": "rejected", "message": "rejected" });
+                } else {
+                    reply["result"] = result;
+                }
                 if socket
                     .send(Message::Text(reply.to_string().into()))
                     .await
@@ -1294,14 +1350,17 @@ mod tests {
 
         let value = stored(&store, TURN_SCOPE, "pg_1");
         let options = &value["options"];
-        assert_eq!(options["system_prompt_ref"], prompt_digest(&prompt));
-        assert!(options.get("system_prompt").is_none(), "{options}");
         assert_eq!(
-            options["skill_context"]["baseline_ref"],
-            prompt_digest(index)
+            options["system_prompt"],
+            json!({ "$ref": prompt_digest(&prompt) })
+        );
+        assert!(options.get("system_prompt_ref").is_none(), "{options}");
+        assert_eq!(
+            options["skill_context"]["baseline"],
+            json!({ "$ref": prompt_digest(index) })
         );
         assert!(
-            options["skill_context"].get("baseline").is_none(),
+            options["skill_context"].get("baseline_ref").is_none(),
             "{options}"
         );
         assert_eq!(body_keys(&store).len(), 2);
@@ -1418,9 +1477,12 @@ mod tests {
             "a dehydrated re-put writes no body"
         );
         let value = stored(&store, TURN_SCOPE, "dr_1");
-        assert_eq!(value["options"]["system_prompt_ref"], prompt_digest(prompt));
         assert_eq!(
-            value["options"]["skill_context"]["baseline_ref"],
+            value["options"]["system_prompt"]["$ref"],
+            prompt_digest(prompt)
+        );
+        assert_eq!(
+            value["options"]["skill_context"]["baseline"]["$ref"],
             prompt_digest(index)
         );
         let read = get_turn(&iii, "dr_1", 2_000).await.unwrap().unwrap();
@@ -1434,7 +1496,8 @@ mod tests {
     }
 
     /// A ref whose body is gone is a hard error, never an empty prompt (which
-    /// would re-resolve the prompt and change the session).
+    /// would re-resolve the prompt and change the session). The record holds
+    /// the ref as its own field, as the first build with refs stored it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn missing_body_is_an_error() {
         let (iii, store, _calls, server) = fake_state().await;
@@ -1449,6 +1512,118 @@ mod tests {
             error.contains("missing prompt body sha256:missing_body_is_an_error for mb_1"),
             "{error}"
         );
+        iii.shutdown();
+        server.abort();
+    }
+
+    /// A harness from before refs parses `system_prompt` and `baseline` as
+    /// optional strings and ignores unknown fields. A stored ref must fail
+    /// that parse: read as "no prompt", the session would run without its
+    /// prompt, and that harness's next write would drop the ref for good.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_pre_ref_harness_cannot_read_a_ref_as_no_prompt() {
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct PreRefOptions {
+            system_prompt: Option<String>,
+            skill_context: Option<PreRefContext>,
+        }
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct PreRefContext {
+            baseline: Option<String>,
+        }
+
+        let (iii, store, _calls, server) = fake_state().await;
+        let (prompt, index) = ("pre_ref prompt", "pre_ref index");
+        put_turn(&iii, &prompt_record("pr_1", Some(prompt), None), 2_000)
+            .await
+            .unwrap();
+        put_turn(&iii, &prompt_record("pr_2", None, Some(index)), 2_000)
+            .await
+            .unwrap();
+        for sid in ["pr_1", "pr_2"] {
+            let options = stored(&store, TURN_SCOPE, sid)["options"].clone();
+            assert!(
+                serde_json::from_value::<PreRefOptions>(options.clone()).is_err(),
+                "{options}"
+            );
+        }
+        let first = get_turn(&iii, "pr_1", 2_000).await.unwrap().unwrap();
+        assert_eq!(first.options.system_prompt.as_deref(), Some(prompt));
+        let second = get_turn(&iii, "pr_2", 2_000).await.unwrap().unwrap();
+        let context = second.options.skill_context.unwrap();
+        assert_eq!(context.baseline.as_deref(), Some(index));
+        iii.shutdown();
+        server.abort();
+    }
+
+    /// The store can lose a body this process wrote (a reset, or a crash
+    /// between its scope files). The process trusts its own write for minutes
+    /// only: the next write after that stores the body again, which mends the
+    /// records already referencing it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_lost_body_is_stored_again_minutes_later() {
+        let (iii, store, _calls, server) = fake_state().await;
+        let prompt = "lost_body prompt";
+        let digest = prompt_digest(prompt);
+        put_turn(&iii, &prompt_record("lb_1", Some(prompt), None), 2_000)
+            .await
+            .unwrap();
+        store
+            .lock()
+            .unwrap()
+            .remove(&(PROMPT_SCOPE.to_owned(), digest.clone()));
+        *KNOWN_BODIES.lock().unwrap().get_mut(&digest).unwrap() -= 10 * 60 * 1000;
+        put_turn(&iii, &prompt_record("lb_2", Some(prompt), None), 2_000)
+            .await
+            .unwrap();
+        assert_eq!(body_keys(&store), [digest]);
+        let read = get_turn(&iii, "lb_1", 2_000).await.unwrap().unwrap();
+        assert_eq!(read.options.system_prompt.as_deref(), Some(prompt));
+        iii.shutdown();
+        server.abort();
+    }
+
+    /// A stored ref always points at a stored body: the bodies are written
+    /// before the record, and a failed body write leaves the record as it was.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bodies_are_written_before_the_record_or_not_at_all() {
+        let (iii, store, calls, server) = fake_state().await;
+        let (prompt, index) = ("body_order prompt", "body_order index");
+        put_turn(
+            &iii,
+            &prompt_record("bo_1", Some(prompt), Some(index)),
+            2_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [
+                format!("state::set {PROMPT_SCOPE}/{}", prompt_digest(prompt)),
+                format!("state::set {PROMPT_SCOPE}/{}", prompt_digest(index)),
+                format!("state::set {TURN_SCOPE}/bo_1"),
+            ]
+        );
+
+        let before = stored(&store, TURN_SCOPE, "bo_1");
+        let error = put_turn(
+            &iii,
+            &prompt_record("bo_1", Some(REJECTED_BODY), None),
+            2_000,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("rejected"), "{error}");
+        assert_eq!(
+            calls.lock().unwrap().last(),
+            Some(&format!(
+                "state::set {PROMPT_SCOPE}/{}",
+                prompt_digest(REJECTED_BODY)
+            ))
+        );
+        assert_eq!(stored(&store, TURN_SCOPE, "bo_1"), before);
         iii.shutdown();
         server.abort();
     }
