@@ -99,7 +99,11 @@ async fn main() -> anyhow::Result<()> {
     // shutdown_async only signals the SDK's dedicated connection thread. Join
     // it before main returns so pending telemetry can finish flushing.
     tokio::task::spawn_blocking(move || iii.shutdown()).await?;
-    result
+    result?;
+    // Returning would wait for a llama.cpp pass still running on the blocking
+    // pool (seconds on a GPU, minutes on the CPU) whose caller already has its
+    // answer: exit now.
+    std::process::exit(0)
 }
 /// Keep the clef model loaded while the judge hub selects this provider (see
 /// `ModelSlot::follow_selection`); a hub that does not expose its

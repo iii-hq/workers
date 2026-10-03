@@ -153,15 +153,12 @@ impl Runtime {
                         (Some(d), n) if n > 0 => format!("{} ({})", d.description, d.backend),
                         _ => "CPU".into(),
                     };
-                    let mut params = LlamaModelParams::default().with_n_gpu_layers(layers);
-                    if layers == 0 {
-                        // No GPU device at all: with one, llama.cpp keeps CPU
-                        // weights in its pinned host buffer (no CPU repacking)
-                        // and still sends batch matmuls to it.
-                        params = params.with_devices(&[])?;
-                    }
-                    let model = LlamaModel::load_from_file(backend, &gguf, &params)
-                        .map_err(|e| anyhow!("load {}: {e}", gguf.display()))?;
+                    let model = LlamaModel::load_from_file(
+                        backend,
+                        &gguf,
+                        &LlamaModelParams::default().with_n_gpu_layers(layers),
+                    )
+                    .map_err(|e| anyhow!("load {}: {e}", gguf.display()))?;
                     Ok((model, device))
                 };
                 let (model, device) = match load() {
