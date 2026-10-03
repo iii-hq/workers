@@ -1875,3 +1875,25 @@ async fn finalized_turn_records_drop_what_only_a_running_turn_reads() {
         }
     }
 }
+
+/// `session::deleted` purges the session's turn record with its other rows
+/// (MOT-5166); other sessions' records stay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_deleted_removes_the_turn_record() {
+    use harness::functions::on_session_deleted::{self, SessionDeletedEvent};
+    let stack = Stack::new("completed").await;
+    on_session_deleted::handle(
+        &stack.deps,
+        SessionDeletedEvent {
+            session_id: "child2".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let store = stack.store.lock().unwrap();
+    assert!(store.calls.iter().any(|(f, data)| f == "state::delete"
+        && data["scope"] == "harness_turn"
+        && data["key"] == "child2"));
+    assert!(store.state("harness_turn", "child2").is_null());
+    assert!(!store.state("harness_turn", "grandchild1").is_null());
+}

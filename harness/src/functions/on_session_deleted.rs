@@ -42,6 +42,8 @@ pub async fn handle(
     crate::budget::purge(deps, &event.session_id, cfg.session_timeout_ms).await?;
     crate::context_snapshot::delete(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
     crate::usage_report::delete(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
+    // Last, so a failed purge above keeps the record for the handler's retry.
+    crate::state::delete_turn(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
     Ok(SessionDeletedAck {
         ok: true,
         removed: swept,
