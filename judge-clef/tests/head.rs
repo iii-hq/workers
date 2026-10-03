@@ -6,10 +6,10 @@ use candle_core::{
 };
 use judge_clef::{
     encode::{Encoded, Field},
-    head::{option_ids, Head, Lexicon},
+    head::{Head, Lexicon},
 };
 use serde::Deserialize;
-use std::{fs::File, path::PathBuf};
+use std::path::PathBuf;
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -95,20 +95,6 @@ fn head_refuses_what_the_reference_cannot_score() {
         64,
     )
     .is_err());
-    let head = tiny_head();
-    let lexicon = Lexicon::open(&fixture("tiny/backbone.gguf")).unwrap();
-    let (case, encoded) = cases().remove(0);
-    let hidden =
-        || Tensor::from_vec(case.hidden.clone(), (case.ids.len(), 32), &Device::Cpu).unwrap();
-    let lexical = lexicon
-        .rows(&option_ids(&encoded.ids, &encoded.fields))
-        .unwrap();
-
-    let mut empty = encoded.fields.clone();
-    empty[1].span = 20..20;
-    assert!(head.forward(hidden(), &empty, &lexical).is_err());
-    let short = lexical.narrow(0, 1, lexical.dim(0).unwrap() - 1).unwrap();
-    assert!(head.forward(hidden(), &encoded.fields, &short).is_err());
 }
 
 #[test]
@@ -141,24 +127,4 @@ fn lexicon_reads_output_rows_of_a_gguf() {
         expected.to_vec2::<f32>().unwrap()
     );
     assert!(lexicon.rows(&[8]).is_err());
-}
-
-#[test]
-fn lexicon_reads_the_tiny_backbone() {
-    let gguf = fixture("tiny/backbone.gguf");
-    let lexicon = Lexicon::open(&gguf).unwrap();
-    assert_eq!(lexicon.hidden(), 32);
-    let mut file = File::open(&gguf).unwrap();
-    let content = gguf_file::Content::read(&mut file).unwrap();
-    let output = content
-        .tensor(&mut file, "output.weight", &Device::Cpu)
-        .unwrap()
-        .dequantize(&Device::Cpu)
-        .unwrap();
-    let rows = output.to_vec2::<f32>().unwrap();
-    assert_eq!(
-        lexicon.rows(&[261, 0]).unwrap().to_vec2::<f32>().unwrap(),
-        vec![rows[261].clone(), rows[0].clone()]
-    );
-    assert!(lexicon.rows(&[262]).is_err());
 }

@@ -39,10 +39,11 @@ pub struct Encoded {
     pub dropped: usize,
 }
 
-/// Python's float `repr`, which `json.dumps` writes. `{:?}` picks the same
-/// shortest digits and switches to an exponent at the same magnitudes (below
-/// 1e-4, from 1e16); Python signs the exponent and pads it to two digits:
-/// `1e-05`, `1e+16`.
+/// Python's float `repr`, which `json.dumps` writes. ryu picks the same
+/// shortest digits, breaking a tie between two of them to even as CPython
+/// does (`{:?}` rounds it up: 637.1682739257813 for Python's
+/// 637.1682739257812), and switches to an exponent from 1e16; Python also
+/// uses one below 1e-4, and signs and pads it to two digits: `1e-05`, `1e+16`.
 struct PythonFloats;
 impl serde_json::ser::Formatter for PythonFloats {
     fn write_f64<W: ?Sized + std::io::Write>(
@@ -50,7 +51,20 @@ impl serde_json::ser::Formatter for PythonFloats {
         w: &mut W,
         value: f64,
     ) -> std::io::Result<()> {
-        let repr = format!("{value:?}");
+        let mut buf = ryu::Buffer::new();
+        let repr = buf.format_finite(value);
+        let (neg, body) = repr
+            .strip_prefix('-')
+            .map_or(("", repr), |body| ("-", body));
+        // ryu keeps 1e-5 <= |v| < 1e-4 in fixed notation; Python writes e-05 there.
+        if let Some(digits) = body.strip_prefix("0.0000") {
+            let (head, tail) = digits.split_at(1);
+            return if tail.is_empty() {
+                write!(w, "{neg}{head}e-05")
+            } else {
+                write!(w, "{neg}{head}.{tail}e-05")
+            };
+        }
         match repr.split_once('e') {
             None => w.write_all(repr.as_bytes()),
             Some((digits, exponent)) => {

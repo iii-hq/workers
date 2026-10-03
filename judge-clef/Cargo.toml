@@ -26,6 +26,7 @@ iii-llama-runtime = { path = "../crates/llama-runtime" }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+ryu = "1"
 anyhow = "1"
 hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }

@@ -1475,6 +1475,7 @@ dependencies = [
  "iii-llama-runtime",
  "iii-sdk",
  "judge-contract",
+ "ryu",
  "schemars",
  "serde",
  "serde_json",

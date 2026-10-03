@@ -128,7 +128,8 @@ JOINT SCHEMA DECISIONS:
 ```
 
 The state is a string as-is, or compact JSON with every object's keys sorted,
-as Python's `json.dumps(sort_keys=True)` writes it; instructions and
+as Python's `json.dumps(value, sort_keys=True, separators=(",", ":"),
+ensure_ascii=False)` writes it; instructions and
 descriptions that are objects or arrays render the same way. The key order of a
 JSON state therefore does not matter to Clef. Every piece (the header, the
 state, each field line, each option) is tokenized on its own, as the model was

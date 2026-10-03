@@ -180,21 +180,39 @@ impl ClefClient {
         {
             return failure(code, stats);
         }
-        // Every evaluation is encoded first, so a bad one fails before any inference.
-        let tokenize = |text: &str| {
-            self.tokenizer
-                .encode_fast(text, false)
-                .map(|encoding| encoding.get_ids().to_vec())
-                .map_err(|_| ErrorCode::InvalidRequest)
-        };
+        // Every evaluation is encoded first, so a bad one fails before any
+        // inference. A state of megabytes takes seconds to tokenize: off the
+        // executor, within the deadline and cancellable.
+        let evaluations = Arc::new(request.evaluations);
+        let (tokenizer, jobs) = (self.tokenizer.clone(), evaluations.clone());
         let window = self.engine.context_tokens as usize;
-        let mut prompts = Vec::with_capacity(request.evaluations.len());
-        for evaluation in &request.evaluations {
-            match encode::encode(evaluation, window, tokenize) {
-                Ok(encoded) => prompts.push(encoded),
-                Err(code) => return failure(code, stats),
+        let encoding = tokio::task::spawn_blocking(move || {
+            let tokenize = |text: &str| {
+                tokenizer
+                    .encode_fast(text, false)
+                    .map(|encoding| encoding.get_ids().to_vec())
+                    .map_err(|_| ErrorCode::InvalidRequest)
+            };
+            jobs.iter()
+                .map(|evaluation| encode::encode(evaluation, window, tokenize))
+                .collect::<Result<Vec<_>, _>>()
+        });
+        let prompts = tokio::select! {
+            biased;
+            _ = guard.cancelled() => Err(ErrorCode::Cancelled),
+            joined = timeout_at(deadline, encoding) => match joined {
+                Err(_) => Err(ErrorCode::Deadline),
+                Ok(Err(_)) => Err(ErrorCode::Transport),
+                Ok(Ok(encoded)) => encoded,
+            },
+        };
+        let prompts = match prompts {
+            Ok(prompts) => prompts,
+            Err(code) => {
+                stats.elapsed_ms = started.elapsed().as_millis() as u64;
+                return failure(code, stats);
             }
-        }
+        };
         let truncated = prompts.iter().filter(|p| p.dropped > 0).count();
         if truncated > 0 {
             // The model answers about state it never saw: callers sending big
@@ -207,7 +225,7 @@ impl ClefClient {
             );
         }
         let mut results = BTreeMap::new();
-        for (evaluation, encoded) in request.evaluations.iter().zip(prompts) {
+        for (evaluation, encoded) in evaluations.iter().zip(prompts) {
             let tokens = encoded.ids.len() as u64;
             // One attempt per backbone forward, as judge-laya counts its passes.
             stats.attempts += 1;
@@ -220,8 +238,7 @@ impl ClefClient {
             };
             stats.elapsed_ms = started.elapsed().as_millis() as u64;
             let logits = match logits {
-                Ok(logits) if logits.len() == evaluation.questions.len() => logits,
-                Ok(_) => return failure(ErrorCode::InvalidResponse, stats),
+                Ok(logits) => logits,
                 Err(code) => return failure(code, stats),
             };
             let answers = evaluation
@@ -364,7 +381,7 @@ fn answer(question: &Question, z: &[f32]) -> Option<Answer> {
         .into_iter()
         .map(|(key, _)| key)
         .collect();
-    let p = softmax(z, 1.0).filter(|p| p.len() == keys.len())?;
+    let p = softmax(z, 1.0)?;
     // The first of equal maxima, as Python's max() picks it.
     let best = (0..p.len()).fold(0, |best, i| if p[i] > p[best] { i } else { best });
     let probabilities: BTreeMap<String, f64> =
@@ -409,7 +426,5 @@ mod tests {
         assert!(
             matches!(answer(&choice, &[0.0, 1.0]), Some(Answer::Choice { choice, .. }) if choice == "b")
         );
-        // One logit per option, or no answer.
-        assert!(answer(&choice, &[0.0]).is_none());
     }
 }

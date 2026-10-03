@@ -25,6 +25,8 @@ pub fn register(iii: &IIIClient, config: SharedConfig, slot: Arc<ModelSlot<ClefC
         let config = config.clone();
         let slot = slot.clone();
         async move {
+            // Keeps an unpinned model loaded until this call ends.
+            let _in_use = slot.in_use();
             let caller = take_caller_id(&mut payload);
             let mut request = match serde_json::from_value::<EvaluateRequest>(payload) {
                 Ok(request) => request,
@@ -63,6 +65,8 @@ pub fn register(iii: &IIIClient, config: SharedConfig, slot: Arc<ModelSlot<ClefC
         let config = models_config.clone();
         let slot = models_slot.clone();
         async move {
+            // Keeps an unpinned model loaded until this call ends.
+            let _in_use = slot.in_use();
             let caller = take_caller_id(&mut payload);
             let mut request = match serde_json::from_value::<ModelsRequest>(payload) {
                 Ok(request) => request,

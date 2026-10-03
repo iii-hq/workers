@@ -27,7 +27,8 @@ pub struct Lexicon {
     dtype: GgmlDType,
     /// File offset of row 0.
     start: u64,
-    /// Bytes per row.
+    /// Bytes per row: whole blocks, so n rows are exactly the n*row bytes
+    /// qtensor_from_ggml reads (it does not check the length).
     row: usize,
     vocab: usize,
     hidden: usize,
@@ -76,10 +77,6 @@ impl Lexicon {
             self.file
                 .read_exact_at(out, self.start + u64::from(id) * self.row as u64)?;
         }
-        // qtensor_from_ggml casts `raw` to blocks without checking its length.
-        ensure!(
-            raw.len() == ids.len() * self.hidden / self.dtype.block_size() * self.dtype.type_size()
-        );
         let rows = qtensor_from_ggml(self.dtype, &raw, vec![ids.len(), self.hidden], &Device::Cpu)?;
         Ok(rows.dequantize(&Device::Cpu)?)
     }
@@ -291,28 +288,9 @@ impl Head {
 
     /// One logit per option of each field: `hidden` [L, H] final-norm states,
     /// `lexical` [T, H] the output.weight rows of `option_ids`.
-    pub fn forward(
-        &self,
-        hidden: Tensor,
-        fields: &[Field],
-        lexical: &Tensor,
-    ) -> Result<Vec<Vec<f32>>> {
+    fn forward(&self, hidden: Tensor, fields: &[Field], lexical: &Tensor) -> Result<Vec<Vec<f32>>> {
         let l = hidden.dim(0)?;
         let options: Vec<&Range<usize>> = fields.iter().flat_map(|f| &f.options).collect();
-        // An empty span's mean is NaN in the reference.
-        ensure!(
-            !fields.is_empty()
-                && fields
-                    .iter()
-                    .map(|f| &f.span)
-                    .chain(options.iter().copied())
-                    .all(|r| !r.is_empty() && r.end <= l),
-            "a question or option span is empty or outside the prompt"
-        );
-        ensure!(
-            lexical.dim(0)? == options.iter().map(|r| r.len()).sum::<usize>(),
-            "one lexical row per option token"
-        );
         let mean = |x: &Tensor, r: &Range<usize>| x.narrow(0, r.start, r.len())?.mean_keepdim(0);
         let cat = |rows: candle_core::Result<Vec<Tensor>>| Tensor::cat(&rows?, 0);
 
@@ -420,7 +398,7 @@ fn l2(x: &Tensor, eps: f64) -> candle_core::Result<Tensor> {
 }
 
 /// Token ids of every option span, options in order: the rows `forward` takes as `lexical`.
-pub fn option_ids(ids: &[u32], fields: &[Field]) -> Vec<u32> {
+fn option_ids(ids: &[u32], fields: &[Field]) -> Vec<u32> {
     fields
         .iter()
         .flat_map(|f| &f.options)

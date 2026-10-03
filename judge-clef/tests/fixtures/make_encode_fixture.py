@@ -32,12 +32,14 @@ RECORDS = [
                      "criteria": {"paid": "Invoice is paid.", "overdue": "Invoice is past due.", "draft": "Not sent."}},
           "large": {"type": "noul", "instructions": "Is the total above 1000 USD?"},
           "urgency": {"type": "score", "criteria": ["Can wait", "This week", "Today"]}}}, [10, 0, -1]),
-    # 17-digit floats (9.999999999999999e-05, the f32 max) need serde_json's float_roundtrip feature.
+    # 17-digit floats (9.999999999999999e-05, the f32 max) need serde_json's float_roundtrip feature; ties between
+    # two shortest reprs (637.1682739257812, 2085791105584651.2, f32(0.9674148559570312)) round to even.
     ({"id": "floats", "state": {
         "f64": [1e-05, 1e+16, 100.0, -0.0, 0.0, 5e-324, 2.2250738585072014e-308, 1.7976931348623157e+308, 0.0001,
                 9.9e-05, 9.999999999999999e-05, 1.5e-07, 1e15, 9999999999999998.0, 0.1, -2.5e-10, 123456789.125,
-                1e22, 1e-7],
-        "f32": [f32(x) for x in (0.1, 1e-05, 1.401298464324817e-45, 16777217.0, 1e16, 2.5, 3.4028234663852886e+38)],
+                1e22, 1e-7, 637.1682739257812, 2085791105584651.2, -1.25e-05],
+        "f32": [f32(x) for x in (0.1, 1e-05, 1.401298464324817e-45, 16777217.0, 1e16, 2.5, 3.4028234663852886e+38,
+                                 0.9674148559570312)],
         "ints": [0, -1, 18446744073709551615, -9223372036854775808, 9007199254740993]},
       "questions": {"finite": {"type": "noul", "instructions": "Are all values finite?", "criteria": None}}}, []),
     ({"id": "escapes", "state": {

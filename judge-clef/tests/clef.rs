@@ -18,13 +18,11 @@ fn argmax(p: &[f64]) -> usize {
 ///
 /// `CLEF_CHECKPOINT_DIR` holds `backbone.gguf`, `joint_head.safetensors`,
 /// `joint_head_config.json` and `tokenizer.json`. The tolerance was measured
-/// on the CPU (Vulkan's kernels reach 0.15 on deploy_log/rollback_needed), and
-/// `gpu_layers: Some(0)` alone still lets llama.cpp's op_offload run batch
-/// matmuls on a GPU, so hide the Vulkan driver:
+/// on the CPU (Vulkan's kernels reach 0.15 on deploy_log/rollback_needed);
+/// `gpu_layers: Some(0)` keeps llama.cpp off any GPU:
 ///
 /// ```sh
-/// VK_ICD_FILENAMES=/nonexistent.json CLEF_CHECKPOINT_DIR=<dir> \
-///   cargo test --release --test clef -- --ignored --nocapture
+/// CLEF_CHECKPOINT_DIR=<dir> cargo test --release --test clef -- --ignored --nocapture
 /// ```
 #[tokio::test]
 #[ignore]
