@@ -30,7 +30,8 @@ automatically at start; the joint schema head runs in candle on the CPU.
 `gpu_layers: 0` keeps the backbone on the CPU even when a GPU is present. The
 joint schema head always runs on the CPU, on `threads` threads
 (`RAYON_NUM_THREADS` in the worker environment wins). The chosen device is
-logged at start as `selected inference device` and shown in the settings form.
+logged when the model loads, as `selected inference device`, and shown in the
+settings form.
 
 ## Install
 
@@ -155,8 +156,10 @@ prompt tokens and `output_tokens` is always 0.
 
 Only the state is ever cut. When the prompt exceeds `context_tokens`, the state
 keeps its first tokens and loses the rest (cut between tokens, possibly inside
-a JSON value); a schema that alone exceeds the window answers
-`payload_too_large`. `judge-clef::models::list` reports the window as
+a JSON value; logged as `state truncated to the context window`); a schema
+that alone exceeds the window answers `payload_too_large`. A question with an
+empty id and no instructions answers `invalid_request`: it would give the head
+an empty span to read. `judge-clef::models::list` reports the window as
 `context_window` and 255 as `max_options`.
 
 ## Writing requests for Clef

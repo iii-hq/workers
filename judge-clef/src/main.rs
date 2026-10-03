@@ -1,2 +1,146 @@
-//! STUB: the worker boot is implemented in its own change.
-fn main() {}
+//! Boot the clef provider: register on the bus, then fetch and load the
+//! checkpoint on first use (or at once while the judge hub selects clef).
+use clap::Parser;
+use iii_llama_runtime::{ModelSlot, IDLE_RELEASE};
+use iii_sdk::IIIClient;
+use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
+use judge_clef::{configuration, download, engine, register, ClefClient, PROVIDER};
+use std::{path::PathBuf, sync::Arc};
+use tracing_subscriber::EnvFilter;
+
+#[derive(Parser)]
+#[command(
+    name = "judge-clef",
+    about = "clef provider for the judge hub: typed Noul, Choice and Score decisions from Cloudflare's Clef-Flash, all questions of an evaluation decided together, running in-process."
+)]
+struct Cli {
+    /// Engine websocket URL.
+    #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
+    url: String,
+    /// Use a local checkpoint directory (backbone.gguf, joint_head.safetensors,
+    /// joint_head_config.json, tokenizer.json) instead of the Hugging Face Hub.
+    #[arg(long, env = "III_CLEF_CHECKPOINT_DIR")]
+    checkpoint_dir: Option<PathBuf>,
+}
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+    let iii = Arc::new(register_worker(
+        &cli.url,
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                runtime: "rust".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                name: "judge-clef".into(),
+                os: std::env::consts::OS.into(),
+                pid: Some(std::process::id()),
+                ..WorkerMetadata::default()
+            }),
+            ..InitOptions::default()
+        },
+    ));
+    configuration::register_config(&iii, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let initial = configuration::fetch_config(&iii)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let (checkpoint_dir, model) = (cli.checkpoint_dir, initial.model.clone());
+    let options = engine::Options {
+        threads: initial.threads,
+        gpu_layers: initial.gpu_layers,
+        context_tokens: initial.context_tokens,
+    };
+    // candle (the head) reads RAYON_NUM_THREADS per call; an operator export wins.
+    if std::env::var_os("RAYON_NUM_THREADS").is_none() {
+        std::env::set_var("RAYON_NUM_THREADS", initial.threads.to_string());
+    }
+    let config = configuration::new_cell(initial);
+    #[cfg(feature = "console-ui")]
+    register::register_console_ui(&iii);
+    configuration::register_config_trigger(&iii, config.clone())?
+        .run()
+        .await;
+    // The model loads on first use, or right away while the hub selects this
+    // provider (see `serve`).
+    let slot = ModelSlot::new(move || -> anyhow::Result<ClefClient> {
+        let checkpoint = match &checkpoint_dir {
+            Some(dir) => download::local(&model, dir)?,
+            None => {
+                tracing::info!(
+                    model,
+                    "fetching the clef checkpoint from the Hugging Face Hub"
+                );
+                download::fetch(&model)?
+            }
+        };
+        tracing::info!(
+            model = checkpoint.model,
+            revision = checkpoint.revision,
+            "loading the clef checkpoint"
+        );
+        let client = ClefClient::load(&checkpoint, options)?;
+        tracing::info!(device = client.device(), "selected inference device");
+        Ok(client)
+    });
+    register(&iii, config, slot.clone());
+    tokio::spawn(slot.clone().release_idle(IDLE_RELEASE));
+    let mut serving = tokio::spawn(serve(iii.clone(), slot));
+    let result = tokio::select! {
+        result = wait_for_shutdown() => result,
+        served = &mut serving => match served? {
+            // Pinned for good (the hub exposes no selection): serve until shutdown.
+            Ok(()) => wait_for_shutdown().await,
+            Err(error) => Err(error),
+        },
+    };
+    serving.abort();
+    // shutdown_async only signals the SDK's dedicated connection thread. Join
+    // it before main returns so pending telemetry can finish flushing.
+    tokio::task::spawn_blocking(move || iii.shutdown()).await?;
+    result
+}
+/// Keep the clef model loaded while the judge hub selects this provider (see
+/// `ModelSlot::follow_selection`); a hub that does not expose its
+/// configuration id pins it for good.
+async fn serve(iii: Arc<IIIClient>, slot: Arc<ModelSlot<ClefClient>>) -> anyhow::Result<()> {
+    match iii_config_client::follow(
+        &iii,
+        "judge",
+        "judge-clef::on-judge-config-change",
+        "Internal: keep the clef model loaded while the judge hub selects this provider.",
+    )
+    .await
+    {
+        Ok(hub) => slot.follow_selection(hub, PROVIDER).await,
+        Err(reason) => {
+            tracing::warn!(
+                reason,
+                "judge hub selection unknown; keeping the clef model loaded"
+            );
+            slot.pin(true);
+            Ok(())
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown() -> anyhow::Result<()> {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    tracing::info!("judge-clef ready");
+    tokio::select! { _ = interrupt.recv() => {}, _ = terminate.recv() => {} }
+    Ok(())
+}
+#[cfg(not(unix))]
+async fn wait_for_shutdown() -> anyhow::Result<()> {
+    tracing::info!("judge-clef ready");
+    tokio::signal::ctrl_c().await?;
+    Ok(())
+}
