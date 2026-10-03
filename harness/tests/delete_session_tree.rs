@@ -1784,6 +1784,10 @@ async fn a_tombstone_after_a_live_answer_refuses_dispatch_and_withdraws_its_witn
     assert!(witnesses.is_empty(), "{witnesses:#?}");
 }
 
+/// The orphan redrive's view of the turn scope is process-wide: tests that
+/// read or refresh it run one at a time.
+static TURN_VIEW_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// `harness_turn` keys read with `state::get` since the calls were cleared.
 fn turn_gets(store: &Store) -> Vec<String> {
     store
@@ -1802,6 +1806,7 @@ fn turn_gets(store: &Store) -> Vec<String> {
 async fn orphan_redrive_reads_only_changed_turns_and_the_sweep_refreshes_its_view() {
     use harness::functions::sweep_pending::{self, SweepEvent};
     use harness::inflight::redrive_orphans;
+    let _view = TURN_VIEW_TESTS.lock().await;
     let stack = Stack::new("completed").await;
     // Own keys only: the other tests' writes mark the fixture's ids.
     stack
@@ -1961,4 +1966,179 @@ async fn session_deleted_waits_out_a_running_step() {
         .unwrap()
         .unwrap();
     assert!(turn(&stack, "child1").is_null());
+}
+
+/// A finished record written before prompt refs: its frozen texts inline,
+/// one done call a finished record no longer keeps.
+fn inline_prompt_turn(stack: &Stack, id: &str, prompt: &str, index: &str) {
+    stack.session(id, None, "completed");
+    let mut store = stack.store.lock().unwrap();
+    let mut row = store.state("harness_turn", id);
+    row["options"]["system_prompt"] = json!(prompt);
+    row["options"]["skill_context"] = json!({"baseline": index});
+    row["calls"] = json!({"done": {"state": "done", "function_id": "x::y"}});
+    store.put("harness_turn", id, row);
+}
+
+/// `harness::turn_compaction::compact` over a fresh listing of the store.
+async fn compact(stack: &Stack, now: i64) -> harness::turn_compaction::CompactReport {
+    let records = harness::state::list_turns(&stack.deps.iii, 2_000)
+        .await
+        .unwrap();
+    harness::turn_compaction::compact(&stack.deps, &records, now).await
+}
+
+fn turn_writes(store: &Store) -> usize {
+    store
+        .calls
+        .iter()
+        .filter(|(f, data)| f == "state::set" && data["scope"] == "harness_turn")
+        .count()
+}
+
+const DAY_MS: i64 = 86_400_000;
+
+// Prompt texts are unique per test: the harness remembers which bodies it
+// stored process-wide, and each test has its own store.
+
+/// A finished record that still holds its prompt inline is rewritten once:
+/// bodies to `harness_prompt`, refs in the record, slimmed, `updated_at`
+/// kept. The next pass finds nothing inline and writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_converts_inline_terminal_records_once() {
+    let stack = Stack::new("completed").await;
+    let (prompt, index) = ("compact_converts prompt", "compact_converts index");
+    inline_prompt_turn(&stack, "cc_old", prompt, index);
+    let now = harness::types::message::AgentMessage::now_ms();
+    assert_eq!(compact(&stack, now).await.converted, 1);
+
+    let row = turn(&stack, "cc_old");
+    assert_eq!(row["updated_at"], 1);
+    assert_eq!(row["calls"], json!({}));
+    {
+        let store = stack.store.lock().unwrap();
+        for (field, text) in [
+            (&row["options"]["system_prompt"], prompt),
+            (&row["options"]["skill_context"]["baseline"], index),
+        ] {
+            let digest = field["$ref"].as_str().expect("a ref, not the text");
+            assert!(digest.starts_with("sha256:"), "{digest}");
+            assert_eq!(store.state("harness_prompt", digest)["body"], text);
+        }
+    }
+    let read = harness::state::get_turn(&stack.deps.iii, "cc_old", 2_000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.options.system_prompt.as_deref(), Some(prompt));
+    assert_eq!(
+        read.options.skill_context.unwrap().baseline.as_deref(),
+        Some(index)
+    );
+
+    stack.store.lock().unwrap().calls.clear();
+    let again = compact(&stack, now).await;
+    assert_eq!((again.converted, again.prompts_collected), (0, 0));
+    assert_eq!(turn_writes(&stack.store.lock().unwrap()), 0);
+}
+
+/// Conversion leaves a turn that is still running, one whose step executes
+/// here, and one rewritten since the listing (it re-reads under the session's
+/// guards and requires the listed `turn_id` and `updated_at`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_skips_running_and_changed_records() {
+    let stack = Stack::new("completed").await;
+    let prompt = "compact_skips prompt";
+    for id in ["cs_running", "cs_inflight", "cs_changed"] {
+        inline_prompt_turn(&stack, id, prompt, "compact_skips index");
+    }
+    stack.set_status("cs_running", "running");
+    let records = harness::state::list_turns(&stack.deps.iii, 2_000)
+        .await
+        .unwrap();
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", "cs_changed");
+        row["updated_at"] = json!(2);
+        store.put("harness_turn", "cs_changed", row);
+        store.calls.clear();
+    }
+    let _step = stack.deps.inflight.enter("cs_inflight");
+    let now = harness::types::message::AgentMessage::now_ms();
+    let report = harness::turn_compaction::compact(&stack.deps, &records, now).await;
+    assert_eq!(report.converted, 0);
+    assert_eq!(turn_writes(&stack.store.lock().unwrap()), 0);
+    for id in ["cs_running", "cs_inflight", "cs_changed"] {
+        assert_eq!(turn(&stack, id)["options"]["system_prompt"], prompt, "{id}");
+    }
+}
+
+/// A body goes only when no record references it and it is older than the
+/// grace period, which covers a send that stored a body but has not yet
+/// written the record that references it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_collects_only_old_unreferenced_bodies() {
+    let stack = Stack::new("completed").await;
+    let now = harness::types::message::AgentMessage::now_ms();
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", "child2");
+        row["options"]["system_prompt"] = json!({"$ref": "sha256:cb_a"});
+        store.put("harness_turn", "child2", row);
+        for (digest, created_at) in [
+            ("sha256:cb_a", now - 2 * DAY_MS),
+            ("sha256:cb_b", now - 2 * DAY_MS),
+            ("sha256:cb_c", now - DAY_MS / 24),
+        ] {
+            store.put(
+                "harness_prompt",
+                digest,
+                json!({"body": digest, "created_at": created_at}),
+            );
+        }
+    }
+    let report = compact(&stack, now).await;
+    assert_eq!((report.converted, report.prompts_collected), (0, 1));
+    let store = stack.store.lock().unwrap();
+    assert!(store.state("harness_prompt", "sha256:cb_b").is_null());
+    for kept in ["sha256:cb_a", "sha256:cb_c"] {
+        assert_eq!(store.state("harness_prompt", kept)["body"], kept);
+    }
+}
+
+/// The pending sweep converts and collects from the one full read of the
+/// turn scope it already makes; the conversion re-reads only the record it
+/// rewrites.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_sweep_compacts_from_its_one_full_read() {
+    use harness::functions::sweep_pending::{self, SweepEvent};
+    let _view = TURN_VIEW_TESTS.lock().await;
+    let stack = Stack::new("completed").await;
+    // Own keys only: the other tests' writes mark the fixture's ids.
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .state
+        .retain(|(scope, _), _| scope != "harness_turn");
+    stack.session("sw_done", None, "completed");
+    inline_prompt_turn(&stack, "sw_old", "sweep prompt", "sweep index");
+    {
+        let mut store = stack.store.lock().unwrap();
+        store.put(
+            "harness_prompt",
+            "sha256:sw_unused",
+            json!({"body": "unused", "created_at": 1}),
+        );
+        store.calls.clear();
+    }
+    let swept = sweep_pending::handle(&stack.deps, SweepEvent::default())
+        .await
+        .unwrap();
+    assert_eq!((swept.converted, swept.prompts_collected), (1, 1));
+    assert_eq!(
+        turn_gets(&stack.store.lock().unwrap()),
+        ["sw_done", "sw_old", "sw_old"]
+    );
+    assert!(turn(&stack, "sw_old")["options"]["system_prompt"]["$ref"].is_string());
 }

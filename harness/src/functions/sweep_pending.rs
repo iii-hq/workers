@@ -8,11 +8,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::deps::Deps;
 use crate::error::HarnessError;
+use crate::types::message::AgentMessage;
 
 pub const SWEEP_PENDING_ID: &str = "harness::sweep-pending";
 pub const SWEEP_PENDING_DESC: &str =
     "Internal cron sweep: resolve pending function calls past their timeout and re-enqueue the \
-     step of running turns left without one, so a turn never wedges. Not called directly.";
+     step of running turns left without one, so a turn never wedges; then move finished turn \
+     records' inline prompts to shared bodies and delete unused bodies. Not called directly.";
 
 /// Cron event payload (ignored — the sweep scans all turn records). A struct
 /// keeps the request schema concrete.
@@ -30,10 +32,19 @@ pub struct SweepResponse {
     /// Number of orphaned running turns whose step was re-enqueued.
     #[serde(default)]
     pub redriven: u64,
+    /// Finished turn records rewritten with prompt refs.
+    #[serde(default)]
+    pub converted: u64,
+    /// Unreferenced prompt bodies deleted.
+    #[serde(default)]
+    pub prompts_collected: u64,
 }
 
 pub async fn handle(deps: &Deps, _event: SweepEvent) -> Result<SweepResponse, HarnessError> {
-    let resolved = crate::deferred::sweep_expired(deps).await?;
+    // One full read of the turn scope serves the expiry and the compaction,
+    // and refreshes the orphan redrive's view.
+    let records = crate::inflight::read_all_turns(deps).await?;
+    let resolved = crate::deferred::sweep_expired(deps, &records).await?;
     // A failed orphan scan must not hide the pending-call result.
     let redriven = match crate::inflight::redrive_orphans(deps).await {
         Ok(n) => n,
@@ -42,9 +53,12 @@ pub async fn handle(deps: &Deps, _event: SweepEvent) -> Result<SweepResponse, Ha
             0
         }
     };
+    let compacted = crate::turn_compaction::compact(deps, &records, AgentMessage::now_ms()).await;
     Ok(SweepResponse {
         ok: true,
         resolved,
         redriven,
+        converted: compacted.converted,
+        prompts_collected: compacted.prompts_collected,
     })
 }

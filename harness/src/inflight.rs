@@ -188,11 +188,28 @@ const BOOT_DELAY_MS: u64 = 30_000;
 /// Background loop: one orphan pass shortly after boot (turns stranded by the
 /// outage that preceded a restart), then one per redrive window. The daily
 /// pending sweep alone would leave a wedged session stuck for up to a day.
+///
+/// Boot starts with one full read ([`read_all_turns`]): it seeds the
+/// redrive's view, so the first pass reads only running turns, and the
+/// records feed one compaction ([`crate::turn_compaction`]) after that pass.
 pub async fn run_loop(deps: std::sync::Arc<Deps>) {
     tokio::time::sleep(std::time::Duration::from_millis(BOOT_DELAY_MS)).await;
+    let mut boot_records = read_all_turns(&deps)
+        .await
+        .inspect_err(|e| tracing::warn!(error = %e, "boot read of the turn records failed"))
+        .ok();
     loop {
         if let Err(e) = redrive_orphans(&deps).await {
             tracing::warn!(error = %e, "orphaned-turn redrive pass failed");
+        }
+        if let Some(records) = boot_records.take() {
+            let report =
+                crate::turn_compaction::compact(&deps, &records, AgentMessage::now_ms()).await;
+            tracing::info!(
+                converted = report.converted,
+                prompts_collected = report.prompts_collected,
+                "turn records compacted after boot"
+            );
         }
         tokio::time::sleep(std::time::Duration::from_millis(ORPHAN_REDRIVE_AFTER_MS)).await;
     }

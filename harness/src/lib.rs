@@ -47,6 +47,7 @@ pub mod surface;
 pub mod timer;
 pub(crate) mod trace_tags;
 pub mod trigger;
+pub mod turn_compaction;
 pub mod turn_loop;
 pub mod types;
 pub mod usage_report;

@@ -346,14 +346,21 @@ async fn hydrate(
 /// that references it. Cost: one body write per prompt in use per window.
 ///
 /// It also keeps the `created_at` of a body a new record starts referencing
-/// within minutes of now, far under the collector's grace. The collector must
-/// still not delete a body whose `created_at` moved after it read it: a
-/// rewrite can land between its read and its delete.
+/// within minutes of now, far under the collector's grace. A rewrite that
+/// lands between the collector's read and its delete is held off by
+/// [`PROMPT_WRITES`].
 const KNOWN_BODY_TTL_MS: i64 = 5 * 60 * 1000;
 
 /// Digests this process wrote, with when.
 static KNOWN_BODIES: std::sync::Mutex<BTreeMap<String, i64>> =
     std::sync::Mutex::new(BTreeMap::new());
+
+/// Held by a body write, and by [`collect_prompt_bodies`] from its read of a
+/// body to its delete: the state worker has no conditional delete, so a body
+/// written again in between would otherwise go with it.
+// ponytail: in-process only; another harness process sharing the store can
+// still rewrite a body inside that window (milliseconds, once a day).
+static PROMPT_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn store_prompt_body(
     iii: &IIIClient,
@@ -370,12 +377,50 @@ async fn store_prompt_body(
     if fresh(&KNOWN_BODIES.lock().unwrap_or_else(|e| e.into_inner())) {
         return Ok(());
     }
+    let _writes = PROMPT_WRITES.lock().await;
     let body = json!({ "body": text, "created_at": now });
     set_retrying_timeout(iii, PROMPT_SCOPE, digest, body, timeout_ms).await?;
     let mut known = KNOWN_BODIES.lock().unwrap_or_else(|e| e.into_inner());
     known.retain(|_, at| now - *at < KNOWN_BODY_TTL_MS);
     known.insert(digest.to_owned(), now);
     Ok(())
+}
+
+/// Delete each body that `referenced` lacks and that was last written before
+/// `cutoff`; returns how many went. One body failing warns and moves on: a
+/// body kept too long is harmless.
+pub(crate) async fn collect_prompt_bodies(
+    iii: &IIIClient,
+    referenced: &BTreeSet<String>,
+    cutoff: i64,
+    timeout_ms: u64,
+) -> Result<u64, HarnessError> {
+    let digests = parse_keys(&state_list_keys(iii, PROMPT_SCOPE, timeout_ms).await?);
+    let mut collected = 0;
+    for digest in digests.iter().filter(|d| !referenced.contains(*d)) {
+        let _writes = PROMPT_WRITES.lock().await;
+        let deleted = async {
+            let body = state_get(iii, PROMPT_SCOPE, digest, timeout_ms).await?;
+            if !body["created_at"].as_i64().is_some_and(|at| at < cutoff) {
+                return Ok(false);
+            }
+            state_delete(iii, PROMPT_SCOPE, digest, timeout_ms).await?;
+            Ok::<_, HarnessError>(true)
+        }
+        .await;
+        match deleted {
+            Ok(true) => {
+                KNOWN_BODIES
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(digest);
+                collected += 1;
+            }
+            Ok(false) => {}
+            Err(e) => tracing::warn!(%digest, error = %e, "could not collect a prompt body"),
+        }
+    }
+    Ok(collected)
 }
 
 /// Bodies read back. They never change, so an entry never goes stale.
@@ -1624,6 +1669,31 @@ mod tests {
             ))
         );
         assert_eq!(stored(&store, TURN_SCOPE, "bo_1"), before);
+        iii.shutdown();
+        server.abort();
+    }
+
+    /// The collector reads a body, then deletes it. A write of that body in
+    /// between would go with the delete, leaving the record that the write
+    /// was for pointing at nothing: body writes wait the collector out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_body_write_waits_out_the_collector() {
+        let (iii, store, _calls, server) = fake_state().await;
+        let prompt = "collector_wait prompt";
+        let collector = PROMPT_WRITES.lock().await;
+        let record = prompt_record("cw_1", Some(prompt), None);
+        let put = put_turn(&iii, &record, 2_000);
+        tokio::pin!(put);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), &mut put)
+                .await
+                .is_err(),
+            "the body write must wait for the collector"
+        );
+        assert!(body_keys(&store).is_empty());
+        drop(collector);
+        put.await.unwrap();
+        assert_eq!(body_keys(&store), [prompt_digest(prompt)]);
         iii.shutdown();
         server.abort();
     }
