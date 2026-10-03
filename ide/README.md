@@ -190,7 +190,7 @@ fully unjailed, regardless of `fs.allow_unjailed`.
 |---|---|
 | `coder::info` | Discover the jail: roots, caps, response budgets, exclude/non-accessible globs. Call first. |
 | `coder::read-file` | Windowed reads (`line_from`/`line_to`), `stat` probe, byte-budgeted full reads, and multi-file batch reads. |
-| `coder::search` | Literal/regex content + path search with context lines, bounded by match/byte budgets. `respect_gitignore: true` skips what `.gitignore` hides; `fuzzy_paths: true` ranks path matches quick-open style, best first. |
+| `coder::search` | Literal/regex content + path search over a folder or one file, with context lines, bounded by match/byte budgets. `respect_gitignore: true` skips what `.gitignore` hides; `fuzzy_paths: true` ranks path matches quick-open style, best first. |
 | `coder::list-folder` | Paginated single-folder listing. |
 | `coder::tree` | Recursive depth- and per-folder-bounded directory snapshot. |
 | `coder::create-file` / `coder::update-file` / `coder::delete-file` / `coder::move` | Batched create, line/regex edits, delete, and atomic rename/move. |

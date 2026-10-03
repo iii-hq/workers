@@ -1,5 +1,5 @@
 {
-  "description": "Search file contents (literal or regex) and/or paths (files and dirs); first match per line only. default_exclude_globs noise is skipped unless use_default_excludes: false. truncated: true means refine the query, not paginate. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
+  "description": "Search file contents (literal or regex) and/or paths (files and dirs); first match per line only; path may be a folder or a single file. default_exclude_globs noise is skipped unless use_default_excludes: false. truncated: true means refine the query, not paginate. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
   "function_id": "coder::search",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -89,7 +89,7 @@
       },
       "path": {
         "default": ".",
-        "description": "Folder to search (default `.`). It only narrows the walk: globs are NOT relative to this folder, they match paths relative to the session root (or to the configured root that contains them; see coder::info). Result paths are absolute.",
+        "description": "Folder or file to search (default `.`); a file searches just that file. It only narrows the walk: globs are NOT relative to it, they match paths relative to the session root (or to the configured root that contains them; see coder::info). Result paths are absolute.",
         "type": "string"
       },
       "query": {

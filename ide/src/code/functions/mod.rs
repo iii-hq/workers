@@ -89,10 +89,11 @@ const READ_FILE_DESC: &str =
 
 const SEARCH_ID: &str = "coder::search";
 const SEARCH_DESC: &str = "Search file contents (literal or regex) and/or paths (files and dirs); \
-     first match per line only. default_exclude_globs noise is skipped \
-     unless use_default_excludes: false. truncated: true means refine the \
-     query, not paginate. Paths: relative to the primary root or absolute \
-     inside an allowed root (see coder::info).";
+     first match per line only; path may be a folder or a single file. \
+     default_exclude_globs noise is skipped unless use_default_excludes: \
+     false. truncated: true means refine the query, not paginate. Paths: \
+     relative to the primary root or absolute inside an allowed root (see \
+     coder::info).";
 
 const UPDATE_FILE_ID: &str = "coder::update-file";
 const UPDATE_FILE_DESC: &str =
