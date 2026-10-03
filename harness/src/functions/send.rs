@@ -1004,6 +1004,7 @@ fn build_options(
                 identity,
             ),
         },
+        system_prompt_ref: None,
         skills_prompt: None,
         skill_context: None,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
@@ -1701,6 +1702,7 @@ mod tests {
         stale_recheck.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("frozen".into()),
+            baseline_ref: None,
         });
         stale_recheck.set_filesystem_root("/old");
         let mut incoming = stale_recheck.clone();
@@ -2023,6 +2025,7 @@ mod tests {
             max_transient_resumes: 1,
             preloaded_contracts: None,
             seeded_contracts: None,
+            system_prompt_ref: None,
         }
     }
 
@@ -2218,11 +2221,13 @@ mod tests {
         initial.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("old baseline".into()),
+            baseline_ref: None,
         });
         let mut terminal = terminal_record_with_skill_state(2, true);
         terminal.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["new".into()]),
             baseline: Some("new baseline".into()),
+            baseline_ref: None,
         });
         let mut prepared = initial.options.clone();
 
@@ -2242,6 +2247,7 @@ mod tests {
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["stale".into()]),
             baseline: Some("stale baseline".into()),
+            baseline_ref: None,
         });
         prepared.skills_prompt = Some("stale legacy body".into());
 
@@ -2261,11 +2267,13 @@ mod tests {
         initial.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["prior".into()]),
             baseline: None,
+            baseline_ref: None,
         });
         let mut terminal = terminal_record_with_skill_state(2, true);
         terminal.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["prior".into()]),
             baseline: Some("baseline frozen by the completed turn".into()),
+            baseline_ref: None,
         });
         let mut prepared = initial.options.clone();
         prepared.skill_context.as_mut().unwrap().filter = None;
@@ -2278,6 +2286,7 @@ mod tests {
             Some(crate::types::turn::SkillContext {
                 filter: None,
                 baseline: Some("baseline frozen by the completed turn".into()),
+                baseline_ref: None,
             })
         );
         assert_eq!(prepared.skills_prompt, terminal.options.skills_prompt);
@@ -2291,6 +2300,7 @@ mod tests {
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["fresh".into()]),
             baseline: Some("fresh baseline".into()),
+            baseline_ref: None,
         });
         let expected = prepared.clone();
 
@@ -2308,6 +2318,7 @@ mod tests {
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: None,
             baseline: None,
+            baseline_ref: None,
         });
 
         let error = rebase_terminal_skill_options(&mut prepared, Some(&terminal), true)
@@ -2326,6 +2337,7 @@ mod tests {
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: None,
             baseline: None,
+            baseline_ref: None,
         });
         let appended = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let append_observer = appended.clone();
@@ -2497,6 +2509,7 @@ mod tests {
         previous.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["one".into()]),
             baseline: Some("frozen".into()),
+            baseline_ref: None,
         });
         assert_eq!(
             select_skill_context(Some(&previous), None, &view).unwrap(),
@@ -2568,11 +2581,13 @@ mod tests {
         active.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("active frozen baseline".into()),
+            baseline_ref: None,
         });
         let mut requested = options_with(None);
         requested.skill_context = Some(crate::types::turn::SkillContext {
             filter: None,
             baseline: Some("stale request baseline".into()),
+            baseline_ref: None,
         });
 
         assert!(merge_explicit_skill_filter(&mut active, &requested, true).unwrap());
@@ -2580,7 +2595,8 @@ mod tests {
             active.skill_context,
             Some(crate::types::turn::SkillContext {
                 filter: None,
-                baseline: Some("active frozen baseline".into())
+                baseline: Some("active frozen baseline".into()),
+                baseline_ref: None,
             })
         );
     }

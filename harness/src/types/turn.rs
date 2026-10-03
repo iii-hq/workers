@@ -72,6 +72,10 @@ pub struct SkillContext {
     pub filter: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<String>,
+    /// `harness_prompt` key of `baseline`'s text. Stored records carry only
+    /// this; `state::get_turn` fills `baseline` back in from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_ref: Option<String>,
 }
 
 /// The effective skill view this session most recently admitted. A
@@ -112,6 +116,10 @@ pub struct TurnOptions {
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// `harness_prompt` key of `system_prompt`'s text. Stored records carry
+    /// only this; `state::get_turn` fills `system_prompt` back in from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_ref: Option<String>,
     /// Legacy-only attribution for skill bodies previously frozen from
     /// session metadata. New sessions never populate this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -528,6 +536,7 @@ pub(crate) mod tests {
                 max_transient_resumes: 1,
                 preloaded_contracts: None,
                 seeded_contracts: None,
+                system_prompt_ref: None,
             },
             calls: Default::default(),
             parent: None,
@@ -782,6 +791,7 @@ pub(crate) mod tests {
         r.options.skill_context = Some(SkillContext {
             filter: Some(vec!["review".into()]),
             baseline: Some("<available_skills>review</available_skills>".into()),
+            baseline_ref: None,
         });
         r.skill_ack = Some(SkillAck {
             generation: 3,

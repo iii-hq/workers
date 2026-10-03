@@ -1,7 +1,9 @@
 //! Durable loop bookkeeping in iii state (harness.md § State).
 //!
-//! Four scopes: `harness_turn/<session_id>` holds the [`TurnRecord`] (loop
+//! Five scopes: `harness_turn/<session_id>` holds the [`TurnRecord`] (loop
 //! progress, per-send options, per-call checkpoints),
+//! `harness_prompt/<sha256:hex>` holds each frozen prompt body the records
+//! reference ([`PROMPT_SCOPE`]),
 //! `harness_idem/<idempotency_key>` holds the webhook-dedupe row,
 //! `harness_queue/<session_id>:<id>` holds one [`QueuedMessage`] per message
 //! that arrived while a step was streaming (drained by the loop), and
@@ -9,7 +11,7 @@
 //! Binding scopes use the state worker's hidden harness API; ordinary
 //! bookkeeping keeps the public `state::*` compatibility surface.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
@@ -178,7 +180,9 @@ pub(crate) async fn state_delete(
     .map_err(|e| HarnessError::State(format!("{STATE_DELETE_ID} {scope}/{key}: {e}")))
 }
 
-/// Read the turn record for a session (`None` when absent or null).
+/// Read the turn record for a session (`None` when absent or null), with its
+/// frozen prompt texts filled back in from `harness_prompt` ([`put_turn`]
+/// stores refs only). The record keeps the refs too.
 pub async fn get_turn(
     iii: &IIIClient,
     session_id: &str,
@@ -188,9 +192,10 @@ pub async fn get_turn(
     if v.is_null() {
         return Ok(None);
     }
-    serde_json::from_value(v)
-        .map(Some)
-        .map_err(|e| HarnessError::State(format!("turn record parse: {e}")))
+    let mut record: TurnRecord = serde_json::from_value(v)
+        .map_err(|e| HarnessError::State(format!("turn record parse: {e}")))?;
+    hydrate(iii, &mut record, timeout_ms).await?;
+    Ok(Some(record))
 }
 
 /// Persist the turn record (whole-record write; the loop holds the only
@@ -203,35 +208,167 @@ pub async fn get_turn(
 /// moments after the first wait expired — the retry lands where the
 /// propagated error killed the turn. Only timeouts retry; every other
 /// failure means the write was REJECTED and must surface.
+///
+/// The frozen prompt texts go to `harness_prompt` by digest and the stored
+/// record carries only the refs ([`dehydrate`]); `record` itself is untouched.
+/// Bodies are written first, so a stored ref always points at a stored body.
 pub async fn put_turn(
     iii: &IIIClient,
     record: &TurnRecord,
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
-    let value = serde_json::to_value(record)
+    let mut stored = record.clone();
+    for (digest, text) in dehydrate(&mut stored) {
+        store_prompt_body(iii, &digest, &text, timeout_ms).await?;
+    }
+    let value = serde_json::to_value(&stored)
         .map_err(|e| HarnessError::State(format!("turn record serialize: {e}")))?;
-    let written = match state_set(
-        iii,
-        TURN_SCOPE,
-        &record.session_id,
-        value.clone(),
-        timeout_ms,
-    )
-    .await
-    {
-        Err(e) if is_timeout(&e) => {
-            tracing::warn!(
-                session_id = %record.session_id,
-                error = %e,
-                "turn record persist timed out; retrying once"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            state_set(iii, TURN_SCOPE, &record.session_id, value, timeout_ms).await
-        }
-        other => other,
-    };
+    let written =
+        set_retrying_timeout(iii, TURN_SCOPE, &record.session_id, value, timeout_ms).await;
     mark_turn_changed(&record.session_id);
     written
+}
+
+/// `state::set`, retried ONCE when it times out (see [`put_turn`]).
+async fn set_retrying_timeout(
+    iii: &IIIClient,
+    scope: &str,
+    key: &str,
+    value: Value,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
+    match state_set(iii, scope, key, value.clone(), timeout_ms).await {
+        Err(e) if is_timeout(&e) => {
+            tracing::warn!(scope, key, error = %e, "state write timed out; retrying once");
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            state_set(iii, scope, key, value, timeout_ms).await
+        }
+        other => other,
+    }
+}
+
+/// Frozen prompt and skill-index bodies, content-addressed: the key is
+/// [`prompt_digest`] of the text, the value `{ "body", "created_at" }`. Turn
+/// records reference them (`system_prompt_ref`, `baseline_ref`), so one
+/// prompt shared by hundreds of sessions is stored once and every record
+/// write stays small. Bodies never change; `created_at` is the last write.
+pub(crate) const PROMPT_SCOPE: &str = "harness_prompt";
+
+pub(crate) fn prompt_digest(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("sha256:{:x}", Sha256::digest(text.as_bytes()))
+}
+
+/// The record's frozen texts, each with its `harness_prompt` ref.
+fn prompt_fields(record: &mut TurnRecord) -> Vec<(&mut Option<String>, &mut Option<String>)> {
+    let options = &mut record.options;
+    let mut fields = vec![(&mut options.system_prompt, &mut options.system_prompt_ref)];
+    if let Some(context) = options.skill_context.as_mut() {
+        fields.push((&mut context.baseline, &mut context.baseline_ref));
+    }
+    fields
+}
+
+/// Move each frozen text present in `record` to its ref; returns the
+/// `(digest, text)` bodies to store. A ref without its text (a listed record)
+/// stays as it is.
+pub(crate) fn dehydrate(record: &mut TurnRecord) -> Vec<(String, String)> {
+    prompt_fields(record)
+        .into_iter()
+        .filter_map(|(text, slot)| {
+            let text = text.take()?;
+            let digest = prompt_digest(&text);
+            *slot = Some(digest.clone());
+            Some((digest, text))
+        })
+        .collect()
+}
+
+/// Fill each frozen text that is absent but referenced. A ref whose body is
+/// gone is an error: an empty prompt would re-resolve and change the session.
+async fn hydrate(
+    iii: &IIIClient,
+    record: &mut TurnRecord,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
+    let session_id = record.session_id.clone();
+    for (text, slot) in prompt_fields(record) {
+        if let (None, Some(digest)) = (&*text, &*slot) {
+            *text = Some(load_prompt_body(iii, digest, &session_id, timeout_ms).await?);
+        }
+    }
+    Ok(())
+}
+
+/// How long this process trusts that a body it wrote is still stored. It must
+/// stay under the body collector's grace period (24 h): a body this process
+/// skips rewriting was written less than this long ago, so its `created_at`
+/// keeps the collector off it while a new record starts referencing it, and
+/// a body the collector did delete is written again.
+const KNOWN_BODY_TTL_MS: i64 = 12 * 60 * 60 * 1000;
+
+/// Digests this process wrote, with when.
+static KNOWN_BODIES: std::sync::Mutex<BTreeMap<String, i64>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+async fn store_prompt_body(
+    iii: &IIIClient,
+    digest: &str,
+    text: &str,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
+    let now = AgentMessage::now_ms();
+    let fresh = |known: &BTreeMap<String, i64>| {
+        known
+            .get(digest)
+            .is_some_and(|at| now - at < KNOWN_BODY_TTL_MS)
+    };
+    if fresh(&KNOWN_BODIES.lock().unwrap_or_else(|e| e.into_inner())) {
+        return Ok(());
+    }
+    let body = json!({ "body": text, "created_at": now });
+    set_retrying_timeout(iii, PROMPT_SCOPE, digest, body, timeout_ms).await?;
+    let mut known = KNOWN_BODIES.lock().unwrap_or_else(|e| e.into_inner());
+    known.retain(|_, at| now - *at < KNOWN_BODY_TTL_MS);
+    known.insert(digest.to_owned(), now);
+    Ok(())
+}
+
+/// Bodies read back. They never change, so an entry never goes stale.
+// ponytail: FIFO, not LRU; the live stack has ~40 distinct bodies.
+static BODY_CACHE: std::sync::Mutex<VecDeque<(String, String)>> =
+    std::sync::Mutex::new(VecDeque::new());
+const BODY_CACHE_CAP: usize = 256;
+
+async fn load_prompt_body(
+    iii: &IIIClient,
+    digest: &str,
+    session_id: &str,
+    timeout_ms: u64,
+) -> Result<String, HarnessError> {
+    let cached = BODY_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(d, _)| d == digest)
+        .map(|(_, body)| body.clone());
+    if let Some(body) = cached {
+        return Ok(body);
+    }
+    let value = state_get(iii, PROMPT_SCOPE, digest, timeout_ms).await?;
+    let body = value
+        .get("body")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            HarnessError::State(format!("missing prompt body {digest} for {session_id}"))
+        })?
+        .to_owned();
+    let mut cache = BODY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= BODY_CACHE_CAP {
+        cache.pop_front();
+    }
+    cache.push_back((digest.to_owned(), body.clone()));
+    Ok(body)
 }
 
 /// Whether a state error is the caller-side invocation timeout (the SDK's
@@ -267,7 +404,8 @@ fn mark_turn_changed(key: &str) {
 /// List every turn record (the pending-call sweep scans these). Keys first,
 /// then one `state::get` per key: the scope keeps one record per session ever
 /// run, and a single `state::list` reply crossed the engine's 16 MiB frame
-/// cap, which wedged the state worker's connection.
+/// cap, which wedged the state worker's connection. Records come back as
+/// stored (prompt refs, no prompt text): read the text through [`get_turn`].
 // ponytail: sequential gets; bounded concurrency if the sweep gets slow.
 pub async fn list_turns(iii: &IIIClient, timeout_ms: u64) -> Result<Vec<TurnRecord>, HarnessError> {
     let keys = parse_keys(&state_list_keys(iii, TURN_SCOPE, timeout_ms).await?);
@@ -1037,5 +1175,281 @@ mod tests {
         assert!(!is_binding_scope(TURN_SCOPE));
         assert!(!is_binding_scope(QUEUE_SCOPE));
         assert!(!is_binding_scope(IDEM_SCOPE));
+    }
+
+    type Store = std::sync::Arc<std::sync::Mutex<BTreeMap<(String, String), Value>>>;
+    type Calls = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// A store-backed fake engine serving `state::{get,set,delete,list_keys}`
+    /// over every scope. Logs each call as `"<function> <scope>/<key>"`.
+    async fn fake_state() -> (IIIClient, Store, Calls, tokio::task::JoinHandle<()>) {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (store, calls) = (Store::default(), Calls::default());
+        let (db, seen) = (store.clone(), calls.clone());
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            while let Some(Ok(frame)) = socket.next().await {
+                let Ok(msg) = serde_json::from_str::<Value>(frame.to_text().unwrap_or("")) else {
+                    continue;
+                };
+                if msg["type"] != "invokefunction" || msg["invocation_id"].is_null() {
+                    continue;
+                }
+                let function = msg["function_id"].as_str().unwrap_or("").to_owned();
+                let scope = msg["data"]["scope"].as_str().unwrap_or("").to_owned();
+                let key = msg["data"]["key"].as_str().unwrap_or("").to_owned();
+                seen.lock()
+                    .unwrap()
+                    .push(format!("{function} {scope}/{key}"));
+                let result = {
+                    let mut db = db.lock().unwrap();
+                    let at = (scope.clone(), key);
+                    match function.as_str() {
+                        "state::list_keys" => json!({ "keys": db.keys()
+                            .filter(|(s, _)| *s == scope).map(|(_, k)| k).collect::<Vec<_>>() }),
+                        "state::get" => db.get(&at).cloned().unwrap_or(Value::Null),
+                        "state::set" => {
+                            db.insert(at, msg["data"]["value"].clone());
+                            json!({})
+                        }
+                        "state::delete" => {
+                            db.remove(&at);
+                            json!({})
+                        }
+                        _ => Value::Null,
+                    }
+                };
+                let reply = json!({ "type": "invocationresult", "function_id": function,
+                    "invocation_id": msg["invocation_id"], "result": result });
+                if socket
+                    .send(Message::Text(reply.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());
+        (iii, store, calls, server)
+    }
+
+    fn prompt_record(session_id: &str, prompt: Option<&str>, baseline: Option<&str>) -> TurnRecord {
+        let mut record: TurnRecord = serde_json::from_value(json!({
+            "turn_id": "t", "session_id": session_id, "status": "completed", "step": 0,
+            "turn_count": 0, "depth": 0, "options": { "model": "m", "max_turns": 16 },
+            "created_at": 1, "updated_at": 1 }))
+        .unwrap();
+        record.options.system_prompt = prompt.map(str::to_owned);
+        record.options.skill_context = baseline.map(|b| crate::types::turn::SkillContext {
+            filter: None,
+            baseline: Some(b.to_owned()),
+            baseline_ref: None,
+        });
+        record
+    }
+
+    fn stored(store: &Store, scope: &str, key: &str) -> Value {
+        let db = store.lock().unwrap();
+        db.get(&(scope.to_owned(), key.to_owned()))
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    fn body_keys(store: &Store) -> Vec<String> {
+        let db = store.lock().unwrap();
+        db.keys()
+            .filter(|(s, _)| s == PROMPT_SCOPE)
+            .map(|(_, k)| k.clone())
+            .collect()
+    }
+
+    fn body_writes(calls: &Calls) -> usize {
+        let prefix = format!("state::set {PROMPT_SCOPE}/");
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.starts_with(&prefix))
+            .count()
+    }
+
+    // Prompt texts are unique per test: the known-body set is process-wide,
+    // and each test has its own fake store.
+
+    /// The stored record carries refs only; the bodies live once in
+    /// `harness_prompt`; `get_turn` restores the text (and keeps the refs).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn put_then_get_restores_the_prompt_and_stores_only_a_ref() {
+        let (iii, store, _calls, server) = fake_state().await;
+        let prompt = "put_then_get frozen prompt. ".repeat(1_000);
+        let index = "<available_skills>put_then_get</available_skills>";
+        let record = prompt_record("pg_1", Some(&prompt), Some(index));
+        put_turn(&iii, &record, 2_000).await.unwrap();
+
+        let value = stored(&store, TURN_SCOPE, "pg_1");
+        let options = &value["options"];
+        assert_eq!(options["system_prompt_ref"], prompt_digest(&prompt));
+        assert!(options.get("system_prompt").is_none(), "{options}");
+        assert_eq!(
+            options["skill_context"]["baseline_ref"],
+            prompt_digest(index)
+        );
+        assert!(
+            options["skill_context"].get("baseline").is_none(),
+            "{options}"
+        );
+        assert_eq!(body_keys(&store).len(), 2);
+        let body = stored(&store, PROMPT_SCOPE, &prompt_digest(&prompt));
+        assert_eq!(body["body"], prompt.as_str());
+        assert!(body["created_at"].as_i64().is_some(), "{body}");
+
+        let read = get_turn(&iii, "pg_1", 2_000).await.unwrap().unwrap();
+        let mut expected = record.clone();
+        expected.options.system_prompt_ref = Some(prompt_digest(&prompt));
+        expected
+            .options
+            .skill_context
+            .as_mut()
+            .unwrap()
+            .baseline_ref = Some(prompt_digest(index));
+        assert_eq!(read, expected);
+        iii.shutdown();
+        server.abort();
+    }
+
+    /// Two sessions on one prompt share one body. A process writes a body once
+    /// (it remembers what it stored); concurrent first writes set the same key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn same_prompt_two_sessions_one_body() {
+        let (iii, store, calls, server) = fake_state().await;
+        let prompt = "same_prompt_two_sessions shared prompt";
+        put_turn(&iii, &prompt_record("sp_1", Some(prompt), None), 2_000)
+            .await
+            .unwrap();
+        put_turn(&iii, &prompt_record("sp_2", Some(prompt), None), 2_000)
+            .await
+            .unwrap();
+        assert_eq!(body_keys(&store), [prompt_digest(prompt)]);
+        assert_eq!(body_writes(&calls), 1);
+        // Known for longer than the TTL: written again (the collector may
+        // have deleted it since).
+        *KNOWN_BODIES
+            .lock()
+            .unwrap()
+            .get_mut(&prompt_digest(prompt))
+            .unwrap() -= KNOWN_BODY_TTL_MS;
+        put_turn(&iii, &prompt_record("sp_2", Some(prompt), None), 2_000)
+            .await
+            .unwrap();
+        assert_eq!(body_writes(&calls), 2);
+
+        let racing = "same_prompt_two_sessions racing prompt";
+        let (a, b) = (
+            prompt_record("sp_3", Some(racing), None),
+            prompt_record("sp_4", Some(racing), None),
+        );
+        let (ra, rb) = tokio::join!(put_turn(&iii, &a, 2_000), put_turn(&iii, &b, 2_000));
+        ra.unwrap();
+        rb.unwrap();
+        assert_eq!(body_keys(&store).len(), 2);
+        for sid in ["sp_1", "sp_2", "sp_3", "sp_4"] {
+            let read = get_turn(&iii, sid, 2_000).await.unwrap().unwrap();
+            let want = if sid < "sp_3" { prompt } else { racing };
+            assert_eq!(read.options.system_prompt.as_deref(), Some(want), "{sid}");
+        }
+        iii.shutdown();
+        server.abort();
+    }
+
+    /// Records written before refs existed (inline text, no ref) read as
+    /// before, without touching `harness_prompt`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inline_record_still_reads() {
+        let (iii, store, calls, server) = fake_state().await;
+        let record = prompt_record("ir_1", Some("inline_record prompt"), Some("inline index"));
+        store.lock().unwrap().insert(
+            (TURN_SCOPE.into(), "ir_1".into()),
+            serde_json::to_value(&record).unwrap(),
+        );
+        let read = get_turn(&iii, "ir_1", 2_000).await.unwrap().unwrap();
+        assert_eq!(read, record);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [format!("state::get {TURN_SCOPE}/ir_1")]
+        );
+        iii.shutdown();
+        server.abort();
+    }
+
+    /// A listed record is dehydrated (refs, no text). Re-putting it keeps the
+    /// refs and writes no body; `get_turn` still restores the text.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dehydrated_record_reput_keeps_ref() {
+        let (iii, store, calls, server) = fake_state().await;
+        let (prompt, index) = ("dehydrated_reput prompt", "dehydrated_reput index");
+        put_turn(
+            &iii,
+            &prompt_record("dr_1", Some(prompt), Some(index)),
+            2_000,
+        )
+        .await
+        .unwrap();
+        let listed = list_turns(&iii, 2_000).await.unwrap().remove(0);
+        assert_eq!(listed.options.system_prompt, None);
+        assert_eq!(
+            listed.options.system_prompt_ref,
+            Some(prompt_digest(prompt))
+        );
+        let context = listed.options.skill_context.clone().unwrap();
+        assert_eq!(context.baseline, None);
+        assert_eq!(context.baseline_ref, Some(prompt_digest(index)));
+
+        let writes = body_writes(&calls);
+        put_turn(&iii, &listed, 2_000).await.unwrap();
+        assert_eq!(
+            body_writes(&calls),
+            writes,
+            "a dehydrated re-put writes no body"
+        );
+        let value = stored(&store, TURN_SCOPE, "dr_1");
+        assert_eq!(value["options"]["system_prompt_ref"], prompt_digest(prompt));
+        assert_eq!(
+            value["options"]["skill_context"]["baseline_ref"],
+            prompt_digest(index)
+        );
+        let read = get_turn(&iii, "dr_1", 2_000).await.unwrap().unwrap();
+        assert_eq!(read.options.system_prompt.as_deref(), Some(prompt));
+        assert_eq!(
+            read.options.skill_context.unwrap().baseline.as_deref(),
+            Some(index)
+        );
+        iii.shutdown();
+        server.abort();
+    }
+
+    /// A ref whose body is gone is a hard error, never an empty prompt (which
+    /// would re-resolve the prompt and change the session).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn missing_body_is_an_error() {
+        let (iii, store, _calls, server) = fake_state().await;
+        let mut record = prompt_record("mb_1", None, None);
+        record.options.system_prompt_ref = Some("sha256:missing_body_is_an_error".into());
+        store.lock().unwrap().insert(
+            (TURN_SCOPE.into(), "mb_1".into()),
+            serde_json::to_value(&record).unwrap(),
+        );
+        let error = get_turn(&iii, "mb_1", 2_000).await.unwrap_err().to_string();
+        assert!(
+            error.contains("missing prompt body sha256:missing_body_is_an_error for mb_1"),
+            "{error}"
+        );
+        iii.shutdown();
+        server.abort();
     }
 }

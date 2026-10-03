@@ -139,6 +139,7 @@ mod tests {
         let durable = Arc::new(tokio::sync::Mutex::new(SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("durable baseline".into()),
+            baseline_ref: None,
         }));
         let writer_locks = locks.clone();
         let writer_durable = durable.clone();
@@ -150,6 +151,7 @@ mod tests {
         let mut in_memory = Some(SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("generation baseline".into()),
+            baseline_ref: None,
         });
         drop(initial_guard);
         writer.await.unwrap();
