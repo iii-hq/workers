@@ -1,11 +1,26 @@
 //! Clef's backbone on the shared llama.cpp runtime: the final-norm hidden
-//! state of every prompt token (embeddings mode, no pooling). STUB: the
-//! interface is fixed; the body is implemented in its own change.
+//! state of every prompt token (embeddings mode, no pooling), read by the
+//! joint head in candle.
+//!
+//! ponytail: llama.cpp 0.1.156's qwen35 graph still computes the vocab logits
+//! of every token (an unused LM head: 2 GFLOP per token on Clef-Flash, most of
+//! the 511 MiB CPU compute buffer at batch 512), and its host output buffer
+//! holds `n_vocab + hidden` floats per token of batch (0.96 MiB each, about
+//! 0.5 GiB at 512). Dropping both needs a llama.cpp with the `clef` arch
+//! (PR #29831), which no published llama-cpp-2 has yet.
 use anyhow::Result;
 pub use iii_llama_runtime::scorer::Stop;
+use iii_llama_runtime::{
+    llama_cpp_2::{context::params::LlamaPoolingType, llama_batch::LlamaBatch, token::LlamaToken},
+    Runtime, Session,
+};
 use std::{
+    num::NonZeroU32,
     path::Path,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Instant,
 };
 use tokio::sync::oneshot;
@@ -24,6 +39,7 @@ pub struct Options {
 
 #[derive(Clone)]
 pub struct Engine {
+    runtime: Runtime,
     /// The backbone's hidden size (`n_embd_out`).
     pub hidden: usize,
     pub device: Arc<str>,
@@ -33,8 +49,35 @@ pub struct Engine {
 impl Engine {
     /// Load the GGUF on the runtime thread; `batch_tokens` is one forward.
     pub fn spawn(gguf: &Path, options: Options, batch_tokens: u32) -> Result<Self> {
-        let _ = (gguf, options, batch_tokens);
-        todo!("engine::spawn")
+        let Options {
+            threads,
+            gpu_layers,
+            context_tokens,
+        } = options;
+        let runtime = Runtime::spawn(
+            gguf,
+            iii_llama_runtime::Options {
+                threads,
+                gpu_layers,
+            },
+            move |params| {
+                params
+                    .with_n_ctx(NonZeroU32::new(context_tokens))
+                    .with_n_batch(batch_tokens)
+                    .with_n_ubatch(batch_tokens)
+                    .with_embeddings(true)
+                    .with_pooling_type(LlamaPoolingType::None)
+            },
+        )?;
+        // The width embeddings_ith returns (n_embd unless the GGUF sets an
+        // output width).
+        let hidden = runtime.run(|session| session.model.n_embd_out() as usize)?;
+        Ok(Self {
+            device: runtime.device().into(),
+            runtime,
+            hidden,
+            context_tokens,
+        })
     }
 
     /// Hidden states `[ids.len() × hidden]`, row-major, memory cleared first.
@@ -46,7 +89,48 @@ impl Engine {
         deadline: Instant,
         cancel: Arc<AtomicBool>,
     ) -> oneshot::Receiver<Result<Vec<f32>, Stop>> {
-        let _ = (ids, deadline, cancel);
-        todo!("engine::states")
+        let hidden = self.hidden;
+        self.runtime
+            .submit(move |session| prefill(session, hidden, &ids, deadline, &cancel))
     }
+}
+
+/// Decode `ids` in chunks of n_batch at consecutive positions of sequence 0.
+/// The memory (attention KV plus Qwen3.5's recurrent state) carries between
+/// chunks and is cleared first, so requests never see each other.
+fn prefill(
+    session: &mut Session<'_>,
+    hidden: usize,
+    ids: &[u32],
+    deadline: Instant,
+    cancel: &AtomicBool,
+) -> Result<Vec<f32>, Stop> {
+    let ctx = &mut session.ctx;
+    if ids.len() > ctx.n_ctx() as usize {
+        return Err(Stop::TooLong);
+    }
+    // A decode larger than n_batch aborts the process.
+    let chunk = ctx.n_batch() as usize;
+    ctx.clear_kv_cache();
+    let mut batch = LlamaBatch::new(chunk, 1);
+    let mut states = Vec::with_capacity(ids.len() * hidden);
+    for (start, part) in (0..).step_by(chunk).zip(ids.chunks(chunk)) {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Stop::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(Stop::Deadline);
+        }
+        batch.clear();
+        for (pos, &id) in (start..).zip(part) {
+            batch
+                .add(LlamaToken(id as i32), pos, &[0], true)
+                .map_err(|_| Stop::Failed)?;
+        }
+        ctx.decode(&mut batch).map_err(|_| Stop::Failed)?;
+        for i in 0..part.len() as i32 {
+            states.extend_from_slice(ctx.embeddings_ith(i).map_err(|_| Stop::Failed)?);
+        }
+    }
+    Ok(states)
 }
