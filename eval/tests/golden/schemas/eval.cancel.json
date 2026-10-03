@@ -20,7 +20,9 @@
       "EvalStatusV1": {
         "enum": [
           "queued",
-          "running",
+          "collecting",
+          "judging",
+          "investigating",
           "completed",
           "failed",
           "cancelled"

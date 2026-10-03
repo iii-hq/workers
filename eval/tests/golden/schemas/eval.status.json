@@ -17,61 +17,83 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "anyOf": [
       {
-        "$ref": "#/definitions/EvalStatusResponseV1"
+        "$ref": "#/definitions/AnalysisRecordV1"
       },
       {
         "type": "null"
       }
     ],
     "definitions": {
-      "ActiveRunV1": {
+      "AnalysisCountersV1": {
         "additionalProperties": false,
         "properties": {
-          "iteration": {
+          "diagnostics": {
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
           },
-          "role": {
-            "$ref": "#/definitions/VariantRoleV1"
-          },
-          "run_id": {
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "started_at": {
-            "format": "int64",
+          "entries": {
+            "format": "uint32",
+            "minimum": 0.0,
             "type": "integer"
           },
-          "turn_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "rejected_suggestions": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "sessions": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "suggestions": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "validations": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
           }
         },
         "required": [
-          "iteration",
-          "role",
-          "run_id",
-          "session_id",
-          "started_at"
+          "diagnostics",
+          "entries",
+          "rejected_suggestions",
+          "sessions",
+          "suggestions",
+          "validations"
         ],
         "type": "object"
       },
-      "EvalStatusResponseV1": {
+      "AnalysisOriginV1": {
+        "enum": [
+          "automatic",
+          "manual"
+        ],
+        "type": "string"
+      },
+      "AnalysisRecordV1": {
         "additionalProperties": false,
+        "description": "The compact analysis record listed by `eval::list`; evidence and model outputs live separately in the analysis assets.",
         "properties": {
-          "active": {
+          "analyst": {
             "anyOf": [
               {
-                "$ref": "#/definitions/ActiveRunV1"
+                "$ref": "#/definitions/AnalystRefV1"
               },
               {
                 "type": "null"
               }
+            ]
+          },
+          "code_root": {
+            "description": "Frozen at admission with the model: the directory the investigation reads and runs in, absent when code access was off.",
+            "type": [
+              "string",
+              "null"
             ]
           },
           "completed_at": {
@@ -81,77 +103,417 @@
               "null"
             ]
           },
+          "config_revision": {
+            "type": "string"
+          },
+          "counters": {
+            "$ref": "#/definitions/AnalysisCountersV1"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CoverageLevelV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "created_at": {
             "format": "int64",
             "type": "integer"
           },
-          "error": {
+          "criteria_version": {
+            "type": "string"
+          },
+          "deadline": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "evaluation_id": {
+            "type": "string"
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/FailureV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "judge_call": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/JudgeCallV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/MonitorModelV1"
+              }
+            ],
+            "description": "Frozen at admission: later configuration changes never alter it."
+          },
+          "observation_key": {
+            "type": "string"
+          },
+          "observe_since": {
+            "description": "Earlier root turns join the window only if they started after this instant: the monitor was observing then. Turns from before the monitor was enabled are never reported as new.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "origin": {
+            "$ref": "#/definitions/AnalysisOriginV1"
+          },
+          "pending_reason": {
+            "description": "Why collection is still waiting (descendants running, metrics incomplete).",
             "type": [
               "string",
               "null"
             ]
           },
-          "evaluation_id": {
+          "routing": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RoutingV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rules_version": {
             "type": "string"
           },
-          "failed_runs": {
+          "schema_version": {
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
           },
-          "passed_runs": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
+          "session_id": {
+            "type": "string"
+          },
+          "source_title": {
+            "description": "The session's title, once collection has read it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stages": {
+            "description": "When each status began, oldest first.",
+            "items": {
+              "$ref": "#/definitions/StageTimeV1"
+            },
+            "type": "array"
           },
           "status": {
             "$ref": "#/definitions/EvalStatusV1"
           },
-          "terminal_runs": {
-            "format": "uint32",
+          "step": {
+            "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
           },
-          "total_runs": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
+          "turn_id": {
+            "type": "string"
           },
           "updated_at": {
             "format": "int64",
             "type": "integer"
+          },
+          "usage": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/MonitorUsageV1"
+              }
+            ],
+            "description": "The monitor's own consumption, apart from the observed task."
           }
         },
         "required": [
+          "config_revision",
+          "counters",
           "created_at",
+          "criteria_version",
+          "deadline",
           "evaluation_id",
-          "failed_runs",
-          "passed_runs",
+          "model",
+          "observation_key",
+          "observe_since",
+          "origin",
+          "rules_version",
+          "schema_version",
+          "session_id",
+          "stages",
           "status",
-          "terminal_runs",
-          "total_runs",
-          "updated_at"
+          "step",
+          "turn_id",
+          "updated_at",
+          "usage"
         ],
         "type": "object"
+      },
+      "AnalystRefV1": {
+        "additionalProperties": false,
+        "properties": {
+          "sent_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "sent_at",
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "CoverageLevelV1": {
+        "oneOf": [
+          {
+            "description": "Every in-scope transcript was read and the model context holds every diagnostic's evidence.",
+            "enum": [
+              "complete"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Previews omit or shorten entries; the full transcripts were read.",
+            "enum": [
+              "partial"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Required evidence did not fit; no conclusion of healthy behavior.",
+            "enum": [
+              "insufficient"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "EvalStatusV1": {
         "enum": [
           "queued",
-          "running",
+          "collecting",
+          "judging",
+          "investigating",
           "completed",
           "failed",
           "cancelled"
         ],
         "type": "string"
       },
-      "VariantRoleV1": {
+      "FailureV1": {
+        "additionalProperties": false,
+        "description": "The stage that failed and why. `stage` is the status the analysis was in.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "stage": {
+            "$ref": "#/definitions/EvalStatusV1"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "stage"
+        ],
+        "type": "object"
+      },
+      "JudgeCallV1": {
+        "additionalProperties": false,
+        "description": "A Jev call started by this analysis. Persisted before the call so a restart can tell a lost answer from one never requested.",
+        "properties": {
+          "deadline": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deadline",
+          "request_id",
+          "started_at"
+        ],
+        "type": "object"
+      },
+      "MonitorModelV1": {
+        "additionalProperties": false,
+        "description": "The Harness model the user chose for investigations. Credentials stay in the provider worker; this request never carries a key.",
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "provider_options": {
+            "additionalProperties": true,
+            "description": "Provider-native options, namespaced by the selected provider id.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "thinking_level": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ThinkingLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "model",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "MonitorUsageV1": {
+        "additionalProperties": false,
+        "description": "Known usage only: absent counters are unknown, never zero.",
+        "properties": {
+          "judge_calls": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "judge_input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "judge_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "judge_usage_complete": {
+            "description": "False when Jev reported incomplete usage or failed.",
+            "type": "boolean"
+          },
+          "llm_cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "llm_input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "llm_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "judge_calls",
+          "judge_input_tokens",
+          "judge_output_tokens",
+          "judge_usage_complete"
+        ],
+        "type": "object"
+      },
+      "RoutingReasonV1": {
         "enum": [
-          "control",
-          "treatment"
+          "diagnostics",
+          "needs_investigation",
+          "insufficient_evidence",
+          "low_confidence",
+          "coverage_insufficient",
+          "audit_sample",
+          "manual_request"
+        ],
+        "type": "string"
+      },
+      "RoutingV1": {
+        "additionalProperties": false,
+        "properties": {
+          "investigate": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/definitions/RoutingReasonV1"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "investigate",
+          "reasons"
+        ],
+        "type": "object"
+      },
+      "StageTimeV1": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/definitions/EvalStatusV1"
+          }
+        },
+        "required": [
+          "at",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ThinkingLevel": {
+        "enum": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
         ],
         "type": "string"
       }
     },
-    "title": "Nullable_EvalStatusResponseV1"
+    "title": "Nullable_AnalysisRecordV1"
   }
 }

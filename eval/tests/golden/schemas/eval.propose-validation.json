@@ -1,0 +1,259 @@
+{
+  "function_id": "eval::propose-validation",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Asks Jev to pick, among the existing E2E executions, the baseline and the candidate that fit one suggestion's validation plan. Nothing is attached.",
+    "properties": {
+      "evaluation_id": {
+        "type": "string"
+      },
+      "suggestion_index": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "evaluation_id",
+      "suggestion_index"
+    ],
+    "title": "ProposeValidationRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "ProposalAlternativeV1": {
+        "additionalProperties": false,
+        "description": "Another offered pair Jev found likely; `probability` is Jev's share for it among the offered options.",
+        "properties": {
+          "baseline_execution_id": {
+            "type": "string"
+          },
+          "candidate_execution_id": {
+            "type": "string"
+          },
+          "probability": {
+            "format": "double",
+            "type": "number"
+          },
+          "stack_note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseline_execution_id",
+          "candidate_execution_id",
+          "probability",
+          "stack_note"
+        ],
+        "type": "object"
+      },
+      "ProposalJevV1": {
+        "additionalProperties": false,
+        "description": "The model that answered and what the call consumed; the usage is also added to the analysis record.",
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "stats": {
+            "$ref": "#/definitions/Stats"
+          }
+        },
+        "required": [
+          "model",
+          "request_id",
+          "stats"
+        ],
+        "type": "object"
+      },
+      "ProposalOutcomeV1": {
+        "oneOf": [
+          {
+            "description": "Jev chose a pair; `proposal` holds it.",
+            "enum": [
+              "proposed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Jev judged that no listed pair compares the Harness without and with the change.",
+            "enum": [
+              "none_fits"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Code found no pair of runs of the same case, so Jev was not asked.",
+            "enum": [
+              "no_comparable_pair"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Stats": {
+        "additionalProperties": false,
+        "description": "Known accepted usage, never a billing estimate. Unreported counters or failure/cancellation make usage_complete false.",
+        "properties": {
+          "attempts": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "elapsed_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "questions": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "requests": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "usage_complete": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "attempts",
+          "elapsed_ms",
+          "input_tokens",
+          "output_tokens",
+          "questions",
+          "requests",
+          "usage_complete"
+        ],
+        "type": "object"
+      },
+      "ValidationProposalV1": {
+        "additionalProperties": false,
+        "description": "Jev's pick. `confidence` describes Jev's distribution over the offered pairs, not the probability that the pair is right: check the runs.",
+        "properties": {
+          "baseline_execution_id": {
+            "type": "string"
+          },
+          "candidate_execution_id": {
+            "type": "string"
+          },
+          "confidence": {
+            "format": "double",
+            "type": "number"
+          },
+          "low_confidence": {
+            "description": "`confidence` is below the monitor's low-confidence threshold.",
+            "type": "boolean"
+          },
+          "stack_note": {
+            "description": "The recorded stack difference computed in code, as Jev saw it: \"recorded stacks identical\", \"recorded stack differs: ...\" or \"recorded stack unknown\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseline_execution_id",
+          "candidate_execution_id",
+          "confidence",
+          "low_confidence",
+          "stack_note"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "alternatives": {
+        "default": [],
+        "description": "Up to three other offered pairs with at least 5% of Jev's probability, most likely first; empty when Jev was not asked.",
+        "items": {
+          "$ref": "#/definitions/ProposalAlternativeV1"
+        },
+        "type": "array"
+      },
+      "excluded": {
+        "additionalProperties": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "description": "Runs left out, by reason: the E2E status for runs that are not `passed` or `failed` (`incomplete`, `technical_failed`, ...), `other_scenario` and `no_id`.",
+        "type": "object"
+      },
+      "jev": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ProposalJevV1"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Absent when Jev was not asked."
+      },
+      "outcome": {
+        "$ref": "#/definitions/ProposalOutcomeV1"
+      },
+      "pairs_considered": {
+        "description": "Ordered (baseline, candidate) pairs offered to Jev: the most recent comparable ones, at most 60.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "pairs_dropped": {
+        "description": "Comparable pairs left out because older pairs were kept instead.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "proposal": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ValidationProposalV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "runs_considered": {
+        "description": "Eligible runs the pairs were built from: `passed` or `failed`, and including the plan's scenario when it names one.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "runs_listed": {
+        "description": "Executions the E2E returned (its 100 detailed executions at most).",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "excluded",
+      "outcome",
+      "pairs_considered",
+      "pairs_dropped",
+      "runs_considered",
+      "runs_listed"
+    ],
+    "title": "ProposeValidationResponseV1",
+    "type": "object"
+  }
+}

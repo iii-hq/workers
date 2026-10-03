@@ -16,6 +16,7 @@ path = "src/lib.rs"
 
 [dependencies]
 harness = { path = "../harness" }
+judge-contract = { path = "../crates/judge-contract" }
 iii-sdk = "=0.23.0"
 iii-helpers = "=0.23.0"
 iii-console-ui = { path = "../crates/console-ui" }
@@ -34,3 +35,5 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 serde_yaml = "0.9"
+futures-util = "0.3"
+tokio-tungstenite = "0.28"

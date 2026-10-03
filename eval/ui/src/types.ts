@@ -1,26 +1,4 @@
-export type JsonValue =
-  | null
-  | boolean
-  | number
-  | string
-  | JsonValue[]
-  | { [key: string]: JsonValue }
-
-export type SessionStatus = 'idle' | 'working' | 'done' | 'error'
-
-export interface SessionMeta {
-  session_id: string
-  title: string
-  description: string
-  status: SessionStatus
-  status_reason?: string
-  metadata?: Record<string, JsonValue>
-  forked_from?: string
-  draft?: string
-  created_at: number
-  updated_at: number
-  message_count: number
-}
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
 export interface ContextSnapshot {
   session_id: string
@@ -98,305 +76,466 @@ export interface SessionMetrics {
   }
 }
 
-export type TurnStatus =
-  | 'running'
-  | 'awaiting_functions'
-  | 'completed'
-  | 'cancelled'
-  | 'failed'
+export type TurnStatus = 'running' | 'awaiting_functions' | 'completed' | 'cancelled' | 'failed'
 
-export interface SessionComparisonItem {
-  session: SessionMeta
-  lifecycle: {
-    session_status: SessionStatus
-    turn_id?: string
-    turn_status?: TurnStatus
-    result_error?: string
-    terminal?: boolean
-    expects_wake?: boolean
-    complete?: boolean
-    partial: boolean
-  }
-  metrics?: SessionMetrics
-  summary?: Record<string, number | null>
-  deltas: Record<string, { absolute: number | null; percent: number | null }>
-  errors: string[]
-}
+// Session monitor — mirrors eval/src/contract.rs (`eval::*` functions).
 
-export interface SessionComparisonResponse {
-  schema_version: string
-  captured_at: number
-  baseline_session_id: string
-  sessions: SessionComparisonItem[]
-}
-
-export type EvalStatus =
+export type AnalysisStatus =
   | 'queued'
-  | 'running'
+  | 'collecting'
+  | 'judging'
+  | 'investigating'
   | 'completed'
   | 'failed'
   | 'cancelled'
 
-export type EvalRunStatus =
-  | 'pending'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
+export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 
-export type ComparisonDimension = 'prompt' | 'system_prompt'
-export type VariantRole = 'control' | 'treatment'
-export type ExecutionOrder = 'balanced_control_first' | 'balanced_treatment_first'
-
-export interface EvalVariant {
-  label?: string
-  prompt: string
-  system_prompt: string | null
-}
-
-export interface EvalModelConfig {
+export interface MonitorModel {
   model: string
-  provider?: string
-  system_prompt_strategy: 'override' | 'enrich' | 'disabled'
-  mode?: 'ask' | 'agent'
-  thinking_level?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
-  provider_options?: Record<string, JsonValue>
+  provider: string
+  thinking_level?: ThinkingLevel | null
+  provider_options?: Record<string, JsonValue> | null
 }
 
-export interface EvalLimits {
-  execution: {
-    invocation_timeout_seconds?: number
-    scenario_timeout_seconds?: number
-    max_turns?: number
-    max_output_tokens_per_call?: number
-    max_total_tokens?: number
-    max_cost_usd?: number
-  }
-  evaluation: {
-    max_function_call_errors?: number
-    max_error_spans?: number
-  }
-}
-
-export interface FunctionPolicy {
-  allow: string[]
-  deny: string[]
-  expose: 'agent_trigger' | 'native'
-}
-
-export type OutputContract =
-  | { type: 'text' }
-  | { type: 'json'; schema?: JsonValue }
-
-export interface EvalRequest {
-  dimension: ComparisonDimension
-  model: EvalModelConfig
-  control: EvalVariant
-  treatment: EvalVariant
-  evaluator?: {
-    function_id: string
-    arguments: JsonValue
-  }
-  runs: number
-  execution_order: ExecutionOrder
-  source_evaluation_id?: string
-  limits: EvalLimits
-  functions?: FunctionPolicy
-  output?: OutputContract
-  metadata?: JsonValue
-}
-
-export interface EvalSummary {
-  evaluation_id: string
-  status: EvalStatus
-  dimension: ComparisonDimension
-  model: string
-  provider?: string
-  control_label?: string
-  treatment_label?: string
-  total_runs: number
-  terminal_runs: number
-  passed_runs: number
-  failed_runs: number
-  eligible?: boolean
-  created_at: number
+export interface MonitorConfig {
+  enabled: boolean
+  model: MonitorModel
+  /** Absolute path of the codebase the investigation reads; absent means code access is off. */
+  code_repository?: string
+  revision: string
   updated_at: number
-  completed_at?: number
-  error?: string
+  enabled_since?: number
 }
 
-export interface EvalStatusResponse {
-  evaluation_id: string
-  status: EvalStatus
-  total_runs: number
-  terminal_runs: number
-  passed_runs: number
-  failed_runs: number
-  active?: {
-    run_id: string
-    role: VariantRole
-    iteration: number
-    session_id: string
-    turn_id?: string
-    started_at: number
-  }
-  created_at: number
-  updated_at: number
-  completed_at?: number
-  error?: string
+export interface CapacityRejection {
+  session_id: string
+  turn_id: string
+  at: number
 }
 
-export interface Benchmark {
-  wall_time_ms: number
-  sessions: number
-  turns: number
-  function_calls: number
-  function_call_errors: number
-  input_tokens?: number
-  output_tokens?: number
-  total_tokens?: number
-  cache_read_tokens?: number
-  cache_write_tokens?: number
-  reasoning_tokens?: number
-  cost_usd?: number
-  trace_count?: number
-  span_count?: number
-  error_span_count?: number
-  trace_duration_ms?: number
+export interface TriageAvailability {
+  provider: string
+  available: boolean
+  code?: string
+  models: string[]
+  checked_at: number
 }
 
-export interface VariantAggregate {
-  runs: number
-  evaluated_runs: number
-  passed: number
-  pass_rate: number
-  benchmarked_runs: number
-  median_score?: number
-  median_wall_time_ms?: number
-  median_input_tokens?: number
-  median_output_tokens?: number
-  median_total_tokens?: number
-  median_reasoning_tokens?: number
-  median_function_calls?: number
-  median_function_call_errors?: number
-  median_cost_usd?: number
-  median_trace_count?: number
-  median_span_count?: number
-  median_error_span_count?: number
-  median_trace_duration_ms?: number
+/** What the monitor enforces, as `eval::config` reports it. The UI states these, never its own copy. */
+export interface MonitorLimits {
+  /** Deadline of one analysis, queue included. */
+  analysis_budget_ms: number
+  /** What one Jev call may take. */
+  judge_timeout_ms: number
+  /** Bytes of the evidence the models may read. */
+  model_context_bytes: number
+  assets_bytes: number
+  investigation_max_turns: number
+  investigation_max_output_tokens: number
+  investigation_max_total_tokens: number
+  /** Generate steps of an investigation that has code access. */
+  investigation_code_max_turns: number
+  /** Total tokens of an investigation that has code access. */
+  investigation_code_max_total_tokens: number
+  /** Analyses running at once. */
+  queue_concurrency: number
+  /** Unfinished analyses admitted (running and queued). */
+  max_active_analyses: number
+  /** Triage confidence under which a session is investigated anyway. */
+  low_confidence: number
+  /** Percent of sessions with no signal that are investigated anyway. */
+  audit_sample_percent: number
+  retention_days: number
+  retention_max_terminal: number
 }
 
-export interface AggregateDelta {
-  pass_rate: number
-  median_score?: number
-  median_wall_time_ms?: number
-  median_total_tokens?: number
-  median_reasoning_tokens?: number
-  median_function_calls?: number
-  median_function_call_errors?: number
-  median_cost_usd?: number
-  median_trace_count?: number
-  median_span_count?: number
-  median_error_span_count?: number
-  median_trace_duration_ms?: number
+export interface MonitorState {
+  config: MonitorConfig | null
+  limits: MonitorLimits
+  /** Requested, not engine-confirmed (SDK limitation). */
+  observer_bound: boolean
+  observer_error?: string
+  last_rejection?: CapacityRejection
+  triage?: TriageAvailability
 }
 
-export interface EvalRun {
-  run_id: string
-  role: VariantRole
-  iteration: number
-  execution_position: number
-  pair_position: number
-  status: EvalRunStatus
+export interface Failure {
+  stage: AnalysisStatus
+  code: string
+  message: string
+}
+
+export type CoverageLevel = 'complete' | 'partial' | 'insufficient'
+
+export type RoutingReason =
+  | 'diagnostics'
+  | 'needs_investigation'
+  | 'insufficient_evidence'
+  | 'low_confidence'
+  | 'coverage_insufficient'
+  | 'audit_sample'
+  | 'manual_request'
+
+export interface Routing {
+  investigate: boolean
+  reasons: RoutingReason[]
+}
+
+export interface JudgeCall {
+  request_id: string
+  started_at: number
+  deadline: number
+}
+
+export interface AnalystRef {
   session_id: string
   turn_id?: string
-  passed?: boolean
-  started_at: number
-  completed_at?: number
-  output?: JsonValue
-  metrics?: JsonValue
-  evaluation?: {
-    passed: boolean
-    score?: number
-    reason?: string
-    details?: JsonValue
-  }
-  benchmark?: Benchmark
-  failures?: Array<{
-    phase: string
-    message: string
-    function_id?: string
-  }>
+  sent_at: number
 }
 
-export interface EvalReport {
-  schema_version: string
+export interface AnalysisCounters {
+  sessions: number
+  entries: number
+  diagnostics: number
+  suggestions: number
+  rejected_suggestions: number
+  validations: number
+}
+
+export interface StageTime {
+  status: AnalysisStatus
+  at: number
+}
+
+/** Known usage only: an absent field is unknown, never zero. */
+export interface MonitorUsage {
+  judge_calls: number
+  judge_input_tokens: number
+  judge_output_tokens: number
+  judge_usage_complete: boolean
+  llm_input_tokens?: number
+  llm_output_tokens?: number
+  llm_cost_usd?: number
+}
+
+export interface AnalysisRecord {
+  schema_version: number
   evaluation_id: string
-  source_evaluation_id?: string
-  execution_order_policy: ExecutionOrder
-  effective_execution_order: string[]
-  dimension: ComparisonDimension
-  model: EvalModelConfig
-  evaluator?: {
-    function_id: string
-    arguments_sha256: string
-  }
-  control: {
-    label?: string
-    prompt_sha256: string
-    system_prompt_sha256?: string
-  }
-  treatment: {
-    label?: string
-    prompt_sha256: string
-    system_prompt_sha256?: string
-  }
-  shared_artifacts: {
-    model_sha256: string
-    function_policy_sha256: string
-    limits_sha256: string
-    output_sha256: string
-  }
-  control_aggregate: VariantAggregate
-  treatment_aggregate: VariantAggregate
-  delta: AggregateDelta
-  order_sensitivity: OrderSensitivity
-  eligible?: boolean
-  runs: EvalRun[]
+  observation_key: string
+  origin: 'automatic' | 'manual'
+  session_id: string
+  turn_id: string
+  source_title?: string
+  model: MonitorModel
+  /** The codebase directory, frozen at admission; absent means the investigation had no code access. */
+  code_root?: string
+  config_revision: string
+  rules_version: string
+  criteria_version: string
+  status: AnalysisStatus
+  step: number
   created_at: number
+  updated_at: number
+  deadline: number
+  observe_since: number
+  completed_at?: number
+  counters: AnalysisCounters
+  stages: StageTime[]
+  usage: MonitorUsage
+  coverage?: CoverageLevel
+  routing?: Routing
+  pending_reason?: string
+  judge_call?: JudgeCall
+  analyst?: AnalystRef
+  failure?: Failure
+}
+
+export interface EntryRef {
+  session_id: string
+  entry_id: string
+}
+
+export type Correlation = 'harness_notice_correlated' | 'unknown'
+
+export interface Diagnostic {
+  rule_id: string
+  rule_version: string
+  fingerprint: string
+  session_id: string
+  turn_id?: string
+  target: string
+  observation: string
+  correlation: Correlation
+  evidence: EntryRef[]
+}
+
+export interface ExcludedProbe {
+  session_id: string
+  turn_id?: string
+  target: string
+  code: string
+  calls: string[]
+}
+
+export interface SessionEvidence {
+  session_id: string
+  parent_session_id?: string
+  parent_turn_id?: string
+  depth: number
+  in_scope: boolean
+  entries: number
+  json_sha256?: string
+  /** Masked, shortened entries shown to the models. */
+  preview: JsonValue[]
+  omitted_entries: number
+  reduced_entries: number
+}
+
+export interface Coverage {
+  level: CoverageLevel
+  sessions_in_scope: number
+  sessions_out_of_scope: number
+  entries_read: number
+  diagnostics_in_context: number
+  context_bytes: number
+  limitations: string[]
+}
+
+export interface Snapshot {
+  captured_at: number
+  rules_version: string
+  source_session_id: string
+  source_turn_id: string
+  source_title?: string
+  source_status: TurnStatus
+  source_stop_reason?: string
+  source_result_error?: string
+  observed_model?: string
+  observed_provider?: string
+  window_turn_ids: string[]
+  sessions: SessionEvidence[]
+  metrics_scope: 'session_tree'
+  metrics: SessionMetrics
+  diagnostics: Diagnostic[]
+  excluded_probes: ExcludedProbe[]
+  coverage: Coverage
+}
+
+export interface Stats {
+  attempts: number
+  requests: number
+  questions: number
+  input_tokens: number
+  output_tokens: number
+  elapsed_ms: number
+  usage_complete: boolean
+}
+
+export interface ChoiceAnswer {
+  type: 'choice'
+  choice: string
+  probabilities: Record<string, number>
+  confidence: number
+}
+
+export type JudgeAnswer =
+  | ChoiceAnswer
+  | { type: 'noul'; noul: number }
+  | {
+      type: 'score'
+      score: number
+      probabilities: Record<string, number>
+      confidence: number
+      legend: Record<string, JsonValue>
+    }
+
+export interface Triage {
+  provider: string
+  request_id: string
+  model: string
+  criteria_version: string
+  answers: Record<string, JudgeAnswer>
+  stats: Stats
   completed_at: number
 }
 
-export interface RoleOrderSensitivity {
-  first_runs: number
-  first_passed: number
-  second_runs: number
-  second_passed: number
-  differs: boolean
+export interface TriageFailure {
+  request_id: string
+  code: string
+  http_status?: number
+  stats?: Stats
+  message: string
 }
 
-export interface OrderSensitivity {
-  detected: boolean
-  control: RoleOrderSensitivity
-  treatment: RoleOrderSensitivity
+export interface ValidationPlan {
+  scenario_id: string | null
+  reproduction: string
+  invariants: string[]
+  primary_metric: string
+  expectation: string
+  non_regression_controls: string[]
 }
 
-export interface EvalProgress {
-  effective_execution_order: string[]
-  control_aggregate: VariantAggregate
-  treatment_aggregate: VariantAggregate
-  delta: AggregateDelta
-  order_sensitivity: OrderSensitivity
-  runs: EvalRun[]
+/** Lines of one file of the code directory the analyst read (1-based, inclusive). */
+export interface CodeRef {
+  /** Relative to the directory, never absolute. */
+  path: string
+  line_from: number
+  line_to: number
 }
 
-export interface EvalResultResponse {
-  status: EvalStatus
-  request: EvalRequest
-  progress: EvalProgress
-  report?: EvalReport
+export interface Suggestion {
+  title: string
+  observation: string
+  hypothesis: string
+  harness_component: string
+  proposed_change: string
+  expected_effect: string
+  evidence: EntryRef[]
+  /** At most 8, each checked against the directory; empty without code access. */
+  code_refs: CodeRef[]
+  limitations: string
+  validation: ValidationPlan
 }
 
+export interface RejectedSuggestion {
+  index: number
+  title: string
+  reasons: string[]
+}
+
+export type SignalVerdict = 'likely_expected' | 'worth_changing' | 'unclear'
+
+export interface SignalAssessment {
+  fingerprint: string
+  verdict: SignalVerdict
+  explanation: string
+}
+
+export interface Investigation {
+  session_id: string
+  turn_id: string
+  requested_model: string
+  requested_provider: string
+  /** The directory this investigation ran in; absent without code access. */
+  code_root?: string
+  effective_model?: string
+  effective_provider?: string
+  suggestions: Suggestion[]
+  rejected: RejectedSuggestion[]
+  signal_assessments: SignalAssessment[]
+  metrics?: SessionMetrics
+  completed_at: number
+}
+
+export interface E2eReportRef {
+  scenario_id: string
+  subject_id?: string
+  available: boolean
+}
+
+export interface E2eMeasure {
+  average?: number
+  /** Runs that reported it; below `run_count` means some reported nothing. */
+  samples: number
+}
+
+export interface E2eScenario {
+  scenario_id: string
+  behavior_sha256?: string
+  contract_fingerprint?: string
+  run_count: number
+  measures: Record<'function_calls' | 'function_call_errors' | 'tokens' | 'duration_seconds' | 'cost_usd', E2eMeasure>
+}
+
+export interface E2eExecution {
+  execution_id: string
+  label?: string
+  status?: string
+  conclusion?: string
+  availability?: string
+  reports_available: boolean
+  reports: E2eReportRef[]
+  evidence_error?: string
+  model?: string
+  provider?: string
+  harness_version?: string
+  engine_version?: string
+  e2e_revision?: string
+  scenarios: E2eScenario[]
+  assessments?: { passed: number; total: number }
+}
+
+export interface ComparabilityCheck {
+  field: string
+  baseline?: string
+  candidate?: string
+  matches: boolean
+}
+
+export interface ValidationLink {
+  suggestion_index: number
+  baseline: E2eExecution
+  candidate: E2eExecution
+  comparability: { comparable: boolean; checks: ComparabilityCheck[] }
+  attached_at: number
+}
+
+/** `eval::propose-validation`: Jev's pick among the comparable E2E pairs. */
+export type ProposalOutcome = 'proposed' | 'none_fits' | 'no_comparable_pair'
+
+export interface ValidationProposal {
+  baseline_execution_id: string
+  candidate_execution_id: string
+  /** Jev's distribution over the offered pairs, not whether the pair is right. */
+  confidence: number
+  low_confidence: boolean
+  /** Computed in code: "recorded stacks identical", "recorded stack differs: …" or "… unknown". */
+  stack_note: string
+}
+
+export interface ProposalAlternative {
+  baseline_execution_id: string
+  candidate_execution_id: string
+  probability: number
+  stack_note: string
+}
+
+export interface ProposeValidationResponse {
+  outcome: ProposalOutcome
+  proposal?: ValidationProposal
+  runs_listed: number
+  runs_considered: number
+  pairs_considered: number
+  pairs_dropped: number
+  /** Runs left out, by E2E status, `other_scenario` or `no_id`. */
+  excluded: Record<string, number>
+  alternatives: ProposalAlternative[]
+  jev?: { model: string; request_id: string; stats: Stats }
+}
+
+export interface AnalysisAssets {
+  evaluation_id: string
+  snapshot?: Snapshot
+  triage?: Triage
+  triage_failure?: TriageFailure
+  investigation?: Investigation
+  validations: ValidationLink[]
+}
+
+export interface AnalysisResult {
+  record: AnalysisRecord
+  assets: AnalysisAssets
+}
+
+export interface CompletedEvent {
+  evaluation_id: string
+  status: AnalysisStatus
+  timestamp: number
+}
+
+/** One `router::models::list` row. */
 export interface CatalogModel {
   id: string
   provider: string

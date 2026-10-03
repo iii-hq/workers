@@ -1,4 +1,4 @@
-//! Injectable console page for creating and inspecting prompt evaluations.
+//! Injectable console page for the session monitor.
 
 use std::sync::Arc;
 

@@ -5,11 +5,12 @@ deploy: binary
 manifest: Cargo.toml
 license: Apache-2.0
 bin: eval
-tags: [evaluation, benchmark, sessions, metrics, prompt, system-prompt]
-description: Compare live objective metrics for 2-5 root sessions; retain durable prompt experiments as an advanced surface.
+tags: [evaluation, monitoring, sessions, metrics, harness, diagnostics]
+description: Session monitor for the Harness (deterministic diagnostics, Jev triage through judge, investigation by the user-chosen LLM, E2E validation plans; inactive until configured).
 
 dependencies:
   state: "latest"
   queue: "latest"
   cron: "latest"
   iii-observability: "latest"
+  judge: "latest"

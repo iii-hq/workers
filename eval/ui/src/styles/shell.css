@@ -1,0 +1,406 @@
+/* eval worker UI: the shell. The Monitor's sidebar (status, notices,
+   Analyze, filter, history rows) and the frame the detail and the settings
+   sit in. Page chrome, rows, controls and status panels come from
+   @iii-dev/console-ui; only machine values are mono. Narrow is the pane's
+   width (`data-narrow` from useContainerNarrow, @container), never the
+   viewport. */
+
+[data-iii-ui="eval"] .eval-ui-shell {
+  min-height: 0;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+/* ── monitor: body ───────────────────────────────────────────────────── */
+
+[data-iii-ui="eval"] .eval-ui-monitor {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-body {
+  width: 100%;
+}
+
+[data-iii-ui="eval"] .eval-ui-sidebar {
+  min-width: 0;
+}
+
+/* The whole sidebar scrolls: the status card and form leave first. */
+[data-iii-ui="eval"] .eval-ui-side {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+[data-iii-ui="eval"] .eval-ui-main {
+  min-width: 0;
+}
+
+/* Detail and settings own their padding and width; this is the scroller. */
+[data-iii-ui="eval"] .eval-ui-main-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Programmatic focus target after a drill-in; nothing to operate. */
+[data-iii-ui="eval"] .eval-ui-main-scroll:focus {
+  outline: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-main-empty {
+  display: flex;
+  justify-content: center;
+  padding: 48px 32px;
+}
+
+[data-iii-ui="eval"] .eval-ui-main-empty > * {
+  width: 100%;
+  max-width: 360px;
+}
+
+/* ── monitor: status card ────────────────────────────────────────────── */
+
+[data-iii-ui="eval"] .eval-ui-status {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+[data-iii-ui="eval"] .eval-ui-status-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+
+[data-iii-ui="eval"] .eval-ui-status-label {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+[data-iii-ui="eval"] .eval-ui-status-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+/* Settings open: pressed, in the neutral selection style. */
+[data-iii-ui="eval"] .eval-ui-status-actions [aria-pressed="true"] {
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="eval"] .eval-ui-dot-ghost {
+  background: var(--color-ink-ghost);
+}
+
+[data-iii-ui="eval"] .eval-ui-status-note {
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+[data-iii-ui="eval"] .eval-ui-status-lines {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 4px 8px;
+  margin: 0;
+  font-size: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-status-lines dt {
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="eval"] .eval-ui-status-lines dd {
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui="eval"] .eval-ui-nowrap {
+  white-space: nowrap;
+}
+
+/* The model id stays on one line; its full name is on the title. */
+[data-iii-ui="eval"] .eval-ui-status-lines dd[data-truncate] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="eval"] .eval-ui-status-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-mono {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+/* ── monitor: analyze form and filter ────────────────────────────────── */
+
+[data-iii-ui="eval"] .eval-ui-analyze {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-label {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+[data-iii-ui="eval"] .eval-ui-analyze-row {
+  display: flex;
+  gap: 6px;
+}
+
+/* Only the family: the input keeps its shared size, so phones do not zoom. */
+[data-iii-ui="eval"] .eval-ui-mono-input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+}
+
+[data-iii-ui="eval"] .eval-ui-hint {
+  color: var(--color-ink-faint);
+  font-size: 11.5px;
+}
+
+[data-iii-ui="eval"] .eval-ui-form-error {
+  margin: 0;
+  color: var(--color-alert-strong);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui="eval"] .eval-ui-filter {
+  display: flex;
+  width: 100%;
+}
+
+[data-iii-ui="eval"] .eval-ui-filter-item {
+  flex: 1 1 auto;
+  padding-inline: 6px;
+}
+
+/* ── monitor: history rows ───────────────────────────────────────────── */
+
+[data-iii-ui="eval"] .eval-ui-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The row selects; the icon beside it opens the observed session. They are
+   siblings (a button cannot hold a button), the icon centred on the row's
+   right edge with room reserved for it. */
+[data-iii-ui="eval"] .eval-ui-row-wrap {
+  position: relative;
+}
+
+[data-iii-ui="eval"] .eval-ui-row-wrap > .eval-ui-row {
+  padding-right: 40px;
+}
+
+[data-iii-ui="eval"] .eval-ui-row-open {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  transform: translateY(-50%);
+}
+
+[data-iii-ui="eval"] .eval-ui-row-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-row-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-row-status {
+  min-width: 0;
+  overflow: hidden;
+  line-height: 16px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="eval"] .eval-ui-row-status[data-tone="ok"] {
+  color: var(--color-ok);
+}
+
+[data-iii-ui="eval"] .eval-ui-row-status[data-tone="accent"] {
+  color: var(--color-accent);
+}
+
+[data-iii-ui="eval"] .eval-ui-row-status[data-tone="warn"] {
+  color: var(--color-warn-strong);
+}
+
+[data-iii-ui="eval"] .eval-ui-row-status[data-tone="alert"] {
+  color: var(--color-alert-strong);
+}
+
+[data-iii-ui="eval"] .eval-ui-row-time {
+  flex: none;
+  margin-left: auto;
+  line-height: 16px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="eval"] .eval-ui-row-title {
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="eval"] .eval-ui-row-meta {
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── monitor: first-load skeleton rows (the rows' shape) ─────────────── */
+
+[data-iii-ui="eval"] .eval-ui-skeleton-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+[data-iii-ui="eval"] .eval-ui-skeleton-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-skeleton-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+[data-iii-ui="eval"] .eval-ui-sk-dot,
+[data-iii-ui="eval"] .eval-ui-sk-label,
+[data-iii-ui="eval"] .eval-ui-sk-time,
+[data-iii-ui="eval"] .eval-ui-sk-title,
+[data-iii-ui="eval"] .eval-ui-sk-meta,
+[data-iii-ui="eval"] .eval-ui-sk-line {
+  display: block;
+  flex: none;
+  max-width: 100%;
+}
+
+[data-iii-ui="eval"] .eval-ui-sk-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+}
+
+[data-iii-ui="eval"] .eval-ui-sk-label {
+  width: 84px;
+  height: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-sk-time {
+  width: 30px;
+  height: 11px;
+  margin-left: auto;
+}
+
+[data-iii-ui="eval"] .eval-ui-sk-title {
+  width: 86%;
+  height: 13px;
+}
+
+[data-iii-ui="eval"] .eval-ui-sk-meta {
+  width: 58%;
+  height: 11px;
+}
+
+[data-iii-ui="eval"] .eval-ui-sk-line {
+  width: 70%;
+  height: 11px;
+}
+
+/* ── narrow: a phone, or a split pane under the wide layout ──────────── */
+
+/* Touch targets are 44px: the rows, the form, the filter and the icons. */
+[data-iii-ui="eval"] .eval-ui-monitor[data-narrow="true"] .eval-ui-status-head {
+  min-height: 44px;
+}
+
+[data-iii-ui="eval"] .eval-ui-monitor[data-narrow="true"] .eval-ui-status-actions > button {
+  width: 44px;
+  height: 44px;
+}
+
+[data-iii-ui="eval"] .eval-ui-monitor[data-narrow="true"] .eval-ui-row-wrap > .eval-ui-row {
+  padding-right: 52px;
+}
+
+[data-iii-ui="eval"] .eval-ui-monitor[data-narrow="true"] .eval-ui-row-open {
+  right: 4px;
+  width: 44px;
+  height: 44px;
+}
+
+[data-iii-ui="eval"] .eval-ui-monitor[data-narrow="true"] .eval-ui-mono-input,
+[data-iii-ui="eval"] .eval-ui-monitor[data-narrow="true"] .eval-ui-filter-item {
+  min-height: 44px;
+}
+
+[data-iii-ui="eval"] .eval-ui-monitor[data-narrow="true"] .eval-ui-main-empty {
+  padding: 32px 16px;
+}
