@@ -315,6 +315,88 @@ Sends make one request without automatic retry. An `accepted` result means Meta
 accepted submission; later webhooks establish delivery or failure. A timed-out
 send has an uncertain outcome: inspect the archive before repeating it.
 
+### Upload and send documents
+
+Documents use two separate Cloud functions. Upload once, save the returned
+`media_id`, and reuse it for subsequent explicit sends while it remains valid.
+Neither function needs a linked-device session or invokes native media sending.
+These functions are available after building and starting this worker version;
+editing source does not update an already running process.
+
+| Function ID | Required request fields | Optional request fields |
+| --- | --- | --- |
+| `whatsapp::cloud::media::upload_document` | `data_base64`, `mimetype`, `file_name` | None |
+| `whatsapp::cloud::messages::send_document` | `chat_id`, `media_id`, `file_name` | `caption` |
+
+Upload uses standard base64 containing only the selected file's bytes. It
+accepts no host path, URL, token, or native session ID. The calling engine or
+agent must authorize each upload/send under its existing function permissions.
+Do not add these functions to an automatic approval list just to test them.
+
+Markdown `.md` / `text/markdown` is **not an officially supported Meta document
+format** and is rejected. Choose `.txt` or PDF explicitly and supply that
+document; the worker never renames or converts it. Meta's supported formats,
+100 MB published limit, media lifetimes, and the worker's stricter limits are
+listed with sources in [the document reference](docs/meta-cloud-documents.md).
+
+The following example assumes the user explicitly selected a plain-text
+attachment named `report.txt` whose bytes are `Report` followed by a newline.
+Use your actual worker namespace. The first command uploads only; the second
+sends a message and should only run after confirming its recipient and file.
+
+```sh
+iii trigger whatsapp::cloud::media::upload_document --namespace my-project \
+  --json '{"data_base64":"UmVwb3J0Cg==","mimetype":"text/plain","file_name":"report.txt"}'
+```
+
+Example upload result:
+
+```json
+{
+  "media_id": "1376223850470843",
+  "mimetype": "text/plain",
+  "file_name": "report.txt",
+  "file_length": 7
+}
+```
+
+Replace the example ID below with the **returned** `media_id`, and replace the
+example phone number with the explicitly confirmed recipient. `chat_id` uses
+the same Cloud recipient rules as text messages; native JIDs are rejected.
+
+```sh
+iii trigger whatsapp::cloud::messages::send_document --namespace my-project \
+  --json '{"chat_id":"+15550000001","media_id":"1376223850470843","file_name":"report.txt","caption":"Your requested report"}'
+```
+
+Example send result:
+
+```json
+{
+  "message_id": "wamid.example",
+  "chat_id": "+15550000001",
+  "status": "accepted",
+  "message_status": null
+}
+```
+
+`accepted` confirms submission only. Follow the returned `message_id` in the
+Cloud archive or filtered `message.status` webhook events for delivery/read
+status or failure. Free-form documents require an open customer service
+window; a closed-window response never triggers an automatic template send.
+Upload and send each make one HTTP attempt. If the result is unknown after a
+timeout, do not retry automatically or assume that no upload/message exists.
+
+Errors preserve the iii `code` and `message` envelope. Use the stable code for
+decisions: `cloud_window_closed` requires an explicit template choice or a new
+customer message/call; `cloud_outcome_unknown` forbids assuming the operation
+failed; `cloud_archive_failed` means Meta already accepted the message and its
+ID is included in the error message. Meta's free-form error text is discarded
+to avoid credential exposure. See the complete
+[error contract](docs/meta-cloud-documents.md#structured-worker-errors).
+
+### Cloud message archive
+
 Cloud archives live under `data_dir/.cloud/<phone_number_id>/inbox.db`, separate
 from every native session. They retain webhook messages and worker-submitted
 messages under `max_inbox_messages`; changing the phone ID selects a separate

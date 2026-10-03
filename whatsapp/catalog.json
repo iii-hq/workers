@@ -9948,5 +9948,158 @@
         "error"
       ]
     }
+  },
+  {
+    "id": "whatsapp::cloud::media::upload_document",
+    "description": "Upload one officially supported document to Meta Cloud API from bounded base64; returns a reusable media_id. No linked session, host paths, URL fetches, conversion or automatic retries. Markdown is unsupported; explicitly choose TXT or PDF.",
+    "request_format": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "additionalProperties": false,
+      "title": "CloudDocumentUploadRequest",
+      "properties": {
+        "data_base64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 89478488,
+          "description": "Standard padded base64, no data URL. Decoded bytes must fit max_media_bytes (default 16 MiB; configurable to 64 MiB) and the conservative 100,000,000-byte Cloud ceiling. No automatic conversion."
+        },
+        "mimetype": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Official document MIME type: text/plain, application/pdf, application/msword, application/vnd.ms-excel, application/vnd.ms-powerpoint, or the corresponding Office Open XML MIME. Must match filename extension and content. text/markdown is rejected with an explicit alternative.",
+          "examples": [
+            "text/plain",
+            "application/pdf",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+          ]
+        },
+        "file_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "Display filename with supported extension; maximum 255 UTF-8 bytes (worker policy), without paths or control characters. Markdown is not supported; choose TXT or PDF explicitly."
+        }
+      },
+      "required": [
+        "data_base64",
+        "mimetype",
+        "file_name"
+      ]
+    },
+    "response_format": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "additionalProperties": false,
+      "title": "CloudUploadedDocument",
+      "properties": {
+        "media_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[0-9]+$",
+          "description": "Meta media ID from upload_document, valid for 30 days unless deleted. Reuse without uploading bytes again. Numeric IDs are strings; 128-character bound is worker policy."
+        },
+        "mimetype": {
+          "type": "string"
+        },
+        "file_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "Display filename with supported extension; maximum 255 UTF-8 bytes (worker policy), without paths or control characters. Markdown is not supported; choose TXT or PDF explicitly."
+        },
+        "file_length": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000000,
+          "description": "Number of decoded file bytes uploaded."
+        }
+      },
+      "required": [
+        "media_id",
+        "mimetype",
+        "file_name",
+        "file_length"
+      ]
+    }
+  },
+  {
+    "id": "whatsapp::cloud::messages::send_document",
+    "description": "Submit one Cloud API document using an existing Meta media_id; requires an open customer service window. Returns API acceptance only; delivery comes by webhook. Never retries or switches to templates or native transport automatically.",
+    "request_format": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "additionalProperties": false,
+      "title": "CloudDocumentRequest",
+      "properties": {
+        "chat_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 136,
+          "description": "International phone number or supported business-scoped user ID; native/group JIDs are not accepted."
+        },
+        "media_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[0-9]+$",
+          "description": "Meta media ID from upload_document, valid for 30 days unless deleted. Reuse without uploading bytes again. Numeric IDs are strings; 128-character bound is worker policy."
+        },
+        "file_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "Display filename with supported extension; maximum 255 UTF-8 bytes (worker policy), without paths or control characters. Markdown is not supported; choose TXT or PDF explicitly."
+        },
+        "caption": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1024,
+          "description": "Optional caption of at most 1024 Unicode characters."
+        }
+      },
+      "required": [
+        "chat_id",
+        "media_id",
+        "file_name"
+      ]
+    },
+    "response_format": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "chat_id": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "message_status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "Graph accepted the request; delivery is reported separately by webhook.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "chat_id",
+        "message_id",
+        "status"
+      ],
+      "title": "SentMessage",
+      "type": "object"
+    }
   }
 ]

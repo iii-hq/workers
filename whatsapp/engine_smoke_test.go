@@ -178,7 +178,7 @@ func TestEngineSmoke(t *testing.T) {
 			t.Fatalf("empty asset: %s", path)
 		}
 	}
-	for _, id := range []string{"whatsapp::sessions::create", "whatsapp::messages::list", "whatsapp::cloud::messages::send_text", "whatsapp::cloud::messages::send_template"} {
+	for _, id := range []string{"whatsapp::sessions::create", "whatsapp::messages::list", "whatsapp::cloud::messages::send_text", "whatsapp::cloud::messages::send_template", "whatsapp::cloud::media::upload_document", "whatsapp::cloud::messages::send_document"} {
 		info, err := smokeTrigger(engine, engineURL, "default", "engine::functions::info", map[string]any{"function_id": id, "namespace": smokeNamespace})
 		if err != nil {
 			t.Fatal(err)
@@ -244,6 +244,16 @@ func TestEngineSmoke(t *testing.T) {
 		}
 	}
 	if webhookPort > 0 {
+		t.Run("cloud_document_contract", func(t *testing.T) {
+			// Reject unsupported Markdown through the installed typed function;
+			// validation must finish before any external request can be made.
+			_, err := smokeValue(engine, engineURL, smokeNamespace, "whatsapp::cloud::media::upload_document", map[string]any{
+				"data_base64": "UmVwb3J0Cg==", "mimetype": "text/markdown", "file_name": "report.md",
+			})
+			if err == nil || !strings.Contains(err.Error(), "cloud_unsupported_document") {
+				t.Fatalf("document error code was not preserved by the SDK: %v", err)
+			}
+		})
 		t.Run("cloud_webhook", func(t *testing.T) { smokeCloudWebhook(t, engine, engineURL, webhookPort) })
 		t.Run("cloud_events", func(t *testing.T) { smokeCloudEvents(t, engine, engineURL, webhookPort) })
 		t.Run("development_tunnel", func(t *testing.T) { smokeDevelopmentTunnel(t, engine, engineURL, tunnel) })

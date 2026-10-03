@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
 
 type CloudConfig struct {
@@ -148,24 +150,55 @@ func newCloudClient() *cloudClient {
 	return &cloudClient{http: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, base: "https://graph.facebook.com"}
 }
 func (c *cloudClient) request(ctx context.Context, config Config, method, path string, query url.Values, body any) (map[string]any, error) {
+	var reader io.Reader
+	contentType := ""
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return nil, cloudError("invalid_request", "Invalid Cloud API JSON request")
+		}
+		reader = bytes.NewReader(encoded)
+		contentType = "application/json"
+	}
+	return c.requestBody(ctx, config, method, path, query, reader, contentType)
+}
+
+func cloudError(code, message string) *iii.InvocationError {
+	return &iii.InvocationError{Code: code, Message: message}
+}
+
+// POST failures after dispatch cannot establish whether Meta accepted a message
+// or uploaded media. Never replay a request, including unreadable acknowledgements.
+func cloudResponseError(method, message string) error {
+	if method == http.MethodPost {
+		return cloudError("cloud_outcome_unknown", message+"; Meta may have completed the operation. No automatic retry was made; check messages before retrying a send")
+	}
+	return cloudError("cloud_invalid_response", message)
+}
+
+func cloudRequestConfig(config Config) error {
 	if !config.Cloud.Enabled {
-		return nil, errors.New("Cloud API is disabled")
+		return cloudError("cloud_disabled", "Cloud API is disabled")
 	}
 	if strings.TrimSpace(config.Cloud.AccessToken) == "" {
-		return nil, errors.New("Cloud API access token is missing")
+		return cloudError("cloud_not_configured", "Cloud API access token is missing")
 	}
 	if err := config.Cloud.Validate(); err != nil {
+		return cloudError("cloud_not_configured", err.Error())
+	}
+	return nil
+}
+
+// JSON messages and multipart media share authentication, deadlines, response
+// bounds and the transport that disables redirects and connection replay.
+func (c *cloudClient) requestBody(ctx context.Context, config Config, method, path string, query url.Values, reader io.Reader, contentType string) (map[string]any, error) {
+	if err := cloudRequestConfig(config); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(config.OperationTimeoutSecs)*time.Second)
 	defer cancel()
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		reader = bytes.NewReader(encoded)
+	if ctx.Err() != nil {
+		return nil, cloudError("cloud_request_canceled", "Cloud API request canceled before dispatch")
 	}
 	u := c.base + "/" + config.Cloud.APIVersion + "/" + path
 	if len(query) > 0 {
@@ -173,70 +206,66 @@ func (c *cloudClient) request(ctx context.Context, config Config, method, path s
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, reader)
 	if err != nil {
-		return nil, errors.New("invalid Cloud API request")
+		return nil, cloudError("invalid_request", "Invalid Cloud API request")
 	}
 	req.Header.Set("Authorization", "Bearer "+config.Cloud.AccessToken)
 	req.Header.Set("User-Agent", "iii-whatsapp-cloud/0.1")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	req.GetBody = nil
 	response, err := c.http.Do(req)
 	if err != nil {
-		return nil, errors.New("Cloud API request failed; a send may have completed; check messages before retrying")
+		return nil, cloudResponseError(method, "Cloud API request failed or timed out")
 	}
 	defer response.Body.Close()
 	const limit = 2 * 1024 * 1024
 	if response.ContentLength > limit {
-		return nil, errors.New("Cloud API response exceeds the size limit")
+		return nil, cloudResponseError(method, "Cloud API response exceeds the size limit")
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return nil, errors.New("Could not read Cloud API response; check messages before retrying a send")
+		return nil, cloudResponseError(method, "Could not read Cloud API response")
 	}
 	if len(raw) > limit {
-		return nil, errors.New("Cloud API response exceeds the size limit")
+		return nil, cloudResponseError(method, "Cloud API response exceeds the size limit")
 	}
 	var value map[string]any
 	decodeErr := json.Unmarshal(raw, &value)
+	if method == http.MethodPost && response.StatusCode >= 500 {
+		remote, _ := value["error"].(map[string]any)
+		code, validCode := remote["code"].(float64)
+		if decodeErr != nil || !validCode || code <= 0 {
+			return nil, cloudResponseError(method, fmt.Sprintf("Cloud API HTTP %d without a valid Meta error response", response.StatusCode))
+		}
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 || value["error"] != nil {
-		return nil, errors.New(cloudRemoteError(config, response.StatusCode, value))
+		code := "cloud_api_error"
+		message := cloudRemoteError(response.StatusCode, value)
+		if remote, ok := value["error"].(map[string]any); ok && remote["code"] == float64(131047) {
+			code = "cloud_window_closed"
+			message += ": The customer service window is closed. Wait for a new customer message or call, or explicitly choose an approved template. No automatic retry or template fallback was made"
+		}
+		return nil, cloudError(code, message)
 	}
 	if decodeErr != nil || value == nil {
-		return nil, errors.New("Cloud API returned invalid JSON; check messages before retrying a send")
+		return nil, cloudResponseError(method, "Cloud API returned invalid JSON")
 	}
 	return value, nil
 }
-func cloudRemoteError(config Config, status int, value map[string]any) string {
+func cloudRemoteError(status int, value map[string]any) string {
 	result := fmt.Sprintf("Cloud API HTTP %d", status)
 	if remote, ok := value["error"].(map[string]any); ok {
 		if code, ok := remote["code"].(float64); ok {
 			result += fmt.Sprintf(" (code %.0f)", code)
 		}
-		if message, ok := remote["message"].(string); ok {
-			result += ": " + message
-		}
-		if data, ok := remote["error_data"].(map[string]any); ok {
-			if details, ok := data["details"].(string); ok {
-				result += ": " + details
-			}
+		if subcode, ok := remote["error_subcode"].(float64); ok {
+			result += fmt.Sprintf(" (subcode %.0f)", subcode)
 		}
 	}
-	for _, secret := range []string{config.Cloud.AccessToken, config.Cloud.AppSecret, config.Cloud.VerifyToken} {
-		if secret != "" {
-			result = strings.ReplaceAll(result, secret, "[REDACTED]")
-		}
-	}
-	clean := []rune(strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, result))
-	if len(clean) > 1024 {
-		clean = clean[:1024]
-	}
-	return string(clean)
+	// Meta text/details can echo credentials in arbitrary encodings. Expose only
+	// numeric diagnostics instead of trying to redact every possible encoding.
+	return result
 }
 func cloudCursor(cursor string) error {
 	if len(cursor) > 2048 || strings.IndexFunc(cursor, unicode.IsControl) >= 0 {
@@ -432,20 +461,31 @@ func (c *cloudClient) send(ctx context.Context, config Config, chat string, body
 	}
 	messages, err := cloudArray(response["messages"])
 	if err != nil || len(messages) == 0 {
-		return result, errors.New("Cloud API returned no message acknowledgement; check messages before retrying")
+		return result, cloudResponseError(http.MethodPost, "Cloud API returned no message acknowledgement")
 	}
 	message, _ := messages[0].(map[string]any)
 	id, _ := message["id"].(string)
-	if id == "" || len(id) > 512 {
-		return result, errors.New("Cloud API returned no valid message ID; check messages before retrying")
+	if id == "" || len(id) > 512 || strings.IndexFunc(id, unicode.IsControl) >= 0 || cloudEchoesSecret(config, id) {
+		return result, cloudResponseError(http.MethodPost, "Cloud API returned no valid message ID")
 	}
 	result.MessageID = id
 	result.ChatID, _ = normalizeCloudChatID(chat)
 	result.Status = "accepted"
-	if status, ok := message["message_status"].(string); ok {
+	if status, ok := message["message_status"].(string); ok && !cloudEchoesSecret(config, status) {
 		result.MessageStatus = &status
 	}
 	return result, nil
+}
+
+// Opaque IDs can contain a short, user-chosen verify token by coincidence.
+// Reject a complete credential echo, never an incidental substring of an ID.
+func cloudEchoesSecret(config Config, value string) bool {
+	for _, secret := range []string{config.Cloud.AccessToken, config.Cloud.AppSecret, config.Cloud.VerifyToken} {
+		if secret != "" && value == secret {
+			return true
+		}
+	}
+	return false
 }
 func decodeCloudRequest(input map[string]any, out any) error {
 	copy := make(map[string]any, len(input))
@@ -481,6 +521,7 @@ func retainCloudSend(inbox *Inbox, sent CloudSentMessage, kind, text string, req
 }
 func registerCloud(r *Registry) {
 	client := newCloudClient()
+	registerCloudDocuments(r, client)
 	r.Add("whatsapp::cloud::status", func(ctx context.Context, input map[string]any) (any, error) {
 		var req struct{}
 		if err := decodeCloudRequest(input, &req); err != nil {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -135,6 +136,43 @@ func TestCloudSendPayloadsAndAcknowledgement(t *testing.T) {
 	payload, err := cloudTemplatePayload(CloudTemplateRequest{ChatID: "+15551234567", Name: "hello_world", Language: "en_US"})
 	if err != nil || payload["to"] != "+15551234567" {
 		t.Fatalf("template: %+v, %v", payload, err)
+	}
+}
+
+func TestCloudTextAndTemplateHTTPRemainJSON(t *testing.T) {
+	textBody, err := cloudTextPayload(CloudTextRequest{ChatID: "+15551234567", Text: "Existing text transport", PreviewURL: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	templateBody, err := cloudTemplatePayload(CloudTemplateRequest{ChatID: "+15551234567", Name: "hello_world", Language: "en_US"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []map[string]any{textBody, templateBody} {
+		t.Run(body["type"].(string), func(t *testing.T) {
+			var calls atomic.Int32
+			client := cloudTestClient(t, func(w http.ResponseWriter, request *http.Request) {
+				calls.Add(1)
+				if request.Method != http.MethodPost || request.URL.Path != "/v26.0/456/messages" || request.Header.Get("Content-Type") != "application/json" || request.Header.Get("Authorization") != "Bearer test-access-secret" {
+					t.Error("existing Cloud JSON transport changed")
+				}
+				var received any
+				if err := json.NewDecoder(request.Body).Decode(&received); err != nil {
+					t.Error(err)
+				}
+				encoded, _ := json.Marshal(body)
+				var expected any
+				_ = json.Unmarshal(encoded, &expected)
+				if !reflect.DeepEqual(received, expected) {
+					t.Error("existing message payload changed")
+				}
+				_, _ = w.Write([]byte(`{"messages":[{"id":"wamid.existing","message_status":"accepted"}]}`))
+			})
+			sent, err := client.send(context.Background(), cloudTestConfig(), "+15551234567", body)
+			if err != nil || sent.MessageID != "wamid.existing" || sent.Status != "accepted" || calls.Load() != 1 {
+				t.Fatalf("existing send transport failed: %v, calls=%d", err, calls.Load())
+			}
+		})
 	}
 }
 func TestCloudErrorsAreRedactedRedirectsAndRetriesAreDisabled(t *testing.T) {
