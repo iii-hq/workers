@@ -100,10 +100,28 @@ pub async fn redrive_if_idle(deps: &Deps, record: &TurnRecord) -> Result<bool, H
 }
 
 /// The redrive's view of the turn scope (key -> last seen `Running`), held
-/// for a whole read so the run loop's and the cron sweep's passes serialize;
-/// see [`crate::state::read_changed_turns`].
+/// for a whole read so the run loop's and the cron sweep's passes (and the
+/// sweep's full read, [`read_all_turns`]) serialize; see
+/// [`crate::state::read_changed_turns`].
 static TURN_VIEW: tokio::sync::Mutex<BTreeMap<String, bool>> =
     tokio::sync::Mutex::const_new(BTreeMap::new());
+
+/// Every turn record ([`crate::state::list_turns`]), with the redrive's view
+/// rebuilt from them: the pending sweep's full read doubles as the view's
+/// refresh, so a record rewritten behind this process's writes (a state-store
+/// rollback, a console edit, another harness process) is redriven after the
+/// next sweep, not only after a restart. Writes that land during the read
+/// stay marked for the next pass.
+pub async fn read_all_turns(deps: &Deps) -> Result<Vec<TurnRecord>, HarnessError> {
+    let cfg = deps.cfg().await;
+    let mut view = TURN_VIEW.lock().await;
+    let records = crate::state::list_turns(&deps.iii, cfg.session_timeout_ms).await?;
+    *view = records
+        .iter()
+        .map(|r| (r.session_id.clone(), r.status == TurnStatus::Running))
+        .collect();
+    Ok(records)
+}
 
 /// Re-enqueue the current step of every orphaned `Running` turn. Returns the
 /// number of steps re-enqueued. Reads only the turn records that changed

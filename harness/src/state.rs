@@ -306,9 +306,11 @@ async fn read_listed_turn(
 /// serialize passes over one view (a stale pass must not overwrite a newer
 /// one's entries).
 ///
-/// Limitation: a second harness process writing an EXISTING key between
-/// passes is seen only at the next full pass (the next boot); new keys from
-/// other processes are still seen.
+/// Limitation: an EXISTING key rewritten behind this process's writes (by a
+/// second harness process, a state-store rollback, a console edit) is seen
+/// only at the next full read: the pending sweep's
+/// ([`crate::inflight::read_all_turns`], daily by default) or the first pass
+/// after boot. New keys from other processes are still seen.
 pub async fn read_changed_turns(
     iii: &IIIClient,
     view: &mut BTreeMap<String, bool>,
@@ -813,7 +815,8 @@ mod tests {
 
     /// The orphan redrive reads only what changed: every key on the first
     /// pass, then keys new to the view, keys this process wrote or deleted, and
-    /// keys last seen `Running`. A pass that fails re-marks what it drained.
+    /// keys last seen `Running`. A pass that fails re-marks what it drained,
+    /// and a write is marked after it lands.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn read_changed_turns_reads_only_what_changed() {
         use futures_util::{SinkExt, StreamExt};
@@ -836,9 +839,12 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::<String>::new()));
         // A `state::get` of this key is never answered (the read fails).
         let hang = Arc::new(Mutex::new(None::<String>));
+        // A pass starts while this key's write is in flight: the set is
+        // drained before the write lands.
+        let drain = Arc::new(Mutex::new(None::<String>));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
-        let (db, seen, stuck) = (store.clone(), calls.clone(), hang.clone());
+        let (db, seen, stuck, midway) = (store.clone(), calls.clone(), hang.clone(), drain.clone());
         let server = tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.unwrap();
             let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
@@ -861,6 +867,9 @@ mod tests {
                         "state::get" if stuck.lock().unwrap().as_ref() == Some(&key) => continue,
                         "state::get" => db.get(&key).cloned().unwrap_or(Value::Null),
                         "state::set" => {
+                            if midway.lock().unwrap().take().is_some_and(|k| k == key) {
+                                CHANGED_TURNS.lock().unwrap().clear();
+                            }
                             db.insert(key, msg["data"]["value"].clone());
                             json!({})
                         }
@@ -938,6 +947,13 @@ mod tests {
             .unwrap();
         assert_eq!(pass(&iii, &mut view, &calls).await, ["rv_a", "rv_c"]);
         assert!(pass(&iii, &mut view, &calls).await.is_empty());
+        // A pass that drained the set while a write was in flight (it read the
+        // old record) loses nothing: the key is marked after the write lands.
+        *drain.lock().unwrap() = Some("rv_a".into());
+        put_turn(&iii, &record("rv_a", "failed"), 2_000)
+            .await
+            .unwrap();
+        assert_eq!(pass(&iii, &mut view, &calls).await, ["rv_a"]);
         // A pass that cannot read a written key re-marks it for the next.
         put_turn(&iii, &record("rv_c", "running"), 2_000)
             .await

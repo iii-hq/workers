@@ -75,6 +75,12 @@ impl Store {
                 Ok(json!({}))
             }
             "state::get" | "harness::state::get" => Ok(self.state(scope, key)),
+            "state::list_keys" => Ok(json!({"keys": self
+                .state
+                .keys()
+                .filter(|(s, _)| s == scope)
+                .map(|(_, k)| k)
+                .collect::<Vec<_>>()})),
             "state::list" | "harness::state::list" => Ok(Value::Array(
                 self.state
                     .iter()
@@ -1774,4 +1780,60 @@ async fn a_tombstone_after_a_live_answer_refuses_dispatch_and_withdraws_its_witn
     assert!(!store.calls.iter().any(|(f, _)| f == "ext::after"));
     let witnesses = dispatch_witnesses(&store);
     assert!(witnesses.is_empty(), "{witnesses:#?}");
+}
+
+/// `harness_turn` keys read with `state::get` since the calls were cleared.
+fn turn_gets(store: &Store) -> Vec<String> {
+    store
+        .calls
+        .iter()
+        .filter(|(f, data)| f == "state::get" && data["scope"] == "harness_turn")
+        .map(|(_, data)| data["key"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// The orphan redrive reads only the turn records that changed since its last
+/// pass, and the pending sweep's full read refreshes that view: a record
+/// rewritten behind this process (a state-store rollback, a console edit) is
+/// redriven by the next sweep, not only after a restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orphan_redrive_reads_only_changed_turns_and_the_sweep_refreshes_its_view() {
+    use harness::functions::sweep_pending::{self, SweepEvent};
+    use harness::inflight::redrive_orphans;
+    let stack = Stack::new("completed").await;
+    // Own keys only: the other tests' writes mark the fixture's ids.
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .state
+        .retain(|(scope, _), _| scope != "harness_turn");
+    stack.session("rd_done", None, "completed");
+    stack.session("rd_parked", None, "awaiting_functions");
+    let pass = || async {
+        stack.store.lock().unwrap().calls.clear();
+        let redriven = redrive_orphans(&stack.deps).await.unwrap();
+        (redriven, turn_gets(&stack.store.lock().unwrap()))
+    };
+    assert_eq!(
+        pass().await,
+        (0, vec!["rd_done".into(), "rd_parked".into()])
+    );
+    // Nothing changed: keys only.
+    assert_eq!(pass().await, (0, vec![]));
+    // Rolled back to Running behind this process: the incremental pass cannot
+    // see it...
+    stack.set_status("rd_done", "running");
+    assert_eq!(pass().await, (0, vec![]));
+    // ...the sweep's one full read refreshes the view, and its redrive pass
+    // then reads (and re-checks) only the orphan and re-enqueues it.
+    stack.store.lock().unwrap().calls.clear();
+    let swept = sweep_pending::handle(&stack.deps, SweepEvent::default())
+        .await
+        .unwrap();
+    assert_eq!(swept.redriven, 1);
+    assert_eq!(
+        turn_gets(&stack.store.lock().unwrap()),
+        ["rd_done", "rd_parked", "rd_done", "rd_done"]
+    );
 }

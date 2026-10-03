@@ -623,9 +623,10 @@ fn pending_call_expired(
 }
 
 /// Resolve every pending call past its `pending_timeout_ms` with an error.
+/// Its full read also refreshes the orphan redrive's view.
 pub async fn sweep_expired(deps: &Deps) -> Result<u64, HarnessError> {
     let cfg = deps.cfg().await;
-    let records = crate::state::list_turns(&deps.iii, cfg.session_timeout_ms).await?;
+    let records = crate::inflight::read_all_turns(deps).await?;
     let now = AgentMessage::now_ms();
 
     // Collect expired (session, turn, call) tuples first; resolve re-reads.
