@@ -8,6 +8,7 @@
 //! run once, snapshots the sequence (`state_seq_get`; Qwen3.5's hybrid memory
 //! cannot copy sequences), restores it into up to `parallel` sequences and
 //! decodes their suffixes together in one batch.
+pub use crate::{softmax, Stop};
 use crate::{Runtime, Session};
 use anyhow::{anyhow, bail, Result};
 use llama_cpp_2::{
@@ -44,15 +45,6 @@ pub struct Options {
     pub context_tokens: u32,
     /// Prompts decoded together in one batch (1 = one at a time).
     pub parallel: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stop {
-    Deadline,
-    Cancelled,
-    /// A prompt does not fit the context window.
-    TooLong,
-    Failed,
 }
 
 #[derive(Debug)]
@@ -369,19 +361,6 @@ fn decode(
         }
     }
     Ok(out.into_iter().flatten().collect())
-}
-
-/// Softmax over the option logits at `temperature`; `None` for no options or
-/// a non-finite logit. One option is certain (`[1.0]`).
-pub fn softmax(z: &[f32], temperature: f64) -> Option<Vec<f64>> {
-    if z.is_empty() || z.iter().any(|v| !v.is_finite()) {
-        return None;
-    }
-    let z: Vec<f64> = z.iter().map(|&v| f64::from(v) / temperature).collect();
-    let max = z.iter().fold(f64::NEG_INFINITY, |m, &v| m.max(v));
-    let exp: Vec<f64> = z.iter().map(|&v| (v - max).exp()).collect();
-    let sum: f64 = exp.iter().sum();
-    Some(exp.iter().map(|v| v / sum).collect())
 }
 
 #[cfg(test)]

@@ -11,26 +11,33 @@ repository = "https://github.com/iii-hq/workers"
 # crates/config-client.
 publish = false
 
+[features]
+default = ["llama"]
+# Runtime, Session, Options and `scorer`: llama.cpp through llama-cpp-2.
+# Without it only `lifecycle`, `softmax` and `Stop` build (judge-clef builds
+# its own llama.cpp).
+llama = ["dep:llama-cpp-2", "dep:llama-cpp-sys-2"]
+
 [dependencies]
 anyhow = "1"
 judge-contract = { path = "../judge-contract" }
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "rt", "time"] }
 tracing = "0.1"
-llama-cpp-2 = { version = "0.1.156", default-features = false }
+llama-cpp-2 = { version = "0.1.156", default-features = false, optional = true }
 
 # Linux x86_64 and Windows load llama.cpp's backends at runtime (GGML_BACKEND_DL):
 # the per-CPU variants and the Vulkan module are loaded from the executable's
 # directory, so one build runs on GPU desktops, servers and containers alike.
 [target.'cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "windows"))'.dependencies]
-llama-cpp-2 = { version = "0.1.156", default-features = false, features = ["dynamic-backends", "vulkan"] }
+llama-cpp-2 = { version = "0.1.156", default-features = false, features = ["dynamic-backends", "vulkan"], optional = true }
 # Only for its `links = "llama"` metadata: build.rs copies the backend modules
 # (DEP_LLAMA_BACKENDS_DIR) and the shared libraries beside the binary.
-llama-cpp-sys-2 = { version = "=0.1.156", default-features = false }
+llama-cpp-sys-2 = { version = "=0.1.156", default-features = false, optional = true }
 
 # macOS: Metal is linked in; Apple Silicon GPUs run the model.
 [target.'cfg(target_os = "macos")'.dependencies]
-llama-cpp-2 = { version = "0.1.156", default-features = false, features = ["metal"] }
+llama-cpp-2 = { version = "0.1.156", default-features = false, features = ["metal"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

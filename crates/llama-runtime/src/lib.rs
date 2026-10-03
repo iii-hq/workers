@@ -5,24 +5,55 @@
 //! hardware at a time. What a job does with the model is the provider's
 //! business; `scorer` is the job of the providers that read option labels, and
 //! `lifecycle` loads a provider's model on first use and releases it when idle.
+//! Everything that needs llama-cpp-2 is behind the default `llama` feature.
+#[cfg(feature = "llama")]
 pub use llama_cpp_2;
 pub mod lifecycle;
+#[cfg(feature = "llama")]
 pub mod scorer;
 
 pub use lifecycle::{ModelSlot, Unloaded, IDLE_RELEASE};
 
+#[cfg(feature = "llama")]
 use anyhow::{anyhow, Result};
+#[cfg(feature = "llama")]
 use llama_cpp_2::{
     context::{params::LlamaContextParams, LlamaContext},
     llama_backend::LlamaBackend,
     model::{params::LlamaModelParams, LlamaModel},
 };
+#[cfg(feature = "llama")]
 use std::{
     path::Path,
     sync::{mpsc, Arc, OnceLock},
 };
+#[cfg(feature = "llama")]
 use tokio::sync::oneshot;
 
+/// Why a forward stopped short of its scores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    Deadline,
+    Cancelled,
+    /// A prompt does not fit the context window.
+    TooLong,
+    Failed,
+}
+
+/// Softmax over the option logits at `temperature`; `None` for no options or
+/// a non-finite logit. One option is certain (`[1.0]`).
+pub fn softmax(z: &[f32], temperature: f64) -> Option<Vec<f64>> {
+    if z.is_empty() || z.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    let z: Vec<f64> = z.iter().map(|&v| f64::from(v) / temperature).collect();
+    let max = z.iter().fold(f64::NEG_INFINITY, |m, &v| m.max(v));
+    let exp: Vec<f64> = z.iter().map(|&v| (v - max).exp()).collect();
+    let sum: f64 = exp.iter().sum();
+    Some(exp.iter().map(|v| v / sum).collect())
+}
+
+#[cfg(feature = "llama")]
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     pub threads: usize,
@@ -32,14 +63,17 @@ pub struct Options {
 
 /// The loaded model and its context, owned by the runtime thread; both are
 /// freed when the last `Runtime` handle is dropped and the thread ends.
+#[cfg(feature = "llama")]
 pub struct Session<'a> {
     pub model: &'a LlamaModel,
     pub ctx: LlamaContext<'a>,
 }
 
+#[cfg(feature = "llama")]
 type Job = Box<dyn for<'a> FnOnce(&mut Session<'a>) + Send>;
 
 /// Handle to the runtime thread; clones share it.
+#[cfg(feature = "llama")]
 #[derive(Clone)]
 pub struct Runtime {
     jobs: mpsc::Sender<Job>,
@@ -47,6 +81,7 @@ pub struct Runtime {
 }
 
 /// llama.cpp's backend is process-global and initializes once.
+#[cfg(feature = "llama")]
 fn backend() -> Result<&'static LlamaBackend> {
     static BACKEND: OnceLock<Result<LlamaBackend, String>> = OnceLock::new();
     BACKEND
@@ -62,9 +97,12 @@ fn backend() -> Result<&'static LlamaBackend> {
 /// load them from the executable's directory (the published layout), else from
 /// the build's own output (tests). A module whose system library is missing,
 /// such as the Vulkan loader, is skipped, and the CPU module runs the model.
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    target_os = "windows"
+#[cfg(all(
+    feature = "llama",
+    any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        target_os = "windows"
+    )
 ))]
 fn load_backend_modules() {
     if let Some(dir) = std::env::current_exe()
@@ -79,12 +117,14 @@ fn load_backend_modules() {
 }
 
 /// Elsewhere the backends are linked in (Metal on macOS, CPU otherwise).
+#[cfg(feature = "llama")]
 #[cfg(not(any(
     all(target_os = "linux", target_arch = "x86_64"),
     target_os = "windows"
 )))]
 fn load_backend_modules() {}
 
+#[cfg(feature = "llama")]
 impl Runtime {
     /// Load `gguf` on a new thread and return once it answers (or failed).
     /// `configure` sets the context parameters the provider needs (window,
