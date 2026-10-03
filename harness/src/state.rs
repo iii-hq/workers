@@ -257,11 +257,9 @@ pub async fn list_turns(iii: &IIIClient, timeout_ms: u64) -> Result<Vec<TurnReco
     let mut records = Vec::with_capacity(keys.len());
     for key in keys {
         let value = state_get(iii, TURN_SCOPE, &key, timeout_ms).await?;
-        if value.is_null() {
-            continue;
-        }
-        match serde_json::from_value(value) {
-            Ok(record) => records.push(record),
+        // `None`: the key was deleted between the two reads (null).
+        match serde_json::from_value::<Option<TurnRecord>>(value) {
+            Ok(record) => records.extend(record),
             Err(e) => {
                 tracing::warn!(session_id = %key, error = %e, "skipping unparseable turn record")
             }
@@ -644,8 +642,8 @@ mod tests {
 
     /// The live `harness_turn` scope outgrew the engine's 16 MiB frame cap as
     /// ONE `state::list` reply and wedged the state worker. `list_turns` reads
-    /// the keys, then each record; a key deleted in between (null) or a record
-    /// that no longer parses is skipped.
+    /// the keys, then each record; a key deleted in between (null) is skipped
+    /// silently and a record that no longer parses is skipped with a warning.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn list_turns_reads_each_key_never_the_whole_scope() {
         use futures_util::{SinkExt, StreamExt};
@@ -691,13 +689,44 @@ mod tests {
                 }
             }
         });
+        // Thread-local capture: `list_turns` is polled on this thread.
+        #[derive(Clone, Default)]
+        struct Logs(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Logs {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let logs = Logs::default();
+        let sink = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || sink.clone())
+            .finish();
         let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());
-        let listed = list_turns(&iii, 2_000).await;
+        let listed = {
+            let _logs = tracing::subscriber::set_default(subscriber);
+            list_turns(&iii, 2_000).await
+        };
         iii.shutdown();
         server.abort();
 
         let ids: Vec<String> = listed.unwrap().into_iter().map(|r| r.session_id).collect();
         assert_eq!(ids, ["s_1", "s_2"]);
+        // Only the unparseable record warns; the deleted key is skipped silently.
+        let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        let warned: Vec<&str> = logs
+            .lines()
+            .filter(|l| l.contains("skipping unparseable turn record"))
+            .collect();
+        assert!(
+            warned.len() == 1 && warned[0].contains("session_id=s_bad"),
+            "{logs}"
+        );
         let calls = calls.lock().unwrap();
         assert!(!calls.iter().any(|f| f == "state::list"), "{calls:?}");
         let gets = calls.iter().filter(|f| *f == "state::get").count();
