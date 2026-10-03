@@ -16,7 +16,7 @@
 //! and `generate_step` acks any delivery whose `(turn_id, step)` is no longer
 //! current, so a duplicate of a step that was only delayed is dropped.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use crate::deps::Deps;
@@ -99,11 +99,21 @@ pub async fn redrive_if_idle(deps: &Deps, record: &TurnRecord) -> Result<bool, H
     Ok(true)
 }
 
+/// The redrive's view of the turn scope (key -> last seen `Running`), held
+/// for a whole read so the run loop's and the cron sweep's passes serialize;
+/// see [`crate::state::read_changed_turns`].
+static TURN_VIEW: tokio::sync::Mutex<BTreeMap<String, bool>> =
+    tokio::sync::Mutex::const_new(BTreeMap::new());
+
 /// Re-enqueue the current step of every orphaned `Running` turn. Returns the
-/// number of steps re-enqueued.
+/// number of steps re-enqueued. Reads only the turn records that changed
+/// since the last pass ([`crate::state::read_changed_turns`]).
 pub async fn redrive_orphans(deps: &Deps) -> Result<u64, HarnessError> {
     let cfg = deps.cfg().await;
-    let records = crate::state::list_turns(&deps.iii, cfg.session_timeout_ms).await?;
+    let records = {
+        let mut view = TURN_VIEW.lock().await;
+        crate::state::read_changed_turns(&deps.iii, &mut view, cfg.session_timeout_ms).await?
+    };
     let now = AgentMessage::now_ms();
     let mut redriven = 0;
     for mut record in records {

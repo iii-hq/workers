@@ -9,6 +9,8 @@
 //! Binding scopes use the state worker's hidden harness API; ordinary
 //! bookkeeping keeps the public `state::*` compatibility surface.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use schemars::JsonSchema;
@@ -18,7 +20,7 @@ use serde_json::{json, Value};
 use crate::error::HarnessError;
 use crate::trace_tags::run_hidden;
 use crate::types::message::AgentMessage;
-use crate::types::turn::{IdemRecord, TurnRecord};
+use crate::types::turn::{IdemRecord, TurnRecord, TurnStatus};
 
 pub const TURN_SCOPE: &str = "harness_turn";
 pub const IDEM_SCOPE: &str = "harness_idem";
@@ -208,7 +210,7 @@ pub async fn put_turn(
 ) -> Result<(), HarnessError> {
     let value = serde_json::to_value(record)
         .map_err(|e| HarnessError::State(format!("turn record serialize: {e}")))?;
-    match state_set(
+    let written = match state_set(
         iii,
         TURN_SCOPE,
         &record.session_id,
@@ -227,7 +229,9 @@ pub async fn put_turn(
             state_set(iii, TURN_SCOPE, &record.session_id, value, timeout_ms).await
         }
         other => other,
-    }
+    };
+    mark_turn_changed(&record.session_id);
+    written
 }
 
 /// Whether a state error is the caller-side invocation timeout (the SDK's
@@ -242,30 +246,104 @@ pub async fn delete_turn(
     session_id: &str,
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
-    state_delete(iii, TURN_SCOPE, session_id, timeout_ms).await
+    let deleted = state_delete(iii, TURN_SCOPE, session_id, timeout_ms).await;
+    mark_turn_changed(session_id);
+    deleted
 }
 
-/// List every turn record (the pending-call sweep and the orphan redrive scan
-/// these). Keys first, then one `state::get` per key: the scope keeps one
-/// record per session ever run, and a single `state::list` reply crossed the
-/// engine's 16 MiB frame cap, which wedged the state worker's connection.
-/// A key deleted between the two reads (null) or a record that no longer
-/// parses is skipped, as `parse_list` skips it.
+/// Turn keys this process wrote or deleted since the orphan redrive's last
+/// [`read_changed_turns`] drained them. Marked after the write, even a failed
+/// one (a timed-out write may still have landed), so a pass that drains the
+/// set reads the key after the write.
+static CHANGED_TURNS: std::sync::Mutex<BTreeSet<String>> = std::sync::Mutex::new(BTreeSet::new());
+
+fn mark_turn_changed(key: &str) {
+    CHANGED_TURNS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key.to_owned());
+}
+
+/// List every turn record (the pending-call sweep scans these). Keys first,
+/// then one `state::get` per key: the scope keeps one record per session ever
+/// run, and a single `state::list` reply crossed the engine's 16 MiB frame
+/// cap, which wedged the state worker's connection.
 // ponytail: sequential gets; bounded concurrency if the sweep gets slow.
 pub async fn list_turns(iii: &IIIClient, timeout_ms: u64) -> Result<Vec<TurnRecord>, HarnessError> {
     let keys = parse_keys(&state_list_keys(iii, TURN_SCOPE, timeout_ms).await?);
     let mut records = Vec::with_capacity(keys.len());
     for key in keys {
-        let value = state_get(iii, TURN_SCOPE, &key, timeout_ms).await?;
-        // `None`: the key was deleted between the two reads (null).
-        match serde_json::from_value::<Option<TurnRecord>>(value) {
-            Ok(record) => records.extend(record),
-            Err(e) => {
-                tracing::warn!(session_id = %key, error = %e, "skipping unparseable turn record")
-            }
-        }
+        records.extend(read_listed_turn(iii, &key, timeout_ms).await?);
     }
     Ok(records)
+}
+
+/// One listed key's record. `None` when the key was deleted after it was
+/// listed (null, skipped silently) or the record no longer parses (warned),
+/// as `parse_list` skips it.
+async fn read_listed_turn(
+    iii: &IIIClient,
+    key: &str,
+    timeout_ms: u64,
+) -> Result<Option<TurnRecord>, HarnessError> {
+    let value = state_get(iii, TURN_SCOPE, key, timeout_ms).await?;
+    Ok(serde_json::from_value(value).unwrap_or_else(|e| {
+        tracing::warn!(session_id = %key, error = %e, "skipping unparseable turn record");
+        None
+    }))
+}
+
+/// The orphan redrive's read: only what changed since its last pass. Every
+/// `state::get` is a root trace carrying the whole record, so re-reading every
+/// session ever run each pass flooded the trace store.
+///
+/// `view` maps each turn key to whether its record was last seen `Running`
+/// (an orphan candidate). One `state::list_keys`, then a read of each key
+/// that is new to the view (an empty view reads them all: the first pass
+/// after boot), that this process wrote or deleted since the last pass, or
+/// that was last seen `Running`. Keys gone from `list_keys` leave the view.
+/// Returns the records read, which include every `Running` one. Callers
+/// serialize passes over one view (a stale pass must not overwrite a newer
+/// one's entries).
+///
+/// Limitation: a second harness process writing an EXISTING key between
+/// passes is seen only at the next full pass (the next boot); new keys from
+/// other processes are still seen.
+pub async fn read_changed_turns(
+    iii: &IIIClient,
+    view: &mut BTreeMap<String, bool>,
+    timeout_ms: u64,
+) -> Result<Vec<TurnRecord>, HarnessError> {
+    let changed = std::mem::take(&mut *CHANGED_TURNS.lock().unwrap_or_else(|e| e.into_inner()));
+    let read = async {
+        let keys: BTreeSet<String> =
+            parse_keys(&state_list_keys(iii, TURN_SCOPE, timeout_ms).await?)
+                .into_iter()
+                .collect();
+        view.retain(|key, _| keys.contains(key));
+        let mut records = Vec::new();
+        for key in keys {
+            if view.get(&key) == Some(&false) && !changed.contains(&key) {
+                continue;
+            }
+            let record = read_listed_turn(iii, &key, timeout_ms).await?;
+            let running = record
+                .as_ref()
+                .is_some_and(|r| r.status == TurnStatus::Running);
+            view.insert(key, running);
+            records.extend(record);
+        }
+        Ok(records)
+    }
+    .await;
+    if read.is_err() {
+        // Re-mark what this pass drained: a failed pass loses no write.
+        CHANGED_TURNS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(changed);
+    }
+    read
 }
 
 /// Read one trigger binding (`None` when absent or null).
@@ -731,6 +809,147 @@ mod tests {
         assert!(!calls.iter().any(|f| f == "state::list"), "{calls:?}");
         let gets = calls.iter().filter(|f| *f == "state::get").count();
         assert_eq!(gets, 4, "{calls:?}");
+    }
+
+    /// The orphan redrive reads only what changed: every key on the first
+    /// pass, then keys new to the view, keys this process wrote or deleted, and
+    /// keys last seen `Running`. A pass that fails re-marks what it drained.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_changed_turns_reads_only_what_changed() {
+        use futures_util::{SinkExt, StreamExt};
+        use std::sync::{Arc, Mutex};
+        use tokio_tungstenite::tungstenite::Message;
+
+        fn turn(id: &str, status: &str) -> Value {
+            json!({ "turn_id": "t", "session_id": id, "status": status, "step": 0,
+                "turn_count": 0, "depth": 0, "options": { "model": "m", "max_turns": 16 },
+                "created_at": 1, "updated_at": 1 })
+        }
+        fn record(id: &str, status: &str) -> TurnRecord {
+            serde_json::from_value(turn(id, status)).unwrap()
+        }
+        type Store = Arc<Mutex<BTreeMap<String, Value>>>;
+        let store: Store = Arc::new(Mutex::new(BTreeMap::from([
+            ("rv_a".to_owned(), turn("rv_a", "completed")),
+            ("rv_b".to_owned(), turn("rv_b", "failed")),
+        ])));
+        let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+        // A `state::get` of this key is never answered (the read fails).
+        let hang = Arc::new(Mutex::new(None::<String>));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (db, seen, stuck) = (store.clone(), calls.clone(), hang.clone());
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            while let Some(Ok(frame)) = socket.next().await {
+                let Ok(msg) = serde_json::from_str::<Value>(frame.to_text().unwrap_or("")) else {
+                    continue;
+                };
+                if msg["type"] != "invokefunction" || msg["invocation_id"].is_null() {
+                    continue;
+                }
+                let function = msg["function_id"].as_str().unwrap_or("").to_owned();
+                let key = msg["data"]["key"].as_str().unwrap_or("").to_owned();
+                seen.lock()
+                    .unwrap()
+                    .push(format!("{function} {key}").trim().to_owned());
+                let result = {
+                    let mut db = db.lock().unwrap();
+                    match function.as_str() {
+                        "state::list_keys" => json!({ "keys": db.keys().collect::<Vec<_>>() }),
+                        "state::get" if stuck.lock().unwrap().as_ref() == Some(&key) => continue,
+                        "state::get" => db.get(&key).cloned().unwrap_or(Value::Null),
+                        "state::set" => {
+                            db.insert(key, msg["data"]["value"].clone());
+                            json!({})
+                        }
+                        "state::delete" => {
+                            db.remove(&key);
+                            json!({})
+                        }
+                        _ => Value::Null,
+                    }
+                };
+                let reply = json!({ "type": "invocationresult", "function_id": function,
+                    "invocation_id": msg["invocation_id"], "result": result });
+                if socket
+                    .send(Message::Text(reply.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());
+        let mut view = BTreeMap::new();
+        // One pass; returns the keys it read. Its first call is `list_keys`.
+        async fn pass(
+            iii: &IIIClient,
+            view: &mut BTreeMap<String, bool>,
+            calls: &Mutex<Vec<String>>,
+        ) -> Vec<String> {
+            calls.lock().unwrap().clear();
+            read_changed_turns(iii, view, 2_000).await.unwrap();
+            let calls = std::mem::take(&mut *calls.lock().unwrap());
+            assert_eq!(calls[0], "state::list_keys", "{calls:?}");
+            calls[1..]
+                .iter()
+                .map(|c| c.strip_prefix("state::get ").expect(c).to_owned())
+                .collect()
+        }
+
+        // First pass after boot: every record.
+        assert_eq!(pass(&iii, &mut view, &calls).await, ["rv_a", "rv_b"]);
+        // Nothing changed: keys only.
+        assert!(pass(&iii, &mut view, &calls).await.is_empty());
+        // This process wrote one key: exactly that key.
+        put_turn(&iii, &record("rv_a", "running"), 2_000)
+            .await
+            .unwrap();
+        assert_eq!(pass(&iii, &mut view, &calls).await, ["rv_a"]);
+        // Last seen Running: re-read every pass.
+        assert_eq!(pass(&iii, &mut view, &calls).await, ["rv_a"]);
+        // A key new to the view (another process wrote it): read.
+        store
+            .lock()
+            .unwrap()
+            .insert("rv_c".into(), turn("rv_c", "completed"));
+        assert_eq!(pass(&iii, &mut view, &calls).await, ["rv_a", "rv_c"]);
+        // A key gone from list_keys leaves the view.
+        store.lock().unwrap().remove("rv_b");
+        assert_eq!(pass(&iii, &mut view, &calls).await, ["rv_a"]);
+        assert!(!view.contains_key("rv_b"), "{view:?}");
+        // A delete by this process marks the key: recreated elsewhere before
+        // the pass, it is still read.
+        delete_turn(&iii, "rv_c", 2_000).await.unwrap();
+        store
+            .lock()
+            .unwrap()
+            .insert("rv_c".into(), turn("rv_c", "running"));
+        assert_eq!(pass(&iii, &mut view, &calls).await, ["rv_a", "rv_c"]);
+        assert_eq!(view.get("rv_c"), Some(&true));
+        put_turn(&iii, &record("rv_a", "completed"), 2_000)
+            .await
+            .unwrap();
+        put_turn(&iii, &record("rv_c", "completed"), 2_000)
+            .await
+            .unwrap();
+        assert_eq!(pass(&iii, &mut view, &calls).await, ["rv_a", "rv_c"]);
+        assert!(pass(&iii, &mut view, &calls).await.is_empty());
+        // A pass that cannot read a written key re-marks it for the next.
+        put_turn(&iii, &record("rv_c", "running"), 2_000)
+            .await
+            .unwrap();
+        *hang.lock().unwrap() = Some("rv_c".into());
+        assert!(read_changed_turns(&iii, &mut view, 300).await.is_err());
+        *hang.lock().unwrap() = None;
+        assert_eq!(pass(&iii, &mut view, &calls).await, ["rv_c"]);
+        assert_eq!(view.get("rv_c"), Some(&true));
+
+        iii.shutdown();
+        server.abort();
     }
 
     /// Only the caller-side invocation timeout retries; rejections (schema,
