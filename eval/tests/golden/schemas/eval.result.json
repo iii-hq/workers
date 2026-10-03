@@ -24,102 +24,496 @@
       }
     ],
     "definitions": {
-      "AggregateDeltaV1": {
+      "AnalysisAssetsV1": {
         "additionalProperties": false,
         "properties": {
-          "median_cost_usd": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
+          "evaluation_id": {
+            "type": "string"
+          },
+          "investigation": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/InvestigationV1"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
-          "median_error_span_count": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
+          "snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SnapshotV1"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
-          "median_function_call_errors": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
+          "triage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TriageV1"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
-          "median_function_calls": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
+          "triage_failure": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TriageFailureV1"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
-          "median_reasoning_tokens": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "median_score": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "median_span_count": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "median_total_tokens": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "median_trace_count": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "median_trace_duration_ms": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "median_wall_time_ms": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "pass_rate": {
-            "format": "double",
-            "type": "number"
+          "validations": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/ValidationLinkV1"
+            },
+            "type": "array"
           }
         },
         "required": [
-          "pass_rate"
+          "evaluation_id"
         ],
         "type": "object"
       },
-      "ComparisonDimensionV1": {
+      "AnalysisCountersV1": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnostics": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "entries": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "rejected_suggestions": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "sessions": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "suggestions": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "validations": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "diagnostics",
+          "entries",
+          "rejected_suggestions",
+          "sessions",
+          "suggestions",
+          "validations"
+        ],
+        "type": "object"
+      },
+      "AnalysisOriginV1": {
         "enum": [
-          "prompt",
-          "system_prompt"
+          "automatic",
+          "manual"
         ],
         "type": "string"
+      },
+      "AnalysisRecordV1": {
+        "additionalProperties": false,
+        "description": "The compact analysis record listed by `eval::list`; evidence and model outputs live separately in the analysis assets.",
+        "properties": {
+          "analyst": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/AnalystRefV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "code_root": {
+            "description": "Frozen at admission with the model: the directory the investigation reads and runs in, absent when code access was off.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completed_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "config_revision": {
+            "type": "string"
+          },
+          "counters": {
+            "$ref": "#/definitions/AnalysisCountersV1"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CoverageLevelV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "criteria_version": {
+            "type": "string"
+          },
+          "deadline": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "evaluation_id": {
+            "type": "string"
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/FailureV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "judge_call": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/JudgeCallV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/MonitorModelV1"
+              }
+            ],
+            "description": "Frozen at admission: later configuration changes never alter it."
+          },
+          "observation_key": {
+            "type": "string"
+          },
+          "observe_since": {
+            "description": "Earlier root turns join the window only if they started after this instant: the monitor was observing then. Turns from before the monitor was enabled are never reported as new.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "origin": {
+            "$ref": "#/definitions/AnalysisOriginV1"
+          },
+          "pending_reason": {
+            "description": "Why collection is still waiting (descendants running, metrics incomplete).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "routing": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RoutingV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rules_version": {
+            "type": "string"
+          },
+          "schema_version": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "source_title": {
+            "description": "The session's title, once collection has read it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stages": {
+            "description": "When each status began, oldest first.",
+            "items": {
+              "$ref": "#/definitions/StageTimeV1"
+            },
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/definitions/EvalStatusV1"
+          },
+          "step": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "usage": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/MonitorUsageV1"
+              }
+            ],
+            "description": "The monitor's own consumption, apart from the observed task."
+          }
+        },
+        "required": [
+          "config_revision",
+          "counters",
+          "created_at",
+          "criteria_version",
+          "deadline",
+          "evaluation_id",
+          "model",
+          "observation_key",
+          "observe_since",
+          "origin",
+          "rules_version",
+          "schema_version",
+          "session_id",
+          "stages",
+          "status",
+          "step",
+          "turn_id",
+          "updated_at",
+          "usage"
+        ],
+        "type": "object"
+      },
+      "AnalystRefV1": {
+        "additionalProperties": false,
+        "properties": {
+          "sent_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "sent_at",
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "Answer": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "noul": {
+                "format": "double",
+                "type": "number"
+              },
+              "type": {
+                "enum": [
+                  "noul"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "noul",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "choice": {
+                "type": "string"
+              },
+              "confidence": {
+                "format": "double",
+                "type": "number"
+              },
+              "probabilities": {
+                "additionalProperties": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              "type": {
+                "enum": [
+                  "choice"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "choice",
+              "confidence",
+              "probabilities",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "confidence": {
+                "format": "double",
+                "type": "number"
+              },
+              "legend": {
+                "additionalProperties": {
+                  "$ref": "#/definitions/ScoreLevel"
+                },
+                "type": "object"
+              },
+              "probabilities": {
+                "additionalProperties": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              "score": {
+                "format": "double",
+                "type": "number"
+              },
+              "type": {
+                "enum": [
+                  "score"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "confidence",
+              "legend",
+              "probabilities",
+              "score",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "CodeRefV1": {
+        "additionalProperties": false,
+        "description": "Lines of one file of the code directory.",
+        "properties": {
+          "line_from": {
+            "description": "First line, 1-based and inclusive.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "line_to": {
+            "description": "Last line, inclusive; at most the file's line count.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Relative to the code directory, e.g. `harness/src/registry.rs` or `context-manager/src/prune.rs`; never absolute and never with `..`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "line_from",
+          "line_to",
+          "path"
+        ],
+        "type": "object"
+      },
+      "ComparabilityCheckV1": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "candidate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field": {
+            "type": "string"
+          },
+          "matches": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "matches"
+        ],
+        "type": "object"
+      },
+      "ComparabilityV1": {
+        "additionalProperties": false,
+        "description": "The conditions that must match for a fair comparison; only the Harness version is meant to differ.",
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/definitions/ComparabilityCheckV1"
+            },
+            "type": "array"
+          },
+          "comparable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "checks",
+          "comparable"
+        ],
+        "type": "object"
       },
       "ContextSnapshotV1": {
         "description": "One generation's context accounting. `free = usable - total`, floored at zero: once provider usage lands, `total` is what was billed, which can exceed the `usable` budget the window was fit into — that budget was derived before the generation from an estimate.",
@@ -151,6 +545,13 @@
           },
           "model": {
             "type": "string"
+          },
+          "prefix_divergences": {
+            "description": "Already-sent rows this session's requests rewrote, newest last (at most [`MAX_PREFIX_DIVERGENCES`]), carried from step to step.",
+            "items": {
+              "$ref": "#/definitions/PrefixDivergenceV1"
+            },
+            "type": "array"
           },
           "prompt_sections_fallback": {
             "description": "Why no shared prefix went out: `disabled` (config), `no_stable_prefix` (empty identity prompt) or `prefix_rewritten` (a pre_generate hook replaced the prompt head; its prompt still wins, it just shares nothing).",
@@ -243,191 +644,234 @@
         ],
         "type": "object"
       },
-      "EvalBenchmarkV1": {
-        "additionalProperties": false,
-        "properties": {
-          "cache_read_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "cache_write_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "cost_usd": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "error_span_count": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "function_call_errors": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "function_calls": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "input_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "output_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "reasoning_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "sessions": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "span_count": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "total_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "trace_count": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "trace_duration_ms": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "turns": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "wall_time_ms": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "function_call_errors",
-          "function_calls",
-          "sessions",
-          "turns",
-          "wall_time_ms"
-        ],
-        "type": "object"
-      },
-      "EvalFailureV1": {
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "function_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "message": {
+      "CorrelationV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "unknown"
+            ],
             "type": "string"
           },
-          "phase": {
-            "$ref": "#/definitions/EvalPhaseV1"
+          {
+            "description": "A `registry-changed` notice reached the model between the sources and the repeated call. Temporal correlation, not a proven cause.",
+            "enum": [
+              "harness_notice_correlated"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "CoverageLevelV1": {
+        "oneOf": [
+          {
+            "description": "Every in-scope transcript was read and the model context holds every diagnostic's evidence.",
+            "enum": [
+              "complete"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Previews omit or shorten entries; the full transcripts were read.",
+            "enum": [
+              "partial"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Required evidence did not fit; no conclusion of healthy behavior.",
+            "enum": [
+              "insufficient"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "CoverageV1": {
+        "additionalProperties": false,
+        "properties": {
+          "context_bytes": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "diagnostics_in_context": {
+            "description": "Diagnostics shown to the models; all of them stay in the snapshot.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "entries_read": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "level": {
+            "$ref": "#/definitions/CoverageLevelV1"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sessions_in_scope": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "sessions_out_of_scope": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
           }
         },
         "required": [
-          "message",
-          "phase"
+          "context_bytes",
+          "diagnostics_in_context",
+          "entries_read",
+          "level",
+          "limitations",
+          "sessions_in_scope",
+          "sessions_out_of_scope"
         ],
         "type": "object"
       },
-      "EvalLimitsV1": {
+      "DiagnosticV1": {
         "additionalProperties": false,
+        "description": "One deterministic observation. Model judgments never remove it.",
         "properties": {
-          "evaluation": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/EvaluationLimitsV1"
-              }
-            ],
-            "default": {}
+          "correlation": {
+            "$ref": "#/definitions/CorrelationV1"
           },
-          "execution": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/ExecutionLimitsV1"
-              }
-            ],
-            "default": {
-              "invocation_timeout_seconds": 120,
-              "max_output_tokens_per_call": 8192,
-              "max_turns": 1000,
-              "scenario_timeout_seconds": 600
-            }
+          "evidence": {
+            "description": "Calls, results and notices, in transcript order.",
+            "items": {
+              "$ref": "#/definitions/EntryRefV1"
+            },
+            "type": "array"
+          },
+          "fingerprint": {
+            "description": "Rule, session, turn and the call ids of this occurrence.",
+            "type": "string"
+          },
+          "observation": {
+            "type": "string"
+          },
+          "rule_id": {
+            "type": "string"
+          },
+          "rule_version": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
+        "required": [
+          "correlation",
+          "evidence",
+          "fingerprint",
+          "observation",
+          "rule_id",
+          "rule_version",
+          "session_id",
+          "target"
+        ],
         "type": "object"
       },
-      "EvalModelConfigV1": {
+      "E2eAssessmentsV1": {
         "additionalProperties": false,
         "properties": {
+          "passed": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "total": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "passed",
+          "total"
+        ],
+        "type": "object"
+      },
+      "E2eExecutionRefV1": {
+        "additionalProperties": false,
+        "description": "What `e2e::dashboard::execution-get` reported at lookup time.",
+        "properties": {
+          "assessments": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/E2eAssessmentsV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "availability": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "conclusion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "e2e_revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engine_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "harness_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "model": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "provider": {
             "type": [
@@ -435,20 +879,350 @@
               "null"
             ]
           },
+          "reports": {
+            "items": {
+              "$ref": "#/definitions/E2eReportRefV1"
+            },
+            "type": "array"
+          },
+          "reports_available": {
+            "description": "True only when the execution reported retained reports.",
+            "type": "boolean"
+          },
+          "scenarios": {
+            "items": {
+              "$ref": "#/definitions/E2eScenarioV1"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "execution_id",
+          "reports",
+          "reports_available",
+          "scenarios"
+        ],
+        "type": "object"
+      },
+      "E2eMeasureV1": {
+        "additionalProperties": false,
+        "properties": {
+          "average": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "samples": {
+            "description": "Runs that reported this measure; fewer than `run_count` means some runs reported nothing (never counted as zero).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "samples"
+        ],
+        "type": "object"
+      },
+      "E2eReportRefV1": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "subject_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "available",
+          "scenario_id"
+        ],
+        "type": "object"
+      },
+      "E2eScenarioV1": {
+        "additionalProperties": false,
+        "description": "One scenario's identity and the execution's own averages, as the E2E computed them.",
+        "properties": {
+          "behavior_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contract_fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "measures": {
+            "additionalProperties": {
+              "$ref": "#/definitions/E2eMeasureV1"
+            },
+            "description": "`function_calls`, `function_call_errors`, `tokens`, `duration_seconds` and `cost_usd`, when reported.",
+            "type": "object"
+          },
+          "run_count": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "scenario_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "measures",
+          "run_count",
+          "scenario_id"
+        ],
+        "type": "object"
+      },
+      "EntryRefV1": {
+        "additionalProperties": false,
+        "description": "A transcript entry, addressed the way `session::messages` returns it.",
+        "properties": {
+          "entry_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entry_id",
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "EvalResultResponseV1": {
+        "additionalProperties": false,
+        "properties": {
+          "assets": {
+            "$ref": "#/definitions/AnalysisAssetsV1"
+          },
+          "record": {
+            "$ref": "#/definitions/AnalysisRecordV1"
+          }
+        },
+        "required": [
+          "assets",
+          "record"
+        ],
+        "type": "object"
+      },
+      "EvalStatusV1": {
+        "enum": [
+          "queued",
+          "collecting",
+          "judging",
+          "investigating",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "ExcludedProbeV1": {
+        "additionalProperties": false,
+        "properties": {
+          "calls": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "code": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "calls",
+          "code",
+          "session_id",
+          "target"
+        ],
+        "type": "object"
+      },
+      "FailureV1": {
+        "additionalProperties": false,
+        "description": "The stage that failed and why. `stage` is the status the analysis was in.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "stage": {
+            "$ref": "#/definitions/EvalStatusV1"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "stage"
+        ],
+        "type": "object"
+      },
+      "InvestigationV1": {
+        "additionalProperties": false,
+        "description": "The investigation and its own consumption, kept apart from the observed task's metrics.",
+        "properties": {
+          "code_root": {
+            "description": "The directory the analyst read and ran in; absent when access was off.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completed_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "effective_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effective_provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SessionMetricsResponseV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rejected": {
+            "items": {
+              "$ref": "#/definitions/RejectedSuggestionV1"
+            },
+            "type": "array"
+          },
+          "requested_model": {
+            "type": "string"
+          },
+          "requested_provider": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "signal_assessments": {
+            "items": {
+              "$ref": "#/definitions/SignalAssessmentV1"
+            },
+            "type": "array"
+          },
+          "suggestions": {
+            "items": {
+              "$ref": "#/definitions/SuggestionV1"
+            },
+            "type": "array"
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "completed_at",
+          "rejected",
+          "requested_model",
+          "requested_provider",
+          "session_id",
+          "signal_assessments",
+          "suggestions",
+          "turn_id"
+        ],
+        "type": "object"
+      },
+      "JudgeCallV1": {
+        "additionalProperties": false,
+        "description": "A Jev call started by this analysis. Persisted before the call so a restart can tell a lost answer from one never requested.",
+        "properties": {
+          "deadline": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deadline",
+          "request_id",
+          "started_at"
+        ],
+        "type": "object"
+      },
+      "MetricsScopeV1": {
+        "oneOf": [
+          {
+            "description": "Cumulative over the root and every descendant, all turns.",
+            "enum": [
+              "session_tree"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "MonitorModelV1": {
+        "additionalProperties": false,
+        "description": "The Harness model the user chose for investigations. Credentials stay in the provider worker; this request never carries a key.",
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
           "provider_options": {
             "additionalProperties": true,
+            "description": "Provider-native options, namespaced by the selected provider id.",
             "type": [
               "object",
               "null"
             ]
-          },
-          "system_prompt_strategy": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/SystemPromptStrategy"
-              }
-            ],
-            "default": "enrich"
           },
           "thinking_level": {
             "anyOf": [
@@ -462,670 +1236,273 @@
           }
         },
         "required": [
-          "model"
-        ],
-        "type": "object"
-      },
-      "EvalPhaseV1": {
-        "enum": [
-          "setup",
-          "send",
-          "await",
-          "collect",
-          "evaluate",
-          "limit",
-          "cancel"
-        ],
-        "type": "string"
-      },
-      "EvalProgressV1": {
-        "additionalProperties": false,
-        "properties": {
-          "control_aggregate": {
-            "$ref": "#/definitions/VariantAggregateV1"
-          },
-          "delta": {
-            "$ref": "#/definitions/AggregateDeltaV1"
-          },
-          "effective_execution_order": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "order_sensitivity": {
-            "$ref": "#/definitions/OrderSensitivityV1"
-          },
-          "runs": {
-            "items": {
-              "$ref": "#/definitions/EvalRunReportV1"
-            },
-            "type": "array"
-          },
-          "treatment_aggregate": {
-            "$ref": "#/definitions/VariantAggregateV1"
-          }
-        },
-        "required": [
-          "control_aggregate",
-          "delta",
-          "effective_execution_order",
-          "order_sensitivity",
-          "runs",
-          "treatment_aggregate"
-        ],
-        "type": "object"
-      },
-      "EvalReportV1": {
-        "additionalProperties": false,
-        "properties": {
-          "completed_at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "control": {
-            "$ref": "#/definitions/VariantArtifactV1"
-          },
-          "control_aggregate": {
-            "$ref": "#/definitions/VariantAggregateV1"
-          },
-          "created_at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "delta": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/AggregateDeltaV1"
-              }
-            ],
-            "description": "Treatment minus control. Negative efficiency deltas are improvements."
-          },
-          "dimension": {
-            "$ref": "#/definitions/ComparisonDimensionV1"
-          },
-          "effective_execution_order": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "eligible": {
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
-          "evaluation_id": {
-            "type": "string"
-          },
-          "evaluator": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/EvaluatorArtifactV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "execution_order_policy": {
-            "$ref": "#/definitions/ExecutionOrderV1"
-          },
-          "limits": {
-            "$ref": "#/definitions/EvalLimitsV1"
-          },
-          "model": {
-            "$ref": "#/definitions/EvalModelConfigV1"
-          },
-          "order_sensitivity": {
-            "$ref": "#/definitions/OrderSensitivityV1"
-          },
-          "runs": {
-            "items": {
-              "$ref": "#/definitions/EvalRunReportV1"
-            },
-            "type": "array"
-          },
-          "schema_version": {
-            "type": "string"
-          },
-          "shared_artifacts": {
-            "$ref": "#/definitions/SharedArtifactsV1"
-          },
-          "source_evaluation_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "treatment": {
-            "$ref": "#/definitions/VariantArtifactV1"
-          },
-          "treatment_aggregate": {
-            "$ref": "#/definitions/VariantAggregateV1"
-          }
-        },
-        "required": [
-          "completed_at",
-          "control",
-          "control_aggregate",
-          "created_at",
-          "delta",
-          "dimension",
-          "effective_execution_order",
-          "evaluation_id",
-          "execution_order_policy",
-          "limits",
           "model",
-          "order_sensitivity",
-          "runs",
-          "schema_version",
-          "shared_artifacts",
-          "treatment",
-          "treatment_aggregate"
+          "provider"
         ],
         "type": "object"
       },
-      "EvalResultResponseV1": {
+      "MonitorUsageV1": {
         "additionalProperties": false,
+        "description": "Known usage only: absent counters are unknown, never zero.",
         "properties": {
-          "progress": {
-            "$ref": "#/definitions/EvalProgressV1"
+          "judge_calls": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
           },
-          "report": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/EvalReportV1"
-              },
-              {
-                "type": "null"
-              }
+          "judge_input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "judge_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "judge_usage_complete": {
+            "description": "False when Jev reported incomplete usage or failed.",
+            "type": "boolean"
+          },
+          "llm_cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
             ]
           },
-          "request": {
-            "$ref": "#/definitions/NormalizedEvalRequestV1"
-          },
-          "status": {
-            "$ref": "#/definitions/EvalStatusV1"
-          }
-        },
-        "required": [
-          "progress",
-          "request",
-          "status"
-        ],
-        "type": "object"
-      },
-      "EvalRunReportV1": {
-        "additionalProperties": false,
-        "properties": {
-          "benchmark": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/EvalBenchmarkV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "completed_at": {
-            "format": "int64",
+          "llm_input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
             "type": [
               "integer",
               "null"
             ]
           },
-          "evaluation": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/EvaluatorResponseV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "execution_position": {
-            "default": 0,
-            "format": "uint32",
+          "llm_output_tokens": {
+            "format": "uint64",
             "minimum": 0.0,
-            "type": "integer"
-          },
-          "failures": {
-            "items": {
-              "$ref": "#/definitions/EvalFailureV1"
-            },
-            "type": "array"
-          },
-          "iteration": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "metrics": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/SessionMetricsResponseV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "output": true,
-          "pair_position": {
-            "default": 0,
-            "format": "uint8",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "passed": {
             "type": [
-              "boolean",
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "judge_calls",
+          "judge_input_tokens",
+          "judge_output_tokens",
+          "judge_usage_complete"
+        ],
+        "type": "object"
+      },
+      "PrefixDivergenceV1": {
+        "description": "One generation that rewrote a row an earlier request of the session had already sent: a prefix-matching provider cache (DeepSeek) stops reusing at that row.",
+        "properties": {
+          "cache_read": {
+            "description": "`usage.cache_read` of the rewriting request: what the provider still reused.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "call_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cause": {
+            "description": "What rewrote the row, as far as the harness can tell: `prune` (context-manager pruned or reduced function results to fit the budget that step) or `system_prompt` (row 0: a compaction summary or a prompt change).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "index": {
+            "description": "First row (0 = system prompt, then one per message) that differs from the session's previous request. Absent when only the provider's wire mapping changed.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "prev_len": {
+            "description": "Rows the previous request carried.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "provider_note": {
+            "description": "The provider's own wire-level finding, cause included, when it reported one (a final-message warning starting with [`PROVIDER_PREFIX_NOTE`]).",
+            "type": [
+              "string",
               "null"
             ]
           },
           "role": {
-            "$ref": "#/definitions/VariantRoleV1"
+            "type": [
+              "string",
+              "null"
+            ]
           },
-          "run_id": {
+          "step": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "turn_id": {
             "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "turn_id"
+        ],
+        "type": "object"
+      },
+      "RejectedSuggestionV1": {
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "reasons",
+          "title"
+        ],
+        "type": "object"
+      },
+      "RoutingReasonV1": {
+        "enum": [
+          "diagnostics",
+          "needs_investigation",
+          "insufficient_evidence",
+          "low_confidence",
+          "coverage_insufficient",
+          "audit_sample",
+          "manual_request"
+        ],
+        "type": "string"
+      },
+      "RoutingV1": {
+        "additionalProperties": false,
+        "properties": {
+          "investigate": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/definitions/RoutingReasonV1"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "investigate",
+          "reasons"
+        ],
+        "type": "object"
+      },
+      "ScoreLevel": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          {
+            "items": true,
+            "type": "array"
+          }
+        ],
+        "description": "Score levels require a description. Unlike instructions, Choice option descriptions and Noul criteria, the provider rejects a null level (HTTP422)."
+      },
+      "SessionEvidenceV1": {
+        "additionalProperties": false,
+        "properties": {
+          "depth": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "entries": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "in_scope": {
+            "description": "Out-of-scope descendants belong to earlier turns and are not read.",
+            "type": "boolean"
+          },
+          "json_sha256": {
+            "description": "SHA-256 of the collected JSON entries (not of the stored bytes).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "omitted_entries": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "parent_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent_turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "preview": {
+            "description": "Masked, shortened entries shown to the models.",
+            "items": true,
+            "type": "array"
+          },
+          "reduced_entries": {
+            "description": "Preview entries whose strings were truncated or whose secrets were masked.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
           },
           "session_id": {
             "type": "string"
-          },
-          "started_at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "status": {
-            "$ref": "#/definitions/EvalRunStatusV1"
-          },
-          "turn_id": {
-            "type": [
-              "string",
-              "null"
-            ]
           }
         },
         "required": [
-          "iteration",
-          "role",
-          "run_id",
-          "session_id",
-          "started_at",
-          "status"
-        ],
-        "type": "object"
-      },
-      "EvalRunStatusV1": {
-        "enum": [
-          "pending",
-          "running",
-          "completed",
-          "failed",
-          "cancelled"
-        ],
-        "type": "string"
-      },
-      "EvalStatusV1": {
-        "enum": [
-          "queued",
-          "running",
-          "completed",
-          "failed",
-          "cancelled"
-        ],
-        "type": "string"
-      },
-      "EvalVariantV1": {
-        "additionalProperties": false,
-        "properties": {
-          "label": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "prompt": {
-            "type": "string"
-          },
-          "system_prompt": {
-            "description": "`null` disables the system prompt for this variant. An empty string keeps the harness behavior of resolving the provider or built-in prompt.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "prompt"
-        ],
-        "type": "object"
-      },
-      "EvaluationLimitsV1": {
-        "additionalProperties": false,
-        "properties": {
-          "max_error_spans": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "max_function_call_errors": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "EvaluatorArtifactV1": {
-        "additionalProperties": false,
-        "properties": {
-          "arguments_sha256": {
-            "type": "string"
-          },
-          "function_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "arguments_sha256",
-          "function_id"
-        ],
-        "type": "object"
-      },
-      "EvaluatorResponseV1": {
-        "additionalProperties": false,
-        "properties": {
-          "details": true,
-          "passed": {
-            "type": "boolean"
-          },
-          "reason": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "score": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "passed"
-        ],
-        "type": "object"
-      },
-      "EvaluatorSpecV1": {
-        "additionalProperties": false,
-        "properties": {
-          "arguments": {
-            "default": {}
-          },
-          "function_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "function_id"
-        ],
-        "type": "object"
-      },
-      "ExecutionLimitsV1": {
-        "additionalProperties": false,
-        "properties": {
-          "invocation_timeout_seconds": {
-            "default": 120,
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "max_cost_usd": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "max_output_tokens_per_call": {
-            "default": 8192,
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "max_total_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "max_turns": {
-            "default": 1000,
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "scenario_timeout_seconds": {
-            "default": 600,
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "type": "object"
-      },
-      "ExecutionOrderV1": {
-        "enum": [
-          "balanced_control_first",
-          "balanced_treatment_first"
-        ],
-        "type": "string"
-      },
-      "ExposeMode": {
-        "description": "How allowed functions reach the model (harness.md § Exposure modes).",
-        "enum": [
-          "agent_trigger",
-          "native"
-        ],
-        "type": "string"
-      },
-      "FunctionPolicy": {
-        "description": "The fail-closed dispatch policy (harness.md § Functions). Absent on the send => every call denied (a plain chat loop).",
-        "properties": {
-          "allow": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "deny": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "expose": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/ExposeMode"
-              }
-            ],
-            "default": "agent_trigger"
-          }
-        },
-        "type": "object"
-      },
-      "NormalizedEvalRequestV1": {
-        "additionalProperties": false,
-        "properties": {
-          "control": {
-            "$ref": "#/definitions/EvalVariantV1"
-          },
-          "dimension": {
-            "$ref": "#/definitions/ComparisonDimensionV1"
-          },
-          "evaluator": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/EvaluatorSpecV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "execution_order": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/ExecutionOrderV1"
-              }
-            ],
-            "default": "balanced_control_first"
-          },
-          "functions": {
-            "$ref": "#/definitions/FunctionPolicy"
-          },
-          "limits": {
-            "$ref": "#/definitions/EvalLimitsV1"
-          },
-          "metadata": true,
-          "model": {
-            "$ref": "#/definitions/EvalModelConfigV1"
-          },
-          "output": {
-            "$ref": "#/definitions/OutputContract"
-          },
-          "runs": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "source_evaluation_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "treatment": {
-            "$ref": "#/definitions/EvalVariantV1"
-          }
-        },
-        "required": [
-          "control",
-          "dimension",
-          "functions",
-          "limits",
-          "model",
-          "output",
-          "runs",
-          "treatment"
-        ],
-        "type": "object"
-      },
-      "OrderSensitivityV1": {
-        "additionalProperties": false,
-        "properties": {
-          "control": {
-            "$ref": "#/definitions/RoleOrderSensitivityV1"
-          },
-          "detected": {
-            "type": "boolean"
-          },
-          "treatment": {
-            "$ref": "#/definitions/RoleOrderSensitivityV1"
-          }
-        },
-        "required": [
-          "control",
-          "detected",
-          "treatment"
-        ],
-        "type": "object"
-      },
-      "OutputContract": {
-        "description": "Free text by default; `json` constrains the final answer to a JSON value, validated against `schema` when supplied.",
-        "oneOf": [
-          {
-            "properties": {
-              "type": {
-                "enum": [
-                  "text"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "schema": true,
-              "type": {
-                "enum": [
-                  "json"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          }
-        ]
-      },
-      "RoleOrderSensitivityV1": {
-        "additionalProperties": false,
-        "properties": {
-          "differs": {
-            "type": "boolean"
-          },
-          "first_passed": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "first_runs": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "second_passed": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "second_runs": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "differs",
-          "first_passed",
-          "first_runs",
-          "second_passed",
-          "second_runs"
+          "depth",
+          "entries",
+          "in_scope",
+          "omitted_entries",
+          "preview",
+          "reduced_entries",
+          "session_id"
         ],
         "type": "object"
       },
@@ -1460,29 +1837,34 @@
         ],
         "type": "object"
       },
-      "SharedArtifactsV1": {
+      "SignalAssessmentV1": {
         "additionalProperties": false,
         "properties": {
-          "function_policy_sha256": {
+          "explanation": {
             "type": "string"
           },
-          "limits_sha256": {
+          "fingerprint": {
+            "description": "The `fingerprint` of a diagnostic in the evidence.",
             "type": "string"
           },
-          "model_sha256": {
-            "type": "string"
-          },
-          "output_sha256": {
-            "type": "string"
+          "verdict": {
+            "$ref": "#/definitions/SignalVerdictV1"
           }
         },
         "required": [
-          "function_policy_sha256",
-          "limits_sha256",
-          "model_sha256",
-          "output_sha256"
+          "explanation",
+          "fingerprint",
+          "verdict"
         ],
         "type": "object"
+      },
+      "SignalVerdictV1": {
+        "enum": [
+          "likely_expected",
+          "worth_changing",
+          "unclear"
+        ],
+        "type": "string"
       },
       "SnapshotCategoriesV1": {
         "description": "Where the request's tokens sit. Categories are assembly-time estimates; `hook_guidance` is the measured growth after assembly (pre-generate hook appends and orphan-repair patches), 0 when the request left assembly unchanged.",
@@ -1562,31 +1944,228 @@
         ],
         "type": "object"
       },
-      "SystemPromptStrategy": {
-        "description": "How a caller-supplied system prompt combines with the built-in identity prompt.",
-        "oneOf": [
-          {
-            "description": "Caller prompt replaces the built-in prompt verbatim.",
-            "enum": [
-              "override"
-            ],
+      "SnapshotV1": {
+        "additionalProperties": false,
+        "properties": {
+          "captured_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "coverage": {
+            "$ref": "#/definitions/CoverageV1"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/definitions/DiagnosticV1"
+            },
+            "type": "array"
+          },
+          "excluded_probes": {
+            "description": "Protocol probes that failed as expected and were not reported.",
+            "items": {
+              "$ref": "#/definitions/ExcludedProbeV1"
+            },
+            "type": "array"
+          },
+          "metrics": {
+            "$ref": "#/definitions/SessionMetricsResponseV1"
+          },
+          "metrics_scope": {
+            "$ref": "#/definitions/MetricsScopeV1"
+          },
+          "observed_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rules_version": {
             "type": "string"
           },
-          {
-            "description": "Caller prompt is appended to the built-in identity prompt.",
-            "enum": [
-              "enrich"
-            ],
+          "sessions": {
+            "items": {
+              "$ref": "#/definitions/SessionEvidenceV1"
+            },
+            "type": "array"
+          },
+          "source_result_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_session_id": {
             "type": "string"
           },
-          {
-            "description": "No system prompt is sent to the model.",
-            "enum": [
-              "disabled"
-            ],
+          "source_status": {
+            "$ref": "#/definitions/TurnStatus"
+          },
+          "source_stop_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_turn_id": {
             "type": "string"
+          },
+          "window_turn_ids": {
+            "description": "The observed turn plus earlier root turns no analysis covered yet.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
-        ]
+        },
+        "required": [
+          "captured_at",
+          "coverage",
+          "diagnostics",
+          "excluded_probes",
+          "metrics",
+          "metrics_scope",
+          "rules_version",
+          "sessions",
+          "source_session_id",
+          "source_status",
+          "source_turn_id",
+          "window_turn_ids"
+        ],
+        "type": "object"
+      },
+      "StageTimeV1": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/definitions/EvalStatusV1"
+          }
+        },
+        "required": [
+          "at",
+          "status"
+        ],
+        "type": "object"
+      },
+      "Stats": {
+        "additionalProperties": false,
+        "description": "Known accepted usage, never a billing estimate. Unreported counters or failure/cancellation make usage_complete false.",
+        "properties": {
+          "attempts": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "elapsed_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "questions": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "requests": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "usage_complete": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "attempts",
+          "elapsed_ms",
+          "input_tokens",
+          "output_tokens",
+          "questions",
+          "requests",
+          "usage_complete"
+        ],
+        "type": "object"
+      },
+      "SuggestionV1": {
+        "additionalProperties": false,
+        "properties": {
+          "code_refs": {
+            "default": [],
+            "description": "Code the suggestion rests on, as read in the code directory; only with code access. At most 8; each is checked against the directory.",
+            "items": {
+              "$ref": "#/definitions/CodeRefV1"
+            },
+            "maxItems": 8,
+            "type": "array"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/definitions/EntryRefV1"
+            },
+            "type": "array"
+          },
+          "expected_effect": {
+            "type": "string"
+          },
+          "harness_component": {
+            "type": "string"
+          },
+          "hypothesis": {
+            "type": "string"
+          },
+          "limitations": {
+            "type": "string"
+          },
+          "observation": {
+            "type": "string"
+          },
+          "proposed_change": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "validation": {
+            "$ref": "#/definitions/ValidationPlanV1"
+          }
+        },
+        "required": [
+          "evidence",
+          "expected_effect",
+          "harness_component",
+          "hypothesis",
+          "limitations",
+          "observation",
+          "proposed_change",
+          "title",
+          "validation"
+        ],
+        "type": "object"
       },
       "ThinkingLevel": {
         "enum": [
@@ -1595,6 +2174,97 @@
           "medium",
           "high",
           "xhigh"
+        ],
+        "type": "string"
+      },
+      "TriageFailureV1": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "http_status": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "stats": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Stats"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Known usage of the failed call, when the provider returned it."
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "TriageV1": {
+        "additionalProperties": false,
+        "properties": {
+          "answers": {
+            "additionalProperties": {
+              "$ref": "#/definitions/Answer"
+            },
+            "type": "object"
+          },
+          "completed_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "criteria_version": {
+            "type": "string"
+          },
+          "model": {
+            "description": "The model the provider reports, not the configured default.",
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "stats": {
+            "$ref": "#/definitions/Stats"
+          }
+        },
+        "required": [
+          "answers",
+          "completed_at",
+          "criteria_version",
+          "model",
+          "provider",
+          "request_id",
+          "stats"
+        ],
+        "type": "object"
+      },
+      "TurnStatus": {
+        "description": "The coarse, harness-internal turn lifecycle (harness.md § API Reference). Finer-grained than the session's `status`, which the loop derives from it.",
+        "enum": [
+          "running",
+          "awaiting_functions",
+          "completed",
+          "cancelled",
+          "failed"
         ],
         "type": "string"
       },
@@ -1650,158 +2320,67 @@
         },
         "type": "object"
       },
-      "VariantAggregateV1": {
+      "ValidationLinkV1": {
         "additionalProperties": false,
+        "description": "Baseline and candidate executions linked to one suggestion. A link is a reference, not a verdict: the improvement claim belongs to the E2E comparison and its criteria.",
         "properties": {
-          "benchmarked_runs": {
-            "format": "uint32",
-            "minimum": 0.0,
+          "attached_at": {
+            "format": "int64",
             "type": "integer"
           },
-          "evaluated_runs": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
+          "baseline": {
+            "$ref": "#/definitions/E2eExecutionRefV1"
           },
-          "median_cost_usd": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
+          "candidate": {
+            "$ref": "#/definitions/E2eExecutionRefV1"
           },
-          "median_error_span_count": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
+          "comparability": {
+            "$ref": "#/definitions/ComparabilityV1"
           },
-          "median_function_call_errors": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "median_function_calls": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "median_input_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "median_output_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "median_reasoning_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "median_score": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "median_span_count": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "median_total_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "median_trace_count": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "median_trace_duration_ms": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "median_wall_time_ms": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "pass_rate": {
-            "format": "double",
-            "type": "number"
-          },
-          "passed": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "runs": {
-            "format": "uint32",
+          "suggestion_index": {
+            "format": "uint",
             "minimum": 0.0,
             "type": "integer"
           }
         },
         "required": [
-          "benchmarked_runs",
-          "evaluated_runs",
-          "pass_rate",
-          "passed",
-          "runs"
+          "attached_at",
+          "baseline",
+          "candidate",
+          "comparability",
+          "suggestion_index"
         ],
         "type": "object"
       },
-      "VariantArtifactV1": {
+      "ValidationPlanV1": {
         "additionalProperties": false,
+        "description": "The E2E plan a suggestion must carry. A reviewer can run it without the LLM that wrote it.",
         "properties": {
-          "label": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "prompt_sha256": {
+          "expectation": {
             "type": "string"
           },
-          "system_prompt_sha256": {
+          "invariants": {
+            "description": "Task-correctness invariants checked by an independent evaluator.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "non_regression_controls": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "primary_metric": {
+            "description": "The effort metric compared between baseline and candidate.",
+            "type": "string"
+          },
+          "reproduction": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "description": "An existing harness-e2e scenario, or null when a new case is needed.",
             "type": [
               "string",
               "null"
@@ -1809,16 +2388,13 @@
           }
         },
         "required": [
-          "prompt_sha256"
+          "expectation",
+          "invariants",
+          "non_regression_controls",
+          "primary_metric",
+          "reproduction"
         ],
         "type": "object"
-      },
-      "VariantRoleV1": {
-        "enum": [
-          "control",
-          "treatment"
-        ],
-        "type": "string"
       }
     },
     "title": "Nullable_EvalResultResponseV1"

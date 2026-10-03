@@ -1,17 +1,17 @@
-//! Live session comparison, with durable prompt experiments kept as an
-//! advanced surface.
+//! Session monitor for the iii Harness: evidence-based analyses of finished
+//! sessions.
 
-pub mod comparison;
+pub mod code;
 pub mod contract;
+pub mod diagnostics;
 pub mod error;
 pub mod events;
 pub mod functions;
 pub mod ids;
-pub mod limits;
 pub mod locks;
 pub mod manifest;
+pub mod proposal;
 pub mod queue;
-pub mod report;
 pub mod runtime;
 pub mod state;
 pub mod surface;

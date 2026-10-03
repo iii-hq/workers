@@ -1,0 +1,340 @@
+{
+  "function_id": "eval::attach-validation",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "baseline_execution_id": {
+        "type": "string"
+      },
+      "candidate_execution_id": {
+        "type": "string"
+      },
+      "dry_run": {
+        "default": false,
+        "description": "Look both executions up and return the link without saving it.",
+        "type": "boolean"
+      },
+      "evaluation_id": {
+        "type": "string"
+      },
+      "suggestion_index": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "baseline_execution_id",
+      "candidate_execution_id",
+      "evaluation_id",
+      "suggestion_index"
+    ],
+    "title": "AttachValidationRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "ComparabilityCheckV1": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "candidate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field": {
+            "type": "string"
+          },
+          "matches": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "matches"
+        ],
+        "type": "object"
+      },
+      "ComparabilityV1": {
+        "additionalProperties": false,
+        "description": "The conditions that must match for a fair comparison; only the Harness version is meant to differ.",
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/definitions/ComparabilityCheckV1"
+            },
+            "type": "array"
+          },
+          "comparable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "checks",
+          "comparable"
+        ],
+        "type": "object"
+      },
+      "E2eAssessmentsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "passed": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "total": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "passed",
+          "total"
+        ],
+        "type": "object"
+      },
+      "E2eExecutionRefV1": {
+        "additionalProperties": false,
+        "description": "What `e2e::dashboard::execution-get` reported at lookup time.",
+        "properties": {
+          "assessments": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/E2eAssessmentsV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "availability": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "conclusion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "e2e_revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engine_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "harness_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reports": {
+            "items": {
+              "$ref": "#/definitions/E2eReportRefV1"
+            },
+            "type": "array"
+          },
+          "reports_available": {
+            "description": "True only when the execution reported retained reports.",
+            "type": "boolean"
+          },
+          "scenarios": {
+            "items": {
+              "$ref": "#/definitions/E2eScenarioV1"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "execution_id",
+          "reports",
+          "reports_available",
+          "scenarios"
+        ],
+        "type": "object"
+      },
+      "E2eMeasureV1": {
+        "additionalProperties": false,
+        "properties": {
+          "average": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "samples": {
+            "description": "Runs that reported this measure; fewer than `run_count` means some runs reported nothing (never counted as zero).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "samples"
+        ],
+        "type": "object"
+      },
+      "E2eReportRefV1": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "subject_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "available",
+          "scenario_id"
+        ],
+        "type": "object"
+      },
+      "E2eScenarioV1": {
+        "additionalProperties": false,
+        "description": "One scenario's identity and the execution's own averages, as the E2E computed them.",
+        "properties": {
+          "behavior_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contract_fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "measures": {
+            "additionalProperties": {
+              "$ref": "#/definitions/E2eMeasureV1"
+            },
+            "description": "`function_calls`, `function_call_errors`, `tokens`, `duration_seconds` and `cost_usd`, when reported.",
+            "type": "object"
+          },
+          "run_count": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "scenario_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "measures",
+          "run_count",
+          "scenario_id"
+        ],
+        "type": "object"
+      },
+      "ValidationLinkV1": {
+        "additionalProperties": false,
+        "description": "Baseline and candidate executions linked to one suggestion. A link is a reference, not a verdict: the improvement claim belongs to the E2E comparison and its criteria.",
+        "properties": {
+          "attached_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "baseline": {
+            "$ref": "#/definitions/E2eExecutionRefV1"
+          },
+          "candidate": {
+            "$ref": "#/definitions/E2eExecutionRefV1"
+          },
+          "comparability": {
+            "$ref": "#/definitions/ComparabilityV1"
+          },
+          "suggestion_index": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attached_at",
+          "baseline",
+          "candidate",
+          "comparability",
+          "suggestion_index"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "link": {
+        "$ref": "#/definitions/ValidationLinkV1"
+      },
+      "saved": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "link",
+      "saved"
+    ],
+    "title": "AttachValidationResponseV1",
+    "type": "object"
+  }
+}
