@@ -1,9 +1,15 @@
 //! Clef's record encoding (`joint_schema_model.py` `encode_record`, `render`,
-//! `question_options`). STUB: the interface is fixed; the body is implemented
-//! in its own change.
+//! `question_options`): hand-written ChatML around the state, then a schema
+//! listing every field and its options. Each piece is tokenized on its own,
+//! as the reference does; the head reads the question and option spans.
 use judge_contract::{ErrorCode, Evaluation, Question};
-use serde_json::Value;
+use serde::Serialize;
+use serde_json::{json, Value};
 use std::ops::Range;
+
+pub const PREFIX: &str = "<|im_start|>system\nRead the complete state and schema. Decide every field jointly. Each answer must be exactly one of that field's allowed options.<|im_end|>\n<|im_start|>user\nSTATE:\n";
+const SUFFIX: &str =
+    "\n<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nJOINT SCHEMA DECISIONS:";
 
 /// What a schema piece is to the head.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,19 +39,121 @@ pub struct Encoded {
     pub dropped: usize,
 }
 
+/// Python's float `repr`, which `json.dumps` writes. `{:?}` picks the same
+/// shortest digits and switches to an exponent at the same magnitudes (below
+/// 1e-4, from 1e16); Python signs the exponent and pads it to two digits:
+/// `1e-05`, `1e+16`.
+struct PythonFloats;
+impl serde_json::ser::Formatter for PythonFloats {
+    fn write_f64<W: ?Sized + std::io::Write>(
+        &mut self,
+        w: &mut W,
+        value: f64,
+    ) -> std::io::Result<()> {
+        let repr = format!("{value:?}");
+        match repr.split_once('e') {
+            None => w.write_all(repr.as_bytes()),
+            Some((digits, exponent)) => {
+                let (sign, exponent) = exponent
+                    .strip_prefix('-')
+                    .map_or(("+", exponent), |exponent| ("-", exponent));
+                write!(w, "{digits}e{sign}{exponent:0>2}")
+            }
+        }
+    }
+}
+
+/// `render`: a string as is, anything else as `json.dumps(sort_keys=True,
+/// separators=(",", ":"), ensure_ascii=False)`.
+fn render(value: &Value) -> String {
+    if let Value::String(text) = value {
+        return text.clone();
+    }
+    let mut value = value.clone();
+    value.sort_all_objects();
+    let mut out = Vec::new();
+    let mut serializer = serde_json::Serializer::with_formatter(&mut out, PythonFloats);
+    value
+        .serialize(&mut serializer)
+        .expect("JSON values serialize");
+    String::from_utf8(out).expect("serde_json writes UTF-8")
+}
+
+fn value(content: &impl Serialize) -> Value {
+    serde_json::to_value(content).expect("contract values are JSON")
+}
+
 /// The question's kind and its options in prompt order: noul `[true, false]`
 /// (default descriptions), choice sorted by id, score `"0".."n-1"`. A `Null`
 /// description is left out of the option JSON.
 pub fn options(question: &Question) -> (u32, Vec<(String, Value)>) {
-    let _ = question;
-    todo!("encode::options")
+    match question {
+        // `criteria.update(...)` over the defaults: a given null drops the description.
+        Question::Noul { criteria, .. } => (
+            0,
+            [
+                ("true", "The proposition is true or the answer is yes."),
+                ("false", "The proposition is false or the answer is no."),
+            ]
+            .map(|(id, default)| {
+                let given = criteria.as_ref().and_then(|criteria| criteria.get(id));
+                (id.to_owned(), given.map_or_else(|| default.into(), value))
+            })
+            .into(),
+        ),
+        Question::Choice { criteria, .. } => (
+            1,
+            criteria
+                .iter()
+                .map(|(id, c)| (id.clone(), value(c)))
+                .collect(),
+        ),
+        Question::Score { criteria, .. } => (
+            2,
+            criteria
+                .iter()
+                .enumerate()
+                .map(|(index, level)| (index.to_string(), value(level)))
+                .collect(),
+        ),
+    }
 }
 
 /// The rendered state, then every later piece in prompt order (schema through
 /// suffix); `PREFIX` precedes both.
 pub fn pieces(evaluation: &Evaluation) -> (String, Vec<(Role, String)>) {
-    let _ = evaluation;
-    todo!("encode::pieces")
+    let mut out = vec![(Role::Text, "\n\nSCHEMA FIELDS:\n".to_owned())];
+    for (n, (id, question)) in evaluation.questions.iter().enumerate() {
+        let (Question::Noul { instructions, .. }
+        | Question::Choice { instructions, .. }
+        | Question::Score { instructions, .. }) = question;
+        let (kind, options) = options(question);
+        let name = ["noul", "choice", "score"][kind as usize];
+        out.push((
+            Role::Text,
+            format!("\nFIELD {}\nID: {id}\nTYPE: {name}\nINSTRUCTION: ", n + 1),
+        ));
+        let instructions = match value(instructions) {
+            instructions if instructions.is_null() || instructions == "" => id.clone(),
+            instructions => render(&instructions),
+        };
+        out.push((Role::Question(kind), instructions));
+        out.push((Role::Text, "\nALLOWED OPTIONS:\n".to_owned()));
+        for (j, (option_id, description)) in options.into_iter().enumerate() {
+            let mut option = json!({ "option_id": option_id });
+            if !description.is_null() {
+                option["description"] = description;
+            }
+            out.extend([
+                (Role::Text, format!("OPTION {}: ", j + 1)),
+                (Role::Option, render(&option)),
+                (Role::Text, "\n".to_owned()),
+            ]);
+        }
+        out.push((Role::Text, "END FIELD\n".to_owned()));
+    }
+    out.push((Role::Text, SUFFIX.to_owned()));
+    (render(&evaluation.state), out)
 }
 
 /// `encode_record(max_length = max_tokens)`: each piece tokenized on its own,
@@ -57,6 +165,46 @@ pub fn encode(
     max_tokens: usize,
     tokenize: impl Fn(&str) -> Result<Vec<u32>, ErrorCode>,
 ) -> Result<Encoded, ErrorCode> {
-    let _ = (evaluation, max_tokens, tokenize);
-    todo!("encode::encode")
+    let (state, schema_pieces) = pieces(evaluation);
+    let mut ids = tokenize(PREFIX)?;
+    let (mut schema, mut fields) = (Vec::new(), Vec::<Field>::new());
+    for (role, text) in schema_pieces {
+        let piece = tokenize(&text)?;
+        let span = schema.len()..schema.len() + piece.len();
+        match role {
+            // The reference averages an empty span into NaN, which spreads to every field.
+            Role::Question(_) if span.is_empty() => return Err(ErrorCode::InvalidRequest),
+            Role::Question(kind) => fields.push(Field {
+                kind,
+                span,
+                options: Vec::new(),
+            }),
+            Role::Option => fields
+                .last_mut()
+                .expect("options follow their question")
+                .options
+                .push(span),
+            Role::Text => {}
+        }
+        schema.extend(piece);
+    }
+    let room = max_tokens
+        .checked_sub(ids.len() + schema.len())
+        .ok_or(ErrorCode::PayloadTooLarge)?;
+    let mut state = tokenize(&state)?;
+    let dropped = state.len().saturating_sub(room);
+    state.truncate(room);
+    let offset = ids.len() + state.len();
+    for field in &mut fields {
+        for span in std::iter::once(&mut field.span).chain(&mut field.options) {
+            *span = span.start + offset..span.end + offset;
+        }
+    }
+    ids.extend(state);
+    ids.extend(schema);
+    Ok(Encoded {
+        ids,
+        fields,
+        dropped,
+    })
 }
