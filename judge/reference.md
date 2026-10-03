@@ -59,9 +59,10 @@ on the first download: a request that cannot wait that long answers `deadline`
 while the load goes on for the next one, and a failed load answers
 `provider_unavailable` with its `provider_error` and `retry_after_ms` (30 s).
 `preload_all: true` keeps every local provider loaded instead, so no request
-waits; each holds its memory (on a GPU, about 6 GB for decider or SemIf and
-1.5 GB for laya; clef holds its backbone GGUF on the GPU and its joint schema
-head in host memory). Hosted providers such as `judge-typesafe` are unaffected.
+waits; each holds its memory (on a GPU, about 6 GB for decider, SemIf or clef
+at its default 16384-token window and 1.5 GB for laya; clef keeps its joint
+schema head in host memory). Hosted providers such as `judge-typesafe` are
+unaffected.
 
 Credentials, default model and execution limits belong to the provider worker.
 For TypeSafe, open **Settings → Workers → judge-typesafe** in the Console or read

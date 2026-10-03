@@ -15,9 +15,9 @@ const MODELS = [{ value: 'clef-flash', label: 'clef-flash', description: 'Clef-F
 const numberFields = [
   { field: 'threads', section: 'model', label: 'CPU threads', placeholder: '8', description: 'Threads for the backbone’s CPU work and for the joint schema head, applied at the next start. Hybrid CPUs are fastest around their performance-core count; the built-in default is min(8, logical cores).' },
   { field: 'gpu_layers', section: 'model', label: 'GPU layers', placeholder: 'all', allowZero: true, description: 'Backbone layers offloaded to the GPU in Vulkan or Metal builds, applied at the next start. Clear to offload every layer when a GPU is present; 0 keeps the backbone on the CPU. The joint schema head always runs on the CPU.' },
-  { field: 'context_tokens', section: 'model', label: 'Context window (tokens)', placeholder: '16384', description: 'Longest prompt (state and every question with its options) one evaluation fills, 512 to 65536, applied at the next start. A longer state is truncated, keeping its beginning; a schema longer than the window answers payload_too_large.' },
+  { field: 'context_tokens', section: 'model', label: 'Context window (tokens)', placeholder: '16384', description: 'Longest prompt (state and every question with its options) one evaluation fills, 512 to 65536, applied at the next start. A longer state is truncated, keeping its beginning; a schema longer than the window answers payload_too_large. On a GPU it holds 6.0 GiB of VRAM at 16384 and 9.2 GiB at 65536.' },
   { field: 'max_request_bytes', section: 'limits', label: 'Maximum request bytes', placeholder: '8388608', description: 'Maximum encoded JSON bytes per evaluation. Clear to use 8388608 (8 MiB).' },
-  { field: 'max_timeout_ms', section: 'limits', label: 'Maximum timeout (ms)', placeholder: '300000', description: 'Maximum caller timeout. Clear to use 300000 (5 minutes).' },
+  { field: 'max_timeout_ms', section: 'limits', label: 'Maximum timeout (ms)', placeholder: '300000', description: 'Maximum caller timeout. Clear to use 300000 (5 minutes). On the CPU, which reads about 40 prompt tokens per second, a prompt over about 10k tokens needs more.' },
 ]
 const knownFields = ['model', ...numberFields.map(({ field }) => field)]
 

@@ -168,7 +168,7 @@ export function JudgeRoutingForm({ iii, ...props }: ConfigFormProps & { iii: Eng
             id="judge-cfg-preload_all"
             field="preload_all"
             label="Keep every local provider loaded"
-            description="Local providers (judge-decider, judge-semif, judge-laya, judge-clef) keep their model loaded while they are the default; any other one loads its model on the first request that names it and releases it after 10 idle minutes, so that first request may time out while it loads. On, every local provider keeps its model loaded, so no request waits; each one holds its memory (on a GPU, about 6 GB for decider or SemIf and 1.5 GB for laya; clef holds its backbone on the GPU and its joint schema head in host memory). Hosted providers are unaffected."
+            description="Local providers (judge-decider, judge-semif, judge-laya, judge-clef) keep their model loaded while they are the default; any other one loads its model on the first request that names it and releases it after 10 idle minutes, so that first request may time out while it loads. On, every local provider keeps its model loaded, so no request waits; each one holds its memory (on a GPU, about 6 GB for decider, SemIf or clef at its default 16384-token window and 1.5 GB for laya; clef keeps its joint schema head in host memory). Hosted providers are unaffected."
             error={props.errors?.get('/preload_all')}
             renderControl={(controlProps) => (
               <Switch

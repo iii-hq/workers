@@ -43,8 +43,9 @@ The functions register at start; the model loads on demand. While clef is the
 judge hub's **default provider** (`provider: clef` under **Settings → Workers →
 judge**) it loads at once and stays loaded. Otherwise the first call that names
 `"provider": "clef"` (or comes from a session that picked it) loads it, and it
-is released (VRAM included) after 10 minutes without calls. A call that cannot
-wait for the load answers `deadline` while the load goes on for the next one.
+is released (VRAM included, about 6 GiB) after 10 minutes without calls. A call
+that cannot wait for the load answers `deadline` while the load goes on for the
+next one.
 The first load downloads the pinned checkpoint into the hf-hub cache
 (`$HF_HOME`, default `~/.cache/huggingface`): first the joint schema head and
 the tokenizer from `Cloudflare/clef-flash`, then the backbone GGUF from
@@ -162,6 +163,16 @@ empty id and no instructions answers `invalid_request`: it would give the head
 an empty span to read. `judge-clef::models::list` reports the window as
 `context_window` and 255 as `max_options`.
 
+`tests/clef.rs` checks the token counts and probabilities of 10 records (28
+questions) against Cloudflare's own pipeline, `joint_schema_model.py` with the
+bf16 backbone and head (`tests/fixtures/make_reference.py`). The shipped
+Q4_K_M differs by about 0.008 on average and at most 0.088 on the CPU, 0.15 on
+Vulkan (deploy_log/rollback_needed). It picks the reference's top option on
+27 of 28 questions on the CPU and all 28 on Vulkan; the CPU miss is
+deploy_log/severity, whose reference top two are 0.018 apart. The test runs
+on the CPU, where its tolerance was measured. Q8_0 is about 3x closer (mean
+0.003, max 0.035) but a 9.5 GB file.
+
 ## Writing requests for Clef
 
 Cloudflare publishes no prompting guide for Clef; it claims compatibility with
@@ -193,6 +204,36 @@ TypeSafe's Jev API, so TypeSafe's guidance applies, with these Clef specifics:
 - **Tune thresholds on your own data.** Cloudflare publishes no calibration
   figures for Clef.
 
+## Speed and memory (Q4_K_M, i9-14900K, RX 6900 XT)
+
+An evaluation is one forward pass over one prompt, so its time follows the
+prompt's length, not its number of questions; the evaluations of one request
+run one after another. Per evaluation, backbone and joint schema head
+together:
+
+| Prompt | 400 tokens | 2048 tokens | 8192 tokens | 16384 tokens |
+|---|---|---|---|---|
+| Vulkan | 0.4 s | 1.9 s | 7.5 s | 15.7 s |
+
+The head is 9–16% of that. The CPU (8 threads) reads about 40 prompt tokens
+per second: 10.4 s for 416 tokens, 51 s for 2048, 449 s for 16384. A prompt
+over about 10k tokens therefore cannot finish on the CPU within the default
+`max_timeout_ms` of 300000 (5 minutes): use a GPU, or raise `max_timeout_ms`
+and the request's `timeout_ms`. From a warm page cache the model loads in
+2.3 s on Vulkan and 1.2 s on the CPU.
+
+On Vulkan the worker holds 6.0 GiB of VRAM at the default `context_tokens` of
+16384 (backbone weights 4.9 GiB, KV cache 0.5 GiB, compute buffer 0.6 GiB;
+6.1 GiB at peak) and 9.2 GiB at 65536, where the compute buffer grows to
+2.2 GiB. The joint schema head stays in host memory.
+
+Flash attention is off. The worker prefills a prompt in 512-token chunks, and
+llama.cpp's CPU flash-attention kernel changes below 64 queries, so a short
+last chunk drifted from a one-pass prefill. Without it chunked prefill is
+bit-exact, Vulkan prefill is 13% faster at 16384 tokens and the gap to the
+reference is unchanged on the CPU and lower on Vulkan (0.15 against 0.16). The
+cost is VRAM: 79 MiB more at 16384 tokens, 1.7 GiB more at 65536.
+
 ## Configuration
 
 **Settings → Workers → judge-clef**:
@@ -202,9 +243,9 @@ TypeSafe's Jev API, so TypeSafe's guidance applies, with these Clef specifics:
 | `model` | `clef-flash` | next start |
 | `threads` | min(8, logical cores) | next start (also the head's threads; `RAYON_NUM_THREADS` in the environment wins for the head) |
 | `gpu_layers` | all layers when a GPU backend and device exist | next start (`0` = CPU; the head always runs on the CPU) |
-| `context_tokens` | 16384, the reference's `max_length` | next start (512 to 65536, Cloudflare's stated window) |
+| `context_tokens` | 16384, the reference's `max_length` | next start (512 to 65536, Cloudflare's stated window; 6.0 GiB of VRAM at 16384, 9.2 GiB at 65536) |
 | `max_request_bytes` | 8388608 | new calls |
-| `max_timeout_ms` | 300000 | new calls |
+| `max_timeout_ms` | 300000 | new calls (raise it for prompts over about 10k tokens on the CPU) |
 
 ## Building
 
