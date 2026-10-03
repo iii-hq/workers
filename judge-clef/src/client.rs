@@ -104,6 +104,11 @@ impl ClefClient {
         }
     }
 
+    /// Resolves once no pass holds the model (see [`Engine::idle`]).
+    pub async fn idle(&self) {
+        self.engine.idle().await
+    }
+
     pub fn model_name(&self) -> &str {
         &self.name
     }
@@ -316,8 +321,8 @@ impl ClefClient {
                 ),
                 release_date: self.revision.to_string(),
                 context_window: Some(self.engine.context_tokens),
-                // The contract's own bound: every option is a span of the prompt.
-                max_options: Some(255),
+                // Options are bounded by the window, not by a count.
+                max_options: None,
             }],
             stats: stats(true),
         }

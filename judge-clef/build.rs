@@ -50,7 +50,15 @@ fn llama_source(out: &Path) -> PathBuf {
             let url =
                 format!("https://github.com/ggml-org/llama.cpp/archive/{LLAMA_COMMIT}.tar.gz");
             let status = Command::new("curl")
-                .args(["-fsSL", "--retry", "3", "-o"])
+                .args([
+                    "-fsSL",
+                    "--retry",
+                    "3",
+                    "--retry-all-errors",
+                    "--retry-delay",
+                    "5",
+                    "-o",
+                ])
                 .arg(&tarball)
                 .arg(&url)
                 .status()
@@ -64,6 +72,9 @@ fn llama_source(out: &Path) -> PathBuf {
         );
     }
     let _ = fs::remove_dir_all(&src);
+    // cmake-rs's build tree: re-extracted sources carry the archive's old
+    // mtimes, so make would keep objects built from the previous patch set.
+    let _ = fs::remove_dir_all(out.join("build"));
     run(Path::new("tar"), &["-xzf", "llama.cpp.tar.gz"], out);
     for patch in &patches {
         let patch = fs::canonicalize(patch).expect("patch path");

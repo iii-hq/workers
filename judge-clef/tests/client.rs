@@ -237,9 +237,6 @@ async fn model_listing_describes_the_loaded_model() {
         card.description
     );
     assert!(card.release_date.starts_with("local:"));
-    assert_eq!(
-        (card.context_window, card.max_options),
-        (Some(2048), Some(255))
-    );
+    assert_eq!((card.context_window, card.max_options), (Some(2048), None));
     assert!(stats.usage_complete);
 }

@@ -29,10 +29,9 @@ the order judge-contract's ``BTreeMap`` gives the Rust encoder.
 
 ``GGUF`` and ``TOLERANCE`` record what judge-clef pins and must stay within:
 the GGUF (ggml-org/Clef-Flash-GGUF @ 4a7a08c0, llama.cpp's ``clef`` arch) and
-the max |p - p_ref|. TOLERANCE is 1.5x, rounded up, of the first pipeline's
-0.0880 (bartowski's backbone GGUF and an f32 head in candle). The in-graph
-Q4_K_M on llama.cpp b11379 measures max |dp| 0.065 on the CPU and 0.080 on
-Vulkan, mean 0.007, top-1 26/28; both misses are near-ties (orders/region,
+the max |p - p_ref|. TOLERANCE leaves 1.75x headroom over the worst case
+below. The in-graph Q4_K_M on llama.cpp b11379 measures max |dp| 0.065 on the
+CPU and 0.080 on Vulkan, mean 0.007, top-1 26/28; both misses are near-ties (orders/region,
 margin 0.0046, which the f32 HF backbone also flips; deploy_log/severity,
 0.0174). Q8_0: max 0.03, top-1 27/28.
 

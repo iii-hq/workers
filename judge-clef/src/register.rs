@@ -25,8 +25,8 @@ pub fn register(iii: &IIIClient, config: SharedConfig, slot: Arc<ModelSlot<ClefC
         let config = config.clone();
         let slot = slot.clone();
         async move {
-            // Keeps an unpinned model loaded until this call ends.
-            let _in_use = slot.in_use();
+            // Keeps an unpinned model loaded until this call and its pass end.
+            let in_use = slot.in_use();
             let caller = take_caller_id(&mut payload);
             let mut request = match serde_json::from_value::<EvaluateRequest>(payload) {
                 Ok(request) => request,
@@ -48,13 +48,18 @@ pub fn register(iii: &IIIClient, config: SharedConfig, slot: Arc<ModelSlot<ClefC
                 Err(unloaded) => return Ok(unloaded.evaluate_error()),
             };
             let snapshot = config.read().await.clone();
-            Ok::<EvaluateResponse, Error>(
-                client
-                    .with_caller_id(caller.as_deref())
-                    .with_limits(snapshot.limits())
-                    .evaluate(request)
-                    .await,
-            )
+            let response = client
+                .with_caller_id(caller.as_deref())
+                .with_limits(snapshot.limits())
+                .evaluate(request)
+                .await;
+            // A cancelled or late call returns while its pass runs on; the
+            // model stays held (not idle-released) until that pass ends.
+            tokio::spawn(async move {
+                client.idle().await;
+                drop(in_use);
+            });
+            Ok::<EvaluateResponse, Error>(response)
         }
     });
     let request_schema = serde_json::to_value(schemars::schema_for!(EvaluateRequest))

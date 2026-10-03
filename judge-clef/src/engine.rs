@@ -43,6 +43,11 @@ impl Engine {
         })
     }
 
+    /// Resolves once no pass holds the model (a detached one has ended).
+    pub async fn idle(&self) {
+        drop(self.model.lock().await);
+    }
+
     /// The score of every option of every field, in prompt order. `cancel`
     /// and `deadline` are checked once the model is free, before the pass.
     /// ponytail: the pass itself cannot be stopped (no abort callback on

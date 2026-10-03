@@ -7,14 +7,20 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <exception>
 #include <strings.h>
 
 // llama.cpp logs every tensor while loading (~1300 lines): keep warnings and
-// errors. A continuation line follows its message's fate.
+// errors. A continuation line follows its message's fate. Also dropped: the
+// context's "compute buffer size ... does not match expectation" (one line per
+// backend), which llama.cpp logs on freeing a context whose pass reallocated
+// its compute buffers, as 16k prompts do (README: the 14.1 GiB peak).
 static void log_warnings(ggml_log_level level, const char * text, void *) {
     thread_local bool keep = false;
     if (level != GGML_LOG_LEVEL_CONT) {
-        keep = level >= GGML_LOG_LEVEL_WARN;
+        keep = level >= GGML_LOG_LEVEL_WARN &&
+               !(strncmp(text, "~llama_context:", 15) == 0 && strstr(text, "does not match expectation"));
     }
     if (keep) {
         fputs(text, stderr);
@@ -72,8 +78,9 @@ extern "C" llama_model * clef_model_load(const char * path, int32_t gpu_layers) 
 // llama_decision_order (0 none, 1-3 question noul/choice/score, 4 option);
 // scores[k] gets option k's score, options in prompt order.
 // Returns 0, -1001 on bad input, -1002 when the context cannot be created,
-// -1003 when the batch refuses a token, -1004 with no score, else
-// llama_process's own code.
+// -1003 when the batch refuses a token, -1004 with no score, -1005 when the
+// GGUF sets a pooling type, -1006 when the pass throws (e.g. a Vulkan
+// allocation), else llama_process's own code.
 extern "C" int32_t clef_decide(const llama_model * model, int32_t n_threads, const int32_t * ids,
                                const uint8_t * orders, int32_t n_tokens, float * scores, int32_t n_scores) {
     int32_t n_options = 0;
@@ -98,6 +105,11 @@ extern "C" int32_t clef_decide(const llama_model * model, int32_t n_threads, con
     if (!ctx) {
         return -1002;
     }
+    // A GGUF with a pooling type would pool the scores into embd_seq and leave every row 0.
+    if (llama_pooling_type(ctx) != LLAMA_POOLING_TYPE_NONE) {
+        llama_free(ctx);
+        return -1005;
+    }
     llama_batch_ext * batch = llama_batch_ext_init(ctx);
     int32_t status = 0;
     for (int32_t i = 0; i < n_tokens && status == 0; i++) {
@@ -109,7 +121,16 @@ extern "C" int32_t clef_decide(const llama_model * model, int32_t n_threads, con
         }
     }
     if (status == 0) {
-        status = llama_process(ctx, LLAMA_PROCESS_TYPE_ENCODE, batch);
+        // ggml-vulkan throws (e.g. vk::OutOfDeviceMemoryError while growing its
+        // prealloc buffers mid-pass); an exception must not reach Rust.
+        try {
+            status = llama_process(ctx, LLAMA_PROCESS_TYPE_ENCODE, batch);
+        } catch (const std::exception & e) {
+            fprintf(stderr, "clef_decide: %s\n", e.what());
+            status = -1006;
+        } catch (...) {
+            status = -1006;
+        }
     }
     for (int32_t k = 0; k < n_scores && status == 0; k++) {
         const float * row = llama_get_embeddings_ith(ctx, k);

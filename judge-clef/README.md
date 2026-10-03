@@ -158,7 +158,7 @@ a JSON value; logged as `state truncated to the context window`); a schema
 that alone exceeds the window answers `payload_too_large`. A question with an
 empty id and no instructions answers `invalid_request`: it would give the head
 an empty span to read. `judge-clef::models::list` reports the window as
-`context_window` and 255 as `max_options`.
+`context_window`.
 
 `tests/clef.rs` checks the token counts and probabilities of 10 records (28
 questions) against Cloudflare's own pipeline, `joint_schema_model.py` with the
@@ -236,17 +236,17 @@ VRAM reaches 14.1 GiB and pinned memory 1.75 GiB, so the GPU needs that much
 free. The worker's own memory peaks at 0.9 GiB, besides 0.6 GiB of the mapped
 GGUF. Creating and freeing the context costs about 15 ms at 356 tokens and
 0.1–0.2 s at 16k. On the CPU a 16k pass needs about 7 GiB of RAM besides the
-mapped GGUF. Flash attention is on: without it the attention scores of a
-one-pass prompt grow with its square (16k tokens took 101–110 s and 33 GB of
-RAM).
+mapped GGUF. Flash attention is on: without it the attention scores grow with
+the square of the prompt, and on Vulkan llama.cpp moves them to the CPU (16k
+tokens took 101–110 s instead of 15 s, with about 18 GiB of host compute
+buffers).
 
 ### Why the window stops at 16384 tokens
 
 The whole prompt is one llama.cpp batch, so the compute buffers grow with it,
 and the GPU's kernel driver kills a job that runs too long. On the RX 6900 XT
 (amdgpu, 2 s job timeout), 24576 tokens fit in VRAM (13.0 GB) but the pass lost
-the device every time; ggml-vulkan then aborts the whole process, so no error
-can be returned. 32768 tokens need more VRAM than the card has. `context_tokens`
+the device every time, and the worker process did not survive it. 32768 tokens need more VRAM than the card has. `context_tokens`
 therefore stops at 16384, the reference's `max_length` and the default; on a
 smaller GPU, or one other processes share, lower it. The worker also sets
 `GGML_VK_MAX_NODES_PER_SUBMIT=10` unless the environment sets it: in a fresh
