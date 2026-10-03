@@ -6,22 +6,11 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
-description = "clef provider for the judge hub: Cloudflare's Clef-Flash decision model run in-process (Qwen3.5 backbone GGUF through llama.cpp, joint schema head through candle)."
+description = "clef provider for the judge hub: Cloudflare's Clef-Flash decision model run in-process (llama.cpp's clef arch: the Qwen3.5 backbone and the joint schema head in one graph)."
 
 [features]
-default = ["console-ui", "legacy"]
+default = ["console-ui"]
 console-ui = ["dep:iii-console-ui"]
-# ponytail: stage 1 of the move to llama.cpp's own clef arch. `legacy` keeps
-# the candle head and llama-cpp-2's backbone (src/head.rs, src/engine.rs);
-# without it build.rs builds llama.cpp b11379 for src/llama.rs instead. Stage
-# 2 deletes this feature, candle and the `cfg(feature = "legacy")` gates.
-legacy = ["dep:candle-core", "dep:candle-nn", "iii-llama-runtime/llama"]
-
-# The worker needs the legacy engine until stage 2.
-[[bin]]
-name = "judge-clef"
-path = "src/main.rs"
-required-features = ["legacy"]
 
 [dependencies]
 judge-contract = { path = "../crates/judge-contract" }
@@ -31,8 +20,6 @@ iii-console-ui = { path = "../crates/console-ui", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-candle-core = { version = "0.11", optional = true }
-candle-nn = { version = "0.11", optional = true }
 iii-llama-runtime = { path = "../crates/llama-runtime", default-features = false }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 serde = { version = "1", features = ["derive"] }
@@ -53,6 +40,10 @@ futures-util = "0.3"
 tempfile = "3"
 tokio-tungstenite = "0.28"
 
-# The joint head runs here on the CPU: keep full optimization, like judge-laya.
+# The model runs in llama.cpp (cmake's Release flags win); Rust only
+# tokenizes, 1.5x slower at "z" (0.46 s against 0.30 s for a 2 MiB state).
 [profile.release]
-opt-level = 3
+opt-level = "z"
+strip = true
+lto = "fat"
+codegen-units = 1

@@ -1,8 +1,0 @@
-{
-  "hidden_size": 32,
-  "width": 16,
-  "routing_layers": 2,
-  "layers": 4,
-  "heads": 2,
-  "feedforward": 24
-}

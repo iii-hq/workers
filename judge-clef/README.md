@@ -6,32 +6,30 @@ no llama-server. Clef-Flash is Cloudflare's decision model
 ([announcement](https://blog.cloudflare.com/clef-decision-models)): a
 Qwen3.5-9B backbone and a joint schema head of about 122M parameters. The head
 reads the backbone's final hidden state of every prompt token and gives one
-logit per option of every question, so all the questions of an evaluation are
-decided together in one forward pass, with no decoding. This worker runs the
-backbone GGUF through llama.cpp (the
-[`llama-cpp-2`](https://crates.io/crates/llama-cpp-2) crate, in the runtime
-it shares with judge-decider, judge-semif and judge-laya) on the CPU, on
-Metal (macOS) or on Vulkan (Linux x86_64: AMD, NVIDIA and Intel GPUs), picked
-automatically at start; the joint schema head runs in candle on the CPU.
+score per option of every question, so all the questions of an evaluation are
+decided together in one forward pass, with no decoding. This worker runs both
+in one graph through llama.cpp's own `clef` architecture: `build.rs` compiles
+llama.cpp b11379 from source and `native/clef.cpp` calls it. The model runs on
+the CPU, on Metal (macOS) or on Vulkan (Linux x86_64: AMD, NVIDIA and Intel
+GPUs), picked automatically at start.
 
 ## Hardware selection
 
-- **macOS**: Metal is linked in; Apple Silicon GPUs run the backbone.
+- **macOS**: Metal is linked in; Apple Silicon GPUs run the model.
 - **Linux x86_64**: llama.cpp's backends are modules loaded at start from the
   binary's directory (`GGML_BACKEND_DL`). The Vulkan module loads wherever a
   Vulkan loader and driver exist (`libvulkan.so.1`); without them it is
-  skipped and the CPU runs the backbone, so the same package works on GPU
+  skipped and the CPU runs the model, so the same package works on GPU
   desktops, servers and containers. The CPU module is picked for the host
   (AVX2, AVX-512, AMX variants). The package ships `libllama`, `libggml`,
   `libggml-base`, the CPU variants and the Vulkan module beside the binary,
   which finds them through its `$ORIGIN` runpath.
 - **Linux aarch64**: CPU, statically linked.
 
-`gpu_layers: 0` keeps the backbone on the CPU even when a GPU is present. The
-joint schema head always runs on the CPU, on `threads` threads
-(`RAYON_NUM_THREADS` in the worker environment wins). The chosen device is
-logged when the model loads, as `selected inference device`, and shown in the
-settings form.
+By default the whole model, joint schema head included, runs on the GPU when
+there is one. `gpu_layers: 0` keeps it all on the CPU; `threads` sets
+llama.cpp's CPU threads. The chosen device is logged when the model loads, as
+`selected inference device`, and shown in the settings form.
 
 ## Install
 
@@ -43,14 +41,14 @@ The functions register at start; the model loads on demand. While clef is the
 judge hub's **default provider** (`provider: clef` under **Settings → Workers →
 judge**) it loads at once and stays loaded. Otherwise the first call that names
 `"provider": "clef"` (or comes from a session that picked it) loads it, and it
-is released (VRAM included, about 6 GiB) after 10 minutes without calls. A call
+is released (VRAM included, about 5.5 GiB) after 10 minutes without calls. A call
 that cannot wait for the load answers `deadline` while the load goes on for the
 next one.
 The first load downloads the pinned checkpoint into the hf-hub cache
-(`$HF_HOME`, default `~/.cache/huggingface`): first the joint schema head and
-the tokenizer from `Cloudflare/clef-flash`, then the backbone GGUF from
-`bartowski/Cloudflare_clef-flash-GGUF` (a llama.cpp `qwen35` conversion that
-keeps the untied `output.weight` the head reads). To keep it loaded while
+(`$HF_HOME`, default `~/.cache/huggingface`): first the tokenizer from
+`Cloudflare/clef-flash`, then the 6.5 GB `Clef-Flash-Q4_K_M.gguf` from
+`ggml-org/Clef-Flash-GGUF` (llama.cpp's `clef` conversion: the backbone and
+the joint schema head in one file). To keep it loaded while
 another provider is the default, turn on **Keep every local provider loaded**
 (`preload_all`) in the judge settings. A hub build that does not expose
 `judge::configuration-id` keeps the model loaded from the start.
@@ -60,14 +58,12 @@ a directory holding one checkpoint, loaded as the configured `model`:
 
 | File | Content |
 |---|---|
-| `backbone.gguf` | the Qwen3.5 backbone GGUF (arch `qwen35`, with `output.weight`) |
-| `joint_head.safetensors` | the joint schema head, from `Cloudflare/clef-flash` |
-| `joint_head_config.json` | its sizes, from `Cloudflare/clef-flash` |
+| `model.gguf` | the Clef GGUF (arch `clef`: backbone and joint schema head), from `ggml-org/Clef-Flash-GGUF` |
 | `tokenizer.json` | the tokenizer, from `Cloudflare/clef-flash` |
 
-The files may be symlinks, for example into an hf-hub snapshot. Use a K-quant
-or legacy-quant backbone (`Q4_K_M`, `Q8_0`, …): the reader of `output.weight`
-(candle) rejects the IQ quantizations. The tokenizer is the Hugging Face
+The files may be symlinks, for example into an hf-hub snapshot. A GGUF of any
+other architecture is refused at load: a `qwen35` conversion of the backbone
+alone would load without the head. The tokenizer is the Hugging Face
 `tokenizer.json`, not the GGUF's vocabulary: llama.cpp's `qwen35`
 pre-tokenizer skips the NFC normalization the model was trained with, which
 changes the tokens of Hindi, Thai and decomposed text.
@@ -147,7 +143,7 @@ The joint schema head reads the hidden states of each question's instruction
 span and of each option's JSON span, plus the last token's state as a summary
 of the whole prompt. The questions attend to each other, and each option gets
 a lexical prior from the backbone's output embeddings (`output.weight`) of its
-own tokens. A softmax over each question's logits gives its probabilities, at
+own tokens. A softmax over each question's scores gives its probabilities, at
 temperature 1 as in the reference. `confidence` is TypeSafe's
 (`judge_contract::confidence`), as for every local provider:
 `(n·p_max − 1) / (n − 1)` for a choice, 1 − the expected distance from the
@@ -167,12 +163,19 @@ an empty span to read. `judge-clef::models::list` reports the window as
 `tests/clef.rs` checks the token counts and probabilities of 10 records (28
 questions) against Cloudflare's own pipeline, `joint_schema_model.py` with the
 bf16 backbone and head (`tests/fixtures/make_reference.py`). The shipped
-Q4_K_M differs by about 0.008 on average and at most 0.088 on the CPU, 0.15 on
-Vulkan (deploy_log/rollback_needed). It picks the reference's top option on
-27 of 28 questions on the CPU and all 28 on Vulkan; the CPU miss is
-deploy_log/severity, whose reference top two are 0.018 apart. The test runs
-on the CPU, where its tolerance was measured. Q8_0 is about 3x closer (mean
-0.003, max 0.035) but a 9.5 GB file.
+Q4_K_M differs by:
+
+| Device | max \|Δp\| | mean \|Δp\| | reference's top option |
+|---|---|---|---|
+| CPU | 0.065 | 0.007 | 26 of 28 |
+| Vulkan | 0.080 | 0.007 | 26 of 28 |
+
+Both misses are near-ties: orders/region, whose reference top two are 0.005
+apart (the f32 Hugging Face backbone flips it too), and deploy_log/severity,
+0.017 apart. The test's tolerance is 0.14 and it runs on the CPU
+(`CLEF_GPU_LAYERS=all` runs it on the GPU). `Clef-Flash-Q8_0.gguf` is about 3x
+closer (max 0.03, mean 0.003, 27 of 28) but a 9.7 GB file and about 2.5 GiB
+more VRAM.
 
 ## Writing requests for Clef
 
@@ -205,35 +208,55 @@ TypeSafe's Jev API, so TypeSafe's guidance applies, with these Clef specifics:
 - **Tune thresholds on your own data.** Cloudflare publishes no calibration
   figures for Clef.
 
-## Speed and memory (Q4_K_M, i9-14900K, RX 6900 XT)
+## Speed and memory (Q4_K_M, i9-14900K, RX 6900 XT 16 GiB)
 
-An evaluation is one forward pass over one prompt, so its time follows the
-prompt's length, not its number of questions; the evaluations of one request
-run one after another. Per evaluation, backbone and joint schema head
-together:
+An evaluation is one forward pass over one prompt, backbone and joint schema
+head together, so its time follows the prompt's length, not its number of
+questions. The evaluations of one request run one after another, and so do
+those of concurrent requests. Per evaluation:
 
-| Prompt | 400 tokens | 2048 tokens | 8192 tokens | 16384 tokens |
+| Prompt | 356 tokens | 2k tokens | 8k tokens | 16k tokens |
 |---|---|---|---|---|
-| Vulkan | 0.4 s | 1.9 s | 7.5 s | 15.7 s |
+| Vulkan | 0.24 s | 1.3 s | 6.6 s | 15 s |
+| CPU, 16 threads | 5 s | 31 s | – | 280–360 s |
 
-The head is 9–16% of that. The CPU (8 threads) reads about 40 prompt tokens
-per second: 10.4 s for 416 tokens, 51 s for 2048, 449 s for 16384. A prompt
-over about 10k tokens therefore cannot finish on the CPU within the default
-`max_timeout_ms` of 300000 (5 minutes): use a GPU, or raise `max_timeout_ms`
-and the request's `timeout_ms`. From a warm page cache the model loads in
-2.3 s on Vulkan and 1.2 s on the CPU.
+The CPU timings were taken while other work loaded the machine (8 threads are
+about as fast). A prompt near 16k tokens cannot finish on the CPU within the
+default `max_timeout_ms` of 300000 (5 minutes): use a GPU, or raise
+`max_timeout_ms` and the request's `timeout_ms`.
 
-On Vulkan the worker holds 6.0 GiB of VRAM at the default `context_tokens` of
-16384 (backbone weights 4.9 GiB, KV cache 0.5 GiB, compute buffer 0.6 GiB;
-6.1 GiB at peak) and 9.2 GiB at 65536, where the compute buffer grows to
-2.2 GiB. The joint schema head stays in host memory.
+Each pass runs in a llama.cpp context sized to its prompt (rounded up to 256
+tokens), created for it and freed after it, so between evaluations only the
+weights hold memory: 5.5 GiB of VRAM on Vulkan. A pass adds its compute
+buffers for its duration: VRAM peaks at 5.7 GiB for a 356-token prompt and
+10.1 GiB for 16368 tokens, with 1 GiB of pinned host memory; the worker's own
+RAM stays under 1 GiB. Creating and freeing the context costs about 15 ms at
+356 tokens and 0.1–0.2 s at 16k. On the CPU a 16k pass needs about 7 GiB of RAM
+besides the mapped GGUF. Flash attention is on: without it the attention
+scores of a one-pass prompt grow with its square (16k tokens took 101–110 s and
+33 GB of RAM).
 
-Flash attention is off. The worker prefills a prompt in 512-token chunks, and
-llama.cpp's CPU flash-attention kernel changes below 64 queries, so a short
-last chunk drifted from a one-pass prefill. Without it chunked prefill is
-bit-exact, Vulkan prefill is 13% faster at 16384 tokens and the gap to the
-reference is unchanged on the CPU and lower on Vulkan (0.15 against 0.16). The
-cost is VRAM: 79 MiB more at 16384 tokens, 1.7 GiB more at 65536.
+### Why the window stops at 16384 tokens
+
+The whole prompt is one llama.cpp batch, so the compute buffers grow with it,
+and the GPU's kernel driver kills a job that runs too long. On the RX 6900 XT
+(amdgpu, 2 s job timeout), 24576 tokens fit in VRAM (13.0 GB) but the pass lost
+the device every time; ggml-vulkan then aborts the whole process, so no error
+can be returned. 32768 tokens need more VRAM than the card has. `context_tokens`
+therefore stops at 16384, the reference's `max_length` and the default; on a
+smaller GPU, or one other processes share, lower it. The worker also sets
+`GGML_VK_MAX_NODES_PER_SUBMIT=10` unless the environment sets it: in a fresh
+context ggml-vulkan submits every 100 graph nodes, which at 16k tokens comes
+close to the 2 s timeout; 10 nodes per submit cost at most 0.5%.
+
+### Cancellation
+
+`judge-clef::cancel` and the deadline are checked while an evaluation waits for
+the model and again just before its pass. A pass that has started cannot be
+stopped (llama.cpp's Vulkan backend has no abort hook): the caller gets its
+`cancelled` or `deadline` answer at once, but the pass holds the model until it
+ends, up to about 15 s at 16k tokens on Vulkan and minutes on the CPU, and the
+next evaluation waits for it.
 
 ## Configuration
 
@@ -242,40 +265,45 @@ cost is VRAM: 79 MiB more at 16384 tokens, 1.7 GiB more at 65536.
 | Field | Default | Applied |
 |---|---|---|
 | `model` | `clef-flash` | next start |
-| `threads` | min(8, logical cores) | next start (also the head's threads; `RAYON_NUM_THREADS` in the environment wins for the head) |
-| `gpu_layers` | all layers when a GPU backend and device exist | next start (`0` = CPU; the head always runs on the CPU) |
-| `context_tokens` | 16384, the reference's `max_length` | next start (512 to 65536, Cloudflare's stated window; 6.0 GiB of VRAM at 16384, 9.2 GiB at 65536) |
+| `threads` | min(8, logical cores) | next start (llama.cpp's CPU threads) |
+| `gpu_layers` | the whole model when a GPU backend and device exist | next start (`0` = CPU) |
+| `context_tokens` | 16384, the reference's `max_length` | next start (512 to 16384; 10.1 GiB of VRAM at peak at 16384, see above) |
 | `max_request_bytes` | 8388608 | new calls |
-| `max_timeout_ms` | 300000 | new calls (raise it for prompts over about 10k tokens on the CPU) |
+| `max_timeout_ms` | 300000 | new calls (raise it for long prompts on the CPU) |
 
 ## Building
 
-llama.cpp is compiled from source through `crates/llama-runtime`: `cmake`, a
-C++ compiler and `libclang` (for bindgen) are required; if libclang lives
-outside the default search path set `LIBCLANG_PATH` (and
-`BINDGEN_EXTRA_CLANG_ARGS=-I<clang>/include` when its builtin headers are not
-found). Linux x86_64 builds also need the Vulkan loader headers, the SPIR-V
-headers and `glslc` (Ubuntu: `libvulkan-dev spirv-headers glslc`) to compile
-the Vulkan module (only the module links `libvulkan`, the binary does not).
-The build copies the modules and libraries beside the binary, so
-`target/release` has the published layout; the release catalog ships them as
-the artifact's `companions`. Windows is not published yet.
+`build.rs` downloads llama.cpp b11379 (`1537a0a8`, GitHub's source archive,
+checked against a pinned sha256), applies `native/*.patch`, builds it with
+cmake and compiles `native/clef.cpp` against it; `src/llama.rs` declares the
+shim's C functions by hand. It needs `curl`, `tar`, `patch`, `cmake` and a
+C++17 compiler, and no libclang. An offline build points
+`III_LLAMA_CPP_TARBALL` at a copy of the archive, checked the same way. The
+patch keeps llama.cpp from reserving a logits buffer the `clef` pass never
+writes (15 GiB of host RAM at 16k tokens). Linux x86_64 builds also need the
+Vulkan loader headers, the SPIR-V headers and `glslc` (Ubuntu: `libvulkan-dev
+spirv-headers glslc`) to compile the Vulkan module (only the module links
+`libvulkan`, the binary does not). The build copies the modules and libraries
+beside the binary, so `target/release` has the published layout; the release
+catalog ships them as the artifact's `companions`. Windows is not published
+yet.
 
-- Give this package its own `CARGO_TARGET_DIR`: llama-cpp-sys-2 relinks its
-  shared libraries in the profile directory and fails with "File exists" when
-  two packages that build llama.cpp share one.
-- `build.rs` adds `$ORIGIN` to the binary's runpath, because a dependency's
-  build script cannot; `readelf -d target/release/judge-clef | grep RUNPATH`
-  shows it.
+- Give this package its own `CARGO_TARGET_DIR`: it lays its llama.cpp beside
+  the binaries as `libllama.so.0` and `libggml*.so`, the names the older
+  llama.cpp of judge-decider, judge-semif and judge-laya uses too.
+- `build.rs` adds `$ORIGIN` to the binary's runpath;
+  `readelf -d target/release/judge-clef | grep RUNPATH` shows it.
 - Run the real model from a release build: the debug build is far too slow at
   this size. The `#[ignore]` real-model tests read the checkpoint from
-  `CLEF_CHECKPOINT_DIR`, in the layout above.
+  `CLEF_CHECKPOINT_DIR`, in the layout above. The tiny test model
+  (`tests/fixtures/tiny/model.gguf`) comes from
+  `tests/fixtures/make_fixtures.py`.
 
 ## License
 
 Apache-2.0. The Clef-Flash weights, joint schema head and tokenizer are
 Cloudflare's (`Cloudflare/clef-flash`, Apache-2.0), built on Qwen3.5-9B
-(Apache-2.0); the backbone GGUF is bartowski's conversion of them
-(`bartowski/Cloudflare_clef-flash-GGUF`, Apache-2.0).
+(Apache-2.0); the GGUF is ggml-org's conversion of them
+(`ggml-org/Clef-Flash-GGUF`, Apache-2.0).
 
 For the full API, read the hub's [reference](../judge/reference.md).

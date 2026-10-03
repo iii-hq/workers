@@ -1,5 +1,5 @@
-//! Test helpers: the committed tiny checkpoint (random qwen3 backbone with a
-//! byte vocabulary, n_embd 32; a seeded joint head; a byte-level tokenizer).
+//! Test helpers: the committed tiny checkpoint (a random clef GGUF, n_embd 32,
+//! with a byte vocabulary, and its byte-level tokenizer).
 #![allow(dead_code)]
 use judge_clef::{download, engine, ClefClient};
 use std::path::PathBuf;
@@ -8,8 +8,7 @@ pub fn tiny_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny")
 }
 
-/// One engine per test binary, like the worker: several llama.cpp contexts
-/// loading at once in one process abort under the Vulkan backend.
+/// One model per test binary, like the worker.
 pub fn tiny_client() -> ClefClient {
     static CLIENT: std::sync::OnceLock<ClefClient> = std::sync::OnceLock::new();
     CLIENT

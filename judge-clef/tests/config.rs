@@ -8,8 +8,8 @@ fn config_validates_model_placement_and_limits() {
     assert_eq!(defaults["context_tokens"], 16384);
     assert!((1..=8).contains(&defaults["threads"].as_u64().unwrap()));
     assert!(defaults.get("gpu_layers").is_none());
-    let ok = ClefConfig::from_json(&json!({"gpu_layers": 0, "context_tokens": 65536})).unwrap();
-    assert_eq!((ok.gpu_layers, ok.context_tokens), (Some(0), 65536));
+    let ok = ClefConfig::from_json(&json!({"gpu_layers": 0, "context_tokens": 16384})).unwrap();
+    assert_eq!((ok.gpu_layers, ok.context_tokens), (Some(0), 16384));
     assert_eq!(
         ClefConfig::from_json(&json!({"context_tokens": 512}))
             .unwrap()
@@ -21,7 +21,8 @@ fn config_validates_model_placement_and_limits() {
         json!({"threads": 0}),
         json!({"threads": 257}),
         json!({"context_tokens": 511}),
-        json!({"context_tokens": 65537}),
+        // One pass over 16384 tokens is the most measured to fit a GPU safely.
+        json!({"context_tokens": 16385}),
         // Clef decides every question in one pass: no per-question batching.
         json!({"parallel_questions": 4}),
         json!({"max_request_bytes": 0}),

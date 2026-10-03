@@ -105,7 +105,7 @@ async fn mixed_evaluation_answers_every_question_with_valid_distributions_and_us
             matches!(results[evaluation].answers[qid], Answer::Noul { noul } if (0.0..=1.0).contains(&noul))
         );
     }
-    // One backbone forward per evaluation, each counting its whole prompt.
+    // One forward per evaluation, each counting its whole prompt.
     assert_eq!((stats.attempts, stats.requests, stats.questions), (2, 2, 4));
     assert_eq!(
         stats.input_tokens,

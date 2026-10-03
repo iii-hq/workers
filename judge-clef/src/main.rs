@@ -17,8 +17,8 @@ struct Cli {
     /// Engine websocket URL.
     #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
-    /// Use a local checkpoint directory (backbone.gguf, joint_head.safetensors,
-    /// joint_head_config.json, tokenizer.json) instead of the Hugging Face Hub.
+    /// Use a local checkpoint directory (model.gguf, tokenizer.json) instead of
+    /// the Hugging Face Hub.
     #[arg(long, env = "III_CLEF_CHECKPOINT_DIR")]
     checkpoint_dir: Option<PathBuf>,
 }
@@ -56,10 +56,6 @@ async fn main() -> anyhow::Result<()> {
         gpu_layers: initial.gpu_layers,
         context_tokens: initial.context_tokens,
     };
-    // candle (the head) reads RAYON_NUM_THREADS per call; an operator export wins.
-    if std::env::var_os("RAYON_NUM_THREADS").is_none() {
-        std::env::set_var("RAYON_NUM_THREADS", initial.threads.to_string());
-    }
     let config = configuration::new_cell(initial);
     #[cfg(feature = "console-ui")]
     register::register_console_ui(&iii);

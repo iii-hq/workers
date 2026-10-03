@@ -6,6 +6,7 @@
 #include "llama-ext.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <strings.h>
 
 // llama.cpp logs every tensor while loading (~1300 lines): keep warnings and
@@ -23,6 +24,12 @@ static void log_warnings(ggml_log_level level, const char * text, void *) {
 // Load the backend modules (GGML_BACKEND_DL builds) from `dir`, else from
 // `fallback` when `dir` had none; both may be null.
 extern "C" void clef_backend_init(const char * dir, const char * fallback) {
+    // A context per call starts ggml-vulkan's submit sizing from zero flops,
+    // so each pass submits its graph in 100-node pieces; at 16k tokens one
+    // nears amdgpu's 2 s job timeout, which loses the device and aborts the
+    // process. 10-node pieces cost at most 0.5% (RX 6900 XT). An operator's
+    // value wins.
+    setenv("GGML_VK_MAX_NODES_PER_SUBMIT", "10", 0);
     llama_log_set(log_warnings, nullptr);
     if (dir) {
         ggml_backend_load_all_from_path(dir);

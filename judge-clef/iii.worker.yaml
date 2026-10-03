@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: judge-clef
 tags: [evaluation, judge, clef, llama.cpp, noul, choice, score, local, gpu]
-description: clef provider for the judge hub (judge-clef::evaluate, judge-clef::models::list, judge-clef::cancel) — Cloudflare's Clef-Flash decision model (a Qwen3.5-9B backbone GGUF and its joint schema head) downloaded from the Hugging Face Hub and run in-process, the backbone through llama.cpp and the joint schema head in candle on the CPU, deciding every question of an evaluation together in one forward pass; picks Metal (macOS), Vulkan (Linux, when a driver is present) or the CPU automatically; no API key or external service.
+description: clef provider for the judge hub (judge-clef::evaluate, judge-clef::models::list, judge-clef::cancel) — Cloudflare's Clef-Flash decision model (a Qwen3.5-9B backbone and its joint schema head in one GGUF) downloaded from the Hugging Face Hub and run in-process through llama.cpp's clef architecture, deciding every question of an evaluation together in one forward pass; picks Metal (macOS), Vulkan (Linux, when a driver is present) or the CPU automatically; no API key or external service.
 config:
   model: clef-flash
   threads: 8

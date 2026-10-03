@@ -105,8 +105,8 @@ jobs:
           # Reuse these assets in both Cargo feature variants.
           echo 'SKIP_UI_BUILD=1' >> "$GITHUB_ENV"
 
-      # judge-semif, judge-decider, judge-laya and judge-clef compile llama.cpp (cmake), its bindings (bindgen: libclang)
-      # and the runtime-loaded Vulkan backend module (headers + glslc).
+      # judge-semif, judge-decider, judge-laya and judge-clef compile llama.cpp (cmake), the first three its bindings
+      # (bindgen: libclang), and the runtime-loaded Vulkan backend module (headers + glslc).
       - name: Provision llama.cpp build tools
         run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
 

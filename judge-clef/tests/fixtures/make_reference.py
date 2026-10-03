@@ -27,13 +27,14 @@ Probabilities are listed in encode order: noul ``[true, false]``, choice by
 sorted option id, score ``0..n-1``. Questions are inserted in sorted id order,
 the order judge-contract's ``BTreeMap`` gives the Rust encoder.
 
-``GGUF`` and ``TOLERANCE`` record the Phase 0 spike's decision: the backbone
-file judge-clef pins (bartowski/Cloudflare_clef-flash-GGUF @ d7f376ea), and
-the max |p - p_ref| the GGUF + f32 head pipeline must stay within. The spike
-measured Q4_K_M at max |dp| 0.0880 (deploy_log/rollback_needed), mean 0.0083,
-top-1 28/28, on llama.cpp e79e4bf660e1 (llama-cpp-sys-2 0.1.156), CPU, 512-token
-chunks; TOLERANCE = 1.5x that, rounded up. (Q8_0: max 0.035, top-1 27/28; the
-miss is orders/region, a 0.0046-margin near-tie the f32 HF backbone also flips.)
+``GGUF`` and ``TOLERANCE`` record what judge-clef pins and must stay within:
+the GGUF (ggml-org/Clef-Flash-GGUF @ 4a7a08c0, llama.cpp's ``clef`` arch) and
+the max |p - p_ref|. TOLERANCE is 1.5x, rounded up, of the first pipeline's
+0.0880 (bartowski's backbone GGUF and an f32 head in candle). The in-graph
+Q4_K_M on llama.cpp b11379 measures max |dp| 0.065 on the CPU and 0.080 on
+Vulkan, mean 0.007, top-1 26/28; both misses are near-ties (orders/region,
+margin 0.0046, which the f32 HF backbone also flips; deploy_log/severity,
+0.0174). Q8_0: max 0.03, top-1 27/28.
 
 Run once from judge-clef/ and commit the output (downloads ~19 GB into the
 Hugging Face cache and loads the bf16 weights on the CPU; an AVX2 CPU without
@@ -55,7 +56,7 @@ from pathlib import Path
 
 REPO = "Cloudflare/clef-flash"
 REVISION = "17f0b0ad64efb65d273590632833508766b2aae6"
-GGUF = "Cloudflare_clef-flash-Q4_K_M.gguf"
+GGUF = "Clef-Flash-Q4_K_M.gguf"
 TOLERANCE = 0.14
 
 

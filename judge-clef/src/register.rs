@@ -59,7 +59,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, slot: Arc<ModelSlot<ClefC
     });
     let request_schema = serde_json::to_value(schemars::schema_for!(EvaluateRequest))
         .expect("clef request schema serializes");
-    iii.register_function(crate::EVALUATE_ID, registration.request_format(request_schema).description("Evaluate Noul, Choice and Score questions against arbitrary JSON state with Clef-Flash (Cloudflare's joint decision model: a llama.cpp backbone and its joint schema head decide every question of an evaluation together, in one pass) running inside this worker. Results are atomic; usage counts prompt tokens. No credentials or endpoints are accepted in the request.").metadata(json!({ "internal": true })));
+    iii.register_function(crate::EVALUATE_ID, registration.request_format(request_schema).description("Evaluate Noul, Choice and Score questions against arbitrary JSON state with Clef-Flash (Cloudflare's joint decision model: its backbone and joint schema head decide every question of an evaluation together, in one llama.cpp forward pass) running inside this worker. Results are atomic; usage counts prompt tokens. No credentials or endpoints are accepted in the request.").metadata(json!({ "internal": true })));
 
     let registration = RegisterFunction::new_async(move |mut payload: Value| {
         let config = models_config.clone();
@@ -124,7 +124,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, slot: Arc<ModelSlot<ClefC
     });
     let request_schema = serde_json::to_value(schemars::schema_for!(CancelRequest))
         .expect("clef cancel request schema serializes");
-    iii.register_function(crate::CANCEL_ID, registration.request_format(request_schema).description("Signal cancellation of an active evaluation owned by the calling worker; the backbone stops at its next chunk and later evaluations are skipped. Requires the same worker replica as the original call.").metadata(json!({ "internal": true })));
+    iii.register_function(crate::CANCEL_ID, registration.request_format(request_schema).description("Signal cancellation of an active evaluation owned by the calling worker; an evaluation still waiting for the model is skipped, as are later ones (a forward pass already running finishes first). Requires the same worker replica as the original call.").metadata(json!({ "internal": true })));
 }
 
 // The engine stamps this trusted transport field into top-level objects.

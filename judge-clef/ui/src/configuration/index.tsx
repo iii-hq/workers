@@ -13,11 +13,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 const MODELS = [{ value: 'clef-flash', label: 'clef-flash', description: 'Clef-Flash · 9B backbone + joint schema head · Cloudflare’s joint decision model' }]
 const numberFields = [
-  { field: 'threads', section: 'model', label: 'CPU threads', placeholder: '8', description: 'Threads for the backbone’s CPU work and for the joint schema head, applied at the next start. Hybrid CPUs are fastest around their performance-core count; the built-in default is min(8, logical cores).' },
-  { field: 'gpu_layers', section: 'model', label: 'GPU layers', placeholder: 'all', allowZero: true, description: 'Backbone layers offloaded to the GPU in Vulkan or Metal builds, applied at the next start. Clear to offload every layer when a GPU is present; 0 keeps the backbone on the CPU. The joint schema head always runs on the CPU.' },
-  { field: 'context_tokens', section: 'model', label: 'Context window (tokens)', placeholder: '16384', description: 'Longest prompt (state and every question with its options) one evaluation fills, 512 to 65536, applied at the next start. A longer state is truncated, keeping its beginning; a schema longer than the window answers payload_too_large. On a GPU it holds 6.0 GiB of VRAM at 16384 and 9.2 GiB at 65536.' },
+  { field: 'threads', section: 'model', label: 'CPU threads', placeholder: '8', description: 'Threads for llama.cpp’s CPU work (all of it when GPU layers is 0), applied at the next start. Hybrid CPUs are fastest around their performance-core count; the built-in default is min(8, logical cores).' },
+  { field: 'gpu_layers', section: 'model', label: 'GPU layers', placeholder: 'all', allowZero: true, description: 'Layers offloaded to the GPU in Vulkan or Metal builds, applied at the next start. Clear to run the whole model, joint schema head included, on the GPU when one is present; 0 runs it all on the CPU.' },
+  { field: 'context_tokens', section: 'model', label: 'Context window (tokens)', placeholder: '16384', description: 'Longest prompt (state and every question with its options) one evaluation fills, 512 to 16384, applied at the next start. A longer state is truncated, keeping its beginning; a schema longer than the window answers payload_too_large. Each evaluation is one pass whose memory grows with its prompt: on a GPU the model holds 5.5 GiB of VRAM, and a 16384-token pass 10.1 GiB at peak.' },
   { field: 'max_request_bytes', section: 'limits', label: 'Maximum request bytes', placeholder: '8388608', description: 'Maximum encoded JSON bytes per evaluation. Clear to use 8388608 (8 MiB).' },
-  { field: 'max_timeout_ms', section: 'limits', label: 'Maximum timeout (ms)', placeholder: '300000', description: 'Maximum caller timeout. Clear to use 300000 (5 minutes). On the CPU, which reads about 40 prompt tokens per second, a prompt over about 10k tokens needs more.' },
+  { field: 'max_timeout_ms', section: 'limits', label: 'Maximum timeout (ms)', placeholder: '300000', description: 'Maximum caller timeout. Clear to use 300000 (5 minutes). On the CPU, which reads about 50 to 70 prompt tokens per second, a prompt near 16384 tokens needs more.' },
 ]
 const knownFields = ['model', ...numberFields.map(({ field }) => field)]
 
@@ -139,7 +139,7 @@ export function ClefConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
     <div className="clef-ui-form" ref={rootRef}>
       <SettingsSection
         title="Model"
-        description="Clef-Flash runs inside this worker, with no API key and no external service: llama.cpp runs the backbone and candle runs the joint schema head on the CPU, deciding every question of an evaluation together in one forward pass. The backbone GGUF and the head are downloaded from the Hugging Face Hub on first load and cached."
+        description="Clef-Flash runs inside this worker, with no API key and no external service: llama.cpp runs the backbone and its joint schema head in one forward pass, deciding every question of an evaluation together. The GGUF and the tokenizer are downloaded from the Hugging Face Hub on first load and cached."
       >
         <SettingsList>
           <SettingsField

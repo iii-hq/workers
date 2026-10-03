@@ -8,24 +8,26 @@ use serde_json::Value;
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ClefConfig {
-    /// Pinned Clef checkpoint (backbone GGUF and joint schema head). Applied at
-    /// the next worker start.
+    /// Pinned Clef checkpoint (one GGUF: backbone and joint schema head).
+    /// Applied at the next worker start.
     pub model: String,
-    /// CPU threads for the backbone's CPU work and for the joint schema head
-    /// (`RAYON_NUM_THREADS`, unless the environment sets it), applied at the
-    /// next start. Hybrid CPUs run faster around their performance-core count.
+    /// CPU threads for llama.cpp's CPU work (all of it with `gpu_layers: 0`),
+    /// applied at the next start. Hybrid CPUs run faster around their
+    /// performance-core count.
     #[schemars(range(min = 1, max = 256))]
     pub threads: usize,
-    /// Backbone layers offloaded to the GPU (Vulkan or Metal builds), applied
-    /// at the next start. Null offloads every layer when a GPU is present; 0
-    /// keeps the backbone on the CPU. The joint schema head always runs on the
-    /// CPU.
+    /// Layers offloaded to the GPU (Vulkan or Metal builds), applied at the
+    /// next start. Null offloads the whole model, joint schema head included,
+    /// when a GPU is present; 0 runs it all on the CPU.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_layers: Option<u32>,
     /// Longest prompt (state and every question with its options) in tokens,
     /// applied at the next start. A longer state is truncated, keeping its
     /// beginning; a schema longer than the window answers `payload_too_large`.
-    #[schemars(range(min = 512, max = 65536))]
+    /// Each evaluation is one pass whose GPU buffers grow with its prompt:
+    /// about 10.1 GiB of VRAM at 16384, the most that ran safely on a 16 GiB
+    /// GPU (24576 lost the device).
+    #[schemars(range(min = 512, max = 16384))]
     pub context_tokens: u32,
     /// Maximum encoded JSON bytes per evaluation.
     #[schemars(range(min = 1))]
@@ -64,7 +66,7 @@ impl ClefConfig {
             return Err(format!("clef model must be one of {names:?}"));
         }
         if !(1..=256).contains(&self.threads)
-            || !(512..=65_536).contains(&self.context_tokens)
+            || !(512..=16_384).contains(&self.context_tokens)
             || self.max_request_bytes == 0
             || self.max_timeout_ms == 0
             || i64::try_from(self.max_timeout_ms).is_err()

@@ -12,14 +12,13 @@ fn argmax(p: &[f64]) -> usize {
 
 /// Every reference evaluation through `ClefClient::evaluate` on the pinned
 /// GGUF (the fixture's `gguf`): same token count, every probability within the
-/// fixture's `tolerance` (1.5x the spike's max |Δp| of 0.088), and the same
-/// top option wherever the reference's top two are more than 2x tolerance
-/// apart (orders/region is a 0.005 near-tie).
+/// fixture's `tolerance`, and the same top option wherever the reference's top
+/// two are more than 2x tolerance apart (the misses, orders/region and
+/// deploy_log/severity, are 0.005 and 0.017 near-ties).
 ///
-/// `CLEF_CHECKPOINT_DIR` holds `backbone.gguf`, `joint_head.safetensors`,
-/// `joint_head_config.json` and `tokenizer.json`. The tolerance was measured
-/// on the CPU (Vulkan's kernels reach 0.15 on deploy_log/rollback_needed);
-/// `gpu_layers: Some(0)` keeps llama.cpp off any GPU:
+/// `CLEF_CHECKPOINT_DIR` holds `model.gguf` and `tokenizer.json`. It runs on
+/// the CPU (max |Δp| 0.065); `CLEF_GPU_LAYERS=all` runs it on the GPU (0.080
+/// on Vulkan), a number offloads that many layers:
 ///
 /// ```sh
 /// CLEF_CHECKPOINT_DIR=<dir> cargo test --release --test clef -- --ignored --nocapture
@@ -30,7 +29,7 @@ async fn gguf_matches_the_reference() {
     let dir = std::env::var("CLEF_CHECKPOINT_DIR").expect("CLEF_CHECKPOINT_DIR holds a checkpoint");
     let options = engine::Options {
         threads: 8,
-        gpu_layers: Some(0),
+        gpu_layers: std::env::var("CLEF_GPU_LAYERS").map_or(Some(0), |n| n.parse().ok()),
         context_tokens: 16384,
     };
     let checkpoint = download::local("clef-flash", dir.as_ref()).unwrap();

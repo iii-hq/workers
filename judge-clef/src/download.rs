@@ -5,32 +5,32 @@ use hf_hub::api::sync::ApiBuilder;
 use hf_hub::{Repo, RepoType};
 use std::path::{Path, PathBuf};
 
-/// A model the `model` setting accepts: a pinned backbone GGUF and the pinned
-/// repository of its joint schema head and tokenizer.
+/// A model the `model` setting accepts: a pinned GGUF of arch `clef`
+/// (backbone and joint schema head) and the pinned repository of its
+/// tokenizer.
 pub struct Model {
     pub name: &'static str,
     pub gguf_repo: &'static str,
     pub gguf_file: &'static str,
     pub gguf_revision: &'static str,
-    pub head_repo: &'static str,
-    pub head_revision: &'static str,
+    pub tokenizer_repo: &'static str,
+    pub tokenizer_revision: &'static str,
     pub description: &'static str,
 }
 
-/// Cloudflare/clef-flash's head and tokenizer, with bartowski's llama.cpp
-/// conversion of its backbone (arch `qwen35`, keeping the untied
-/// `output.weight` the head reads). Against the reference (bf16 backbone and
-/// head) on 28 questions, Q4_K_M has a mean |Δp| of 0.008 (max 0.09 on the
-/// CPU, 0.15 on Vulkan) and keeps every top option but near-ties
-/// (`tests/clef.rs`); Q8_0 is about 3x closer but 9.5 GB.
+/// ggml-org's llama.cpp conversion of Cloudflare/clef-flash, with Cloudflare's
+/// tokenizer. Against the reference (bf16 backbone and head) on 28 questions,
+/// Q4_K_M has a mean |Δp| of 0.007 (max 0.065 on the CPU, 0.080 on Vulkan)
+/// and keeps the top option on 26, the misses being near-ties
+/// (`tests/clef.rs`); Q8_0 is about 3x closer but 9.7 GB.
 pub const MODELS: [Model; 1] = [Model {
     name: "clef-flash",
-    gguf_repo: "bartowski/Cloudflare_clef-flash-GGUF",
-    gguf_file: "Cloudflare_clef-flash-Q4_K_M.gguf",
-    gguf_revision: "d7f376ea88c05e7bb1014dd5351a93df9dd8029e",
-    head_repo: "Cloudflare/clef-flash",
-    head_revision: "17f0b0ad64efb65d273590632833508766b2aae6",
-    description: "Clef-Flash: Qwen3.5-9B backbone Q4_K_M (5.8 GB) and joint schema head (244 MB), Cloudflare's joint decision model",
+    gguf_repo: "ggml-org/Clef-Flash-GGUF",
+    gguf_file: "Clef-Flash-Q4_K_M.gguf",
+    gguf_revision: "4a7a08c09bc63baf043b62b5ba89dd67a0357d95",
+    tokenizer_repo: "Cloudflare/clef-flash",
+    tokenizer_revision: "17f0b0ad64efb65d273590632833508766b2aae6",
+    description: "Clef-Flash: Qwen3.5-9B backbone and joint schema head, Q4_K_M (6.5 GB), Cloudflare's joint decision model",
 }];
 
 pub fn model(name: &str) -> Option<&'static Model> {
@@ -40,11 +40,9 @@ pub fn model(name: &str) -> Option<&'static Model> {
 #[derive(Clone, Debug)]
 pub struct Checkpoint {
     pub model: String,
-    /// The head repository's revision (or `local:<dir>`).
+    /// The GGUF repository's revision (or `local:<dir>`).
     pub revision: String,
     pub gguf: PathBuf,
-    pub head: PathBuf,
-    pub head_config: PathBuf,
     pub tokenizer: PathBuf,
 }
 
@@ -62,26 +60,18 @@ pub fn fetch(name: &str) -> Result<Checkpoint> {
             revision.into(),
         ))
     };
-    // The small files first: a bad head pin fails before the GGUF download.
-    let head = repo(m.head_repo, m.head_revision);
-    let (weights, head_config, tokenizer) = (
-        head.get("joint_head.safetensors")?,
-        head.get("joint_head_config.json")?,
-        head.get("tokenizer.json")?,
-    );
+    // The small file first: a bad tokenizer pin fails before the GGUF download.
+    let tokenizer = repo(m.tokenizer_repo, m.tokenizer_revision).get("tokenizer.json")?;
     Ok(Checkpoint {
         model: m.name.into(),
-        revision: m.head_revision.into(),
+        revision: m.gguf_revision.into(),
         gguf: repo(m.gguf_repo, m.gguf_revision).get(m.gguf_file)?,
-        head: weights,
-        head_config,
         tokenizer,
     })
 }
 
 /// A checkpoint already on disk (air-gapped installs, tests), read as model
-/// `model`: `backbone.gguf`, `joint_head.safetensors`,
-/// `joint_head_config.json` and `tokenizer.json`.
+/// `model`: `model.gguf` and `tokenizer.json`.
 pub fn local(model: &str, dir: &Path) -> Result<Checkpoint> {
     known(model)?;
     let file = |name: &str| {
@@ -93,9 +83,7 @@ pub fn local(model: &str, dir: &Path) -> Result<Checkpoint> {
     Ok(Checkpoint {
         model: model.into(),
         revision: format!("local:{}", dir.display()),
-        gguf: file("backbone.gguf")?,
-        head: file("joint_head.safetensors")?,
-        head_config: file("joint_head_config.json")?,
+        gguf: file("model.gguf")?,
         tokenizer: file("tokenizer.json")?,
     })
 }

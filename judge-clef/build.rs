@@ -20,11 +20,7 @@ fn main() {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         println!("cargo:rustc-link-arg-bins=-Wl,-rpath,$ORIGIN");
     }
-    // ponytail: stage 1 of the migration; `legacy` still links llama-cpp-2's
-    // llama.cpp (same library names), so the two cannot share a binary.
-    if env::var_os("CARGO_FEATURE_LEGACY").is_none() {
-        llama();
-    }
+    llama();
     ui();
 }
 

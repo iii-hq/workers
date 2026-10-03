@@ -1,15 +1,14 @@
-//! Typed evaluations over the in-process Clef checkpoint (backbone engine and
-//! joint schema head), with the judge contract's deadlines, atomic results,
-//! usage accounting and caller-scoped cancellation.
+//! Typed evaluations over the in-process Clef checkpoint (one llama.cpp
+//! forward per evaluation), with the judge contract's deadlines, atomic
+//! results, usage accounting and caller-scoped cancellation.
 use crate::{
     cancellation::CancellationRegistry,
     download::Checkpoint,
     encode::{self, Encoded},
     engine::{self, Engine, Stop},
-    head::{Head, Lexicon},
 };
-use anyhow::{anyhow, ensure, Result};
-use iii_llama_runtime::scorer::softmax;
+use anyhow::{anyhow, Result};
+use iii_llama_runtime::softmax;
 use judge_contract::{
     confidence, encode_evaluation_with_limits, validate_answer, validate_request_with_limits,
     Answer, CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse,
@@ -53,13 +52,10 @@ impl Limits {
     }
 }
 
-/// Clone per handler; clones share the engine, the head and the cancellation
-/// registry.
+/// Clone per handler; clones share the engine and the cancellation registry.
 #[derive(Clone)]
 pub struct ClefClient {
     engine: Engine,
-    head: Arc<Head>,
-    lexicon: Arc<Lexicon>,
     tokenizer: Arc<Tokenizer>,
     name: Arc<str>,
     revision: Arc<str>,
@@ -68,7 +64,8 @@ pub struct ClefClient {
     caller_id: Option<Arc<str>>,
 }
 
-/// Cancels the engine job when the evaluation ends or is dropped.
+/// Cancels the engine job, if it has not started, when the evaluation ends or
+/// is dropped.
 struct CancelOnDrop(Arc<AtomicBool>);
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
@@ -77,25 +74,13 @@ impl Drop for CancelOnDrop {
 }
 
 impl ClefClient {
-    /// Load the checkpoint (seconds; the GGUF is mmapped). The GGUF header,
-    /// the head and the tokenizer are checked before the backbone takes any
-    /// GPU memory.
+    /// Load the checkpoint (seconds; the GGUF is mmapped). The tokenizer is
+    /// read before the model takes any GPU memory.
     pub fn load(checkpoint: &Checkpoint, options: engine::Options) -> Result<Self> {
-        let lexicon = Lexicon::open(&checkpoint.gguf)?;
-        let head = Head::load(&checkpoint.head, &checkpoint.head_config, lexicon.hidden())?;
         let tokenizer = Tokenizer::from_file(&checkpoint.tokenizer)
             .map_err(|e| anyhow!("tokenizer {}: {e}", checkpoint.tokenizer.display()))?;
-        let engine = Engine::spawn(&checkpoint.gguf, options, engine::BATCH_TOKENS)?;
-        ensure!(
-            engine.hidden == lexicon.hidden(),
-            "the backbone's hidden size {} differs from its output.weight's {}",
-            engine.hidden,
-            lexicon.hidden()
-        );
         Ok(Self {
-            engine,
-            head: Arc::new(head),
-            lexicon: Arc::new(lexicon),
+            engine: Engine::load(&checkpoint.gguf, options)?,
             tokenizer: Arc::new(tokenizer),
             name: checkpoint.model.as_str().into(),
             revision: checkpoint.revision.as_str().into(),
@@ -227,7 +212,7 @@ impl ClefClient {
         let mut results = BTreeMap::new();
         for (evaluation, encoded) in evaluations.iter().zip(prompts) {
             let tokens = encoded.ids.len() as u64;
-            // One attempt per backbone forward, as judge-laya counts its passes.
+            // One attempt per forward, as judge-laya counts its passes.
             stats.attempts += 1;
             let logits = tokio::select! {
                 biased;
@@ -276,9 +261,8 @@ impl ClefClient {
         }
     }
 
-    /// One evaluation's option logits: the backbone states, then the joint
-    /// head on the blocking pool. The engine job stops between chunks when
-    /// this future ends or is dropped.
+    /// One evaluation's option logits, per field in prompt order. The engine
+    /// job is skipped if this future ends or is dropped before it starts.
     async fn forward(
         &self,
         encoded: Encoded,
@@ -286,27 +270,22 @@ impl ClefClient {
     ) -> Result<Vec<Vec<f32>>, ErrorCode> {
         let cancel = Arc::new(AtomicBool::new(false));
         let _stop = CancelOnDrop(cancel.clone());
-        let states = match self
+        let counts: Vec<usize> = encoded.fields.iter().map(|f| f.options.len()).collect();
+        let scores = self
             .engine
-            .states(encoded.ids.clone(), deadline.into_std(), cancel)
+            .decide(encoded, deadline.into_std(), cancel)
             .await
-        {
-            Err(_) => return Err(ErrorCode::Transport),
-            Ok(Ok(states)) => states,
-            Ok(Err(stop)) => {
-                return Err(match stop {
-                    Stop::Deadline => ErrorCode::Deadline,
-                    Stop::Cancelled => ErrorCode::Cancelled,
-                    Stop::TooLong => ErrorCode::PayloadTooLarge,
-                    Stop::Failed => ErrorCode::InvalidResponse,
-                })
-            }
-        };
-        let (head, lexicon) = (self.head.clone(), self.lexicon.clone());
-        tokio::task::spawn_blocking(move || head.logits(&lexicon, states, &encoded))
-            .await
-            .map_err(|_| ErrorCode::Transport)?
-            .map_err(|_| ErrorCode::InvalidResponse)
+            .map_err(|stop| match stop {
+                Stop::Deadline => ErrorCode::Deadline,
+                Stop::Cancelled => ErrorCode::Cancelled,
+                Stop::TooLong => ErrorCode::PayloadTooLarge,
+                Stop::Failed => ErrorCode::InvalidResponse,
+            })?;
+        let mut scores = scores.into_iter();
+        Ok(counts
+            .into_iter()
+            .map(|n| scores.by_ref().take(n).collect())
+            .collect())
     }
 
     /// The loaded model is the whole catalog.
