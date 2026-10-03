@@ -3,8 +3,8 @@
 //! joint head in candle.
 //!
 //! ponytail: llama.cpp 0.1.156's qwen35 graph still computes the vocab logits
-//! of every token (an unused LM head: 2 GFLOP per token on Clef-Flash, most of
-//! the 511 MiB CPU compute buffer at batch 512), and its host output buffer
+//! of every token (an unused LM head: 2 GFLOP per token on Clef-Flash, 485 MiB
+//! of the 0.5-0.6 GiB compute buffer at batch 512), and its host output buffer
 //! holds `n_vocab + hidden` floats per token of batch (0.96 MiB each, about
 //! 0.5 GiB at 512). Dropping both needs a llama.cpp with the `clef` arch
 //! (PR #29831), which no published llama-cpp-2 has yet.
@@ -67,6 +67,15 @@ impl Engine {
                     .with_n_ubatch(batch_tokens)
                     .with_embeddings(true)
                     .with_pooling_type(LlamaPoolingType::None)
+                    // LLAMA_FLASH_ATTN_TYPE_DISABLED. Flash attention's CPU
+                    // kernel changes below 64 queries, so a prompt's last chunk
+                    // drifted (min cos 0.995); without it chunking is
+                    // bit-exact, Vulkan prefill is 13% faster at 16k tokens and
+                    // the reference |Δp| is unchanged (CPU) or lower (Vulkan).
+                    // The price is an n_ctx x n_ubatch x heads f32 KQ: +79 MiB
+                    // VRAM at 16k tokens (it shares the vocab logits' compute
+                    // buffer), +1.7 GiB at 65536.
+                    .with_flash_attention_policy(0)
             },
         )?;
         // The width embeddings_ith returns (n_embd unless the GGUF sets an

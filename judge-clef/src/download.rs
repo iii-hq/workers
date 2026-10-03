@@ -20,8 +20,9 @@ pub struct Model {
 /// Cloudflare/clef-flash's head and tokenizer, with bartowski's llama.cpp
 /// conversion of its backbone (arch `qwen35`, keeping the untied
 /// `output.weight` the head reads). Against the reference (bf16 backbone and
-/// head) on 28 questions, Q4_K_M kept every top option with a mean |Δp| of
-/// 0.008; Q8_0 is about 3x closer but 9.5 GB.
+/// head) on 28 questions, Q4_K_M has a mean |Δp| of 0.008 (max 0.09 on the
+/// CPU, 0.15 on Vulkan) and keeps every top option but near-ties
+/// (`tests/clef.rs`); Q8_0 is about 3x closer but 9.5 GB.
 pub const MODELS: [Model; 1] = [Model {
     name: "clef-flash",
     gguf_repo: "bartowski/Cloudflare_clef-flash-GGUF",

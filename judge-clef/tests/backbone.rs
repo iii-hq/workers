@@ -36,16 +36,10 @@ fn tiny_chunks_match_one_pass_and_requests_forget() {
     let whole = states(&one_pass, &ids, false).unwrap();
     let first = states(&chunked, &ids, false).unwrap();
     assert_eq!(first.len(), ids.len() * 32);
-    // llama.cpp's flash-attention kernels change with the ubatch size (f16
-    // on the CPU below 64 queries): 2.4e-2 measured on states up to 3.8. With
-    // flash attention off the two are bit-equal; losing the carry between
-    // chunks drifts every row by more than 1.
-    let worst = whole
-        .iter()
-        .zip(&first)
-        .map(|(a, b)| (a - b).abs())
-        .fold(0f32, f32::max);
-    assert!(worst < 5e-2, "chunked states drift by {worst}");
+    // Bit-equal with flash attention off (the engine's setting), on the CPU
+    // and with matmuls offloaded to Vulkan; flash attention drifted 2.4e-2,
+    // and losing the carry between chunks drifts every row by more than 1.
+    assert!(whole == first, "chunked states differ from one pass");
 
     let other: Vec<u32> = ids.iter().rev().copied().collect();
     states(&chunked, &other, false).unwrap();
