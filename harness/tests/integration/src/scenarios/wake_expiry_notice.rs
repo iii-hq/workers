@@ -131,13 +131,12 @@ pub(super) fn scenario() -> ScenarioFixture {
     )
     // The expiry-woken turn: a fresh externally initiated turn carrying the
     // wake-lost notification as its user message. The sweep's engine-side
-    // unregister is a registry change; the staleness notice now rides as an
-    // ephemeral TAIL user message (never a system-prompt mutation — that
-    // invalidated the provider's prompt-cache prefix), so the prompt keeps
-    // the stable sha. Advisory tail messages are invisible to matchers (the
-    // scripted router strips them — their timing is stack noise elsewhere),
-    // so the notice delivery is asserted over the raw router evidence in
-    // verify instead of a message gate here.
+    // unregister changes the registry, but not the functions this session may
+    // call (REGISTER and `record`), so no registry-changed notice may reach
+    // it. Advisory tail messages are invisible to matchers (the scripted
+    // router strips them — their timing is stack noise elsewhere), so the
+    // notice's absence is asserted over the raw router evidence in verify
+    // instead of a message gate here.
     .generation(
         Generation::new(3)
             .expect(
@@ -158,9 +157,9 @@ pub(super) fn scenario() -> ScenarioFixture {
     .verify(|run| {
         run.expect_assistant_texts(["armed and parked", "expiry noted"])?;
 
-        // The registry-changed notice reached the provider on the woken turn
-        // as a raw tail user message (matchers never see advisories; the raw
-        // router evidence keeps them).
+        // No registry-changed notice reached the provider: the registry moved,
+        // but nothing this session may call did (matchers never see
+        // advisories; the raw router evidence keeps them).
         let notice_delivered = run
             .router_evidence
             .get("calls")
@@ -179,8 +178,9 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .is_some_and(|text| text.starts_with("NOTE: the function registry changed"))
             });
         anyhow::ensure!(
-            notice_delivered,
-            "the registry-changed notice must reach the provider as a tail message"
+            !notice_delivered,
+            "a registry change outside the session's permitted functions must not reach the \
+             provider as a registry-changed notice"
         );
 
         // Exactly one notification, and it must carry everything the woken

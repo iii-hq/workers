@@ -912,15 +912,75 @@ fn overlay_control_contract(item: &mut Value, id: &str) {
 
 /// The `is_error` result for a policy denial (no allow match or a deny match).
 pub fn denied_result(function_id: &str) -> ResultData {
+    denied_result_with_hint(function_id, None)
+}
+
+/// [`denied_result`] naming the permitted id the model most likely meant
+/// (see [`closest_permitted`]): a mistyped id is denied like a forbidden one,
+/// and without the hint the model reads it as a policy problem.
+pub fn denied_result_with_hint(function_id: &str, did_you_mean: Option<&str>) -> ResultData {
+    let hint = did_you_mean
+        .map(|id| format!(" No registered function has this id; did you mean {id}?"))
+        .unwrap_or_default();
     let msg = format!(
         "function {function_id} is not permitted by this agent's dispatch policy (no allow-glob \
-         match or a deny-glob match)"
+         match or a deny-glob match).{hint} Calling it again will be denied again: use a \
+         permitted function or report the blocker."
     );
     ResultData {
         content: vec![ContentBlock::text(msg.clone())],
         is_error: true,
         details: json!({ "error": "policy_denied", "function_id": function_id, "message": msg }),
     }
+}
+
+/// The permitted, registered id closest to `function_id` when `function_id`
+/// itself is not registered at all — a model retyping a long id (a hashed
+/// worker name) corrupts it. `None` for a real function the policy denies, or
+/// when nothing permitted is within an eighth of the id's length (at least 2)
+/// edits.
+pub fn closest_permitted(
+    function_id: &str,
+    policy: &CompiledPolicy,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+) -> Option<String> {
+    let registered = snapshot.internal_ids.contains(function_id)
+        || snapshot
+            .functions
+            .iter()
+            .any(|f| f.function_id == function_id);
+    if registered {
+        return None;
+    }
+    let limit = (function_id.chars().count() / 8).max(2);
+    snapshot
+        .functions
+        .iter()
+        .map(|f| f.function_id.as_str())
+        .filter(|id| policy.allows(id))
+        .map(|id| (edit_distance(function_id, id), id))
+        .filter(|(distance, _)| *distance <= limit)
+        .min()
+        .map(|(_, id)| id.to_string())
+}
+
+/// Levenshtein distance over chars; ids are short and this runs only on a
+/// denial.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (above + 1)
+                .min(row[j] + 1)
+                .min(diagonal + usize::from(ca != *cb));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
 }
 
 /// The `is_error` result for an `agent_trigger` call with no resolvable
@@ -2566,5 +2626,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_mistyped_id_is_denied_with_the_permitted_id_it_resembles() {
+        let exec =
+            "kanban_eval_598997058842fdedec266aaf02880d80b532995d651db57f24d800b6a42eac97::exec";
+        let typo = "kanban_eval_598997058842fdedec266aaf02880d02880d80b532995d651db57f24d800b6a42eac97::exec";
+        let policy = CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec![exec.into()],
+            ..Default::default()
+        }));
+        let descriptor = |id: &str| crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            description: None,
+            parameters: None,
+        };
+        let snapshot =
+            crate::discovery::snapshot_of(vec![descriptor(exec), descriptor("auth::browser")]);
+
+        let hint = closest_permitted(typo, &policy, &snapshot);
+        assert_eq!(hint.as_deref(), Some(exec));
+        let denied = denied_result_with_hint(typo, hint.as_deref());
+        let text = denied.details["message"].as_str().unwrap();
+        assert!(
+            text.contains("not permitted by this agent's dispatch policy"),
+            "{text}"
+        );
+        assert!(text.contains(&format!("did you mean {exec}?")), "{text}");
+        assert!(
+            text.contains("Calling it again will be denied again"),
+            "{text}"
+        );
+
+        // A real function the policy denies gets no suggestion, nor does an
+        // id nothing permitted resembles.
+        assert_eq!(closest_permitted("auth::browser", &policy, &snapshot), None);
+        assert_eq!(closest_permitted("web::fetch", &policy, &snapshot), None);
+        assert!(!denied_result("web::fetch").details["message"]
+            .as_str()
+            .unwrap()
+            .contains("did you mean"));
     }
 }
