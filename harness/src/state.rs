@@ -63,6 +63,7 @@ pub(crate) async fn list_values<T: serde::de::DeserializeOwned>(
 }
 
 const STATE_LIST_ID: &str = "state::list";
+const STATE_LIST_KEYS_ID: &str = "state::list_keys";
 const PRIVATE_STATE_GET_ID: &str = "harness::state::get";
 const PRIVATE_STATE_LIST_ID: &str = "harness::state::list";
 const STATE_CAS_ID: &str = "harness::state::compare-and-set";
@@ -244,10 +245,29 @@ pub async fn delete_turn(
     state_delete(iii, TURN_SCOPE, session_id, timeout_ms).await
 }
 
-/// List every turn record (the pending-call sweep scans these). `state::list`
-/// returns a values array (or an object map); both shapes are tolerated.
+/// List every turn record (the pending-call sweep and the orphan redrive scan
+/// these). Keys first, then one `state::get` per key: the scope keeps one
+/// record per session ever run, and a single `state::list` reply crossed the
+/// engine's 16 MiB frame cap, which wedged the state worker's connection.
+/// A key deleted between the two reads (null) or a record that no longer
+/// parses is skipped, as `parse_list` skips it.
+// ponytail: sequential gets; bounded concurrency if the sweep gets slow.
 pub async fn list_turns(iii: &IIIClient, timeout_ms: u64) -> Result<Vec<TurnRecord>, HarnessError> {
-    Ok(parse_list(&state_list(iii, TURN_SCOPE, timeout_ms).await?))
+    let keys = parse_keys(&state_list_keys(iii, TURN_SCOPE, timeout_ms).await?);
+    let mut records = Vec::with_capacity(keys.len());
+    for key in keys {
+        let value = state_get(iii, TURN_SCOPE, &key, timeout_ms).await?;
+        if value.is_null() {
+            continue;
+        }
+        match serde_json::from_value(value) {
+            Ok(record) => records.push(record),
+            Err(e) => {
+                tracing::warn!(session_id = %key, error = %e, "skipping unparseable turn record")
+            }
+        }
+    }
+    Ok(records)
 }
 
 /// Read one trigger binding (`None` when absent or null).
@@ -392,6 +412,25 @@ pub(crate) async fn state_list(
     }
 }
 
+/// Public scopes only: the state worker has no private `list_keys` accessor.
+async fn state_list_keys(
+    iii: &IIIClient,
+    scope: &str,
+    timeout_ms: u64,
+) -> Result<Value, HarnessError> {
+    run_hidden(
+        HIDDEN_FAMILY,
+        iii.trigger(TriggerRequest {
+            function_id: STATE_LIST_KEYS_ID.into(),
+            payload: json!({ "scope": scope }),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        }),
+    )
+    .await
+    .map_err(|e| HarnessError::State(format!("{STATE_LIST_KEYS_ID} {scope}: {e}")))
+}
+
 /// Ask the state worker to reserve our binding scopes and register
 /// `harness::state::*`. Idempotent: re-claiming an owned namespace is a
 /// no-op, so this is safe to call on every miss.
@@ -476,6 +515,16 @@ fn parse_list<T: serde::de::DeserializeOwned>(v: &Value) -> Vec<T> {
     candidates
         .into_iter()
         .filter_map(|c| serde_json::from_value::<T>(c.clone()).ok())
+        .collect()
+}
+
+/// `state::list_keys` replies `{ "keys": [...] }`; a bare array is tolerated too.
+fn parse_keys(v: &Value) -> Vec<String> {
+    let keys = v.get("keys").unwrap_or(v);
+    keys.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|k| k.as_str().map(str::to_owned))
         .collect()
 }
 
@@ -584,6 +633,75 @@ mod tests {
         let as_map = json!({ "s_1": rec });
         assert_eq!(parse_list::<TurnRecord>(&as_map).len(), 1);
         assert_eq!(parse_list::<TurnRecord>(&json!(null)).len(), 0);
+    }
+
+    #[test]
+    fn parse_keys_handles_array_and_object_shapes() {
+        assert_eq!(parse_keys(&json!({ "keys": ["a", "b"] })), ["a", "b"]);
+        assert_eq!(parse_keys(&json!(["a"])), ["a"]);
+        assert!(parse_keys(&json!(null)).is_empty());
+    }
+
+    /// The live `harness_turn` scope outgrew the engine's 16 MiB frame cap as
+    /// ONE `state::list` reply and wedged the state worker. `list_turns` reads
+    /// the keys, then each record; a key deleted in between (null) or a record
+    /// that no longer parses is skipped.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn list_turns_reads_each_key_never_the_whole_scope() {
+        use futures_util::{SinkExt, StreamExt};
+        use std::sync::{Arc, Mutex};
+        use tokio_tungstenite::tungstenite::Message;
+
+        fn turn(id: &str) -> Value {
+            json!({ "turn_id": "t", "session_id": id, "status": "running", "step": 0,
+                "turn_count": 0, "depth": 0, "options": { "model": "m", "max_turns": 16 },
+                "created_at": 1, "updated_at": 1 })
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = calls.clone();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            while let Some(Ok(frame)) = socket.next().await {
+                let Ok(msg) = serde_json::from_str::<Value>(frame.to_text().unwrap_or("")) else {
+                    continue;
+                };
+                if msg["type"] != "invokefunction" || msg["invocation_id"].is_null() {
+                    continue;
+                }
+                let function = msg["function_id"].as_str().unwrap_or("").to_owned();
+                seen.lock().unwrap().push(function.clone());
+                let result = match (function.as_str(), msg["data"]["key"].as_str()) {
+                    ("state::list", _) => json!([turn("s_1"), turn("s_2")]),
+                    ("state::list_keys", _) => json!({ "keys": ["s_1", "s_gone", "s_bad", "s_2"] }),
+                    ("state::get", Some(key @ ("s_1" | "s_2"))) => turn(key),
+                    ("state::get", Some("s_bad")) => json!({ "session_id": "s_bad" }),
+                    _ => Value::Null,
+                };
+                let reply = json!({ "type": "invocationresult", "function_id": function,
+                    "invocation_id": msg["invocation_id"], "result": result });
+                if socket
+                    .send(Message::Text(reply.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());
+        let listed = list_turns(&iii, 2_000).await;
+        iii.shutdown();
+        server.abort();
+
+        let ids: Vec<String> = listed.unwrap().into_iter().map(|r| r.session_id).collect();
+        assert_eq!(ids, ["s_1", "s_2"]);
+        let calls = calls.lock().unwrap();
+        assert!(!calls.iter().any(|f| f == "state::list"), "{calls:?}");
+        let gets = calls.iter().filter(|f| *f == "state::get").count();
+        assert_eq!(gets, 4, "{calls:?}");
     }
 
     /// Only the caller-side invocation timeout retries; rejections (schema,
