@@ -1477,7 +1477,9 @@ async fn late_external_result_while_tombstoned_lets_the_retry_delete_the_subtree
     assert!(!resolved.turn_resumed);
     let settled = turn(&stack, "grandchild1");
     assert_eq!(settled["status"], "cancelled");
-    assert_eq!(settled["calls"]["ext-1"]["state"], "done");
+    // Settled, not left pending: the finished record drops a done call
+    // without a child (MOT-5166).
+    assert!(settled["calls"].get("ext-1").is_none(), "{settled}");
     {
         let store = stack.store.lock().unwrap();
         // Consumed without a model-visible result or a resumed step.
@@ -1836,4 +1838,40 @@ async fn orphan_redrive_reads_only_changed_turns_and_the_sweep_refreshes_its_vie
         turn_gets(&stack.store.lock().unwrap()),
         ["rd_done", "rd_parked", "rd_done", "rd_done"]
     );
+}
+
+/// A finished turn's record keeps only what a finished turn is read for
+/// (MOT-5166): open calls and calls with a child stay; done calls without
+/// one, the failure counts, the watermark and the stream id go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finalized_turn_records_drop_what_only_a_running_turn_reads() {
+    let stack = Stack::new("awaiting_functions").await;
+    for id in ["parent", "child1"] {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", id);
+        row["calls"] = json!({
+            "done": {"state": "done", "function_id": "x::y"},
+            "spawn": {"state": "done", "function_id": "harness::spawn",
+                "child_session_id": "s_c", "child_turn_id": "t_c"}
+        });
+        row["failed_calls"] = json!({"k": {"error_digest": "e", "count": 2}});
+        row["watermark_entry_id"] = json!("e_w");
+        row["stream_request_id"] = json!("req");
+        store.put("harness_turn", id, row);
+    }
+    // finalize_cancelled: a stop on a parked turn with no external call.
+    ordinary_stop(&stack, "parent").await;
+    // finalize_failed: an unexpected step error.
+    harness::turn_loop::fail_turn(&stack.deps, "child1", "t_child1", "boom")
+        .await
+        .unwrap();
+    for (id, status) in [("parent", "cancelled"), ("child1", "failed")] {
+        let row = turn(&stack, id);
+        assert_eq!(row["status"], status, "{id}");
+        let calls: Vec<&String> = row["calls"].as_object().unwrap().keys().collect();
+        assert_eq!(calls, ["spawn"], "{id}");
+        for field in ["failed_calls", "watermark_entry_id", "stream_request_id"] {
+            assert!(row.get(field).is_none(), "{id}: {field} = {}", row[field]);
+        }
+    }
 }

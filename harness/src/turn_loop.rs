@@ -2478,6 +2478,7 @@ async fn finalize_completed(
     record.result = result.clone();
     record.result_error = None;
     record.updated_at = AgentMessage::now_ms();
+    record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
     crate::session_status::project(session, record).await;
@@ -2713,6 +2714,7 @@ async fn finalize_failed(
     record.result_error = Some(summary.clone());
     record.updated_at = AgentMessage::now_ms();
     record_failure_telemetry(record, detail, failure);
+    record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
     let _ = session
@@ -2931,6 +2933,7 @@ pub(crate) async fn finalize_cancelled(
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Cancelled;
     record.updated_at = AgentMessage::now_ms();
+    record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
     // Durable stop marker: without it the transcript just ends mid-thought
