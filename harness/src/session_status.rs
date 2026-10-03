@@ -81,7 +81,7 @@ pub async fn repair(deps: &Deps, session_id: &str) -> Result<bool, HarnessError>
 async fn repair_locked(deps: &Deps, session_id: &str) -> Result<bool, HarnessError> {
     let cfg = deps.cfg().await;
     let session = deps.session().await;
-    match crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await? {
+    match crate::state::get_turn_unhydrated(&deps.iii, session_id, cfg.session_timeout_ms).await? {
         Some(record) if record.status.is_terminal() => {
             project(&session, &record).await;
             Ok(true)
@@ -119,7 +119,7 @@ pub fn spawn_project(deps: &Deps, record: TurnRecord) {
     tokio::spawn(async move {
         let _guard = deps.locks.guard(&record.session_id).await;
         let cfg = deps.cfg().await;
-        let current = match crate::state::get_turn(
+        let current = match crate::state::get_turn_unhydrated(
             &deps.iii,
             &record.session_id,
             cfg.session_timeout_ms,

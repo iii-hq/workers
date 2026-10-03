@@ -347,7 +347,7 @@ pub(crate) fn dehydrate(record: &mut TurnRecord) -> Vec<(String, String)> {
 
 /// Fill each frozen text that is absent but referenced. A ref whose body is
 /// gone is an error: an empty prompt would re-resolve and change the session.
-async fn hydrate(
+pub(crate) async fn hydrate(
     iii: &IIIClient,
     record: &mut TurnRecord,
     timeout_ms: u64,

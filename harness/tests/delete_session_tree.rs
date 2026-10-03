@@ -2237,3 +2237,65 @@ async fn stop_and_delete_work_without_the_prompt_body() {
     assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
     assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
 }
+
+fn step(id: &str) -> harness::turn_loop::TurnStepPayload {
+    serde_json::from_value(json!({"session_id":id,"turn_id":format!("t_{id}"),"step":0,"depth":0}))
+        .unwrap()
+}
+
+/// A stopped step and a failed step finalize from the stored record: neither
+/// needs the prompt body, so a session whose body is gone still ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopped_and_failed_steps_finalize_without_the_prompt_body() {
+    let stack = Stack::new("completed").await;
+    stack.set_status("grandchild1", "running");
+    for id in ["child1", "grandchild1"] {
+        lose_prompt_body(&stack, id);
+    }
+    assert!(ordinary_stop(&stack, "child1").await.stopping);
+    let stopped = harness::turn_loop::run_step(&stack.deps, step("child1"))
+        .await
+        .unwrap();
+    assert_eq!(turn(&stack, "child1")["status"], "cancelled", "{stopped:?}");
+
+    // Not stopped: generating needs the body, so the step fails and the
+    // failure finalizes.
+    let error = harness::turn_loop::run_step(&stack.deps, step("grandchild1"))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("missing prompt body"), "{error}");
+    harness::turn_loop::fail_turn(
+        &stack.deps,
+        "grandchild1",
+        "t_grandchild1",
+        &error.to_string(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(turn(&stack, "grandchild1")["status"], "failed");
+    for id in ["child1", "grandchild1"] {
+        assert_eq!(
+            turn(&stack, id)["options"]["system_prompt"]["$ref"],
+            format!("sha256:lost_{id}"),
+            "{id}: the write-back keeps the ref"
+        );
+    }
+}
+
+/// `harness::status` reads no prompt text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_reports_a_session_without_its_prompt_body() {
+    let stack = Stack::new("completed").await;
+    lose_prompt_body(&stack, "parent");
+    let report = harness::functions::status::handle(
+        &stack.deps,
+        harness::functions::status::StatusRequest {
+            session_id: "parent".into(),
+            verbose: true,
+        },
+    )
+    .await
+    .unwrap()
+    .expect("a report");
+    assert_eq!(report.turn_id.as_deref(), Some("t_parent"));
+}
