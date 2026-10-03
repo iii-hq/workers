@@ -356,7 +356,7 @@ iii.registerTrigger({
 | `session::message-updated` | a message's content changed | `session_id?`, `roles?`, `metadata?` | `{ session_id, entry_id, message, revision, origin?, timestamp }` |
 | `session::status-changed` | status actually changed | `session_id?`, `metadata?` | `{ session_id, status, previous_status, status_reason?, timestamp }` |
 | `session::meta-updated` | title/description/metadata changed | `session_id?`, `metadata?` | `{ session_id, title, description, metadata?, timestamp }` |
-| `session::deleted` | session removed | `session_id?`, `metadata?` | `{ session_id, timestamp }` |
+| `session::deleted` | session removed | `session_id?`, `metadata?` | `{ session_id, timestamp, resync? }` (`resync: true`: an adapter hot-reload swapped in a store that lacks the session; not deleted) |
 
 Filter semantics (all supplied filters must hold — AND):
 

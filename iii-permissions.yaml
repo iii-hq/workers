@@ -152,8 +152,8 @@ rules:
   # model-reachable way to start new turns and is left at the needs_approval
   # default (the harness self-enforces depth/fan-out and walls spawned
   # children out of the control plane unless the spawn passes
-  # options.orchestrator). The internal config/cron hooks must never be
-  # agent-callable.
+  # options.orchestrator). The internal config/cron/session-deleted hooks
+  # must never be agent-callable.
   - '!harness::send'
   - '!harness::run'
   - '!harness::turn'
@@ -162,6 +162,7 @@ rules:
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
+  - '!harness::on-session-deleted'
   # kanban: console asset delivery and the configuration reload sink are
   # engine plumbing. Deleting/restoring a ticket is the human's call from the
   # ticket screen; the ticket working loop is allowlisted below.

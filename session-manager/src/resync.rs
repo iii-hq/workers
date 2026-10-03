@@ -11,8 +11,10 @@
 //! session, then one snapshot event per entry (`message-added` for a fresh
 //! entry, `message-updated` for one that had been edited). Sessions that were
 //! present before the swap but are gone after it are signalled with
-//! `session::deleted`. Consumers reconcile by entry id and highest revision, so
-//! a single snapshot per entry is enough to converge an open view.
+//! `session::deleted` marked `resync: true`: they were not deleted, so
+//! consumers keep their durable per-session data. Consumers reconcile by
+//! entry id and highest revision, so a single snapshot per entry is enough to
+//! converge an open view.
 //!
 //! Delivery always goes through the local emitter (never a `RemotePublisher`):
 //! a replay is local state, and on an fs-main instance the emitter still fans
@@ -66,6 +68,7 @@ pub async fn resync_triggers(
                 event: SessionEvent::Deleted(SessionDeletedEvent {
                     session_id: old.session_id.clone(),
                     timestamp: now,
+                    resync: true,
                 }),
                 session_metadata: old.metadata.clone(),
             });
@@ -270,6 +273,10 @@ mod tests {
         assert!(kinds.contains(&"session::created"));
         assert!(kinds.contains(&"session::message-added"));
         assert!(kinds.contains(&"session::message-updated"));
+        // A store swap is not a deletion: consumers keep durable per-session
+        // data for a session that comes back when the swap is reverted.
+        let deleted = seen.iter().find(|(t, _)| t == "session::deleted").unwrap();
+        assert_eq!(deleted.1["resync"], true);
     }
 
     #[tokio::test]

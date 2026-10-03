@@ -74,3 +74,18 @@ fn configuration_ensure_is_denied() {
         Decision::Deny { .. }
     ));
 }
+
+/// `harness::on-session-deleted` is the `session::deleted` cleanup hook, engine
+/// plumbing like the other internal harness hooks. Called directly with a live
+/// session id, it would wipe that session's turn record and bindings.
+#[test]
+fn harness_on_session_deleted_is_denied() {
+    assert!(matches!(
+        repository_permissions().check(
+            "harness::on-session-deleted",
+            &json!({ "session_id": "s_live" }),
+            PermissionMode::Manual
+        ),
+        Decision::Deny { .. }
+    ));
+}

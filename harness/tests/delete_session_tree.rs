@@ -1846,7 +1846,8 @@ async fn orphan_redrive_reads_only_changed_turns_and_the_sweep_refreshes_its_vie
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn finalized_turn_records_drop_what_only_a_running_turn_reads() {
     let stack = Stack::new("awaiting_functions").await;
-    for id in ["parent", "child1"] {
+    stack.set_status("grandchild1", "running");
+    for id in ["parent", "child1", "grandchild1"] {
         let mut store = stack.store.lock().unwrap();
         let mut row = store.state("harness_turn", id);
         row["calls"] = json!({
@@ -1859,13 +1860,32 @@ async fn finalized_turn_records_drop_what_only_a_running_turn_reads() {
         row["stream_request_id"] = json!("req");
         store.put("harness_turn", id, row);
     }
+    // finalize_completed: a step that finds its step cap spent completes the
+    // turn without a generation. First: stopping the parent cascades to it.
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", "grandchild1");
+        row["turn_count"] = json!(16);
+        store.put("harness_turn", "grandchild1", row);
+    }
+    let payload = serde_json::from_value(
+        json!({"session_id":"grandchild1","turn_id":"t_grandchild1","step":0,"depth":0}),
+    )
+    .unwrap();
+    harness::turn_loop::run_step(&stack.deps, payload)
+        .await
+        .unwrap();
     // finalize_cancelled: a stop on a parked turn with no external call.
     ordinary_stop(&stack, "parent").await;
     // finalize_failed: an unexpected step error.
     harness::turn_loop::fail_turn(&stack.deps, "child1", "t_child1", "boom")
         .await
         .unwrap();
-    for (id, status) in [("parent", "cancelled"), ("child1", "failed")] {
+    for (id, status) in [
+        ("parent", "cancelled"),
+        ("child1", "failed"),
+        ("grandchild1", "completed"),
+    ] {
         let row = turn(&stack, id);
         assert_eq!(row["status"], status, "{id}");
         let calls: Vec<&String> = row["calls"].as_object().unwrap().keys().collect();
@@ -1876,24 +1896,69 @@ async fn finalized_turn_records_drop_what_only_a_running_turn_reads() {
     }
 }
 
+async fn session_deleted(deps: &Deps, event: Value) {
+    harness::functions::on_session_deleted::handle(deps, serde_json::from_value(event).unwrap())
+        .await
+        .unwrap();
+}
+
 /// `session::deleted` purges the session's turn record with its other rows
 /// (MOT-5166); other sessions' records stay.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_deleted_removes_the_turn_record() {
-    use harness::functions::on_session_deleted::{self, SessionDeletedEvent};
     let stack = Stack::new("completed").await;
-    on_session_deleted::handle(
-        &stack.deps,
-        SessionDeletedEvent {
-            session_id: "child2".into(),
-        },
-    )
-    .await
-    .unwrap();
+    session_deleted(&stack.deps, json!({"session_id": "child2", "timestamp": 1})).await;
     let store = stack.store.lock().unwrap();
     assert!(store.calls.iter().any(|(f, data)| f == "state::delete"
         && data["scope"] == "harness_turn"
         && data["key"] == "child2"));
     assert!(store.state("harness_turn", "child2").is_null());
     assert!(!store.state("harness_turn", "grandchild1").is_null());
+}
+
+/// session-manager's adapter hot-reload signals every session the swapped-in
+/// store lacks with `session::deleted` + `resync: true`. Those sessions were
+/// not deleted and come back if the swap is reverted, so their turn record
+/// (the session's settings memory) stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resync_session_deleted_keeps_the_turn_record() {
+    let stack = Stack::new("completed").await;
+    session_deleted(
+        &stack.deps,
+        json!({"session_id": "child2", "timestamp": 1, "resync": true}),
+    )
+    .await;
+    assert_eq!(turn(&stack, "child2")["turn_id"], "t_child2");
+}
+
+/// A step holds its record in memory and writes it back when it ends. The
+/// purge waits that step out, so it deletes the step's last write instead of
+/// the step re-creating the record it just deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_deleted_waits_out_a_running_step() {
+    let stack = Stack::new("completed").await;
+    let held = turn(&stack, "child1");
+    let step = stack.deps.turn_activity.guard("child1").await;
+    let deps = stack.deps.clone();
+    let purge = tokio::spawn(async move {
+        session_deleted(&deps, json!({"session_id": "child1", "timestamp": 1})).await
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        turn(&stack, "child1")["turn_id"],
+        "t_child1",
+        "deleted under a running step"
+    );
+    // The step's final put_turn, then the step ends.
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .put("harness_turn", "child1", held);
+    drop(step);
+    tokio::time::timeout(Duration::from_secs(5), purge)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(turn(&stack, "child1").is_null());
 }
