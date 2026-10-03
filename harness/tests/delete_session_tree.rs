@@ -1921,21 +1921,6 @@ async fn session_deleted_removes_the_turn_record() {
     assert!(!store.state("harness_turn", "grandchild1").is_null());
 }
 
-/// session-manager's adapter hot-reload signals every session the swapped-in
-/// store lacks with `session::deleted` + `resync: true`. Those sessions were
-/// not deleted and come back if the swap is reverted, so their turn record
-/// (the session's settings memory) stays.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resync_session_deleted_keeps_the_turn_record() {
-    let stack = Stack::new("completed").await;
-    session_deleted(
-        &stack.deps,
-        json!({"session_id": "child2", "timestamp": 1, "resync": true}),
-    )
-    .await;
-    assert_eq!(turn(&stack, "child2")["turn_id"], "t_child2");
-}
-
 /// A step holds its record in memory and writes it back when it ends. The
 /// purge waits that step out, so it deletes the step's last write instead of
 /// the step re-creating the record it just deleted.
@@ -2182,4 +2167,73 @@ async fn the_sweep_compacts_from_its_one_full_read() {
         ["sw_done", "sw_old", "sw_old"]
     );
     assert!(turn(&stack, "sw_old")["options"]["system_prompt"]["$ref"].is_string());
+}
+
+/// Point `id`'s record at a prompt body the store does not have.
+fn lose_prompt_body(stack: &Stack, id: &str) {
+    let mut store = stack.store.lock().unwrap();
+    let mut row = store.state("harness_turn", id);
+    row["options"]["system_prompt"] = json!({"$ref": format!("sha256:lost_{id}")});
+    store.put("harness_turn", id, row);
+}
+
+/// One record whose prompt body is gone does not end the redrive pass: the
+/// orphans after it are still re-enqueued.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_prompt_body_does_not_stop_the_orphan_redrive() {
+    let _view = TURN_VIEW_TESTS.lock().await;
+    let stack = Stack::new("completed").await;
+    // Own keys only: the other tests' writes mark the fixture's ids.
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .state
+        .retain(|(scope, _), _| scope != "harness_turn");
+    stack.session("lb_a_lost", None, "running");
+    stack.session("lb_b_orphan", None, "running");
+    lose_prompt_body(&stack, "lb_a_lost");
+    let redriven = harness::inflight::redrive_orphans(&stack.deps)
+        .await
+        .unwrap();
+    assert_eq!(redriven, 1);
+    let store = stack.store.lock().unwrap();
+    let enqueued: Vec<&Value> = store
+        .calls
+        .iter()
+        .filter(|(f, _)| f == "harness::turn")
+        .map(|(_, data)| &data["session_id"])
+        .collect();
+    assert_eq!(enqueued, [&json!("lb_b_orphan")]);
+}
+
+/// Stop and delete-session-tree read only a record's status, turn and calls,
+/// so a session whose prompt body is gone can still be stopped and deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_and_delete_work_without_the_prompt_body() {
+    let stack = Stack::new("running").await;
+    stack.set_status("grandchild1", "awaiting_functions");
+    for id in ["child2", "grandchild1"] {
+        lose_prompt_body(&stack, id);
+    }
+    let stopped = harness::functions::stop::handle(
+        &stack.deps,
+        harness::functions::stop::StopRequest {
+            session_id: "grandchild1".into(),
+            turn_id: Some("t_grandchild1".into()),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(stopped.stopping);
+    let row = turn(&stack, "grandchild1");
+    assert_eq!(row["status"], "cancelled");
+    assert_eq!(
+        row["options"]["system_prompt"]["$ref"], "sha256:lost_grandchild1",
+        "the write-back keeps the ref"
+    );
+    let accepted = stack.request("child2").await;
+    let done = stack.run(&accepted.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+    assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
 }

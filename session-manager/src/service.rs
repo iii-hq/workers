@@ -492,7 +492,6 @@ impl SessionService {
             event: SessionEvent::Deleted(SessionDeletedEvent {
                 session_id: req.session_id.clone(),
                 timestamp: self.clock.now_ms(),
-                resync: false,
             }),
             // Filters evaluate against the metadata as-of-deletion.
             session_metadata: meta.metadata,

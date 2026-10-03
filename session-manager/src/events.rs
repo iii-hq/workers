@@ -307,11 +307,6 @@ pub struct MetaUpdatedEvent {
 pub struct SessionDeletedEvent {
     pub session_id: String,
     pub timestamp: i64,
-    /// `true` when an adapter hot-reload swapped in a store that lacks the
-    /// session: it was not deleted, and it comes back if the swap is reverted.
-    /// Consumers keep the durable per-session data they would otherwise purge.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub resync: bool,
 }
 
 /// A typed event produced by a mutation.
@@ -1192,7 +1187,6 @@ mod tests {
                 event: SessionEvent::Deleted(SessionDeletedEvent {
                     session_id: "s_1".into(),
                     timestamp: 11,
-                    resync: true,
                 }),
                 session_metadata: Some(map(json!({ "owner": "u_1" }))),
             },
@@ -1260,7 +1254,6 @@ mod tests {
             event: SessionEvent::Deleted(SessionDeletedEvent {
                 session_id: "s_1".into(),
                 timestamp: 1,
-                resync: false,
             }),
             session_metadata: Some(map(json!({ "owner": "u_1" }))),
         };

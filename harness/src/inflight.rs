@@ -142,8 +142,8 @@ pub async fn redrive_orphans(deps: &Deps) -> Result<u64, HarnessError> {
         // Re-check under the session lock against the freshest record so a
         // step that just advanced or finished is not redriven.
         let _guard = deps.locks.guard(&record.session_id).await;
-        match crate::state::get_turn(&deps.iii, &record.session_id, cfg.session_timeout_ms).await? {
-            Some(fresh)
+        match crate::state::get_turn(&deps.iii, &record.session_id, cfg.session_timeout_ms).await {
+            Ok(Some(fresh))
                 if fresh.turn_id == record.turn_id
                     && fresh.step == record.step
                     && is_orphan_candidate(
@@ -154,7 +154,17 @@ pub async fn redrive_orphans(deps: &Deps) -> Result<u64, HarnessError> {
             {
                 record = fresh;
             }
-            _ => continue,
+            // One unreadable record (a lost prompt body) must not strand the
+            // orphans after it.
+            Err(e) => {
+                tracing::warn!(
+                    session_id = %record.session_id,
+                    error = %e,
+                    "could not re-read an orphan candidate; skipped this pass"
+                );
+                continue;
+            }
+            Ok(_) => continue,
         }
         match redrive_if_idle(deps, &record).await {
             Ok(true) => {

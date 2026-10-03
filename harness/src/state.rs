@@ -188,14 +188,23 @@ pub async fn get_turn(
     session_id: &str,
     timeout_ms: u64,
 ) -> Result<Option<TurnRecord>, HarnessError> {
-    let mut v = state_get(iii, TURN_SCOPE, session_id, timeout_ms).await?;
-    let Some(mut record) = parse_stored_turn(&mut v)
-        .map_err(|e| HarnessError::State(format!("turn record parse: {e}")))?
-    else {
+    let Some(mut record) = get_turn_unhydrated(iii, session_id, timeout_ms).await? else {
         return Ok(None);
     };
     hydrate(iii, &mut record, timeout_ms).await?;
     Ok(Some(record))
+}
+
+/// The turn record as stored: prompt refs, no prompt text. For callers that
+/// read only its status, turn, calls or context, so a lost prompt body does
+/// not fail them. [`put_turn`] writes it back with its refs.
+pub async fn get_turn_unhydrated(
+    iii: &IIIClient,
+    session_id: &str,
+    timeout_ms: u64,
+) -> Result<Option<TurnRecord>, HarnessError> {
+    let mut v = state_get(iii, TURN_SCOPE, session_id, timeout_ms).await?;
+    parse_stored_turn(&mut v).map_err(|e| HarnessError::State(format!("turn record parse: {e}")))
 }
 
 /// Persist the turn record (whole-record write; the loop holds the only

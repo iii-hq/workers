@@ -7,14 +7,10 @@ use serde::{Deserialize, Serialize};
 use crate::deps::Deps;
 use crate::error::HarnessError;
 
-/// `session::deleted` payload (only the fields we read).
+/// `session::deleted` payload (only the field we read).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SessionDeletedEvent {
     pub session_id: String,
-    /// Set by session-manager's adapter hot-reload for a session the swapped-in
-    /// store lacks: not deleted, and back if the swap is reverted.
-    #[serde(default)]
-    pub resync: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -46,16 +42,13 @@ pub async fn handle(
     crate::budget::purge(deps, &event.session_id, cfg.session_timeout_ms).await?;
     crate::context_snapshot::delete(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
     crate::usage_report::delete(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
-    // The turn record is the session's settings memory: keep it for a session
-    // a store swap only hid. Last, so a failed purge above keeps the record for
-    // the handler's retry. Under the step guards, as delete-session-tree's
-    // erase: a running step writes back the record it holds when it ends, so
-    // delete after that write rather than have it re-create the record.
-    if !event.resync {
-        let _activity = deps.turn_activity.guard(&event.session_id).await;
-        let _lock = deps.locks.guard(&event.session_id).await;
-        crate::state::delete_turn(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
-    }
+    // Last, so a failed purge above keeps the record for the handler's retry.
+    // Under the step guards, as delete-session-tree's erase: a running step
+    // writes back the record it holds when it ends, so delete after that write
+    // rather than have it re-create the record.
+    let _activity = deps.turn_activity.guard(&event.session_id).await;
+    let _lock = deps.locks.guard(&event.session_id).await;
+    crate::state::delete_turn(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
     Ok(SessionDeletedAck {
         ok: true,
         removed: swept,
