@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use crate::deps::Deps;
 use crate::error::HarnessError;
-use crate::state::prompt_digest;
+use crate::state::{prompt_digest, TurnListing};
 use crate::types::turn::TurnRecord;
 
 /// How long an unreferenced body is kept: a send stores its body before it
@@ -24,8 +24,9 @@ pub struct CompactReport {
 
 /// Convert, then collect. Never fails: what fails is warned and left for the
 /// next pass.
-pub async fn compact(deps: &Deps, records: &[TurnRecord], now: i64) -> CompactReport {
+pub async fn compact(deps: &Deps, listing: &TurnListing, now: i64) -> CompactReport {
     let timeout = deps.cfg().await.session_timeout_ms;
+    let records = &listing.records;
     let mut report = CompactReport::default();
     for record in records.iter().filter(|r| holds_inline_prompt(r)) {
         match convert(deps, record, timeout).await {
@@ -39,11 +40,12 @@ pub async fn compact(deps: &Deps, records: &[TurnRecord], now: i64) -> CompactRe
         }
     }
     // An inline text counts by its digest: converted, its record references it.
-    let referenced: BTreeSet<String> = records
+    let mut referenced: BTreeSet<String> = records
         .iter()
         .flat_map(prompt_texts)
         .filter_map(|(text, slot)| slot.clone().or_else(|| text.as_deref().map(prompt_digest)))
         .collect();
+    referenced.extend(listing.unparsed_refs.iter().cloned());
     let cutoff = now - PROMPT_BODY_GRACE_MS;
     match crate::state::collect_prompt_bodies(&deps.iii, &referenced, cutoff, timeout).await {
         Ok(n) => report.prompts_collected = n,
@@ -75,6 +77,12 @@ fn holds_inline_prompt(record: &TurnRecord) -> bool {
 /// still the record that was listed. `put_turn` moves the texts to refs.
 async fn convert(deps: &Deps, listed: &TurnRecord, timeout: u64) -> Result<bool, HarnessError> {
     let session_id = &listed.session_id;
+    // A step enters `inflight` before it takes `turn_activity`, and holds that
+    // for its whole run: skip it rather than wait it out (the boot pass runs
+    // in the redrive loop). Checked again under the guards.
+    if deps.inflight.contains(session_id) {
+        return Ok(false);
+    }
     let _activity = deps.turn_activity.guard(session_id).await;
     let _lock = deps.locks.guard(session_id).await;
     if deps.inflight.contains(session_id) {

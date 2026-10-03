@@ -1982,10 +1982,10 @@ fn inline_prompt_turn(stack: &Stack, id: &str, prompt: &str, index: &str) {
 
 /// `harness::turn_compaction::compact` over a fresh listing of the store.
 async fn compact(stack: &Stack, now: i64) -> harness::turn_compaction::CompactReport {
-    let records = harness::state::list_turns(&stack.deps.iii, 2_000)
+    let listing = harness::state::list_turns(&stack.deps.iii, 2_000)
         .await
         .unwrap();
-    harness::turn_compaction::compact(&stack.deps, &records, now).await
+    harness::turn_compaction::compact(&stack.deps, &listing, now).await
 }
 
 fn turn_writes(store: &Store) -> usize {
@@ -2044,7 +2044,9 @@ async fn compact_converts_inline_terminal_records_once() {
 
 /// Conversion leaves a turn that is still running, one whose step executes
 /// here, and one rewritten since the listing (it re-reads under the session's
-/// guards and requires the listed `turn_id` and `updated_at`).
+/// guards and requires the listed `turn_id` and `updated_at`). A step holds
+/// `turn_activity` for its whole run: conversion skips its session without
+/// waiting for the step to end (boot compaction runs in the redrive loop).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_skips_running_and_changed_records() {
     let stack = Stack::new("completed").await;
@@ -2053,7 +2055,7 @@ async fn compact_skips_running_and_changed_records() {
         inline_prompt_turn(&stack, id, prompt, "compact_skips index");
     }
     stack.set_status("cs_running", "running");
-    let records = harness::state::list_turns(&stack.deps.iii, 2_000)
+    let listing = harness::state::list_turns(&stack.deps.iii, 2_000)
         .await
         .unwrap();
     {
@@ -2064,8 +2066,14 @@ async fn compact_skips_running_and_changed_records() {
         store.calls.clear();
     }
     let _step = stack.deps.inflight.enter("cs_inflight");
+    let _activity = stack.deps.turn_activity.guard("cs_inflight").await;
     let now = harness::types::message::AgentMessage::now_ms();
-    let report = harness::turn_compaction::compact(&stack.deps, &records, now).await;
+    let report = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        harness::turn_compaction::compact(&stack.deps, &listing, now),
+    )
+    .await
+    .expect("conversion must not wait for a running step");
     assert_eq!(report.converted, 0);
     assert_eq!(turn_writes(&stack.store.lock().unwrap()), 0);
     for id in ["cs_running", "cs_inflight", "cs_changed"] {
@@ -2104,6 +2112,39 @@ async fn compact_collects_only_old_unreferenced_bodies() {
     for kept in ["sha256:cb_a", "sha256:cb_c"] {
         assert_eq!(store.state("harness_prompt", kept)["body"], kept);
     }
+}
+
+/// A record this build cannot parse (a build with a newer record shape wrote
+/// it) is left out of the listing, yet its refs are in use: once that build
+/// runs again, a body collected here would make the session's every read a
+/// "missing prompt body". The collector keeps every body it names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_keeps_the_bodies_of_a_record_it_cannot_parse() {
+    let stack = Stack::new("completed").await;
+    let now = harness::types::message::AgentMessage::now_ms();
+    stack.session("cu_newer", None, "completed");
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", "cu_newer");
+        row["status"] = json!("a_status_from_a_newer_build");
+        row["options"]["system_prompt"] = json!({"$ref": "sha256:cu_used"});
+        store.put("harness_turn", "cu_newer", row);
+        for digest in ["sha256:cu_used", "sha256:cu_unused"] {
+            store.put(
+                "harness_prompt",
+                digest,
+                json!({"body": digest, "created_at": now - 2 * DAY_MS}),
+            );
+        }
+    }
+    let report = compact(&stack, now).await;
+    assert_eq!(report.prompts_collected, 1);
+    let store = stack.store.lock().unwrap();
+    assert!(store.state("harness_prompt", "sha256:cu_unused").is_null());
+    assert_eq!(
+        store.state("harness_prompt", "sha256:cu_used")["body"],
+        "sha256:cu_used"
+    );
 }
 
 /// The pending sweep converts and collects from the one full read of the

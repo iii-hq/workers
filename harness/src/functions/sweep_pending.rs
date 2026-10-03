@@ -43,8 +43,8 @@ pub struct SweepResponse {
 pub async fn handle(deps: &Deps, _event: SweepEvent) -> Result<SweepResponse, HarnessError> {
     // One full read of the turn scope serves the expiry and the compaction,
     // and refreshes the orphan redrive's view.
-    let records = crate::inflight::read_all_turns(deps).await?;
-    let resolved = crate::deferred::sweep_expired(deps, &records).await?;
+    let listing = crate::inflight::read_all_turns(deps).await?;
+    let resolved = crate::deferred::sweep_expired(deps, &listing.records).await?;
     // A failed orphan scan must not hide the pending-call result.
     let redriven = match crate::inflight::redrive_orphans(deps).await {
         Ok(n) => n,
@@ -53,7 +53,7 @@ pub async fn handle(deps: &Deps, _event: SweepEvent) -> Result<SweepResponse, Ha
             0
         }
     };
-    let compacted = crate::turn_compaction::compact(deps, &records, AgentMessage::now_ms()).await;
+    let compacted = crate::turn_compaction::compact(deps, &listing, AgentMessage::now_ms()).await;
     Ok(SweepResponse {
         ok: true,
         resolved,

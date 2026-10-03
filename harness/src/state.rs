@@ -188,9 +188,9 @@ pub async fn get_turn(
     session_id: &str,
     timeout_ms: u64,
 ) -> Result<Option<TurnRecord>, HarnessError> {
-    let v = state_get(iii, TURN_SCOPE, session_id, timeout_ms).await?;
-    let Some(mut record) =
-        parse_stored_turn(v).map_err(|e| HarnessError::State(format!("turn record parse: {e}")))?
+    let mut v = state_get(iii, TURN_SCOPE, session_id, timeout_ms).await?;
+    let Some(mut record) = parse_stored_turn(&mut v)
+        .map_err(|e| HarnessError::State(format!("turn record parse: {e}")))?
     else {
         return Ok(None);
     };
@@ -282,8 +282,9 @@ fn refs_to_stored(record: &mut Value) {
 }
 
 /// A stored turn record (`None` for null), its refs moved back to their own
-/// fields ([`refs_to_stored`] undone).
-fn parse_stored_turn(mut record: Value) -> serde_json::Result<Option<TurnRecord>> {
+/// fields ([`refs_to_stored`] undone). `record` stays readable when the parse
+/// fails ([`read_listed_turn`] still needs its refs).
+fn parse_stored_turn(record: &mut Value) -> serde_json::Result<Option<TurnRecord>> {
     for (at, text, slot) in STORED_REFS {
         if let Some(fields) = record.pointer_mut(at).and_then(Value::as_object_mut) {
             if let Some(digest) = fields.get_mut(text).and_then(|t| t.get_mut("$ref")) {
@@ -293,7 +294,21 @@ fn parse_stored_turn(mut record: Value) -> serde_json::Result<Option<TurnRecord>
             }
         }
     }
-    serde_json::from_value(record)
+    Option::<TurnRecord>::deserialize(&*record)
+}
+
+/// Every `sha256:` string in a stored record: the prompt refs of a record
+/// this build cannot parse, wherever the build that wrote it keeps them.
+/// Anything else it picks up only keeps a body longer.
+fn digests_in(value: &Value, digests: &mut BTreeSet<String>) {
+    match value {
+        Value::String(s) if s.starts_with("sha256:") => {
+            digests.insert(s.clone());
+        }
+        Value::Array(items) => items.iter().for_each(|v| digests_in(v, digests)),
+        Value::Object(fields) => fields.values().for_each(|v| digests_in(v, digests)),
+        _ => {}
+    }
 }
 
 /// The record's frozen texts, each with its `harness_prompt` ref.
@@ -496,26 +511,43 @@ fn mark_turn_changed(key: &str) {
 /// cap, which wedged the state worker's connection. Records come back as
 /// stored (prompt refs, no prompt text): read the text through [`get_turn`].
 // ponytail: sequential gets; bounded concurrency if the sweep gets slow.
-pub async fn list_turns(iii: &IIIClient, timeout_ms: u64) -> Result<Vec<TurnRecord>, HarnessError> {
+pub async fn list_turns(iii: &IIIClient, timeout_ms: u64) -> Result<TurnListing, HarnessError> {
     let keys = parse_keys(&state_list_keys(iii, TURN_SCOPE, timeout_ms).await?);
-    let mut records = Vec::with_capacity(keys.len());
+    let mut listing = TurnListing {
+        records: Vec::with_capacity(keys.len()),
+        unparsed_refs: BTreeSet::new(),
+    };
     for key in keys {
-        records.extend(read_listed_turn(iii, &key, timeout_ms).await?);
+        let record = read_listed_turn(iii, &key, timeout_ms, &mut listing.unparsed_refs).await?;
+        listing.records.extend(record);
     }
-    Ok(records)
+    Ok(listing)
+}
+
+/// The whole turn scope, as [`list_turns`] reads it.
+#[derive(Debug)]
+pub struct TurnListing {
+    pub records: Vec<TurnRecord>,
+    /// The digests ([`digests_in`]) of the stored records left out of
+    /// `records` because they do not parse here, e.g. written by a build with
+    /// a newer record shape. That build reads them again, so their bodies are
+    /// still in use.
+    pub unparsed_refs: BTreeSet<String>,
 }
 
 /// One listed key's record. `None` when the key was deleted after it was
-/// listed (null, skipped silently) or the record no longer parses (warned),
-/// as `parse_list` skips it.
+/// listed (null, skipped silently) or the record no longer parses (warned,
+/// its digests added to `unparsed_refs`), as `parse_list` skips it.
 async fn read_listed_turn(
     iii: &IIIClient,
     key: &str,
     timeout_ms: u64,
+    unparsed_refs: &mut BTreeSet<String>,
 ) -> Result<Option<TurnRecord>, HarnessError> {
-    let value = state_get(iii, TURN_SCOPE, key, timeout_ms).await?;
-    Ok(parse_stored_turn(value).unwrap_or_else(|e| {
+    let mut value = state_get(iii, TURN_SCOPE, key, timeout_ms).await?;
+    Ok(parse_stored_turn(&mut value).unwrap_or_else(|e| {
         tracing::warn!(session_id = %key, error = %e, "skipping unparseable turn record");
+        digests_in(&value, unparsed_refs);
         None
     }))
 }
@@ -555,7 +587,7 @@ pub async fn read_changed_turns(
             if view.get(&key) == Some(&false) && !changed.contains(&key) {
                 continue;
             }
-            let record = read_listed_turn(iii, &key, timeout_ms).await?;
+            let record = read_listed_turn(iii, &key, timeout_ms, &mut BTreeSet::new()).await?;
             let running = record
                 .as_ref()
                 .is_some_and(|r| r.status == TurnStatus::Running);
@@ -1022,7 +1054,12 @@ mod tests {
         iii.shutdown();
         server.abort();
 
-        let ids: Vec<String> = listed.unwrap().into_iter().map(|r| r.session_id).collect();
+        let ids: Vec<String> = listed
+            .unwrap()
+            .records
+            .into_iter()
+            .map(|r| r.session_id)
+            .collect();
         assert_eq!(ids, ["s_1", "s_2"]);
         // Only the unparseable record warns; the deleted key is skipped silently.
         let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
@@ -1504,7 +1541,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let listed = list_turns(&iii, 2_000).await.unwrap().remove(0);
+        let listed = list_turns(&iii, 2_000).await.unwrap().records.remove(0);
         assert_eq!(listed.options.system_prompt, None);
         assert_eq!(
             listed.options.system_prompt_ref,
@@ -1694,6 +1731,38 @@ mod tests {
         drop(collector);
         put.await.unwrap();
         assert_eq!(body_keys(&store), [prompt_digest(prompt)]);
+        iii.shutdown();
+        server.abort();
+    }
+
+    /// The other side: a body write in progress holds the collector off both
+    /// its read of the body and its delete, so the write cannot land between
+    /// the two and go with the delete.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_collector_waits_out_a_body_write() {
+        let (iii, store, calls, server) = fake_state().await;
+        let digest = "sha256:collector_waits";
+        store.lock().unwrap().insert(
+            (PROMPT_SCOPE.into(), digest.into()),
+            json!({ "body": "old", "created_at": 1 }),
+        );
+        let (referenced, cutoff) = (BTreeSet::new(), 2);
+        let writer = PROMPT_WRITES.lock().await;
+        let collect = collect_prompt_bodies(&iii, &referenced, cutoff, 2_000);
+        tokio::pin!(collect);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), &mut collect)
+                .await
+                .is_err(),
+            "the collector must wait for the body write"
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [format!("state::list_keys {PROMPT_SCOPE}/")]
+        );
+        drop(writer);
+        assert_eq!(collect.await.unwrap(), 1);
+        assert!(body_keys(&store).is_empty());
         iii.shutdown();
         server.abort();
     }

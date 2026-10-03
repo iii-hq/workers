@@ -112,15 +112,16 @@ static TURN_VIEW: tokio::sync::Mutex<BTreeMap<String, bool>> =
 /// rollback, a console edit, another harness process) is redriven after the
 /// next sweep, not only after a restart. Writes that land during the read
 /// stay marked for the next pass.
-pub async fn read_all_turns(deps: &Deps) -> Result<Vec<TurnRecord>, HarnessError> {
+pub async fn read_all_turns(deps: &Deps) -> Result<crate::state::TurnListing, HarnessError> {
     let cfg = deps.cfg().await;
     let mut view = TURN_VIEW.lock().await;
-    let records = crate::state::list_turns(&deps.iii, cfg.session_timeout_ms).await?;
-    *view = records
+    let listing = crate::state::list_turns(&deps.iii, cfg.session_timeout_ms).await?;
+    *view = listing
+        .records
         .iter()
         .map(|r| (r.session_id.clone(), r.status == TurnStatus::Running))
         .collect();
-    Ok(records)
+    Ok(listing)
 }
 
 /// Re-enqueue the current step of every orphaned `Running` turn. Returns the
@@ -194,7 +195,7 @@ const BOOT_DELAY_MS: u64 = 30_000;
 /// records feed one compaction ([`crate::turn_compaction`]) after that pass.
 pub async fn run_loop(deps: std::sync::Arc<Deps>) {
     tokio::time::sleep(std::time::Duration::from_millis(BOOT_DELAY_MS)).await;
-    let mut boot_records = read_all_turns(&deps)
+    let mut boot_listing = read_all_turns(&deps)
         .await
         .inspect_err(|e| tracing::warn!(error = %e, "boot read of the turn records failed"))
         .ok();
@@ -202,9 +203,9 @@ pub async fn run_loop(deps: std::sync::Arc<Deps>) {
         if let Err(e) = redrive_orphans(&deps).await {
             tracing::warn!(error = %e, "orphaned-turn redrive pass failed");
         }
-        if let Some(records) = boot_records.take() {
+        if let Some(listing) = boot_listing.take() {
             let report =
-                crate::turn_compaction::compact(&deps, &records, AgentMessage::now_ms()).await;
+                crate::turn_compaction::compact(&deps, &listing, AgentMessage::now_ms()).await;
             tracing::info!(
                 converted = report.converted,
                 prompts_collected = report.prompts_collected,
