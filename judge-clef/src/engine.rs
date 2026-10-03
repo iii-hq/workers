@@ -1,6 +1,6 @@
 //! The loaded Clef model (src/llama.rs) for async callers: one forward at a
-//! time in arrival order, each on the blocking pool so the executor never
-//! waits on llama.cpp.
+//! time in arrival order, each on its own thread so the executor never waits
+//! on llama.cpp.
 use crate::{encode::Encoded, llama::Model};
 use anyhow::Result;
 pub use iii_llama_runtime::Stop;
@@ -12,7 +12,21 @@ use std::{
     },
     time::Instant,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
+
+/// Run `work` on a thread of its own. Not tokio's blocking pool: handlers run
+/// on the SDK's connection runtime, and the SDK's shutdown joins that thread,
+/// whose runtime waits for every blocking task (a whole pass) before exiting.
+/// Errs when `work` panicked.
+pub(crate) fn detached<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> oneshot::Receiver<T> {
+    let (done, result) = oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(work());
+    });
+    result
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
@@ -64,7 +78,7 @@ impl Engine {
             return Err(Stop::TooLong);
         }
         let model = self.model.clone().lock_owned().await;
-        tokio::task::spawn_blocking(move || {
+        detached(move || {
             if cancel.load(Ordering::Relaxed) {
                 return Err(Stop::Cancelled);
             }

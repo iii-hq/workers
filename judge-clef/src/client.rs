@@ -176,7 +176,7 @@ impl ClefClient {
         let evaluations = Arc::new(request.evaluations);
         let (tokenizer, jobs) = (self.tokenizer.clone(), evaluations.clone());
         let window = self.engine.context_tokens as usize;
-        let encoding = tokio::task::spawn_blocking(move || {
+        let encoding = crate::engine::detached(move || {
             let tokenize = |text: &str| {
                 tokenizer
                     .encode_fast(text, false)
