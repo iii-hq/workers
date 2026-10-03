@@ -167,8 +167,8 @@ Q4_K_M differs by:
 
 | Device | max \|Δp\| | mean \|Δp\| | reference's top option |
 |---|---|---|---|
-| CPU | 0.065 | 0.007 | 26 of 28 |
-| Vulkan | 0.080 | 0.007 | 26 of 28 |
+| CPU | 0.065 | 0.0067 | 26 of 28 |
+| Vulkan | 0.080 | 0.0065 | 26 of 28 |
 
 Both misses are near-ties: orders/region, whose reference top two are 0.005
 apart (the f32 Hugging Face backbone flips it too), and deploy_log/severity,
@@ -217,7 +217,7 @@ those of concurrent requests. Per evaluation:
 
 | Prompt | 356 tokens | 2k tokens | 8k tokens | 16k tokens |
 |---|---|---|---|---|
-| Vulkan | 0.24 s | 1.3 s | 6.6 s | 15 s |
+| Vulkan | 0.25 s | 1.3 s | 6.7 s | 15.4 s |
 | CPU, 16 threads | 5 s | 31 s | – | 280–360 s |
 
 The CPU timings were taken while other work loaded the machine (8 threads are
@@ -228,13 +228,17 @@ default `max_timeout_ms` of 300000 (5 minutes): use a GPU, or raise
 Each pass runs in a llama.cpp context sized to its prompt (rounded up to 256
 tokens), created for it and freed after it, so between evaluations only the
 weights hold memory: 5.5 GiB of VRAM on Vulkan. A pass adds its compute
-buffers for its duration: VRAM peaks at 5.7 GiB for a 356-token prompt and
-10.1 GiB for 16368 tokens, with 1 GiB of pinned host memory; the worker's own
-RAM stays under 1 GiB. Creating and freeing the context costs about 15 ms at
-356 tokens and 0.1–0.2 s at 16k. On the CPU a 16k pass needs about 7 GiB of RAM
-besides the mapped GGUF. Flash attention is on: without it the attention
-scores of a one-pass prompt grow with its square (16k tokens took 101–110 s and
-33 GB of RAM).
+buffers for its duration: 5.7 GiB of VRAM in all for a 356-token prompt,
+7.6 GiB for 8k tokens and 10.1 GiB for 16384, with 1 GiB of pinned host
+memory. At 16k tokens llama.cpp also reallocates them as the pass starts, since
+it sized them for a head with one question and one option: for about 30 ms
+VRAM reaches 14.1 GiB and pinned memory 1.75 GiB, so the GPU needs that much
+free. The worker's own memory peaks at 0.9 GiB, besides 0.6 GiB of the mapped
+GGUF. Creating and freeing the context costs about 15 ms at 356 tokens and
+0.1–0.2 s at 16k. On the CPU a 16k pass needs about 7 GiB of RAM besides the
+mapped GGUF. Flash attention is on: without it the attention scores of a
+one-pass prompt grow with its square (16k tokens took 101–110 s and 33 GB of
+RAM).
 
 ### Why the window stops at 16384 tokens
 
@@ -267,7 +271,7 @@ next evaluation waits for it.
 | `model` | `clef-flash` | next start |
 | `threads` | min(8, logical cores) | next start (llama.cpp's CPU threads) |
 | `gpu_layers` | the whole model when a GPU backend and device exist | next start (`0` = CPU) |
-| `context_tokens` | 16384, the reference's `max_length` | next start (512 to 16384; 10.1 GiB of VRAM at peak at 16384, see above) |
+| `context_tokens` | 16384, the reference's `max_length` | next start (512 to 16384; 14.1 GiB of VRAM at peak at 16384, see above) |
 | `max_request_bytes` | 8388608 | new calls |
 | `max_timeout_ms` | 300000 | new calls (raise it for long prompts on the CPU) |
 

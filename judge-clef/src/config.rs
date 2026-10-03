@@ -25,7 +25,7 @@ pub struct ClefConfig {
     /// applied at the next start. A longer state is truncated, keeping its
     /// beginning; a schema longer than the window answers `payload_too_large`.
     /// Each evaluation is one pass whose GPU buffers grow with its prompt:
-    /// about 10.1 GiB of VRAM at 16384, the most that ran safely on a 16 GiB
+    /// 14.1 GiB of VRAM at peak at 16384, the most that ran safely on a 16 GiB
     /// GPU (24576 lost the device).
     #[schemars(range(min = 512, max = 16384))]
     pub context_tokens: u32,
