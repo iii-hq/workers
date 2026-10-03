@@ -946,8 +946,9 @@ pub fn comparability(
     baseline: &E2eExecutionRefV1,
     candidate: &E2eExecutionRefV1,
 ) -> ComparabilityV1 {
+    // Sorted: the E2E lists the same scenarios in any order.
     let scenarios = |execution: &E2eExecutionRefV1, field: fn(&E2eScenarioV1) -> Option<String>| {
-        let values: Vec<String> = execution
+        let mut values: Vec<String> = execution
             .scenarios
             .iter()
             .map(|scenario| {
@@ -958,6 +959,7 @@ pub fn comparability(
                 )
             })
             .collect();
+        values.sort();
         (!values.is_empty()).then(|| values.join(", "))
     };
     let pairs = [
@@ -3234,6 +3236,24 @@ mod tests {
             judge_error_message("missing_key", None, None),
             "Jev (typesafe) answered missing_key"
         );
+    }
+
+    #[test]
+    fn comparability_ignores_the_order_scenarios_are_listed_in() {
+        let run = |scenarios: &[&str]| -> E2eExecutionRefV1 {
+            serde_json::from_value(json!({
+                "execution_id": "x", "reports_available": true, "reports": [],
+                "model": "m", "provider": "p", "engine_version": "e", "e2e_revision": "r",
+                "scenarios": scenarios.iter().map(|id| json!({
+                    "scenario_id": id, "behavior_sha256": format!("b-{id}"),
+                    "contract_fingerprint": format!("c-{id}"), "run_count": 1, "measures": {}
+                })).collect::<Vec<_>>(),
+            }))
+            .unwrap()
+        };
+        let link = comparability(&run(&["a", "b"]), &run(&["b", "a"]));
+        assert!(link.comparable, "{:?}", link.checks);
+        assert!(!comparability(&run(&["a", "b"]), &run(&["a", "c"])).comparable);
     }
 
     #[test]

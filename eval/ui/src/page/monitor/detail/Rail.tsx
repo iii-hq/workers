@@ -179,7 +179,11 @@ function MetricsTile({ snapshot }: { snapshot: Snapshot }) {
         <Row label="Calls" value={count(totals.function_calls)} />
         <Row label="Errors" value={count(totals.function_call_errors)} />
         <Row label="Tokens" value={formatTokens(tokens)} />
-        <Row label="Duration" value={traces ? formatDuration(traces.duration_ms) : '—'} />
+        {/* No traces means no duration was measured: never show it as 0 ms. */}
+        <Row
+          label="Duration"
+          value={traces && traces.trace_count > 0 ? formatDuration(traces.duration_ms) : 'not reported'}
+        />
         <Row label="Cost" value={formatCostShort(totals.cost_usd)} />
       </Rows>
       <p className="eval-ui-ad-quiet eval-ui-ad-foot">Whole session tree, not just this turn.</p>
