@@ -1,14 +1,17 @@
 //! llama.cpp b11379, built from source by build.rs (cmake, no bindgen), through
-//! the C shim in native/shim.cpp and a few llama.h functions declared by hand:
-//! backend init, model loading and the ordered-decision forward (the `clef`
-//! arch's head in the graph, one score per option). Each `decide` creates a
-//! context sized to its prompt and frees it, so between calls only the model
-//! holds memory.
-use anyhow::{anyhow, ensure, Result};
+//! the C shim in native/shim.cpp and llama.h functions declared by hand:
+//! backend init, model loading, tokenization, and two ways to run a model.
+//! [`Model::decide`] is the ordered-decision forward (the `clef` arch's head
+//! in the graph, one score per option) in a context sized to its prompt and
+//! freed after it. [`Model::new_context`] keeps a [`Context`] for the callers
+//! that drive llama.cpp themselves: batches of tokens over sequences
+//! ([`Batch`]), logits or embeddings per output row, sequence state snapshots.
+use anyhow::{anyhow, bail, ensure, Result};
 use std::{
     ffi::{c_char, CStr, CString},
     path::Path,
     ptr::{self, NonNull},
+    slice,
     sync::Once,
 };
 
@@ -18,11 +21,29 @@ struct RawModel {
     _private: [u8; 0],
 }
 
+/// llama.cpp's `llama_context`, opaque.
+#[repr(C)]
+struct RawContext {
+    _private: [u8; 0],
+}
+
+/// llama.cpp's `llama_vocab`, opaque.
+#[repr(C)]
+struct RawVocab {
+    _private: [u8; 0],
+}
+
+/// llama.cpp's `llama_memory_i`, opaque.
+#[repr(C)]
+struct RawMemory {
+    _private: [u8; 0],
+}
+
 extern "C" {
     // native/shim.cpp
     fn ln_backend_init(dir: *const c_char, fallback: *const c_char, vk_max_nodes_per_submit: u32);
     fn ln_gpu_device(out: *mut c_char, len: usize) -> bool;
-    fn ln_model_load(path: *const c_char, gpu_layers: i32) -> *mut RawModel;
+    fn ln_model_load(path: *const c_char, gpu_layers: i32, use_gpu_devices: bool) -> *mut RawModel;
     fn ln_decide(
         model: *const RawModel,
         n_threads: i32,
@@ -32,6 +53,27 @@ extern "C" {
         scores: *mut f32,
         n_scores: i32,
     ) -> i32;
+    fn ln_context_new(
+        model: *mut RawModel,
+        n_ctx: u32,
+        n_batch: u32,
+        n_ubatch: u32,
+        n_seq_max: u32,
+        n_threads: i32,
+        embeddings: bool,
+        pooling_type: i32,
+        flash_attn_type: i32,
+        kv_unified: bool,
+    ) -> *mut RawContext;
+    fn ln_process(
+        ctx: *mut RawContext,
+        encode: bool,
+        tokens: *const i32,
+        pos: *const i32,
+        seq: *const i32,
+        output: *const i8,
+        n_tokens: i32,
+    ) -> i32;
     // llama.h
     fn llama_model_free(model: *mut RawModel);
     fn llama_model_meta_val_str(
@@ -40,6 +82,42 @@ extern "C" {
         buf: *mut c_char,
         buf_size: usize,
     ) -> i32;
+    fn llama_model_n_embd(model: *const RawModel) -> i32;
+    fn llama_model_n_embd_out(model: *const RawModel) -> i32;
+    fn llama_model_get_vocab(model: *const RawModel) -> *const RawVocab;
+    fn llama_vocab_n_tokens(vocab: *const RawVocab) -> i32;
+    fn llama_tokenize(
+        vocab: *const RawVocab,
+        text: *const c_char,
+        text_len: i32,
+        tokens: *mut i32,
+        n_tokens_max: i32,
+        add_special: bool,
+        parse_special: bool,
+    ) -> i32;
+    fn llama_free(ctx: *mut RawContext);
+    fn llama_n_ctx(ctx: *const RawContext) -> u32;
+    fn llama_n_batch(ctx: *const RawContext) -> u32;
+    fn llama_n_seq_max(ctx: *const RawContext) -> u32;
+    fn llama_get_logits_ith(ctx: *mut RawContext, i: i32) -> *mut f32;
+    fn llama_get_embeddings_ith(ctx: *mut RawContext, i: i32) -> *mut f32;
+    fn llama_get_memory(ctx: *const RawContext) -> *mut RawMemory;
+    fn llama_memory_clear(mem: *mut RawMemory, data: bool);
+    fn llama_state_seq_get_size_ext(ctx: *mut RawContext, seq_id: i32, flags: u32) -> usize;
+    fn llama_state_seq_get_data_ext(
+        ctx: *mut RawContext,
+        dst: *mut u8,
+        size: usize,
+        seq_id: i32,
+        flags: u32,
+    ) -> usize;
+    fn llama_state_seq_set_data_ext(
+        ctx: *mut RawContext,
+        src: *const u8,
+        size: usize,
+        seq_id: i32,
+        flags: u32,
+    ) -> usize;
 }
 
 /// Load llama.cpp's backends, once per process: later calls do nothing, and
@@ -91,15 +169,23 @@ pub struct Model {
     pub device: String,
 }
 
-// SAFETY: a loaded llama_model has no thread affinity and `decide` only reads
+// SAFETY: a loaded llama_model has no thread affinity, and contexts only read
 // it. Not `Sync`: concurrent contexts over one model on the Vulkan backend are
 // unverified, so callers serialize (a Mutex or one thread).
 unsafe impl Send for Model {}
 
 impl Model {
     /// Load a GGUF. `gpu_layers` None offloads every layer when a GPU device
-    /// exists; Some(0) uses no GPU device at all.
-    pub fn load(gguf: &Path, gpu_layers: Option<u32>, threads: usize) -> Result<Self> {
+    /// exists, Some(n) that many. With Some(0), `keep_gpu_devices` false
+    /// hides the GPU devices from llama.cpp altogether; true leaves them
+    /// visible, as llama-cpp-2 does (CPU weights then stay in the GPU's
+    /// pinned host buffer, unrepacked, and large batch matmuls go to it).
+    pub fn load(
+        gguf: &Path,
+        gpu_layers: Option<u32>,
+        threads: usize,
+        keep_gpu_devices: bool,
+    ) -> Result<Self> {
         let gpu = gpu_device();
         let layers = match gpu_layers {
             None if gpu.is_some() => -1,
@@ -111,8 +197,10 @@ impl Model {
             _ => "CPU".into(),
         };
         let path = CString::new(gguf.as_os_str().as_encoded_bytes())?;
-        let raw = NonNull::new(unsafe { ln_model_load(path.as_ptr(), layers) })
-            .ok_or_else(|| anyhow!("load {}: llama.cpp could not load it", gguf.display()))?;
+        let raw = NonNull::new(unsafe {
+            ln_model_load(path.as_ptr(), layers, layers != 0 || keep_gpu_devices)
+        })
+        .ok_or_else(|| anyhow!("load {}: llama.cpp could not load it", gguf.display()))?;
         Ok(Self {
             raw,
             threads: i32::try_from(threads).unwrap_or(8),
@@ -122,20 +210,92 @@ impl Model {
 
     /// The GGUF's `general.architecture`.
     pub fn architecture(&self) -> Option<String> {
-        let mut arch = [0 as c_char; 64];
-        let found = unsafe {
-            llama_model_meta_val_str(
+        self.meta("general.architecture")
+    }
+
+    /// The GGUF metadata value at `key`, as text.
+    pub fn meta(&self, key: &str) -> Option<String> {
+        let key = CString::new(key).ok()?;
+        let raw = self.raw.as_ptr();
+        // snprintf's contract: the full length, whatever fits the buffer.
+        let len = unsafe { llama_model_meta_val_str(raw, key.as_ptr(), ptr::null_mut(), 0) };
+        let len = usize::try_from(len).ok()?;
+        let mut text = vec![0u8; len + 1];
+        unsafe {
+            llama_model_meta_val_str(raw, key.as_ptr(), text.as_mut_ptr().cast(), text.len())
+        };
+        text.truncate(len);
+        Some(String::from_utf8_lossy(&text).into_owned())
+    }
+
+    /// Tokens in the vocabulary (the length of a logits row).
+    pub fn n_vocab(&self) -> usize {
+        unsafe { llama_vocab_n_tokens(llama_model_get_vocab(self.raw.as_ptr())) as usize }
+    }
+
+    /// Width of the hidden states.
+    pub fn n_embd(&self) -> usize {
+        unsafe { llama_model_n_embd(self.raw.as_ptr()) as usize }
+    }
+
+    /// Width of an embeddings row (`n_embd` unless the graph ends in a head).
+    pub fn n_embd_out(&self) -> usize {
+        unsafe { llama_model_n_embd_out(self.raw.as_ptr()) as usize }
+    }
+
+    /// `text`'s token ids as llama-cpp-2's `str_to_token` gives them: special
+    /// tokens written in the text are parsed, a NUL is refused, and
+    /// `add_special` adds the BOS/EOS the vocabulary asks for (AddBos::Always).
+    pub fn tokenize(&self, text: &str, add_special: bool) -> Result<Vec<i32>> {
+        ensure!(!text.contains('\0'), "text holds a NUL byte");
+        let vocab = unsafe { llama_model_get_vocab(self.raw.as_ptr()) };
+        let len = i32::try_from(text.len())?;
+        let mut ids = vec![0; (text.len() / 2 + usize::from(add_special)).max(8)];
+        for _ in 0..2 {
+            // SAFETY: `ids` holds n_tokens_max entries; llama.cpp copies `text`.
+            let n = unsafe {
+                llama_tokenize(
+                    vocab,
+                    text.as_ptr().cast(),
+                    len,
+                    ids.as_mut_ptr(),
+                    i32::try_from(ids.len())?,
+                    add_special,
+                    true,
+                )
+            };
+            // A negative count is the size it needs (i32::MIN: too many).
+            match usize::try_from(n) {
+                Ok(n) => {
+                    ids.truncate(n);
+                    return Ok(ids);
+                }
+                Err(_) if n != i32::MIN => ids.resize(n.unsigned_abs() as usize, 0),
+                Err(_) => break,
+            }
+        }
+        bail!("llama.cpp could not tokenize {} bytes", text.len())
+    }
+
+    /// A context over this model, freed on drop.
+    pub fn new_context(&self, params: ContextParams) -> Result<Context<'_>> {
+        let raw = unsafe {
+            ln_context_new(
                 self.raw.as_ptr(),
-                c"general.architecture".as_ptr(),
-                arch.as_mut_ptr(),
-                arch.len(),
+                params.n_ctx,
+                params.n_batch,
+                params.n_ubatch,
+                params.n_seq_max,
+                params.threads,
+                params.embeddings,
+                params.pooling as i32,
+                params.flash_attention as i32,
+                params.kv_unified,
             )
-        } >= 0;
-        found.then(|| {
-            unsafe { CStr::from_ptr(arch.as_ptr()) }
-                .to_string_lossy()
-                .into_owned()
-        })
+        };
+        let raw = NonNull::new(raw)
+            .ok_or_else(|| anyhow!("llama.cpp could not create a context ({params:?})"))?;
+        Ok(Context { raw, model: self })
     }
 
     /// One forward over the prompt: `orders[i]` is token i's
@@ -171,5 +331,203 @@ impl Model {
 impl Drop for Model {
     fn drop(&mut self) {
         unsafe { llama_model_free(self.raw.as_ptr()) }
+    }
+}
+
+/// llama.h's `llama_pooling_type`: how an embeddings context pools a
+/// sequence's rows (`None` keeps one row per token).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pooling {
+    /// The GGUF's own.
+    Unspecified = -1,
+    None = 0,
+    Mean = 1,
+    Cls = 2,
+    Last = 3,
+    Rank = 4,
+}
+
+/// llama.h's `llama_flash_attn_type`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlashAttention {
+    /// On when the device supports it.
+    Auto = -1,
+    Disabled = 0,
+    Enabled = 1,
+}
+
+/// The `llama_context_params` a [`Context`] is created with; the fields not
+/// here keep llama.cpp's defaults. `Default` is llama.cpp's at b11379.
+#[derive(Clone, Copy, Debug)]
+pub struct ContextParams {
+    /// The window in tokens, shared by the sequences (0: the model's own).
+    pub n_ctx: u32,
+    /// The most tokens one decode takes.
+    pub n_batch: u32,
+    /// Tokens per micro-batch (at most n_batch). An encode, or a context
+    /// without memory or causal attention, takes one micro-batch at most.
+    pub n_ubatch: u32,
+    /// Sequences: ids 0..n_seq_max.
+    pub n_seq_max: u32,
+    pub threads: i32,
+    /// Keep embeddings rather than logits: native/llama-output-reserve.patch
+    /// leaves such a context without logits.
+    pub embeddings: bool,
+    pub pooling: Pooling,
+    pub flash_attention: FlashAttention,
+    /// One KV pool for every sequence instead of n_ctx / n_seq_max each.
+    pub kv_unified: bool,
+}
+
+impl Default for ContextParams {
+    fn default() -> Self {
+        Self {
+            n_ctx: 512,
+            n_batch: 2048,
+            n_ubatch: 512,
+            n_seq_max: 1,
+            threads: 4,
+            embeddings: false,
+            pooling: Pooling::Unspecified,
+            flash_attention: FlashAttention::Auto,
+            kv_unified: false,
+        }
+    }
+}
+
+/// Tokens for one [`Context::decode`] or [`Context::encode`].
+#[derive(Default)]
+pub struct Batch {
+    tokens: Vec<i32>,
+    pos: Vec<i32>,
+    seq: Vec<i32>,
+    output: Vec<i8>,
+}
+
+impl Batch {
+    /// `token` at position `pos` of sequence `seq`. `output` keeps its logits
+    /// (or embeddings) for reading at this row's index in the batch.
+    pub fn add(&mut self, token: i32, pos: i32, seq: i32, output: bool) {
+        self.tokens.push(token);
+        self.pos.push(pos);
+        self.seq.push(seq);
+        self.output.push(i8::from(output));
+    }
+}
+
+/// A sequence's memory, from [`Context::state_seq_get`]: only llama.cpp
+/// writes these bytes.
+#[derive(Clone)]
+pub struct SeqState(Vec<u8>);
+
+/// A llama.cpp context over a [`Model`]: its memory (KV cache, recurrent
+/// state) and the outputs of its last pass. Freed on drop; not `Send`.
+pub struct Context<'m> {
+    raw: NonNull<RawContext>,
+    model: &'m Model,
+}
+
+impl Context<'_> {
+    /// The window in tokens (llama.cpp pads the one asked for).
+    pub fn n_ctx(&self) -> u32 {
+        unsafe { llama_n_ctx(self.raw.as_ptr()) }
+    }
+
+    pub fn n_batch(&self) -> u32 {
+        unsafe { llama_n_batch(self.raw.as_ptr()) }
+    }
+
+    /// Run `batch` through the model into the sequences' memory. Errs when
+    /// llama.cpp refuses the batch or fails the pass; a bad batch never
+    /// aborts the process (`ln_process`).
+    pub fn decode(&mut self, batch: &Batch) -> Result<()> {
+        self.process(batch, false)
+    }
+
+    /// Run `batch` as one non-causal micro-batch (encoders, decision heads).
+    pub fn encode(&mut self, batch: &Batch) -> Result<()> {
+        self.process(batch, true)
+    }
+
+    fn process(&mut self, batch: &Batch, encode: bool) -> Result<()> {
+        // SAFETY: the four vectors hold one entry per token.
+        let status = unsafe {
+            ln_process(
+                self.raw.as_ptr(),
+                encode,
+                batch.tokens.as_ptr(),
+                batch.pos.as_ptr(),
+                batch.seq.as_ptr(),
+                batch.output.as_ptr(),
+                i32::try_from(batch.tokens.len())?,
+            )
+        };
+        ensure!(status == 0, "llama.cpp: ln_process returned {status}");
+        Ok(())
+    }
+
+    /// The logits of batch row `i` of the last pass (negative: from the last
+    /// output back), `n_vocab` of them; None unless that row was an output.
+    pub fn logits_ith(&self, i: i32) -> Option<&[f32]> {
+        let row = unsafe { llama_get_logits_ith(self.raw.as_ptr(), i) };
+        (!row.is_null()).then(|| unsafe { slice::from_raw_parts(row, self.model.n_vocab()) })
+    }
+
+    /// The embeddings of batch row `i` of the last pass, `n_embd_out` of them;
+    /// None unless that row was an output of an embeddings context.
+    pub fn embeddings_ith(&self, i: i32) -> Option<&[f32]> {
+        let row = unsafe { llama_get_embeddings_ith(self.raw.as_ptr(), i) };
+        (!row.is_null()).then(|| unsafe { slice::from_raw_parts(row, self.model.n_embd_out()) })
+    }
+
+    /// Empty every sequence's memory.
+    pub fn clear_kv_cache(&mut self) {
+        unsafe { llama_memory_clear(llama_get_memory(self.raw.as_ptr()), true) }
+    }
+
+    /// Snapshot sequence `seq`'s memory (host copy).
+    pub fn state_seq_get(&self, seq: i32) -> Result<SeqState> {
+        self.check_seq(seq)?;
+        let raw = self.raw.as_ptr();
+        let size = unsafe { llama_state_seq_get_size_ext(raw, seq, 0) };
+        let mut bytes = vec![0u8; size];
+        let written =
+            unsafe { llama_state_seq_get_data_ext(raw, bytes.as_mut_ptr(), size, seq, 0) };
+        ensure!(
+            size > 0 && written == size,
+            "llama.cpp: state of sequence {seq}: {written} of {size} bytes"
+        );
+        Ok(SeqState(bytes))
+    }
+
+    /// Restore `state` into sequence `seq` (any sequence of a context shaped
+    /// like the one it came from).
+    pub fn state_seq_set(&mut self, state: &SeqState, seq: i32) -> Result<()> {
+        self.check_seq(seq)?;
+        let read = unsafe {
+            llama_state_seq_set_data_ext(self.raw.as_ptr(), state.0.as_ptr(), state.0.len(), seq, 0)
+        };
+        ensure!(
+            read == state.0.len(),
+            "llama.cpp: restoring sequence {seq} read {read} of {} bytes",
+            state.0.len()
+        );
+        Ok(())
+    }
+
+    /// llama.cpp asserts (aborts) on a sequence outside its memory.
+    fn check_seq(&self, seq: i32) -> Result<()> {
+        let n_seq_max = unsafe { llama_n_seq_max(self.raw.as_ptr()) };
+        ensure!(
+            u32::try_from(seq).is_ok_and(|seq| seq < n_seq_max),
+            "sequence {seq} outside 0..{n_seq_max}"
+        );
+        Ok(())
+    }
+}
+
+impl Drop for Context<'_> {
+    fn drop(&mut self) {
+        unsafe { llama_free(self.raw.as_ptr()) }
     }
 }

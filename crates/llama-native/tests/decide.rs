@@ -7,7 +7,7 @@ use std::path::Path;
 fn decides_finite_deterministic_scores() {
     let gguf = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../judge-clef/tests/fixtures/tiny/model.gguf");
-    let model = Model::load(&gguf, Some(0), 2).expect("tiny GGUF loads");
+    let model = Model::load(&gguf, Some(0), 2, false).expect("tiny GGUF loads");
     assert_eq!(model.device, "CPU");
     assert_eq!(model.architecture().as_deref(), Some("clef"));
     // A choice question (order 2) and its three options (order 4), as bytes.

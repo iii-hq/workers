@@ -56,7 +56,7 @@ impl Engine {
         // and aborts the process. 10-node pieces cost at most 0.5% (RX 6900
         // XT). An operator's value wins.
         iii_llama_native::init_backends(Some(10));
-        let model = Model::load(gguf, options.gpu_layers, options.threads)?;
+        let model = Model::load(gguf, options.gpu_layers, options.threads, false)?;
         // A qwen35 GGUF of the backbone loads too, without the decision head.
         let arch = model.architecture();
         ensure!(
