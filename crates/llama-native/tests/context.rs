@@ -175,11 +175,22 @@ fn clear_empties_memory_and_bad_batches_err() {
     assert!(ctx.decode(&long).is_err(), "more than n_batch");
     // An encode is one micro-batch: the same 65 tokens past n_ubatch.
     assert!(ctx.encode(&long).is_err());
+    assert!(
+        ctx.encode(&one(65, 0, 0)).is_err(),
+        "an encode needs a context without memory"
+    );
     // The context is still usable.
     decode(&mut ctx, &[(&ids, 0, 0)]).unwrap();
     assert!(model
         .new_context(ContextParams {
             threads: 0,
+            ..Default::default()
+        })
+        .is_err());
+    assert!(model
+        .new_context(ContextParams {
+            n_ctx: 32,
+            n_seq_max: 64,
             ..Default::default()
         })
         .is_err());
@@ -227,7 +238,7 @@ fn encodes_rows_to_token_embeddings() {
     assert!(encoded.iter().flatten().all(|v| v.is_finite()));
     // An embeddings context keeps no logits.
     assert!(ctx.logits_ith(0).is_none());
-    // Without memory, a decode is the same encode (judge-laya decodes).
+    // Without memory, a decode is the same encode.
     ctx.decode(&batch).unwrap();
     assert_eq!(rows(&ctx, a.len() + b.len()), encoded);
     // A row's states do not depend on the other row in the batch.

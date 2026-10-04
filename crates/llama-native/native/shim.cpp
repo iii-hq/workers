@@ -5,6 +5,7 @@
 #include "llama.h"
 #include "llama-ext.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -76,12 +77,15 @@ extern "C" llama_model * ln_model_load(const char * path, int32_t gpu_layers, bo
 }
 
 // A context over `model` (llama_context_params is passed by value): the
-// fields below, the rest at their defaults. pooling_type and flash_attn_type
-// are llama.h's enum values. Null when llama.cpp refuses the parameters.
+// fields below, the rest at their defaults. pooling_type is llama.h's enum
+// value. Null when llama.cpp refuses the parameters.
 extern "C" llama_context * ln_context_new(llama_model * model, uint32_t n_ctx, uint32_t n_batch, uint32_t n_ubatch,
                                           uint32_t n_seq_max, int32_t n_threads, bool embeddings,
-                                          int32_t pooling_type, int32_t flash_attn_type, bool kv_unified) {
-    if (n_threads < 1) {
+                                          int32_t pooling_type, bool kv_unified) {
+    // llama.cpp asserts (aborts) when the sequences outnumber the output rows
+    // it reserves: n_batch, clamped to n_ctx for a causal model.
+    const uint32_t n_ctx_eff = n_ctx ? n_ctx : (uint32_t) llama_model_n_ctx_train(model);
+    if (n_threads < 1 || std::max(1u, n_seq_max) > std::min(n_batch, n_ctx_eff)) {
         return nullptr;
     }
     llama_context_params params = llama_context_default_params();
@@ -92,7 +96,6 @@ extern "C" llama_context * ln_context_new(llama_model * model, uint32_t n_ctx, u
     params.n_threads       = params.n_threads_batch = n_threads;
     params.embeddings      = embeddings;
     params.pooling_type    = (enum llama_pooling_type) pooling_type;
-    params.flash_attn_type = (enum llama_flash_attn_type) flash_attn_type;
     params.kv_unified      = kv_unified;
     return llama_init_from_model(model, params);
 }
@@ -101,15 +104,18 @@ extern "C" llama_context * ln_context_new(llama_model * model, uint32_t n_ctx, u
 // position pos[i] of sequence seq[i], its logits or embeddings kept when
 // output[i] is not 0. Returns -1001 for what llama.cpp would abort the process
 // on: no tokens, more than n_batch (n_ubatch when the pass is one micro-batch:
-// an encode, or a context without memory or causal attention), a sequence
-// outside [0, n_seq_max) or a negative position. -1006 when the pass throws
-// (e.g. a Vulkan allocation), else llama.cpp's own code: 0 done, 1 no memory
-// slot, 2 aborted, -1 a batch it refuses (a token outside the vocabulary,
-// positions that do not continue their sequence), -2/-3 compute failures.
+// an encode, or a context without memory or causal attention), an encode on a
+// context with memory (llama.cpp's encoder graph gets no memory context), a
+// sequence outside [0, n_seq_max) or a negative position. -1006 when the pass
+// throws (e.g. a Vulkan allocation), else llama.cpp's own code: 0 done, 1 no
+// memory slot, 2 aborted, -1 a batch it refuses (a token outside the
+// vocabulary, positions that do not continue their sequence), -2/-3 compute
+// failures.
 extern "C" int32_t ln_process(llama_context * ctx, bool encode, const int32_t * tokens, const int32_t * pos,
                               const int32_t * seq, const int8_t * output, int32_t n_tokens) {
     const bool one_ubatch = encode || !llama_get_memory(ctx) || !llama_get_causal_attn(ctx);
-    if (n_tokens < 1 || (uint32_t) n_tokens > (one_ubatch ? llama_n_ubatch(ctx) : llama_n_batch(ctx))) {
+    if ((encode && llama_get_memory(ctx)) || n_tokens < 1 ||
+        (uint32_t) n_tokens > (one_ubatch ? llama_n_ubatch(ctx) : llama_n_batch(ctx))) {
         return -1001;
     }
     const llama_seq_id n_seq_max = (llama_seq_id) llama_n_seq_max(ctx);

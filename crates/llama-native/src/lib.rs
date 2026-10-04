@@ -62,7 +62,6 @@ extern "C" {
         n_threads: i32,
         embeddings: bool,
         pooling_type: i32,
-        flash_attn_type: i32,
         kv_unified: bool,
     ) -> *mut RawContext;
     fn ln_process(
@@ -82,7 +81,6 @@ extern "C" {
         buf: *mut c_char,
         buf_size: usize,
     ) -> i32;
-    fn llama_model_n_embd(model: *const RawModel) -> i32;
     fn llama_model_n_embd_out(model: *const RawModel) -> i32;
     fn llama_model_get_vocab(model: *const RawModel) -> *const RawVocab;
     fn llama_vocab_n_tokens(vocab: *const RawVocab) -> i32;
@@ -233,12 +231,7 @@ impl Model {
         unsafe { llama_vocab_n_tokens(llama_model_get_vocab(self.raw.as_ptr())) as usize }
     }
 
-    /// Width of the hidden states.
-    pub fn n_embd(&self) -> usize {
-        unsafe { llama_model_n_embd(self.raw.as_ptr()) as usize }
-    }
-
-    /// Width of an embeddings row (`n_embd` unless the graph ends in a head).
+    /// Width of an embeddings row (the hidden width unless the graph ends in a head).
     pub fn n_embd_out(&self) -> usize {
         unsafe { llama_model_n_embd_out(self.raw.as_ptr()) as usize }
     }
@@ -289,7 +282,6 @@ impl Model {
                 params.threads,
                 params.embeddings,
                 params.pooling as i32,
-                params.flash_attention as i32,
                 params.kv_unified,
             )
         };
@@ -347,15 +339,6 @@ pub enum Pooling {
     Rank = 4,
 }
 
-/// llama.h's `llama_flash_attn_type`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FlashAttention {
-    /// On when the device supports it.
-    Auto = -1,
-    Disabled = 0,
-    Enabled = 1,
-}
-
 /// The `llama_context_params` a [`Context`] is created with; the fields not
 /// here keep llama.cpp's defaults. `Default` is llama.cpp's at b11379.
 #[derive(Clone, Copy, Debug)]
@@ -374,7 +357,6 @@ pub struct ContextParams {
     /// leaves such a context without logits.
     pub embeddings: bool,
     pub pooling: Pooling,
-    pub flash_attention: FlashAttention,
     /// One KV pool for every sequence instead of n_ctx / n_seq_max each.
     pub kv_unified: bool,
 }
@@ -389,7 +371,6 @@ impl Default for ContextParams {
             threads: 4,
             embeddings: false,
             pooling: Pooling::Unspecified,
-            flash_attention: FlashAttention::Auto,
             kv_unified: false,
         }
     }
@@ -445,6 +426,7 @@ impl Context<'_> {
     }
 
     /// Run `batch` as one non-causal micro-batch (encoders, decision heads).
+    /// Errs on a context with memory (KV cache): decode there.
     pub fn encode(&mut self, batch: &Batch) -> Result<()> {
         self.process(batch, true)
     }

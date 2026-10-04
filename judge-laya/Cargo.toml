@@ -23,7 +23,8 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 half = "2"
 memmap2 = "0.9"
 safetensors = "0.8"
-# Only the model lifecycle (ModelSlot); llama.cpp comes from llama-native.
+# The engine thread (Runtime) and the model lifecycle (ModelSlot); llama.cpp
+# comes from llama-native.
 iii-llama-runtime = { path = "../crates/llama-runtime" }
 iii-llama-native = { path = "../crates/llama-native" }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }

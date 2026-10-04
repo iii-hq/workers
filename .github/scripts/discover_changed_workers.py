@@ -108,6 +108,16 @@ PROVIDER_CONTRACT_INFRA_PATHS = {
 # the matrix but not source_changed (no version-bump gate on the PR author).
 CRATES_DIR = "crates"
 
+# crates/<name> suites that load other workers' test fixtures: a change to
+# one of these paths also runs the crate's own suite.
+CRATE_FIXTURE_PREFIXES = {
+    "llama-native": (
+        "judge-clef/tests/fixtures/",
+        "judge-decider/tests/fixtures/",
+        "judge-laya/tests/fixtures/",
+    ),
+}
+
 # Docs-only files inside a crate dir. Everything else — including Cargo.toml
 # and Cargo.lock, which change what dependents build against — counts as a
 # source change.
@@ -318,8 +328,14 @@ def main(argv: list[str] | None = None) -> int:
         p.error(f"unknown --force-worker: {', '.join(unknown_forced)}")
 
     changed_crates = sorted(
-        c for c, rels in touched_crates.items()
-        if any(not is_crate_metadata(rel) for rel in rels)
+        {
+            c for c, rels in touched_crates.items()
+            if any(not is_crate_metadata(rel) for rel in rels)
+        }
+        | {
+            c for c, prefixes in CRATE_FIXTURE_PREFIXES.items()
+            if any(f.startswith(prefixes) for f in files)
+        }
     )
 
     # Crate dependents join the matrix exactly like --force-worker picks:

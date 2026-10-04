@@ -5,8 +5,8 @@
 //! does with the model is the provider's business; `scorer` is the job of the
 //! providers that read option labels (judge-decider, judge-semif), and
 //! `lifecycle` loads a provider's model on first use and releases it when idle
-//! (every local provider; judge-laya and judge-clef drive `iii_llama_native`
-//! on their own thread).
+//! (every local provider; judge-clef drives `iii_llama_native` on its own
+//! threads).
 pub use iii_llama_native;
 pub mod lifecycle;
 pub mod scorer;

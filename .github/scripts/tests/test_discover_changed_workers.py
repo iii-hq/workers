@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
+
+import pytest
 
 
 SCRIPTS = Path(__file__).resolve().parents[1]
@@ -46,3 +49,15 @@ def test_crate_dependents_follow_crates_that_depend_on_the_crate(tmp_path: Path)
     workers = {"direct", "through", "other"}
     assert discover.crate_dependents(tmp_path, "native", workers) == ["direct", "through"]
     assert discover.crate_dependents(tmp_path, "runtime", workers) == ["through"]
+
+
+def test_a_fixture_another_crate_loads_runs_that_crate(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(SCRIPTS.parents[1])
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(
+        discover, "changed_files", lambda base, head: ["judge-laya/tests/fixtures/tiny.reference.gguf"]
+    )
+    assert discover.main(["--base", "main"]) == 0
+    assert "llama-native" in json.loads(capsys.readouterr().out)["crates"]
