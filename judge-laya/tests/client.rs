@@ -198,7 +198,6 @@ async fn routing_follows_explicit_model_then_workflow_then_state_language() {
     let routed = client.with_routing(judge_laya::Routing {
         auto_route: true,
         auto_task_detection: true,
-        shortlist_k: None,
     });
     let noul = json!({"q": {"type": "noul", "instructions": "Refund?"}});
     let portuguese = "O cliente diz que a fatura foi cobrada duas vezes e pede o reembolso até sexta, não dá para esperar.";
@@ -253,65 +252,4 @@ async fn routing_follows_explicit_model_then_workflow_then_state_language() {
     assert_eq!(model, "laya");
     assert_eq!(results.len(), 2);
     assert_eq!((stats.attempts, stats.requests, stats.questions), (2, 2, 2));
-}
-
-#[tokio::test]
-async fn shortlist_keeps_k_options_and_answers_zero_for_the_rest() {
-    let labels = [
-        "billing",
-        "sales",
-        "technical",
-        "legal",
-        "shipping",
-        "returns",
-        "privacy",
-        "other",
-    ];
-    let criteria: serde_json::Map<String, Value> = labels
-        .iter()
-        .map(|label| (label.to_string(), json!(format!("questions about {label}"))))
-        .collect();
-    let question =
-        json!({"dept": {"type": "choice", "instructions": "Which team?", "criteria": criteria}});
-    let build = || {
-        request(
-            json!({"evaluations": [{"id": "t", "state": "Billed twice, refund now.", "questions": question}]}),
-        )
-    };
-    let shortlisted = tiny_client().with_routing(judge_laya::Routing {
-        shortlist_k: Some(3),
-        ..Default::default()
-    });
-    let EvaluateResponse::Ok { results, .. } = ok(shortlisted.evaluate(build()).await) else {
-        unreachable!()
-    };
-    let Answer::Choice {
-        choice,
-        probabilities,
-        ..
-    } = &results["t"].answers["dept"]
-    else {
-        panic!("choice answer")
-    };
-    assert_eq!(probabilities.len(), labels.len());
-    let kept: Vec<_> = probabilities
-        .iter()
-        .filter(|(_, p)| **p > 0.0)
-        .map(|(k, _)| k)
-        .collect();
-    assert_eq!(kept.len(), 3, "{probabilities:?}");
-    assert!(kept.contains(&choice));
-    assert!((probabilities.values().sum::<f64>() - 1.0).abs() < 1e-6);
-    // k at or above the option count leaves the question untouched.
-    let relaxed = tiny_client().with_routing(judge_laya::Routing {
-        shortlist_k: Some(8),
-        ..Default::default()
-    });
-    let EvaluateResponse::Ok { results, .. } = ok(relaxed.evaluate(build()).await) else {
-        unreachable!()
-    };
-    let Answer::Choice { probabilities, .. } = &results["t"].answers["dept"] else {
-        panic!("choice answer")
-    };
-    assert!(probabilities.values().all(|p| *p > 0.0));
 }

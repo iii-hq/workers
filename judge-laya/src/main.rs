@@ -21,9 +21,10 @@ struct Cli {
     /// rl_agent_config.json, tokenizer.json) instead of the Hugging Face Hub.
     #[arg(long, env = "III_LAYA_CHECKPOINT_DIR")]
     checkpoint_dir: Option<PathBuf>,
-    /// Use a local encoder GGUF for the default model instead of the Hub.
-    #[arg(long, env = "III_LAYA_ENCODER_GGUF")]
-    encoder_gguf: Option<PathBuf>,
+    /// Use a local GGUF (encoder and decision head, `src/gguf.rs`) for the
+    /// default model instead of converting the Hub checkpoint.
+    #[arg(long, env = "III_LAYA_GGUF")]
+    gguf: Option<PathBuf>,
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -63,10 +64,6 @@ async fn main() -> anyhow::Result<()> {
         gpu_layers: initial.gpu_layers,
         batch_rows: initial.batch_questions,
     };
-    // candle (the head) reads RAYON_NUM_THREADS per call; an operator export wins.
-    if std::env::var_os("RAYON_NUM_THREADS").is_none() {
-        std::env::set_var("RAYON_NUM_THREADS", initial.threads.to_string());
-    }
     let config = configuration::new_cell(initial);
     #[cfg(feature = "console-ui")]
     register::register_console_ui(&iii);
@@ -78,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         revision,
         preload,
         checkpoint_dir: cli.checkpoint_dir,
-        encoder_gguf: cli.encoder_gguf,
+        gguf: cli.gguf,
     };
     let slot = ModelSlot::new(move || load(&checkpoints, options));
     register(&iii, config, slot.clone());
@@ -105,7 +102,7 @@ struct Checkpoints {
     revision: Option<String>,
     preload: Vec<String>,
     checkpoint_dir: Option<PathBuf>,
-    encoder_gguf: Option<PathBuf>,
+    gguf: Option<PathBuf>,
 }
 
 /// Fetch (unless local) and load every configured checkpoint.
@@ -115,7 +112,7 @@ fn load(source: &Checkpoints, options: engine::Options) -> anyhow::Result<LayaCl
         revision,
         preload,
         checkpoint_dir,
-        encoder_gguf,
+        gguf,
     } = source.clone();
     let mut checkpoints = Vec::new();
     for (i, name) in std::iter::once(&model).chain(&preload).enumerate() {
@@ -134,7 +131,7 @@ fn load(source: &Checkpoints, options: engine::Options) -> anyhow::Result<LayaCl
                 download::fetch(
                     name,
                     revision.as_deref(),
-                    encoder_gguf.as_deref().filter(|_| i == 0),
+                    gguf.as_deref().filter(|_| i == 0),
                 )?
             }
         };

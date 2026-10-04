@@ -6,7 +6,7 @@ version = "0.2.1"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
-description = "Self-contained laya provider for the judge hub: ModernBERT + typed decision head via candle."
+description = "Self-contained laya provider for the judge hub: ModernBERT + typed decision head in llama.cpp."
 
 [features]
 default = ["console-ui"]
@@ -20,12 +20,12 @@ iii-console-ui = { path = "../crates/console-ui", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-candle-core = "0.11"
-candle-nn = "0.11"
 half = "2"
 memmap2 = "0.9"
 safetensors = "0.8"
-iii-llama-runtime = { path = "../crates/llama-runtime" }
+# Only the model lifecycle (ModelSlot); llama.cpp comes from llama-native.
+iii-llama-runtime = { path = "../crates/llama-runtime", default-features = false }
+iii-llama-native = { path = "../crates/llama-native" }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -39,6 +39,7 @@ futures-util = "0.3"
 tempfile = "3"
 tokio-tungstenite = "0.28"
 
-# The model runs here: keep full optimization, no size-first profile.
+# Tokenization and the checkpoint conversion run in Rust (llama.cpp builds
+# with cmake's Release flags): keep full optimization.
 [profile.release]
 opt-level = 3
