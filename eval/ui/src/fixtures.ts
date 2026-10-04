@@ -1,5 +1,5 @@
-// Test fixtures shared by the unit tests: the limits the monitor reports today.
-import type { MonitorLimits } from './types'
+// Test fixtures shared by the unit tests: the limits and the (empty) cost the monitor reports today.
+import type { MonitorCost, MonitorLimits } from './types'
 
 export const LIMITS: MonitorLimits = {
   analysis_budget_ms: 1_800_000,
@@ -13,8 +13,14 @@ export const LIMITS: MonitorLimits = {
   investigation_code_max_total_tokens: 800_000,
   queue_concurrency: 8,
   max_active_analyses: 500,
-  low_confidence: 0.8,
-  audit_sample_percent: 5,
   retention_days: 30,
   retention_max_terminal: 1000,
+}
+
+export const COST: MonitorCost = {
+  since: 1_759_449_600_000,
+  today_usd: 0,
+  today_unknown: 0,
+  capped: false,
+  per_analysis: { count: 0, unknown: 0 },
 }

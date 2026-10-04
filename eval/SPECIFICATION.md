@@ -108,9 +108,9 @@ O acesso a Jev deve reutilizar o hub `judge` e o provider `judge-typesafe` exist
 
 ### 5.3 Investigação com a LLM
 
-A LLM deve ser acionada para sinais conhecidos relevantes, casos indicados pela triagem e uma amostra de sessões sem sinais conhecidos. Essa amostra permite descobrir problemas que os detectores ainda não reconhecem.
+A LLM é acionada se, e somente se, a triagem de Jev responder `needs_investigation`, em análises automáticas e manuais. Um sinal determinístico, evidência insuficiente, confidence baixa, cobertura insuficiente, um pedido manual ou uma amostra de sessões sem sinais não a acionam por si sós; os sinais continuam no resultado.
 
-A seleção da amostra deve ser rastreável. Sua taxa, os limiares de triagem e os limites de análise serão definidos no guia técnico e avaliados com dados reais. Uma classificação de comportamento esperado não deve excluir definitivamente uma sessão de auditoria.
+O motivo do roteamento deve ficar registrado na análise. Os limites de análise serão definidos no guia técnico e avaliados com dados reais.
 
 A LLM recebe um resumo das evidências e usa o modelo escolhido pelo usuário. Uma mudança posterior dessa configuração não deve alterar silenciosamente a identidade de uma análise já iniciada.
 
@@ -216,7 +216,7 @@ Texto da sessão, respostas de ferramentas e avisos são dados de análise. Não
 ## 10. Critérios de aceite
 
 - A observação é inativa até que o usuário configure e ative o monitor; a LLM utilizada corresponde à seleção registrada.
-- Uma sessão concluída, com erro ou cancelada pode gerar análise automática; sessões saudáveis também participam da amostragem.
+- Uma sessão concluída, com erro ou cancelada pode gerar análise automática; só as que a triagem marca como `needs_investigation` chegam à LLM.
 - Sessões do próprio monitor não produzem novas análises automáticas.
 - Eventos duplicados e retomadas não duplicam a análise de uma mesma ocorrência.
 - Coleta parcial, turno alterado e provider indisponível ficam explícitos no resultado.
@@ -230,7 +230,7 @@ Texto da sessão, respostas de ferramentas e avisos são dados de análise. Não
 - O consumo da análise fica separado das métricas da tarefa observada.
 - A interface substitui avaliações de prompt pelo monitor e mantém a comparação objetiva de sessões.
 
-A qualidade do monitor deve ser avaliada com um conjunto de sessões revisadas: problemas detectados, falsos alertas, problemas perdidos na amostra auditada, utilidade das sugestões e custo por análise. Isso mede o monitor; a campanha antes/depois mede a melhoria proposta no Harness.
+A qualidade do monitor deve ser avaliada com um conjunto de sessões revisadas: problemas detectados, falsos alertas, problemas que a triagem deixou de investigar, utilidade das sugestões e custo por análise. Isso mede o monitor; a campanha antes/depois mede a melhoria proposta no Harness.
 
 ## 11. Guia de implementação
 

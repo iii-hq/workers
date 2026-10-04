@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
 import { Fragment, useId } from 'react'
 import { formatCost, formatTokens, totalTokens } from '../../../model'
 import type { AnalysisAssets, AnalysisRecord, MonitorUsage, Snapshot } from '../../../types'
+import { OtherAnalyses } from './OtherAnalyses'
 import { count, formatCostShort, pathSegments, plural, sourceLine } from './present'
 
 function Prop({ label, children, full }: { label: string; children: ReactNode; full?: boolean }) {
@@ -118,20 +119,35 @@ function Row({ label, value, sub }: { label: string; value: ReactNode; sub?: str
 
 /** `1 call · 1,204 tokens` — only what is known. */
 function judgeSub(usage: MonitorUsage): string {
-  if (usage.judge_calls === 0) return 'not called'
+  if (usage.judge_calls === 0) return 'no call made'
   const tokens = totalTokens(usage).judge
   return `${plural(usage.judge_calls, 'call')} · ${formatTokens(tokens)} tokens${usage.judge_usage_complete ? '' : ' (incomplete)'}`
 }
 
 function llmSub(usage: MonitorUsage, ran: boolean): string {
   const { llm } = totalTokens(usage)
-  if (llm === undefined) return ran ? 'tokens not reported' : 'not run'
+  if (llm === undefined) return ran ? 'tokens not reported' : 'no turn ran'
   return `${formatTokens(llm)} tokens`
 }
 
+/**
+ * What the monitor spent on this analysis. Jev reports no cost, so a total that follows a triage call is a lower
+ * bound and is written `≥`; nothing reported reads "Not reported", never zero.
+ */
 function CostTile({ record, ran }: { record: AnalysisRecord; ran: boolean }) {
   const titleId = useId()
   const { usage } = record
+  const known = usage.llm_cost_usd !== undefined
+  const partial = known && usage.judge_calls > 0
+  const tokens = totalTokens(usage).llm
+  let foot = 'Counted apart from the task.'
+  if (partial) foot = 'Partial: the total counts only what providers reported.'
+  else if (!known) {
+    foot =
+      tokens === undefined
+        ? 'No provider reported usage for this analysis.'
+        : 'The provider reported tokens but no cost.'
+  }
   return (
     <section aria-labelledby={titleId} className="eval-ui-ad-tile">
       <div className="eval-ui-ad-tile-head">
@@ -139,23 +155,18 @@ function CostTile({ record, ran }: { record: AnalysisRecord; ran: boolean }) {
           Monitor cost
         </h2>
         <span className="eval-ui-ad-mono eval-ui-ad-value">
-          {usage.llm_cost_usd === undefined ? '—' : formatCost(usage.llm_cost_usd)}
+          {known ? `${partial ? '≥ ' : ''}${formatCost(usage.llm_cost_usd)}` : 'Not reported'}
         </span>
       </div>
       <Rows>
-        <Row label="Triage · Jev" value="cost not reported" sub={judgeSub(usage)} />
+        <Row label="Triage · Jev" value="Not reported" sub={judgeSub(usage)} />
         <Row
           label="Investigation · LLM"
-          value={usage.llm_cost_usd === undefined && !ran ? '—' : formatCost(usage.llm_cost_usd)}
+          value={known ? formatCost(usage.llm_cost_usd) : ran ? 'Not reported' : '—'}
           sub={llmSub(usage, ran)}
         />
       </Rows>
-      <p className="eval-ui-ad-quiet eval-ui-ad-foot">
-        Counted apart from the task.
-        {usage.judge_calls > 0 && usage.llm_cost_usd !== undefined
-          ? " Jev doesn't report cost, so the total above is the investigation only."
-          : ''}
-      </p>
+      <p className="eval-ui-ad-quiet eval-ui-ad-foot">{foot}</p>
     </section>
   )
 }
@@ -195,15 +206,34 @@ export function Rail({
   record,
   assets,
   openInvestigation,
+  turn,
+  now,
+  comparing,
+  onSelect,
+  onCompare,
 }: {
   record: AnalysisRecord
   assets: AnalysisAssets
   openInvestigation?: () => void
+  /** Every analysis of the observed turn (this one included), or `null` until they are read. */
+  turn: AnalysisRecord[] | null
+  now: number
+  comparing: string | null
+  onSelect: (evaluationId: string) => void
+  onCompare: (evaluationId: string) => void
 }) {
   const ran = Boolean(record.analyst || assets.investigation)
   return (
     <aside aria-label="Analysis properties" className="eval-ui-ad-rail">
       <Properties record={record} assets={assets} openInvestigation={openInvestigation} />
+      <OtherAnalyses
+        open={record}
+        rows={turn}
+        now={now}
+        comparing={comparing}
+        onSelect={onSelect}
+        onCompare={onCompare}
+      />
       <CostTile record={record} ran={ran} />
       {assets.snapshot ? <MetricsTile snapshot={assets.snapshot} /> : null}
     </aside>

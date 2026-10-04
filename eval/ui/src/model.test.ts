@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  briefMarkdown,
   entryLabel,
   formatCost,
+  formatStamp,
   formatTokens,
   matchesFilter,
   monitorSummary,
@@ -11,7 +13,7 @@ import {
   statusPresentation,
   suggestionsUsing,
 } from './model'
-import type { AnalysisRecord, Diagnostic, Snapshot } from './types'
+import type { AnalysisRecord, Diagnostic, Snapshot, Suggestion } from './types'
 
 const T0 = Date.UTC(2026, 9, 2, 19, 24, 0)
 
@@ -80,8 +82,9 @@ describe('row detail', () => {
     expect(rowDetail(record({ status: 'collecting', pending_reason: 'descendant sessions are still running' }))).toBe(
       'children running',
     )
+    // What routed an analysis is the detail's to say; a row names the signals.
     expect(rowDetail(record({ status: 'completed', routing: { investigate: true, reasons: ['audit_sample'] } }))).toBe(
-      'audit sample',
+      'no signals',
     )
     expect(
       rowDetail(
@@ -234,5 +237,77 @@ describe('formatting', () => {
     })
     expect(markdown).toContain('Scenario: new case needed')
     expect(markdown).toContain('- schedule once')
+  })
+})
+
+describe('briefMarkdown', () => {
+  const suggestion: Suggestion = {
+    title: 'Scope the notice',
+    observation: 'The model called engine::functions::info again.',
+    hypothesis: 'A broad notice prompts a new lookup.',
+    harness_component: 'Model notices',
+    proposed_change: 'Emit the notice only when a function in context changes.',
+    expected_effect: 'Fewer repeated lookups.',
+    evidence: [{ session_id: 's', entry_id: 'e_t_1_fc_02' }],
+    code_refs: [
+      { path: 'harness/src/notice.rs', line_from: 120, line_to: 148 },
+      { path: 'harness/src/a.rs', line_from: 9, line_to: 9 },
+    ],
+    limitations: '',
+    validation: {
+      scenario_id: 'tool_contract_recovery',
+      reproduction: 'r',
+      invariants: ['schedule once'],
+      primary_metric: 'lookups per run',
+      expectation: 'fewer',
+      non_regression_controls: ['recovery still happens'],
+    },
+  }
+  const input = {
+    analysisId: 'eval_1',
+    sessionId: 's_root',
+    turnId: 't_aaa',
+    harnessVersion: '1.8.42',
+    index: 0,
+    suggestion,
+    status: 'Accepted by layon, 02 Oct 21:14',
+    criterion: 'lookups per run · lower is better · at least 50 % lower · 5 runs per side',
+    codeRoot: '/work/workers',
+  }
+
+  it('hands over the stored fields, section by section', () => {
+    const brief = briefMarkdown(input)
+    expect(brief.split('\n')[0]).toBe('# Implement: Scope the notice')
+    expect(brief).toContain('Analysis eval_1 · S1 · observed session s_root · turn t_aaa · Harness 1.8.42')
+    expect(brief).toContain('Status: Accepted by layon, 02 Oct 21:14')
+    expect(brief).toContain('## Hypothesis (not proven)')
+    expect(brief).toContain('Harness area: Model notices')
+    expect(brief).toContain('In /work/workers\n- harness/src/notice.rs:120-148\n- harness/src/a.rs:9')
+    expect(brief).toContain('e_t_1_fc_02 (open eval_1 for the entries)')
+    expect(brief).toContain('Criterion: lookups per run')
+    expect(brief).toContain('- schedule once\n- recovery still happens')
+  })
+
+  it('leaves out what it has nothing to say about', () => {
+    const brief = briefMarkdown({
+      ...input,
+      status: undefined,
+      criterion: undefined,
+      codeRoot: undefined,
+      harnessVersion: undefined,
+      suggestion: { ...suggestion, code_refs: [], evidence: [] },
+    })
+    expect(brief).not.toContain('## Limitations')
+    expect(brief).not.toContain('## Code read')
+    expect(brief).not.toContain('## Evidence')
+    expect(brief).not.toContain('Status:')
+    expect(brief).not.toContain('Criterion:')
+    expect(brief).not.toContain('Harness 1')
+  })
+})
+
+describe('formatStamp', () => {
+  it('reads day, month and local time', () => {
+    expect(formatStamp(new Date(2026, 9, 3, 10, 12).getTime())).toBe('03 Oct 10:12')
   })
 })

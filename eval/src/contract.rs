@@ -46,6 +46,11 @@ pub struct ConfigureRequestV1 {
     /// monitor's host); absent means no code access.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_repository: Option<String>,
+    /// US dollars of known investigation cost per UTC day after which
+    /// automatic observation admits nothing until the next day; absent means
+    /// no cap. A manual `eval::analyze-session` is never refused by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_cost_cap_usd: Option<f64>,
     /// Stamped by the engine on every invocation; callers omit it. Listed
     /// so the closed schema still accepts the engine's metadata.
     #[serde(rename = "_caller_worker_id", default, skip_serializing)]
@@ -68,6 +73,15 @@ impl ConfigureRequestV1 {
                 )));
             }
         }
+        if self
+            .daily_cost_cap_usd
+            .is_some_and(|cap| !cap.is_finite() || cap <= 0.0)
+        {
+            return Err(EvalError::InvalidRequest(
+                "daily_cost_cap_usd must be a positive number of US dollars; omit it for no cap"
+                    .into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -81,6 +95,9 @@ pub struct MonitorConfigV1 {
     /// `ConfigureRequestV1`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_repository: Option<String>,
+    /// The daily cap on known investigation cost (see `ConfigureRequestV1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_cost_cap_usd: Option<f64>,
     /// SHA-256 of the effective configuration; analyses keep the revision
     /// they were admitted with.
     pub revision: String,
@@ -104,14 +121,59 @@ pub struct MonitorStateResponseV1 {
     pub observer_bound: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observer_error: Option<String>,
-    /// The latest turn not admitted because the monitor was at capacity.
+    /// The latest turn not admitted: the monitor was at capacity or the daily
+    /// cost cap was reached (`reason`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_rejection: Option<CapacityRejectionV1>,
     /// Present when the request asked to check the triage provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage: Option<TriageAvailabilityV1>,
+    /// What the investigations cost so far, to decide before enabling.
+    pub cost: MonitorCostV1,
     /// The limits this version enforces, so the console never restates them.
     pub limits: MonitorLimitsV1,
+}
+
+/// The monitor's own spend. Only the investigation's LLM cost is in dollars;
+/// Jev's usage is reported in tokens on each record.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MonitorCostV1 {
+    /// Start (ms since the Unix epoch) of the UTC day the `today_*` values
+    /// cover. The monitor has no timezone setting, so a day is a UTC day.
+    pub since: i64,
+    /// The known investigation cost since `since`: the larger of the day's
+    /// persisted spend (deleting an analysis does not give it back) and the sum
+    /// of the stored analyses' `usage.llm_cost_usd`.
+    pub today_usd: f64,
+    /// Analyses of the day whose investigation started but reported no cost.
+    /// They add nothing to `today_usd`, but their cost is unknown, not zero.
+    pub today_unknown: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap_usd: Option<f64>,
+    /// A cap is set and `today_usd`, plus the median cost of each investigation
+    /// still running, reached it: automatic observation admits and investigates
+    /// nothing until the next UTC day.
+    pub capped: bool,
+    /// What one investigation has cost, from the history.
+    pub per_analysis: AnalysisCostStatsV1,
+}
+
+/// Cost of the completed analyses that investigated with the configured
+/// model, provider and code access (or lack of it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AnalysisCostStatsV1 {
+    /// Analyses with a known cost; `min`, `median` and `max` come from them.
+    pub count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub median: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    /// Analyses that investigated but reported no cost.
+    pub unknown: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -132,10 +194,18 @@ pub struct MonitorLimitsV1 {
     pub investigation_code_max_total_tokens: u64,
     pub queue_concurrency: u32,
     pub max_active_analyses: u32,
-    pub low_confidence: f64,
-    pub audit_sample_percent: u32,
     pub retention_days: u32,
     pub retention_max_terminal: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RejectionReasonV1 {
+    /// The unfinished-analyses cap was reached.
+    #[default]
+    AtCapacity,
+    /// The day's known cost reached `daily_cost_cap_usd`.
+    CostCap,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -144,6 +214,10 @@ pub struct CapacityRejectionV1 {
     pub session_id: String,
     pub turn_id: String,
     pub at: i64,
+    /// Why the turn was not admitted; rows saved before the cost cap existed
+    /// read as `at_capacity`.
+    #[serde(default)]
+    pub reason: RejectionReasonV1,
 }
 
 /// What `judge::models::list` answered for the triage provider. The key
@@ -210,12 +284,18 @@ pub enum CoverageLevelV1 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RoutingReasonV1 {
-    Diagnostics,
     NeedsInvestigation,
+    /// Legacy: no longer produced; kept so stored records still deserialize.
+    Diagnostics,
+    /// Legacy: no longer produced.
     InsufficientEvidence,
+    /// Legacy: no longer produced.
     LowConfidence,
+    /// Legacy: no longer produced.
     CoverageInsufficient,
+    /// Legacy: no longer produced.
     AuditSample,
+    /// Legacy: no longer produced.
     ManualRequest,
 }
 
@@ -309,6 +389,21 @@ pub struct AnalysisRecordV1 {
     pub analyst: Option<AnalystRefV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<FailureV1>,
+    /// The earlier analysis of the same turn this reanalysis was requested
+    /// over (same `observation_key`); absent on a first analysis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
+    /// The Harness version the engine reported when a live event admitted the
+    /// analysis (the turn just ended on it); absent on a manual analysis, which
+    /// may be of an older session, and when the engine did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_version: Option<String>,
+    /// Occurrences of each deterministic pattern the collection found, keyed
+    /// `<rule_id>:<target>` (a target may itself contain colons). Empty both
+    /// when nothing was found and before collection (`coverage` is set once
+    /// collection read the evidence).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub signals: BTreeMap<String, u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -368,6 +463,14 @@ pub struct DiagnosticV1 {
     pub correlation: CorrelationV1,
     /// Calls, results and notices, in transcript order.
     pub evidence: Vec<EntryRefV1>,
+}
+
+impl DiagnosticV1 {
+    /// The recurring pattern this occurrence belongs to, `<rule_id>:<target>`
+    /// (a target may itself contain colons): what a release is judged by.
+    pub fn pattern(&self) -> String {
+        format!("{}:{}", self.rule_id, self.target)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -622,6 +725,31 @@ pub struct E2eScenarioV1 {
     /// `function_calls`, `function_call_errors`, `tokens`,
     /// `duration_seconds` and `cost_usd`, when reported.
     pub measures: BTreeMap<String, E2eMeasureV1>,
+    /// The scenario's cohort in `plan_execution.measurements.cohorts[]`, when
+    /// the execution has exactly one for it. Each value below is absent when
+    /// the E2E did not report it, never zero.
+    ///
+    /// Share of the planned runs that passed (0 to 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass_rate: Option<f64>,
+    /// Mean score of the scored runs (0 to 100).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_runs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_runs: Option<u32>,
+    /// The cohort's total cost divided by its completed runs; the total also
+    /// covers failed attempts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd_per_run: Option<f64>,
+    /// The cohort's total tokens divided by its completed runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens_per_run: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub median_wall_time_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p50_function_calls: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -642,6 +770,10 @@ pub struct E2eExecutionRefV1 {
     pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conclusion: Option<String>,
+    /// When the E2E started the execution (ms since the Unix epoch): its
+    /// results cannot have existed before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub availability: Option<String>,
     /// True only when the execution reported retained reports.
@@ -741,6 +873,10 @@ pub struct AnalyzeSessionResponseV1 {
 pub struct EvalListRequestV1 {
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Only the analyses of this observed turn (the `observation_key` of a
+    /// record), reanalyses included.
+    #[serde(default)]
+    pub observation_key: Option<String>,
 }
 
 impl EvalListRequestV1 {
@@ -771,6 +907,10 @@ pub struct EvaluationIdRequestV1 {
 pub struct EvalResultResponseV1 {
     pub record: AnalysisRecordV1,
     pub assets: AnalysisAssetsV1,
+    /// One row per suggestion, in suggestion order: what people decided about
+    /// it. A suggestion nobody acted on reads as `new`.
+    #[serde(default)]
+    pub reviews: Vec<SuggestionReviewV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -932,6 +1072,9 @@ pub enum WakeOutcomeV1 {
     Admitted,
     Reused,
     AtCapacity,
+    // The day's known cost reached `daily_cost_cap_usd`; a plain comment so
+    // the schema stays a flat string enum.
+    CostCap,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -959,11 +1102,515 @@ pub struct SweepResponseV1 {
     pub retained_deleted: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Review: what people decide about a suggestion
+// ---------------------------------------------------------------------------
+
+/// Where a suggestion stands. Only people move it: the monitor never does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleStatusV1 {
+    New,
+    Accepted,
+    InProgress,
+    Shipped,
+    Rejected,
+    Duplicate,
+}
+
+/// One change of status, with who made it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LifecycleEventV1 {
+    pub status: LifecycleStatusV1,
+    pub at: i64,
+    pub by: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LifecycleV1 {
+    pub status: LifecycleStatusV1,
+    /// The pull request that implements it (`in_progress`, `shipped`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<String>,
+    /// The Harness version that shipped it, a semantic version like `1.8.43`;
+    /// the recurrence query splits the analyses at it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Why it was rejected (`rejected`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// What it duplicates: a pull request, or another `<evaluation_id>:<index>`
+    /// (`duplicate`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_of: Option<String>,
+    /// Every change of status, oldest first; empty while `new`.
+    pub history: Vec<LifecycleEventV1>,
+}
+
+/// What a validation measures. Every metric but `signal_per_run` is the mean
+/// over the runs of the scenario the infrastructure did not break
+/// (`pass_rate` is the share that passed, an unfinished run counting as not
+/// passed; `duration` is the wall time in milliseconds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CriterionMetricV1 {
+    /// Occurrences of one of the suggestion's patterns per run, counted by
+    /// the deterministic detectors over each run's transcript.
+    SignalPerRun,
+    PassRate,
+    CostUsd,
+    Duration,
+    Tokens,
+    FunctionCalls,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectionV1 {
+    Decrease,
+    Increase,
+}
+
+/// What a person commits to before the results exist.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CriterionInputV1 {
+    pub metric: CriterionMetricV1,
+    /// `signal_per_run` only: one of the row's `patterns`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    /// The change that counts as an effect, wanted when the candidate moves
+    /// the baseline mean in this direction.
+    pub direction: DirectionV1,
+    /// The smallest change of the baseline mean that counts, as an absolute
+    /// difference in the metric's own unit: signals per run, USD, seconds,
+    /// calls or tokens; percentage points (0-100) for `pass_rate`. Above 0.
+    pub min_effect: f64,
+    /// Completed runs each side needs for a verdict of improvement (1-20).
+    pub min_runs: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CriterionV1 {
+    pub metric: CriterionMetricV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    pub direction: DirectionV1,
+    pub min_effect: f64,
+    pub min_runs: u32,
+    /// The scenario whose runs are measured.
+    pub scenario_id: String,
+    pub registered_at: i64,
+    pub registered_by: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationOutcomeV1 {
+    /// The candidate moved the metric by at least `min_effect` in the wanted
+    /// direction, with `min_runs` completed runs each side.
+    ValidatedImprovement,
+    /// The metric moved less than `min_effect`.
+    NoImprovement,
+    /// The metric moved by at least `min_effect` the wrong way.
+    Regression,
+    /// Too few completed runs, missing data or no criterion.
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationRunStateV1 {
+    /// Recorded before the executions are requested.
+    Starting,
+    /// Both executions were requested; the sweep waits for them.
+    Running,
+    /// Both ended; the pair is about to be attached.
+    Finished,
+    /// The pair is attached to the analysis and its evidence computed.
+    Attached,
+    Failed,
+}
+
+/// The baseline and candidate E2E executions this worker started for a
+/// suggestion (`eval::start-validation`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ValidationRunV1 {
+    /// Absent until the E2E accepted the execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_execution_id: Option<String>,
+    /// The full commits the Harness was built from.
+    pub baseline_commit: String,
+    pub candidate_commit: String,
+    pub scenario_id: String,
+    /// Runs requested for each side.
+    pub runs: u32,
+    pub model: String,
+    pub provider: String,
+    pub started_at: i64,
+    /// When both executions were seen ended; the sweep stops trying to attach
+    /// the pair some time after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<i64>,
+    pub state: ValidationRunStateV1,
+    /// Why it failed, or why attaching is being retried; starts with a stable
+    /// code (`e2e_unavailable:`, `e2e_busy:`…).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// One run of the scenario as the E2E reported it. Runs the infrastructure
+/// broke are listed with the E2E's own words, never counted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceRunV1 {
+    pub run_id: String,
+    /// The E2E reported the run complete with a valid technical outcome.
+    pub completed: bool,
+    /// `completion` as the E2E reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<String>,
+    /// `technical` as the E2E reported it; anything but `valid` is an
+    /// infrastructure failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub technical: Option<String>,
+    /// `passed` or `failed`, the run's task outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_time_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_calls: Option<f64>,
+    /// Occurrences of each of the row's patterns the detectors found in this
+    /// run's transcript (0 is a measurement); absent when the report held no
+    /// transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signals: Option<BTreeMap<String, u32>>,
+}
+
+impl EvidenceRunV1 {
+    /// The run says something about the Harness: its technical outcome is
+    /// valid, finished or not. One that ran out of steps or gave up is the
+    /// Harness's result; a technical failure is the infrastructure's.
+    pub fn measurable(&self) -> bool {
+        self.technical.as_deref() == Some("valid")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceSideV1 {
+    pub execution_id: String,
+    /// Every run of the scenario the execution holds.
+    pub runs: Vec<EvidenceRunV1>,
+    /// Measurable runs (see `EvidenceRunV1::measurable`) with a value of the
+    /// criterion's metric (every measurable run while there is no criterion).
+    pub n: u32,
+    /// Mean of the criterion's metric over those runs; absent without a
+    /// criterion or without such runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean: Option<f64>,
+}
+
+/// Computed in code from the attached pair's runs, never by a model. It is
+/// what the person's verdict is shown next to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceV1 {
+    pub scenario_id: String,
+    pub computed_at: i64,
+    pub baseline: EvidenceSideV1,
+    pub candidate: EvidenceSideV1,
+    pub computed_outcome: ValidationOutcomeV1,
+    pub reason: String,
+}
+
+/// The person's judgment, kept with the criterion it was made against.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VerdictV1 {
+    pub outcome: ValidationOutcomeV1,
+    pub rationale: String,
+    /// The non-regression controls of the plan that were checked.
+    pub controls_checked: Vec<String>,
+    pub by: String,
+    pub at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub criterion_snapshot: Option<CriterionV1>,
+}
+
+/// Everything people decided about one suggestion, in the `eval_suggestion`
+/// state scope. The title, component and patterns are copied from the
+/// suggestion so the row outlives the analysis's retention.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SuggestionReviewV1 {
+    pub evaluation_id: String,
+    pub suggestion_index: usize,
+    pub title: String,
+    pub harness_component: String,
+    /// The scenario the suggestion's validation plan names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenario_id: Option<String>,
+    /// `<rule_id>:<target>` of the diagnostics the suggestion's evidence
+    /// cites: what a validation counts and a release is judged by.
+    pub patterns: Vec<String>,
+    pub lifecycle: LifecycleV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub criterion: Option<CriterionV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<ValidationRunV1>,
+    /// When the first execution this worker started for the suggestion began,
+    /// kept when a new start replaces `run`: results of it may have been seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_run_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<EvidenceV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<VerdictV1>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewActionV1 {
+    /// Move the suggestion to `status`.
+    SetLifecycle,
+    /// Register the criterion a validation is judged by, before its results.
+    SetCriterion,
+    /// Record the person's verdict.
+    SetVerdict,
+}
+
+/// `eval::review`. The fields of the other actions are ignored. The author is
+/// the caller's identity when the engine stamps one, else `by`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct ReviewRequestV1 {
+    pub evaluation_id: String,
+    pub suggestion_index: usize,
+    pub action: ReviewActionV1,
+    /// `set_lifecycle`: the status to move to (never back to `new`; a shipped
+    /// suggestion stays shipped, to complete its `pr` or `version`).
+    /// `shipped` needs a `pr` (here or already recorded), `rejected` a
+    /// `reason`, `duplicate` a `duplicate_of`.
+    #[serde(default)]
+    pub status: Option<LifecycleStatusV1>,
+    #[serde(default)]
+    pub pr: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub duplicate_of: Option<String>,
+    /// `set_lifecycle`: shown in the history.
+    #[serde(default)]
+    pub note: Option<String>,
+    /// `set_criterion`. Refused once a criterion exists and a run started or
+    /// a pair was attached: a criterion chosen after the results proves
+    /// nothing.
+    #[serde(default)]
+    pub criterion: Option<CriterionInputV1>,
+    /// `set_criterion`: the scenario to measure; defaults to the one the
+    /// suggestion's plan names.
+    #[serde(default)]
+    pub scenario_id: Option<String>,
+    /// `set_verdict`. `validated_improvement` is refused unless a criterion
+    /// was registered before the first attached pair or run, and the evidence
+    /// has `min_runs` completed runs on both sides.
+    #[serde(default)]
+    pub outcome: Option<ValidationOutcomeV1>,
+    #[serde(default)]
+    pub rationale: Option<String>,
+    #[serde(default)]
+    pub controls_checked: Vec<String>,
+    /// The author when the caller has no identity.
+    #[serde(default)]
+    pub by: Option<String>,
+    /// Stamped by the engine on every invocation; callers omit it.
+    #[serde(rename = "_caller_worker_id", default)]
+    pub caller_worker_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct ReviewsRequestV1 {
+    /// Only this analysis; absent means every analysis.
+    #[serde(default)]
+    pub evaluation_id: Option<String>,
+}
+
+/// Suggestions of one analysis by lifecycle status; a suggestion nobody acted
+/// on counts as `new`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewSummaryV1 {
+    pub evaluation_id: String,
+    pub suggestions: u32,
+    pub new: u32,
+    pub accepted: u32,
+    pub in_progress: u32,
+    pub shipped: u32,
+    pub rejected: u32,
+    pub duplicate: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewsResponseV1 {
+    /// The stored rows: suggestions somebody acted on or validated.
+    pub reviews: Vec<SuggestionReviewV1>,
+    /// One per analysis that has suggestions, newest first.
+    pub summaries: Vec<ReviewSummaryV1>,
+}
+
+/// `eval::start-validation`: builds a baseline and a candidate stack from the
+/// E2E's `harness` template pinned to two pushed commits and starts both
+/// executions in Docker. Spends model tokens, so it only ever runs on an
+/// explicit request. With `dry_run` it only resolves and checks the refs.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct StartValidationRequestV1 {
+    pub evaluation_id: String,
+    pub suggestion_index: usize,
+    /// The harness-e2e scenario to run.
+    pub scenario_id: String,
+    /// A ref of `code_repository` (a branch, a tag or a commit) that is on a
+    /// remote branch.
+    pub candidate_ref: String,
+    /// Defaults to the merge base of the candidate and `origin/main`.
+    #[serde(default)]
+    pub baseline_ref: Option<String>,
+    /// Runs of the scenario for each side; defaults to 5 (1-20).
+    #[serde(default)]
+    pub runs: Option<u32>,
+    /// Required unless `dry_run`.
+    #[serde(default)]
+    pub model: String,
+    /// Required unless `dry_run`.
+    #[serde(default)]
+    pub provider: String,
+    /// Registered first, before any execution starts. Required unless
+    /// `dry_run`, which only checks it against `runs` when present.
+    #[serde(default)]
+    pub criterion: Option<CriterionInputV1>,
+    /// The author: this name wins over the host's user and the caller's
+    /// identity.
+    #[serde(default)]
+    pub by: Option<String>,
+    /// Resolve and check the refs, the scenario and the runs exactly as a
+    /// start does, and answer with the commits they resolve to. Registers
+    /// nothing, calls no E2E function and spends nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Stamped by the engine on every invocation; callers omit it.
+    #[serde(rename = "_caller_worker_id", default)]
+    pub caller_worker_id: Option<String>,
+}
+
+/// One side of a validation, resolved to the commit the E2E would build.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedCommitV1 {
+    /// The full commit.
+    pub commit: String,
+    /// The first 12 characters of `commit`.
+    pub short: String,
+    /// A remote branch that holds the commit, as `git branch -r` names it
+    /// (`origin/feat`); the one named like the ref when several do.
+    pub branch: String,
+}
+
+/// What `eval::start-validation` answers to a `dry_run`: the commits both
+/// refs resolve to, every start check passed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ValidationResolutionV1 {
+    pub baseline: ResolvedCommitV1,
+    pub candidate: ResolvedCommitV1,
+    /// What a start would go ahead with but a person should know.
+    pub warnings: Vec<String>,
+}
+
+/// The suggestion's row once the executions started, or, for a `dry_run`, the
+/// resolution.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum StartValidationResponseV1 {
+    Started(Box<SuggestionReviewV1>),
+    Resolved(ValidationResolutionV1),
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct RecurrenceRequestV1 {
+    pub evaluation_id: String,
+    pub suggestion_index: usize,
+}
+
+/// One pattern over a set of analyses.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecurrencePatternV1 {
+    pub pattern: String,
+    /// Occurrences summed over the analyses.
+    pub occurrences: u32,
+    /// Analyses with at least one occurrence.
+    pub analyses_with: u32,
+    /// Occurrences per analysis; absent when there is no analysis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_analysis: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecurrenceWindowV1 {
+    /// Analyses whose collection finished and whose Harness version is known.
+    pub analyses: u32,
+    pub patterns: Vec<RecurrencePatternV1>,
+}
+
+/// Whether the suggestion's patterns came back: the analyses on Harness
+/// versions before the one that shipped it against the ones from it on.
+/// Analyses are kept 30 days, so the earlier window is bounded by retention.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecurrenceResponseV1 {
+    pub evaluation_id: String,
+    pub suggestion_index: usize,
+    /// The version the suggestion shipped in, where the windows split.
+    pub version: String,
+    pub before: RecurrenceWindowV1,
+    pub from_version: RecurrenceWindowV1,
+    /// Analyses left out because they carry no (or no semantic) Harness
+    /// version.
+    pub without_version: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn routing_recorded_under_the_earlier_rules_still_reads() {
+        let routing: RoutingV1 = serde_json::from_value(json!({
+            "investigate": true,
+            "reasons": ["diagnostics", "needs_investigation", "insufficient_evidence",
+                "low_confidence", "coverage_insufficient", "audit_sample", "manual_request"]
+        }))
+        .unwrap();
+        assert_eq!(routing.reasons.len(), 7);
+    }
 
     #[test]
     fn configure_accepts_engine_metadata_and_rejects_credentials() {
@@ -1003,6 +1650,27 @@ mod tests {
     }
 
     #[test]
+    fn the_daily_cost_cap_must_be_a_positive_number() {
+        let request = |cap: Option<f64>| ConfigureRequestV1 {
+            enabled: true,
+            model: MonitorModelV1 {
+                model: "m".into(),
+                provider: "p".into(),
+                thinking_level: None,
+                provider_options: None,
+            },
+            code_repository: None,
+            daily_cost_cap_usd: cap,
+            caller_worker_id: None,
+        };
+        assert!(request(None).validate().is_ok());
+        assert!(request(Some(0.01)).validate().is_ok());
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(request(Some(invalid)).validate().is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
     fn llm_output_rejects_unknown_fields() {
         let output = json!({"suggestions": [], "verdict": "validated"});
         assert!(serde_json::from_value::<InvestigationOutputV1>(output).is_err());
@@ -1020,11 +1688,15 @@ mod tests {
             EvalListRequestV1::default().normalized_limit().unwrap(),
             DEFAULT_LIST_LIMIT as usize
         );
-        assert!(EvalListRequestV1 { limit: Some(0) }
-            .normalized_limit()
-            .is_err());
         assert!(EvalListRequestV1 {
-            limit: Some(MAX_LIST_LIMIT + 1)
+            limit: Some(0),
+            ..Default::default()
+        }
+        .normalized_limit()
+        .is_err());
+        assert!(EvalListRequestV1 {
+            limit: Some(MAX_LIST_LIMIT + 1),
+            ..Default::default()
         }
         .normalized_limit()
         .is_err());

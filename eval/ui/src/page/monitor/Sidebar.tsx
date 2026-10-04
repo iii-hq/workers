@@ -4,6 +4,7 @@ import {
   IconButton,
   Input,
   List,
+  ListGroup,
   ListItem,
   PageSidebar,
   type PanelSide,
@@ -13,11 +14,22 @@ import {
   StatusPanel,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { Pause, Play, Settings2, SquareArrowOutUpRight } from 'lucide-react'
+import {
+  ChevronDown,
+  ChevronUp,
+  Pause,
+  Play,
+  RefreshCw,
+  Settings2,
+  SlidersHorizontal,
+  SquareArrowOutUpRight,
+  TriangleAlert,
+} from 'lucide-react'
 import {
   type FormEvent,
   Fragment,
   type MutableRefObject,
+  type ReactNode,
   type RefObject,
   useEffect,
   useId,
@@ -26,22 +38,38 @@ import {
   useState,
 } from 'react'
 import { formatDate } from '../../components'
-import { type Filter, matchesFilter, type Tone } from '../../model'
+import type { Filter, Tone } from '../../model'
 import type { AnalysisRecord, MonitorState } from '../../types'
 import { MonitorNotices } from './Notices'
 import {
   CARD_LABEL,
   type CardState,
+  cappedNote,
+  capRow,
   cardState,
-  clock,
   emptyFilterTitle,
   FILTERS,
+  filterLabel,
+  groupHistory,
+  groupSource,
+  groupTally,
+  type HistoryItem,
+  memberMeta,
   queueLine,
+  type ReviewIndex,
+  reviewLine,
+  reviewMeta,
+  rowCause,
   rowMeta,
   rowStatus,
+  rowTime,
   rowTitle,
   SIDEBAR_WIDTH,
+  skippedRow,
+  type TriageProblem,
   todayLine,
+  triageNotice,
+  triageRow,
 } from './shell-state'
 
 /** The triage provider the monitor always uses (shown until the API reports one). */
@@ -62,6 +90,7 @@ const CARD_TONE: Record<CardState, Tone> = {
   loading: 'neutral',
   unconfigured: 'neutral',
   paused: 'neutral',
+  capped: 'warn',
   observing: 'accent',
   unavailable: 'alert',
 }
@@ -72,6 +101,16 @@ export interface SidebarProps {
   state: MonitorState | null
   /** The first read of the monitor failed. */
   stateError: string | null
+  /** What people decided about the suggestions; `null` until read, or when the worker predates it. */
+  reviews: ReviewIndex | null
+  /** Why triage cannot run, when the provider check or the last analysis says so. */
+  triage: TriageProblem | undefined
+  /** The provider check has answered at least once. */
+  triageChecked: boolean
+  triageChecking: boolean
+  onCheckTriage: () => void
+  /** Opens the settings at the daily cost cap. */
+  onChangeCap: () => void
   records: AnalysisRecord[] | null
   listError: string | null
   now: number
@@ -84,8 +123,11 @@ export interface SidebarProps {
   onToggleObservation: () => void
   onToggleSettings: () => void
   onSelect: (evaluationId: string) => void
-  /** Rejects with the error to show under the form; resolves with whether the analysis already existed. */
-  onAnalyze: (sessionId: string) => Promise<{ reused: boolean }>
+  /**
+   * Rejects with the error to show under the form; resolves with whether the analysis already existed, or that the
+   * person backed out of the question that comes first.
+   */
+  onAnalyze: (sessionId: string) => Promise<{ reused: boolean; cancelled: boolean }>
   /** Shows the observed session of a row; absent when the console cannot open a conversation. */
   onOpenSession?: (sessionId: string) => void
   onRetry: () => void
@@ -143,7 +185,11 @@ export function Sidebar(props: SidebarProps) {
           itemClassName="eval-ui-filter-item"
           value={props.filter}
           onChange={props.onFilter}
-          options={FILTERS.map(({ value, label }) => ({ value, label, icon: false as const }))}
+          options={FILTERS.map(({ value, label }) => ({
+            value,
+            label: filterLabel(value, label, props.records, props.reviews),
+            icon: false as const,
+          }))}
         />
         <History {...props} />
       </div>
@@ -158,17 +204,26 @@ function StatusCard({
   now,
   settingsOpen,
   togglePending,
+  triage,
+  triageChecked,
+  triageChecking,
+  narrow,
   onToggleObservation,
   onToggleSettings,
+  onCheckTriage,
+  onChangeCap,
 }: SidebarProps) {
   const card = cardState(state, stateError !== null)
   const config = state?.config ?? null
-  const tone = CARD_TONE[card]
+  // Observing with triage that cannot run still observes, but the dot says it will not get far.
+  const tone = card === 'observing' && triage ? 'warn' : CARD_TONE[card]
+  const skipped = card === 'capped' ? skippedRow(state) : null
+  const cap = state && config ? capRow(state.cost) : null
 
   return (
     <section className="eval-ui-status" aria-label="Monitor status">
       <div className="eval-ui-status-head">
-        <Dot tone={tone} pulse={card === 'observing'} />
+        <Dot tone={tone} pulse={card === 'observing' && !triage} />
         {card === 'loading' ? (
           <Skeleton className="eval-ui-sk-label" />
         ) : (
@@ -194,6 +249,33 @@ function StatusCard({
           Nothing is observed or sent to a model until you choose an analyst model and turn observation on.
         </p>
       ) : null}
+      {card === 'capped' && state ? <p className="eval-ui-status-note">{cappedNote(state.cost)}</p> : null}
+      {triage && card !== 'unconfigured' ? (
+        <StatusPanel
+          variant="warn"
+          role="status"
+          icon={<TriangleAlert aria-hidden size={16} />}
+          headline="Triage unavailable"
+          detail={
+            <div className="eval-ui-status-triage">
+              <p>{triageNotice(triage)}</p>
+              {/* The provider check lists models: it can say a key came back, never that credits did. */}
+              {triage.source === 'check' ? (
+                <Button
+                  variant="ghost"
+                  size={narrow ? 'lg' : 'sm'}
+                  disabled={triageChecking}
+                  aria-busy={triageChecking || undefined}
+                  onClick={onCheckTriage}
+                >
+                  <RefreshCw aria-hidden size={16} />
+                  Check again
+                </Button>
+              ) : null}
+            </div>
+          }
+        />
+      ) : null}
       {card === 'loading' ? (
         <div className="eval-ui-status-skeleton" aria-busy="true">
           <Skeleton className="eval-ui-sk-line" />
@@ -207,12 +289,36 @@ function StatusCard({
             {config.model.model} · {config.model.provider}
           </dd>
           <dt>Triage</dt>
-          <dd>{state?.triage?.provider ?? TRIAGE_PROVIDER}</dd>
+          <dd data-tone={triage ? 'alert' : undefined}>
+            {triageRow(triage, triageChecked, state?.triage?.provider ?? TRIAGE_PROVIDER)}
+          </dd>
           <dt>Queue</dt>
           <dd>{records ? <Parts text={queueLine(records, now, state?.limits.max_active_analyses)} /> : '—'}</dd>
           <dt>Today</dt>
           <dd>{records ? <Parts text={todayLine(records, now)} /> : '—'}</dd>
+          {cap ? (
+            <>
+              <dt>Cap</dt>
+              <dd title="The cap counts a UTC day.">
+                <Parts text={cap} />
+              </dd>
+            </>
+          ) : null}
+          {skipped ? (
+            <>
+              <dt>Skipped</dt>
+              <dd>
+                <Parts text={skipped} />
+              </dd>
+            </>
+          ) : null}
         </dl>
+      ) : null}
+      {card === 'capped' ? (
+        <Button variant="ghost" size={narrow ? 'lg' : 'sm'} className="eval-ui-status-cap" onClick={onChangeCap}>
+          <SlidersHorizontal aria-hidden size={16} />
+          Change cap
+        </Button>
       ) : null}
     </section>
   )
@@ -255,7 +361,9 @@ function AnalyzeForm({ state, narrow, inputRef, onAnalyze }: SidebarProps) {
     setError(null)
     setNote(null)
     try {
-      const { reused } = await onAnalyze(sessionId)
+      const { reused, cancelled } = await onAnalyze(sessionId)
+      // Backed out: the id stays, ready to be sent after all.
+      if (cancelled) return
       setValue('')
       if (reused) setNote('Already analyzed — showing the existing analysis')
     } catch (failure) {
@@ -322,14 +430,43 @@ function History({
   listError,
   filter,
   onFilter,
+  reviews,
   selectedId,
   settingsOpen,
+  now,
   onSelect,
   onOpenSession,
   onRetry,
 }: SidebarProps) {
-  const rows = records?.filter((record) => matchesFilter(record, filter)) ?? []
+  const items = records ? groupHistory(records, filter, reviews) : []
   const loading = records === null && listError === null
+  // Groups the person opened; the one holding the selection opens when the selection moves into it.
+  const [open, setOpen] = useState<ReadonlySet<string>>(new Set())
+  const selectedKey = settingsOpen
+    ? undefined
+    : records?.find((record) => record.evaluation_id === selectedId)?.observation_key
+  useEffect(() => {
+    if (selectedKey) setOpen((current) => (current.has(selectedKey) ? current : new Set(current).add(selectedKey)))
+  }, [selectedKey])
+  const toggle = (key: string) =>
+    setOpen((current) => {
+      const next = new Set(current)
+      if (!next.delete(key)) next.add(key)
+      return next
+    })
+  const row = (record: AnalysisRecord, grouped: boolean) => (
+    <Row
+      key={record.evaluation_id}
+      record={record}
+      grouped={grouped}
+      reviews={reviews}
+      now={now}
+      // Settings are open in the main pane: no analysis is the current one.
+      selected={!settingsOpen && record.evaluation_id === selectedId}
+      onSelect={onSelect}
+      onOpenSession={onOpenSession}
+    />
+  )
 
   return (
     <nav className="eval-ui-history" aria-label="Analyses" aria-busy={loading || undefined}>
@@ -359,26 +496,29 @@ function History({
           description="Finished sessions show up here once the monitor is on."
         />
       ) : null}
-      {records && records.length > 0 && rows.length === 0 ? (
+      {records && records.length > 0 && items.length === 0 ? (
         <EmptyState
           compact
-          title={emptyFilterTitle(filter)}
+          title={emptyFilterTitle(filter, reviews !== null)}
           description="Nothing in the list matches this filter."
           action={{ label: 'Show all', onClick: () => onFilter('all') }}
         />
       ) : null}
-      {rows.length > 0 ? (
+      {items.length > 0 ? (
         <List>
-          {rows.map((record) => (
-            <Row
-              key={record.evaluation_id}
-              record={record}
-              // Settings are open in the main pane: no analysis is the current one.
-              selected={!settingsOpen && record.evaluation_id === selectedId}
-              onSelect={onSelect}
-              onOpenSession={onOpenSession}
-            />
-          ))}
+          {items.map((item: HistoryItem) =>
+            item.kind === 'row' ? (
+              row(item.record, false)
+            ) : (
+              <TurnGroup
+                key={item.key}
+                item={item}
+                open={open.has(item.key)}
+                onToggle={() => toggle(item.key)}
+                renderRow={(record) => row(record, true)}
+              />
+            ),
+          )}
         </List>
       ) : null}
     </nav>
@@ -386,21 +526,84 @@ function History({
 }
 
 /**
+ * The analyses of one observed turn: the header says which turn and what happened to it, the newest shown analysis
+ * stays visible and the rest is one click away.
+ */
+function TurnGroup({
+  item,
+  open,
+  onToggle,
+  renderRow,
+}: {
+  item: Extract<HistoryItem, { kind: 'group' }>
+  open: boolean
+  onToggle: () => void
+  renderRow: (record: AnalysisRecord) => ReactNode
+}) {
+  const bodyId = useId()
+  const [newest, ...earlier] = item.shown
+  const head = item.members[0]
+  const Chevron = open ? ChevronUp : ChevronDown
+  return (
+    <ListGroup className="eval-ui-group">
+      <button
+        type="button"
+        className="eval-ui-group-head"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={onToggle}
+      >
+        <span className="eval-ui-group-title">
+          <Chevron size={16} aria-hidden="true" />
+          <span className="eval-ui-group-name" title={rowTitle(head)}>
+            {rowTitle(head)}
+          </span>
+        </span>
+        <span className="eval-ui-group-source">{groupSource(head)}</span>
+        <span className="eval-ui-group-tally">{groupTally(item.members)}</span>
+      </button>
+      <div id={bodyId} className="eval-ui-group-rows">
+        {renderRow(newest)}
+        {open ? earlier.map(renderRow) : null}
+        {!open && earlier.length > 0 ? (
+          <button type="button" className="eval-ui-group-more" onClick={onToggle}>
+            <ChevronDown size={16} aria-hidden="true" />
+            Show {earlier.length} earlier {earlier.length === 1 ? 'analysis' : 'analyses'}
+          </button>
+        ) : null}
+      </div>
+    </ListGroup>
+  )
+}
+
+/**
  * A row selects the analysis; the icon beside it opens the observed session
  * without selecting. Two sibling buttons: a button cannot hold a button.
+ * Inside a group the turn is in the header, so a row says what became of this
+ * analysis (the cause of a failure, what it cost and took) instead of the title.
  */
 function Row({
   record,
+  grouped,
+  reviews,
+  now,
   selected,
   onSelect,
   onOpenSession,
 }: {
   record: AnalysisRecord
+  grouped: boolean
+  reviews: ReviewIndex | null
+  now: number
   selected: boolean
   onSelect: (evaluationId: string) => void
   onOpenSession?: (sessionId: string) => void
 }) {
   const status = rowStatus(record)
+  const cause = rowCause(record)
+  // A finished analysis with suggestions says where they stand; the rest keeps the monitor's own words.
+  const label = reviewLine(record, reviews) ?? status.label
+  const standing = reviewMeta(record, reviews)
   return (
     <div className="eval-ui-row-wrap">
       <ListItem
@@ -413,22 +616,37 @@ function Row({
           <span className="eval-ui-row-top">
             <Dot tone={status.tone} />
             <span className="eval-ui-row-status" data-tone={status.quiet ? 'neutral' : status.tone}>
-              {status.label}
+              {label}
             </span>
             <time
               className="eval-ui-row-time"
               dateTime={new Date(record.created_at).toISOString()}
               title={formatDate(record.created_at)}
             >
-              {clock(record.created_at)}
+              {rowTime(record, now)}
             </time>
           </span>
-          <span className="eval-ui-row-title" title={rowTitle(record)}>
-            {rowTitle(record)}
-          </span>
-          <span className="eval-ui-row-meta">
-            {record.session_id} · {rowMeta(record)}
-          </span>
+          {grouped ? (
+            <>
+              {cause ? (
+                <span className="eval-ui-row-title" title={cause}>
+                  {cause}
+                </span>
+              ) : null}
+              {standing ? <span className="eval-ui-row-meta">{standing}</span> : null}
+              <span className="eval-ui-row-meta">{memberMeta(record)}</span>
+            </>
+          ) : (
+            <>
+              <span className="eval-ui-row-title" title={rowTitle(record)}>
+                {rowTitle(record)}
+              </span>
+              {standing ? <span className="eval-ui-row-meta">{standing}</span> : null}
+              <span className="eval-ui-row-meta">
+                {record.session_id} · {rowMeta(record)}
+              </span>
+            </>
+          )}
         </span>
       </ListItem>
       {onOpenSession ? (

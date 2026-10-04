@@ -4,7 +4,7 @@ import { StatusPanel } from '@iii-dev/console-ui'
 import { CircleAlert } from 'lucide-react'
 import { useId } from 'react'
 import { formatTokens, shortHash } from '../../../model'
-import type { AnalysisAssets, AnalysisRecord, MonitorLimits, TriageFailure } from '../../../types'
+import type { AnalysisAssets, AnalysisRecord, TriageFailure } from '../../../types'
 import { SectionHead } from './marks'
 import { choiceBars, plural, routingSentence, seconds, TRIAGE_QUESTION, triageChoice, twoDecimals } from './present'
 
@@ -41,20 +41,12 @@ function Failure({ failure }: { failure: TriageFailure }) {
   )
 }
 
-export function Triage({
-  record,
-  assets,
-  limits,
-}: {
-  record: AnalysisRecord
-  assets: AnalysisAssets
-  limits: MonitorLimits | undefined
-}) {
+export function Triage({ record, assets }: { record: AnalysisRecord; assets: AnalysisAssets }) {
   const headingId = useId()
   const { triage, triage_failure: failure } = assets
   if (!triage && !failure) return null
   const answer = triageChoice(triage)
-  const sentence = routingSentence(record, triage, limits)
+  const sentence = routingSentence(record, triage)
   const cut = sentence?.indexOf(': ') ?? -1
 
   return (

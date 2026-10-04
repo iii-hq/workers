@@ -2,14 +2,19 @@
 // draft, what counts as a change, and the copy that depends on data. No React.
 import { formatBytes, formatDuration } from '@iii-dev/console-ui/format'
 import type {
+  AnalysisCostStats,
+  AnalysisRecord,
   CatalogModel,
+  ModelPricing,
   MonitorConfig,
+  MonitorCost,
   MonitorLimits,
   MonitorModel,
   ThinkingLevel,
   TriageAvailability,
 } from '../../types'
-import { count as grouped, investigationCaps, plural } from './detail/present'
+import { formatCostShort, count as grouped, investigationCaps, plural } from './detail/present'
+import { clock } from './time'
 
 export const THINKING_LABEL: Record<ThinkingLevel, string> = {
   minimal: 'Minimal',
@@ -31,6 +36,8 @@ export interface ModelEntry {
   supportsThinking: boolean
   supportsXhigh: boolean
   displayName?: string
+  contextWindow?: number
+  pricing?: ModelPricing
   /** False for the saved model when the catalog does not list it (or is down). */
   listed: boolean
 }
@@ -77,6 +84,8 @@ export function buildCatalog(models: readonly CatalogModel[], saved: MonitorMode
       supportsThinking: model.supports_thinking === true,
       supportsXhigh: model.supports_xhigh === true,
       displayName: model.display_name,
+      contextWindow: model.context_window,
+      pricing: model.pricing,
       listed: true,
     })
   }
@@ -109,15 +118,41 @@ export function buildCatalog(models: readonly CatalogModel[], saved: MonitorMode
         .map((entry) => ({
           value: entry.key,
           label: modelLabel(entry),
-          description: !entry.listed
-            ? 'Saved model, not in the catalog'
-            : entry.supportsThinking
-              ? 'thinking'
-              : undefined,
+          description: entry.listed ? priceLine(entry) : 'Saved model, not in the catalog',
           keywords: [entry.provider, entry.displayName ?? ''].filter(Boolean),
         })),
     }))
   return { groups, byKey }
+}
+
+/** `1`, `1.32`, `0.3`: at most four decimals, trailing zeros trimmed. */
+function trimmed(value: number): string {
+  return String(Number(value.toFixed(4)))
+}
+
+/** `$4 / $20 per Mtok`, or `Price not listed` (never `$0`) unless the catalog gives both prices. */
+export function priceText(pricing: ModelPricing | undefined): string {
+  return pricing?.input !== undefined && pricing.output !== undefined
+    ? `$${trimmed(pricing.input)} / $${trimmed(pricing.output)} per Mtok`
+    : 'Price not listed'
+}
+
+/** `200k`, `1M`: the context window as the model pickers write it. */
+function contextText(tokens: number): string {
+  return tokens >= 1_000_000 ? `${trimmed(Math.round(tokens / 100_000) / 10)}M` : `${Math.round(tokens / 1000)}k`
+}
+
+/** `$4 / $20 per Mtok · 1M ctx`: what a catalog model costs and how much it holds. */
+export function priceLine(entry: Pick<ModelEntry, 'pricing' | 'contextWindow'>): string {
+  return [priceText(entry.pricing), entry.contextWindow ? `${contextText(entry.contextWindow)} ctx` : undefined]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+/** Under the model picker: the chosen model's price, and what a higher thinking level does to a bill. */
+export function modelPriceHint(entry: ModelEntry | undefined): string | null {
+  if (!entry?.listed) return null
+  return `${priceLine(entry)}.${entry.supportsThinking ? ' Higher thinking levels are slower and cost more.' : ''}`
 }
 
 const BASE_LEVELS: ThinkingLevel[] = ['minimal', 'low', 'medium', 'high']
@@ -134,6 +169,8 @@ export interface Draft {
   thinking: ThinkingLevel | null
   /** The codebase directory as typed; empty means code access off. */
   codeDirectory: string
+  /** The daily cost cap in dollars as typed; empty means no cap. */
+  costCap: string
 }
 
 export function draftFromConfig(config: MonitorConfig | null): Draft {
@@ -142,7 +179,23 @@ export function draftFromConfig(config: MonitorConfig | null): Draft {
     modelKey: config ? modelKey(config.model.provider, config.model.model) : null,
     thinking: config?.model.thinking_level ?? null,
     codeDirectory: config?.code_repository ?? '',
+    costCap: config?.daily_cost_cap_usd === undefined ? '' : String(config.daily_cost_cap_usd),
   }
+}
+
+export const COST_CAP_ERROR = 'Enter an amount above 0, for example 5.00. Leave it empty for no cap.'
+
+/** The typed cap: empty is no cap, a positive amount is the cap, anything else is refused. */
+export function parseCostCap(text: string): { cap?: number; error?: string } {
+  const typed = text.trim().replace(/^\$\s*/, '')
+  if (typed === '') return {}
+  const cap = /^(\d+\.?\d*|\.\d+)$/.test(typed) ? Number(typed) : Number.NaN
+  return Number.isFinite(cap) && cap > 0 ? { cap } : { error: COST_CAP_ERROR }
+}
+
+/** The cap `eval::configure` gets: absent removes it. */
+export function dailyCostCap(draft: Draft): number | undefined {
+  return parseCostCap(draft.costCap).cap
 }
 
 export function isDirty(base: Draft, draft: Draft): boolean {
@@ -150,7 +203,10 @@ export function isDirty(base: Draft, draft: Draft): boolean {
     base.enabled !== draft.enabled ||
     base.modelKey !== draft.modelKey ||
     base.thinking !== draft.thinking ||
-    base.codeDirectory.trim() !== draft.codeDirectory.trim()
+    base.codeDirectory.trim() !== draft.codeDirectory.trim() ||
+    // An amount that cannot be read never equals the saved one.
+    parseCostCap(draft.costCap).error !== undefined ||
+    parseCostCap(base.costCap).cap !== parseCostCap(draft.costCap).cap
   )
 }
 
@@ -220,7 +276,7 @@ export function codeDirectoryHelp(limits: MonitorLimits | undefined): string {
 }
 
 /** `800k` for round thousands, every other number written out (`16,384`). */
-function tokenCap(tokens: number): string {
+export function tokenCap(tokens: number): string {
   return tokens >= 1000 && tokens % 1000 === 0 ? `${tokens / 1000}k` : grouped(tokens)
 }
 
@@ -241,7 +297,6 @@ export function limitRows(limits: MonitorLimits, codeAccess: boolean): Array<[la
       'Investigation tokens',
       `${tokenCap(caps.totalTokens)} total · ${tokenCap(limits.investigation_max_output_tokens)} output`,
     ],
-    ['Audit sample', `${limits.audit_sample_percent}% of sessions with no signal`],
     [
       'Retention',
       `${plural(limits.retention_days, 'day')} · ${grouped(limits.retention_max_terminal)} finished ${finished}`,
@@ -307,6 +362,13 @@ export function savedNotice(input: {
         : `${subject} ${verb} the model ${runningCount === 1 ? 'it' : 'they'} started with.`,
     )
   }
+  if (after.daily_cost_cap_usd !== before?.daily_cost_cap_usd) {
+    parts.push(
+      after.daily_cost_cap_usd === undefined
+        ? 'The daily cost cap is removed.'
+        : `Automatic analyses pause for the day once ${formatCostShort(after.daily_cost_cap_usd)} is reported.`,
+    )
+  }
   parts.push(`Observation is ${after.enabled ? 'on' : 'paused'}.`)
   return parts.join(' ')
 }
@@ -326,4 +388,79 @@ export function triageHint(code: string | undefined): string {
 export function triageWarning(triage: TriageAvailability): string {
   const until = triage.code === 'missing_key' ? 'Until the key is added' : 'Until triage is available'
   return `${until}, new analyses fail at triage. You can still save these settings.`
+}
+
+// The Cost section: what the monitor's own analyses have cost, from its own history. Nothing here is a forecast,
+// and an analysis that reported no cost is counted apart, never as $0.
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** Completed analyses with the same model and code access needed before a figure is shown. */
+export const MIN_ESTIMATE = 3
+
+/**
+ * The most one investigation can cost under the monitor's limits: its total-token cap at the model's output price,
+ * the dearest rate there is. A ceiling to read before the history can say anything, never a forecast: a real run
+ * reads mostly cached input. `undefined` when the catalog doesn't list the price (never `$0`).
+ */
+export function costCeiling(
+  limits: MonitorLimits,
+  codeAccess: boolean,
+  pricing: ModelPricing | undefined,
+): number | undefined {
+  if (pricing?.output === undefined) return undefined
+  return (investigationCaps(limits, codeAccess).totalTokens * pricing.output) / 1_000_000
+}
+
+/** `At most about $4.40`; the history takes over once `MIN_ESTIMATE` analyses reported a cost. */
+export function ceilingLine(ceiling: number | undefined, stats: AnalysisCostStats): string | null {
+  return ceiling !== undefined && stats.count < MIN_ESTIMATE ? `At most about ${formatCostShort(ceiling)}` : null
+}
+
+/** `min $0.04 · median $0.38 · max $1.27`; `null` until one completed analysis reported a cost. */
+export function perAnalysisLine(stats: AnalysisCostStats): string | null {
+  if (stats.min === undefined || stats.median === undefined || stats.max === undefined) return null
+  return `min ${formatCostShort(stats.min)} · median ${formatCostShort(stats.median)} · max ${formatCostShort(stats.max)}`
+}
+
+export function perAnalysisHint(stats: AnalysisCostStats, retentionDays: number | undefined): string {
+  return stats.count === 0
+    ? 'Min, median and max appear after the first completed analysis that reports a cost. Until then Reanalyze shows no estimate.'
+    : `${plural(stats.count, 'analysis', 'analyses')} with a reported cost${retentionDays === undefined ? '' : `, last ${plural(retentionDays, 'day')}`}`
+}
+
+/** `3 of 12 analyses`; `null` when every investigation reported its cost. */
+export function notReportedLine(stats: AnalysisCostStats): string | null {
+  return stats.unknown === 0
+    ? null
+    : `${stats.unknown} of ${plural(stats.count + stats.unknown, 'analysis', 'analyses')}`
+}
+
+/**
+ * The investigations of the last seven days from the list: `$4.82 · 12 analyses · 3 not reported`. A list at its
+ * limit may not reach back seven days: the line then says "at least".
+ */
+export function lastWeekLine(records: readonly AnalysisRecord[], now: number, complete: boolean): string {
+  const since = now - 7 * DAY_MS
+  const week = records.filter((record) => record.created_at >= since && record.analyst !== undefined)
+  const costs = week.flatMap((record) => (record.usage.llm_cost_usd === undefined ? [] : [record.usage.llm_cost_usd]))
+  const unknown = week.length - costs.length
+  const parts = [
+    costs.length > 0 ? formatCostShort(costs.reduce((sum, cost) => sum + cost, 0)) : undefined,
+    plural(week.length, 'analysis', 'analyses'),
+    unknown > 0 ? `${unknown} not reported` : undefined,
+  ].filter(Boolean)
+  return `${complete ? '' : 'at least '}${parts.join(' · ')}`
+}
+
+/** Under the cap field: how much of it today's reported cost is, or that an empty field means no cap. */
+export function capProgress(cost: MonitorCost, cap: number | undefined): string {
+  return cap === undefined
+    ? 'Empty means no cap.'
+    : `${formatCostShort(cost.today_usd)} of ${formatCostShort(cap)} reported today.`
+}
+
+/** The cap's rule. The monitor's day is a UTC day, so it says where that day ends on this machine. */
+export function capHelp(since: number): string {
+  return `When today's reported monitor cost reaches this amount, the monitor stops starting analyses on its own until the day ends. The day is UTC: it ends at ${clock(since + DAY_MS)} on this machine. Analyses you start by hand still run. Unknown costs aren't counted.`
 }

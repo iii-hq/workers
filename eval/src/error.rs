@@ -12,6 +12,10 @@ pub enum EvalError {
     Conflict(String),
     #[error("dependency error: {0}")]
     Dependency(String),
+    /// A dependency that never answered, so the call may still have taken
+    /// effect (unlike `Dependency`, which also covers an explicit refusal).
+    #[error("dependency error: {0}")]
+    Unanswered(String),
     #[error("state error: {0}")]
     State(String),
     #[error("serialization error: {0}")]

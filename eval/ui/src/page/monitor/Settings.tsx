@@ -18,20 +18,39 @@ import { errorMessage } from '@iii-dev/console-ui/format'
 import { ArrowLeft, CircleAlert, CircleCheck, LoaderCircle, RefreshCw, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EvalApi } from '../../api'
-import type { CatalogModel, MonitorConfig, MonitorLimits, MonitorState, ThinkingLevel } from '../../types'
+import type {
+  AnalysisRecord,
+  CatalogModel,
+  MonitorConfig,
+  MonitorLimits,
+  MonitorState,
+  ThinkingLevel,
+} from '../../types'
 import {
   buildCatalog,
   CODE_ACCESS_RISK,
+  capHelp,
+  capProgress,
+  ceilingLine,
   codeDirectoryError,
   codeDirectoryHelp,
   codeRepository,
+  costCeiling,
   type Draft,
+  dailyCostCap,
   draftFromConfig,
   isDirty,
   JUDGE,
+  lastWeekLine,
   limitRows,
+  MIN_ESTIMATE,
   modelLabel,
+  modelPriceHint,
+  notReportedLine,
   PROVIDER_DEFAULT,
+  parseCostCap,
+  perAnalysisHint,
+  perAnalysisLine,
   pickModel,
   runningHint,
   savedNotice,
@@ -41,12 +60,15 @@ import {
   triageHint,
   triageWarning,
 } from './settings-model'
+import { LIST_LIMIT } from './shell-state'
 
 export interface MonitorSettingsProps {
   api: EvalApi
   state: MonitorState | null
   /** What the monitor enforces; the Limits section waits for it. */
   limits: MonitorLimits | undefined
+  /** The listed analyses, for the last seven days of the Cost section; `null` until they are read. */
+  records: AnalysisRecord[] | null
   /** Analyses in flight: they keep the model they started with. */
   runningCount: number
   /** One level at a time: only then does the page need its own way back to the list. */
@@ -55,6 +77,11 @@ export interface MonitorSettingsProps {
   onClose?: () => void
   /** Reports unsaved edits so the host can guard navigation (`setDirty`). */
   onDirtyChange?: (dirty: boolean) => void
+  /** Asked before observation starts; `false` keeps the settings as they are (`Triage is unavailable`). */
+  confirmStart: () => Promise<boolean>
+  /** "Change cap" opened the settings: scroll to the cap field and focus it, then say so. */
+  focusCap: boolean
+  onCapFocused: () => void
 }
 
 type Load<T> = { status: 'loading' } | { status: 'ready'; value: T } | { status: 'error'; message: string }
@@ -92,11 +119,15 @@ export function MonitorSettings({
   api,
   state,
   limits,
+  records,
   runningCount,
   narrow,
   onSaved,
   onClose,
   onDirtyChange,
+  confirmStart,
+  focusCap,
+  onCapFocused,
 }: MonitorSettingsProps) {
   const [baseline, setBaseline] = useState<MonitorConfig | null>(state?.config ?? null)
   const editing = baseline !== null
@@ -133,10 +164,24 @@ export function MonitorSettings({
   )
   const entry = draft.modelKey ? view.byKey.get(draft.modelKey) : undefined
   const choices = thinkingChoices(entry)
+  // Until the history can say what an analysis costs, the limits and the chosen model's price give a ceiling.
+  const ceiling =
+    state && limits
+      ? ceilingLine(costCeiling(limits, Boolean(codeRepository(draft)), entry?.pricing), state.cost.per_analysis)
+      : null
 
   const busy = saving !== null
   const dirty = isDirty(base, draft)
-  const canSave = entry !== undefined && !busy
+  const cap = parseCostCap(draft.costCap)
+  const canSave = entry !== undefined && !busy && cap.error === undefined
+
+  const capRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (!focusCap) return
+    capRef.current?.scrollIntoView({ block: 'center' })
+    capRef.current?.focus()
+    onCapFocused()
+  }, [focusCap, onCapFocused])
 
   const onDirtyRef = useRef(onDirtyChange)
   onDirtyRef.current = onDirtyChange
@@ -167,6 +212,7 @@ export function MonitorSettings({
         enabled,
         toMonitorModel(entry, draft.thinking, baseline?.model ?? null),
         codeRepository(draft),
+        dailyCostCap(draft),
       )
       setNotice(
         savedNotice({
@@ -188,6 +234,12 @@ export function MonitorSettings({
     } finally {
       setSaving(null)
     }
+  }
+
+  /** Turning observation on starts analyzing: triage that cannot run is said before anything is saved. */
+  const begin = async (enabled: boolean, kind: 'paused' | 'observing' | 'changes') => {
+    if (enabled && !baseline?.enabled && !(await confirmStart())) return
+    await save(enabled, kind)
   }
 
   const back = async () => {
@@ -213,6 +265,7 @@ export function MonitorSettings({
   const thinkingPlaceholder = !entry || catalogFailed ? 'Choose a model first' : 'Provider default'
   const thinkingValue = !catalogFailed && entry && choices.length > 0 ? (draft.thinking ?? PROVIDER_DEFAULT) : undefined
 
+  const priceHint = catalogFailed ? null : modelPriceHint(entry)
   let modelHint: string | null = null
   if (!baseline) {
     modelHint =
@@ -365,6 +418,7 @@ export function MonitorSettings({
               />
             ) : null}
           </SettingsList>
+          {priceHint ? <p className="eval-ui-settings-hint">{priceHint}</p> : null}
           {modelHint ? <p className="eval-ui-settings-hint">{modelHint}</p> : null}
         </SettingsSection>
 
@@ -521,6 +575,84 @@ export function MonitorSettings({
           </SettingsSection>
         ) : null}
 
+        {state ? (
+          <SettingsSection
+            title="Cost"
+            description="What the monitor has spent, from your own analyses. Nothing here is a forecast."
+          >
+            <SettingsList>
+              <SettingsRow
+                label="Per analysis"
+                description={perAnalysisHint(state.cost.per_analysis, limits?.retention_days)}
+                control={
+                  <span className="eval-ui-settings-mono eval-ui-settings-value">
+                    {perAnalysisLine(state.cost.per_analysis) ?? 'Not known yet'}
+                  </span>
+                }
+              />
+              {ceiling ? (
+                <SettingsRow
+                  label="At most per analysis"
+                  description={`The investigation's token cap at ${entry?.model ?? 'the chosen model'}'s output price: a ceiling, not a forecast, since real runs read mostly cached input. It stays until ${MIN_ESTIMATE} analyses report a cost. Set a daily cap below before you start observing.`}
+                  control={<span className="eval-ui-settings-mono eval-ui-settings-value">{ceiling}</span>}
+                />
+              ) : null}
+              {notReportedLine(state.cost.per_analysis) ? (
+                <SettingsRow
+                  label="Not reported"
+                  description="Left out of the figures above. Never counted as $0."
+                  control={
+                    <span className="eval-ui-settings-mono eval-ui-settings-value">
+                      {notReportedLine(state.cost.per_analysis)}
+                    </span>
+                  }
+                />
+              ) : null}
+              {records ? (
+                <SettingsRow
+                  label="Last 7 days"
+                  control={
+                    <span className="eval-ui-settings-mono eval-ui-settings-value">
+                      {lastWeekLine(records, Date.now(), records.length < LIST_LIMIT)}
+                    </span>
+                  }
+                />
+              ) : null}
+              <SettingsField
+                id="eval-settings-cost-cap"
+                field="daily_cost_cap_usd"
+                label={
+                  <>
+                    Daily cost cap <span className="eval-ui-settings-optional">USD · optional</span>
+                  </>
+                }
+                description={capProgress(state.cost, cap.cap)}
+                error={cap.error}
+                layout="stacked"
+                controlSize="compact"
+                renderControl={(controlProps) => (
+                  <span className="eval-ui-settings-money">
+                    <span aria-hidden="true">$</span>
+                    <Input
+                      {...controlProps}
+                      ref={capRef}
+                      className="eval-ui-settings-mono"
+                      inputMode="decimal"
+                      value={draft.costCap}
+                      placeholder="No cap"
+                      spellCheck={false}
+                      autoComplete="off"
+                      disabled={busy}
+                      onChange={(costCap) => edit((current) => ({ ...current, costCap }))}
+                    />
+                  </span>
+                )}
+              />
+            </SettingsList>
+            <p className="eval-ui-settings-hint">{capHelp(state.cost.since)}</p>
+          </SettingsSection>
+        ) : null}
+
         {saveError ? (
           <StatusPanel
             variant="alert"
@@ -551,7 +683,7 @@ export function MonitorSettings({
                 data-settings-narrow-action
                 aria-busy={saving === 'changes'}
                 disabled={!dirty || !canSave}
-                onClick={() => void save(draft.enabled, 'changes')}
+                onClick={() => void begin(draft.enabled, 'changes')}
               >
                 {saving === 'changes' ? <LoaderCircle aria-hidden className={uiClasses.spin} size={16} /> : null}
                 Save changes
@@ -574,7 +706,7 @@ export function MonitorSettings({
                 data-settings-narrow-action
                 aria-busy={saving === 'observing'}
                 disabled={!canSave}
-                onClick={() => void save(true, 'observing')}
+                onClick={() => void begin(true, 'observing')}
               >
                 {saving === 'observing' ? <LoaderCircle aria-hidden className={uiClasses.spin} size={16} /> : null}
                 Save and start observing

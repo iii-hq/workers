@@ -32,8 +32,8 @@ async-trait = "0.1"
 schemars = "0.8"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
+serde_yaml = "0.9"
 
 [dev-dependencies]
-serde_yaml = "0.9"
 futures-util = "0.3"
 tokio-tungstenite = "0.28"

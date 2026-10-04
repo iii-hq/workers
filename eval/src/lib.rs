@@ -3,6 +3,7 @@
 
 pub mod code;
 pub mod contract;
+pub mod cost;
 pub mod diagnostics;
 pub mod error;
 pub mod events;
@@ -12,7 +13,9 @@ pub mod locks;
 pub mod manifest;
 pub mod proposal;
 pub mod queue;
+pub mod review;
 pub mod runtime;
 pub mod state;
 pub mod surface;
 pub mod ui;
+pub mod validation;

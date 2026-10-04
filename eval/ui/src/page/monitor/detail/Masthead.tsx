@@ -13,6 +13,8 @@ import {
 import { Ban, ChevronLeft, Ellipsis, ExternalLink, RefreshCw, Trash2 } from 'lucide-react'
 import { isActive, statusPresentation } from '../../../model'
 import type { AnalysisRecord, Snapshot } from '../../../types'
+import { dayClock } from '../time'
+import type { TurnRelation } from './compare'
 import { Pill } from './marks'
 import { canReanalyze } from './notices'
 import { metaRest } from './present'
@@ -38,12 +40,19 @@ export function Masthead({
   narrow,
   actions,
   onBack,
+  turn,
+  now,
+  onSelect,
 }: {
   record: AnalysisRecord
   snapshot: Snapshot | undefined
   narrow: boolean
   actions: DetailActions
   onBack?: () => void
+  /** What this analysis replaced, or what replaced it; a link to that analysis. */
+  turn?: TurnRelation
+  now: number
+  onSelect: (evaluationId: string) => void
 }) {
   const active = isActive(record.status)
   const status = statusLabel(record)
@@ -80,6 +89,16 @@ export function Masthead({
         )}
         {' · '}
         {metaRest(record, snapshot)}
+        {turn ? (
+          <>
+            {' · '}
+            <button type="button" className="eval-ui-ad-meta-link" onClick={() => onSelect(turn.evaluationId)}>
+              <RefreshCw size={16} aria-hidden="true" className="eval-ui-ad-meta-icon" />
+              {turn.label} {turn.evaluationId}
+              {turn.at === undefined ? '' : ` · ${dayClock(turn.at, now)}`}
+            </button>
+          </>
+        ) : null}
       </p>
     </>
   )

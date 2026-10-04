@@ -274,13 +274,10 @@ Validar status, ID da avaliação, conjunto de respostas e domínio das opções
 
 ### Roteamento inicial para a LLM
 
-- Sempre investigar diagnósticos determinísticos relevantes.
-- Investigar `needs_investigation` e `insufficient_evidence`.
-- Investigar resposta com confidence abaixo de 0,8.
-- Auditar uma amostra estável de 5% dos demais casos: hash da chave de observação, módulo 100, menor que 5.
-- Análise manual solicita investigação mesmo quando a triagem não encontra um sinal.
+- Investigar se, e somente se, a triagem respondeu `needs_investigation`, em análises automáticas e manuais.
+- Diagnósticos determinísticos, `insufficient_evidence`, confidence baixa, cobertura insuficiente, pedido manual e amostra de sessões quietas não enviam a sessão à LLM por si sós. Os diagnósticos continuam no resultado.
 
-Registrar o motivo do roteamento. O limiar de 0,8 e a amostra de 5% são hipóteses operacionais iniciais, não medidas de acurácia. Validá-los com sessões revisadas antes de ampliá-los ou transformá-los em opções de configuração.
+Registrar o motivo do roteamento: `[needs_investigation]` ou `[]`. Os motivos antigos (`diagnostics`, `insufficient_evidence`, `low_confidence`, `coverage_insufficient`, `audit_sample`, `manual_request`) só permanecem no contrato para que registros já gravados continuem lendo; nada os produz mais. O limiar de 0,8 sobrevive apenas como o aviso de baixa confiança de `eval::propose-validation`.
 
 ## 7. Investigação com a LLM do usuário
 

@@ -1,17 +1,31 @@
 import { describe, expect, it } from 'vitest'
-import { LIMITS } from '../../fixtures'
-import type { CatalogModel, MonitorConfig } from '../../types'
+import { COST, LIMITS } from '../../fixtures'
+import type { AnalysisRecord, CatalogModel, MonitorConfig } from '../../types'
 import {
   buildCatalog,
   CODE_ACCESS_RISK,
+  COST_CAP_ERROR,
+  capHelp,
+  capProgress,
+  ceilingLine,
   codeDirectoryError,
   codeDirectoryHelp,
   codeRepository,
+  costCeiling,
+  dailyCostCap,
   draftFromConfig,
   isDirty,
+  lastWeekLine,
   limitRows,
   modelKey,
+  modelPriceHint,
+  notReportedLine,
+  parseCostCap,
+  perAnalysisHint,
+  perAnalysisLine,
   pickModel,
+  priceLine,
+  priceText,
   runningHint,
   savedNotice,
   thinkingChoices,
@@ -21,17 +35,31 @@ import {
 } from './settings-model'
 
 const catalog: CatalogModel[] = [
-  { id: 'deepseek-v4-pro', provider: 'deepseek', context_window: 1, max_output_tokens: 1, supports_thinking: true },
+  {
+    id: 'deepseek-v4-pro',
+    provider: 'deepseek',
+    context_window: 1_000_000,
+    max_output_tokens: 1,
+    supports_thinking: true,
+    pricing: { input: 1.32, output: 3.96 },
+  },
   {
     id: 'claude-sonnet-5-5',
     provider: 'anthropic',
-    context_window: 1,
+    context_window: 1_048_576,
     max_output_tokens: 1,
     supports_thinking: true,
     supports_xhigh: true,
+    pricing: { input: 4, output: 20, cache_read: 0.4 },
   },
-  { id: 'claude-haiku-4-5', provider: 'anthropic', display_name: 'Haiku', context_window: 1, max_output_tokens: 1 },
-  { id: 'claude-haiku-4-5', provider: 'anthropic', context_window: 1, max_output_tokens: 1 },
+  {
+    id: 'claude-haiku-4-5',
+    provider: 'anthropic',
+    display_name: 'Haiku',
+    context_window: 200_000,
+    max_output_tokens: 1,
+  },
+  { id: 'claude-haiku-4-5', provider: 'anthropic', context_window: 200_000, max_output_tokens: 1 },
 ]
 
 const config = (patch: Partial<MonitorConfig> = {}): MonitorConfig => ({
@@ -50,8 +78,10 @@ describe('buildCatalog', () => {
       'claude-haiku-4-5 · anthropic',
       'claude-sonnet-5-5 · anthropic',
     ])
-    expect(groups[0].options[1].description).toBe('thinking')
-    expect(groups[0].options[0].description).toBeUndefined()
+    expect(groups[0].options[1].description).toBe('$4 / $20 per Mtok · 1M ctx')
+    expect(groups[1].options[0].description).toBe('$1.32 / $3.96 per Mtok · 1M ctx')
+    // No price in the catalog: said so, never $0.
+    expect(groups[0].options[0].description).toBe('Price not listed · 200k ctx')
     expect(groups[0].options[0].keywords).toContain('Haiku')
   })
 
@@ -83,7 +113,13 @@ describe('thinkingChoices and pickModel', () => {
   })
 
   it('keeps the level only if the new model accepts it', () => {
-    const draft = { enabled: true, modelKey: sonnet?.key ?? null, thinking: 'xhigh' as const, codeDirectory: '' }
+    const draft = {
+      enabled: true,
+      modelKey: sonnet?.key ?? null,
+      thinking: 'xhigh' as const,
+      codeDirectory: '',
+      costCap: '',
+    }
     expect(pickModel(draft, deepseek!).thinking).toBeNull()
     expect(pickModel({ ...draft, thinking: 'high' }, deepseek!).thinking).toBe('high')
     expect(pickModel({ ...draft, thinking: 'high' }, haiku!).thinking).toBeNull()
@@ -101,7 +137,13 @@ describe('isDirty', () => {
   })
 
   it('first run starts paused with nothing chosen', () => {
-    expect(draftFromConfig(null)).toEqual({ enabled: false, modelKey: null, thinking: null, codeDirectory: '' })
+    expect(draftFromConfig(null)).toEqual({
+      enabled: false,
+      modelKey: null,
+      thinking: null,
+      codeDirectory: '',
+      costCap: '',
+    })
   })
 
   it('reads the saved directory, and ignores spaces around it', () => {
@@ -111,6 +153,137 @@ describe('isDirty', () => {
     expect(isDirty(saved, { ...saved, codeDirectory: '' })).toBe(true)
     const none = draftFromConfig(config())
     expect(isDirty(none, { ...none, codeDirectory: '   ' })).toBe(false)
+  })
+})
+
+describe('daily cost cap', () => {
+  it('is empty for no cap, and an amount above zero otherwise', () => {
+    expect(parseCostCap('')).toEqual({})
+    expect(parseCostCap('   ')).toEqual({})
+    expect(parseCostCap('5')).toEqual({ cap: 5 })
+    expect(parseCostCap(' $5.00 ')).toEqual({ cap: 5 })
+    expect(parseCostCap('.5')).toEqual({ cap: 0.5 })
+    for (const typed of ['0', '0.0', '-1', 'five', '1e3', '5,00', '1.2.3', 'Infinity']) {
+      expect(parseCostCap(typed), typed).toEqual({ error: COST_CAP_ERROR })
+    }
+  })
+
+  it('travels with the draft: saved caps read back, and only a different amount is a change', () => {
+    const saved = draftFromConfig(config({ daily_cost_cap_usd: 5 }))
+    expect(saved.costCap).toBe('5')
+    expect(draftFromConfig(config()).costCap).toBe('')
+    expect(isDirty(saved, { ...saved, costCap: '5.00' })).toBe(false)
+    expect(isDirty(saved, { ...saved, costCap: '7' })).toBe(true)
+    expect(isDirty(saved, { ...saved, costCap: '' })).toBe(true)
+    // An amount that cannot be read never equals what is saved.
+    const none = draftFromConfig(config())
+    expect(isDirty(none, { ...none, costCap: 'five' })).toBe(true)
+  })
+
+  it('sends the cap, or nothing to remove it', () => {
+    const base = draftFromConfig(config())
+    expect(dailyCostCap({ ...base, costCap: '2.5' })).toBe(2.5)
+    expect(dailyCostCap({ ...base, costCap: '' })).toBeUndefined()
+    expect(dailyCostCap({ ...base, costCap: 'nope' })).toBeUndefined()
+  })
+
+  it('shows how much of it today has used, and where the day ends on this machine', () => {
+    const cost = { ...COST, since: new Date(2026, 9, 3, 21, 0).getTime() - 86_400_000, today_usd: 0.91 }
+    expect(capProgress(cost, 5)).toBe('$0.91 of $5.00 reported today.')
+    expect(capProgress(cost, undefined)).toBe('Empty means no cap.')
+    expect(capHelp(cost.since)).toContain('The day is UTC: it ends at 21:00 on this machine.')
+    expect(capHelp(cost.since)).toContain("Analyses you start by hand still run. Unknown costs aren't counted.")
+  })
+
+  it('says in the notice what a save did to it', () => {
+    const input = { runningCount: 0, now: 5_000_000, budgetMs: LIMITS.analysis_budget_ms }
+    expect(savedNotice({ before: config(), after: config({ daily_cost_cap_usd: 5 }), ...input })).toBe(
+      'New analyses use claude-sonnet-5-5 · medium. Automatic analyses pause for the day once $5.00 is reported. Observation is on.',
+    )
+    expect(savedNotice({ before: config({ daily_cost_cap_usd: 5 }), after: config(), ...input })).toBe(
+      'New analyses use claude-sonnet-5-5 · medium. The daily cost cap is removed. Observation is on.',
+    )
+  })
+})
+
+describe('prices', () => {
+  it('writes both prices per million tokens, trailing zeros trimmed, and never $0 for a missing price', () => {
+    expect(priceText({ input: 15, output: 75 })).toBe('$15 / $75 per Mtok')
+    expect(priceText({ input: 0.3, output: 1.2 })).toBe('$0.3 / $1.2 per Mtok')
+    expect(priceText({ input: 1.32, output: 3.96 })).toBe('$1.32 / $3.96 per Mtok')
+    expect(priceText(undefined)).toBe('Price not listed')
+    expect(priceText({ input: 3 })).toBe('Price not listed')
+  })
+
+  it('adds the context window', () => {
+    expect(priceLine({ pricing: { input: 15, output: 75 }, contextWindow: 200_000 })).toBe(
+      '$15 / $75 per Mtok · 200k ctx',
+    )
+    expect(priceLine({ pricing: undefined, contextWindow: 1_000_000 })).toBe('Price not listed · 1M ctx')
+    expect(priceLine({ pricing: undefined, contextWindow: undefined })).toBe('Price not listed')
+  })
+
+  it('says under the picker what the chosen model costs, and what thinking does to a bill', () => {
+    const { byKey } = buildCatalog(catalog, config().model)
+    const sonnet = byKey.get(modelKey('anthropic', 'claude-sonnet-5-5'))
+    const haiku = byKey.get(modelKey('anthropic', 'claude-haiku-4-5'))
+    expect(modelPriceHint(sonnet)).toBe('$4 / $20 per Mtok · 1M ctx. Higher thinking levels are slower and cost more.')
+    expect(modelPriceHint(haiku)).toBe('Price not listed · 200k ctx.')
+    // A saved model the catalog does not list has no price to state.
+    expect(
+      modelPriceHint(buildCatalog([], config().model).byKey.get(modelKey('anthropic', 'claude-sonnet-5-5'))),
+    ).toBeNull()
+    expect(modelPriceHint(undefined)).toBeNull()
+  })
+})
+
+describe('cost section', () => {
+  const stats = { count: 9, min: 0.04, median: 0.38, max: 1.27, unknown: 3 }
+
+  it('states what an analysis has cost from the history, and says when there is none', () => {
+    expect(perAnalysisLine(stats)).toBe('min $0.04 · median $0.38 · max $1.27')
+    expect(perAnalysisHint(stats, 30)).toBe('9 analyses with a reported cost, last 30 days')
+    expect(perAnalysisHint({ ...stats, count: 1 }, undefined)).toBe('1 analysis with a reported cost')
+    expect(perAnalysisLine({ count: 0, unknown: 0 })).toBeNull()
+    expect(perAnalysisHint({ count: 0, unknown: 0 }, 30)).toContain('Until then Reanalyze shows no estimate.')
+  })
+
+  it('gives a ceiling before the history can say anything: the token cap at the output price', () => {
+    // 200,000 tokens at $20 per Mtok output; with code access 800,000.
+    const pricing = { input: 4, output: 20 }
+    expect(costCeiling(LIMITS, false, pricing)).toBe(4)
+    expect(costCeiling(LIMITS, true, pricing)).toBe(16)
+    // A price the catalog does not list is never read as free.
+    expect(costCeiling(LIMITS, true, undefined)).toBeUndefined()
+    expect(costCeiling(LIMITS, true, { input: 4 })).toBeUndefined()
+    const none = { count: 0, unknown: 0 }
+    expect(ceilingLine(16, none)).toBe('At most about $16.00')
+    expect(ceilingLine(16, { ...stats, count: 2 })).toBe('At most about $16.00')
+    // Three analyses with a reported cost: the history speaks, the ceiling goes.
+    expect(ceilingLine(16, { ...stats, count: 3 })).toBeNull()
+    expect(ceilingLine(undefined, none)).toBeNull()
+  })
+
+  it('counts the analyses that reported no cost apart, never as zero', () => {
+    expect(notReportedLine(stats)).toBe('3 of 12 analyses')
+    expect(notReportedLine({ ...stats, unknown: 0 })).toBeNull()
+  })
+
+  const DAY = 86_400_000
+  const NOW = new Date(2026, 9, 3, 12, 0).getTime()
+  const rec = (daysAgo: number, cost: number | undefined, ran = true) =>
+    ({
+      created_at: NOW - daysAgo * DAY,
+      analyst: ran ? { session_id: 'a', sent_at: 0 } : undefined,
+      usage: { llm_cost_usd: cost },
+    }) as unknown as AnalysisRecord
+
+  it('adds the last seven days from the list', () => {
+    const records = [rec(1, 1.5), rec(2, 3.32), rec(3, undefined), rec(8, 9), rec(1, undefined, false)]
+    expect(lastWeekLine(records, NOW, true)).toBe('$4.82 · 3 analyses · 1 not reported')
+    expect(lastWeekLine(records, NOW, false)).toBe('at least $4.82 · 3 analyses · 1 not reported')
+    expect(lastWeekLine([], NOW, true)).toBe('0 analyses')
+    expect(lastWeekLine([rec(1, undefined)], NOW, true)).toBe('1 analysis · 1 not reported')
   })
 })
 
@@ -259,7 +432,6 @@ describe('limitRows', () => {
       'Context to models': '192.0 KiB of JSON',
       'Investigation steps': '1',
       'Investigation tokens': '200k total · 16,384 output',
-      'Audit sample': '5% of sessions with no signal',
       Retention: '30 days · 1,000 finished analyses',
     })
   })

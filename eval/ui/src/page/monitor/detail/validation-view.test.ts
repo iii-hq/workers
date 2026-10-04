@@ -1,17 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import type { E2eExecution, E2eScenario, ValidationLink } from '../../../types'
 import {
-  aggregate,
   checkLabel,
   checkValue,
+  difference,
   formatClock,
   foundSummary,
   harnessNote,
   hasMeasures,
   latestLink,
-  measureRows,
   mismatches,
   reportProblem,
+  scenarioTables,
+  signalRow,
 } from './validation-view'
 
 const scenario = (over: Partial<E2eScenario> = {}): E2eScenario => ({
@@ -120,46 +121,141 @@ describe('runs', () => {
   })
 })
 
-describe('measures', () => {
-  it('weights the average of several scenarios by the runs that reported it', () => {
-    const two = run({
+describe('measures per scenario', () => {
+  const cohort = (over: Partial<E2eScenario> = {}) =>
+    scenario({ pass_rate: 1, p50_function_calls: 11, median_wall_time_ms: 15_100, ...over })
+  const rowsOf = (table: ReturnType<typeof scenarioTables>[number]) =>
+    Object.fromEntries(table.rows.map((r) => [r.key, r]))
+
+  it('puts the target scenario first and never averages scenarios together', () => {
+    const both = (id: string) => run({ scenarios: [scenario({ scenario_id: 'other' }), scenario({ scenario_id: id })] })
+    const tables = scenarioTables(link(both('tool_contract_recovery'), both('tool_contract_recovery')), {
+      target: 'tool_contract_recovery',
+    })
+    expect(tables.map((table) => [table.scenarioId, table.target])).toEqual([
+      ['tool_contract_recovery', true],
+      ['other', false],
+    ])
+    expect(tables[0].runs).toBe('5 runs per side')
+  })
+
+  it('computes the difference in code: absolute, relative, and points for a rate', () => {
+    const baseline = run({ scenarios: [cohort()] })
+    const candidate = run({
+      execution_id: 'exe_2',
       scenarios: [
-        scenario({ measures: { ...scenario().measures, tokens: { average: 100, samples: 1 } } }),
-        scenario({ scenario_id: 'other', measures: { ...scenario().measures, tokens: { average: 400, samples: 3 } } }),
+        cohort({
+          pass_rate: 0.6,
+          p50_function_calls: 8,
+          median_wall_time_ms: 14_600,
+          measures: { ...scenario().measures, cost_usd: { average: 0.17, samples: 5 } },
+        }),
       ],
     })
-    expect(aggregate(two, 'tokens')).toEqual({ average: 325, samples: 4 })
-  })
-
-  it('treats no sample as no value, never zero', () => {
-    const none = run({ scenarios: [scenario({ measures: { ...scenario().measures, cost_usd: { samples: 0 } } })] })
-    expect(aggregate(none, 'cost_usd')).toEqual({ samples: 0 })
-  })
-
-  it('shows each execution on its own with its sample count and gaps', () => {
-    const noCost = run({
-      execution_id: 'exe_2',
-      scenarios: [scenario({ measures: { ...scenario().measures, cost_usd: { samples: 0 } } })],
+    const [table] = scenarioTables(link(baseline, candidate), {
+      target: 'tool_contract_recovery',
+      primary: 'function_calls',
     })
-    const rows = Object.fromEntries(measureRows(run(), noCost).map((row) => [row.key, row]))
-    expect(rows.runs.baseline).toEqual({ value: '5' })
-    expect(rows.assessments.baseline).toEqual({ value: '8 / 8', sub: 'conclusion: passed' })
-    expect(rows.function_calls.baseline).toEqual({ value: '23', sub: '5 of 5 runs', warn: undefined })
-    expect(rows.tokens.baseline.value).toBe('61.3k')
-    expect(rows.duration_seconds.baseline.value).toBe('2m 14s')
-    expect(rows.cost_usd.baseline).toEqual({
-      value: '$0.21',
-      sub: '3 of 5 runs',
-      warn: 'Not reported in 2 of 5 runs',
-    })
-    expect(rows.cost_usd.candidate).toEqual({ warn: 'Not reported in 5 of 5 runs' })
+    const rows = rowsOf(table)
+    expect(rows.pass_rate.delta).toEqual({ abs: '-40 pp' })
+    expect(rows.function_calls.qualifier).toBe('median per run')
+    expect(rows.function_calls.delta).toEqual({ abs: '-3', pct: '-27 %' })
+    expect(rows.function_calls.primary).toBe(true)
+    expect(rows.cost_usd.primary).toBeUndefined()
+    expect(rows.cost_usd.delta?.abs).toBe('-$0.0400')
+    expect(rows.duration.delta?.abs).toBe('-500ms')
   })
 
-  it('leaves every cell empty for an execution without scenarios or assessments', () => {
-    const bare = run({ scenarios: [], assessments: undefined, conclusion: undefined })
-    expect(
-      measureRows(bare, bare).every((row) => row.baseline.value === undefined && row.baseline.warn === undefined),
-    ).toBe(true)
+  it('leaves the difference blank when a side reports nothing, and says so', () => {
+    const noCost = cohort({ measures: { ...scenario().measures, cost_usd: { samples: 0 } } })
+    const [table] = scenarioTables(link(run({ scenarios: [cohort()] }), run({ scenarios: [noCost] })), {})
+    const cost = rowsOf(table).cost_usd
+    expect(cost.delta).toBeUndefined()
+    expect(cost.candidate).toEqual({ warn: 'Not reported' })
+    expect(cost.baseline).toEqual({ value: '$0.2100', sub: '3 of 5 runs', warn: 'Not reported in 2' })
+  })
+
+  it('shows the cohort cost without a sample count the measure never had (new plan executions)', () => {
+    // The E2E reports tokens only in `scenario_metrics`: no cost measure, a cost per run from the cohort.
+    const planned = (cost: number) =>
+      cohort({ measures: { ...scenario().measures, cost_usd: { samples: 0 } }, cost_usd_per_run: cost })
+    const [table] = scenarioTables(
+      link(run({ scenarios: [planned(0.0039)] }), run({ scenarios: [planned(0.0037)] })),
+      {},
+    )
+    const cost = rowsOf(table).cost_usd
+    expect(cost.baseline).toEqual({ value: '$0.0039', sub: undefined, warn: undefined })
+    expect(cost.candidate).toEqual({ value: '$0.0037', sub: undefined, warn: undefined })
+    expect(cost.delta?.abs).toBe('-$0.0002')
+  })
+
+  it('says a handful of runs is descriptive only, and counts one run in the singular', () => {
+    const few = (runs: number) => run({ scenarios: [scenario({ run_count: runs })] })
+    const [one] = scenarioTables(link(few(1), few(1)), {})
+    expect(one.runs).toBe('1 run per side')
+    expect(one.caution).toBe('n=1 per side; the E2E advises at least 5, so these differences are descriptive only')
+    const [uneven] = scenarioTables(link(few(5), few(2)), {})
+    expect(uneven.caution).toMatch(/^n=5 and 2; the E2E advises at least 5/)
+    expect(scenarioTables(link(few(5), few(5)), {})[0].caution).toBeUndefined()
+    expect(scenarioTables(link(few(20), few(7)), {})[0].caution).toBeUndefined()
+  })
+
+  it('compares only like with like: a median against a mean has no difference', () => {
+    const [table] = scenarioTables(
+      link(run({ scenarios: [cohort()] }), run({ scenarios: [cohort({ p50_function_calls: undefined })] })),
+      {},
+    )
+    const calls = rowsOf(table).function_calls
+    expect(calls.qualifier).toBe('mean per run')
+    expect(calls.delta).toEqual({ abs: '0', pct: '0 %' })
+    const onlyMedian = scenarioTables(
+      link(
+        run({ scenarios: [cohort({ measures: { ...scenario().measures, function_calls: { samples: 0 } } })] }),
+        run({ scenarios: [cohort({ p50_function_calls: undefined })] }),
+      ),
+      {},
+    )[0]
+    expect(rowsOf(onlyMedian).function_calls.delta).toBeUndefined()
+    expect(rowsOf(onlyMedian).function_calls.baseline.sub).toBe('median per run')
+  })
+
+  it('has no relative change from a baseline of zero', () => {
+    expect(difference(0, 3, String)).toEqual({ abs: '+3', pct: undefined })
+    expect(difference(3, 0, String)).toEqual({ abs: '-3', pct: '-100 %' })
+  })
+
+  it('shows the signal the criterion counts, from the computed evidence, first in the target table', () => {
+    const side = (mean: number) => ({ execution_id: 'e', runs: [], n: 5, mean })
+    const evidence = {
+      scenario_id: 'tool_contract_recovery',
+      computed_at: 1,
+      baseline: side(3),
+      candidate: side(0),
+      computed_outcome: 'validated_improvement' as const,
+      reason: '',
+    }
+    const criterion = {
+      metric: 'signal_per_run' as const,
+      pattern: 'repeated_contract_discovery:engine::functions::info',
+      direction: 'decrease' as const,
+      min_effect: 0.5,
+      min_runs: 5,
+      scenario_id: 'tool_contract_recovery',
+      registered_at: 1,
+      registered_by: 'layon',
+    }
+    const row = signalRow(criterion, evidence)
+    expect(row?.label).toBe('repeated_contract_discovery')
+    expect(row?.delta).toEqual({ abs: '-3', pct: '-100 %' })
+    expect(row?.baseline).toEqual({ value: '3', sub: 'n=5' })
+    const [table] = scenarioTables(link(), { target: 'tool_contract_recovery', signal: row })
+    expect(table.rows[0].key).toBe('signal')
+    expect(signalRow({ ...criterion, metric: 'pass_rate' }, evidence)).toBeUndefined()
+  })
+
+  it('has nothing to show for an execution without scenarios', () => {
+    const bare = run({ scenarios: [] })
+    expect(scenarioTables(link(bare, bare), {})).toEqual([])
     expect(hasMeasures(link(bare, bare))).toBe(false)
     expect(hasMeasures(link())).toBe(true)
   })

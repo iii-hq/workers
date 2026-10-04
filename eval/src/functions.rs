@@ -6,8 +6,9 @@ use serde_json::json;
 
 use crate::contract::{
     AnalyzeSessionRequestV1, AttachValidationRequestV1, ConfigureRequestV1, EvalListRequestV1,
-    EvaluationIdRequestV1, MonitorStateRequestV1, ProposeValidationRequestV1, StepRequestV1,
-    SweepEventV1, WakeEventV1,
+    EvaluationIdRequestV1, MonitorStateRequestV1, ProposeValidationRequestV1, RecurrenceRequestV1,
+    ReviewRequestV1, ReviewsRequestV1, StartValidationRequestV1, StepRequestV1, SweepEventV1,
+    WakeEventV1,
 };
 use crate::runtime::Deps;
 
@@ -21,6 +22,10 @@ pub const CANCEL_ID: &str = "eval::cancel";
 pub const DELETE_ID: &str = "eval::delete";
 pub const ATTACH_VALIDATION_ID: &str = "eval::attach-validation";
 pub const PROPOSE_VALIDATION_ID: &str = "eval::propose-validation";
+pub const START_VALIDATION_ID: &str = "eval::start-validation";
+pub const REVIEW_ID: &str = "eval::review";
+pub const REVIEWS_ID: &str = "eval::reviews";
+pub const RECURRENCE_ID: &str = "eval::recurrence";
 pub const STEP_ID: &str = "eval::step";
 pub const WAKE_ID: &str = "eval::on-turn-completed";
 pub const SWEEP_ID: &str = "eval::sweep";
@@ -43,7 +48,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              router::models::list; credentials stay in the providers and are never accepted \
              here. An optional code_repository (an absolute directory on this host, normally \
              the iii workers repository) lets the investigation read that code like a chat \
-             with the directory selected, and for now with every function allowed. Analyses \
+             with the directory selected, and for now with every function allowed. An optional \
+             daily_cost_cap_usd pauses automatic observation for the rest of the UTC day once the \
+             known investigation cost reaches it (manual analyses are never refused). Analyses \
              already admitted keep the configuration they started with.",
         ),
     );
@@ -61,8 +68,10 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         })
         .description(
             "Read the monitor configuration (null until configured), whether the \
-             harness::turn-completed observation trigger was requested, the latest capacity \
-             rejection and, with check_providers, whether the Jev triage provider answers.",
+             harness::turn-completed observation trigger was requested, the latest rejection \
+             (capacity or daily cost cap), the day's known investigation cost against the cap with \
+             what one analysis has cost, and, with check_providers, whether the Jev triage \
+             provider answers.",
         ),
     );
 
@@ -96,7 +105,8 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             }
         })
         .description(
-            "List recent monitor analyses as compact records, newest first, without evidence.",
+            "List recent monitor analyses as compact records, newest first, without evidence; \
+             observation_key keeps only the analyses of one observed turn.",
         ),
     );
 
@@ -180,7 +190,8 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         .description(
             "Link a baseline and a candidate E2E execution (read through \
              e2e::dashboard::execution-get) to one suggestion of a terminal analysis. The link \
-             records report availability; it is not a verdict and starts no campaign.",
+             records report availability and, when the suggestion's scenario is known, the \
+             evidence computed from the runs; it is not a verdict and starts no campaign.",
         ),
     );
 
@@ -201,6 +212,87 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              pre-filters the comparable pairs and counts the runs it leaves out; Jev only \
              chooses among them. Nothing is attached and no campaign starts; the call's Jev \
              usage is added to the analysis. Its confidence is not proof: check the runs.",
+        ),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        START_VALIDATION_ID,
+        RegisterFunction::new_async(move |request: StartValidationRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::validation::start_validation(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "Explicitly start a baseline and a candidate E2E execution for one suggestion. Both \
+             commits (candidate_ref, and baseline_ref or the merge base with origin/main) are \
+             resolved with git in the configured code_repository and must be on a remote branch; \
+             each stack is the E2E's `harness` template with only the Harness pinned to its commit, \
+             run in Docker (runs 1-20, default 5). The criterion is registered before anything \
+             starts; the sweep attaches the pair when both finish and computes the evidence. \
+             Spends model tokens, and never runs unless called. With dry_run: true it only \
+             resolves and checks the refs, scenario and runs and answers with the resolved \
+             commits (`baseline`, `candidate`, `warnings`); it registers nothing and calls no \
+             E2E function.",
+        ),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        REVIEW_ID,
+        RegisterFunction::new_async(move |request: ReviewRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::review::review(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "Record what a person decided about a suggestion of a terminal analysis: move its \
+             lifecycle (new, accepted, in_progress, shipped, rejected, duplicate), register the \
+             criterion a validation is judged by, or record a verdict. A verdict of \
+             validated_improvement is refused unless the criterion was registered before the \
+             first attached pair or run and both sides have min_runs completed runs. The author \
+             is `by`, else the eval host's user, else the caller's identity.",
+        ),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        REVIEWS_ID,
+        RegisterFunction::new_async(move |request: ReviewsRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::review::reviews(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "List the stored suggestion reviews (lifecycle, criterion, run, evidence, verdict) \
+             and, per analysis with suggestions, how many sit at each lifecycle status.",
+        ),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        RECURRENCE_ID,
+        RegisterFunction::new_async(move |request: RecurrenceRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::review::recurrence(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "For a suggestion marked shipped with its version, how often its patterns were found \
+             per analysis on Harness versions before it against from it on. Analyses without a \
+             semantic Harness version are left out and counted.",
         ),
     );
 

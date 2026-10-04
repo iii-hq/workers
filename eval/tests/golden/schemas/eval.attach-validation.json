@@ -191,6 +191,14 @@
             },
             "type": "array"
           },
+          "started_at": {
+            "description": "When the E2E started the execution (ms since the Unix epoch): its results cannot have existed before.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "status": {
             "type": [
               "string",
@@ -260,9 +268,33 @@
               "null"
             ]
           },
+          "completed_runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "contract_fingerprint": {
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "cost_usd_per_run": {
+            "description": "The cohort's total cost divided by its completed runs; the total also covers failed attempts.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "mean_score": {
+            "description": "Mean score of the scored runs (0 to 100).",
+            "format": "double",
+            "type": [
+              "number",
               "null"
             ]
           },
@@ -273,6 +305,36 @@
             "description": "`function_calls`, `function_call_errors`, `tokens`, `duration_seconds` and `cost_usd`, when reported.",
             "type": "object"
           },
+          "median_wall_time_ms": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "p50_function_calls": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "pass_rate": {
+            "description": "The scenario's cohort in `plan_execution.measurements.cohorts[]`, when the execution has exactly one for it. Each value below is absent when the E2E did not report it, never zero.\n\nShare of the planned runs that passed (0 to 1).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "planned_runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "run_count": {
             "format": "uint32",
             "minimum": 0.0,
@@ -280,6 +342,14 @@
           },
           "scenario_id": {
             "type": "string"
+          },
+          "total_tokens_per_run": {
+            "description": "The cohort's total tokens divided by its completed runs.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
           }
         },
         "required": [

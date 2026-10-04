@@ -4,8 +4,6 @@ use uuid::Uuid;
 /// Prefix of every investigation session the monitor creates. Recursion
 /// guard only — it is not an access check.
 pub const ANALYST_PREFIX: &str = "eval_monitor_";
-/// Percentage of otherwise quiet sessions sent to the LLM for audit.
-pub const AUDIT_SAMPLE_PERCENT: u32 = 5;
 
 pub fn evaluation_id() -> String {
     format!("eval_{}", Uuid::new_v4().simple())
@@ -29,15 +27,6 @@ pub fn judge_request_id(evaluation_id: &str, step: u64) -> String {
 /// once its call ended, so a repeated click must not reuse one.
 pub fn proposal_request_id(evaluation_id: &str) -> String {
     format!("{evaluation_id}-propose-{}", Uuid::new_v4().simple())
-}
-
-/// Deterministic audit sample: the first 32 bits of the observation key,
-/// modulo 100.
-pub fn audit_sample(observation_key: &str) -> bool {
-    observation_key
-        .get(..8)
-        .and_then(|prefix| u32::from_str_radix(prefix, 16).ok())
-        .is_some_and(|value| value % 100 < AUDIT_SAMPLE_PERCENT)
 }
 
 pub fn sha256_text(value: &str) -> String {
@@ -68,13 +57,5 @@ mod tests {
         let first = proposal_request_id("eval_x");
         assert!(first.starts_with("eval_x-propose-") && first.len() <= 128);
         assert_ne!(first, proposal_request_id("eval_x"));
-    }
-
-    #[test]
-    fn audit_sample_is_about_five_percent() {
-        let sampled = (0..10_000)
-            .filter(|index| audit_sample(&observation_key("s", &index.to_string())))
-            .count();
-        assert!((350..650).contains(&sampled), "sampled {sampled}");
     }
 }

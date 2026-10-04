@@ -24,6 +24,7 @@ import { type E2eRun, runGroups, runName, withPicked } from './e2e-runs'
 import { FillRow, JevNotices, NoRunsPanel, PlanHint, RunsDownPanel } from './JevParts'
 import { type JevPair, needsNewCase } from './jev-fill'
 import { RunPicker } from './RunPicker'
+import { usePhoneViewport } from './review-parts'
 import { useJevFill } from './use-jev-fill'
 import { useRunList } from './use-run-list'
 import {
@@ -39,25 +40,6 @@ import {
 } from './validation-lookup'
 import { CheckList, HarnessLine, Mismatches } from './validation-parts'
 import { foundSummary, mismatches } from './validation-view'
-
-// The shared BottomSheet is hidden from the `md` breakpoint (768 px) up, so a
-// narrow pane in a wide window gets the Dialog; only a phone gets the sheet.
-const PHONE_QUERY = '(max-width: 767px)'
-
-function usePhoneViewport(): boolean {
-  const [phone, setPhone] = useState(
-    () => typeof window !== 'undefined' && window.matchMedia?.(PHONE_QUERY).matches === true,
-  )
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return
-    const media = window.matchMedia(PHONE_QUERY)
-    const update = () => setPhone(media.matches)
-    update()
-    media.addEventListener('change', update)
-    return () => media.removeEventListener('change', update)
-  }, [])
-  return phone
-}
 
 function Line({
   tone,

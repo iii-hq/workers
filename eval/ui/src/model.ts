@@ -10,6 +10,7 @@ import type {
   MonitorUsage,
   SignalAssessment,
   Snapshot,
+  Suggestion,
 } from './types'
 
 export type Tone = 'ok' | 'accent' | 'warn' | 'alert' | 'neutral'
@@ -86,7 +87,6 @@ function stageName(stage: AnalysisStatus | undefined): string {
 
 /** The quiet second line of a history row. */
 export function rowDetail(record: AnalysisRecord): string {
-  const reasons = record.routing?.reasons ?? []
   if (record.status === 'collecting' && record.pending_reason) {
     return record.pending_reason.includes('descendant') ? 'children running' : 'waiting'
   }
@@ -96,8 +96,6 @@ export function rowDetail(record: AnalysisRecord): string {
     return at ? `during ${stageName(at.status)}` : 'cancelled'
   }
   if (record.counters.diagnostics > 0) return plural(record.counters.diagnostics, 'signal')
-  if (reasons.includes('audit_sample')) return 'audit sample'
-  if (reasons.includes('manual_request')) return 'manual'
   return record.status === 'completed' ? 'no signals' : STAGE_LABEL[record.status].toLowerCase()
 }
 
@@ -323,5 +321,78 @@ export function planMarkdown(
     '',
     'Non-regression controls:',
     ...plan.non_regression_controls.map((item) => `- ${item}`),
+  ].join('\n')
+}
+
+/** `03 Oct 10:12`, local time: when something was decided. */
+export function formatStamp(ms: number): string {
+  const date = new Date(ms)
+  const month = date.toLocaleString('en-US', { month: 'short' })
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${pad(date.getDate())} ${month} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+export interface BriefInput {
+  analysisId: string
+  sessionId: string
+  turnId: string
+  harnessVersion?: string
+  /** 0-based. */
+  index: number
+  suggestion: Suggestion
+  /** Where the suggestion stands, as a sentence (`Accepted by layon, 02 Oct 21:14`). */
+  status?: string
+  /** The registered success criterion, as a sentence. */
+  criterion?: string
+  /** The directory the investigation read code in. */
+  codeRoot?: string
+}
+
+/**
+ * The handoff to whoever implements a suggestion, from stored fields only: a
+ * person or a chat reads it, a model never summarizes it. A section with
+ * nothing to say is left out.
+ */
+export function briefMarkdown(input: BriefInput): string {
+  const { suggestion, index } = input
+  const { validation } = suggestion
+  const section = (title: string, lines: string[]): string[] => {
+    const kept = lines.filter((line) => line.trim() !== '')
+    return kept.length > 0 ? ['', `## ${title}`, ...kept] : []
+  }
+  const codeRefs = suggestion.code_refs.map((ref) =>
+    ref.line_from === ref.line_to ? `- ${ref.path}:${ref.line_from}` : `- ${ref.path}:${ref.line_from}-${ref.line_to}`,
+  )
+  const entries = suggestion.evidence.map((ref) => ref.entry_id)
+  const controls = [...validation.invariants, ...validation.non_regression_controls]
+  return [
+    `# Implement: ${suggestion.title}`,
+    [
+      `Analysis ${input.analysisId}`,
+      `S${index + 1}`,
+      `observed session ${input.sessionId}`,
+      `turn ${input.turnId}`,
+      input.harnessVersion ? `Harness ${input.harnessVersion}` : '',
+    ]
+      .filter(Boolean)
+      .join(' · '),
+    ...(input.status ? [`Status: ${input.status}`] : []),
+    ...section('Observation', [suggestion.observation]),
+    ...section('Hypothesis (not proven)', [suggestion.hypothesis]),
+    ...section('Proposed change', [`Harness area: ${suggestion.harness_component}`, suggestion.proposed_change]),
+    ...section('Expected effect', [suggestion.expected_effect]),
+    ...section('Code read', codeRefs.length > 0 && input.codeRoot ? [`In ${input.codeRoot}`, ...codeRefs] : codeRefs),
+    ...section(
+      'Evidence in the analysis',
+      entries.length > 0 ? [`${entries.join(', ')} (open ${input.analysisId} for the entries)`] : [],
+    ),
+    ...section('Limitations', [suggestion.limitations]),
+    ...section('Prove it in E2E', [
+      `Scenario: ${validation.scenario_id ?? 'new case needed'}`,
+      ...(input.criterion ? [`Criterion: ${input.criterion}`] : []),
+      `Primary metric: ${validation.primary_metric}`,
+      `Expectation: ${validation.expectation}`,
+      ...(controls.length > 0 ? ['Controls:', ...controls.map((control) => `- ${control}`)] : []),
+    ]),
   ].join('\n')
 }

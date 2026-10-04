@@ -162,6 +162,48 @@
   overflow-wrap: anywhere;
 }
 
+/* Triage that cannot run: the row says so in alert ink, the warning panel above it says why. */
+[data-iii-ui="eval"] .eval-ui-status-lines dd[data-tone="alert"] {
+  color: var(--color-alert-strong);
+}
+
+[data-iii-ui="eval"] .eval-ui-status-triage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-status-triage p {
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-status-cap {
+  align-self: flex-start;
+}
+
+/* A button that reads as a link inside a sentence ("Check again"). */
+[data-iii-ui="eval"] .eval-ui-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+[data-iii-ui="eval"] .eval-ui-link:disabled {
+  color: var(--color-ink-faint);
+  cursor: default;
+}
+
+[data-iii-ui="eval"] .eval-ui-link:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+
 /* ── monitor: analyze form and filter ────────────────────────────────── */
 
 [data-iii-ui="eval"] .eval-ui-analyze {
@@ -310,6 +352,103 @@
   white-space: nowrap;
 }
 
+/* ── monitor: analyses grouped by the turn they observed ─────────────── */
+
+[data-iii-ui="eval"] .eval-ui-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-block: 6px;
+}
+
+[data-iii-ui="eval"] .eval-ui-group-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-iii-ui="eval"] .eval-ui-group-head:hover {
+  background: var(--color-surface);
+}
+
+[data-iii-ui="eval"] .eval-ui-group-head:focus-visible,
+[data-iii-ui="eval"] .eval-ui-group-more:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+
+[data-iii-ui="eval"] .eval-ui-group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-group-title svg {
+  flex: none;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="eval"] .eval-ui-group-name {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="eval"] .eval-ui-group-source,
+[data-iii-ui="eval"] .eval-ui-group-tally {
+  overflow: hidden;
+  padding-left: 20px;
+  color: var(--color-ink-faint);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="eval"] .eval-ui-group-source {
+  font-family: var(--font-mono);
+}
+
+[data-iii-ui="eval"] .eval-ui-group-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-group-more {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+[data-iii-ui="eval"] .eval-ui-group-more:hover {
+  color: var(--color-ink);
+}
+
 /* ── monitor: first-load skeleton rows (the rows' shape) ─────────────── */
 
 [data-iii-ui="eval"] .eval-ui-skeleton-rows {
@@ -403,4 +542,251 @@
 
 [data-iii-ui="eval"] .eval-ui-monitor[data-narrow="true"] .eval-ui-main-empty {
   padding: 32px 16px;
+}
+
+[data-iii-ui="eval"] .eval-ui-monitor[data-narrow="true"] .eval-ui-group-head,
+[data-iii-ui="eval"] .eval-ui-monitor[data-narrow="true"] .eval-ui-group-more {
+  min-height: 44px;
+}
+
+/* ── confirmations ───────────────────────────────────────────────────── */
+
+/* The details of a confirmation are whole sentences: they wrap instead of ending in an ellipsis. */
+[data-iii-ui="eval"] [role="alertdialog"] li.truncate {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+/* ── detail: notices ─────────────────────────────────────────────────── */
+
+/* The one action of a notice sits inside it, under the facts. */
+[data-iii-ui="eval"] .eval-ui-ad-notice-body .eval-ui-ad-notice-actions {
+  margin-top: 8px;
+}
+
+/* ── detail: the other analyses of the turn (rail tile) ──────────────── */
+
+[data-iii-ui="eval"] .eval-ui-oa-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-oa-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 0;
+  box-shadow: inset 0 1px 0 var(--color-panel);
+}
+
+[data-iii-ui="eval"] .eval-ui-oa-row:first-child {
+  box-shadow: none;
+  padding-top: 0;
+}
+
+/* The row is a link to that analysis. */
+[data-iii-ui="eval"] .eval-ui-oa-open {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--color-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-iii-ui="eval"] .eval-ui-oa-open:hover .eval-ui-ad-mono {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+[data-iii-ui="eval"] .eval-ui-oa-open:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+
+[data-iii-ui="eval"] .eval-ui-oa-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-oa-note {
+  font-size: 11.5px;
+}
+
+[data-iii-ui="eval"] .eval-ui-oa-compare[aria-pressed="true"] {
+  background: var(--color-surface-selected);
+}
+
+[data-iii-ui="eval"] .eval-ui-oa-more {
+  align-self: flex-start;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+[data-iii-ui="eval"] .eval-ui-oa-more:hover {
+  color: var(--color-ink);
+}
+
+[data-iii-ui="eval"] .eval-ui-ad[data-narrow] .eval-ui-oa-open,
+[data-iii-ui="eval"] .eval-ui-ad[data-narrow] .eval-ui-oa-more,
+[data-iii-ui="eval"] .eval-ui-ad[data-narrow] .eval-ui-oa-compare {
+  min-height: 44px;
+}
+
+/* In the two-column rail of a medium pane the tile takes the whole row, and the cost tile after it too. */
+@container eval-detail (max-width: 875px) {
+  [data-iii-ui="eval"] .eval-ui-oa,
+  [data-iii-ui="eval"] .eval-ui-oa + .eval-ui-ad-tile:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+[data-iii-ui="eval"] .eval-ui-ad-meta-icon {
+  display: inline-block;
+  margin-right: 3px;
+  vertical-align: -2px;
+}
+
+/* ── detail: comparison of two analyses of one turn ──────────────────── */
+
+[data-iii-ui="eval"] .eval-ui-cmp {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 20px;
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp:focus {
+  outline: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp-head svg {
+  flex: none;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp-close {
+  margin-left: auto;
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 12.5px;
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp-pick > :last-child {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp-summary,
+[data-iii-ui="eval"] .eval-ui-cmp-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-panel-raised);
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp-note,
+[data-iii-ui="eval"] .eval-ui-cmp-caption {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp-signals {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-selected);
+  font-size: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp-signals-head,
+[data-iii-ui="eval"] .eval-ui-cmp-signal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-cmp-tag {
+  padding: 0 6px;
+  border-radius: 9999px;
+  background: var(--color-surface);
+  font-size: 11px;
+}
+
+[data-iii-ui="eval"] .eval-ui-ad[data-narrow] .eval-ui-cmp {
+  padding: 14px 16px;
+}
+
+[data-iii-ui="eval"] .eval-ui-ad[data-narrow] .eval-ui-cmp-close {
+  min-height: 44px;
 }

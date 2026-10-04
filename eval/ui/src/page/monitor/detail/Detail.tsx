@@ -17,8 +17,11 @@ import type { EvalApi } from '../../../api'
 import { isActive, statusPresentation } from '../../../model'
 import type { AnalysisResult, EntryRef, MonitorLimits } from '../../../types'
 import { canOpenSession, openSession } from '../open-session'
+import type { SpendGuide } from '../shell-state'
+import { turnRelation } from './compare'
 import { Evidence } from './Evidence'
 import { Masthead } from './Masthead'
+import { Comparison, useTurnAnalyses } from './OtherAnalyses'
 import { Pipeline } from './Pipeline'
 import { Rail } from './Rail'
 import { Signals } from './Signals'
@@ -40,6 +43,8 @@ export interface AnalysisDetailProps {
   limits: MonitorLimits | undefined
   /** Bumps when the list re-reads or an analysis finished elsewhere. */
   refreshKey: number
+  /** What a new analysis would cost, and the question that comes before it starts. */
+  spend: SpendGuide
   onBack?: () => void
   onSelect: (evaluationId: string) => void
   onChanged: () => void
@@ -143,6 +148,7 @@ function DetailBody({
   narrow,
   limits,
   refreshKey,
+  spend,
   onBack,
   onSelect,
   onChanged,
@@ -191,6 +197,9 @@ function DetailBody({
   }, [load, refreshKey])
 
   const running = result ? isActive(result.record.status) : false
+  // The analyses of this turn: the rail lists them, the masthead says what this one replaced, Compare reads one.
+  const turn = useTurnAnalyses(api, result?.record, refreshKey)
+  const [comparing, setComparing] = useState<string | null>(null)
   // The clock and the poll belong to an analysis that is running; a hidden
   // browser tab pauses both.
   const watching = running
@@ -277,6 +286,7 @@ function DetailBody({
       reanalyze: () =>
         void run('reanalyze', async () => {
           if (!sessionId) return
+          if (!(await spend.confirm('reanalyze'))) return
           const started = await api.analyze(sessionId, true)
           announce('Reanalysis started')
           onChanged()
@@ -315,6 +325,7 @@ function DetailBody({
       run,
       sessionId,
       show,
+      spend,
     ],
   )
 
@@ -363,21 +374,58 @@ function DetailBody({
   const terminal = !running
   const snapshot = assets.snapshot
 
-  const rail = <Rail record={record} assets={assets} openInvestigation={actions.openInvestigation} />
+  const rail = (
+    <Rail
+      record={record}
+      assets={assets}
+      openInvestigation={actions.openInvestigation}
+      turn={turn}
+      now={now}
+      comparing={comparing}
+      onSelect={onSelect}
+      onCompare={(evaluationId) => {
+        const closing = comparing === evaluationId
+        setComparing(closing ? null : evaluationId)
+        // The panel sits in the main column: under the rail on a narrow pane.
+        if (!closing) {
+          window.requestAnimationFrame(() =>
+            scrollToElement(root.current?.querySelector<HTMLElement>('[data-section="comparison"]')),
+          )
+        }
+      }}
+    />
+  )
+  /** What people decide about a suggestion (or a pair attached to it) changed: read the analysis again. */
+  const reviewed = () => {
+    void load(false)
+    onChanged()
+  }
   const main = (
     <div className="eval-ui-ad-main">
+      {comparing ? (
+        <Comparison
+          api={api}
+          current={result}
+          otherId={comparing}
+          rows={turn}
+          now={now}
+          onPick={setComparing}
+          onClose={() => setComparing(null)}
+        />
+      ) : null}
       <Suggestions
         api={api}
         evaluationId={evaluationId}
+        record={record}
         assets={assets}
+        reviews={result.reviews}
         narrow={narrow}
         terminal={terminal}
         onJump={onJump}
         onOpenE2e={host.panels?.openScreen ? openE2e : undefined}
-        onAttached={() => {
-          void load(false)
-          onChanged()
-        }}
+        onAttached={reviewed}
+        onReviewed={reviewed}
+        onDraft={host.chat?.openDraft ? (draft) => host.chat?.openDraft?.(draft) : undefined}
       />
       {snapshot ? (
         <Signals
@@ -388,7 +436,7 @@ function DetailBody({
           narrow={narrow}
         />
       ) : null}
-      <Triage record={record} assets={assets} limits={limits} />
+      <Triage record={record} assets={assets} />
       {snapshot ? <Evidence snapshot={snapshot} jump={jump} limits={limits} /> : null}
     </div>
   )
@@ -396,7 +444,16 @@ function DetailBody({
   return (
     <div ref={root} className="eval-ui-ad" data-narrow={narrow || undefined}>
       <div className="eval-ui-ad-inner">
-        <Masthead record={record} snapshot={snapshot} narrow={narrow} actions={actions} onBack={onBack} />
+        <Masthead
+          record={record}
+          snapshot={snapshot}
+          narrow={narrow}
+          actions={actions}
+          onBack={onBack}
+          turn={turnRelation(record, turn)}
+          now={now}
+          onSelect={onSelect}
+        />
         {actionError ? (
           <StatusPanel
             variant="alert"
@@ -424,7 +481,14 @@ function DetailBody({
           />
         ) : null}
         <Pipeline record={record} now={now} narrow={narrow} />
-        <StateNotice result={result} now={now} narrow={narrow} limits={limits} actions={actions} />
+        <StateNotice
+          result={result}
+          now={now}
+          narrow={narrow}
+          limits={limits}
+          actions={actions}
+          estimate={spend.estimate}
+        />
         <div className="eval-ui-ad-cols">
           {/* The rail reads first in every layout; the stylesheet puts it beside the sections when there is room. */}
           {rail}

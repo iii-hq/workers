@@ -11,16 +11,37 @@ import {
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
-import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EvalApi } from '../../api'
 import { useAnalysisCompleted } from '../../events'
 import { type Filter, isActive } from '../../model'
-import type { AnalysisRecord, CompletedEvent, MonitorConfig, MonitorState } from '../../types'
+import type {
+  AnalysisRecord,
+  CompletedEvent,
+  MonitorConfig,
+  MonitorState,
+  ReviewsResponse,
+  TriageAvailability,
+} from '../../types'
 import { AnalysisDetail } from './detail/Detail'
 import { canOpenSession, openSession } from './open-session'
 import { MonitorSettings } from './Settings'
 import { Sidebar } from './Sidebar'
-import { isDeletedAnalysis, LIST_LIMIT, NARROW_BELOW, needsPolling, type OpenRequest, POLL_MS } from './shell-state'
+import {
+  estimateFor,
+  estimateLine,
+  indexReviews,
+  isDeletedAnalysis,
+  LIST_LIMIT,
+  NARROW_BELOW,
+  needsPolling,
+  type OpenRequest,
+  POLL_MS,
+  type SpendGuide,
+  type SpendKind,
+  spendDialog,
+  triageProblem,
+} from './shell-state'
 
 export interface MonitorViewProps {
   host: Host
@@ -38,6 +59,24 @@ export interface MonitorViewProps {
 }
 
 type Level = 'both' | 'list' | 'main'
+
+/** "Check again" inside the confirmation: asks for the provider check, and says it is running. */
+function Recheck({ onCheck }: { onCheck: () => void }) {
+  const [busy, setBusy] = useState(false)
+  return (
+    <button
+      type="button"
+      className="eval-ui-link"
+      disabled={busy}
+      onClick={() => {
+        setBusy(true)
+        onCheck()
+      }}
+    >
+      {busy ? 'Checking…' : 'Check again'}
+    </button>
+  )
+}
 
 export function MonitorView({
   host,
@@ -71,6 +110,13 @@ export function MonitorView({
   const [refreshKey, setRefreshKey] = useState(0)
   const [now, setNow] = useState(() => Date.now())
   const [togglePending, setTogglePending] = useState(false)
+  /** The provider check of triage (`api.monitor(true)`), read when the page opens and on Check again. */
+  const [triage, setTriage] = useState<TriageAvailability | undefined>(undefined)
+  const [checking, setChecking] = useState(false)
+  const [reviews, setReviews] = useState<ReviewsResponse | null>(null)
+  const reviewIndex = useMemo(() => indexReviews(reviews), [reviews])
+  /** "Change cap" asked Settings to show the cap field. */
+  const [focusCap, setFocusCap] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
   const { confirm, dialog } = useConfirm()
@@ -80,6 +126,13 @@ export function MonitorView({
   const listSeq = useRef(0)
   const monitorSeq = useRef(0)
   const recordsRef = useRef<AnalysisRecord[] | null>(null)
+  const monitorRef = useRef<MonitorState | null>(null)
+  monitorRef.current = monitor
+  const triageRef = useRef<TriageAvailability | undefined>(undefined)
+  triageRef.current = triage
+  const triageSeq = useRef(0)
+  const reviewSeq = useRef(0)
+  const askSeq = useRef(0)
   // A list read that is still out: the poll waits for it instead of discarding it.
   const listInFlight = useRef(false)
   // After a delete, focus returns to the list once it is showing.
@@ -134,12 +187,97 @@ export function MonitorView({
     }
   }, [api])
 
+  /**
+   * Whether Jev can triage, before anything is spent: the monitor lists the judge's models. A read that fails keeps
+   * what the card knew. Resolves with the availability it holds afterwards.
+   */
+  const checkTriage = useCallback(async () => {
+    const seq = ++triageSeq.current
+    setChecking(true)
+    try {
+      const next = await api.monitor(true)
+      if (seq === triageSeq.current) setTriage(next.triage)
+      return seq === triageSeq.current ? next.triage : triageRef.current
+    } catch {
+      return triageRef.current
+    } finally {
+      if (seq === triageSeq.current) setChecking(false)
+    }
+  }, [api])
+
+  /** What people decided about the suggestions; a worker that predates reviews answers nothing, and the list shows none. */
+  const loadReviews = useCallback(async () => {
+    const seq = ++reviewSeq.current
+    try {
+      const next = await api.reviews()
+      if (seq === reviewSeq.current) setReviews(next)
+    } catch {
+      // Keeps the last answer: the list never waits for it.
+    }
+  }, [api])
+
   const reload = useCallback(() => {
     void loadList()
     void loadMonitor()
-  }, [loadList, loadMonitor])
+    void loadReviews()
+  }, [loadList, loadMonitor, loadReviews])
 
   useEffect(reload, [reload])
+  useEffect(() => {
+    void checkTriage()
+  }, [checkTriage])
+
+  /**
+   * The question before an analysis starts: triage that cannot run, or what the analysis would cost. `true` goes on.
+   * "Check again" runs the provider check and asks again with its answer, in place of this dialog.
+   */
+  const guard = useCallback(
+    async (kind: SpendKind): Promise<boolean> => {
+      const ask = async (checked: TriageAvailability | undefined): Promise<boolean> => {
+        const token = ++askSeq.current
+        const at = Date.now()
+        const current = monitorRef.current
+        const dialog = spendDialog({
+          kind,
+          config: current?.config ?? null,
+          limits: current?.limits,
+          estimate: estimateFor(current, recordsRef.current),
+          problem: triageProblem(checked, recordsRef.current, at),
+          now: at,
+        })
+        if (!dialog) return true
+        const flow: { again?: Promise<boolean>; closed: boolean } = { closed: false }
+        const answer = await confirm({
+          title: dialog.title,
+          description: (
+            <>
+              {dialog.description}
+              {dialog.recheck ? (
+                <>
+                  {' '}
+                  <Recheck
+                    // A new question replaces this one in place: its button starts idle.
+                    key={token}
+                    onCheck={() => {
+                      flow.again = checkTriage().then((next) => (flow.closed ? false : ask(next)))
+                    }}
+                  />
+                </>
+              ) : null}
+            </>
+          ),
+          details: dialog.details,
+          confirmLabel: dialog.confirmLabel,
+        })
+        // A newer question took this one's place: its answer is the answer.
+        if (askSeq.current !== token) return flow.again ?? false
+        flow.closed = true
+        return answer
+      }
+      return ask(triageRef.current)
+    },
+    [checkTriage, confirm],
+  )
 
   const onCompleted = useCallback(
     (event: CompletedEvent) => {
@@ -252,6 +390,7 @@ export function MonitorView({
 
   const analyze = useCallback(
     async (sessionId: string) => {
+      if (!(await guard('analyze'))) return { reused: false, cancelled: true }
       const started = await api.analyze(sessionId).catch((error: unknown) => {
         // The turn of a deleted analysis stays indexed and only `reanalyze` admits it
         // again. The id was typed on purpose, so that is what the form means.
@@ -263,14 +402,16 @@ export function MonitorView({
       const shown = !settingsDirty.current
       if (shown) select(started.evaluation_id)
       announce(started.reused && shown ? 'Already analyzed — showing the existing analysis' : `Analyzing ${sessionId}`)
-      return { reused: started.reused && shown }
+      return { reused: started.reused && shown, cancelled: false }
     },
-    [api, announce, loadList, select],
+    [api, announce, guard, loadList, select],
   )
 
   const toggleObservation = useCallback(async () => {
     const config = monitor?.config
     if (!config || togglePending) return
+    // Resuming starts analyzing again: triage that cannot run is said first.
+    if (!config.enabled && !(await guard('resume'))) return
     setTogglePending(true)
     setActionError(null)
     try {
@@ -283,7 +424,7 @@ export function MonitorView({
     } finally {
       setTogglePending(false)
     }
-  }, [announce, api, loadMonitor, monitor?.config, togglePending])
+  }, [announce, api, guard, loadMonitor, monitor?.config, togglePending])
 
   const saved = useCallback(
     (config: MonitorConfig) => {
@@ -305,6 +446,17 @@ export function MonitorView({
     setDrilled(false)
     reload()
   }, [reload, setSelectedId])
+
+  const spend: SpendGuide = useMemo(
+    () => ({ estimate: estimateLine(estimateFor(monitor, records)), confirm: guard }),
+    [monitor, records, guard],
+  )
+  const problem = triageProblem(triage, records, now)
+
+  const changeCap = useCallback(() => {
+    setFocusCap(true)
+    setSettingsOpen(true)
+  }, [])
 
   const firstRun = monitor !== null && monitor.config === null
   const kind = firstRun || settingsOpen ? 'settings' : selectedId ? 'detail' : 'empty'
@@ -370,11 +522,15 @@ export function MonitorView({
         api={api}
         state={monitor}
         limits={monitor?.limits}
+        records={records}
         runningCount={activeCount}
         onSaved={saved}
         narrow={narrow}
         onClose={firstRun ? undefined : () => setSettingsOpen(false)}
         onDirtyChange={onSettingsDirty}
+        confirmStart={() => guard('start')}
+        focusCap={focusCap}
+        onCapFocused={() => setFocusCap(false)}
       />
     )
   } else if (kind === 'detail' && selectedId) {
@@ -387,6 +543,7 @@ export function MonitorView({
         narrow={narrow}
         limits={monitor?.limits}
         refreshKey={refreshKey}
+        spend={spend}
         onBack={narrow ? backToList : undefined}
         onSelect={select}
         onChanged={reload}
@@ -419,6 +576,12 @@ export function MonitorView({
             narrow={narrow}
             state={monitor}
             stateError={monitorError}
+            reviews={reviewIndex}
+            triage={problem}
+            triageChecked={triage !== undefined}
+            triageChecking={checking}
+            onCheckTriage={() => void checkTriage()}
+            onChangeCap={changeCap}
             records={records}
             listError={listError}
             now={now}

@@ -95,6 +95,27 @@
   overflow-wrap: anywhere;
 }
 
+/* The daily cost cap: a dollar sign in front of the amount. */
+[data-iii-ui="eval"] .eval-ui-settings-money {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+[data-iii-ui="eval"] .eval-ui-settings-money > span {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  transform: translateY(-50%);
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  pointer-events: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-settings-money input {
+  padding-left: 26px;
+}
+
 [data-iii-ui="eval"] .eval-ui-settings-footer {
   display: flex;
   flex-wrap: wrap;

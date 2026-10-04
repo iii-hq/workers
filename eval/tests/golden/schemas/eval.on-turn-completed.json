@@ -52,7 +52,8 @@
           "stale",
           "admitted",
           "reused",
-          "at_capacity"
+          "at_capacity",
+          "cost_cap"
         ],
         "type": "string"
       }

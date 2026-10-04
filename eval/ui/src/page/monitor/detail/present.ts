@@ -21,7 +21,9 @@ export const MAX_SUGGESTIONS = 3
 export const MAX_CODE_REFS = 8
 
 export const TRIAGE_QUESTION = 'investigation'
-const CHOICE_ORDER = ['needs_investigation', 'insufficient_evidence', 'expected_behavior']
+/** The one triage answer that sends a session to the analyst. */
+const INVESTIGATED_CHOICE = 'needs_investigation'
+const CHOICE_ORDER = [INVESTIGATED_CHOICE, 'insufficient_evidence', 'expected_behavior']
 
 /** `1,204` */
 export function count(value: number): string {
@@ -122,36 +124,28 @@ function joinClauses(clauses: string[]): string {
 }
 
 /**
- * Why the session was, or was not, sent to the analyst. `limits` is unknown
- * until the monitor's state is read; the threshold is then left unnamed.
+ * Why the session was investigated. Only `needs_investigation` is produced now; the other reasons read the analyses
+ * recorded before a session was investigated on Jev's answer alone, in the past tense of what they were.
  */
-export function routingClauses(
-  record: AnalysisRecord,
-  triage: Triage | undefined,
-  limits: MonitorLimits | undefined,
-): string[] {
+export function routingClauses(record: AnalysisRecord, triage: Triage | undefined): string[] {
   const answer = triageChoice(triage)
   const clauses: string[] = []
   for (const reason of record.routing?.reasons ?? []) {
     switch (reason) {
+      case 'needs_investigation':
+      case 'insufficient_evidence':
+        clauses.push(`Jev answered ${reason}`)
+        break
       case 'diagnostics':
         clauses.push(record.counters.diagnostics === 1 ? 'a rule found a signal' : 'rules found signals')
         break
-      case 'needs_investigation':
-      case 'insufficient_evidence':
-        clauses.push(`triage chose ${reason}`)
-        break
-      case 'low_confidence': {
-        const threshold = limits ? twoDecimals(limits.low_confidence) : 'its threshold'
+      case 'low_confidence':
         clauses.push(
-          answer
-            ? `confidence ${twoDecimals(answer.confidence)} is below ${threshold}`
-            : `triage confidence is below ${threshold}`,
+          answer ? `confidence ${twoDecimals(answer.confidence)} was below its threshold` : 'confidence was low',
         )
         break
-      }
       case 'coverage_insufficient':
-        clauses.push('the capture is insufficient')
+        clauses.push('the capture was insufficient')
         break
       case 'audit_sample':
         clauses.push('the session was drawn for the audit sample')
@@ -164,20 +158,14 @@ export function routingClauses(
   return clauses
 }
 
-export function routingSentence(
-  record: AnalysisRecord,
-  triage: Triage | undefined,
-  limits: MonitorLimits | undefined,
-): string | undefined {
+export function routingSentence(record: AnalysisRecord, triage: Triage | undefined): string | undefined {
   if (!record.routing) return undefined
   if (record.routing.investigate) {
-    const clauses = routingClauses(record, triage, limits)
-    return clauses.length ? `Sent to investigation: ${joinClauses(clauses)}.` : 'Sent to investigation.'
+    const clauses = routingClauses(record, triage)
+    return clauses.length ? `Investigated: ${joinClauses(clauses)}.` : 'Investigated.'
   }
   const answer = triageChoice(triage)
-  const parts = ['no rule found a signal']
-  if (answer) parts.push(`triage chose ${answer.choice} with confidence ${twoDecimals(answer.confidence)}`)
-  return `Not sent to investigation: ${joinClauses(parts)}.`
+  return `Not investigated: ${answer ? `Jev answered ${answer.choice}; ` : ''}only ${INVESTIGATED_CHOICE} is investigated.`
 }
 
 /** `c2 · functions::info` tail of an entry id, the way chips label it. */

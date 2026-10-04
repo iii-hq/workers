@@ -8,15 +8,21 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::contract::{AnalysisAssetsV1, AnalysisRecordV1, CapacityRejectionV1, MonitorConfigV1};
+use crate::contract::{
+    AnalysisAssetsV1, AnalysisRecordV1, CapacityRejectionV1, MonitorConfigV1, SuggestionReviewV1,
+};
 use crate::error::EvalError;
 
 pub const CONFIG_SCOPE: &str = "eval_monitor";
 pub const CONFIG_KEY: &str = "config";
 pub const LAST_REJECTION_KEY: &str = "last_rejection";
+pub const DAILY_SPEND_KEY: &str = "daily_spend";
 pub const OBSERVATION_SCOPE: &str = "eval_observation";
 pub const ANALYSIS_SCOPE: &str = "eval_analysis";
 pub const ASSETS_SCOPE: &str = "eval_analysis_assets";
+/// What people decided about each suggestion, keyed
+/// `<evaluation_id>:<suggestion_index>`; outlives the analysis's retention.
+pub const REVIEW_SCOPE: &str = "eval_suggestion";
 const DISPATCH_TIMEOUT_MS: u64 = 10_000;
 
 /// Marks one observed session turn as admitted. It outlives a deleted
@@ -47,6 +53,22 @@ pub async fn put_last_rejection(
     rejection: &CapacityRejectionV1,
 ) -> Result<(), EvalError> {
     set(iii, CONFIG_SCOPE, LAST_REJECTION_KEY, rejection).await
+}
+
+/// What the investigations cost on the UTC day starting at `since`, kept apart
+/// from the analyses: deleting one, or retention, must not give the budget back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DailySpendV1 {
+    pub since: i64,
+    pub usd: f64,
+}
+
+pub async fn get_spend(iii: &IIIClient) -> Result<Option<DailySpendV1>, EvalError> {
+    get(iii, CONFIG_SCOPE, DAILY_SPEND_KEY).await
+}
+
+pub async fn put_spend(iii: &IIIClient, spend: &DailySpendV1) -> Result<(), EvalError> {
+    set(iii, CONFIG_SCOPE, DAILY_SPEND_KEY, spend).await
 }
 
 pub async fn get_observation(
@@ -97,6 +119,32 @@ pub async fn get_assets(
 
 pub async fn put_assets(iii: &IIIClient, assets: &AnalysisAssetsV1) -> Result<(), EvalError> {
     set(iii, ASSETS_SCOPE, &assets.evaluation_id, assets).await
+}
+
+fn review_key(evaluation_id: &str, suggestion_index: usize) -> String {
+    format!("{evaluation_id}:{suggestion_index}")
+}
+
+pub async fn get_review(
+    iii: &IIIClient,
+    evaluation_id: &str,
+    suggestion_index: usize,
+) -> Result<Option<SuggestionReviewV1>, EvalError> {
+    get(
+        iii,
+        REVIEW_SCOPE,
+        &review_key(evaluation_id, suggestion_index),
+    )
+    .await
+}
+
+pub async fn put_review(iii: &IIIClient, review: &SuggestionReviewV1) -> Result<(), EvalError> {
+    let key = review_key(&review.evaluation_id, review.suggestion_index);
+    set(iii, REVIEW_SCOPE, &key, review).await
+}
+
+pub async fn list_reviews(iii: &IIIClient) -> Result<Vec<SuggestionReviewV1>, EvalError> {
+    list(iii, REVIEW_SCOPE).await
 }
 
 /// Removes the assets before the record, so a partial delete never leaves a

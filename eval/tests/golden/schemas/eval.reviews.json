@@ -1,0 +1,695 @@
+{
+  "function_id": "eval::reviews",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "evaluation_id": {
+        "default": null,
+        "description": "Only this analysis; absent means every analysis.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "ReviewsRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "CriterionMetricV1": {
+        "description": "What a validation measures. Every metric but `signal_per_run` is the mean over the runs of the scenario the infrastructure did not break (`pass_rate` is the share that passed, an unfinished run counting as not passed; `duration` is the wall time in milliseconds).",
+        "oneOf": [
+          {
+            "enum": [
+              "pass_rate",
+              "cost_usd",
+              "duration",
+              "tokens",
+              "function_calls"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Occurrences of one of the suggestion's patterns per run, counted by the deterministic detectors over each run's transcript.",
+            "enum": [
+              "signal_per_run"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "CriterionV1": {
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "$ref": "#/definitions/DirectionV1"
+          },
+          "metric": {
+            "$ref": "#/definitions/CriterionMetricV1"
+          },
+          "min_effect": {
+            "format": "double",
+            "type": "number"
+          },
+          "min_runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pattern": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "registered_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "registered_by": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "description": "The scenario whose runs are measured.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "direction",
+          "metric",
+          "min_effect",
+          "min_runs",
+          "registered_at",
+          "registered_by",
+          "scenario_id"
+        ],
+        "type": "object"
+      },
+      "DirectionV1": {
+        "enum": [
+          "decrease",
+          "increase"
+        ],
+        "type": "string"
+      },
+      "EvidenceRunV1": {
+        "additionalProperties": false,
+        "description": "One run of the scenario as the E2E reported it. Runs the infrastructure broke are listed with the E2E's own words, never counted.",
+        "properties": {
+          "completed": {
+            "description": "The E2E reported the run complete with a valid technical outcome.",
+            "type": "boolean"
+          },
+          "completion": {
+            "description": "`completion` as the E2E reported it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "function_calls": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "signals": {
+            "additionalProperties": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "description": "Occurrences of each of the row's patterns the detectors found in this run's transcript (0 is a measurement); absent when the report held no transcript.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "`passed` or `failed`, the run's task outcome.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "technical": {
+            "description": "`technical` as the E2E reported it; anything but `valid` is an infrastructure failure.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total_tokens": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "wall_time_ms": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "completed",
+          "run_id"
+        ],
+        "type": "object"
+      },
+      "EvidenceSideV1": {
+        "additionalProperties": false,
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "mean": {
+            "description": "Mean of the criterion's metric over those runs; absent without a criterion or without such runs.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "n": {
+            "description": "Measurable runs (see `EvidenceRunV1::measurable`) with a value of the criterion's metric (every measurable run while there is no criterion).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "runs": {
+            "description": "Every run of the scenario the execution holds.",
+            "items": {
+              "$ref": "#/definitions/EvidenceRunV1"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "execution_id",
+          "n",
+          "runs"
+        ],
+        "type": "object"
+      },
+      "EvidenceV1": {
+        "additionalProperties": false,
+        "description": "Computed in code from the attached pair's runs, never by a model. It is what the person's verdict is shown next to.",
+        "properties": {
+          "baseline": {
+            "$ref": "#/definitions/EvidenceSideV1"
+          },
+          "candidate": {
+            "$ref": "#/definitions/EvidenceSideV1"
+          },
+          "computed_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "computed_outcome": {
+            "$ref": "#/definitions/ValidationOutcomeV1"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseline",
+          "candidate",
+          "computed_at",
+          "computed_outcome",
+          "reason",
+          "scenario_id"
+        ],
+        "type": "object"
+      },
+      "LifecycleEventV1": {
+        "additionalProperties": false,
+        "description": "One change of status, with who made it.",
+        "properties": {
+          "at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "by": {
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/LifecycleStatusV1"
+          }
+        },
+        "required": [
+          "at",
+          "by",
+          "status"
+        ],
+        "type": "object"
+      },
+      "LifecycleStatusV1": {
+        "description": "Where a suggestion stands. Only people move it: the monitor never does.",
+        "enum": [
+          "new",
+          "accepted",
+          "in_progress",
+          "shipped",
+          "rejected",
+          "duplicate"
+        ],
+        "type": "string"
+      },
+      "LifecycleV1": {
+        "additionalProperties": false,
+        "properties": {
+          "duplicate_of": {
+            "description": "What it duplicates: a pull request, or another `<evaluation_id>:<index>` (`duplicate`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "history": {
+            "description": "Every change of status, oldest first; empty while `new`.",
+            "items": {
+              "$ref": "#/definitions/LifecycleEventV1"
+            },
+            "type": "array"
+          },
+          "pr": {
+            "description": "The pull request that implements it (`in_progress`, `shipped`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "description": "Why it was rejected (`rejected`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/LifecycleStatusV1"
+          },
+          "version": {
+            "description": "The Harness version that shipped it, a semantic version like `1.8.43`; the recurrence query splits the analyses at it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "history",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ReviewSummaryV1": {
+        "additionalProperties": false,
+        "description": "Suggestions of one analysis by lifecycle status; a suggestion nobody acted on counts as `new`.",
+        "properties": {
+          "accepted": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "duplicate": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "evaluation_id": {
+            "type": "string"
+          },
+          "in_progress": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "new": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "rejected": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "shipped": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "suggestions": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "accepted",
+          "duplicate",
+          "evaluation_id",
+          "in_progress",
+          "new",
+          "rejected",
+          "shipped",
+          "suggestions"
+        ],
+        "type": "object"
+      },
+      "SuggestionReviewV1": {
+        "additionalProperties": false,
+        "description": "Everything people decided about one suggestion, in the `eval_suggestion` state scope. The title, component and patterns are copied from the suggestion so the row outlives the analysis's retention.",
+        "properties": {
+          "criterion": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CriterionV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evaluation_id": {
+            "type": "string"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/EvidenceV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "first_run_at": {
+            "description": "When the first execution this worker started for the suggestion began, kept when a new start replaces `run`: results of it may have been seen.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "harness_component": {
+            "type": "string"
+          },
+          "lifecycle": {
+            "$ref": "#/definitions/LifecycleV1"
+          },
+          "patterns": {
+            "description": "`<rule_id>:<target>` of the diagnostics the suggestion's evidence cites: what a validation counts and a release is judged by.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ValidationRunV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scenario_id": {
+            "description": "The scenario the suggestion's validation plan names.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggestion_index": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/VerdictV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "evaluation_id",
+          "harness_component",
+          "lifecycle",
+          "patterns",
+          "suggestion_index",
+          "title"
+        ],
+        "type": "object"
+      },
+      "ValidationOutcomeV1": {
+        "oneOf": [
+          {
+            "description": "The candidate moved the metric by at least `min_effect` in the wanted direction, with `min_runs` completed runs each side.",
+            "enum": [
+              "validated_improvement"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The metric moved less than `min_effect`.",
+            "enum": [
+              "no_improvement"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The metric moved by at least `min_effect` the wrong way.",
+            "enum": [
+              "regression"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Too few completed runs, missing data or no criterion.",
+            "enum": [
+              "inconclusive"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ValidationRunStateV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "failed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Recorded before the executions are requested.",
+            "enum": [
+              "starting"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Both executions were requested; the sweep waits for them.",
+            "enum": [
+              "running"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Both ended; the pair is about to be attached.",
+            "enum": [
+              "finished"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The pair is attached to the analysis and its evidence computed.",
+            "enum": [
+              "attached"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ValidationRunV1": {
+        "additionalProperties": false,
+        "description": "The baseline and candidate E2E executions this worker started for a suggestion (`eval::start-validation`).",
+        "properties": {
+          "baseline_commit": {
+            "description": "The full commits the Harness was built from.",
+            "type": "string"
+          },
+          "baseline_execution_id": {
+            "description": "Absent until the E2E accepted the execution.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "candidate_commit": {
+            "type": "string"
+          },
+          "candidate_execution_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "description": "Why it failed, or why attaching is being retried; starts with a stable code (`e2e_unavailable:`, `e2e_busy:`…).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "description": "When both executions were seen ended; the sweep stops trying to attach the pair some time after.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "runs": {
+            "description": "Runs requested for each side.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/definitions/ValidationRunStateV1"
+          }
+        },
+        "required": [
+          "baseline_commit",
+          "candidate_commit",
+          "model",
+          "provider",
+          "runs",
+          "scenario_id",
+          "started_at",
+          "state"
+        ],
+        "type": "object"
+      },
+      "VerdictV1": {
+        "additionalProperties": false,
+        "description": "The person's judgment, kept with the criterion it was made against.",
+        "properties": {
+          "at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "by": {
+            "type": "string"
+          },
+          "controls_checked": {
+            "description": "The non-regression controls of the plan that were checked.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "criterion_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CriterionV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "$ref": "#/definitions/ValidationOutcomeV1"
+          },
+          "rationale": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "by",
+          "controls_checked",
+          "outcome",
+          "rationale"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "reviews": {
+        "description": "The stored rows: suggestions somebody acted on or validated.",
+        "items": {
+          "$ref": "#/definitions/SuggestionReviewV1"
+        },
+        "type": "array"
+      },
+      "summaries": {
+        "description": "One per analysis that has suggestions, newest first.",
+        "items": {
+          "$ref": "#/definitions/ReviewSummaryV1"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "reviews",
+      "summaries"
+    ],
+    "title": "ReviewsResponseV1",
+    "type": "object"
+  }
+}

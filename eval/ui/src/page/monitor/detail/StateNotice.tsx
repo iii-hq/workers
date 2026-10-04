@@ -1,10 +1,25 @@
 // What the monitor is doing, or exactly why it stopped, under the steps.
 import { Button, StatusPanel, uiClasses } from '@iii-dev/console-ui'
-import { Ban, CircleAlert, CircleCheck, CircleHelp, Clock, FileX, LoaderCircle, TriangleAlert } from 'lucide-react'
+import {
+  Ban,
+  CircleAlert,
+  CircleCheck,
+  CircleHelp,
+  Clock,
+  ExternalLink,
+  FileX,
+  LoaderCircle,
+  TriangleAlert,
+} from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { AnalysisResult, MonitorLimits } from '../../../types'
 import { describeState, type NoticeAction, type NoticeIcon, type NoticeTone } from './notices'
 import type { DetailActions } from './shared'
+
+/** Where TypeSafe's own 402 message sends you to add credits. */
+const TYPESAFE_BILLING = 'https://console.typesafe.ai/settings/billing'
+/** The console's own settings of the judge-typesafe worker, where its API key lives. */
+const JUDGE_SETTINGS = '#/configuration/workers/judge-typesafe'
 
 const VARIANT: Record<NoticeTone, 'info' | 'warn' | 'alert'> = {
   info: 'info',
@@ -55,12 +70,15 @@ export function StateNotice({
   narrow,
   limits,
   actions,
+  estimate,
 }: {
   result: AnalysisResult
   now: number
   narrow: boolean
   limits: MonitorLimits | undefined
   actions: DetailActions
+  /** What a Reanalyze would cost, for the notices that end with it (`estimateLine`). */
+  estimate: string
 }) {
   const copy = describeState(result, now, limits)
   if (!copy) return null
@@ -74,9 +92,28 @@ export function StateNotice({
         Cancel analysis
       </Button>
     ),
-    reanalyze: (
-      <Button key="reanalyze" variant="pill" size={size} disabled={busy} onClick={actions.reanalyze}>
-        Reanalyze
+    billing: (
+      <Button
+        key="billing"
+        variant="pill"
+        size={size}
+        onClick={() => window.open(TYPESAFE_BILLING, '_blank', 'noopener,noreferrer')}
+      >
+        Open TypeSafe billing
+        <ExternalLink size={16} aria-hidden="true" />
+      </Button>
+    ),
+    'judge-settings': (
+      <Button
+        key="judge-settings"
+        variant="pill"
+        size={size}
+        onClick={() => {
+          window.location.hash = JUDGE_SETTINGS
+        }}
+      >
+        Open judge-typesafe settings
+        <ExternalLink size={16} aria-hidden="true" />
       </Button>
     ),
     signals: (
@@ -86,7 +123,7 @@ export function StateNotice({
     ),
     session: actions.openInvestigation ? (
       <Button key="session" variant="ghost" size={size} onClick={actions.openInvestigation}>
-        Open investigation session
+        Open analyst session
       </Button>
     ) : null,
   }
@@ -104,10 +141,11 @@ export function StateNotice({
             <p>{copy.body}</p>
             {copy.message ? <p className="eval-ui-ad-quiet">{copy.message}</p> : null}
             {copy.detail ? <p className="eval-ui-ad-mono-quiet">{copy.detail}</p> : null}
+            {copy.estimate ? <p className="eval-ui-ad-quiet">{estimate}</p> : null}
+            {shown.length ? <div className="eval-ui-ad-notice-actions">{shown}</div> : null}
           </div>
         }
       />
-      {shown.length ? <div className="eval-ui-ad-notice-actions">{shown}</div> : null}
     </div>
   )
 }

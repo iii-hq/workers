@@ -16,12 +16,65 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "additionalProperties": false,
     "definitions": {
+      "AnalysisCostStatsV1": {
+        "additionalProperties": false,
+        "description": "Cost of the completed analyses that investigated with the configured model, provider and code access (or lack of it).",
+        "properties": {
+          "count": {
+            "description": "Analyses with a known cost; `min`, `median` and `max` come from them.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "median": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "min": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "unknown": {
+            "description": "Analyses that investigated but reported no cost.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "unknown"
+        ],
+        "type": "object"
+      },
       "CapacityRejectionV1": {
         "additionalProperties": false,
         "properties": {
           "at": {
             "format": "int64",
             "type": "integer"
+          },
+          "reason": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/RejectionReasonV1"
+              }
+            ],
+            "default": "at_capacity",
+            "description": "Why the turn was not admitted; rows saved before the cost cap existed read as `at_capacity`."
           },
           "session_id": {
             "type": "string"
@@ -44,6 +97,14 @@
             "description": "The codebase directory the investigation reads (see `ConfigureRequestV1`).",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "daily_cost_cap_usd": {
+            "description": "The daily cap on known investigation cost (see `ConfigureRequestV1`).",
+            "format": "double",
+            "type": [
+              "number",
               "null"
             ]
           },
@@ -78,6 +139,55 @@
         ],
         "type": "object"
       },
+      "MonitorCostV1": {
+        "additionalProperties": false,
+        "description": "The monitor's own spend. Only the investigation's LLM cost is in dollars; Jev's usage is reported in tokens on each record.",
+        "properties": {
+          "cap_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "capped": {
+            "description": "A cap is set and `today_usd`, plus the median cost of each investigation still running, reached it: automatic observation admits and investigates nothing until the next UTC day.",
+            "type": "boolean"
+          },
+          "per_analysis": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/AnalysisCostStatsV1"
+              }
+            ],
+            "description": "What one investigation has cost, from the history."
+          },
+          "since": {
+            "description": "Start (ms since the Unix epoch) of the UTC day the `today_*` values cover. The monitor has no timezone setting, so a day is a UTC day.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "today_unknown": {
+            "description": "Analyses of the day whose investigation started but reported no cost. They add nothing to `today_usd`, but their cost is unknown, not zero.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "today_usd": {
+            "description": "The known investigation cost since `since`: the larger of the day's persisted spend (deleting an analysis does not give it back) and the sum of the stored analyses' `usage.llm_cost_usd`.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "capped",
+          "per_analysis",
+          "since",
+          "today_unknown",
+          "today_usd"
+        ],
+        "type": "object"
+      },
       "MonitorLimitsV1": {
         "additionalProperties": false,
         "properties": {
@@ -89,11 +199,6 @@
           },
           "assets_bytes": {
             "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "audit_sample_percent": {
-            "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
           },
@@ -129,10 +234,6 @@
             "minimum": 0.0,
             "type": "integer"
           },
-          "low_confidence": {
-            "format": "double",
-            "type": "number"
-          },
           "max_active_analyses": {
             "format": "uint32",
             "minimum": 0.0,
@@ -163,14 +264,12 @@
         "required": [
           "analysis_budget_ms",
           "assets_bytes",
-          "audit_sample_percent",
           "investigation_code_max_total_tokens",
           "investigation_code_max_turns",
           "investigation_max_output_tokens",
           "investigation_max_total_tokens",
           "investigation_max_turns",
           "judge_timeout_ms",
-          "low_confidence",
           "max_active_analyses",
           "model_context_bytes",
           "queue_concurrency",
@@ -213,6 +312,24 @@
           "provider"
         ],
         "type": "object"
+      },
+      "RejectionReasonV1": {
+        "oneOf": [
+          {
+            "description": "The unfinished-analyses cap was reached.",
+            "enum": [
+              "at_capacity"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The day's known cost reached `daily_cost_cap_usd`.",
+            "enum": [
+              "cost_cap"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "ThinkingLevel": {
         "enum": [
@@ -273,6 +390,14 @@
         ],
         "description": "`null` until the user configures the monitor."
       },
+      "cost": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/MonitorCostV1"
+          }
+        ],
+        "description": "What the investigations cost so far, to decide before enabling."
+      },
       "last_rejection": {
         "anyOf": [
           {
@@ -282,7 +407,7 @@
             "type": "null"
           }
         ],
-        "description": "The latest turn not admitted because the monitor was at capacity."
+        "description": "The latest turn not admitted: the monitor was at capacity or the daily cost cap was reached (`reason`)."
       },
       "limits": {
         "allOf": [
@@ -315,6 +440,7 @@
       }
     },
     "required": [
+      "cost",
       "limits",
       "observer_bound"
     ],

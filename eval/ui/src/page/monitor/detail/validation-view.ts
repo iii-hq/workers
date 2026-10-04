@@ -1,10 +1,23 @@
 // Pure presentation logic of the E2E validation views (the attach dialog and
 // the "E2E runs" panel): labels and values of the identity checks, the
-// per-execution measures, the report notice. Unknown stays unknown, never 0.
+// measures of each scenario with the difference between the two sides, the
+// report notice. Unknown stays unknown, never 0; the difference is computed
+// here, in code, and left blank when a side reports nothing.
 import { formatDuration } from '@iii-dev/console-ui/format'
-import { formatTokens, shortHash } from '../../../model'
-import type { ComparabilityCheck, E2eExecution, E2eScenario, ValidationLink } from '../../../types'
-import { formatCostShort } from './present'
+import { formatCost, formatTokens, shortHash } from '../../../model'
+import type {
+  ComparabilityCheck,
+  Criterion,
+  CriterionMetric,
+  E2eExecution,
+  E2eMeasure,
+  E2eScenario,
+  Evidence,
+  ValidationLink,
+} from '../../../types'
+
+/** The runs a side the E2E advises: its robustness check wants at least this many. */
+export const DEFAULT_MIN_RUNS = 5
 
 const CHECK_LABEL: Record<string, { text: string; mono: boolean }> = {
   scenarios: { text: 'Scenario', mono: false },
@@ -107,97 +120,244 @@ export function reportsAvailable(link: ValidationLink): boolean {
   return link.baseline.reports_available && link.candidate.reports_available
 }
 
-// --- measures --------------------------------------------------------------
+// --- measures per scenario ---------------------------------------------------
 
 export interface MeasureCell {
   /** Absent when nothing was reported. */
   value?: string
-  /** Quiet second line: how many runs the value covers, a conclusion… */
+  /** Quiet second line: how many runs the value covers, which statistic… */
   sub?: string
   /** Amber line: some runs reported nothing. */
   warn?: string
 }
 
-export interface MeasureRow {
+export interface DiffRow {
   key: string
   label: string
+  /** `median per run`: the statistic both sides share; absent when they report different ones. */
+  qualifier?: string
+  /** The measure the registered criterion judges. */
+  primary?: boolean
   baseline: MeasureCell
   candidate: MeasureCell
+  /** Candidate minus baseline; absent when either side reports nothing or they report different statistics. */
+  delta?: { abs: string; pct?: string }
 }
 
-type MeasureKey = keyof E2eScenario['measures']
-
-export function totalRuns(execution: E2eExecution): number {
-  return execution.scenarios.reduce((sum, scenario) => sum + scenario.run_count, 0)
-}
-
-/**
- * The average of a measure over every scenario of the execution, weighted by
- * the runs that reported it, and how many runs that is. No sample, no value.
- */
-export function aggregate(execution: E2eExecution, key: MeasureKey): { average?: number; samples: number } {
-  let weighted = 0
-  let samples = 0
-  for (const scenario of execution.scenarios) {
-    const measure = scenario.measures?.[key]
-    if (measure?.average === undefined || measure.samples <= 0) continue
-    weighted += measure.average * measure.samples
-    samples += measure.samples
-  }
-  return samples > 0 ? { average: weighted / samples, samples } : { samples: 0 }
+export interface ScenarioTable {
+  scenarioId: string
+  target: boolean
+  /** `5 runs per side`, or each side's own count when they differ. */
+  runs: string
+  /** Set when a side has fewer runs than the E2E advises: the differences below are descriptive only. */
+  caution?: string
+  rows: DiffRow[]
 }
 
 const NUMBER = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 })
 
-const MEASURES: Array<{ key: MeasureKey; label: string; format: (average: number) => string }> = [
-  { key: 'function_calls', label: 'Function calls · average', format: (average) => NUMBER.format(average) },
-  { key: 'tokens', label: 'Tokens · average', format: (average) => formatTokens(Math.round(average)) },
-  { key: 'duration_seconds', label: 'Duration · average', format: (average) => formatDuration(average * 1000) },
-  { key: 'cost_usd', label: 'Cost · average', format: (average) => formatCostShort(average) },
+/** One statistic of a measure for one side; `samples` is how many runs it covers when the E2E says. */
+interface Reading {
+  qualifier: string
+  value?: number
+  samples?: number
+}
+
+interface Def {
+  key: string
+  label: string
+  metric?: CriterionMetric
+  /** Listed even when neither side reports it: an unreported cost must be seen. */
+  always?: boolean
+  /** The difference of two percentages is in points, not a relative change. */
+  points?: boolean
+  format: (value: number) => string
+  /** Statistics in order of preference: both sides are compared on the first both report. */
+  readings: (scenario: E2eScenario) => Reading[]
+}
+
+/** The mean of a measure over the runs that reported it; no sample, no value. */
+const mean = (measure: E2eMeasure | undefined): number | undefined =>
+  measure && measure.samples > 0 ? measure.average : undefined
+
+const DEFS: Def[] = [
+  {
+    key: 'pass_rate',
+    label: 'Pass rate',
+    metric: 'pass_rate',
+    points: true,
+    format: (value) => `${Math.round(value)} %`,
+    readings: (s) => [{ qualifier: '', value: s.pass_rate === undefined ? undefined : s.pass_rate * 100 }],
+  },
+  {
+    key: 'function_calls',
+    label: 'Function calls',
+    metric: 'function_calls',
+    format: (value) => NUMBER.format(value),
+    readings: (s) => [
+      { qualifier: 'median per run', value: s.p50_function_calls },
+      { qualifier: 'mean per run', value: mean(s.measures?.function_calls) },
+    ],
+  },
+  {
+    key: 'function_call_errors',
+    label: 'Function call errors',
+    format: (value) => NUMBER.format(value),
+    readings: (s) => [{ qualifier: 'mean per run', value: mean(s.measures?.function_call_errors) }],
+  },
+  {
+    key: 'cost_usd',
+    label: 'Cost',
+    metric: 'cost_usd',
+    always: true,
+    format: formatCost,
+    readings: (s) => {
+      // The sample count belongs to the measure: a cost taken from the cohort has none to show.
+      const measured = mean(s.measures?.cost_usd)
+      return [
+        {
+          qualifier: 'per run',
+          value: measured ?? s.cost_usd_per_run,
+          samples: measured === undefined ? undefined : s.measures?.cost_usd?.samples,
+        },
+      ]
+    },
+  },
+  {
+    key: 'duration',
+    label: 'Time',
+    metric: 'duration',
+    format: (seconds) => formatDuration(seconds * 1000),
+    readings: (s) => [
+      {
+        qualifier: 'median per run',
+        value: s.median_wall_time_ms === undefined ? undefined : s.median_wall_time_ms / 1000,
+      },
+      { qualifier: 'mean per run', value: mean(s.measures?.duration_seconds) },
+    ],
+  },
+  {
+    key: 'tokens',
+    label: 'Tokens',
+    metric: 'tokens',
+    format: (value) => formatTokens(Math.round(value)),
+    readings: (s) => [{ qualifier: 'per run', value: s.total_tokens_per_run ?? mean(s.measures?.tokens) }],
+  },
 ]
 
-function measureCell(execution: E2eExecution, key: MeasureKey, format: (average: number) => string): MeasureCell {
-  const runs = totalRuns(execution)
-  const { average, samples } = aggregate(execution, key)
-  if (runs === 0) return {}
-  const missing = runs - samples
-  const warn = missing > 0 ? `Not reported in ${missing} of ${runs} runs` : undefined
-  if (average === undefined) return { warn }
-  return { value: format(average), sub: `${samples} of ${runs} runs`, warn }
+/** `-27 %`, `+3`, `0`: the sign is the direction of the move, never a verdict. */
+function signed(text: string, amount: number): string {
+  return amount > 0 ? `+${text}` : amount < 0 ? `-${text}` : text
 }
 
-function assessmentsCell(execution: E2eExecution): MeasureCell {
-  const { assessments, conclusion } = execution
+/** Candidate minus baseline, as absolute and relative change. The relative change has no baseline to start from at 0. */
+export function difference(
+  baseline: number,
+  candidate: number,
+  format: (value: number) => string,
+  points = false,
+): { abs: string; pct?: string } {
+  const change = candidate - baseline
+  if (points) return { abs: `${signed(String(Math.round(Math.abs(change))), Math.round(change))} pp` }
+  const pct = baseline === 0 ? undefined : (change / baseline) * 100
   return {
-    value: assessments ? `${assessments.passed} / ${assessments.total}` : undefined,
-    sub: conclusion ? `conclusion: ${conclusion}` : undefined,
+    abs: signed(format(Math.abs(change)), change),
+    pct: pct === undefined ? undefined : `${signed(String(Math.round(Math.abs(pct))), Math.round(pct))} %`,
   }
 }
 
-/** The rows of the "per execution" table: each execution on its own, no difference column. */
-export function measureRows(baseline: E2eExecution, candidate: E2eExecution): MeasureRow[] {
-  const runs = (execution: E2eExecution): MeasureCell => {
-    const total = totalRuns(execution)
-    return total > 0 ? { value: String(total) } : {}
+function cell(def: Def, reading: Reading | undefined, runs: number, statistic: boolean): MeasureCell {
+  if (reading?.value === undefined) return { warn: 'Not reported' }
+  const covered = reading.samples !== undefined && runs > 0
+  return {
+    value: def.format(reading.value),
+    sub: covered ? `${reading.samples} of ${runs} runs` : statistic ? reading.qualifier : undefined,
+    warn: covered && runs > (reading.samples ?? 0) ? `Not reported in ${runs - (reading.samples ?? 0)}` : undefined,
   }
-  return [
-    { key: 'runs', label: 'Runs', baseline: runs(baseline), candidate: runs(candidate) },
-    {
-      key: 'assessments',
-      label: 'Assessments passed',
-      baseline: assessmentsCell(baseline),
-      candidate: assessmentsCell(candidate),
-    },
-    ...MEASURES.map(({ key, label, format }) => ({
-      key,
-      label,
-      baseline: measureCell(baseline, key, format),
-      candidate: measureCell(candidate, key, format),
-    })),
+}
+
+function diffRow(def: Def, baseline: E2eScenario | undefined, candidate: E2eScenario | undefined, primary: boolean) {
+  const forBaseline = baseline ? def.readings(baseline) : []
+  const forCandidate = candidate ? def.readings(candidate) : []
+  const shared = forBaseline.findIndex(
+    (reading, at) => reading.value !== undefined && forCandidate[at]?.value !== undefined,
+  )
+  const first = (readings: Reading[]) => readings.find((reading) => reading.value !== undefined)
+  const b = shared >= 0 ? forBaseline[shared] : first(forBaseline)
+  const c = shared >= 0 ? forCandidate[shared] : first(forCandidate)
+  if (b?.value === undefined && c?.value === undefined && !def.always) return undefined
+  const row: DiffRow = {
+    key: def.key,
+    label: def.label,
+    qualifier: shared >= 0 ? b?.qualifier || undefined : undefined,
+    primary: primary || undefined,
+    baseline: cell(def, b, baseline?.run_count ?? 0, shared < 0),
+    candidate: cell(def, c, candidate?.run_count ?? 0, shared < 0),
+  }
+  if (shared >= 0 && b?.value !== undefined && c?.value !== undefined) {
+    row.delta = difference(b.value, c.value, def.format, def.points)
+  }
+  return row
+}
+
+/** The signal the criterion counts, from the evidence the code computed over each run's transcript. */
+export function signalRow(criterion: Criterion | undefined, evidence: Evidence | undefined): DiffRow | undefined {
+  if (!criterion || criterion.metric !== 'signal_per_run' || !evidence) return undefined
+  const { baseline, candidate } = evidence
+  const side = (n: number, value: number | undefined): MeasureCell =>
+    value === undefined ? {} : { value: NUMBER.format(value), sub: `n=${n}` }
+  return {
+    key: 'signal',
+    label: criterion.pattern?.split(':')[0] ?? 'signal',
+    qualifier: 'signals per run',
+    primary: true,
+    baseline: side(baseline.n, baseline.mean),
+    candidate: side(candidate.n, candidate.mean),
+    delta:
+      baseline.mean !== undefined && candidate.mean !== undefined
+        ? difference(baseline.mean, candidate.mean, (value) => NUMBER.format(value))
+        : undefined,
+  }
+}
+
+/**
+ * One table per scenario the executions ran, the target first, each with the
+ * measures the E2E reported for it. Scenarios are never averaged together: a
+ * mean over different scenarios describes none of them.
+ */
+export function scenarioTables(
+  link: ValidationLink,
+  options: { target?: string; primary?: CriterionMetric; signal?: DiffRow },
+): ScenarioTable[] {
+  const ids = [
+    ...new Set([...link.baseline.scenarios, ...link.candidate.scenarios].map((scenario) => scenario.scenario_id)),
   ]
+  const target = options.target && ids.includes(options.target) ? options.target : ids[0]
+  return [target, ...ids.filter((id) => id !== target)]
+    .filter((id): id is string => id !== undefined)
+    .map((id) => {
+      const baseline = link.baseline.scenarios.find((scenario) => scenario.scenario_id === id)
+      const candidate = link.candidate.scenarios.find((scenario) => scenario.scenario_id === id)
+      const rows = DEFS.flatMap((def) => diffRow(def, baseline, candidate, def.metric === options.primary) ?? [])
+      const counts = [baseline?.run_count, candidate?.run_count]
+      const fewest = Math.min(counts[0] ?? 0, counts[1] ?? 0)
+      return {
+        scenarioId: id,
+        target: id === target,
+        runs:
+          counts[0] !== undefined && counts[0] === counts[1]
+            ? `${counts[0]} ${counts[0] === 1 ? 'run' : 'runs'} per side`
+            : `${counts[0] ?? 0} baseline · ${counts[1] ?? 0} candidate runs`,
+        caution:
+          fewest < DEFAULT_MIN_RUNS
+            ? `${counts[0] === counts[1] ? `n=${fewest} per side` : `n=${counts[0] ?? 0} and ${counts[1] ?? 0}`}; the E2E advises at least ${DEFAULT_MIN_RUNS}, so these differences are descriptive only`
+            : undefined,
+        rows: id === target && options.signal ? [options.signal, ...rows] : rows,
+      }
+    })
 }
 
-/** True when either execution carries anything to put in the table. */
+/** True when either execution carries a scenario to put in the table. */
 export function hasMeasures(link: ValidationLink): boolean {
-  return [link.baseline, link.candidate].some((run) => run.scenarios.length > 0 || run.assessments !== undefined)
+  return [link.baseline, link.candidate].some((run) => run.scenarios.length > 0)
 }

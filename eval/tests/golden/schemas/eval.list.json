@@ -11,6 +11,14 @@
           "integer",
           "null"
         ]
+      },
+      "observation_key": {
+        "default": null,
+        "description": "Only the analyses of this observed turn (the `observation_key` of a record), reanalyses included.",
+        "type": [
+          "string",
+          "null"
+        ]
       }
     },
     "title": "EvalListRequestV1",
@@ -139,6 +147,13 @@
               }
             ]
           },
+          "harness_version": {
+            "description": "The Harness version the engine reported when a live event admitted the analysis (the turn just ended on it); absent on a manual analysis, which may be of an older session, and when the engine did not say.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "judge_call": {
             "anyOf": [
               {
@@ -196,6 +211,15 @@
           "session_id": {
             "type": "string"
           },
+          "signals": {
+            "additionalProperties": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "description": "Occurrences of each deterministic pattern the collection found, keyed `<rule_id>:<target>` (a target may itself contain colons). Empty both when nothing was found and before collection (`coverage` is set once collection read the evidence).",
+            "type": "object"
+          },
           "source_title": {
             "description": "The session's title, once collection has read it.",
             "type": [
@@ -217,6 +241,13 @@
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
+          },
+          "supersedes": {
+            "description": "The earlier analysis of the same turn this reanalysis was requested over (same `observation_key`); absent on a first analysis.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "turn_id": {
             "type": "string"
@@ -452,16 +483,56 @@
         "type": "object"
       },
       "RoutingReasonV1": {
-        "enum": [
-          "diagnostics",
-          "needs_investigation",
-          "insufficient_evidence",
-          "low_confidence",
-          "coverage_insufficient",
-          "audit_sample",
-          "manual_request"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "needs_investigation"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Legacy: no longer produced; kept so stored records still deserialize.",
+            "enum": [
+              "diagnostics"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Legacy: no longer produced.",
+            "enum": [
+              "insufficient_evidence"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Legacy: no longer produced.",
+            "enum": [
+              "low_confidence"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Legacy: no longer produced.",
+            "enum": [
+              "coverage_insufficient"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Legacy: no longer produced.",
+            "enum": [
+              "audit_sample"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Legacy: no longer produced.",
+            "enum": [
+              "manual_request"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "RoutingV1": {
         "additionalProperties": false,

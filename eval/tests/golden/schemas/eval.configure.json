@@ -66,6 +66,14 @@
           "null"
         ]
       },
+      "daily_cost_cap_usd": {
+        "description": "US dollars of known investigation cost per UTC day after which automatic observation admits nothing until the next day; absent means no cap. A manual `eval::analyze-session` is never refused by it.",
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
       "enabled": {
         "type": "boolean"
       },
@@ -135,6 +143,14 @@
         "description": "The codebase directory the investigation reads (see `ConfigureRequestV1`).",
         "type": [
           "string",
+          "null"
+        ]
+      },
+      "daily_cost_cap_usd": {
+        "description": "The daily cap on known investigation cost (see `ConfigureRequestV1`).",
+        "format": "double",
+        "type": [
+          "number",
           "null"
         ]
       },

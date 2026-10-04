@@ -3,10 +3,20 @@
 // never read like a healthy result, and "completed" never speaks for the task.
 import { formatBytes, formatDuration } from '@iii-dev/console-ui/format'
 import { formatCost, formatTokens, remainingMs, totalTokens } from '../../../model'
-import type { AnalysisRecord, AnalysisResult, AnalysisStatus, MonitorLimits, MonitorUsage } from '../../../types'
+import type {
+  AnalysisRecord,
+  AnalysisResult,
+  AnalysisStatus,
+  Failure,
+  MonitorLimits,
+  MonitorUsage,
+} from '../../../types'
+import { span } from '../time'
 import {
+  capitalize,
   clock,
   count,
+  formatCostShort,
   investigationCaps,
   parseSizes,
   plural,
@@ -19,7 +29,11 @@ import {
 
 export type NoticeTone = 'info' | 'running' | 'warn' | 'alert'
 export type NoticeIcon = 'spinner' | 'clock' | 'alert' | 'help' | 'warn' | 'ban' | 'check' | 'file-x'
-export type NoticeAction = 'cancel' | 'reanalyze' | 'signals' | 'session'
+/**
+ * What a notice offers besides the masthead's one Reanalyze: stop the run, read the signals, or the one thing the
+ * cause needs done outside the monitor (`billing`, `judge-settings`) or in the analyst's session.
+ */
+export type NoticeAction = 'cancel' | 'signals' | 'session' | 'billing' | 'judge-settings'
 
 /**
  * Failures a new run would hit again: `eval::analyze` refuses a descendant
@@ -41,6 +55,8 @@ export interface StateCopy {
   message?: string
   /** One mono line: the code, a time, the request id. */
   detail?: string
+  /** A new run is possible: the notice ends with what it would cost. */
+  estimate?: boolean
   actions: NoticeAction[]
 }
 
@@ -102,8 +118,26 @@ function pendingCopy(reason: string): { title: string; body: string } {
 
 const KEPT = 'The signals and the snapshot are kept.'
 
-function judgeCopy(code: string, limits: MonitorLimits | undefined): { title: string; body: string } {
+/** The provider's own words, when they fit in a sentence; longer ones stay in the quiet line. */
+function providerWords(message: string): string | undefined {
+  const words = message.trim().replace(/[.\s]+$/, '')
+  return words && words.length <= 160 && !words.includes('\n') ? words : undefined
+}
+
+function judgeCopy(
+  code: string,
+  limits: MonitorLimits | undefined,
+  assets: { message: string; httpStatus?: number },
+): { title: string; body: string; inlined?: boolean } {
   switch (code) {
+    case 'judge_out_of_credits': {
+      const words = providerWords(assets.message)
+      return {
+        title: 'Jev is out of credits',
+        body: `judge-typesafe answered HTTP ${assets.httpStatus ?? 402}${words ? `: ${words}` : ''}. Triage can't run until credits are added, so no analyst model was called and nothing was spent on this analysis. ${KEPT}`,
+        inlined: words !== undefined,
+      }
+    }
     case 'judge_provider_unavailable':
       return {
         title: 'judge-typesafe is unavailable',
@@ -111,8 +145,8 @@ function judgeCopy(code: string, limits: MonitorLimits | undefined): { title: st
       }
     case 'judge_missing_key':
       return {
-        title: 'judge-typesafe has no API key',
-        body: `The triage provider has no key configured, so it couldn't classify the session. ${KEPT} Add the key, then reanalyze.`,
+        title: 'Jev has no API key',
+        body: `judge-typesafe has no key, so triage can't run. Add the key in the judge-typesafe settings, then reanalyze. ${KEPT}`,
       }
     case 'judge_deadline':
       return {
@@ -139,77 +173,152 @@ function judgeCopy(code: string, limits: MonitorLimits | undefined): { title: st
   }
 }
 
+/** Steps an analyst may take: what the backend named in its message (`(32)`), else the cap of the analysis. */
+function stepsOf(record: Pick<AnalysisRecord, 'code_root'>, failure: Failure, limits: MonitorLimits | undefined) {
+  const named = /\((\d+)\)/.exec(failure.message)
+  if (named) return Number(named[1])
+  return limits ? investigationCaps(limits, Boolean(record.code_root)).steps : undefined
+}
+
+/** `417k`, `1,204`: tokens as a budget reads. */
+function tokensOf(tokens: number): string {
+  return tokens >= 10_000 ? `${Math.round(tokens / 1000)}k` : count(tokens)
+}
+
+/** What an analysis that ran a model spent, as far as the model's provider reported it; empty when nothing ran. */
+function spentClause(usage: MonitorUsage): string | undefined {
+  if (usage.llm_cost_usd !== undefined) return `${formatCostShort(usage.llm_cost_usd)} was spent`
+  return totalTokens(usage).llm === undefined ? undefined : "its cost wasn't reported"
+}
+
+/**
+ * The failure's code, with the one rewrite old records need: before `judge_out_of_credits` existed, no credits was a
+ * `judge_http` whose message (and triage failure) still say HTTP 402.
+ */
+export function failureCode(failure: Failure, httpStatus?: number): string {
+  const credits = failure.code === 'judge_http' && (httpStatus === 402 || /\bHTTP 402\b/.test(failure.message))
+  return credits ? 'judge_out_of_credits' : failure.code
+}
+
+/** The headline of a failure; the list says it too, so it is one string in one place. */
+export function failureHeadline(failure: Failure, steps?: number): string {
+  const { stage } = failure
+  const code = failureCode(failure)
+  if (code.startsWith('judge_')) return judgeCopy(code, undefined, { message: '' }).title
+  switch (code) {
+    case 'deadline':
+      return 'The analysis ran out of time'
+    case 'source_not_found':
+      return 'The session has no turn record'
+    case 'source_advanced':
+    case 'inconsistent_evidence':
+      return 'The session changed during capture'
+    case 'evidence_unreadable':
+      return "The evidence couldn't be read"
+    case 'not_a_root_session':
+      return 'This is not a root session'
+    case 'monitor_session':
+      return "The monitor doesn't analyze its own sessions"
+    case 'coverage_insufficient':
+      return stage === 'investigating' ? 'Evidence too large for the analyst' : 'Evidence too large to analyze'
+    case 'snapshot_missing':
+      return 'The saved capture is missing'
+    case 'external_outcome_unknown':
+      return stage === 'investigating' ? 'Investigation result is unknown' : 'Triage result is unknown'
+    case 'analyst_rejected':
+      return "Harness didn't accept the investigation"
+    case 'analyst_failed':
+      return 'The analyst ended without a result'
+    case 'analyst_turn_changed':
+      return 'The investigation session changed'
+    case 'analyst_step_cap':
+      return steps === undefined
+        ? 'The analyst used all its steps'
+        : steps === 1
+          ? 'The analyst used its only step'
+          : `The analyst used all ${steps} steps`
+    case 'analyst_output_invalid':
+      return "The analyst's answer was unusable"
+    case 'cost_cap':
+      return 'The daily cost cap was reached'
+    default:
+      return 'The analysis failed'
+  }
+}
+
 function failureCopy(result: AnalysisResult, limits: MonitorLimits | undefined): StateCopy | null {
   const { record, assets } = result
   const failure = record.failure
   if (!failure) return null
-  const { code, stage } = failure
+  const { stage } = failure
+  const status = assets.triage_failure?.http_status
+  const code = failureCode(failure, status)
   const at = record.completed_at ?? record.updated_at
   const signals = record.counters.diagnostics
   const keptSignals =
     signals > 0 ? ` ${plural(signals, 'signal')} from the capture ${signals === 1 ? 'is' : 'are'} kept.` : ''
   const request = record.judge_call?.request_id
+  const spent = spentClause(record.usage)
   const base = {
     tone: 'alert' as NoticeTone,
     icon: 'alert' as NoticeIcon,
     message: failure.message || undefined,
-    detail: [code, clock(at), stage === 'judging' && request ? `request ${request}` : undefined]
+    detail: [
+      failure.code,
+      code.startsWith('judge_') && status !== undefined ? `HTTP ${status}` : undefined,
+      clock(at),
+      stage === 'judging' && request ? `request ${request}` : undefined,
+    ]
       .filter(Boolean)
       .join(' · '),
-    actions: ['reanalyze'] as NoticeAction[],
+    estimate: canReanalyze(record),
+    actions: [] as NoticeAction[],
   }
-  const retry = 'Reanalyze to try again.'
-  const copy = (title: string, body: string, extra: Partial<StateCopy> = {}): StateCopy => ({
-    ...base,
-    title,
-    body,
-    ...extra,
-  })
+  const title = failureHeadline({ ...failure, code }, stepsOf(record, failure, limits))
+  const copy = (body: string, extra: Partial<StateCopy> = {}): StateCopy => ({ ...base, title, body, ...extra })
+  /** The analyst's session holds what it did: the one thing to read when it ended badly. */
+  const analyst: Partial<StateCopy> = { actions: ['session'] }
+  const noEstimate = { estimate: false, actions: [] as NoticeAction[] }
 
   if (code.startsWith('judge_')) {
-    const judge = judgeCopy(code, limits)
-    return copy(judge.title, judge.body)
+    const judge = judgeCopy(code, limits, { message: failure.message, httpStatus: status })
+    const action: NoticeAction[] =
+      code === 'judge_out_of_credits' ? ['billing'] : code === 'judge_missing_key' ? ['judge-settings'] : []
+    return copy(judge.body, { actions: action, ...(judge.inlined ? { message: undefined } : {}) })
   }
   switch (code) {
     case 'deadline':
       return copy(
-        'The analysis ran out of time',
-        `It didn't finish within ${seconds(record.deadline - record.created_at, 0)}. It was stopped during ${stageWord(stage)}.${assets.snapshot ? ' The evidence captured so far is kept.' : ''} ${retry}`,
+        `It didn't finish within ${seconds(record.deadline - record.created_at, 0)}. It was stopped during ${stageWord(stage)}.${assets.snapshot ? ' The evidence captured so far is kept.' : ''}`,
         { icon: 'clock' },
       )
     case 'source_not_found':
       return copy(
-        'The session has no turn record',
         'Harness has no turn record for this session, so there was nothing to capture. It may have been deleted. No model was called.',
         { icon: 'file-x' },
       )
     case 'source_advanced':
       return copy(
-        'The session changed during capture',
         `A newer turn started while turn ${shortId(record.turn_id)} was being read. Turns weren't mixed, so the capture was stopped. Reanalyze once the session settles.`,
       )
     case 'inconsistent_evidence':
       return copy(
-        'The session changed during capture',
         "The observed turn resumed, or a descendant session changed, while the evidence was being read. Turns weren't mixed, so the capture was stopped. Reanalyze once the session settles.",
       )
     case 'evidence_unreadable':
       return copy(
-        "The evidence couldn't be read",
-        `A page of the transcript was missing or malformed, so the monitor stopped instead of skipping evidence. No model was called. ${retry}`,
+        'A page of the transcript was missing or malformed, so the monitor stopped instead of skipping evidence. No model was called.',
         { icon: 'file-x' },
       )
     case 'not_a_root_session':
       return copy(
-        'This is not a root session',
         "It belongs to another session's tree. Analyze its root session instead: descendants are analyzed together with their root.",
-        { tone: 'warn', icon: 'warn', actions: [] },
+        { tone: 'warn', icon: 'warn', ...noEstimate },
       )
     case 'monitor_session':
       return copy(
-        "The monitor doesn't analyze its own sessions",
         "This session was created by the monitor to investigate another analysis. It's never analyzed, so analyses can't feed each other.",
-        { tone: 'warn', icon: 'warn', actions: [] },
+        { tone: 'warn', icon: 'warn', ...noEstimate },
       )
     case 'coverage_insufficient': {
       const sizes = parseSizes(failure.message)
@@ -220,61 +329,72 @@ function failureCopy(result: AnalysisResult, limits: MonitorLimits | undefined):
           : `The snapshot needs ${formatBytes(sizes.size)}; the limit is ${formatBytes(sizes.limit)}.`
         : 'The evidence is over the size the monitor can analyze.'
       return copy(
-        forContext ? 'Evidence too large for the analyst' : 'Evidence too large to analyze',
         `${measured} ${forContext ? 'The analyst model was not called.' : 'No model was called.'}${keptSignals} This doesn't mean the session was healthy.`,
         {
           tone: 'warn',
           icon: 'warn',
           message: sizes ? undefined : base.message,
-          actions: signals > 0 ? ['signals', 'reanalyze'] : ['reanalyze'],
+          actions: signals > 0 ? ['signals'] : [],
         },
       )
     }
     case 'snapshot_missing':
       return copy(
-        'The saved capture is missing',
-        `The evidence captured for this analysis can't be found, so the next stage couldn't run. Reanalyze to capture the session again.`,
+        "The evidence captured for this analysis can't be found, so the next stage couldn't run. Reanalyze to capture the session again.",
         { icon: 'file-x' },
       )
-    case 'external_outcome_unknown': {
-      const judging = stage !== 'investigating'
+    case 'external_outcome_unknown':
       return copy(
-        judging ? 'Triage result is unknown' : 'Investigation result is unknown',
-        judging
-          ? "The eval worker restarted after the Jev call started, and no answer was saved. The call wasn't repeated, so it can't be charged twice. Reanalyze to try again."
-          : "The eval worker restarted after the request to the analyst was sent, and no result was saved. The request wasn't repeated, so it can't be charged twice. Reanalyze to try again.",
+        stage === 'investigating'
+          ? "The eval worker restarted after the request to the analyst was sent, and no result was saved. The request wasn't repeated, so it can't be charged twice."
+          : "The eval worker restarted after the Jev call started, and no answer was saved. The call wasn't repeated, so it can't be charged twice.",
         { icon: 'help' },
       )
-    }
     case 'analyst_rejected':
       return copy(
-        "Harness didn't accept the investigation",
-        `The request to start the analyst's turn was refused, so there are no suggestions. Triage and signals are kept. ${retry}`,
+        "The request to start the analyst's turn was refused, so there are no suggestions. Triage and signals are kept.",
       )
-    case 'analyst_failed':
+    case 'analyst_failed': {
+      const started = record.stages.find((stage) => stage.status === 'investigating')?.at
+      const after = started === undefined ? '' : ` after ${span(at - started)}`
       return copy(
-        'The investigation turn failed',
-        `The analyst's turn ended without a result, so there are no suggestions. Triage and signals are kept. ${retry}`,
+        `The analyst's turn ended${after} before it delivered a result, so there is nothing to show.${record.analyst ? ' What it did is kept in the analyst session.' : ''}${spent ? ` ${capitalize(spent)}.` : ''} Triage and signals are kept.`,
+        analyst,
       )
+    }
     case 'analyst_turn_changed':
       return copy(
-        'The investigation session changed',
-        `Another turn started in the investigation session, so its result can't be trusted. Triage and signals are kept. ${retry}`,
+        "Another turn started in the investigation session, so its result can't be trusted. Triage and signals are kept.",
+        analyst,
       )
-    case 'analyst_step_cap':
+    case 'analyst_step_cap': {
+      const steps = stepsOf(record, failure, limits)
+      const caps = limits ? investigationCaps(limits, Boolean(record.code_root)) : undefined
+      const tokens = totalTokens(record.usage).llm
+      const used = [
+        steps === undefined ? undefined : `${steps} of ${steps} steps`,
+        tokens === undefined
+          ? undefined
+          : `${tokensOf(tokens)}${caps ? ` of ${tokensOf(caps.totalTokens)}` : ''} tokens`,
+        spent,
+      ].filter(Boolean)
       return copy(
-        'The investigation ran out of steps',
-        `The analyst used every step it was given before it delivered a result, so there are no suggestions. Triage and signals are kept. ${retry}`,
+        `It reached the step cap before delivering a result, so there is no suggestion to show.${used.length ? ` ${used.join(' · ')}.` : ''} The cap is fixed in this version. Triage and signals are kept.`,
+        analyst,
       )
+    }
     case 'analyst_output_invalid':
       return copy(
-        "The analyst's answer was unusable",
-        `The investigation finished, but its result doesn't match the suggestion format, so nothing is shown as a suggestion. Triage and signals are kept. ${retry}`,
+        "The investigation finished, but its result doesn't match the suggestion format, so nothing is shown as a suggestion. Triage and signals are kept.",
+        analyst,
+      )
+    case 'cost_cap':
+      return copy(
+        "The day's cost cap was reached while this analysis waited, so the analyst model was not called and nothing was spent on it. Triage and signals are kept. Raise the cap in Settings, or reanalyze: a manual analysis is never held back by the cap, and it investigates if Jev answers needs_investigation again.",
+        { tone: 'warn', icon: 'warn' },
       )
     default:
-      return copy('The analysis failed', `It stopped during ${stageWord(stage)}. ${retry}`, {
-        message: failure.message || undefined,
-      })
+      return copy(`It stopped during ${stageWord(stage)}.`, { message: failure.message || undefined })
   }
 }
 
@@ -285,23 +405,23 @@ function completedCopy(result: AnalysisResult): StateCopy | null {
   if (record.counters.rejected_suggestions > 0) return null
   const signals = record.counters.diagnostics
   const answer = triageChoice(assets.triage)
-  const reasons = record.routing?.reasons ?? []
   const parts = [signals === 0 ? 'No signals.' : `${plural(signals, 'signal')} recorded.`]
   if (answer) parts.push(`Triage said ${answer.choice} at ${twoDecimals(answer.confidence)}.`)
-  if (record.routing && !record.routing.investigate) parts.push('It was not sent to investigation.')
-  else if (record.routing && reasons.length === 1 && reasons[0] === 'audit_sample') {
-    parts.push('The session was investigated as part of the audit sample.')
-  } else if (record.routing) parts.push('The analyst investigated and proposed no change.')
+  const skipped = record.routing && !record.routing.investigate
+  if (skipped) parts.push('It was not sent to investigation.')
+  else if (record.routing) parts.push('The analyst investigated and proposed no change.')
   // "Nothing worth changing" is only said of a capture that was complete: a
-  // missing signal in a partial one is not evidence of healthy behavior.
+  // missing signal in a partial one is not evidence of healthy behavior, and a
+  // signal that no analyst looked at is not one either.
+  const unexamined = signals > 0 && skipped
   const coverage = assets.snapshot?.coverage.level ?? record.coverage
-  if (coverage === 'complete') {
+  if (coverage === 'complete' && !unexamined) {
     return {
       tone: 'info',
       icon: 'check',
       title: 'Nothing worth changing was found',
       body: parts.join(' '),
-      actions: ['reanalyze'],
+      actions: [],
     }
   }
   if (coverage === 'insufficient' || coverage === 'partial') {
@@ -310,9 +430,9 @@ function completedCopy(result: AnalysisResult): StateCopy | null {
   return {
     tone: coverage === 'insufficient' ? 'warn' : 'info',
     icon: coverage === 'insufficient' ? 'warn' : 'help',
-    title: 'No suggestions were made',
+    title: unexamined ? 'Signals recorded, not investigated' : 'No suggestions were made',
     body: parts.join(' '),
-    actions: ['reanalyze'],
+    actions: [],
   }
 }
 
@@ -367,9 +487,9 @@ export function describeState(
       }
     }
     case 'investigating': {
-      const sentence = routingSentence(record, assets.triage, limits)
-      const because = sentence?.startsWith('Sent to investigation: ')
-        ? `Sent because ${sentence.slice('Sent to investigation: '.length)}`
+      const sentence = routingSentence(record, assets.triage)
+      const because = sentence?.startsWith('Investigated: ')
+        ? `Sent because ${sentence.slice('Investigated: '.length)}`
         : undefined
       return {
         tone: 'running',
@@ -397,7 +517,8 @@ export function describeState(
         title: `Cancelled during ${during}`,
         body: `It was stopped at ${clock(record.completed_at ?? record.updated_at)}. ${note} Usage so far is kept.`,
         detail: usageSummary(record.usage),
-        actions: record.analyst ? ['reanalyze', 'session'] : ['reanalyze'],
+        estimate: true,
+        actions: record.analyst ? ['session'] : [],
       }
     }
   }
