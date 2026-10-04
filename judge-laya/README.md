@@ -5,8 +5,9 @@ hub, running **inside the worker**: no API key, no Python, no external service.
 laya is a typed-decision model (ModernBERT-large 421M for English,
 mmBERT-base 322M for 100+ languages, Apache-2.0) that answers Noul, Choice and
 Score questions over JSON state in one encoder pass per question. The
-checkpoint runs in llama.cpp (`crates/llama-native`, shared with judge-clef),
-the encoder and laya's decision head in one graph, on the CPU, on Metal
+checkpoint runs in llama.cpp (`crates/llama-native`, the engine every local
+judge provider shares), the encoder and laya's decision head in one graph,
+on the CPU, on Metal
 (macOS) or on Vulkan (Linux x86_64: AMD, NVIDIA and Intel GPUs), picked
 automatically at start.
 
@@ -167,6 +168,7 @@ judge-clef's README): `curl`, `tar`, `patch`, `cmake` and a C++17 compiler
 are required, and no libclang; an offline build points
 `III_LLAMA_CPP_TARBALL` at a copy of the source archive. Linux x86_64 builds
 also need the Vulkan loader headers, the SPIR-V headers and `glslc` (Ubuntu:
-`libvulkan-dev spirv-headers glslc`) to compile the Vulkan module. The build copies the modules and libraries beside the
-binary, so `target/release` has the published layout; the release catalog
-ships them as the artifact's `companions`. Windows is not published yet.
+`libvulkan-dev spirv-headers glslc`) to compile the Vulkan module. The build
+copies the modules and libraries beside the binary, so `target/release` has
+the published layout; the release catalog ships them as the artifact's
+`companions`. Windows is not published yet.

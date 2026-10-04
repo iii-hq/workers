@@ -1,10 +1,12 @@
-//! llama.cpp runtime shared by the in-process judge providers (judge-semif,
-//! judge-decider, judge-laya): device selection, model loading, and one thread
-//! that owns the llama.cpp `Context` (not `Send`) and serves jobs in arrival
-//! order, so a single forward runs on the hardware at a time. llama.cpp itself
-//! is `iii_llama_native`. What a job does with the model is the provider's
-//! business; `scorer` is the job of the providers that read option labels, and
-//! `lifecycle` loads a provider's model on first use and releases it when idle.
+//! llama.cpp runtime shared by the in-process judge providers: device
+//! selection, model loading, and one thread that owns the llama.cpp `Context`
+//! (not `Send`) and serves jobs in arrival order, so a single forward runs on
+//! the hardware at a time. llama.cpp itself is `iii_llama_native`. What a job
+//! does with the model is the provider's business; `scorer` is the job of the
+//! providers that read option labels (judge-decider, judge-semif), and
+//! `lifecycle` loads a provider's model on first use and releases it when idle
+//! (every local provider; judge-laya and judge-clef drive `iii_llama_native`
+//! on their own thread).
 pub use iii_llama_native;
 pub mod lifecycle;
 pub mod scorer;

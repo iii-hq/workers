@@ -9,8 +9,9 @@ reads the backbone's final hidden state of every prompt token and gives one
 score per option of every question, so all the questions of an evaluation are
 decided together in one forward pass, with no decoding. This worker runs both
 in one graph through llama.cpp's own `clef` architecture:
-[`crates/llama-native`](../crates/llama-native/) compiles llama.cpp b11379
-from source and calls it through a C shim. The model runs on
+[`crates/llama-native`](../crates/llama-native/), the engine judge-decider,
+judge-semif and judge-laya share, compiles llama.cpp b11379 from source and
+calls it through a C shim. The model runs on
 the CPU, on Metal (macOS) or on Vulkan (Linux x86_64: AMD, NVIDIA and Intel
 GPUs), picked automatically at start.
 
@@ -293,9 +294,6 @@ and libraries beside the binary, so `target/release` has the published layout;
 the release catalog ships them as the artifact's `companions`. Windows is not
 published yet.
 
-- Give this package its own `CARGO_TARGET_DIR`: it lays its llama.cpp beside
-  the binaries as `libllama.so.0` and `libggml*.so`, the names the older
-  llama.cpp of judge-decider, judge-semif and judge-laya uses too.
 - `build.rs` adds `$ORIGIN` to the binary's runpath;
   `readelf -d target/release/judge-clef | grep RUNPATH` shows it.
 - Run the real model from a release build: the debug build is far too slow at

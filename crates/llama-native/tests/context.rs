@@ -1,6 +1,7 @@
 //! The context API on the CPU over two tiny random GGUFs of the other judge
 //! providers: judge-decider's qwen3 (causal, byte vocabulary, logits) and
-//! judge-laya's modern-bert encoder (non-causal, embeddings).
+//! judge-laya's modern-bert encoder with its decision head (non-causal,
+//! embeddings).
 use iii_llama_native::{Batch, Context, ContextParams, Model, Pooling};
 use std::path::Path;
 
@@ -16,7 +17,7 @@ fn qwen3() -> Model {
 }
 
 fn encoder() -> Model {
-    load("judge-laya/tests/fixtures/tiny-encoder.reference.gguf")
+    load("judge-laya/tests/fixtures/tiny.reference.gguf")
 }
 
 /// Two sequences sharing one KV pool, as crates/llama-runtime's scorer runs.
@@ -188,8 +189,9 @@ fn clear_empties_memory_and_bad_batches_err() {
 fn encodes_rows_to_token_embeddings() {
     let model = encoder();
     assert_eq!(model.architecture().as_deref(), Some("modern-bert"));
+    // Rows are laya's decision head: one score per question type.
     let width = model.n_embd_out();
-    assert_eq!(width, model.n_embd());
+    assert_eq!(width, 3);
     let mut ctx = model
         .new_context(ContextParams {
             n_ctx: 64,

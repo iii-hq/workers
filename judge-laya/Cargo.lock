@@ -1026,6 +1026,7 @@ name = "iii-llama-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "iii-llama-native",
  "judge-contract",
  "serde_json",
  "tokio",

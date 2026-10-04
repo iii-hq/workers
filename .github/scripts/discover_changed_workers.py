@@ -240,13 +240,28 @@ def catalog_deltas(base: str, head: str) -> tuple[set[str], set[str], bool]:
 
 
 def crate_dependents(repo_root: pathlib.Path, crate: str, workers: set[str]) -> list[str]:
-    """Workers whose Cargo.toml declares a path dependency on crates/<crate>.
+    """Workers whose Cargo.toml declares a path dependency on crates/<crate>,
+    directly or through other crates (judge-decider reaches crates/llama-native
+    through crates/llama-runtime).
 
     Textual match on `crates/<crate>` inside the manifest — loose on purpose
-    (path deps read `{ path = "../crates/<crate>" }`, and a TOML parser is a
-    new CI dependency); a false positive only adds a worker to the matrix.
+    (path deps read `{ path = "../crates/<crate>" }`, between crates
+    `{ path = "../<crate>" }`, and a TOML parser is a new CI dependency); a
+    false positive only adds a worker to the matrix.
     """
-    needle = f"{CRATES_DIR}/{crate}"
+    manifests = {
+        manifest.parent.name: manifest.read_text()
+        for manifest in (repo_root / CRATES_DIR).glob("*/Cargo.toml")
+    }
+    crates = {crate}
+    grew = True
+    while grew:
+        grew = False
+        for name, text in manifests.items():
+            if name not in crates and any(f'"../{c}"' in text for c in crates):
+                crates.add(name)
+                grew = True
+    needles = [f"{CRATES_DIR}/{c}" for c in crates]
     out = []
     for w in sorted(workers):
         manifest = repo_root / w / "Cargo.toml"
@@ -254,7 +269,7 @@ def crate_dependents(repo_root: pathlib.Path, crate: str, workers: set[str]) -> 
             text = manifest.read_text()
         except OSError:
             continue
-        if needle in text:
+        if any(needle in text for needle in needles):
             out.append(w)
     return out
 

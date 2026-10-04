@@ -6,8 +6,9 @@ SemIf reads runtime-defined decisions from a frozen open LLM: one forward pass,
 a softmax over the next-token logits of the option letters `A`–`P`, no decoding.
 Its published Qwen3.5-4B baseline agrees with Jev's own references on 0.845 of
 TypeSafe's public subset (Jev 0.883). This worker runs the same prompt through
-llama.cpp (`crates/llama-native`) on the CPU, on Metal (macOS) or on Vulkan
-(Linux x86_64: AMD, NVIDIA and Intel GPUs), picked automatically at start.
+llama.cpp (`crates/llama-native`, the engine every local judge provider
+shares) on the CPU, on Metal (macOS) or on Vulkan (Linux x86_64: AMD, NVIDIA
+and Intel GPUs), picked automatically at start.
 
 ## Hardware selection
 
@@ -108,6 +109,11 @@ Parallel suffixes pay off on short states; long states are dominated by the
 one-time prefill. On the same card llama.cpp's ROCm backend measured within
 10% of Vulkan either way, so the worker ships Vulkan alone. A single short
 decision takes 67–140 ms on the GPU and 1.1–1.4 s on the CPU.
+
+These figures predate llama.cpp b11379 (`crates/llama-native`). Against the
+previous build, b11379 takes 0.85 of the time on the CPU (a 1.6k-token request
+of 9 questions and a 7.6k-token one of 10, 9 runs each) and the same time on
+Vulkan (within 2%).
 
 GPU, reuse and batching change probabilities by up to 0.02 against fresh CPU
 scoring, as SemIf documents for its own fast paths.

@@ -24,7 +24,7 @@ half = "2"
 memmap2 = "0.9"
 safetensors = "0.8"
 # Only the model lifecycle (ModelSlot); llama.cpp comes from llama-native.
-iii-llama-runtime = { path = "../crates/llama-runtime", default-features = false }
+iii-llama-runtime = { path = "../crates/llama-runtime" }
 iii-llama-native = { path = "../crates/llama-native" }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 serde = { version = "1", features = ["derive"] }

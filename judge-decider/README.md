@@ -6,9 +6,9 @@ no llama-server. decider-4b v2 is a Qwen3.5-4B-Base fine-tune trained for
 exactly this readout (JevBench v1.4.2 rank 1, 64.1): one forward pass per
 decision, a softmax over the next-token logits of the option labels at the
 model's fitted temperature, no decoding. This worker reads it in decider's own
-prompt layout through llama.cpp (`crates/llama-native`) on the CPU, on
-Metal (macOS) or on Vulkan (Linux x86_64: AMD, NVIDIA and Intel GPUs), picked
-automatically at start.
+prompt layout through llama.cpp (`crates/llama-native`, the engine every local
+judge provider shares) on the CPU, on Metal (macOS) or on Vulkan (Linux
+x86_64: AMD, NVIDIA and Intel GPUs), picked automatically at start.
 
 On an RX 6900 XT (Vulkan), against the other judge providers on the same
 machine:
@@ -128,7 +128,10 @@ one batch (`iii_llama_runtime::scorer`, shared with judge-semif).
 rows and the answers (probabilities and confidence) against the bf16 weights
 computed in float32 (`tests/fixtures/make_decider_prompts.py`): an f16
 conversion agrees to 0.0025, Q8_0 to 0.0074, and the shipped Q4_K_M to 0.12
-on a near-flat 12-option question (0.02 elsewhere). For the closer Q8_0
+(0.14 on the CPU) on a near-flat 12-option question, where llama.cpp b11379
+puts `area0` (0.17) just above `auth` (0.16), the reference's answer at 0.28
+(0.03 elsewhere).
+For the closer Q8_0
 (4.5 GB), convert `Mapika/decider-4b` at `v2` with llama.cpp's
 `convert_hf_to_gguf.py --outtype q8_0 --no-mtp` and point `III_DECIDER_GGUF`
 at it.
