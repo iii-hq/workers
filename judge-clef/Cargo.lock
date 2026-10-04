@@ -970,6 +970,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-llama-native"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cc",
+ "cmake",
+ "sha2",
+]
+
+[[package]]
 name = "iii-llama-runtime"
 version = "0.1.0"
 dependencies = [
@@ -1067,13 +1077,12 @@ name = "judge-clef"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "cc",
  "clap",
- "cmake",
  "futures-util",
  "hf-hub",
  "iii-config-client",
  "iii-console-ui",
+ "iii-llama-native",
  "iii-llama-runtime",
  "iii-sdk",
  "judge-contract",
@@ -1081,7 +1090,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "tokenizers",
  "tokio",

@@ -21,6 +21,7 @@ clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 iii-llama-runtime = { path = "../crates/llama-runtime", default-features = false }
+iii-llama-native = { path = "../crates/llama-native" }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
@@ -29,11 +30,6 @@ anyhow = "1"
 hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
 tracing = "0.1"
-
-[build-dependencies]
-cc = "1"
-cmake = "0.1"
-sha2 = "0.10"
 
 [dev-dependencies]
 futures-util = "0.3"

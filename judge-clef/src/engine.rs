@@ -1,8 +1,9 @@
-//! The loaded Clef model (src/llama.rs) for async callers: one forward at a
-//! time in arrival order, each on its own thread so the executor never waits
-//! on llama.cpp.
-use crate::{encode::Encoded, llama::Model};
-use anyhow::Result;
+//! The loaded Clef model (crates/llama-native) for async callers: one forward
+//! at a time in arrival order, each on its own thread so the executor never
+//! waits on llama.cpp.
+use crate::encode::Encoded;
+use anyhow::{ensure, Result};
+use iii_llama_native::Model;
 pub use iii_llama_runtime::Stop;
 use std::{
     path::Path,
@@ -49,7 +50,20 @@ pub struct Engine {
 impl Engine {
     /// Load the GGUF (blocking, seconds).
     pub fn load(gguf: &Path, options: Options) -> Result<Self> {
+        // A context per call starts ggml-vulkan's submit sizing from zero
+        // flops, so each pass submits its graph in 100-node pieces; at 16k
+        // tokens one nears amdgpu's 2 s job timeout, which loses the device
+        // and aborts the process. 10-node pieces cost at most 0.5% (RX 6900
+        // XT). An operator's value wins.
+        iii_llama_native::init_backends(Some(10));
         let model = Model::load(gguf, options.gpu_layers, options.threads)?;
+        // A qwen35 GGUF of the backbone loads too, without the decision head.
+        let arch = model.architecture();
+        ensure!(
+            arch.as_deref() == Some("clef"),
+            "{}: architecture {arch:?}, not clef",
+            gguf.display()
+        );
         Ok(Self {
             device: model.device.as_str().into(),
             model: Arc::new(Mutex::new(model)),
@@ -85,7 +99,7 @@ impl Engine {
             if Instant::now() >= deadline {
                 return Err(Stop::Deadline);
             }
-            match model.decide(&encoded) {
+            match decide(&model, &encoded) {
                 Ok(scores) if scores.iter().all(|s| s.is_finite()) => Ok(scores),
                 Ok(_) => {
                     tracing::warn!("clef forward gave a non-finite score");
@@ -100,4 +114,20 @@ impl Engine {
         .await
         .map_err(|_| Stop::Failed)?
     }
+}
+
+/// One forward over the prompt: the score of every option of every field, in
+/// prompt order (softmax per field).
+fn decide(model: &Model, encoded: &Encoded) -> Result<Vec<f32>> {
+    // llama_decision_order: question noul 1, choice 2, score 3; option 4.
+    let mut orders = vec![0u8; encoded.ids.len()];
+    for field in &encoded.fields {
+        orders[field.span.clone()].fill(field.kind as u8 + 1);
+        for option in &field.options {
+            orders[option.clone()].fill(4);
+        }
+    }
+    let ids: Vec<i32> = encoded.ids.iter().map(|&id| id as i32).collect();
+    let n_scores = encoded.fields.iter().map(|f| f.options.len()).sum();
+    model.decide(&ids, &orders, n_scores)
 }

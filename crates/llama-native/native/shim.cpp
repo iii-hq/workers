@@ -1,6 +1,6 @@
-// The slice of llama.cpp judge-clef calls, as a C API of scalars and pointers
-// (src/llama.rs declares it by hand): llama.h passes structs by value, and
-// llama_batch_ext_set_decision_order is C++ (src/llama-ext.h).
+// The slice of llama.cpp the judge providers call, as a C API of scalars and
+// pointers (src/lib.rs declares it by hand): llama.h passes structs by value,
+// and llama_batch_ext_set_decision_order is C++ (src/llama-ext.h).
 #include "ggml-backend.h"
 #include "llama.h"
 #include "llama-ext.h"
@@ -9,13 +9,15 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <string>
 #include <strings.h>
 
 // llama.cpp logs every tensor while loading (~1300 lines): keep warnings and
 // errors. A continuation line follows its message's fate. Also dropped: the
 // context's "compute buffer size ... does not match expectation" (one line per
 // backend), which llama.cpp logs on freeing a context whose pass reallocated
-// its compute buffers, as 16k prompts do (README: the 14.1 GiB peak).
+// its compute buffers, as 16k clef prompts do (judge-clef/README.md: the 14.1
+// GiB peak).
 static void log_warnings(ggml_log_level level, const char * text, void *) {
     thread_local bool keep = false;
     if (level != GGML_LOG_LEVEL_CONT) {
@@ -28,14 +30,13 @@ static void log_warnings(ggml_log_level level, const char * text, void *) {
 }
 
 // Load the backend modules (GGML_BACKEND_DL builds) from `dir`, else from
-// `fallback` when `dir` had none; both may be null.
-extern "C" void clef_backend_init(const char * dir, const char * fallback) {
-    // A context per call starts ggml-vulkan's submit sizing from zero flops,
-    // so each pass submits its graph in 100-node pieces; at 16k tokens one
-    // nears amdgpu's 2 s job timeout, which loses the device and aborts the
-    // process. 10-node pieces cost at most 0.5% (RX 6900 XT). An operator's
-    // value wins.
-    setenv("GGML_VK_MAX_NODES_PER_SUBMIT", "10", 0);
+// `fallback` when `dir` had none; both may be null. A vk_max_nodes_per_submit
+// other than 0 sets GGML_VK_MAX_NODES_PER_SUBMIT first, unless the operator
+// did; 0 leaves the environment alone.
+extern "C" void ln_backend_init(const char * dir, const char * fallback, uint32_t vk_max_nodes_per_submit) {
+    if (vk_max_nodes_per_submit) {
+        setenv("GGML_VK_MAX_NODES_PER_SUBMIT", std::to_string(vk_max_nodes_per_submit).c_str(), 0);
+    }
     llama_log_set(log_warnings, nullptr);
     if (dir) {
         ggml_backend_load_all_from_path(dir);
@@ -47,7 +48,7 @@ extern "C" void clef_backend_init(const char * dir, const char * fallback) {
 }
 
 // "<description> (<backend>)" of the first device that is not the CPU.
-extern "C" bool clef_gpu_device(char * out, size_t len) {
+extern "C" bool ln_gpu_device(char * out, size_t len) {
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         const char * backend = ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev));
@@ -61,7 +62,7 @@ extern "C" bool clef_gpu_device(char * out, size_t len) {
 
 // gpu_layers: -1 every layer, n that many; 0 uses no GPU device at all (with
 // one, llama.cpp keeps CPU weights in its pinned host buffer, unrepacked).
-extern "C" llama_model * clef_model_load(const char * path, int32_t gpu_layers) {
+extern "C" llama_model * ln_model_load(const char * path, int32_t gpu_layers) {
     llama_model_params params = llama_model_default_params();
     ggml_backend_dev_t no_devices[] = { nullptr };
     params.n_gpu_layers = gpu_layers;
@@ -71,8 +72,9 @@ extern "C" llama_model * clef_model_load(const char * path, int32_t gpu_layers) 
     return llama_model_load_from_file(path, params);
 }
 
-// One forward of Clef over the whole prompt in a context sized to it, freed
-// before returning: n_ctx = n_batch = n_ubatch = n_tokens rounded up to 256,
+// One forward of a decision model (llama.cpp's `clef` arch: the head in the
+// graph) over the whole prompt in a context sized to it, freed before
+// returning: n_ctx = n_batch = n_ubatch = n_tokens rounded up to 256,
 // the padding llama.cpp gives n_ctx anyway (it aborts the process on an
 // encode longer than n_ubatch). orders[i] is the token's
 // llama_decision_order (0 none, 1-3 question noul/choice/score, 4 option);
@@ -81,8 +83,8 @@ extern "C" llama_model * clef_model_load(const char * path, int32_t gpu_layers) 
 // -1003 when the batch refuses a token, -1004 with no score, -1005 when the
 // GGUF sets a pooling type, -1006 when the pass throws (e.g. a Vulkan
 // allocation), else llama_process's own code.
-extern "C" int32_t clef_decide(const llama_model * model, int32_t n_threads, const int32_t * ids,
-                               const uint8_t * orders, int32_t n_tokens, float * scores, int32_t n_scores) {
+extern "C" int32_t ln_decide(const llama_model * model, int32_t n_threads, const int32_t * ids,
+                             const uint8_t * orders, int32_t n_tokens, float * scores, int32_t n_scores) {
     int32_t n_options = 0;
     for (int32_t i = 0; i < n_tokens; i++) {
         if (orders[i] > LLAMA_DECISION_ORDER_OPTION) {
@@ -126,7 +128,7 @@ extern "C" int32_t clef_decide(const llama_model * model, int32_t n_threads, con
         try {
             status = llama_process(ctx, LLAMA_PROCESS_TYPE_ENCODE, batch);
         } catch (const std::exception & e) {
-            fprintf(stderr, "clef_decide: %s\n", e.what());
+            fprintf(stderr, "ln_decide: %s\n", e.what());
             status = -1006;
         } catch (...) {
             status = -1006;

@@ -1,8 +1,7 @@
 //! clef provider for the judge hub: Cloudflare's Clef-Flash decision model run
-//! in-process. llama.cpp's `clef` arch (built by build.rs, called through
-//! native/clef.cpp) runs the Qwen3.5 backbone and the joint schema head in one
-//! graph: one forward per evaluation gives one score per option of every
-//! question.
+//! in-process. llama.cpp's `clef` arch (crates/llama-native) runs the Qwen3.5
+//! backbone and the joint schema head in one graph: one forward per evaluation
+//! gives one score per option of every question.
 mod cancellation;
 pub mod client;
 pub mod config;
@@ -10,7 +9,6 @@ pub mod configuration;
 pub mod download;
 pub mod encode;
 pub mod engine;
-mod llama;
 pub mod register;
 pub use client::{ClefClient, Limits};
 pub use config::ClefConfig;

@@ -11,6 +11,7 @@ on:
       - 'judge-decider/**'
       - 'judge-clef/**'
       - 'crates/llama-runtime/**'
+      - 'crates/llama-native/**'
       - 'crates/judge-contract/**'
       - 'crates/config-client/**'
       - 'crates/console-ui/**'

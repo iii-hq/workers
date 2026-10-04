@@ -8,8 +8,9 @@ Qwen3.5-9B backbone and a joint schema head of about 122M parameters. The head
 reads the backbone's final hidden state of every prompt token and gives one
 score per option of every question, so all the questions of an evaluation are
 decided together in one forward pass, with no decoding. This worker runs both
-in one graph through llama.cpp's own `clef` architecture: `build.rs` compiles
-llama.cpp b11379 from source and `native/clef.cpp` calls it. The model runs on
+in one graph through llama.cpp's own `clef` architecture:
+[`crates/llama-native`](../crates/llama-native/) compiles llama.cpp b11379
+from source and calls it through a C shim. The model runs on
 the CPU, on Metal (macOS) or on Vulkan (Linux x86_64: AMD, NVIDIA and Intel
 GPUs), picked automatically at start.
 
@@ -277,20 +278,20 @@ next evaluation waits for it.
 
 ## Building
 
-`build.rs` downloads llama.cpp b11379 (`1537a0a8`, GitHub's source archive,
-checked against a pinned sha256), applies `native/*.patch`, builds it with
-cmake and compiles `native/clef.cpp` against it; `src/llama.rs` declares the
-shim's C functions by hand. It needs `curl`, `tar`, `patch`, `cmake` and a
-C++17 compiler, and no libclang. An offline build points
-`III_LLAMA_CPP_TARBALL` at a copy of the archive, checked the same way. The
-patch keeps llama.cpp from reserving a logits buffer the `clef` pass never
-writes (15 GiB of host RAM at 16k tokens). Linux x86_64 builds also need the
-Vulkan loader headers, the SPIR-V headers and `glslc` (Ubuntu: `libvulkan-dev
-spirv-headers glslc`) to compile the Vulkan module (only the module links
-`libvulkan`, the binary does not). The build copies the modules and libraries
-beside the binary, so `target/release` has the published layout; the release
-catalog ships them as the artifact's `companions`. Windows is not published
-yet.
+`crates/llama-native`'s `build.rs` downloads llama.cpp b11379 (`1537a0a8`,
+GitHub's source archive, checked against a pinned sha256), applies
+`native/*.patch`, builds it with cmake and compiles `native/shim.cpp` against
+it; its `src/lib.rs` declares the shim's C functions by hand. It needs `curl`,
+`tar`, `patch`, `cmake` and a C++17 compiler, and no libclang. An offline
+build points `III_LLAMA_CPP_TARBALL` at a copy of the archive, checked the
+same way. The patch keeps llama.cpp from reserving a logits buffer the `clef`
+pass never writes (15 GiB of host RAM at 16k tokens). Linux x86_64 builds also
+need the Vulkan loader headers, the SPIR-V headers and `glslc` (Ubuntu:
+`libvulkan-dev spirv-headers glslc`) to compile the Vulkan module (only the
+module links `libvulkan`, the binary does not). The build copies the modules
+and libraries beside the binary, so `target/release` has the published layout;
+the release catalog ships them as the artifact's `companions`. Windows is not
+published yet.
 
 - Give this package its own `CARGO_TARGET_DIR`: it lays its llama.cpp beside
   the binaries as `libllama.so.0` and `libggml*.so`, the names the older
