@@ -109,7 +109,9 @@ impl Engine {
     }
 }
 
-/// One pass over `rows` (one sequence each, outputs at the markers only).
+/// One pass over `rows`, one sequence each. An embeddings pass outputs every
+/// token anyway (llama.cpp overrides partial output flags, with a warning),
+/// so all are flagged; the head's columns are read at the markers.
 fn scores(
     ctx: &mut Context<'_>,
     rows: &[Row],
@@ -125,9 +127,9 @@ fn scores(
     let mut batch = Batch::default();
     let mut starts = Vec::with_capacity(rows.len());
     let mut start = 0;
-    for (seq, (ids, markers, _)) in rows.iter().enumerate() {
+    for (seq, (ids, _, _)) in rows.iter().enumerate() {
         for (pos, &id) in ids.iter().enumerate() {
-            batch.add(id as i32, pos as i32, seq as i32, markers.contains(&pos));
+            batch.add(id as i32, pos as i32, seq as i32, true);
         }
         starts.push(start);
         start += ids.len();
