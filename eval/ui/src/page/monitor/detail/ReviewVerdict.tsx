@@ -18,6 +18,7 @@ import {
   OUTCOME_TONE,
   OUTCOMES,
   PROPOSAL_LABEL,
+  sameVerdict,
   verdictControls,
 } from './review-model'
 import { DialogFrame, FieldLine, FormActions, FormField, TextArea } from './review-parts'
@@ -67,7 +68,10 @@ function VerdictForm({
   const [saving, setSaving] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
   const refusal = improvementRefusal(review, links)
-  const ready = outcome !== null && rationale.trim() !== '' && !(outcome === 'validated_improvement' && refusal)
+  const current = review.verdict
+  const unchanged = sameVerdict(current, { outcome, rationale, checked }, controls)
+  const ready =
+    outcome !== null && rationale.trim() !== '' && !(outcome === 'validated_improvement' && refusal) && !unchanged
   const size = narrow ? 'lg' : 'sm'
 
   const submit = async () => {
@@ -101,7 +105,16 @@ function VerdictForm({
       }}
     >
       <div className="eval-ui-val-fields">
-        {review.evidence ? <Proposal evidence={review.evidence} note="Nothing below is pre-selected." /> : null}
+        {review.evidence ? (
+          <Proposal
+            evidence={review.evidence}
+            note={
+              current
+                ? 'Your current verdict is filled in below: change it and record, or cancel.'
+                : 'Nothing below is pre-selected.'
+            }
+          />
+        ) : null}
         <fieldset className="eval-ui-rv-options" disabled={saving}>
           <legend className="eval-ui-val-sr">Outcome</legend>
           {OUTCOMES.map((value) => {

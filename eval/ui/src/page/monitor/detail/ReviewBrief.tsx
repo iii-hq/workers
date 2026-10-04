@@ -18,7 +18,7 @@ export function CopyBriefButton({ brief, narrow }: { brief: string; narrow: bool
   )
 }
 
-/** Hidden by the caller when the host cannot open a draft; disabled while the monitor has no code directory. */
+/** Hidden by the caller when the host cannot open a draft; disabled when the analysis ran without a code directory. */
 export function DraftButton({
   disabled,
   narrow,
@@ -41,8 +41,8 @@ export function DraftNote({ drafted, codeRoot }: { drafted: boolean; codeRoot: s
   if (!codeRoot) {
     return (
       <p className="eval-ui-ad-quiet eval-ui-rv-note">
-        Draft in chat is off: the monitor has no code directory. Set one in Settings · Code access. The brief can still
-        be copied.
+        Draft in chat is off: this analysis ran without code access, so there is no directory to open the chat in. The
+        brief can still be copied.
       </p>
     )
   }

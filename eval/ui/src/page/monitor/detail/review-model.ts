@@ -17,6 +17,7 @@ import type {
   ValidationOutcome,
   ValidationPlan,
   ValidationRun,
+  Verdict,
 } from '../../../types'
 import { shortId } from './present'
 import { checkLabel, DEFAULT_MIN_RUNS, formatClock, mismatches } from './validation-view'
@@ -505,4 +506,23 @@ export function scenarioChoices(review: SuggestionReview, planScenario: string |
   return [
     ...new Set([review.criterion?.scenario_id, review.scenario_id, planScenario, review.run?.scenario_id]),
   ].filter((id): id is string => Boolean(id))
+}
+
+/** The draft repeats the verdict already on file (same outcome, rationale and checked controls): recording it would only rewrite its time. */
+export function sameVerdict(
+  current: Verdict | undefined,
+  draft: { outcome: ValidationOutcome | null; rationale: string; checked: string[] },
+  controls: string[],
+): boolean {
+  if (!current) return false
+  const set = (items: string[]) =>
+    items
+      .filter((item) => controls.includes(item))
+      .sort()
+      .join('\n')
+  return (
+    draft.outcome === current.outcome &&
+    draft.rationale.trim() === current.rationale.trim() &&
+    set(draft.checked) === set(current.controls_checked ?? [])
+  )
 }

@@ -22,6 +22,7 @@ import {
   prLabel,
   readPattern,
   registeredLate,
+  sameVerdict,
   statusSentence,
   verdictControls,
   withChoice,
@@ -472,5 +473,31 @@ describe('after release', () => {
   it('has nothing to fall from when the pattern was not there before', () => {
     expect(readPattern(pattern(0), pattern(1))).toBe('unseen')
     expect(readPattern(undefined, pattern(1))).toBe('unseen')
+  })
+})
+
+describe('sameVerdict', () => {
+  const current = {
+    outcome: 'inconclusive' as const,
+    rationale: 'n=1 per side',
+    controls_checked: ['a', 'gone'],
+    by: 'layon',
+    at: 0,
+  } as unknown as import('../../../types').Verdict
+  const controls = ['a', 'b']
+  it('is the verdict on file: same outcome, rationale and checked controls still in the plan', () => {
+    expect(
+      sameVerdict(current, { outcome: 'inconclusive', rationale: ' n=1 per side ', checked: ['a'] }, controls),
+    ).toBe(true)
+  })
+  it('differs when anything a person can change differs', () => {
+    expect(
+      sameVerdict(current, { outcome: 'no_improvement', rationale: 'n=1 per side', checked: ['a'] }, controls),
+    ).toBe(false)
+    expect(sameVerdict(current, { outcome: 'inconclusive', rationale: 'more', checked: ['a'] }, controls)).toBe(false)
+    expect(
+      sameVerdict(current, { outcome: 'inconclusive', rationale: 'n=1 per side', checked: ['a', 'b'] }, controls),
+    ).toBe(false)
+    expect(sameVerdict(undefined, { outcome: 'inconclusive', rationale: 'x', checked: [] }, controls)).toBe(false)
   })
 })
