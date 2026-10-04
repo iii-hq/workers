@@ -879,18 +879,28 @@ impl Session {
             let _held = held;
             let navigate = page.execute(params);
             tokio::pin!(navigate);
-            // chromiumoxide checks its deadline only when its handler wakes:
-            // wake it just past the deadline instead of whenever some other
-            // call or event does.
-            let wait =
-                std::time::Duration::from_millis(chromiumoxide::handler::REQUEST_TIMEOUT + 500);
-            if let Ok(result) = tokio::time::timeout(wait, &mut navigate).await {
+            // The first poll hands it over: a new sender always has room.
+            if let std::task::Poll::Ready(result) = futures::poll!(&mut navigate) {
                 return result;
             }
+            // The tab's channel keeps order: once this answers, the handler
+            // has taken the navigation and started its own 30 s on it.
             let _ = page.url().await;
-            tokio::time::timeout(wait, navigate)
-                .await
-                .unwrap_or(Err(CdpError::Timeout))
+            let taken = tokio::time::Instant::now();
+            let result = navigate.await;
+            if matches!(result, Err(CdpError::Timeout)) {
+                // This call's own 30 s started as it was sent, a little before
+                // the handler's, which holds the tab until it passes and
+                // notices that only when it next wakes. Hand the tab on past
+                // it: the next navigation's hand-over wakes the handler, which
+                // lets go of this one before taking that.
+                let released = taken
+                    + std::time::Duration::from_millis(
+                        chromiumoxide::handler::REQUEST_TIMEOUT + 500,
+                    );
+                tokio::time::sleep_until(released).await;
+            }
+            result
         });
         let result = navigation.await.map_err(|_| CdpError::NoResponse)??;
         Ok(result.result.error_text.clone())
