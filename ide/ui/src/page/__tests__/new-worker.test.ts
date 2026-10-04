@@ -15,8 +15,8 @@ import {
   type StackPhase,
   sourceLabel,
   stackSteps,
-  templateChoices,
   type Trigger,
+  templateChoices,
   validateWorkerName,
   workerFunctions,
 } from '../new-worker'
@@ -169,7 +169,12 @@ describe('newWorkerReducer', () => {
       failedCreate,
     )
     expect(failedAdd).toMatchObject({ step: 'failed', error: 'boom', logs: ['npm ERR!'], owned: true })
-    expect(run([{ type: 'add' }], failedAdd)).toMatchObject({ step: 'adding', phase: 'installing', error: null, logs: [] })
+    expect(run([{ type: 'add' }], failedAdd)).toMatchObject({
+      step: 'adding',
+      phase: 'installing',
+      error: null,
+      logs: [],
+    })
 
     const listFailed = run([{ type: 'list-failed', error: 'C230 templates unavailable' }])
     expect(listFailed).toMatchObject({ step: 'form', list: null, error: 'C230 templates unavailable' })

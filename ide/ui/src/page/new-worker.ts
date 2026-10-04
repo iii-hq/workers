@@ -216,7 +216,9 @@ export interface FunctionEntry {
 
 /** The worker's own functions: its `<name>::` ids, in id order. */
 export function workerFunctions(entries: FunctionEntry[], name: string): FunctionEntry[] {
-  return entries.filter((entry) => entry.function_id.startsWith(`${name}::`)).sort((a, b) => a.function_id.localeCompare(b.function_id))
+  return entries
+    .filter((entry) => entry.function_id.startsWith(`${name}::`))
+    .sort((a, b) => a.function_id.localeCompare(b.function_id))
 }
 
 /* ── Add to stack ───────────────────────────────────────────────────── */

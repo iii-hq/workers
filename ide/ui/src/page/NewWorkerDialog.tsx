@@ -36,9 +36,9 @@ import {
   type ListTemplatesResult,
   NEW_WORKER_INITIAL,
   newWorkerReducer,
+  type ProgressStep,
   pickTemplate,
   type ScaffoldResult,
-  type ProgressStep,
   type StepState,
   sourceLabel,
   stackSteps,
@@ -175,9 +175,10 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
   const runningName = state.step === 'running' ? result?.name : undefined
   useEffect(() => {
     if (!runningName) return
-    host.iii
-      .trigger<{ functions: FunctionEntry[] }>('engine::functions::list', {})
-      .then(({ functions: all }) => setFunctions(workerFunctions(all, runningName)), () => setFunctions([]))
+    host.iii.trigger<{ functions: FunctionEntry[] }>('engine::functions::list', {}).then(
+      ({ functions: all }) => setFunctions(workerFunctions(all, runningName)),
+      () => setFunctions([]),
+    )
   }, [host, runningName])
 
   // Opens the public page in the browser worker's console page; the browser
@@ -187,7 +188,10 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
     if (!browser || !result || !publicHref || event.metaKey || event.ctrlKey || event.shiftKey) return
     event.preventDefault()
     host.iii
-      .trigger<{ session_id: string }>(BROWSER_START, { url: `http://127.0.0.1:${HTTP_PORT}/${result.name}`, preview: false })
+      .trigger<{ session_id: string }>(BROWSER_START, {
+        url: `http://127.0.0.1:${HTTP_PORT}/${result.name}`,
+        preview: false,
+      })
       .then(
         ({ session_id }) => {
           host.panels?.open({ pageId: 'browser', context: { sessionId: session_id } })
@@ -446,7 +450,12 @@ function ResultSteps({
   failure: ReactNode
 }) {
   const rows = [
-    { key: 'files', label: `Created ${files} ${files === 1 ? 'file' : 'files'}`, state: 'done' as const, detail: entry && `${entry} is open` },
+    {
+      key: 'files',
+      label: `Created ${files} ${files === 1 ? 'file' : 'files'}`,
+      state: 'done' as const,
+      detail: entry && `${entry} is open`,
+    },
     { key: 'install', ...install, detail: install.state === 'active' ? elapsed : null },
     { key: 'start', ...start, detail: start.state === 'active' ? elapsed : null },
   ]
