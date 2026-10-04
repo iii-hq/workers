@@ -324,6 +324,45 @@ jobs:
         run: cargo test --locked --test minilm_target
 
   # ──────────────────────────────────────────────────────────────
+  # crates/llama-native builds llama.cpp per target: shared libraries and
+  # runtime-loaded backends on Linux x86_64 (the gates above), static Metal on
+  # macOS, a static CPU build on aarch64 Linux. Only the release pipeline
+  # compiled the last two, so build and test the crate natively on both.
+  # discover fans llama-native and llama-runtime changes into these four
+  # workers. The hosted images ship cmake, a C/C++ toolchain, curl, tar and
+  # patch; the tests load judge-clef/judge-decider/judge-laya's tiny GGUFs.
+  # No rust-cache: it purges the crate's own build dir (llama.cpp), leaving
+  # only four small build dependencies to restore.
+  # ──────────────────────────────────────────────────────────────
+  llama-native-targets:
+    name: "llama-native: llama.cpp build + test (${{ matrix.os }})"
+    needs: discover
+    if: >-
+      contains(needs.discover.outputs.rust, '"judge-clef"')
+      || contains(needs.discover.outputs.rust, '"judge-decider"')
+      || contains(needs.discover.outputs.rust, '"judge-semif"')
+      || contains(needs.discover.outputs.rust, '"judge-laya"')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04-arm]
+    defaults:
+      run:
+        working-directory: crates/llama-native
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+
+      - name: Run tests
+        run: cargo test --locked --all-features
+
+  # ──────────────────────────────────────────────────────────────
   # ios-simulator ships for macOS only: it drives Xcode's simulators through
   # `xcrun simctl` and a Swift helper (bridge/simbridge.swift) that the worker
   # compiles on the host at first use. The ubuntu gate above proves only the
