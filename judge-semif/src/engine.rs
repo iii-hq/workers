@@ -6,11 +6,8 @@
 //! suffixes).
 use crate::{download::Checkpoint, prompt};
 use anyhow::Result;
+use iii_llama_runtime::scorer::{softmax, Render, Scorer, Vocab};
 pub use iii_llama_runtime::scorer::{Options, Stop};
-use iii_llama_runtime::{
-    llama_cpp_2::token::LlamaToken,
-    scorer::{softmax, Render, Scorer, Vocab},
-};
 use std::{
     future::Future,
     sync::{atomic::AtomicBool, Arc},
@@ -31,7 +28,7 @@ impl Render for Evaluation {
     fn options(&self, i: usize) -> usize {
         self.questions[i].1.len()
     }
-    fn tokens(&self, vocab: &Vocab<'_>, i: usize) -> Result<Vec<LlamaToken>, Stop> {
+    fn tokens(&self, vocab: &Vocab<'_>, i: usize) -> Result<Vec<i32>, Stop> {
         let (criterion, options) = &self.questions[i];
         vocab.tokenize(&prompt::render(&self.state, criterion, options))
     }

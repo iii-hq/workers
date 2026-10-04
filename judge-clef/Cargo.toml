@@ -20,7 +20,7 @@ iii-console-ui = { path = "../crates/console-ui", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-iii-llama-runtime = { path = "../crates/llama-runtime", default-features = false }
+iii-llama-runtime = { path = "../crates/llama-runtime" }
 iii-llama-native = { path = "../crates/llama-native" }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 serde = { version = "1", features = ["derive"] }

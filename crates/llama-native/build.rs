@@ -108,7 +108,7 @@ fn llama() {
     // Linux x86_64 loads its backends at runtime: the CPU variants and the
     // Vulkan module beside the binary, so one build runs on any x86-64 CPU,
     // with or without a GPU. Elsewhere they are linked in statically: Metal
-    // on macOS, the CPU otherwise (crates/llama-runtime's target table).
+    // on macOS, the CPU otherwise.
     let dynamic = os == "linux" && arch == "x86_64";
     let backends = out.join("backends");
     let mut cmake = cmake::Config::new(&src);
@@ -216,7 +216,7 @@ fn clang_runtime_dir() -> Option<String> {
 
 /// Copy the backend modules into the profile directory (the published layout)
 /// and the libraries' SONAME files (`libllama.so.0`) there and into deps/ and
-/// examples/, where tests and examples run (crates/llama-runtime/build.rs).
+/// examples/, where tests and examples run.
 fn lay_beside_binaries(out: &Path, lib: &Path, backends: &Path) {
     // OUT_DIR is <profile>/build/<crate>-<hash>/out.
     let profile_dir = out

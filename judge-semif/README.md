@@ -6,9 +6,8 @@ SemIf reads runtime-defined decisions from a frozen open LLM: one forward pass,
 a softmax over the next-token logits of the option letters `A`–`P`, no decoding.
 Its published Qwen3.5-4B baseline agrees with Jev's own references on 0.845 of
 TypeSafe's public subset (Jev 0.883). This worker runs the same prompt through
-llama.cpp (the [`llama-cpp-2`](https://crates.io/crates/llama-cpp-2) crate) on
-the CPU, on Metal (macOS) or on Vulkan (Linux x86_64: AMD, NVIDIA and Intel
-GPUs), picked automatically at start.
+llama.cpp (`crates/llama-native`) on the CPU, on Metal (macOS) or on Vulkan
+(Linux x86_64: AMD, NVIDIA and Intel GPUs), picked automatically at start.
 
 ## Hardware selection
 
@@ -19,7 +18,7 @@ GPUs), picked automatically at start.
   skipped and the CPU runs the model, so the same package works on GPU
   desktops, servers and containers. The CPU module is picked for the host
   (AVX2, AVX-512, AMX variants). The package ships `libllama`, `libggml`,
-  `libggml-base`, the CPU variants and the Vulkan module (≈77 MB) beside the
+  `libggml-base`, the CPU variants and the Vulkan module (≈71 MB) beside the
   binary, which finds them through its `$ORIGIN` runpath.
 - **Linux aarch64**: CPU, statically linked.
 
@@ -129,15 +128,16 @@ scoring, as SemIf documents for its own fast paths.
 
 ## Building
 
-llama.cpp is compiled from source through `crates/llama-runtime`: `cmake`, a C++ compiler and `libclang`
-(for bindgen) are required; if libclang lives outside the default search path
-set `LIBCLANG_PATH` (and `BINDGEN_EXTRA_CLANG_ARGS=-I<clang>/include` when its
-builtin headers are not found). Linux x86_64 builds also need the Vulkan
-loader headers, the SPIR-V headers and `glslc` (Ubuntu: `libvulkan-dev
-spirv-headers glslc`) to compile the Vulkan module (only the module links
-`libvulkan`, the binary does not). The build copies the modules and libraries
-beside the binary, so `target/release` has the published layout; the release
-catalog ships them as the artifact's `companions`. Windows is not published
-yet.
+llama.cpp b11379 is compiled from source through `crates/llama-native`: its
+`build.rs` downloads GitHub's source archive (checked against a pinned
+sha256), builds it with cmake and compiles a small C shim against it, with no
+bindgen. It needs `curl`, `tar`, `patch`, `cmake` and a C++17 compiler; an
+offline build points `III_LLAMA_CPP_TARBALL` at a copy of the archive, checked
+the same way. Linux x86_64 builds also need the Vulkan loader headers, the
+SPIR-V headers and `glslc` (Ubuntu: `libvulkan-dev spirv-headers glslc`) to
+compile the Vulkan module (only the module links `libvulkan`, the binary does
+not). The build copies the modules and libraries beside the binary, so
+`target/release` has the published layout; the release catalog ships them as
+the artifact's `companions`. Windows is not published yet.
 
 For the full API, read the hub's [reference](../judge/reference.md).

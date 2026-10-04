@@ -11,14 +11,8 @@
 pub use crate::{softmax, Stop};
 use crate::{Runtime, Session};
 use anyhow::{anyhow, bail, Result};
-use llama_cpp_2::{
-    context::{session::LlamaStateSeqFlags, LlamaContext},
-    llama_batch::LlamaBatch,
-    model::{AddBos, LlamaModel},
-    token::LlamaToken,
-};
+use iii_llama_native::{Batch, Context, ContextParams, Model};
 use std::{
-    num::NonZeroU32,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -59,16 +53,14 @@ pub struct Outcome {
 /// labels (`A`–`Z`, then the two-letter labels that are one token, up to
 /// `MAX_LABELS`) and the `\n(` that opens a label in decider's wide layout.
 pub struct Vocab<'a> {
-    model: &'a LlamaModel,
-    pub labels: &'a [LlamaToken],
-    pub open: &'a [LlamaToken],
+    model: &'a Model,
+    pub labels: &'a [i32],
+    pub open: &'a [i32],
 }
 
 impl Vocab<'_> {
-    pub fn tokenize(&self, text: &str) -> Result<Vec<LlamaToken>, Stop> {
-        self.model
-            .str_to_token(text, AddBos::Never)
-            .map_err(|_| Stop::Failed)
+    pub fn tokenize(&self, text: &str) -> Result<Vec<i32>, Stop> {
+        self.model.tokenize(text, false).map_err(|_| Stop::Failed)
     }
 }
 
@@ -78,12 +70,12 @@ pub trait Render: Send + 'static {
     fn prompts(&self) -> usize;
     /// Options offered by prompt `i`: its answer is read over that many labels.
     fn options(&self, i: usize) -> usize;
-    fn tokens(&self, vocab: &Vocab<'_>, i: usize) -> Result<Vec<LlamaToken>, Stop>;
+    fn tokens(&self, vocab: &Vocab<'_>, i: usize) -> Result<Vec<i32>, Stop>;
 }
 
 struct Labels {
-    ids: Vec<LlamaToken>,
-    open: Vec<LlamaToken>,
+    ids: Vec<i32>,
+    open: Vec<i32>,
 }
 
 /// A model loaded for option-label scoring; clones share it.
@@ -106,15 +98,15 @@ impl Scorer {
                 threads: options.threads,
                 gpu_layers: options.gpu_layers,
             },
-            move |params| {
-                params
-                    .with_n_ctx(NonZeroU32::new(options.context_tokens))
-                    .with_n_batch(CHUNK as u32)
-                    .with_n_ubatch(CHUNK as u32)
-                    .with_n_seq_max(parallel as u32)
-                    // One KV pool shared by the parallel sequences, so a long
-                    // prompt can still use the whole window.
-                    .with_kv_unified(true)
+            move |params| ContextParams {
+                n_ctx: options.context_tokens,
+                n_batch: CHUNK as u32,
+                n_ubatch: CHUNK as u32,
+                n_seq_max: parallel as u32,
+                // One KV pool shared by the parallel sequences, so a long
+                // prompt can still use the whole window.
+                kv_unified: true,
+                ..params
             },
         )?;
         let labels = runtime.run(|session| label_tokens(session.model))??;
@@ -158,10 +150,9 @@ impl Scorer {
             };
             (0..evaluation.prompts())
                 .map(|i| {
-                    let ids = evaluation
+                    evaluation
                         .tokens(&vocab, i)
-                        .map_err(|_| anyhow!("tokenization failed"))?;
-                    Ok(ids.into_iter().map(|t| t.0).collect())
+                        .map_err(|_| anyhow!("tokenization failed"))
                 })
                 .collect()
         })?
@@ -170,10 +161,10 @@ impl Scorer {
 
 /// Every letter `A`–`Z` must be one token of the model's vocabulary; the
 /// two-letter labels that are one token follow, up to `MAX_LABELS`.
-fn label_tokens(model: &LlamaModel) -> Result<Labels> {
+fn label_tokens(model: &Model) -> Result<Labels> {
     let tokenize = |text: &str| {
         model
-            .str_to_token(text, AddBos::Never)
+            .tokenize(text, false)
             .map_err(|e| anyhow!("tokenize {text:?}: {e}"))
     };
     let letters: Vec<char> = ('A'..='Z').collect();
@@ -237,8 +228,7 @@ fn score(
         let mut first = Vec::new();
         let mut common = 0;
         let (mut shortest, mut longest) = (usize::MAX, 1);
-        let mut tails: Vec<(usize, Vec<LlamaToken>, usize)> =
-            Vec::with_capacity(evaluation.prompts());
+        let mut tails: Vec<(usize, Vec<i32>, usize)> = Vec::with_capacity(evaluation.prompts());
         for i in 0..evaluation.prompts() {
             check()?;
             let options = evaluation.options(i);
@@ -277,10 +267,7 @@ fn score(
             ctx.clear_kv_cache();
             decode(ctx, &labels.ids, &[(prefix, 0, None)], &check)?;
             tokens += prefix.len() as u64;
-            Some(
-                ctx.state_seq_get(0, LlamaStateSeqFlags::default())
-                    .map_err(|_| Stop::Failed)?,
-            )
+            Some(ctx.state_seq_get(0).map_err(|_| Stop::Failed)?)
         } else {
             None
         };
@@ -297,14 +284,14 @@ fn score(
                         .map_err(|_| Stop::Failed)?;
                 }
             }
-            let suffixes: Vec<(Vec<LlamaToken>, usize)> = chunk
+            let suffixes: Vec<(Vec<i32>, usize)> = chunk
                 .iter()
                 .map(|(lcp, tail, options)| {
                     let ids = first[skip..*lcp].iter().chain(tail).copied().collect();
                     (ids, *options)
                 })
                 .collect();
-            let spans: Vec<(&[LlamaToken], usize, Option<usize>)> = suffixes
+            let spans: Vec<(&[i32], usize, Option<usize>)> = suffixes
                 .iter()
                 .map(|(ids, options)| (&ids[..], skip, Some(*options)))
                 .collect();
@@ -321,11 +308,10 @@ fn score(
 /// positions `start..`, packed into batches of `CHUNK` tokens. For spans
 /// with `Some(options)`, return the option labels' logits at their last
 /// position, in span order.
-#[allow(clippy::type_complexity)]
 fn decode(
-    ctx: &mut LlamaContext<'_>,
-    labels: &[LlamaToken],
-    spans: &[(&[LlamaToken], usize, Option<usize>)],
+    ctx: &mut Context<'_>,
+    labels: &[i32],
+    spans: &[(&[i32], usize, Option<usize>)],
     check: &dyn Fn() -> Result<(), Stop>,
 ) -> Result<Vec<Vec<f32>>, Stop> {
     let flat: Vec<(usize, usize)> = spans
@@ -336,26 +322,24 @@ fn decode(
     let mut out: Vec<Option<Vec<f32>>> = vec![None; spans.len()];
     for chunk in flat.chunks(CHUNK) {
         check()?;
-        let mut batch = LlamaBatch::new(chunk.len(), 1);
+        let mut batch = Batch::default();
         let mut wanted = Vec::new();
         for (row, &(seq, i)) in chunk.iter().enumerate() {
             let (tokens, start, options) = spans[seq];
             let last = options.is_some() && i + 1 == tokens.len();
-            batch
-                .add(tokens[i], (start + i) as i32, &[seq as i32], last)
-                .map_err(|_| Stop::Failed)?;
+            batch.add(tokens[i], (start + i) as i32, seq as i32, last);
             if last {
                 wanted.push((seq, row as i32));
             }
         }
-        ctx.decode(&mut batch).map_err(|_| Stop::Failed)?;
+        ctx.decode(&batch).map_err(|_| Stop::Failed)?;
         for (seq, row) in wanted {
-            let logits = ctx.get_logits_ith(row);
+            let logits = ctx.logits_ith(row).ok_or(Stop::Failed)?;
             let options = spans[seq].2.unwrap_or(0);
             out[seq] = Some(
                 labels[..options]
                     .iter()
-                    .map(|t| logits[t.0 as usize])
+                    .map(|&t| logits[t as usize])
                     .collect(),
             );
         }
