@@ -77,7 +77,7 @@ impl Engine {
                 n_ubatch: tokens,
                 n_seq_max: batch_rows as u32,
                 embeddings: true,
-                // The GGUF says mean; the scores are read per token.
+                // The scores are read per token, whatever a GGUF says.
                 pooling: Pooling::None,
                 ..params
             },

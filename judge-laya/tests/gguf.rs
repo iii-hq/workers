@@ -5,11 +5,14 @@ use std::{collections::BTreeMap, path::Path};
 
 /// Keys only the converter's own tooling reads: names, the pooling (the
 /// worker pools nothing) and llama.cpp's tokenizer and chat template (the
-/// worker tokenizes itself).
-const UNWRITTEN: [&str; 11] = [
+/// worker tokenizes itself). The pooling and the EOS differ so that llama.cpp
+/// loads without warnings (checked below).
+const UNWRITTEN: [&str; 13] = [
     "general.name",
     "general.size_label",
+    "modern-bert.pooling_type",
     "modern-bert.classifier.pooling_type",
+    "tokenizer.ggml.eos_token_id",
     "tokenizer.ggml.pre",
     "tokenizer.ggml.add_bos_token",
     "tokenizer.ggml.add_eos_token",
@@ -123,6 +126,9 @@ fn converted_checkpoint_matches_llama_cpp_converter() {
         assert_eq!((our_dims, our_ty), (dims, ty), "{name}");
         assert!(our_bytes == bytes, "{name} data");
     }
+    // No pooling, and `<|endoftext|>` rather than [SEP] as the EOS.
+    assert_eq!(ours.meta["modern-bert.pooling_type"], "4:0");
+    assert_eq!(ours.meta["tokenizer.ggml.eos_token_id"], "4:50279");
     let written = |gguf: Gguf| -> BTreeMap<String, String> {
         gguf.meta
             .into_iter()

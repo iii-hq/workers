@@ -72,6 +72,12 @@ pub fn convert(
         .find_map(|key| cfg.get(*key).and_then(Value::as_f64))
         .unwrap_or(1e-5) as f32;
     let (tokens, types, merges) = vocabulary(tokenizer, int("vocab_size")? as usize)?;
+    // llama.cpp warns unless its EOS ends generation, which ModernBERT's [SEP]
+    // does not: name the vocabulary's end of text instead (the worker never
+    // generates).
+    let eos = tokens
+        .iter()
+        .position(|token| token == "<|endoftext|>" || token == "<eos>");
     let arch = "modern-bert";
     let key = |k: &str| format!("{arch}.{k}");
     let mut meta: Vec<(String, Meta)> = vec![
@@ -102,6 +108,8 @@ pub fn convert(
         (key("attention.layer_norm_rms_epsilon"), Meta::F32(eps)),
         (key("attention.layer_norm_epsilon"), Meta::F32(eps)),
         (key("attention.causal"), Meta::Bool(false)),
+        // One row per token (llama.cpp's NONE): the worker reads the [MASK] rows.
+        (key("pooling_type"), Meta::U32(0)),
         (
             key("attention.sliding_window"),
             Meta::U32(int("local_attention")?),
@@ -154,7 +162,6 @@ pub fn convert(
     }
     for (field, name) in [
         ("bos_token_id", "bos"),
-        ("eos_token_id", "eos"),
         ("sep_token_id", "seperator"),
         ("pad_token_id", "padding"),
     ] {
@@ -164,6 +171,9 @@ pub fn convert(
                 Meta::U32(id as u32),
             ));
         }
+    }
+    if let Some(eos) = eos {
+        meta.push(("tokenizer.ggml.eos_token_id".into(), Meta::U32(eos as u32)));
     }
 
     // (gguf name, checkpoint name, ggml type), in llama.cpp's order.

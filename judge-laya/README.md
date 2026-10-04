@@ -44,12 +44,14 @@ The GGUF holds the checkpoint's own (fine-tuned) encoder and decision head
 llama.cpp's `modern-bert` layout with a `laya` decision head, written by the
 worker (`src/gguf.rs`): its tensors match b11379's `convert_hf_to_gguf.py`
 byte for byte on all three checkpoints, and so do its model and `decision.*`
-keys; it leaves out only that converter's names, pooling, chat template and
-llama.cpp tokenizer settings (`tests/gguf.rs` checks the tiny checkpoint
-against the converter's output). The graph scores every token for each
-question type; the worker reads its question's column at the `[MASK]`
-markers (no pooling). Matrices stay f16: Q8_0 moved laya's calibrated
-probabilities by up to 0.04 and flipped one fixture answer at 512 tokens.
+keys; it leaves out only that converter's names, classifier pooling, chat
+template and llama.cpp tokenizer settings, and names pooling none and the
+vocabulary's end of text as EOS, so llama.cpp loads it without warnings
+(`tests/gguf.rs` checks the tiny checkpoint against the converter's output).
+The graph scores every token for each question type; the worker reads its
+question's column at the `[MASK]` markers (no pooling). Matrices stay f16:
+Q8_0 moved laya's calibrated probabilities by up to 0.04 and flipped one
+fixture answer at 512 tokens.
 
 ## Hardware selection
 
