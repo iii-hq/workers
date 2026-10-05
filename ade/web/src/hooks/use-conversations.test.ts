@@ -123,6 +123,29 @@ describe('applyCatalogModelFallback', () => {
     expect(next.map((c) => c.updatedAt)).toEqual([2_000, 3_000])
   })
 
+  it('moves an untouched draft off the interim catalog pick once the provider default is known', () => {
+    const interim = 'provider::aaa-first-key'
+    const preferred = 'provider::sonnet'
+    const valid = new Set([interim, preferred])
+    const sessions = [
+      conversation({ id: 'fresh-draft', model: interim, draft: true }),
+      conversation({
+        id: 'typed-draft',
+        model: interim,
+        draft: true,
+        messages: [{ id: 'm1', role: 'user', content: 'hi' } as never],
+      }),
+      conversation({ id: 'session', model: interim, draft: false }),
+    ]
+
+    const next = applyCatalogModelFallback(sessions, valid, preferred, interim)
+
+    expect(next.map((c) => c.model)).toEqual([preferred, interim, interim])
+    expect(applyCatalogModelFallback(sessions, valid, preferred, null)).toBe(
+      sessions,
+    )
+  })
+
   it('never invents a model for a discovered session (sub-agents)', () => {
     const fallback = 'provider::current-model'
     const sessions = [

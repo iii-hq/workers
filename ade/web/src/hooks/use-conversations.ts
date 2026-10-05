@@ -869,10 +869,25 @@ export function applyCatalogModelFallback(
   conversations: Conversation[],
   validModels: ReadonlySet<string>,
   fallbackModel: ModelId,
+  /** The catalog pick drafts received before a provider default was known;
+      untouched drafts still on it move to `fallbackModel`. */
+  interimModel: ModelId | null = null,
 ): Conversation[] {
   let changed = false
   const next = conversations.map((c) => {
-    if (c.model && validModels.has(c.model)) return c
+    if (c.model && validModels.has(c.model)) {
+      if (
+        interimModel &&
+        interimModel !== fallbackModel &&
+        c.draft &&
+        c.model === interimModel &&
+        c.messages.length === 0
+      ) {
+        changed = true
+        return { ...c, model: fallbackModel }
+      }
+      return c
+    }
     // A profile model is authoritative even when the live catalog no longer
     // advertises it. Directory deliberately keeps retired ids loadable so
     // the send path can surface the real resolution error; silently swapping
@@ -1573,6 +1588,7 @@ export function useConversations(
     saveNewChatDraft('')
   }, [])
   const [activeId, setActiveId] = useState<string | null>(() => loadActiveId())
+  const interimModelRef = useRef<ModelId | null>(null)
   const [connectionState, setConnectionState] = useState<IIIConnectionState>(
     serverEnabled ? 'connecting' : 'connected',
   )
@@ -2528,10 +2544,15 @@ export function useConversations(
     const keys = catalogSig.split('\u0001')
     const valid = new Set(keys)
     // A provider's declared default beats the alphabetically first key.
-    const fallback =
-      preferredModel && valid.has(preferredModel) ? preferredModel : keys[0]
+    const preferred =
+      preferredModel && valid.has(preferredModel) ? preferredModel : null
+    const fallback = preferred ?? keys[0]
+    // The provider list can land after the catalog; remember the interim
+    // pick so drafts still on it follow the provider default when it arrives.
+    const interim = interimModelRef.current
+    interimModelRef.current = preferred ? null : fallback
     setConversations((prev) => {
-      return applyCatalogModelFallback(prev, valid, fallback)
+      return applyCatalogModelFallback(prev, valid, fallback, interim)
     })
     const lastModel = loadLastModel()
     if (lastModel && !valid.has(lastModel)) {
