@@ -310,7 +310,9 @@ impl DirWatch {
             if made || matches!(event.kind, EventKind::Modify(ModifyKind::Name(_))) {
                 let mut missed = lock(&dropped);
                 for path in event.paths {
-                    if path.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+                    // The pump and the walk skip .git; so must this way in.
+                    if !is_git_internal(&path) && path.symlink_metadata().is_ok_and(|m| m.is_dir())
+                    {
                         *missed.entry(path).or_default() |= made;
                     }
                 }
@@ -741,9 +743,9 @@ async fn pump(
 fn start_watch(
     iii: IIIClient,
     root: PathBuf,
+    subscribers: Subscribers,
     open: impl FnOnce(&Path, Sender<notify::Event>) -> Option<DirWatch> + Send + 'static,
 ) -> WatchEntry {
-    let subscribers = Subscribers::default();
     let (started, ready) = tokio::sync::watch::channel(None);
     let bound = subscribers.clone();
     let task = tokio::spawn(async move {
@@ -806,16 +808,17 @@ impl ChangedTriggerHandler {
         let mut ready = {
             let mut watches = lock(&self.watches);
             let key = (root.clone(), delivery.include_ignored);
-            // A pump that died (a panic) must not swallow every later binding.
-            if watches
-                .get(&key)
-                .is_some_and(|entry| entry.task.is_finished())
-            {
-                watches.remove(&key);
-            }
-            let entry = watches
-                .entry(key)
-                .or_insert_with(|| start_watch(self.iii.clone(), root, open));
+            // A pump that died (a panic) must not swallow every later binding:
+            // its replacement serves the bindings it had too.
+            let orphans = match watches.get(&key) {
+                Some(entry) if entry.task.is_finished() => {
+                    watches.remove(&key).map(|e| e.subscribers.clone())
+                }
+                _ => None,
+            };
+            let entry = watches.entry(key).or_insert_with(|| {
+                start_watch(self.iii.clone(), root, orphans.unwrap_or_default(), open)
+            });
             lock(&entry.subscribers)
                 .insert(config.id.clone(), (config.function_id.clone(), delivery));
             entry.ready.clone()
@@ -1321,6 +1324,63 @@ mod tests {
             .register_trigger(binding("b1", &root, false))
             .await
             .unwrap();
+    }
+
+    /// A directory whose create event found the channel full is kept for
+    /// the pump to watch, but never a .git: the pump and the walk skip it.
+    #[tokio::test]
+    #[cfg_attr(target_os = "macos", ignore = "FSEvents watches the root recursively")]
+    async fn a_dropped_git_directory_is_not_kept_for_watching() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let watch = DirWatch::open(&root, tx, 64, true).unwrap();
+        std::fs::write(root.join("fill"), "x").unwrap(); // the one slot
+        std::thread::sleep(Duration::from_millis(200));
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::create_dir(root.join("sub")).unwrap();
+        let missed = || lock(&watch.missed).keys().cloned().collect::<HashSet<_>>();
+        for _ in 0..50 {
+            if missed().contains(&root.join("sub")) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(missed().contains(&root.join("sub")), "{:?}", missed());
+        assert!(!missed().contains(&root.join(".git")), "{:?}", missed());
+    }
+
+    /// A watch whose pump died is replaced on the next binding, and the
+    /// replacement keeps serving every binding the dead one had.
+    #[tokio::test]
+    async fn a_replaced_watch_keeps_the_bindings_of_the_dead_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let handler = handler_at(&root, 64);
+        handler
+            .register_trigger(binding("b1", &root, false))
+            .await
+            .unwrap();
+        lock(&handler.watches)
+            .values()
+            .for_each(|entry| entry.task.abort());
+        while lock(&handler.watches)
+            .values()
+            .any(|entry| !entry.task.is_finished())
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        handler
+            .register_trigger(binding("b2", &root, false))
+            .await
+            .unwrap();
+        let watches = lock(&handler.watches);
+        assert_eq!(watches.len(), 1);
+        let entry = watches.values().next().unwrap();
+        assert!(!entry.task.is_finished());
+        let mut bound: Vec<String> = lock(&entry.subscribers).keys().cloned().collect();
+        bound.sort();
+        assert_eq!(bound, ["b1", "b2"]);
     }
 
     /// Every open pane binds its root: one watch per root (and

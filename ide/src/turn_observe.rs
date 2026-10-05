@@ -56,8 +56,13 @@ const SETUP_WAIT_MS: u64 = 1_000;
 struct ObserverEntry {
     turn_id: String,
     root: PathBuf,
+    /// Which `ensure_with` set this entry up: a failed setup removes only
+    /// its own entry, never a newer one.
+    setup: u64,
     task: tokio::task::JoinHandle<()>,
 }
+
+static NEXT_SETUP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Drop for ObserverEntry {
     fn drop(&mut self) {
@@ -144,6 +149,7 @@ impl TurnObservers {
                 entries.remove(session_id);
             }
             let this = Arc::clone(self);
+            let setup = NEXT_SETUP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let (session, turn, watch_root) =
                 (session_id.to_string(), turn_id.to_string(), root.clone());
             let task = tokio::spawn(async move {
@@ -152,6 +158,16 @@ impl TurnObservers {
                 let Ok(Some(watch)) =
                     tokio::task::spawn_blocking(move || open(&walk_root, tx)).await
                 else {
+                    // A failed setup must not leave the session looking
+                    // observed: drop the entry so the turn's next hooked
+                    // call tries again.
+                    let mut entries = this.lock();
+                    if entries
+                        .get(&session)
+                        .is_some_and(|entry| entry.setup == setup)
+                    {
+                        entries.remove(&session);
+                    }
                     return;
                 };
                 tracing::info!(
@@ -169,6 +185,7 @@ impl TurnObservers {
                 ObserverEntry {
                     turn_id: turn_id.to_string(),
                     root,
+                    setup,
                     task,
                 },
             );
@@ -386,6 +403,7 @@ mod tests {
             ObserverEntry {
                 turn_id: turn_id.to_string(),
                 root: root.to_path_buf(),
+                setup: u64::MAX,
                 task: tokio::spawn(async {}),
             },
         );
@@ -435,6 +453,48 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(SETUP_WAIT_MS / 2));
         assert_eq!(setups.load(Ordering::SeqCst), 1);
         drop(release);
+    }
+
+    /// A watch that fails to start must not leave the session looking
+    /// observed: the turn's next hooked call sets it up again.
+    #[tokio::test]
+    async fn a_failed_watch_setup_is_tried_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let observers = observers_in(dir.path());
+        let setups = Arc::new(AtomicUsize::new(0));
+        let failing = {
+            let setups = setups.clone();
+            move |_: &Path, _| {
+                setups.fetch_add(1, Ordering::SeqCst);
+                None
+            }
+        };
+        observers
+            .ensure_with("s1", "t1", dir.path().to_path_buf(), failing)
+            .await;
+        for _ in 0..100 {
+            if observers.lock().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            observers.lock().is_empty(),
+            "the failed setup's entry stayed"
+        );
+        let working = {
+            let setups = setups.clone();
+            move |root: &Path, tx| {
+                setups.fetch_add(1, Ordering::SeqCst);
+                DirWatch::open(root, tx, MAX_WATCHED_DIRS, false)
+            }
+        };
+        observers
+            .ensure_with("s1", "t1", dir.path().to_path_buf(), working)
+            .await;
+        assert_eq!(setups.load(Ordering::SeqCst), 2);
+        assert!(observers.lock().contains_key("s1"));
     }
 
     #[tokio::test]
