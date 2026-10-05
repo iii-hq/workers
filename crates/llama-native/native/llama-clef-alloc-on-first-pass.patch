@@ -4,7 +4,8 @@ spans of the real batch, so the first pass of a context sized to its prompt
 reallocates them, and the driver holds the old buffers until it frees them: a
 16k-token Clef pass peaked at 14.1 GiB of VRAM instead of 10.1 GiB. For the clef
 arch the reserve only plans the splits; the first pass allocates its buffers
-once, for its real graph. Upstream: not filed yet.
+once, for its real graph. Not with pipeline parallelism (several GPUs), whose
+reserve must allocate to fall back without it. Upstream: not filed yet.
 
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
@@ -13,20 +14,21 @@ once, for its real graph. Upstream: not filed yet.
  
      // when training, ggml_opt allocates extra buffers through the scheduler, so the sizes no longer match the expectation
 -    if (!model.hparams.no_alloc && !opt_ctx) {
-+    // a clef context allocates them on its first pass (sched_reserve), so it has no expectation
-+    if (!model.hparams.no_alloc && !opt_ctx && model.arch != LLM_ARCH_CLEF) {
++    // a clef context without pipeline parallelism allocates them on its first pass (sched_reserve), so it has no expectation
++    if (!model.hparams.no_alloc && !opt_ctx && (model.arch != LLM_ARCH_CLEF || cparams.pipeline_parallel)) {
          for (size_t i = 0; i < backend_ptrs.size(); ++i) {
              ggml_backend_t             backend = backend_ptrs[i];
              ggml_backend_buffer_type_t buft    = backend_buft[i];
-@@ -669,10 +670,16 @@
+@@ -669,10 +670,17 @@
  
      const uint32_t n_outputs_pp = std::min(n_tokens, cparams.n_outputs_max);
  
 +    // A clef graph's head inputs follow the batch's decision spans, which the reserve ubatch lacks: buffers
 +    // reserved here would not fit the real graph, and the first pass would allocate new ones while the old
 +    // ones are still being released (at 16k tokens, two 4.4 GiB device buffers at once). Plan the splits
-+    // only and let the first pass allocate the buffers its graph needs.
-+    const bool split_only = model.hparams.no_alloc || model.arch == LLM_ARCH_CLEF;
++    // only and let the first pass allocate the buffers its graph needs. With pipeline parallelism (several
++    // GPUs) keep allocating here, where a failure retries without it.
++    const bool split_only = model.hparams.no_alloc || (model.arch == LLM_ARCH_CLEF && !cparams.pipeline_parallel);
 +
      // reserve pp (prompt processing) graph first so that buffers are only allocated once
      {
@@ -36,7 +38,7 @@ once, for its real graph. Upstream: not filed yet.
          if (!gf) {
              if (cparams.pipeline_parallel) {
                  LLAMA_LOG_WARN("%s: compute buffer allocation failed, retrying without pipeline parallelism\n", __func__);
-@@ -697,7 +704,7 @@
+@@ -697,7 +705,7 @@
          n_splits_tg = n_splits_pp;
          n_nodes_tg  = n_nodes_pp;
      } else {
@@ -45,7 +47,7 @@ once, for its real graph. Upstream: not filed yet.
          if (!gf) {
              throw std::runtime_error("failed to allocate compute tg buffers");
          }
-@@ -719,10 +726,10 @@
+@@ -719,10 +727,10 @@
                  // [TAG_RESERVE_DIAG_DECAY]
                  // the `inp_diag_decay` tensor size scales with `n_seq_tokens^2` which
                  // makes `n_seqs == 1` use more memory for the compute graph compared to `n_seqs > 1`
