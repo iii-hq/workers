@@ -11,6 +11,7 @@ use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
+use llm_router::types::model::ThinkingLevel;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
@@ -33,6 +34,14 @@ pub fn declaration() -> ProviderDeclaration {
         }),
         config_schema: None, // the router's default {api_key, api_url, max_tokens}
         supports_model_listing: Some(true),
+        // Starting point for callers that name no model: the current
+        // mid-range model first, then its predecessors (router picks the
+        // first one the live catalog holds).
+        default_models: Some(vec![
+            "anthropic/claude-sonnet-5.5".into(),
+            "anthropic/claude-sonnet-5".into(),
+        ]),
+        default_thinking_level: Some(ThinkingLevel::Minimal),
         // No static slice: GET /api/v1/models is the source of truth, and a
         // refresh fires right after registration (see declare_and_refresh),
         // so the catalog fills from the API within seconds of boot.

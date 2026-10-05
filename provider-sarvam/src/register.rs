@@ -12,6 +12,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
+use llm_router::types::model::ThinkingLevel;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
@@ -35,6 +36,11 @@ pub fn declaration() -> ProviderDeclaration {
         }),
         config_schema: None,
         supports_model_listing: Some(true),
+        // Starting point for callers that name no model: the current
+        // mid-range model first, then its predecessors (router picks the
+        // first one the live catalog holds).
+        default_models: Some(vec!["sarvam-105b".into()]),
+        default_thinking_level: Some(ThinkingLevel::Minimal),
         models: None,
         worker_id: Some("provider-sarvam".into()),
     }

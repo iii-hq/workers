@@ -13,6 +13,7 @@ use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
+use llm_router::types::model::ThinkingLevel;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
@@ -50,6 +51,14 @@ pub fn declaration() -> ProviderDeclaration {
         // unless marked write-only).
         config_schema: None,
         supports_model_listing: Some(true),
+        // Starting point for callers that name no model: the current
+        // mid-range model first, then its predecessors (router picks the
+        // first one the live catalog holds).
+        default_models: Some(vec![
+            "copilot/gpt-6.1-sol".into(),
+            "copilot/gpt-6-sol".into(),
+        ]),
+        default_thinking_level: Some(ThinkingLevel::Minimal),
         // No static slice: GET /models is the source of truth once a login
         // exists, and a refresh fires right after registration.
         models: None,

@@ -38,6 +38,9 @@ pub fn declaration() -> ProviderDeclaration {
         // refresh-on-config-change call, which must fire so the catalog
         // appears the moment an operator points api_url at a running server.
         supports_model_listing: Some(true),
+        // Local, user-supplied models: nothing to recommend.
+        default_models: None,
+        default_thinking_level: None,
         // No static slice: refresh_models discovers the catalog live from
         // the resolved server's `/v1/models` + `/props` right after
         // registration (see declare_and_refresh) — no credential required.

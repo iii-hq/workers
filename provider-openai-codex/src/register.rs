@@ -15,6 +15,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
+use llm_router::types::model::ThinkingLevel;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
@@ -39,6 +40,15 @@ pub fn declaration() -> ProviderDeclaration {
         // The authenticated Codex `/models` endpoint is reconciled after
         // registration and periodically while the worker is running.
         supports_model_listing: Some(true),
+        // Starting point for callers that name no model: the current
+        // mid-range model first, then its predecessors (router picks the
+        // first one the live catalog holds).
+        default_models: Some(vec![
+            "codex/gpt-6.1-sol".into(),
+            "codex/gpt-6-sol".into(),
+            "codex/gpt-5.6-sol".into(),
+        ]),
+        default_thinking_level: Some(ThinkingLevel::Minimal),
         models: None,
         worker_id: Some("provider-openai-codex".into()),
         // The mark the console paints beside this provider's models; the

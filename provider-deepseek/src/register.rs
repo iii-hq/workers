@@ -12,6 +12,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
+use llm_router::types::model::ThinkingLevel;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
@@ -37,6 +38,11 @@ pub fn declaration() -> ProviderDeclaration {
         // refresh-on-config-change call, which must fire so the slice appears
         // the moment an operator adds a key.
         supports_model_listing: Some(true),
+        // Starting point for callers that name no model: the current
+        // mid-range model first, then its predecessors (router picks the
+        // first one the live catalog holds).
+        default_models: Some(vec!["deepseek-flash".into(), "deepseek-v4-flash".into()]),
+        default_thinking_level: Some(ThinkingLevel::Minimal),
         // No static slice: refresh_models discovers the catalog right after
         // registration (see declare_and_refresh), gated on a configured
         // credential — no key → empty slice, so the picker never shows
