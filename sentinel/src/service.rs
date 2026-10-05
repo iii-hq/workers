@@ -661,6 +661,7 @@ fn summary(row: &NamedRow, sessions_affected: u64, sparkline: Vec<u64>) -> Group
         resolved_version: text(row, "resolved_version"),
         resolve_until_version_change: number(row, "resolve_until_version_change")
             .is_some_and(|flag| flag != 0),
+        triage: text(row, "triage").and_then(|json| serde_json::from_str(&json).ok()),
     }
 }
 

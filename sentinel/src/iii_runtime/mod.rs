@@ -22,6 +22,7 @@ use crate::ingest::{ring::PhantomRing, CheckoutVersions, IngestJob, Telemetry, T
 use crate::registry::{EngineRegistry, FunctionEntry, WorkerEntry};
 use crate::service::TraceAvailability;
 use crate::store::{Db, NamedRow, Statement, StepResult};
+use crate::triage::{self, Judge};
 use crate::{SentinelError, WorkerConfig};
 
 /// The tag that keeps this worker's own calls out of the trace views.
@@ -47,6 +48,16 @@ impl Runtime {
     /// Call a function with this worker's own traffic marked hidden, and the
     /// resulting trace remembered so its tick is dropped rather than ingested.
     async fn call(&self, function_id: &str, payload: Value) -> Result<Value, SentinelError> {
+        self.call_within(function_id, payload, CALL_TIMEOUT_MS)
+            .await
+    }
+
+    async fn call_within(
+        &self,
+        function_id: &str,
+        payload: Value,
+        timeout_ms: u64,
+    ) -> Result<Value, SentinelError> {
         let iii = self.iii.clone();
         let ring = self.ring.clone();
         let function = function_id.to_string();
@@ -58,12 +69,32 @@ impl Runtime {
                 function_id: function.clone(),
                 payload,
                 action: None,
-                timeout_ms: Some(CALL_TIMEOUT_MS),
+                timeout_ms: Some(timeout_ms),
             })
             .await
             .map_err(|error| SentinelError::dependency(format!("{function}: {error}")))
         })
         .await
+    }
+}
+
+/// `judge::evaluate`, through the hub: the provider is the hub's choice.
+pub struct IiiJudge {
+    runtime: Runtime,
+}
+
+impl IiiJudge {
+    pub fn new(runtime: Runtime) -> Self {
+        Self { runtime }
+    }
+}
+
+#[async_trait]
+impl Judge for IiiJudge {
+    async fn evaluate(&self, request: Value) -> Result<Value, SentinelError> {
+        self.runtime
+            .call_within(triage::JUDGE_FUNCTION_ID, request, triage::JUDGE_WAIT_MS)
+            .await
     }
 }
 

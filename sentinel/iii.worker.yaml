@@ -37,6 +37,9 @@ config:
     cron: "0 0 3 * * *"
   investigation:
     model: ""
+  triage:
+    enabled: true
+    delay_ms: 300000
   projects: []
   service_aliases: {}
   database: primary

@@ -91,6 +91,16 @@ diagnosed twice can be compared.
 created with the evidence already in the transcript and waits for you to
 speak.
 
+Each group is also **triaged** once, five minutes after it is first seen,
+into `defect`, `caller_error`, `transient`, `environment` or `test_traffic`,
+and the label rides on `sentinel::groups::list` and `::get` as `triage`. A
+"function not found" whose function is registered by then is decided
+without a model — a restart when it was brief, the environment when it was
+not; everything else goes to [`judge`](../judge/) in batches. The judge sees
+the group as it was stored, so already redacted. Without `judge` deployed the
+groups simply stay untriaged, and a failing judge is left alone for five
+minutes. A label is a hint for ordering and filtering, never a state change.
+
 Resolving and ignoring are yours. An ignore can last forever, for a number of
 further occurrences, or until the worker version changes — and the counters
 keep running either way, so an ignored group still tells you how often it
@@ -130,6 +140,9 @@ retention:
   resolved_ttl_days: 90
 investigation:
   model: ""                             # catalog id an investigation opens with; each run may pick another
+triage:
+  enabled: true
+  delay_ms: 300000                      # wait this long after first seen; a restart registers what it was missing
 projects:                               # where a worker's source lives on this machine (formerly `repositories`, still read)
   - id: workers
     path: /home/me/workspaces/workers

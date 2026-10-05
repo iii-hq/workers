@@ -34,6 +34,7 @@ pub mod retention;
 pub mod service;
 mod status;
 pub mod store;
+pub mod triage;
 pub mod triggers;
 pub mod ui;
 
@@ -41,7 +42,7 @@ pub use adapters::ErrorEvent;
 pub use config::{
     ArchiveConfigV1, EvidenceConfigV1, FingerprintConfigV1, IngestConfigV1, InvestigationConfigV1,
     LogSourceConfigV1, RedactionConfigV1, RepositoryConfigV1, RetentionConfigV1, SourcesConfigV1,
-    TraceSourceConfigV1, WorkerConfig,
+    TraceSourceConfigV1, TriageConfigV1, WorkerConfig,
 };
 pub use configuration::{ConfigCell, ConfigErrorCell};
 pub use contract::{
@@ -52,15 +53,16 @@ pub use contract::{
     GroupChangeReasonV1, GroupChangedConfigV1, GroupChangedEventV1, GroupChangedOpV1,
     GroupCountsV1, GroupGetRequestV1, GroupGetResponseV1, GroupHistoryRequestV1,
     GroupHistoryResponseV1, GroupStateResponseV1, GroupStatusV1, GroupSummaryV1, GroupTransitionV1,
-    GroupsListRequestV1, GroupsListResponseV1, IgnoreBaselineV1, IgnoreRequestV1, IgnoreRuleV1,
-    IngestStatusV1, InvestigateRequestV1, InvestigateResponseV1, InvestigationCancelRequestV1,
-    InvestigationChangedEventV1, InvestigationChangedOpV1, InvestigationCountsV1,
-    InvestigationGetRequestV1, InvestigationGetResponseV1, InvestigationModeV1,
-    InvestigationStatusV1, InvestigationSummaryV1, InvestigationsListRequestV1,
-    InvestigationsListResponseV1, LogsListRequestV1, LogsListResponseV1, OccurrenceSummaryV1,
-    OccurrencesListRequestV1, OccurrencesListResponseV1, ProposedFixV1, RepositoryStatusV1,
-    ResolveRequestV1, RiskV1, RootCauseV1, SourcesStatusV1, StatusRequestV1, StatusResponseV1,
-    TraceGetRequestV1, TraceGetResponseV1, TraceStoreStateV1, TurnCompletedEventV1,
+    GroupTriageV1, GroupsListRequestV1, GroupsListResponseV1, IgnoreBaselineV1, IgnoreRequestV1,
+    IgnoreRuleV1, IngestStatusV1, InvestigateRequestV1, InvestigateResponseV1,
+    InvestigationCancelRequestV1, InvestigationChangedEventV1, InvestigationChangedOpV1,
+    InvestigationCountsV1, InvestigationGetRequestV1, InvestigationGetResponseV1,
+    InvestigationModeV1, InvestigationStatusV1, InvestigationSummaryV1,
+    InvestigationsListRequestV1, InvestigationsListResponseV1, LogsListRequestV1,
+    LogsListResponseV1, OccurrenceSummaryV1, OccurrencesListRequestV1, OccurrencesListResponseV1,
+    ProposedFixV1, RepositoryStatusV1, ResolveRequestV1, RiskV1, RootCauseV1, SourcesStatusV1,
+    StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1, TraceStoreStateV1,
+    TriageKindV1, TriageSourceV1, TurnCompletedEventV1,
 };
 pub use error::SentinelError;
 pub use events::Emitter;

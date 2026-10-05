@@ -119,8 +119,50 @@ pub enum GroupChangeReasonV1 {
     Investigating,
 }
 
+/// What kind of failure a group is, as triage reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TriageKindV1 {
+    /// A bug the reporting worker's maintainer has to fix in code.
+    Defect,
+    /// The worker rejected bad input and said so: working as designed.
+    CallerError,
+    /// A dependency starting, restarting or timing out; it went away.
+    Transient,
+    /// Local setup: credentials, tokens, files, versions, a missing worker.
+    Environment,
+    /// Tests, probes and deliberately fake identifiers.
+    TestTraffic,
+}
+
+/// Who decided a triage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TriageSourceV1 {
+    /// A deterministic check: a missing function that is registered by the
+    /// time the group is looked at.
+    Rule,
+    /// `judge::evaluate`.
+    Judge,
+}
+
+/// A hint for ordering and filtering the list. It never moves a group:
+/// resolving and ignoring stay human decisions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupTriageV1 {
+    pub kind: TriageKindV1,
+    /// Between 0 and 1, as the judge reports it; 1 for a rule.
+    pub confidence: f64,
+    pub source: TriageSourceV1,
+    /// The judge model that answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub at_ms: i64,
+}
+
 /// A group as the list shows it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GroupSummaryV1 {
     pub id: String,
@@ -160,6 +202,9 @@ pub struct GroupSummaryV1 {
     pub resolved_version: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub resolve_until_version_change: bool,
+    /// Absent until the group has been triaged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage: Option<GroupTriageV1>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]

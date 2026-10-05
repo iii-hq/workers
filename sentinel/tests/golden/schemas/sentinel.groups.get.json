@@ -436,6 +436,17 @@
           },
           "title": {
             "type": "string"
+          },
+          "triage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GroupTriageV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Absent until the group has been triaged."
           }
         },
         "required": [
@@ -452,6 +463,41 @@
           "sparkline",
           "status",
           "title"
+        ],
+        "type": "object"
+      },
+      "GroupTriageV1": {
+        "additionalProperties": false,
+        "description": "A hint for ordering and filtering the list. It never moves a group: resolving and ignoring stay human decisions.",
+        "properties": {
+          "at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "confidence": {
+            "description": "Between 0 and 1, as the judge reports it; 1 for a rule.",
+            "format": "double",
+            "type": "number"
+          },
+          "kind": {
+            "$ref": "#/definitions/TriageKindV1"
+          },
+          "model": {
+            "description": "The judge model that answered.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "$ref": "#/definitions/TriageSourceV1"
+          }
+        },
+        "required": [
+          "at_ms",
+          "confidence",
+          "kind",
+          "source"
         ],
         "type": "object"
       },
@@ -798,6 +844,65 @@
           "evidence"
         ],
         "type": "object"
+      },
+      "TriageKindV1": {
+        "description": "What kind of failure a group is, as triage reads it.",
+        "oneOf": [
+          {
+            "description": "A bug the reporting worker's maintainer has to fix in code.",
+            "enum": [
+              "defect"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The worker rejected bad input and said so: working as designed.",
+            "enum": [
+              "caller_error"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A dependency starting, restarting or timing out; it went away.",
+            "enum": [
+              "transient"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Local setup: credentials, tokens, files, versions, a missing worker.",
+            "enum": [
+              "environment"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Tests, probes and deliberately fake identifiers.",
+            "enum": [
+              "test_traffic"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "TriageSourceV1": {
+        "description": "Who decided a triage.",
+        "oneOf": [
+          {
+            "description": "A deterministic check: a missing function that is registered by the time the group is looked at.",
+            "enum": [
+              "rule"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`judge::evaluate`.",
+            "enum": [
+              "judge"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {

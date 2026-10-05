@@ -24,8 +24,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::{
-    ids, ErrorSourceV1, GroupCountsV1, GroupState, GroupStatusV1, IgnoreBaselineV1, IgnoreRuleV1,
-    SentinelError,
+    ids, ErrorSourceV1, GroupCountsV1, GroupState, GroupStatusV1, GroupTriageV1, IgnoreBaselineV1,
+    IgnoreRuleV1, SentinelError,
 };
 
 /// One statement and its bound parameters.
@@ -682,6 +682,65 @@ impl<D: Db> Store<D> {
         Ok(())
     }
 
+    /// Groups first seen before `seen_before_ms` that nobody has triaged
+    /// yet, oldest first. Status does not matter: an ignored group still
+    /// shows when it comes back, and its kind is the same either way.
+    pub async fn untriaged_groups(
+        &self,
+        seen_before_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<UntriagedGroup>, SentinelError> {
+        let rows = self
+            .db
+            .query(
+                "SELECT g.id, g.namespace, g.service_name, g.function_id, g.exception_type, \
+                 g.message_sample, g.source, g.occurrence_count, g.first_seen_ms, g.last_seen_ms, \
+                 (SELECT COUNT(*) FROM sentinel_group_sessions s WHERE s.group_id = g.id) \
+                 AS sessions_affected \
+                 FROM sentinel_groups g \
+                 WHERE g.triage IS NULL AND g.archived = 0 AND g.first_seen_ms <= ? \
+                 ORDER BY g.first_seen_ms LIMIT ?",
+                vec![json!(seen_before_ms), json!(limit as i64)],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|row| UntriagedGroup {
+                id: text(row, "id").unwrap_or_default(),
+                namespace: text(row, "namespace").unwrap_or_default(),
+                service_name: text(row, "service_name").unwrap_or_default(),
+                function_id: text(row, "function_id"),
+                exception_type: text(row, "exception_type"),
+                message_sample: text(row, "message_sample").unwrap_or_default(),
+                source: text(row, "source").unwrap_or_default(),
+                occurrence_count: number(row, "occurrence_count").unwrap_or(0).max(0) as u64,
+                sessions_affected: number(row, "sessions_affected").unwrap_or(0).max(0) as u64,
+                first_seen_ms: number(row, "first_seen_ms").unwrap_or(0),
+                last_seen_ms: number(row, "last_seen_ms").unwrap_or(0),
+            })
+            .collect())
+    }
+
+    /// Record a group's triage once. Not compare-and-set on `updated_ms`:
+    /// triage is a hint beside the state, so it neither waits for nor
+    /// disturbs a transition landing at the same moment.
+    pub async fn set_triage(
+        &self,
+        group_id: &str,
+        triage: &GroupTriageV1,
+    ) -> Result<(), SentinelError> {
+        self.db
+            .execute(
+                "UPDATE sentinel_groups SET triage = ? WHERE id = ? AND triage IS NULL",
+                vec![
+                    json!(serde_json::to_string(triage).unwrap_or_default()),
+                    json!(group_id),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Group counts for `sentinel::status`, in one pass.
     pub async fn group_counts(&self) -> Result<GroupCountsV1, SentinelError> {
         let rows = self
@@ -710,6 +769,22 @@ impl<D: Db> Store<D> {
         }
         Ok(counts)
     }
+}
+
+/// What triage reads about a group.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UntriagedGroup {
+    pub id: String,
+    pub namespace: String,
+    pub service_name: String,
+    pub function_id: Option<String>,
+    pub exception_type: Option<String>,
+    pub message_sample: String,
+    pub source: String,
+    pub occurrence_count: u64,
+    pub sessions_affected: u64,
+    pub first_seen_ms: i64,
+    pub last_seen_ms: i64,
 }
 
 /// An ERROR log waiting for the span of its own trace.

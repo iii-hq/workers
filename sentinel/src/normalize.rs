@@ -19,7 +19,7 @@ use regex::{Captures, Regex};
 /// Bump with any rule change, and add a matching fixture file. Groups
 /// created under an older version keep their raw `message_sample`, which is
 /// what a fingerprint migration replays.
-pub const NORMALIZER_VERSION: u32 = 1;
+pub const NORMALIZER_VERSION: u32 = 2;
 
 /// Upper bound on a normalized message, in characters.
 const MAX_CHARS: usize = 200;
@@ -62,9 +62,9 @@ impl Normalizer {
     pub fn normalize(&self, message: &str) -> String {
         let (protected, spans) = self.protect_identity(message);
 
-        let masked = uuid_re().replace_all(&protected, "<id>");
-        let masked = ulid_re().replace_all(&masked, "<id>");
-        let masked = hex_re().replace_all(&masked, "<hex>");
+        let masked = uuid_re().replace_all(&protected, "${1}<id>");
+        let masked = ulid_re().replace_all(&masked, "${1}<id>");
+        let masked = hex_re().replace_all(&masked, "${1}<hex>");
         let masked = path_re().replace_all(&masked, "<path>");
         let masked = quoted_re().replace_all(&masked, "<str>");
         let masked = number_re().replace_all(&masked, "<n>");
@@ -139,11 +139,19 @@ fn truncate_chars(value: &str, max: usize) -> String {
     }
 }
 
+/// What may sit right before an identifier: a word boundary, or the `_` of
+/// a prefixed id (`s_<hex>`, `inv_<hex>`). `_` is a word character, so `\b`
+/// alone never fires there and every session would be a group of its own.
+/// Captured so the replacement can keep it.
+const ID_START: &str = r"(\b|_)";
+
 fn uuid_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
-            .expect("uuid pattern compiles")
+        Regex::new(&format!(
+            r"(?i){ID_START}[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}\b"
+        ))
+        .expect("uuid pattern compiles")
     })
 }
 
@@ -151,13 +159,18 @@ fn ulid_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     // Crockford base32, 26 characters, no I/L/O/U.
     RE.get_or_init(|| {
-        Regex::new(r"\b[0-7][0-9ABCDEFGHJKMNPQRSTVWXYZ]{25}\b").expect("ulid pattern compiles")
+        Regex::new(&format!(
+            r"{ID_START}[0-7][0-9ABCDEFGHJKMNPQRSTVWXYZ]{{25}}\b"
+        ))
+        .expect("ulid pattern compiles")
     })
 }
 
 fn hex_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\b[0-9a-f]{8,}\b").expect("hex pattern compiles"))
+    RE.get_or_init(|| {
+        Regex::new(&format!(r"(?i){ID_START}[0-9a-f]{{8,}}\b")).expect("hex pattern compiles")
+    })
 }
 
 fn path_re() -> &'static Regex {

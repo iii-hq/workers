@@ -40,7 +40,7 @@ fn fixture<T: serde::de::DeserializeOwned>(relative: &str) -> Vec<T> {
 fn the_fixture_file_tracks_the_normalizer_version() {
     // A rule change without a new fixture file would silently re-group every
     // existing error under the old version's name.
-    assert_eq!(NORMALIZER_VERSION, 1);
+    assert_eq!(NORMALIZER_VERSION, 2);
     assert!(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join(format!(
