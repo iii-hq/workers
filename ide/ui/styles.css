@@ -771,12 +771,6 @@
   .shui-tree-stage .shui-side-note { align-self: flex-start; padding: 8px 6px; font-size: 13px; }
 
   /* context menu — the console's DropdownMenu anchored at the pointer */
-  .shui-context-anchor {
-    position: fixed;
-    width: 0;
-    height: 0;
-    pointer-events: none;
-  }
   .shui-context-menu { min-width: 220px; max-width: 320px; }
   .shui-context-item {
     display: grid;
