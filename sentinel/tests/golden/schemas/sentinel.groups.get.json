@@ -392,6 +392,10 @@
               "null"
             ]
           },
+          "relevant": {
+            "description": "Whether the default list shows it; see [`RelevanceV1::Relevant`].",
+            "type": "boolean"
+          },
           "resolve_until_version_change": {
             "type": "boolean"
           },
@@ -457,6 +461,7 @@
           "last_seen_ms",
           "namespace",
           "occurrence_count",
+          "relevant",
           "service_name",
           "sessions_affected",
           "source",

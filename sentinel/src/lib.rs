@@ -60,9 +60,9 @@ pub use contract::{
     InvestigationModeV1, InvestigationStatusV1, InvestigationSummaryV1,
     InvestigationsListRequestV1, InvestigationsListResponseV1, LogsListRequestV1,
     LogsListResponseV1, OccurrenceSummaryV1, OccurrencesListRequestV1, OccurrencesListResponseV1,
-    ProposedFixV1, RepositoryStatusV1, ResolveRequestV1, RiskV1, RootCauseV1, SourcesStatusV1,
-    StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1, TraceStoreStateV1,
-    TriageKindV1, TriageSourceV1, TurnCompletedEventV1,
+    ProposedFixV1, RelevanceV1, RepositoryStatusV1, ResolveRequestV1, RiskV1, RootCauseV1,
+    SourcesStatusV1, StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1,
+    TraceStoreStateV1, TriageKindV1, TriageSourceV1, TurnCompletedEventV1,
 };
 pub use error::SentinelError;
 pub use events::Emitter;

@@ -135,6 +135,29 @@ pub enum TriageKindV1 {
     TestTraffic,
 }
 
+impl TriageKindV1 {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Defect => "defect",
+            Self::CallerError => "caller_error",
+            Self::Transient => "transient",
+            Self::Environment => "environment",
+            Self::TestTraffic => "test_traffic",
+        }
+    }
+}
+
+/// Which side of triage the list shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RelevanceV1 {
+    /// What needs a person: defects, persistent caller errors and
+    /// environment problems, regressions, and anything not triaged yet.
+    Relevant,
+    /// Everything else.
+    Noise,
+}
+
 /// Who decided a triage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -205,6 +228,8 @@ pub struct GroupSummaryV1 {
     /// Absent until the group has been triaged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage: Option<GroupTriageV1>,
+    /// Whether the default list shows it; see [`RelevanceV1::Relevant`].
+    pub relevant: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -221,6 +246,9 @@ pub struct GroupsListRequestV1 {
     /// Matches the title, the message sample and the function id.
     #[serde(default)]
     pub search: Option<String>,
+    /// Absent lists both sides.
+    #[serde(default)]
+    pub relevance: Option<RelevanceV1>,
     #[serde(default)]
     pub offset: Option<u32>,
     #[serde(default)]
@@ -237,6 +265,9 @@ pub struct GroupsListRequestV1 {
 pub struct GroupsListResponseV1 {
     pub groups: Vec<GroupSummaryV1>,
     pub total: u64,
+    /// Both sides under the same filters, whatever `relevance` asked for.
+    pub relevant_total: u64,
+    pub noise_total: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]

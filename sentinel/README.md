@@ -101,6 +101,13 @@ the group as it was stored, so already redacted. Without `judge` deployed the
 groups simply stay untriaged, and a failing judge is left alone for five
 minutes. A label is a hint for ordering and filtering, never a state change.
 
+The list opens on **Relevant**: defects, regressions, groups not triaged yet,
+and caller errors or environment problems that repeat (20 or more
+occurrences across an hour or more), since a program repeating a failing call
+needs a fix even when its message is a polite refusal. **Noise** holds the
+rest, ordered by kind, and each side shows its count, so nothing is more than
+a click away. `sentinel::groups::list` takes the same choice as `relevance`.
+
 Resolving and ignoring are yours. An ignore can last forever, for a number of
 further occurrences, or until the worker version changes — and the counters
 keep running either way, so an ignored group still tells you how often it

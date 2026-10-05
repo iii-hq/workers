@@ -9,7 +9,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use sentinel::registry::{EngineRegistry, FunctionEntry, Registry, WorkerEntry};
 use sentinel::service::TraceAvailability;
-use sentinel::store::OccurrenceWrite;
+use sentinel::store::{Db, OccurrenceWrite};
 use sentinel::triage::{Judge, Triage};
 use sentinel::{
     ErrorSourceV1, GroupsListRequestV1, SentinelError, Service, Store, TriageKindV1,
@@ -370,4 +370,101 @@ async fn without_a_judge_deployed_or_with_triage_off_nothing_is_asked() {
     assert_eq!(setup.triage.sweep(&config, 10 * MINUTE).await.unwrap(), 0);
     assert_eq!(calls(&setup), 0);
     assert_eq!(triage_of(&setup.store, "fp::get").await, None);
+}
+
+#[tokio::test]
+async fn the_list_filter_and_the_summary_flag_agree_on_what_is_relevant() {
+    use sentinel::{GroupTriageV1, RelevanceV1};
+    let setup = setup(vec![], judge(|_| "defect")).await;
+    let long: Vec<i64> = (0..25).map(|index| index * 5 * MINUTE).collect();
+    // (function, occurrences at, kind): relevant when marked so.
+    let cases: [(&str, &[i64], Option<TriageKindV1>, bool); 7] = [
+        ("a::defect", &[0], Some(TriageKindV1::Defect), true),
+        ("a::untriaged", &[0], None, true),
+        (
+            "a::persistent-caller",
+            &long,
+            Some(TriageKindV1::CallerError),
+            true,
+        ),
+        (
+            "a::one-off-caller",
+            &[0, MINUTE],
+            Some(TriageKindV1::CallerError),
+            false,
+        ),
+        (
+            "a::persistent-env",
+            &long,
+            Some(TriageKindV1::Environment),
+            true,
+        ),
+        ("a::transient", &long, Some(TriageKindV1::Transient), false),
+        ("a::test", &[0], Some(TriageKindV1::TestTraffic), false),
+    ];
+    for (function, at, kind, _) in cases {
+        group(&setup.store, function, function, "boom", at).await;
+        if let Some(kind) = kind {
+            let id = setup
+                .store
+                .db()
+                .query(
+                    "SELECT id FROM sentinel_groups WHERE fingerprint = ?",
+                    vec![json!(function)],
+                )
+                .await
+                .unwrap()[0]["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let triage = GroupTriageV1 {
+                kind,
+                confidence: 0.9,
+                source: TriageSourceV1::Judge,
+                model: None,
+                at_ms: 0,
+            };
+            setup.store.set_triage(&id, &triage).await.unwrap();
+        }
+    }
+
+    let service = Service::new(setup.store.clone(), Arc::new(NoTrace));
+    let list = |relevance| {
+        let service = &service;
+        async move {
+            service
+                .list(GroupsListRequestV1 {
+                    relevance,
+                    ..GroupsListRequestV1::default()
+                })
+                .await
+                .unwrap()
+        }
+    };
+    let all = list(None).await;
+    let relevant = list(Some(RelevanceV1::Relevant)).await;
+    let noise = list(Some(RelevanceV1::Noise)).await;
+
+    for (function, _, _, expected) in cases {
+        let summary = all
+            .groups
+            .iter()
+            .find(|group| group.function_id.as_deref() == Some(function))
+            .unwrap();
+        assert_eq!(summary.relevant, expected, "{function}: the summary flag");
+        let side = if expected { &relevant } else { &noise };
+        assert!(
+            side.groups
+                .iter()
+                .any(|group| group.function_id.as_deref() == Some(function)),
+            "{function}: the list filter"
+        );
+    }
+    assert_eq!((all.relevant_total, all.noise_total), (4, 3));
+    assert_eq!((relevant.total, noise.total, all.total), (4, 3, 7));
+    assert_eq!(
+        (relevant.relevant_total, noise.noise_total),
+        (4, 3),
+        "each side still counts the other"
+    );
 }

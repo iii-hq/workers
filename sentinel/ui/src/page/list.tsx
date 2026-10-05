@@ -29,7 +29,9 @@ import type { GroupSummary, StatusResponse } from '../api'
 import type { Filters } from './index'
 import { Dot, Sparkline, StatusBadge } from './marks'
 import {
+  KIND_LABEL,
   PAGE_SIZE,
+  RELEVANCE,
   SCOPES,
   SCOPE_STATES,
   WINDOWS,
@@ -55,6 +57,9 @@ interface Props {
   onOpen: (groupId: string) => void
   onMore: () => void
   total: number
+  /** Both sides of triage under the current filters. */
+  relevantTotal: number
+  noiseTotal: number
   workers: string[]
 }
 
@@ -77,9 +82,12 @@ export function GroupsListView({
   onOpen,
   onMore,
   total,
+  relevantTotal,
+  noiseTotal,
   workers,
 }: Props) {
   const scope = scopeOf(filters.statuses)
+  const relevance = filters.relevance ?? 'relevant'
   const counts = status?.groups
   const [picked, setPicked] = useState<string[]>([])
 
@@ -107,6 +115,11 @@ export function GroupsListView({
   const setWindow = (next: string) => onFilters({ ...filters, window: next })
   const setWorker = (next: string) => onFilters({ ...filters, service: next })
   const setSearch = (next: string) => onFilters({ ...filters, search: next })
+  const setRelevance = (next: string) => onFilters({ ...filters, relevance: next })
+  // Each side says how much it holds, so the noise is one click away and
+  // never a mystery.
+  const sideCount = (value: string) =>
+    value === 'relevant' ? relevantTotal : value === 'noise' ? noiseTotal : relevantTotal + noiseTotal
   // "All workers" is the Select's own empty option: an option whose value is
   // an empty string is not allowed.
   const worker = {
@@ -133,7 +146,9 @@ export function GroupsListView({
   const widen =
     filters.search || filters.service
       ? { label: 'Clear search and worker', onClick: () => onFilters({ ...filters, search: '', service: '' }) }
-      : filters.window !== 'all'
+      : relevance === 'relevant' && noiseTotal > 0
+        ? { label: `Show the noise (${spaced(noiseTotal)})`, onClick: () => setRelevance('noise') }
+        : filters.window !== 'all'
         ? { label: 'Show all time', onClick: () => setWindow('all') }
         : scope !== 'open'
           ? { label: 'Show open groups', onClick: () => setScope('open') }
@@ -144,6 +159,17 @@ export function GroupsListView({
       <div className="sentinel-ui-filters" role="toolbar" aria-label="Filter groups">
         {narrow ? (
           <>
+            <Select
+              aria-label="Relevance"
+              sheetTitle="Relevance"
+              className="sentinel-ui-filter"
+              value={relevance}
+              onChange={setRelevance}
+              options={RELEVANCE.map((option) => ({
+                ...option,
+                label: `${option.label} · ${spaced(sideCount(option.value))}`,
+              }))}
+            />
             <Select
               aria-label="Which groups"
               sheetTitle="Which groups"
@@ -165,6 +191,22 @@ export function GroupsListView({
           </>
         ) : (
           <>
+            <SegmentedControl
+              variant="radio"
+              aria-label="Relevance"
+              value={relevance}
+              onChange={setRelevance}
+              options={RELEVANCE.map((option) => ({
+                value: option.value,
+                icon: false as const,
+                label: (
+                  <>
+                    {option.label}
+                    <span className="sentinel-ui-tab-count">{spaced(sideCount(option.value))}</span>
+                  </>
+                ),
+              }))}
+            />
             <SegmentedControl
               variant="radio"
               aria-label="Which groups"
@@ -235,12 +277,21 @@ export function GroupsListView({
       ) : null}
 
       {!loading && groups.length === 0 ? (
-        <EmptyState
-          icon={Inbox}
-          title="No group matches this filter"
-          description="Sentinel keeps counting every occurrence either way; resolved and ignored groups have their own filter."
-          action={widen}
-        />
+        relevance === 'relevant' && !filters.search && !filters.service ? (
+          <EmptyState
+            icon={Inbox}
+            title="Nothing here needs attention"
+            description="Every group in this view was triaged as noise: restarts, closed tabs, bad arguments a caller corrected. They keep counting."
+            action={widen}
+          />
+        ) : (
+          <EmptyState
+            icon={Inbox}
+            title="No group matches this filter"
+            description="Sentinel keeps counting every occurrence either way; resolved and ignored groups have their own filter."
+            action={widen}
+          />
+        )
       ) : narrow ? (
         <List aria-label="Error groups">
           {loading && groups.length === 0
@@ -273,6 +324,7 @@ export function GroupsListView({
                   <TableHead>First seen</TableHead>
                   <TableHead>Last seen</TableHead>
                   <TableHead>24 h</TableHead>
+                  <TableHead>Triage</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="sentinel-ui-chevron">
                     <span className="sentinel-ui-visually-hidden">Open</span>
@@ -283,7 +335,7 @@ export function GroupsListView({
                 {loading && groups.length === 0
                   ? Array.from({ length: 5 }, (_, index) => (
                       <TableRow key={index}>
-                        {Array.from({ length: 9 }, (_, cell) => (
+                        {Array.from({ length: 10 }, (_, cell) => (
                           <TableCell key={cell}>
                             <Skeleton />
                           </TableCell>
@@ -332,7 +384,7 @@ export function ListStatus({
   total,
 }: {
   /** The filters the counts answer — not the ones being fetched right now. */
-  answered: Pick<Filters, 'statuses' | 'window'>
+  answered: Pick<Filters, 'statuses' | 'window' | 'relevance'>
   narrow: boolean
   now: number
   shown: number
@@ -365,7 +417,11 @@ export function ListStatus({
         {total > shown ? `${spaced(shown)} of ${spaced(total)} groups` : `${spaced(shown)} ${shown === 1 ? 'group' : 'groups'}`}
         {within ? ` ${within}` : ''}
       </span>
-      {narrow ? null : <span>regressions first, then last seen</span>}
+      {narrow ? null : (
+        <span>
+          {answered.relevance === 'noise' ? 'by triage kind, then last seen' : 'regressions first, then last seen'}
+        </span>
+      )}
       {/* All-time counts, not the window's: said so, rather than "hidden" beside "in the last 24 h". */}
       {hidden && scopeOf(answered.statuses) === 'open' ? <span>all time: {hidden}, not in Open</span> : null}
     </StatusBar>
@@ -390,11 +446,28 @@ function Issue({ group, extra }: { group: GroupSummary; extra?: string }) {
         <span className="sentinel-ui-issue-title" title={group.title}>
           {type ? <b>{type}</b> : null} {rest}
           {group.source === 'log' ? <Chip className="sentinel-ui-source">log</Chip> : null}
+
         </span>
         <span className="sentinel-ui-issue-where">{where}</span>
         {extra ? <span className="sentinel-ui-issue-extra">{extra}</span> : null}
       </div>
     </div>
+  )
+}
+
+/** What triage made of the group, or a dash while it waits. */
+function Kind({ group }: { group: GroupSummary }) {
+  if (!group.triage) return <span className="sentinel-ui-quiet">—</span>
+  return (
+    <Chip
+      title={
+        group.triage.source === 'rule'
+          ? 'triaged by rule'
+          : `triaged by the judge, ${Math.round(group.triage.confidence * 100)}% sure`
+      }
+    >
+      {KIND_LABEL[group.triage.kind] ?? group.triage.kind}
+    </Chip>
   )
 }
 
@@ -443,6 +516,9 @@ function GroupRow({
         <Sparkline group={group} now={now} />
       </TableCell>
       <TableCell>
+        <Kind group={group} />
+      </TableCell>
+      <TableCell>
         <StatusBadge status={group.status} />
       </TableCell>
       <TableCell className="sentinel-ui-chevron">
@@ -470,7 +546,14 @@ function GroupRowNarrow({
       label={
         <Issue
           group={group}
-          extra={`${group.status} · ${spaced(group.occurrence_count)} · ${ago(group.last_seen_ms, now)}`}
+          extra={[
+            group.status,
+            group.triage ? (KIND_LABEL[group.triage.kind] ?? group.triage.kind) : null,
+            spaced(group.occurrence_count),
+            ago(group.last_seen_ms, now),
+          ]
+            .filter(Boolean)
+            .join(' · ')}
         />
       }
     />

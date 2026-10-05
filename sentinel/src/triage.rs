@@ -28,7 +28,9 @@ use serde_json::{json, Value};
 
 use crate::registry::{EngineRegistry, Registry};
 use crate::store::{Db, Store, UntriagedGroup};
-use crate::{GroupTriageV1, SentinelError, TriageKindV1, TriageSourceV1, WorkerConfig};
+use crate::{
+    GroupStatusV1, GroupTriageV1, SentinelError, TriageKindV1, TriageSourceV1, WorkerConfig,
+};
 
 pub const JUDGE_FUNCTION_ID: &str = "judge::evaluate";
 /// Groups per sweep, and so per judge call.
@@ -43,6 +45,53 @@ pub const JUDGE_WAIT_MS: u64 = JUDGE_TIMEOUT_MS + 5_000;
 const PAUSE_MS: i64 = 300_000;
 /// Longest message sample the judge sees.
 const MAX_MESSAGE_CHARS: usize = 1_000;
+
+/// A caller error or an environment problem this frequent, for this long,
+/// is a program repeating a failing call, not someone's one-off mistake.
+/// Measured on a live store: with these, 377 open groups became 38 that
+/// held 97% of the occurrences.
+pub const PERSISTENT_OCCURRENCES: u64 = 20;
+pub const PERSISTENT_SPAN_MS: i64 = 3_600_000;
+
+/// Whether a group belongs in the default list. Untriaged groups do: a
+/// missing label must never hide anything. [`relevant_sql`] is the same
+/// rule for the list query.
+pub fn is_relevant(
+    status: GroupStatusV1,
+    kind: Option<TriageKindV1>,
+    occurrence_count: u64,
+    first_seen_ms: i64,
+    last_seen_ms: i64,
+) -> bool {
+    let persistent = occurrence_count >= PERSISTENT_OCCURRENCES
+        && last_seen_ms - first_seen_ms >= PERSISTENT_SPAN_MS;
+    status == GroupStatusV1::Regressed
+        || match kind {
+            None | Some(TriageKindV1::Defect) => true,
+            Some(TriageKindV1::CallerError | TriageKindV1::Environment) => persistent,
+            Some(TriageKindV1::Transient | TriageKindV1::TestTraffic) => false,
+        }
+}
+
+/// [`is_relevant`] over `sentinel_groups` columns. The kind is matched as
+/// the prefix of the stored triage, which this worker serializes itself
+/// with `kind` first: plain `LIKE` works on every database the `database`
+/// worker speaks, and needs no column a migration would have to add.
+pub fn relevant_sql() -> String {
+    let defect = kind_sql(TriageKindV1::Defect);
+    let caller = kind_sql(TriageKindV1::CallerError);
+    let environment = kind_sql(TriageKindV1::Environment);
+    format!(
+        "(status = 'regressed' OR triage IS NULL OR {defect} \
+         OR (({caller} OR {environment}) \
+         AND occurrence_count >= {PERSISTENT_OCCURRENCES} \
+         AND last_seen_ms - first_seen_ms >= {PERSISTENT_SPAN_MS}))"
+    )
+}
+
+fn kind_sql(kind: TriageKindV1) -> String {
+    format!("triage LIKE '{{\"kind\":\"{}\"%'", kind.as_str())
+}
 
 /// `judge::evaluate`.
 #[async_trait]
