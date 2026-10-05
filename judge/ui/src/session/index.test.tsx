@@ -131,9 +131,9 @@ async function mount(
   metadata: Record<string, unknown>,
   {
     iii = engine(),
-    setMetadata = vi.fn(),
+    setMetadata = vi.fn<(patch: Record<string, unknown>) => void>(),
     panel = FakePanel as typeof FakePanel | null,
-  }: { iii?: ReturnType<typeof engine>; setMetadata?: ReturnType<typeof vi.fn>; panel?: typeof FakePanel | null } = {},
+  }: { iii?: ReturnType<typeof engine>; setMetadata?: ReturnType<typeof vi.fn<(patch: Record<string, unknown>) => void>>; panel?: typeof FakePanel | null } = {},
 ) {
   host = document.createElement('div')
   document.body.append(host)
