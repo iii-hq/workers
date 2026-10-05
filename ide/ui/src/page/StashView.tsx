@@ -240,8 +240,10 @@ export function StashView({
                     onContextMenu={(event) => {
                       event.preventDefault()
                       setMenuStash(stash.sha)
+                      // Under the row, at the pointer's x: the marked row stays in sight.
+                      const row = event.currentTarget.closest('.shui-log-row') ?? event.currentTarget
                       menu.open(
-                        anchorFromEvent(event),
+                        { x: anchorFromEvent(event).x, y: row.getBoundingClientRect().bottom },
                         stashMenu(stash, {
                           busy,
                           apply,

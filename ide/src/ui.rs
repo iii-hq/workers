@@ -15,7 +15,7 @@
 //!   page.js imports with `host.importModule` only when a terminal opens.
 //!
 //! The registration machinery (content function `shell::ui-content`, one
-//! Message-path trigger per asset, `III_SHELL_UI_WATCH` hot-reload
+//! Message-path trigger per asset, `III_IDE_UI_WATCH` hot-reload
 //! watcher) lives in the shared `iii-console-ui` crate (path-linked from
 //! `workers/crates/console-ui`); this module only names the assets and
 //! embeds their bytes. The page's per-pane state (browsed folder, open
@@ -27,7 +27,7 @@
 //! @iii-dev/console-ui external — they resolve through the console's
 //! import map at runtime) and embedded at compile time so the worker
 //! stays one self-contained binary. For the dev loop, set
-//! `III_SHELL_UI_WATCH` to the build output directory (or `1` for
+//! `III_IDE_UI_WATCH` to the build output directory (or `1` for
 //! `ui/dist`): the worker polls every built asset and re-registers a changed
 //! asset's trigger — every open console tab hot-swaps it (xterm.js alone
 //! reaches a tab's terminals once page.js reloads: page.js keeps the module

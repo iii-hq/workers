@@ -86,10 +86,12 @@ export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
       keepIndex={focusedIndex}
       renderRow={(row) => {
         const indent = { paddingLeft: 4 + row.depth * 14 }
+        // Under the row, at the pointer's x: the menu leaves the row it marks in sight.
         const menu = onMenu
           ? (event: React.MouseEvent) => {
               event.preventDefault()
-              onMenu(row, anchorFromEvent(event))
+              const { x } = anchorFromEvent(event)
+              onMenu(row, { x, y: event.currentTarget.getBoundingClientRect().bottom })
             }
           : undefined
         const menuState = row.key === menuTarget ? 'target' : inMenuScope(row.key, menuTarget) ? 'scope' : undefined
