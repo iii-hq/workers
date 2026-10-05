@@ -167,11 +167,15 @@ def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
     ) in run
 
 
-def test_harness_integration_downloads_verified_rc_engine_without_building_it() -> None:
+def test_harness_integration_downloads_latest_rc_engine_without_building_it() -> None:
     integration = workflow("_harness-integration.yml")
     steps = integration["jobs"]["build"]["steps"]
     install = named_step(steps, "Install verified iii RC")
-    assert integration["env"]["III_RELEASE_TAG"] == "iii/v0.24.0-rc.2"
+    assert "III_RELEASE_TAG" not in {
+        **integration.get("env", {}),
+        **integration["jobs"]["build"].get("env", {}),
+        **install.get("env", {}),
+    }
     stack_cache = named_step(steps, "Restore integration Rust cache")
 
     assert "https://install.iii.dev/iii/main/install.sh" in install["run"]
@@ -187,14 +191,14 @@ def test_harness_integration_downloads_verified_rc_engine_without_building_it() 
         step["run"] for step in steps
         if "$GITHUB_STEP_SUMMARY" in step.get("run", "")
     )
-    assert 'echo "The iii engine is pinned to $III_RELEASE_TAG."' in summary
-    assert "latest @rc channel" not in summary
+    assert 'echo "The iii engine was resolved from the latest @rc channel: $III_ENGINE_VERSION."' in summary
 
 
-def test_every_engine_installer_uses_the_atomic_configuration_release() -> None:
-    """No boot path may override the verified engine with a legacy or mutable tag."""
+def test_other_engine_installers_use_the_atomic_configuration_release() -> None:
     covered = set()
     for path in sorted(WORKFLOWS.glob("*.yml")):
+        if path.name == "_harness-integration.yml":
+            continue
         doc = workflow(path.name)
         for job_name, job in doc.get("jobs", {}).items():
             for step in job.get("steps", []):
@@ -216,7 +220,7 @@ def test_every_engine_installer_uses_the_atomic_configuration_release() -> None:
     )
     assert source_install["if"] == "inputs.stack_mode == 'source'"
     assert covered == {
-        "ci.yml", "build.yml", "_worker-e2e.yml", "_harness-integration.yml",
+        "ci.yml", "build.yml", "_worker-e2e.yml",
         "database-e2e.yml", "rbac-proxy-e2e.yml", "ide-e2e.yml",
         "storage-e2e.yml", "browser-scrapling-e2e.yml", "judge-e2e.yml",
     }
