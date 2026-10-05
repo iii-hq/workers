@@ -74,6 +74,11 @@
   transition: background-color var(--motion-duration-control) ease;
 }
 
+/* A stop the catalog could not confirm: visible, hollow, never a resting place. */
+.reasoning-effort__dot--disabled {
+  opacity: 0.35;
+}
+
 .reasoning-effort__dot {
   position: absolute;
   top: 50%;

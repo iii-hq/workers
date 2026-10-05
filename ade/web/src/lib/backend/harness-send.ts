@@ -12,8 +12,9 @@
 import type { FileBlock } from '@/lib/attachments/store'
 import type { IiiClient } from '@/lib/iii-client'
 
-/** Reasoning effort the harness forwards to the router. `off` is never sent. */
+/** Reasoning effort the harness forwards to the router. */
 export type HarnessThinkingLevel =
+  | 'off'
   | 'minimal'
   | 'low'
   | 'medium'

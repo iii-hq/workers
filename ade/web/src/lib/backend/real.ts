@@ -111,6 +111,7 @@ export function toThinkingLevel(
   level: ChatStreamOptions['thinkingLevel'],
 ): HarnessThinkingLevel | undefined {
   switch (level) {
+    case 'off':
     case 'minimal':
     case 'low':
     case 'medium':
@@ -133,6 +134,9 @@ export function toProviderOptions(
 ): Record<string, unknown> | undefined {
   if (!effort) return undefined
   if (effort === 'default') return {}
+  // `off` is a harness level, not a provider-native effort string: each
+  // provider maps it to its own switch (or warns), so nothing rides here.
+  if (effort === 'off') return undefined
   return { [provider]: { reasoning_effort: effort } }
 }
 
