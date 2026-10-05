@@ -14,6 +14,7 @@ export function GitCompareFiles({
   state,
   prefix,
   top,
+  narrow = false,
   onOpen,
   onClose,
 }: {
@@ -22,6 +23,7 @@ export function GitCompareFiles({
   state: WorkingDiffState
   prefix: string
   top: string | null
+  narrow?: boolean
   onOpen(file: CommitFile): void
   onClose(): void
 }) {
@@ -57,7 +59,7 @@ export function GitCompareFiles({
         ) : files.length === 0 ? (
           <EmptyState compact title="No differences" description={`The working tree matches ${label}.`} />
         ) : (
-          <GitFileList files={files} prefix={prefix} top={top} onOpen={onOpen} />
+          <GitFileList files={files} prefix={prefix} top={top} narrow={narrow} onOpen={onOpen} />
         )}
       </section>
     </div>

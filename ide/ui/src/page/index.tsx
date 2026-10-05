@@ -290,6 +290,11 @@ export function ShellExplorerPage({
   if (terminalOpen && !terminalMounted) setTerminalMounted(true)
   // The Git tool window shares the docked panel with the terminal.
   const [gitOpen, setGitOpen] = useState(false)
+  // Mounted from its first opening, then hidden rather than unmounted: the
+  // terminal and the Git window trade the dock, and a remount re-read the
+  // refs, a page of the log and every worktree, and lost the selection.
+  const [gitMounted, setGitMounted] = useState(false)
+  if (gitOpen && !gitMounted) setGitMounted(true)
   const [gitTab, setGitTab] = useState<GitTab>('log')
   const gitToggleRef = useRef<HTMLButtonElement>(null)
   const [terminalDock, setTerminalDock] = useState<TerminalDock>('bottom')
@@ -2791,8 +2796,9 @@ export function ShellExplorerPage({
           }}
           onCancel={() => setPendingDiscard(null)}
         />
-        {gitOpen && root !== null ? (
+        {gitMounted && root !== null ? (
           <DockPanel
+            hidden={!gitOpen}
             dock="bottom"
             size={terminalBottomSize}
             narrow={narrow}
@@ -2805,6 +2811,7 @@ export function ShellExplorerPage({
               host={host}
               root={root}
               page={worktreesPage}
+              open={gitOpen}
               tab={gitTab}
               onTabChange={setGitTab}
               onHide={closeGit}

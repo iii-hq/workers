@@ -20,6 +20,7 @@ function GitToolWindowView({
   host,
   root,
   page,
+  open = true,
   tab,
   onTabChange,
   onHide,
@@ -33,6 +34,9 @@ function GitToolWindowView({
   host: Host
   root: string
   page: WorktreesPage
+  /** Hidden, the window stays mounted with its place kept, and reads
+      nothing until it shows again. */
+  open?: boolean
   tab: GitTab
   onTabChange(tab: GitTab): void
   onHide(): void
@@ -49,7 +53,11 @@ function GitToolWindowView({
       read-only editor tab. */
   onOpenRevision(file: CommitFile, sha: string): void
 }) {
-  const ops = useWorktreeOps(host, root, page, true, 'view')
+  // The dirty marks cost a `git status` per worktree and only the
+  // Worktrees tab shows them: read from the first time it does.
+  const [marks, setMarks] = useState(tab === 'worktrees')
+  if (tab === 'worktrees' && !marks) setMarks(true)
+  const ops = useWorktreeOps(host, root, page, open, 'view', marks)
   const target = ops.list?.defaultBranch ?? null
   const windowRef = useRef<HTMLDivElement>(null)
   const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
@@ -116,7 +124,7 @@ function GitToolWindowView({
             host={host}
             root={root}
             ops={ops}
-            active={tab === 'log'}
+            active={open && tab === 'log'}
             paneKey={paneKey}
             focusBranch={focusBranch}
             narrow={narrow}

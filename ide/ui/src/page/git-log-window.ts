@@ -114,8 +114,6 @@ export interface CommitDetails {
   committerDate: number
   /** The whole message. */
   message: string
-  /** What `%G?` says: G good, B bad, U good but untrusted, N none, and so on. */
-  signature: string
   /** The changes against the first parent (everything for a root commit),
       paths relative to the repository's top level. */
   files: CommitFile[]
@@ -411,7 +409,7 @@ function filesOf(stdout: string, truncated: boolean): NameStatusEntry[] {
   return []
 }
 
-/** One commit's message, people, signature status and changed files.
+/** One commit's message, people and changed files.
     `prefix` is the browsed root below the top level (see RefsSnapshot). */
 /** Seen from the browsed folder: below it (`rel`), and how to reach it (`view`). */
 function placed(prefix: string, file: NameStatusEntry): CommitFile {
@@ -458,7 +456,7 @@ export async function readCommitDetails(host: Host, root: string, prefix: string
       '-1',
       '--no-color',
       '--no-show-signature',
-      '--format=%H%x00%P%x00%aN%x00%aE%x00%at%x00%cN%x00%cE%x00%ct%x00%G?%x00%B',
+      '--format=%H%x00%P%x00%aN%x00%aE%x00%at%x00%cN%x00%cE%x00%ct%x00%B',
       '--end-of-options',
       sha,
       '--',
@@ -478,7 +476,7 @@ export async function readCommitDetails(host: Host, root: string, prefix: string
   ])
   if (meta.exit_code !== 0) throw failed(meta, 'git log')
   if (tree.exit_code !== 0) throw failed(tree, 'git diff-tree')
-  const [full, parents, author, authorEmail, authorDate, committer, committerEmail, committerDate, signature, ...body] =
+  const [full, parents, author, authorEmail, authorDate, committer, committerEmail, committerDate, ...body] =
     meta.stdout.split('\0')
   if (full === undefined || !HEX.test(full)) throw new Error(`${sha} is not a commit`)
   const files = filesOf(tree.stdout, tree.stdout_truncated).map((file) => placed(prefix, file))
@@ -492,10 +490,24 @@ export async function readCommitDetails(host: Host, root: string, prefix: string
     committerEmail,
     committerDate: Number(committerDate),
     message: body.join('\0').replace(/\n+$/, ''),
-    signature,
     files,
     truncated: meta.stdout_truncated || tree.stdout_truncated,
   }
+}
+
+/** What `%G?` says of `sha`: G good, B bad, U good but untrusted, N none,
+    and so on. A read of its own, kept out of the details: it runs gpg,
+    which can be slow or wedged (a stale keyboxd lock waits 10 s per call),
+    and the short timeout kills it rather than letting checks queue. */
+export async function readSignature(host: Host, root: string, sha: string): Promise<string> {
+  const out = await git(
+    host,
+    root,
+    ['log', '-1', '--no-color', '--no-show-signature', '--format=%G?', '--end-of-options', sha, '--'],
+    3_000,
+  )
+  if (out.exit_code !== 0) throw failed(out, 'git log')
+  return out.stdout.trim()
 }
 
 /** The branches, local and remote, that have `sha`: the first `cap` names

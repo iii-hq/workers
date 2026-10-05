@@ -60,6 +60,20 @@ function folded<T extends { path: string }>(directory: ChangeDirectory<T>): Chan
   return { ...current, name }
 }
 
+/** A group's tree, built once per entries array: a folder toggle or Expand
+    all walks the same tree instead of sorting thousands of paths again.
+    Safe because nothing below mutates it and entries arrays are never
+    changed in place. */
+const trees = new WeakMap<readonly TreeEntry[], ChangeDirectory<TreeEntry>>()
+function treeOf<T extends TreeEntry>(entries: readonly T[]): ChangeDirectory<T> {
+  let tree = trees.get(entries) as ChangeDirectory<T> | undefined
+  if (!tree) {
+    tree = buildChangeTree(entries)
+    trees.set(entries, tree)
+  }
+  return tree
+}
+
 function dirname(path: string): string {
   const slash = path.lastIndexOf('/')
   return slash === -1 ? '' : path.slice(0, slash)
@@ -118,7 +132,7 @@ export function changeRows<T extends TreeEntry>(
         rows.push({ kind: 'file', key: rowKey(group.id, entry.path), group: group.id, depth, entry, dir: '' })
       }
     }
-    walk(buildChangeTree(group.entries), 1)
+    walk(treeOf(group.entries), 1)
   }
   return rows
 }
@@ -136,7 +150,7 @@ export function expandableKeys<T extends TreeEntry>(groups: readonly ChangeGroup
         walk(folder)
       }
     }
-    walk(buildChangeTree(group.entries))
+    walk(treeOf(group.entries))
   }
   return keys
 }

@@ -1110,6 +1110,9 @@
     overflow: auto;
     padding: 0 6px 6px;
   }
+  /* the windowed change tree scrolls itself and carries the padding */
+  .shui-commit-tree:has(> .shui-ctree) { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+  .shui-commit-tree > .shui-ctree { padding: 0 6px 6px; }
   .shui-commit-error { padding: 8px 12px; }
   .shui-commit-skeleton { display: flex; flex-direction: column; gap: 6px; padding: 6px; }
   .shui-commit-skeleton-row { height: 20px; }
@@ -1119,7 +1122,6 @@
   .shui-commit-clean .detail { font: 400 12px / 16px var(--font-sans); color: var(--color-ink-faint); }
 
   /* the change tree: 28px rows, a tick per row, hover-revealed actions */
-  .shui-ctree { display: flex; flex-direction: column; }
   .shui-ctree-row {
     display: flex;
     align-items: center;
@@ -1308,7 +1310,7 @@
   .shui-text-dialog-actions,
   .shui-rollback-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 6px; }
   .shui-rollback-dialog { display: flex; flex-direction: column; gap: 12px; }
-  .shui-rollback-tree { max-height: 260px; overflow: auto; padding: 4px; border-radius: 6px; background: var(--color-surface); }
+  .shui-rollback-tree { display: flex; flex-direction: column; box-sizing: border-box; min-height: 0; padding: 4px; border-radius: 6px; background: var(--color-surface); }
   .shui-rollback-options { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .shui-rollback-summary { margin-left: auto; font: 400 11px / 16px var(--font-sans); color: var(--color-ink-faint); font-variant-numeric: tabular-nums; }
   .shui-danger-button { background: var(--color-alert); color: var(--color-bg); }
@@ -1447,7 +1449,6 @@
   .shui-log-details-empty.pad { padding: 16px 8px; }
   .shui-log-details-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; row-gap: 6px; padding-top: 4px; }
   .shui-log-ref-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .shui-log-files { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
   .shui-log-file {
     width: 100%;
     display: flex;
@@ -3142,6 +3143,8 @@
   .shui-bchanges-tools { display: flex; flex: none; align-items: center; gap: 2px; padding: 0 4px 4px; }
   .shui-bchanges-spacer { flex: 1 1 auto; }
   .shui-bchanges-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 4px 8px; }
+  /* the windowed change tree scrolls itself; a note after it stays below */
+  .shui-bchanges-body:has(> .shui-ctree) { display: flex; flex-direction: column; overflow: hidden; }
   .shui-git-toggle,
   .shui-git-filter {
     display: inline-flex;
@@ -3468,6 +3471,8 @@
   .shui-git-commit-byline > .shui-git-ref { flex: 0 1 auto; min-width: 0; }
   .shui-git-commit-byline > .shui-git-commit-date { flex: none; }
   .shui-git-window[data-narrow] .shui-git-file { height: 44px; touch-action: manipulation; }
+  /* one row height for the windowed file list: folders match the files */
+  .shui-git-window[data-narrow] .shui-git-file-list .shui-scm-folder { height: 44px; }
   .shui-git-window[data-narrow] .shui-git-files { flex: 1 1 auto; max-height: 50%; }
   .shui-git-window[data-narrow] .shui-git-files.shui-git-compare { max-height: none; }
   .shui-git-window[data-narrow] .shui-git-hsash { height: 13px; padding: 6px 0; }
