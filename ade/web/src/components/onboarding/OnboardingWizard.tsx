@@ -16,7 +16,9 @@ import {
 } from '@/lib/onboarding/api'
 import type { JudgeOption } from '@/lib/onboarding/catalog'
 import {
+  browserIsAutomated,
   onOnboardingWizardRequest,
+  shouldAutoOpenOnboarding,
   type WizardStepId,
 } from '@/lib/onboarding/open'
 import { cn } from '@/lib/utils'
@@ -37,9 +39,10 @@ const STEPS: { id: WizardStepId; title: string; optional?: boolean }[] = [
 
 /**
  * The first-run setup wizard. Mounted once in `App`: it opens by itself the
- * first time this machine's ADE loads (`console::onboarding::get` reports
- * `new`), and again whenever something calls `requestOnboardingWizard` — the
- * chat's "configure a provider" call to action, or the command palette.
+ * first time a person loads this machine's ADE (`console::onboarding::get`
+ * reports `new`; never in a browser under automation), and whenever
+ * something calls `requestOnboardingWizard` — the chat's "configure a
+ * provider" call to action, or the command palette.
  *
  * Finishing records `completed` and skipping records `dismissed`, beside the
  * workspace layout in the ADE's data directory, so it never reopens on its
@@ -70,7 +73,9 @@ export function OnboardingWizardHost() {
       .then((state) => {
         if (cancelled || !state) return
         status.current = state.status
-        if (state.status === 'new') setOpen(true)
+        if (shouldAutoOpenOnboarding(state.status, browserIsAutomated())) {
+          setOpen(true)
+        }
         // Someone who finished setup may jump straight to any part of it.
         if (state.status === 'completed') {
           setVisited(new Set(STEPS.map((entry) => entry.id)))

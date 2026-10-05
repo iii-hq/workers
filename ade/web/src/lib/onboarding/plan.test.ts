@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { JUDGE_OPTIONS, workerSource } from './catalog'
+import { shouldAutoOpenOnboarding } from './open'
 import {
   connectPlan,
   describeStep,
@@ -306,5 +307,16 @@ describe('judgeFailure', () => {
     expect(judgeFailure(rejected, 'Laya', false)).toBeNull()
     expect(judgeFailure({ models: [] }, 'Jev', true)).toBeNull()
     expect(judgeFailure(null, 'Jev', true)).toBeNull()
+  })
+})
+
+describe('shouldAutoOpenOnboarding', () => {
+  it('opens by itself only for a person on first run', () => {
+    expect(shouldAutoOpenOnboarding('new', false)).toBe(true)
+    // An e2e suite, an agent's browser session or a stories render.
+    expect(shouldAutoOpenOnboarding('new', true)).toBe(false)
+    expect(shouldAutoOpenOnboarding('dismissed', false)).toBe(false)
+    expect(shouldAutoOpenOnboarding('completed', false)).toBe(false)
+    expect(shouldAutoOpenOnboarding(null, false)).toBe(false)
   })
 })
