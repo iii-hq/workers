@@ -1,11 +1,14 @@
-import { KeyRound, SlidersHorizontal } from 'lucide-react'
+import { SlidersHorizontal } from 'lucide-react'
 import { useId } from 'react'
+import { SecretKeyField } from '@/components/secrets/SecretKeyField'
 import { Input } from '@/components/ui/Input'
+import { KEY_PROVIDERS } from '@/lib/onboarding/catalog'
 import { cn } from '@/lib/utils'
 import type {
   JsonSchema,
   JsonValue,
 } from '@/pages/Configuration/tabs/WorkersTab/api'
+import { ProviderSignIn } from './ProviderSignIn'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -14,14 +17,31 @@ import type {
 type JsonObject = { [key: string]: JsonValue }
 
 interface ProviderSettingsFormProps {
+  providerId: string
   schema: JsonSchema
   value: JsonValue
   onChange: (next: JsonValue) => void
   errors?: ReadonlyMap<string, string>
   credentialEnvVar?: string
   configured?: boolean
+  /** What the router reports about the credential it resolved. */
+  credentialStatus?: {
+    source?: string
+    error?: string
+    checking?: boolean
+    detail?: string
+  }
+  /**
+   * Apply a key change at once (`secret://NAME`, or `undefined` to clear it)
+   * instead of leaving it in the draft for Save — what the model picker does,
+   * so storing a key connects the provider in one step.
+   */
+  onCredentialChange?: (next: string | undefined) => Promise<unknown>
   className?: string
 }
+
+/** Provider keys are read by the router, nobody else. */
+const ROUTER_CONSUMERS = ['llm-router'] as const
 
 function asObject(value: JsonValue): JsonObject {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -58,17 +78,21 @@ function FieldMessage({ message }: { message?: string }) {
 }
 
 /**
- * Friendly fallback for the router's common provider settings. Secret input
- * is intentionally absent: API-key providers declare their environment
- * variable and provider-owned auth flows can replace this form entirely.
+ * Friendly fallback for the router's common provider settings. An API-key
+ * provider's key goes through the secrets store like everywhere else in the
+ * console (`SecretKeyField`), so the router slice only ever holds
+ * `secret://NAME`; a provider that signs in on its own shows that sign-in.
  */
 export function ProviderSettingsForm({
+  providerId,
   schema,
   value,
   onChange,
   errors,
   credentialEnvVar,
   configured,
+  credentialStatus,
+  onCredentialChange,
   className,
 }: ProviderSettingsFormProps) {
   const apiUrlId = useId()
@@ -91,48 +115,25 @@ export function ProviderSettingsForm({
 
   return (
     <div className={cn('space-y-5 py-1', className)}>
-      <section className="overflow-hidden rounded-lg bg-surface ring-1 ring-inset ring-edge">
-        <div className="flex items-start gap-3 p-3">
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-sm bg-surface-active text-ink-faint">
-            <KeyRound className="size-5 sm:size-4" aria-hidden />
-          </span>
-          <div className="min-w-0 flex-1 space-y-1">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="font-sans text-base font-medium text-ink">
-                Authentication
-              </h3>
-              {configured !== undefined ? (
-                <span
-                  className={cn(
-                    'rounded-full px-2 py-0.5 font-sans text-[11px] font-medium',
-                    configured
-                      ? 'bg-ok-muted text-ok'
-                      : 'bg-surface-active text-ink-faint',
-                  )}
-                >
-                  {configured ? 'Connected' : 'Not connected'}
-                </span>
-              ) : null}
-            </div>
-            {credentialEnvVar ? (
-              <>
-                <p className="font-sans text-base leading-relaxed text-ink-faint sm:text-sm">
-                  Keep the API key out of saved configuration. Set it in the
-                  runtime environment instead.
-                </p>
-                <code className="inline-flex max-w-full rounded-sm bg-panel-raised px-2 py-1 font-mono text-sm text-ink ring-1 ring-inset ring-edge">
-                  {credentialEnvVar}
-                </code>
-              </>
-            ) : (
-              <p className="font-sans text-base leading-relaxed text-ink-faint sm:text-sm">
-                Authentication is owned by this provider. Use its login flow;
-                credentials are not entered or stored in this form.
-              </p>
-            )}
-          </div>
-        </div>
-      </section>
+      {credentialEnvVar ? (
+        <SecretKeyField
+          name={credentialEnvVar}
+          value={stringValue(current.api_key) || undefined}
+          onChange={(next) =>
+            onCredentialChange
+              ? onCredentialChange(next)
+              : patch('api_key', next)
+          }
+          consumers={ROUTER_CONSUMERS}
+          status={{ ...credentialStatus, connected: configured }}
+          keysUrl={
+            KEY_PROVIDERS.find((entry) => entry.providerId === providerId)
+              ?.keysUrl
+          }
+        />
+      ) : (
+        <ProviderSignIn providerId={providerId} />
+      )}
 
       <section
         aria-labelledby="provider-settings-heading"

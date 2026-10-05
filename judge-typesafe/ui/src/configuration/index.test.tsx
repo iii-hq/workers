@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import type { ConfigFormProps, ExtensionIii, SelectProps, SettingsFieldProps } from '@iii-dev/console-ui'
+import type {
+  ConfigFormProps,
+  ExtensionIii,
+  SecretKeyFieldProps,
+  SelectProps,
+  SettingsFieldProps,
+} from '@iii-dev/console-ui'
 import { act, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -28,7 +34,18 @@ vi.mock('@iii-dev/console-ui', () => ({
     changes.set(props.name!, onChange)
     return <input {...props} onChange={(event) => onChange(event.currentTarget.value)} />
   },
-  Select: ({ id, name, value, options, onChange, onClear, allowEmpty, emptyLabel, 'aria-busy': busy, ...props }: SelectProps) => {
+  Select: ({
+    id,
+    name,
+    value,
+    options,
+    onChange,
+    onClear,
+    allowEmpty,
+    emptyLabel,
+    'aria-busy': busy,
+    ...props
+  }: SelectProps) => {
     changes.set(name!, (next) => (next === '' ? onClear?.() : onChange(next)))
     return (
       <select
@@ -64,7 +81,17 @@ vi.mock('@iii-dev/console-ui', () => ({
     </div>
   ),
   SettingsList: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  SettingsSection: ({ title, description, action, children }: { title: string; description: string; action?: ReactNode; children: ReactNode }) => (
+  SettingsSection: ({
+    title,
+    description,
+    action,
+    children,
+  }: {
+    title: string
+    description: string
+    action?: ReactNode
+    children: ReactNode
+  }) => (
     <section>
       <h2>{title}</h2>
       <p>{description}</p>
@@ -72,7 +99,17 @@ vi.mock('@iii-dev/console-ui', () => ({
       {children}
     </section>
   ),
-  StatusPanel: ({ variant, headline, detail, action }: { variant?: string; headline: ReactNode; detail?: ReactNode; action?: ReactNode }) => (
+  StatusPanel: ({
+    variant,
+    headline,
+    detail,
+    action,
+  }: {
+    variant?: string
+    headline: ReactNode
+    detail?: ReactNode
+    action?: ReactNode
+  }) => (
     <div role="alert" data-variant={variant}>
       {headline}
       {detail}
@@ -114,7 +151,9 @@ async function mount(value: ConfigFormProps['value'], iii = engine(), extra: Par
   root = createRoot(container)
   const onChange = vi.fn()
   await act(async () =>
-    root!.render(<JevConfigForm id="judge-typesafe" schema={{}} value={value} onChange={onChange} iii={iii} {...extra} />),
+    root!.render(
+      <JevConfigForm id="judge-typesafe" schema={{}} value={value} onChange={onChange} iii={iii} {...extra} />,
+    ),
   )
   return { container, onChange, iii }
 }
@@ -273,7 +312,11 @@ describe('JevConfigForm', () => {
 describe('JevConfigForm catalog', () => {
   it('lists the catalog the worker answers, keeps the stored model selectable, and reports the key as accepted', async () => {
     const { container, iii } = await mount({ model: 'jev-1.13.0' })
-    expect(iii.trigger).toHaveBeenCalledWith('judge-typesafe::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
+    expect(iii.trigger).toHaveBeenCalledWith(
+      'judge-typesafe::models::list',
+      { timeout_ms: 15_000 },
+      { timeoutMs: 20_000 },
+    )
     const select = container.querySelector<HTMLSelectElement>('select[name="model"]')!
     expect([...select.options].map((option) => option.value)).toEqual(['', 'jev-latest', 'jev-preview', 'jev-1.13.0'])
     expect(select.options[1].dataset.description).toBe('Latest JEV · 2026-09-10')
@@ -307,7 +350,9 @@ describe('JevConfigForm catalog', () => {
     expect(alert.textContent).toContain('No API key reaches the worker')
     expect(alert.textContent).toContain('TYPESAFE_API_KEY')
     expect(alert.querySelector('button')).toBeNull()
-    expect([...container.querySelector<HTMLSelectElement>('select[name="model"]')!.options].map((o) => o.value)).toEqual([''])
+    expect(
+      [...container.querySelector<HTMLSelectElement>('select[name="model"]')!.options].map((o) => o.value),
+    ).toEqual([''])
   })
 
   it('surfaces other listing failures with a retry that asks the worker again', async () => {
@@ -334,8 +379,35 @@ describe('JEV configuration deep links', () => {
     const { container, iii } = await mount(`\${JEV_CONFIGURATION}`)
     expect(container.innerHTML).toContain('configuration is supplied as a single value')
     await act(async () =>
-      root!.render(<JevConfigForm id="judge-typesafe" schema={{}} value={{ api_key: 'k' }} onChange={vi.fn()} iii={iii} />),
+      root!.render(
+        <JevConfigForm id="judge-typesafe" schema={{}} value={{ api_key: 'k' }} onChange={vi.fn()} iii={iii} />,
+      ),
     )
     expect(container.querySelector('input[name="api_key"]')).not.toBeNull()
+  })
+})
+
+describe('JevConfigForm with the Console secret field', () => {
+  it('hands the key to the shared field and stores only its reference', async () => {
+    const seen: SecretKeyFieldProps[] = []
+    function StubSecretField(props: SecretKeyFieldProps) {
+      seen.push(props)
+      return <output data-name={props.name} />
+    }
+    const { container, onChange } = await mount(
+      { api_key: 'secret://TYPESAFE_API_KEY', model: 'jev-1.13.0' },
+      engine(),
+      { secretField: StubSecretField } as Partial<ConfigFormProps>,
+    )
+    expect(container.querySelector('input[name="api_key"]')).toBeNull()
+    const last = seen[seen.length - 1]
+    expect(last).toMatchObject({
+      name: 'TYPESAFE_API_KEY',
+      value: 'secret://TYPESAFE_API_KEY',
+      consumers: ['judge-typesafe'],
+    })
+    expect(last.status).toMatchObject({ connected: true, detail: `${catalog.models.length} models` })
+    await act(async () => last.onChange('secret://TYPESAFE_API_KEY_2'))
+    expect(onChange).toHaveBeenLastCalledWith({ api_key: 'secret://TYPESAFE_API_KEY_2', model: 'jev-1.13.0' })
   })
 })

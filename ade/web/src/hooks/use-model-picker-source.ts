@@ -39,6 +39,7 @@ export function useModelPickerSource(
     [],
   )
   const providerEventVersion = useRef(0)
+  const hasCatalog = useRef(false)
   const [catalogLoading, setCatalogLoading] = useState(
     backendId === 'real' && harnessAvailable,
   )
@@ -54,10 +55,15 @@ export function useModelPickerSource(
       setCatalogLoading(false)
       return
     }
-    setCatalogLoading(true)
+    // Only the first read shows as loading. A background re-read (a key was
+    // stored, a provider registered) keeps the current list on screen: a
+    // loading picker is disabled, and a disabled picker closes under the
+    // person configuring it.
+    if (!hasCatalog.current) setCatalogLoading(true)
     try {
       const rows = await fetchModelsCatalog()
       setModelOptions(catalogRowsToModelOptions(rows))
+      hasCatalog.current = true
     } catch {
       setModelOptions([])
     } finally {

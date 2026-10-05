@@ -24,6 +24,7 @@ import uiClasses, { uiClassNames } from '@iii-dev/console-ui/ui-classes'
 import { describe, expect, it } from 'vitest'
 import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
 import { ModelPicker } from '@/components/chat/ModelPicker'
+import { SecretKeyField } from '@/components/secrets/SecretKeyField'
 import { ActionLine, MetaRow } from '@/components/ui/ActivityMetadata'
 import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
@@ -166,6 +167,7 @@ const conformance: {
   LiveRegion: typeof ConsoleUi.LiveRegion
   MetaRow: typeof ConsoleUi.MetaRow
   SearchField: typeof ConsoleUi.SearchField
+  SecretKeyField: typeof ConsoleUi.SecretKeyField
   StatusBar: typeof ConsoleUi.StatusBar
   Toolbar: typeof ConsoleUi.Toolbar
   Card: typeof ConsoleUi.Card
@@ -277,6 +279,7 @@ const conformance: {
   LiveRegion,
   MetaRow,
   SearchField,
+  SecretKeyField,
   StatusBar,
   Toolbar,
   Card,

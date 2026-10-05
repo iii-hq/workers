@@ -263,12 +263,25 @@ describe('Codex console login', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull()
   })
 
-  it('explains the device-login prerequisite before signing in', async () => {
+  it('stays short before signing in: one line, the action and the CLI fallback', async () => {
     await mount()
-    expect(container.textContent).toContain(
-      'Enable device code login in ChatGPT security settings or ask your workspace administrator.',
-    )
+    expect(container.textContent).toContain('Uses your ChatGPT plan — no API key.')
+    expect(container.textContent).not.toContain('Enable device code login')
+    expect(container.querySelectorAll('.codex-provider-card p').length).toBeLessThanOrEqual(3)
     expect(button('Sign in with ChatGPT').disabled).toBe(false)
+  })
+
+  it('shows a long account id short, with the full id on hover', async () => {
+    rpc.mockImplementation(async (method) =>
+      method === `${prefix}auth::status`
+        ? { ...authenticated, source: 'local', account_id: '687f31e3-abcd-4865-bbf5-237d6c1d34cf' }
+        : { ok: true },
+    )
+    await mount()
+    const account = container.querySelector('.codex-provider-account')
+    expect(account?.textContent).toBe('687f31e3… · local Codex login')
+    expect(account?.getAttribute('title')).toBe('687f31e3-abcd-4865-bbf5-237d6c1d34cf')
+    expect(container.textContent).not.toContain('codex login on the machine')
   })
 
   it('offers actionable recovery and a working retry when device login is disabled', async () => {
@@ -314,27 +327,26 @@ describe('Codex console login', () => {
     expect(container.textContent).toContain('Signed out')
   })
 
-  it.each([
-    'expired',
-    'canceled',
-    'error',
-  ])('handles terminal %s polls without hiding an existing session', async (status) => {
-    rpc.mockResolvedValueOnce(authenticated)
-    await mount()
-    await click('Switch account')
-    rpc.mockResolvedValueOnce({
-      status,
-      error: { code: 'authorization_failed', message: 'sensitive server details' },
-    })
-    await advance(5000)
-    expect(container.textContent).toContain('Signed in')
-    expect(container.textContent).toContain('account-1')
-    expect(container.textContent).not.toContain('sensitive server details')
-    expect(container.textContent).not.toContain(attempt.user_code)
-    expect(button('New attempt').disabled).toBe(false)
-    await advance(5000)
-    expect(calls('login::poll')).toHaveLength(1)
-  })
+  it.each(['expired', 'canceled', 'error'])(
+    'handles terminal %s polls without hiding an existing session',
+    async (status) => {
+      rpc.mockResolvedValueOnce(authenticated)
+      await mount()
+      await click('Switch account')
+      rpc.mockResolvedValueOnce({
+        status,
+        error: { code: 'authorization_failed', message: 'sensitive server details' },
+      })
+      await advance(5000)
+      expect(container.textContent).toContain('Signed in')
+      expect(container.textContent).toContain('account-1')
+      expect(container.textContent).not.toContain('sensitive server details')
+      expect(container.textContent).not.toContain(attempt.user_code)
+      expect(button('New attempt').disabled).toBe(false)
+      await advance(5000)
+      expect(calls('login::poll')).toHaveLength(1)
+    },
+  )
 
   it('never overlaps slow polls or accepts responses from an expired attempt', async () => {
     await mount()
@@ -361,18 +373,16 @@ describe('Codex console login', () => {
     expect(container.textContent).not.toContain('account-1')
   })
 
-  it.each([
-    'javascript:alert(1)',
-    'http://example.com/login',
-    verificationLinkWithUserInfo.href,
-    'invalid',
-  ])('rejects unsafe verification link %s', async (verification_uri) => {
-    rpc.mockResolvedValueOnce({ ...signedOut, login: { ...attempt, verification_uri } })
-    await mount()
-    expect(container.querySelector('a')).toBeNull()
-    expect(container.textContent).toContain('sign-in link is unavailable')
-    expect(button('Cancel sign-in').disabled).toBe(false)
-  })
+  it.each(['javascript:alert(1)', 'http://example.com/login', verificationLinkWithUserInfo.href, 'invalid'])(
+    'rejects unsafe verification link %s',
+    async (verification_uri) => {
+      rpc.mockResolvedValueOnce({ ...signedOut, login: { ...attempt, verification_uri } })
+      await mount()
+      expect(container.querySelector('a')).toBeNull()
+      expect(container.textContent).toContain('sign-in link is unavailable')
+      expect(button('Cancel sign-in').disabled).toBe(false)
+    },
+  )
 
   it('refreshes status when the window regains focus', async () => {
     await mount()

@@ -60,12 +60,20 @@ Chat runs on the [`harness`](https://github.com/iii-hq/workers/tree/main/harness
 iii trigger compose::add worker=harness
 ```
 
-### Add a provider key
+### Connect a model: the setup wizard
 
-The provider workers install with the harness, but they need credentials before any model appears — until then the model picker reads **no models** and chat won't generate. Add a key either way:
+The provider workers install with the harness, but they need credentials before any model appears — until then the model picker reads **no models** and chat won't generate. The first time the ADE loads on a machine it opens a setup wizard that does this for you (reopen it any time from the command palette: **Set up the harness**):
 
-- **In the UI (recommended)** — open the model picker and use **configure anthropic** / **configure openai** to paste a key. It's written to that provider's slice of the `llm-router` configuration entry, and the catalog populates within seconds.
-- **From the environment** — `llm-router` falls back to a provider's credential env var (e.g. `ANTHROPIC_API_KEY`), read in the router's own process. See [`llm-router`](https://github.com/iii-hq/workers/tree/main/llm-router#configuration) for the credential model.
+1. **Your machine** — `console::onboarding::scan` looks for the Claude Code and Codex CLIs and whether each is signed in (presence and paths only, never a credential). With the [`secrets`](https://github.com/iii-hq/workers/tree/main/secrets) worker running, `secrets::detect` also looks for provider keys in your shell profile and the project's `.env`, and shows them masked (`sk-ant…9f2c`).
+2. **Models** — recommends what that scan found: a signed-in Claude Code or Codex adds [`provider-claude-code`](https://github.com/iii-hq/workers/tree/main/provider-claude-code) / [`provider-openai-codex`](https://github.com/iii-hq/workers/tree/main/provider-openai-codex) and needs no key; a found key is imported by the secrets worker itself, and a pasted one is stored there. Either way only a reference, `secret://ANTHROPIC_API_KEY`, is written to the `llm-router` configuration, so no key lands in `./config`. Every other provider worker in the registry is listed too.
+3. **Judge** (optional) — adds [`judge`](https://github.com/iii-hq/workers/tree/main/judge) with Jev ([`judge-typesafe`](https://github.com/iii-hq/workers/tree/main/judge-typesafe), its `TYPESAFE_API_KEY` behind a `secret://` reference) or a local judge, and explains where the harness uses it.
+4. **Ready** — what is connected, every worker setup added, and a starter prompt for each thing worth trying first (a kanban board, calling your backend's functions, function search, the registry, triggers). A starter goes into the composer for you to read and send.
+
+Nothing is added without a click: each step lists the exact actions it will run — `compose::add` with each worker and why, `secrets::import` / `secrets::set`, the configuration value written — and, once you continue, logs them live with the compose phase of each worker being added. Finishing or skipping is remembered per machine in `<data_dir>/onboarding.json` (`console::onboarding::get` / `::set`).
+
+After setup, every place that takes a provider key uses the same field: **Configure** in the model picker (applied at once, then checked — a key the provider refuses lists no models and is flagged as such), **Settings → Workers → llm-router**, and **Settings → Workers → judge-typesafe** (both apply on Save). It shows the reference and the masked key with **Replace** and **Remove**, offers a key found on the machine, and moves a plain-text or `${VAR}` value into the secrets store. Injected worker forms get it as `host.components.SecretKeyField`. A configured provider that lists no models stays in the picker, so its key can be fixed from there.
+
+Keys can still come from the environment: `llm-router` falls back to a provider's credential env var (e.g. `ANTHROPIC_API_KEY`), read in the router's own process — in the harness template that means the project's `.env` plus `iii trigger compose::restart worker=llm-router`. See [`llm-router`](https://github.com/iii-hq/workers/tree/main/llm-router#configuration) for the credential model.
 
 Pick a model in the composer and send — the turn streams back through the harness loop.
 

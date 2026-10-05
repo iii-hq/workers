@@ -1740,6 +1740,32 @@ export interface ModelPickerProps {
 /** The Console's responsive searchable model catalog picker. */
 export declare const ModelPicker: React.ComponentType<ModelPickerProps>
 
+export interface SecretKeyFieldProps {
+  /** Secret name — also the environment variable the key is looked up under. */
+  name: string
+  /** The field's configuration value: `secret://NAME`, `${VAR}`, a literal, or empty. */
+  value: string | undefined
+  /** Write the field: a `secret://` reference, or `undefined` to clear it. */
+  onChange: (next: string | undefined) => unknown
+  /** Workers allowed to read the key. */
+  consumers: readonly string[]
+  label?: string
+  /** What the consumer reports about the credential (llm-router's provider status). */
+  status?: { connected?: boolean; source?: string; error?: string; checking?: boolean; detail?: string }
+  keysUrl?: string
+  disabled?: boolean
+  className?: string
+}
+/**
+ * One credential, kept the way the Console keeps credentials: encrypted in
+ * the `secrets` worker, with only `secret://NAME` in configuration. Reuses a
+ * key found on the machine, keeps a stored one or takes a pasted one; moves a
+ * plain-text or `${VAR}` value into the store; adds the secrets worker when
+ * it is missing. Read it from `host.components.SecretKeyField` and fall back
+ * to a plain input when absent: Consoles before it do not have it.
+ */
+export declare const SecretKeyField: React.ComponentType<SecretKeyFieldProps>
+
 export interface WorkerConfigurationDialogProps {
   /** Which worker to open in global Settings; `null` does nothing. */
   configurationId: string | null

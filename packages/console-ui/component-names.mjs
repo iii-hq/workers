@@ -86,6 +86,7 @@ export const componentNames = [
   'PanelHeader',
   'RawValueInput',
   'SearchField',
+  'SecretKeyField',
   'Select',
   'SegmentedControl',
   'Selector',

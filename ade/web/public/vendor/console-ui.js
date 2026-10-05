@@ -84,6 +84,7 @@ export const {
   PanelHeader,
   RawValueInput,
   SearchField,
+  SecretKeyField,
   Select,
   SegmentedControl,
   Selector,

@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/Tooltip'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
+import { getIiiClient } from '@/lib/iii-client'
 import type { ProviderListEntry } from '@/lib/models-catalog'
 import { cn } from '@/lib/utils'
 import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
@@ -630,6 +631,52 @@ function ProviderRail({
   )
 }
 
+/**
+ * Of `candidates` — configured providers with no chat models — the ones that
+ * list no models of any modality. A speech or embedding provider lists its
+ * own; one that lists nothing has a credential the upstream refused.
+ */
+function useModellessProviders(candidates: string[]): ReadonlySet<string> {
+  const [modelless, setModelless] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  )
+  const key = candidates.slice().sort().join(' ')
+  useEffect(() => {
+    const ids = key ? key.split(' ') : []
+    if (ids.length === 0) {
+      setModelless(new Set())
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const client = await getIiiClient()
+        const result = await client.trigger<{ models?: unknown }>(
+          'router::models::list',
+          { modality: 'any' },
+        )
+        const listed = new Set(
+          (Array.isArray(result?.models) ? result.models : []).flatMap(
+            (row) => {
+              const provider = (row as { provider?: unknown } | null)?.provider
+              return typeof provider === 'string' ? [provider] : []
+            },
+          ),
+        )
+        if (!cancelled) {
+          setModelless(new Set(ids.filter((id) => !listed.has(id))))
+        }
+      } catch {
+        if (!cancelled) setModelless(new Set())
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [key])
+  return modelless
+}
+
 interface ModelPickerPanelProps {
   value: ModelId | null
   options: ModelOption[]
@@ -701,6 +748,12 @@ export function ModelPickerPanel({
   )
   const modelGroups = groupByProvider(options)
   const grouped = new Set(modelGroups.map((group) => group.label))
+  const modelless = useModellessProviders(
+    presentProviders
+      .filter((provider) => provider.configured === true)
+      .map((provider) => provider.id)
+      .filter((id) => !grouped.has(id)),
+  )
   const filterWords = filter.toLowerCase().split(/\s+/).filter(Boolean)
   const matchesFilter = (option: ModelOption, provider: string) => {
     if (filterWords.length === 0) return true
@@ -716,11 +769,18 @@ export function ModelPickerPanel({
       ),
     })),
     // A provider with no chat models is listed only while it still needs
-    // setup: a configured one without chat models serves another modality
-    // (speech, embeddings) and has nothing to offer this picker.
+    // setup: a configured one without chat models usually serves another
+    // modality (speech, embeddings) and has nothing to offer this picker.
+    // One that lists no models at all, or whose credential failed, is broken
+    // rather than elsewhere — it stays, so its key can be fixed from here.
     ...presentIds
       .filter((id) => !grouped.has(id))
-      .filter((id) => providerById.get(id)?.configured !== true)
+      .filter(
+        (id) =>
+          providerById.get(id)?.configured !== true ||
+          providerById.get(id)?.credential_error !== undefined ||
+          modelless.has(id),
+      )
       .map((id) => ({ label: id, options: [] })),
   ]
     .filter((group) => filterWords.length === 0 || group.options.length > 0)
@@ -1046,7 +1106,10 @@ export function ModelPickerPanel({
                       <div className="px-3 py-4 font-sans text-base text-ink-faint sm:text-sm">
                         {unavailable
                           ? 'Provider not loaded.'
-                          : 'No models available.'}
+                          : (provider?.credential_error ??
+                            (configured
+                              ? 'No models with this key. Configure to check it.'
+                              : 'No models available.'))}
                       </div>
                     )}
                   </div>
