@@ -70,7 +70,8 @@ export function treeItemFromEvent(event: TreeRowEvent): TreeItemRef | null {
     const itemPath = readTreeData(carrier, 'itemPath', 'data-item-path')
     if (itemPath == null || itemPath.length === 0) continue
     const itemType = readTreeData(carrier, 'itemType', 'data-item-type')
-    return { path: itemPath, kind: itemType === 'directory' ? 'directory' : 'file' }
+    // @pierre/trees marks a folder row `data-item-type="folder"`.
+    return { path: itemPath, kind: itemType === 'folder' ? 'directory' : 'file' }
   }
   return null
 }
