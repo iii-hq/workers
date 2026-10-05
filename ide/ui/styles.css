@@ -772,6 +772,22 @@
 
   /* context menu — the console's DropdownMenu anchored at the pointer */
   .shui-context-menu { min-width: 220px; max-width: 320px; }
+  /* Every IDE menu (context menus, toolbar dropdowns, their submenus)
+     floats over the panel it opens from: a fill a step off that panel, a
+     hairline ring (ink at 12%, the selected fill's value in both themes) and
+     the raised and floating shadows together. In the dark
+     theme the menu's own fill is the tree's, so without them it dissolves
+     into the rows behind it. */
+  [role="menu"] {
+    background-color: light-dark(
+      var(--color-panel),
+      color-mix(in oklab, var(--color-panel-raised), var(--color-ink) 7%)
+    );
+    box-shadow:
+      0 0 0 1px var(--color-surface-selected),
+      var(--shadow-raised),
+      var(--shadow-floating);
+  }
   .shui-context-item {
     display: grid;
     grid-template-columns: 16px minmax(0, 1fr) auto;
