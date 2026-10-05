@@ -13,6 +13,7 @@ import {
   FileCode,
   FileDiff,
   FileDown,
+  Folder,
   GitBranch,
   GitCommitHorizontal,
   GitCompareArrows,
@@ -27,9 +28,10 @@ import { type GitAction, menuItems } from './ActionRail'
 import type { ContextMenuItem } from './ContextMenu'
 import { joinPath } from './coder'
 import type { ChangeRow } from './commit-tree'
+import { FileTypeIcon } from './file-type-icon'
 import type { GitComparisonEntry } from './git'
 import type { GitStash } from './git-log'
-import { basename } from './paths'
+import { basename, dirname } from './paths'
 
 type Entries = readonly GitComparisonEntry[]
 
@@ -56,6 +58,29 @@ export interface ChangeMenuContext {
 }
 
 const BUSY = 'another operation is running'
+
+const files = (count: number) => `${count} ${count === 1 ? 'file' : 'files'}`
+
+/** The menu's first row: what it acts on, so a folder's or a group's
+    "Commit files…" says which files. */
+function changeHead(row: ChangeRow): ContextMenuItem {
+  if (row.kind === 'file') {
+    return {
+      type: 'label',
+      id: 'head',
+      label: basename(row.entry.path),
+      icon: <FileTypeIcon path={row.entry.path} />,
+      detail: dirname(row.entry.path) || undefined,
+    }
+  }
+  return {
+    type: 'label',
+    id: 'head',
+    label: row.label,
+    icon: row.kind === 'folder' ? <Folder /> : undefined,
+    detail: files(row.entries.length),
+  }
+}
 
 export function changeMenu(row: ChangeRow, ctx: ChangeMenuContext): ContextMenuItem[] {
   const file = row.kind === 'file' ? row.entry : null
@@ -202,7 +227,7 @@ export function changeMenu(row: ChangeRow, ctx: ChangeMenuContext): ContextMenuI
       ],
     },
   ]
-  return menuItems(actions)
+  return [changeHead(row), { type: 'separator', id: 'sep:head' }, ...menuItems(actions)]
 }
 
 export interface StashMenuContext {
@@ -216,62 +241,73 @@ export interface StashMenuContext {
 
 export function stashMenu(stash: GitStash, ctx: StashMenuContext): ContextMenuItem[] {
   const busy = ctx.busy ? BUSY : null
-  return menuItems([
-    {
-      id: 'pop',
-      label: 'Pop',
-      icon: <ArchiveRestore aria-hidden />,
-      group: 'apply',
-      blocked: busy,
-      run: () => ctx.apply(stash, true),
-    },
-    {
-      id: 'apply',
-      label: 'Apply',
-      icon: <Download aria-hidden />,
-      group: 'apply',
-      blocked: busy,
-      run: () => ctx.apply(stash, false),
-    },
-    {
-      id: 'unstash',
-      label: 'Unstash…',
-      icon: <PackageOpen aria-hidden />,
-      group: 'apply',
-      blocked: busy,
-      run: () => ctx.unstash(stash),
-    },
-    {
-      id: 'drop',
-      label: 'Drop…',
-      icon: <Trash2 aria-hidden />,
-      group: 'remove',
-      danger: true,
-      blocked: busy,
-      run: () => ctx.drop(stash),
-    },
-    {
-      id: 'clear',
-      label: 'Clear…',
-      icon: <Eraser aria-hidden />,
-      group: 'remove',
-      danger: true,
-      blocked: busy,
-      run: ctx.clear,
-    },
-    {
-      id: 'diff',
-      label: 'Show diff',
-      icon: <FileDiff aria-hidden />,
-      group: 'diff',
-      run: () => ctx.showDiff(stash, false),
-    },
-    {
-      id: 'diff-tab',
-      label: 'Show diff in a new tab',
-      icon: <FileDiff aria-hidden />,
-      group: 'diff',
-      run: () => ctx.showDiff(stash, true),
-    },
-  ])
+  const head: ContextMenuItem = {
+    type: 'label',
+    id: 'head',
+    label: stash.message,
+    icon: <Archive />,
+    detail: stash.ref,
+  }
+  return [
+    head,
+    { type: 'separator', id: 'sep:head' },
+    ...menuItems([
+      {
+        id: 'pop',
+        label: 'Pop',
+        icon: <ArchiveRestore aria-hidden />,
+        group: 'apply',
+        blocked: busy,
+        run: () => ctx.apply(stash, true),
+      },
+      {
+        id: 'apply',
+        label: 'Apply',
+        icon: <Download aria-hidden />,
+        group: 'apply',
+        blocked: busy,
+        run: () => ctx.apply(stash, false),
+      },
+      {
+        id: 'unstash',
+        label: 'Unstash…',
+        icon: <PackageOpen aria-hidden />,
+        group: 'apply',
+        blocked: busy,
+        run: () => ctx.unstash(stash),
+      },
+      {
+        id: 'drop',
+        label: 'Drop…',
+        icon: <Trash2 aria-hidden />,
+        group: 'remove',
+        danger: true,
+        blocked: busy,
+        run: () => ctx.drop(stash),
+      },
+      {
+        id: 'clear',
+        label: 'Clear…',
+        icon: <Eraser aria-hidden />,
+        group: 'remove',
+        danger: true,
+        blocked: busy,
+        run: ctx.clear,
+      },
+      {
+        id: 'diff',
+        label: 'Show diff',
+        icon: <FileDiff aria-hidden />,
+        group: 'diff',
+        run: () => ctx.showDiff(stash, false),
+      },
+      {
+        id: 'diff-tab',
+        label: 'Show diff in a new tab',
+        icon: <FileDiff aria-hidden />,
+        group: 'diff',
+        run: () => ctx.showDiff(stash, true),
+      },
+    ]),
+  ]
 }

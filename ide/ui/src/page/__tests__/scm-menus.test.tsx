@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { inMenuScope } from '../ChangesTree'
 import type { ContextMenuItem } from '../ContextMenu'
 import type { ChangeRow } from '../commit-tree'
 import type { GitComparisonEntry } from '../git'
@@ -56,17 +57,20 @@ function context(busy = false) {
   return { ctx, calls }
 }
 
-/** `label` (disabled marked `!`), separators as `---`, a submenu as `label > [..]`. */
+/** `label` (disabled marked `!`), separators as `---`, a submenu as `label > [..]`;
+    the head row naming the target is left out (see its own test). */
 function shape(items: readonly ContextMenuItem[]): unknown[] {
-  return items.map((item) =>
-    item.type === 'separator'
-      ? '---'
-      : item.type === 'submenu'
-        ? { [`${item.label}${item.disabled ? '!' : ''}`]: shape(item.items) }
-        : item.type === 'label'
-          ? item.label
-          : `${item.label}${item.disabled ? '!' : ''}`,
-  )
+  return items
+    .filter((item) => item.id !== 'head' && item.id !== 'sep:head')
+    .map((item) =>
+      item.type === 'separator'
+        ? '---'
+        : item.type === 'submenu'
+          ? { [`${item.label}${item.disabled ? '!' : ''}`]: shape(item.items) }
+          : item.type === 'label'
+            ? item.label
+            : `${item.label}${item.disabled ? '!' : ''}`,
+    )
 }
 
 function select(items: readonly ContextMenuItem[], ...path: string[]): void {
@@ -82,6 +86,62 @@ function select(items: readonly ContextMenuItem[], ...path: string[]): void {
   if (item.type === 'separator' || item.type === 'label') throw new Error(`${label} is not an action`)
   item.onSelect()
 }
+
+/** The first row's label and detail. */
+function head(items: readonly ContextMenuItem[]): [string, string | undefined] {
+  const [first, second] = items
+  if (first?.type !== 'label' || second?.type !== 'separator') throw new Error('no head row')
+  return [first.label, first.detail]
+}
+
+describe('the head row', () => {
+  it('names the file, folder, group or stash the menu acts on', () => {
+    const { ctx } = context()
+    expect(head(changeMenu(fileRow(entry('src/page/a.ts')), ctx))).toEqual(['a.ts', 'src/page'])
+    expect(head(changeMenu(fileRow(entry('a.ts')), ctx))).toEqual(['a.ts', undefined])
+    const files = [entry('out/a.js', 'untracked'), entry('out/b.js', 'untracked')]
+    const folder: ChangeRow = {
+      kind: 'folder',
+      key: 'unversioned:out/',
+      group: 'unversioned',
+      depth: 1,
+      label: 'out',
+      path: 'out',
+      open: true,
+      entries: files,
+    }
+    expect(head(changeMenu(folder, ctx))).toEqual(['out', '2 files'])
+    const group: ChangeRow = {
+      kind: 'group',
+      key: 'changes',
+      group: 'changes',
+      depth: 0,
+      label: 'Changes',
+      open: true,
+      entries: [files[0]],
+    }
+    expect(head(changeMenu(group, ctx))).toEqual(['Changes', '1 file'])
+    const noop = () => undefined
+    const stash: GitStash = { sha: 'abc', ref: 'stash@{1}', message: 'wip', time: 0, branch: 'main' }
+    expect(
+      head(stashMenu(stash, { busy: false, apply: noop, unstash: noop, drop: noop, clear: noop, showDiff: noop })),
+    ).toEqual(['wip', 'stash@{1}'])
+  })
+})
+
+describe('the rows a menu marks', () => {
+  it('marks every row under a group or a folder, not the target itself or a sibling', () => {
+    expect(inMenuScope('changes:src/a.ts', 'changes')).toBe(true)
+    expect(inMenuScope('unversioned:a.ts', 'changes')).toBe(false)
+    expect(inMenuScope('changes:src/a.ts', 'changes:src/')).toBe(true)
+    expect(inMenuScope('changes:src/lib/b.ts', 'changes:src/')).toBe(true)
+    expect(inMenuScope('changes:srcx/a.ts', 'changes:src/')).toBe(false)
+    expect(inMenuScope('changes:src/', 'changes:src/')).toBe(false)
+    // A file's menu acts on that file alone.
+    expect(inMenuScope('changes:src/a.ts.map', 'changes:src/a.ts')).toBe(false)
+    expect(inMenuScope('changes:src/a.ts', null)).toBe(false)
+  })
+})
 
 describe('a change row menu', () => {
   it('offers a tracked file every action WebStorm has that applies here', () => {

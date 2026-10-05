@@ -86,6 +86,8 @@ export function CommitView({
   const [deleteEntry, setDeleteEntry] = useState<GitComparisonEntry | null>(null)
   const messageRef = useRef<HTMLTextAreaElement>(null)
   const menu = useContextMenu()
+  // The row the open menu acts on, marked in the tree while it is open.
+  const [menuRow, setMenuRow] = useState<string | null>(null)
 
   const groups = useMemo<ChangeGroup[]>(
     () => [
@@ -235,7 +237,9 @@ export function CommitView({
               onOpen={onOpenChange}
               onRollback={setRollbackEntries}
               onStash={setStashEntries}
-              onMenu={(row, anchor) =>
+              menuTarget={menu.isOpen ? menuRow : null}
+              onMenu={(row, anchor) => {
+                setMenuRow(row.key)
                 menu.open(
                   anchor,
                   changeMenu(row, {
@@ -244,8 +248,7 @@ export function CommitView({
                     commit: (entries) => {
                       scm.setIncluded([...scm.changes, ...scm.unversioned], false)
                       scm.setIncluded(entries, true)
-                      // After the menu has closed and given focus back.
-                      requestAnimationFrame(() => messageRef.current?.focus())
+                      messageRef.current?.focus()
                     },
                     rollback: setRollbackEntries,
                     stash: setStashEntries,
@@ -270,7 +273,7 @@ export function CommitView({
                     history: onShowHistory,
                   }),
                 )
-              }
+              }}
               busy={scm.busy}
             />
           )}

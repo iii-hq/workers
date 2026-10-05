@@ -41,7 +41,17 @@ interface ChangesTreeProps<T extends TreeEntry> {
   onStash?: (entries: readonly T[]) => void
   /** Right click (or the menu key) on a row. */
   onMenu?: (row: ChangeRow<T>, anchor: ContextMenuAnchor) => void
+  /** The row whose menu is open: it and the rows it acts on stand out. */
+  menuTarget?: string | null
   busy?: boolean
+}
+
+/** Whether `key` is a row under the menu's target row: everything in a
+    group (`changes`), or below a folder (`changes:src/`). */
+export function inMenuScope(key: string, target: string | null): boolean {
+  if (target === null || key === target) return false
+  if (target.endsWith('/')) return key.startsWith(target)
+  return !target.includes(':') && key.startsWith(`${target}:`)
 }
 
 function plural(count: number, one: string, many: string): string {
@@ -58,6 +68,7 @@ export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
   onRollback,
   onStash,
   onMenu,
+  menuTarget = null,
   busy = false,
 }: ChangesTreeProps<T>) {
   const ticks = isIncluded !== undefined && onInclude !== undefined
@@ -81,6 +92,7 @@ export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
               onMenu(row, anchorFromEvent(event))
             }
           : undefined
+        const menuState = row.key === menuTarget ? 'target' : inMenuScope(row.key, menuTarget) ? 'scope' : undefined
         if (row.kind === 'file') {
           const { entry } = row
           const name = basename(entry.path)
@@ -89,6 +101,7 @@ export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
             <Row
               onFocusChange={(on) => setFocusedKey(on ? row.key : null)}
               onContextMenu={menu}
+              menuState={menuState}
               kind="file"
               style={indent}
               selected={activePath === entry.path}
@@ -146,6 +159,7 @@ export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
           <Row
             onFocusChange={(on) => setFocusedKey(on ? row.key : null)}
             onContextMenu={menu}
+            menuState={menuState}
             kind={row.kind}
             style={indent}
             tick={ticks ? tickState(row.entries, isIncluded) : null}
@@ -209,6 +223,7 @@ export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
 function Row({
   onFocusChange,
   onContextMenu,
+  menuState,
   kind,
   style,
   selected = false,
@@ -224,6 +239,7 @@ function Row({
 }: {
   onFocusChange: (focused: boolean) => void
   onContextMenu?: (event: React.MouseEvent) => void
+  menuState?: 'target' | 'scope'
   kind: ChangeRow<TreeEntry>['kind']
   style: React.CSSProperties
   selected?: boolean
@@ -244,6 +260,7 @@ function Row({
       className="shui-ctree-row"
       data-kind={kind}
       data-selected={selected || undefined}
+      data-menu={menuState}
       data-status={status}
       style={style}
       onContextMenu={onContextMenu}

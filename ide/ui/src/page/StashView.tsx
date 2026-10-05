@@ -78,6 +78,8 @@ export function StashView({
   const [dropFor, setDropFor] = useState<GitStash | null>(null)
   const [clearOpen, setClearOpen] = useState(false)
   const menu = useContextMenu()
+  // The stash the open menu acts on, marked in the list while it is open.
+  const [menuStash, setMenuStash] = useState<string | null>(null)
   const [epoch, setEpoch] = useState(0)
   // Only the Refresh button spins the icon; reloads after an action don't.
   const [refreshing, setRefreshing] = useState(false)
@@ -224,7 +226,11 @@ export function StashView({
           <ul className="shui-log-rows" aria-label="Stashes">
             {stashes.map((stash) => (
               <li key={stash.sha}>
-                <div className="shui-log-row" data-selected={stash.sha === selected || undefined}>
+                <div
+                  className="shui-log-row"
+                  data-selected={stash.sha === selected || undefined}
+                  data-menu={(menu.isOpen && menuStash === stash.sha) || undefined}
+                >
                   <button
                     type="button"
                     className="shui-log-main"
@@ -233,6 +239,7 @@ export function StashView({
                     onClick={() => setSelected(stash.sha)}
                     onContextMenu={(event) => {
                       event.preventDefault()
+                      setMenuStash(stash.sha)
                       menu.open(
                         anchorFromEvent(event),
                         stashMenu(stash, {

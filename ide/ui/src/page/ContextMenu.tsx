@@ -39,7 +39,8 @@ export type ContextMenuItem =
       onSelect: () => void
     }
   | { type: 'separator'; id: string }
-  | { type: 'label'; id: string; label: string }
+  /** What the menu acts on, as its first row: `icon`, `label` and a quieter `detail`. */
+  | { type: 'label'; id: string; label: string; icon?: ReactNode; detail?: string }
   /** A row that opens `items` beside it. */
   | {
       type: 'submenu'
@@ -68,7 +69,11 @@ export function anchorFromEvent(event: {
   currentTarget?: EventTarget | null
   target?: EventTarget | null
 }): ContextMenuAnchor {
-  if (typeof event.clientX === 'number' && typeof event.clientY === 'number' && (event.clientX !== 0 || event.clientY !== 0)) {
+  if (
+    typeof event.clientX === 'number' &&
+    typeof event.clientY === 'number' &&
+    (event.clientX !== 0 || event.clientY !== 0)
+  ) {
     return { x: event.clientX, y: event.clientY }
   }
   const el = (event.target ?? event.currentTarget) as Element | null
@@ -121,7 +126,17 @@ export function ContextMenuSurface({ state, onClose }: { state: ContextMenuState
 
 function renderItem(item: ContextMenuItem, onClose: () => void): ReactNode {
   if (item.type === 'separator') return <DropdownMenuSeparator key={item.id} />
-  if (item.type === 'label') return <DropdownMenuLabel key={item.id}>{item.label}</DropdownMenuLabel>
+  if (item.type === 'label') {
+    return (
+      <DropdownMenuLabel key={item.id} className="shui-context-head" title={item.label}>
+        <span className="menu-icon" aria-hidden>
+          {item.icon}
+        </span>
+        <span className="menu-label">{item.label}</span>
+        {item.detail ? <span className="menu-detail">{item.detail}</span> : null}
+      </DropdownMenuLabel>
+    )
+  }
   if (item.type === 'submenu') {
     return (
       <DropdownMenuSub key={item.id}>
@@ -144,7 +159,10 @@ function renderItem(item: ContextMenuItem, onClose: () => void): ReactNode {
       disabled={item.disabled}
       onSelect={() => {
         onClose()
-        item.onSelect()
+        // After the menu is gone: while open it holds focus inside itself,
+        // so an action that moves focus (a rename field, the commit
+        // message) would see it pulled back and then dropped to the body.
+        queueMicrotask(item.onSelect)
       }}
     >
       <span className="menu-icon" aria-hidden>

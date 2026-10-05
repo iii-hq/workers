@@ -790,8 +790,41 @@
     color: var(--color-ink-faint);
   }
   .shui-context-item .menu-shortcut { margin-left: 12px; }
+  .shui-context-item[data-highlighted] .menu-icon { color: var(--color-ink); }
   .shui-context-item.danger { color: var(--color-alert); }
   .shui-context-item.danger .menu-icon { color: inherit; }
+  /* The first row names what the menu acts on: the file, folder, group or stash. */
+  .shui-context-head {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+    padding: 2px 8px;
+  }
+  .shui-context-head .menu-icon {
+    display: inline-flex;
+    width: 16px;
+    height: 16px;
+    color: var(--color-ink-faint);
+  }
+  .shui-context-head .menu-icon svg { width: 16px; height: 16px; }
+  .shui-context-head .menu-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-ink);
+    font: 600 12.5px / 16px var(--font-sans);
+  }
+  .shui-context-head .menu-detail {
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-ink-ghost);
+    font: 400 11px / 16px var(--font-sans);
+    font-variant-numeric: tabular-nums;
+  }
 
   /* virtual list */
   .shui-vlist {
@@ -1498,6 +1531,17 @@
   .shui-log-row { display: flex; align-items: stretch; gap: 6px; min-height: 44px; padding-left: 4px; border-radius: 6px; }
   .shui-log-row:hover { background: var(--color-surface-hover); }
   .shui-log-row[data-selected] { background: var(--color-surface-selected); }
+  /* The row a context menu was opened on, and the rows its actions reach
+     (a folder's or a group's files), while the menu is open. */
+  :is(.shui-ctree-row, .shui-log-row)[data-menu] {
+    background: color-mix(in oklab, var(--color-accent) 14%, transparent);
+    outline: 1px solid color-mix(in oklab, var(--color-accent) 55%, transparent);
+    outline-offset: -1px;
+  }
+  .shui-ctree-row[data-menu="scope"] {
+    background: color-mix(in oklab, var(--color-accent) 7%, transparent);
+    outline: none;
+  }
   .shui-log-main {
     flex: 1;
     min-width: 0;
