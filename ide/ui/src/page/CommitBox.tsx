@@ -30,7 +30,7 @@ import {
   Square,
   TriangleAlert,
 } from 'lucide-react'
-import { useState } from 'react'
+import { type Ref, useState } from 'react'
 import { changeSummary } from './commit-tree'
 import { gitHeadMessage, gitRecentMessages } from './git-log'
 import { TextDialog } from './TextDialog'
@@ -47,9 +47,11 @@ interface CommitBoxProps {
   root: string | null
   conversationId?: string | null
   scm: SourceControlState
+  /** The message field, for "Commit file…" to move to. */
+  messageRef?: Ref<HTMLTextAreaElement>
 }
 
-export function CommitBox({ host, root, conversationId, scm }: CommitBoxProps) {
+export function CommitBox({ host, root, conversationId, scm, messageRef }: CommitBoxProps) {
   const [message, setMessage] = useState('')
   const [amend, setAmend] = useState(false)
   const [amendSeed, setAmendSeed] = useState<string | null>(null)
@@ -233,6 +235,7 @@ export function CommitBox({ host, root, conversationId, scm }: CommitBoxProps) {
       ) : null}
 
       <textarea
+        ref={messageRef}
         className="shui-commit-message"
         aria-label="Commit message"
         placeholder={`Commit message (${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl+'}Enter to commit)`}

@@ -10,6 +10,7 @@ vi.mock('@iii-dev/console-ui', () => {
   return {
     Button: Pass,
     Checkbox: () => <input type="checkbox" />,
+    ConfirmDialog: () => null,
     DropdownMenu: Pass,
     DropdownMenuCheckboxItem: Pass,
     DropdownMenuContent: Pass,
@@ -43,6 +44,9 @@ function render(phase: SourceControlPhase, unversioned: { path: string; status: 
       scm={scm as unknown as SourceControlState}
       activePath={null}
       onOpenChange={() => {}}
+      onOpenFile={() => {}}
+      onCompare={() => {}}
+      onShowHistory={() => {}}
     />,
   )
 }

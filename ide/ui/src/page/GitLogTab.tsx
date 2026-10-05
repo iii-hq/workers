@@ -182,6 +182,7 @@ export function GitLogTab({
   active,
   paneKey,
   focusBranch,
+  focusPaths = null,
   narrow = false,
   onOpenCommitFile,
   onOpenCompareFile,
@@ -196,6 +197,8 @@ export function GitLogTab({
   paneKey: string
   /** "Show in Log" from the Worktrees tab: the branch to select. */
   focusBranch: { name: string; seq: number } | null
+  /** "Show history" from the Commit panel: root-relative paths to narrow the log to. */
+  focusPaths?: { paths: string[]; seq: number } | null
   /** One pane at a time, drilled into. */
   narrow?: boolean
   onOpenCommitFile(file: CommitFile, details: CommitDetails, pin?: boolean): void
@@ -284,6 +287,15 @@ export function GitLogTab({
     [selectTree],
   )
   const details = useCommitDetails(host, root, snapshot, commitSel)
+  // Applied once per request, as soon as the root's place in the
+  // repository is known: the filter speaks repository paths.
+  const prefix = snapshot?.prefix ?? null
+  const historySeq = useRef<number | null>(null)
+  useEffect(() => {
+    if (focusPaths === null || prefix === null || historySeq.current === focusPaths.seq) return
+    historySeq.current = focusPaths.seq
+    setFilter((prev) => ({ ...prev, paths: focusPaths.paths.map((path) => prefix + path), upTo: undefined }))
+  }, [focusPaths, prefix])
   const working = useWorkingDiff(host, root, snapshot?.prefix ?? null, comparing?.ref ?? null, epoch)
 
   const nodes = useMemo(() => (snapshot === null ? [] : refsTree(snapshot, target)), [snapshot, target])

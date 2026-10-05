@@ -10,8 +10,9 @@ import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { changeSummary, entryPaths } from './commit-tree'
+import { deleteEntry } from './file-actions'
 import { type GitComparisonEntry, type GitState, gitUncommittedFrom } from './git'
-import { gitCommitChanges, gitDiscard, gitPush, gitStashPush } from './git-actions'
+import { gitCommitChanges, gitDiscard, gitIgnore, gitLocalPatch, gitPush, gitStage, gitStashPush } from './git-actions'
 
 export type SourceControlPhase = 'idle' | 'loading' | 'ready' | 'not-a-repo' | 'error'
 
@@ -48,7 +49,18 @@ export interface SourceControlState {
   commit: (options: CommitOptions) => Promise<boolean>
   /** Set these entries aside in a new stash; the rest of the working tree stays. */
   stash: (entries: readonly GitComparisonEntry[], message: string) => Promise<boolean>
+  /** `git add` these unversioned entries. */
+  add: (entries: readonly GitComparisonEntry[]) => Promise<boolean>
+  /** List root-relative paths (a folder ending in `/`) in the root's .gitignore. */
+  ignore: (paths: readonly string[]) => Promise<boolean>
+  /** Delete these entries' files from disk. */
+  remove: (entries: readonly GitComparisonEntry[]) => Promise<boolean>
+  /** These entries' changes as one patch, handed to `use`; what it resolves
+      to is the status line. Nothing in the working tree moves. */
+  patch: (entries: readonly GitComparisonEntry[], use: (patch: string) => Promise<string>) => Promise<void>
 }
+
+const files = (count: number) => `${count} ${count === 1 ? 'file' : 'files'}`
 
 /** The fields a derive can change; the content sources follow from them. */
 function sameEntries(a: readonly GitComparisonEntry[], b: readonly GitComparisonEntry[]): boolean {
@@ -277,6 +289,50 @@ export function useSourceControl(
     [host, root, perform],
   )
 
+  const add = useCallback(
+    (entries: readonly GitComparisonEntry[]) =>
+      perform('add', async () => {
+        await gitStage(host, root ?? '', entryPaths(entries))
+        return `added ${files(entries.length)} to git`
+      }),
+    [host, root, perform],
+  )
+
+  const ignore = useCallback(
+    (paths: readonly string[]) =>
+      perform('ignore', async () => {
+        const added = await gitIgnore(host, root ?? '', paths)
+        return added === 0
+          ? '.gitignore already lists them'
+          : `added ${added} ${added === 1 ? 'line' : 'lines'} to .gitignore`
+      }),
+    [host, root, perform],
+  )
+
+  const remove = useCallback(
+    (entries: readonly GitComparisonEntry[]) =>
+      perform('delete', async () => {
+        for (const entry of entries) await deleteEntry(host, root ?? '', entry.path, false)
+        return `deleted ${files(entries.length)}`
+      }),
+    [host, root, perform],
+  )
+
+  const patch = useCallback(
+    async (entries: readonly GitComparisonEntry[], use: (patch: string) => Promise<string>) => {
+      if (root === null) return
+      setNote(null)
+      try {
+        const tracked = entries.filter((entry) => entry.status !== 'untracked')
+        const untracked = entries.filter((entry) => entry.status === 'untracked').map((entry) => entry.path)
+        setNote({ text: await use(await gitLocalPatch(host, root, entryPaths(tracked), untracked)), failed: false })
+      } catch (err: unknown) {
+        setNote({ text: `patch failed: ${errorMessage(err)}`, failed: true })
+      }
+    },
+    [host, root],
+  )
+
   return useMemo(
     () => ({
       phase,
@@ -294,6 +350,10 @@ export function useSourceControl(
       rollback,
       commit,
       stash,
+      add,
+      ignore,
+      remove,
+      patch,
     }),
     [
       phase,
@@ -311,6 +371,10 @@ export function useSourceControl(
       rollback,
       commit,
       stash,
+      add,
+      ignore,
+      remove,
+      patch,
     ],
   )
 }

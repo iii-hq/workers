@@ -1,11 +1,12 @@
 /* Source-control verbs the explorer offers on top of `git.ts`'s read-only
-   plumbing: stage, unstage, discard, commit, tags, and a file-at-ref read
-   for the compare view. Everything goes through `shell::exec` in argv
+   plumbing: stage, unstage, discard, commit, stash, patches, .gitignore,
+   tags, and a file-at-ref read for the compare view. Everything goes through `shell::exec` in argv
    form, cwd-scoped to the browsed root, so nothing is shell-tokenized. */
 
 import type { Host } from '@iii-dev/console-ui'
-import { coderDelete, joinPath } from './coder'
+import { coderDelete, coderReadFile, coderWriteFile, joinPath } from './coder'
 import type { GitChange, GitFileStatus } from './git'
+import { isMissingFileError } from './load-error'
 import { basename } from './paths'
 
 interface ExecResponse {
@@ -329,13 +330,102 @@ export async function gitStashPush(host: Host, root: string, request: StashReque
   )
 }
 
-/** `git stash apply` or, with `pop`, apply and drop on success. */
-export async function gitStashApply(host: Host, root: string, ref: string, pop: boolean): Promise<void> {
-  await run(host, root, ['stash', pop ? 'pop' : 'apply', ref], `git stash ${pop ? 'pop' : 'apply'}`)
+/** `git stash apply` or, with `pop`, apply and drop on success; `index`
+    stages again what was staged when the stash was made. */
+export async function gitStashApply(host: Host, root: string, ref: string, pop: boolean, index = false): Promise<void> {
+  const verb = pop ? 'pop' : 'apply'
+  await run(host, root, ['stash', verb, ...(index ? ['--index'] : []), ref], `git stash ${verb}`)
 }
 
 export async function gitStashDrop(host: Host, root: string, ref: string): Promise<void> {
   await run(host, root, ['stash', 'drop', ref], 'git stash drop')
+}
+
+/** Drops every stash. */
+export async function gitStashClear(host: Host, root: string): Promise<void> {
+  await run(host, root, ['stash', 'clear'], 'git stash clear')
+}
+
+const PATCH_FLAGS = ['--binary', '--no-color', '--no-ext-diff', '--no-textconv']
+// ponytail: one `git diff --no-index` per unversioned file; past this many
+// a patch is refused rather than run for minutes.
+export const PATCH_UNVERSIONED_LIMIT = 200
+
+/** The working tree's changes to `tracked` (against HEAD) and the whole of
+    the `untracked` files, as one patch with root-relative paths: `git apply`
+    in the root takes it back. Rename sources go in `tracked` too. */
+export async function gitLocalPatch(
+  host: Host,
+  root: string,
+  tracked: readonly string[],
+  untracked: readonly string[],
+): Promise<string> {
+  if (untracked.length > PATCH_UNVERSIONED_LIMIT) {
+    throw new Error(`${untracked.length} unversioned files are too many for one patch`)
+  }
+  const parts: string[] = []
+  const take = (out: ExecResponse) => {
+    if (out.stdout_truncated) throw new Error('the changes are too large to use here')
+    parts.push(out.stdout)
+  }
+  if (tracked.length > 0) {
+    const args = ['--no-optional-locks', 'diff', 'HEAD', '--relative', '-M', ...PATCH_FLAGS, '--', ...tracked]
+    take(await run(host, root, args, 'git diff'))
+  }
+  for (const path of untracked) {
+    // Exits 1 when the two differ, which a new file always does.
+    const args = ['--no-optional-locks', 'diff', '--no-index', ...PATCH_FLAGS, '--', '/dev/null', path]
+    const out = await git(host, root, args)
+    if (out.exit_code !== 1) {
+      const message = failure(out, 'git diff')
+      if (message !== null) throw new Error(message)
+    }
+    take(out)
+  }
+  const patch = parts.join('')
+  if (patch.trim() === '') throw new Error('there are no changes to put in a patch')
+  return patch
+}
+
+/** A root-relative path as a line of the root's .gitignore: anchored with a
+    leading `/`, git's pattern characters and trailing spaces escaped so it
+    matches that one path. A folder keeps its trailing `/`. */
+export function ignorePattern(path: string): string {
+  return `/${path.replace(/[\\*?[\]]/g, '\\$&').replace(/ (?= *$)/g, '\\ ')}`
+}
+
+/** `existing` with a line for each path it does not list yet, and how many
+    that is; null when it lists them all. */
+export function withIgnored(existing: string, paths: readonly string[]): { content: string; added: number } | null {
+  const lines = new Set(existing.split(/\r?\n/))
+  const added = [...new Set(paths.map(ignorePattern))].filter((line) => !lines.has(line))
+  if (added.length === 0) return null
+  const base = existing === '' || existing.endsWith('\n') ? existing : `${existing}\n`
+  return { content: `${base}${added.join('\n')}\n`, added: added.length }
+}
+
+/** Lists root-relative `paths` in the root's .gitignore, made when missing.
+    Resolves to how many lines were added. */
+export async function gitIgnore(host: Host, root: string, paths: readonly string[]): Promise<number> {
+  const file = joinPath(root, '.gitignore')
+  let existing = ''
+  let mode: number | null = null
+  let revision: string | null = null
+  try {
+    const out = await coderReadFile(host, file, { maxOutputBytes: 8 * 1024 * 1024 })
+    if (out.is_utf8 === false || out.more_lines) throw new Error('.gitignore is too large or not text')
+    existing = out.content ?? ''
+    mode = out.mode ?? null
+    revision = out.revision ?? null
+  } catch (err) {
+    if (!isMissingFileError(err instanceof Error ? err.message : String(err))) throw err
+  }
+  const next = withIgnored(existing, paths)
+  if (next === null) return 0
+  // Against the revision read: an edit made since fails the write rather than being lost.
+  const result = await coderWriteFile(host, file, next.content, mode, revision)
+  if (!result.success) throw new Error(result.error?.message ?? 'could not write .gitignore')
+  return next.added
 }
 
 /** Check out a new branch at the stash's base and apply it there; drops the stash on success. */

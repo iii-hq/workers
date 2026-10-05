@@ -7,6 +7,7 @@
 import { Checkbox, IconButton } from '@iii-dev/console-ui'
 import { Archive, ChevronDown, ChevronRight, Folder, FolderOpen, Undo2 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
+import { anchorFromEvent, type ContextMenuAnchor } from './ContextMenu'
 import type { ChangeRow, TreeEntry } from './commit-tree'
 import { FileTypeIcon } from './file-type-icon'
 import type { GitComparisonEntry } from './git'
@@ -38,6 +39,8 @@ interface ChangesTreeProps<T extends TreeEntry> {
   onRollback?: (entries: readonly T[]) => void
   /** Hover action: stash these files. */
   onStash?: (entries: readonly T[]) => void
+  /** Right click (or the menu key) on a row. */
+  onMenu?: (row: ChangeRow<T>, anchor: ContextMenuAnchor) => void
   busy?: boolean
 }
 
@@ -54,6 +57,7 @@ export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
   onOpen,
   onRollback,
   onStash,
+  onMenu,
   busy = false,
 }: ChangesTreeProps<T>) {
   const ticks = isIncluded !== undefined && onInclude !== undefined
@@ -71,6 +75,12 @@ export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
       keepIndex={focusedIndex}
       renderRow={(row) => {
         const indent = { paddingLeft: 4 + row.depth * 14 }
+        const menu = onMenu
+          ? (event: React.MouseEvent) => {
+              event.preventDefault()
+              onMenu(row, anchorFromEvent(event))
+            }
+          : undefined
         if (row.kind === 'file') {
           const { entry } = row
           const name = basename(entry.path)
@@ -78,6 +88,7 @@ export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
           return (
             <Row
               onFocusChange={(on) => setFocusedKey(on ? row.key : null)}
+              onContextMenu={menu}
               kind="file"
               style={indent}
               selected={activePath === entry.path}
@@ -134,6 +145,7 @@ export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
         return (
           <Row
             onFocusChange={(on) => setFocusedKey(on ? row.key : null)}
+            onContextMenu={menu}
             kind={row.kind}
             style={indent}
             tick={ticks ? tickState(row.entries, isIncluded) : null}
@@ -196,6 +208,7 @@ export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
 
 function Row({
   onFocusChange,
+  onContextMenu,
   kind,
   style,
   selected = false,
@@ -210,6 +223,7 @@ function Row({
   letter,
 }: {
   onFocusChange: (focused: boolean) => void
+  onContextMenu?: (event: React.MouseEvent) => void
   kind: ChangeRow<TreeEntry>['kind']
   style: React.CSSProperties
   selected?: boolean
@@ -232,6 +246,7 @@ function Row({
       data-selected={selected || undefined}
       data-status={status}
       style={style}
+      onContextMenu={onContextMenu}
       onFocus={() => onFocusChange(true)}
       onBlur={(event) => {
         // The browser window losing focus blurs the row but leaves focus in

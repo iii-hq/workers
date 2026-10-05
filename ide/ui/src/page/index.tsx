@@ -1842,6 +1842,15 @@ export function ShellExplorerPage({
     },
     [showTab],
   )
+  // "Show history" from a change's menu: the Git window's log, narrowed.
+  const [historyFor, setHistoryFor] = useState<{ paths: string[]; seq: number } | null>(null)
+  const showHistory = useCallback(
+    (paths: string[]) => {
+      setHistoryFor((previous) => ({ paths, seq: (previous?.seq ?? 0) + 1 }))
+      openGit('log')
+    },
+    [openGit],
+  )
   const closeGit = useCallback(() => {
     // Focus inside the window would fall to the page body with it, where
     // the pane's keys stop working; its toggle keeps them.
@@ -2525,6 +2534,8 @@ export function ShellExplorerPage({
                     activeDiff={activeDiff ? { path: activeDiff.path, source: activeDiff.source } : null}
                     onOpenDiff={openDiffTab}
                     onOpenFile={openPinnedFile}
+                    onCompare={compareFile}
+                    onShowHistory={showHistory}
                     onChanged={afterDiskChange}
                   />
                 ) : (
@@ -2854,6 +2865,7 @@ export function ShellExplorerPage({
               onOpenCompareFile={openCompareFile}
               onOpenWorkingFile={openWorkingFile}
               onOpenRevision={openRevision}
+              focusPaths={historyFor}
             />
           </DockPanel>
         ) : null}
