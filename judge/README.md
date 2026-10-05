@@ -85,7 +85,10 @@ or the default. A local provider keeps its model loaded while it is the
 default (all of them with **Keep every local provider loaded**, `preload_all`);
 a request naming any other one loads its model on first use, which that request
 may not outlast, and the model is released after 10 idle minutes. Picking a
-provider in the composer starts that load. A new provider is a
+provider in the composer starts that load. The composer's judge picker is
+laid out like the model picker: each provider shows the model its settings
+name, **Configure** edits a provider's settings (or the hub's) inside the
+picker, and **+** adds a judge worker from the registry. A new provider is a
 worker that registers `judge-<provider>::evaluate`, `::models::list` and
 `::cancel` with the [`judge-contract`](../crates/judge-contract/) types,
 marked `metadata.internal: true` so default discovery shows only the hub, and
