@@ -132,6 +132,7 @@ import type { IiiClient } from '@/lib/iii-client'
 import { Markdown } from '@/lib/markdown'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
 import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConfigurationDialog'
+import { WorkerConfigurationPanel } from '@/pages/Workers/components/WorkerConfigurationPanel'
 import type { ConsoleApi, ExtensionIii } from '@/types/injectable-ui'
 
 /**
@@ -253,6 +254,7 @@ export const components: ConsoleApi['components'] = {
   // `configurationId`; the Console supplies the PageHeader action and opens
   // the worker inside global Settings.
   WorkerConfigurationDialog,
+  WorkerConfigurationPanel,
   DirectoryPicker,
   Wordmark,
 }
