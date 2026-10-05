@@ -247,14 +247,25 @@
         ]
       },
       "ThinkingLevel": {
-        "enum": [
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No reasoning at all; honoured only where the model advertises `supports_thinking_off` (the provider omits its parameter and warns elsewhere).",
+            "enum": [
+              "off"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {
