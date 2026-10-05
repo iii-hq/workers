@@ -82,8 +82,9 @@ and the logs of that trace.
 read the checkout mapped to the failing worker, and you can write to it at any
 time; a message lands in the turn that is already running. When it has a
 cause it records one by calling `sentinel::diagnosis::record`, which is the
-only write its policy allows — everything else it can reach is a read, and the
-engine's raw telemetry is not on the list at all. Each recording is a version;
+only write to this worker its policy allows. Besides reads of the code and
+the evidence, it can reach GitHub and the web, writes included (a PR merge,
+a POST); the engine's raw telemetry is not on the list at all. Each recording is a version;
 the most recent one stands and the earlier ones stay, so the same failure
 diagnosed twice can be compared.
 
