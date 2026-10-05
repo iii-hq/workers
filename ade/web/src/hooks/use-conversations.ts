@@ -1541,6 +1541,8 @@ export function useConversations(
   catalogKeysForValidation?: readonly string[],
   catalogReady?: boolean,
   serverEnabled?: boolean,
+  /** Provider-declared starting model (`provider::id`), when one is known. */
+  preferredModel: ModelId | null = null,
 ): ConversationsApi {
   const catalogSig =
     catalogKeysForValidation && catalogKeysForValidation.length > 0
@@ -2525,7 +2527,9 @@ export function useConversations(
     if (catalogReady === false) return
     const keys = catalogSig.split('\u0001')
     const valid = new Set(keys)
-    const fallback = keys[0]
+    // A provider's declared default beats the alphabetically first key.
+    const fallback =
+      preferredModel && valid.has(preferredModel) ? preferredModel : keys[0]
     setConversations((prev) => {
       return applyCatalogModelFallback(prev, valid, fallback)
     })
@@ -2533,7 +2537,7 @@ export function useConversations(
     if (lastModel && !valid.has(lastModel)) {
       saveLastModel(fallback)
     }
-  }, [catalogSig, catalogReady])
+  }, [catalogSig, catalogReady, preferredModel])
 
   useEffect(() => {
     saveActiveId(activeId)
@@ -2571,7 +2575,7 @@ export function useConversations(
         return pending.id
       }
       const next = emptyConversation(
-        loadLastModel(),
+        loadLastModel() ?? preferredModel,
         loadLastThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
         draft,
       )
@@ -2579,7 +2583,7 @@ export function useConversations(
       setActiveId(next.id)
       return next.id
     },
-    [conversations, activeId],
+    [conversations, activeId, preferredModel],
   )
 
   const select = useCallback((id: string) => {

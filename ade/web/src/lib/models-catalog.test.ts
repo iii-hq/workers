@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   type CatalogModelRow,
   catalogRowsToModelOptions,
+  type ProviderListEntry,
+  preferredStartingModel,
 } from './models-catalog'
 
 describe('catalogRowsToModelOptions', () => {
@@ -61,5 +63,57 @@ describe('catalogRowsToModelOptions', () => {
     expect(byId.get('deepseek::deepseek-v4-flash')).toBe(false)
     expect(byId.get('anthropic::claude-haiku-4-5')).toBe(true)
     expect(byId.get('somewhere::mystery-1')).toBeUndefined()
+  })
+})
+
+describe('preferredStartingModel', () => {
+  const provider = (
+    id: string,
+    extra: Partial<ProviderListEntry> = {},
+  ): ProviderListEntry => ({
+    id,
+    display_name: id,
+    supports_model_listing: true,
+    configured: true,
+    available: true,
+    ...extra,
+  })
+
+  it('takes the first configured, available provider with a listed default', () => {
+    const providers = [
+      provider('openai', { default_model: 'gpt-6.1-sol' }),
+      provider('anthropic', { default_model: 'claude-sonnet-5-5' }),
+    ]
+    const keys = new Set([
+      'anthropic::claude-sonnet-5-5',
+      'openai::gpt-6.1-sol',
+    ])
+    expect(preferredStartingModel(providers, keys)).toBe(
+      'anthropic::claude-sonnet-5-5',
+    )
+  })
+
+  it('skips providers that are unconfigured, unavailable, defaultless or unlisted', () => {
+    const providers = [
+      provider('anthropic', {
+        default_model: 'claude-sonnet-5-5',
+        configured: false,
+      }),
+      provider('deepseek', {
+        default_model: 'deepseek-flash',
+        available: false,
+      }),
+      provider('kimi'),
+      provider('openai', { default_model: 'gpt-6.1-sol' }),
+      provider('xai', { default_model: 'grok-4.3' }),
+    ]
+    const keys = new Set([
+      'anthropic::claude-sonnet-5-5',
+      'deepseek::deepseek-flash',
+      'kimi::kimi-k3',
+      'xai::grok-4.3',
+    ])
+    expect(preferredStartingModel(providers, keys)).toBe('xai::grok-4.3')
+    expect(preferredStartingModel(providers, new Set())).toBeNull()
   })
 })

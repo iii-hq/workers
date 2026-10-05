@@ -200,6 +200,25 @@ export async function subscribeProviderChanges(
   )
 }
 
+/**
+ * The catalog key a new chat should start on when the person has picked
+ * nothing yet: the declared default of the first (by id) configured and
+ * available provider that has one and whose default is in `catalogKeys`.
+ * `null` when no provider qualifies; callers fall back to the first key.
+ */
+export function preferredStartingModel(
+  providers: readonly ProviderListEntry[],
+  catalogKeys: ReadonlySet<string>,
+): string | null {
+  const ranked = [...providers].sort((a, b) => a.id.localeCompare(b.id))
+  for (const p of ranked) {
+    if (!p.default_model || p.configured === false || !p.available) continue
+    const key = makeCatalogModelKey(p.id, p.default_model)
+    if (catalogKeys.has(key)) return key
+  }
+  return null
+}
+
 /** A provider declared to the router, from `router::provider::list`. */
 export interface ProviderListEntry {
   id: string
@@ -233,6 +252,14 @@ export interface ProviderListEntry {
   credential_ref?: string
   /** Why the credential did not resolve, in the router's words. */
   credential_error?: string
+  /**
+   * The model the provider recommends starting on, already checked by the
+   * router against its live catalog. Absent when the provider declares none,
+   * nothing in its family is listed, or the router predates defaults.
+   */
+  default_model?: string
+  /** The thinking level the provider pairs with it; absent means omit. */
+  default_thinking_level?: string
 }
 
 const CREDENTIAL_SOURCES = new Set(['config', 'env', 'secret', 'none'])
@@ -284,6 +311,14 @@ export async function fetchProviderList(): Promise<ProviderListEntry[]> {
       credential_error:
         typeof o.credential_error === 'string' && o.credential_error
           ? o.credential_error
+          : undefined,
+      default_model:
+        typeof o.default_model === 'string' && o.default_model
+          ? o.default_model
+          : undefined,
+      default_thinking_level:
+        typeof o.default_thinking_level === 'string' && o.default_thinking_level
+          ? o.default_thinking_level
           : undefined,
     })
   }
