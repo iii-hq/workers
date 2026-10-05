@@ -91,6 +91,7 @@ export function SentinelConfigForm({
     onChange(setPath(config, path, next) as ConfigFormProps['value'])
 
   const investigation = config.investigation as { model?: string; provider?: string }
+  const triage = config.triage as { enabled?: boolean; delay_ms?: number }
   const selectedModel = catalogKey(investigation.model, investigation.provider)
   // The two fields move together: a picked row knows its provider, and a
   // cleared field must not leave a provider pointing at nothing.
@@ -418,6 +419,40 @@ export function SentinelConfigForm({
                 onChange={(event) => update('enabled', event.target.checked)}
               />
             }
+          />
+        </SettingsList>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Triage"
+        description="Labels each group once, a few minutes after it is first seen, so the list can open on what needs attention: a deterministic rule first, then the judge chosen under Settings → Workers → judge. Without a judge installed only the rule labels. A label never resolves or ignores anything."
+      >
+        <SettingsList>
+          <SettingsRow
+            label="Triage groups"
+            description="Off leaves every group unlabelled, and the list shows them all as relevant."
+            control={
+              <Switch
+                aria-label="Triage groups"
+                checked={Boolean(triage.enabled)}
+                onChange={(event) => update('triage.enabled', event.target.checked)}
+              />
+            }
+          />
+          <SettingsField
+            field="triage.delay_ms"
+            label="Wait before triage (minutes)"
+            description="Long enough for a restart to register what it was missing: a call that failed only during it is labelled transient, not sent to the judge."
+            renderControl={(props) => (
+              <Input
+                {...props}
+                type="number"
+                min={0}
+                disabled={!triage.enabled}
+                value={String((triage.delay_ms ?? 300_000) / 60_000)}
+                onChange={(next) => update('triage.delay_ms', Math.round(Number(next) * 60_000))}
+              />
+            )}
           />
         </SettingsList>
       </SettingsSection>

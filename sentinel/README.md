@@ -101,6 +101,8 @@ not; everything else goes to [`judge`](../judge/) in batches. The judge sees
 the group as it was stored, so already redacted. Without `judge` deployed the
 groups simply stay untriaged, and a failing judge is left alone for five
 minutes. A label is a hint for ordering and filtering, never a state change.
+Switch it off, or change the wait, under **Triage** in the page's settings;
+which judge answers is chosen in the `judge` worker's own settings.
 
 The list opens on **Relevant**: defects, regressions, groups not triaged yet,
 and caller errors or environment problems that repeat (20 or more
