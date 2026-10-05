@@ -269,6 +269,7 @@ async fn error_message_formats_match_golden() {
             delete_file::DeleteFileInput {
                 paths: vec!["blocked-dir".into()],
                 recursive: true,
+                include_protected: false,
                 fs_scope: None,
             },
         )

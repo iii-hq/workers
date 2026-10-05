@@ -10,8 +10,14 @@ export async function renameEntry(host: Host, root: string, from: string, to: st
   await coderMove(host, joinPath(root, from), joinPath(root, to))
 }
 
-export async function deleteEntry(host: Host, root: string, rel: string, isDir: boolean): Promise<void> {
-  const [result] = await coderDelete(host, [joinPath(root, rel)], isDir)
+export async function deleteEntry(
+  host: Host,
+  root: string,
+  rel: string,
+  isDir: boolean,
+  includeProtected = false,
+): Promise<void> {
+  const [result] = await coderDelete(host, [joinPath(root, rel)], isDir, includeProtected)
   if (result && !result.success) {
     throw new Error(result.error?.message ?? `could not delete ${rel}`)
   }
@@ -26,6 +32,12 @@ export async function createEntry(
   const abs = joinPath(root, rel)
   if (kind === 'folder') await shellCreateFolder(host, abs)
   else await coderCreateNewFile(host, abs)
+}
+
+/** A folder delete refused because something under it is protected
+    (`non_accessible_globs`): the user may confirm deleting it all. */
+export function isProtectedSubtreeError(message: string): boolean {
+  return message.includes('subtree contains non-accessible entries')
 }
 
 /** `a/b.ts` → `a/b copy.ts`, then `a/b copy 2.ts`, … */

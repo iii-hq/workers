@@ -117,8 +117,9 @@ const DELETE_FILE_ID: &str = "coder::delete-file";
 const DELETE_FILE_DESC: &str =
     "Remove one or more paths. Directories need recursive: true; missing \
      paths succeed; recursion refuses to descend through non-accessible \
-     entries. Paths: relative to the primary root or absolute inside an \
-     allowed root (see coder::info).";
+     entries unless include_protected: true, which is only for a delete \
+     the user confirmed. Paths: relative to the primary root or absolute \
+     inside an allowed root (see coder::info).";
 
 const LIST_FOLDER_ID: &str = "coder::list-folder";
 const LIST_FOLDER_DESC: &str = "List one folder, paginated and sorted by name. Entries carry only \

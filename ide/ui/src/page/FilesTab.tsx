@@ -38,6 +38,7 @@ import {
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FlatTree } from './coder'
 import { anchorFromEvent, type ContextMenuItem, useContextMenu } from './ContextMenu'
+import { isProtectedSubtreeError } from './file-actions'
 import type { GitFileStatus } from './git'
 import { statusLetter, statusTitle } from './git-actions'
 import { ancestorDirs, basename, dirname, joinRel, stripDirSlash } from './paths'
@@ -62,7 +63,8 @@ const CREATE_PLACEHOLDER = 'untitled'
 export interface ExplorerActions {
   create: (kind: 'file' | 'folder', rel: string) => Promise<void>
   rename: (from: string, to: string, isDir: boolean) => Promise<void>
-  remove: (rel: string, isDir: boolean) => Promise<void>
+  /** `includeProtected`: the user confirmed deleting protected files under the folder too. */
+  remove: (rel: string, isDir: boolean, includeProtected?: boolean) => Promise<void>
   duplicate: (rel: string) => Promise<void>
   openTerminal: (dir: string) => void
   copyPath: (rel: string, absolute: boolean) => void
@@ -106,6 +108,8 @@ interface FilesTabProps {
 interface PendingDelete {
   path: string
   isDir: boolean
+  /** The first delete was refused for protected files under the folder. */
+  protectedInside?: boolean
 }
 
 function FilesTabView({
@@ -452,8 +456,12 @@ function FilesTabView({
     const target = pendingDelete
     setPendingDelete(null)
     if (!target) return
-    void actionsRef.current.remove(target.path, target.isDir).catch((error: unknown) => {
-      setNote(error instanceof Error ? error.message : String(error))
+    const confirmed = target.protectedInside === true
+    void actionsRef.current.remove(target.path, target.isDir, confirmed).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      // A second confirmation, naming what the first one did not.
+      if (!confirmed && target.isDir && isProtectedSubtreeError(message)) setPendingDelete({ ...target, protectedInside: true })
+      else setNote(message)
     })
   }, [pendingDelete])
 
@@ -713,14 +721,23 @@ function FilesTabView({
         onOpenChange={(open) => {
           if (!open) setPendingDelete(null)
         }}
-        title={pendingDelete?.isDir ? `Delete folder ${pendingDeleteName}?` : `Delete ${pendingDeleteName}?`}
+        title={
+          pendingDelete?.protectedInside
+            ? `Delete ${pendingDeleteName} with its protected files?`
+            : pendingDelete?.isDir
+              ? `Delete folder ${pendingDeleteName}?`
+              : `Delete ${pendingDeleteName}?`
+        }
         description={
-          pendingDelete?.isDir
-            ? 'The folder and everything inside it are removed from disk.'
-            : 'The file is removed from disk.'
+          pendingDelete?.protectedInside
+            ? "The folder holds files the IDE keeps protected, like .env files, keys or certificates. They are removed with everything else. This can't be undone."
+            : pendingDelete?.isDir
+              ? 'The folder and everything inside it are removed from disk.'
+              : 'The file is removed from disk.'
         }
         details={pendingDelete ? [pendingDelete.path] : undefined}
-        confirmLabel="Delete"
+        confirmLabel={pendingDelete?.protectedInside ? 'Delete everything' : 'Delete'}
+        tone={pendingDelete?.protectedInside ? 'danger' : undefined}
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
       />

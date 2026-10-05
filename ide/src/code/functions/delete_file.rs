@@ -1,7 +1,9 @@
 //! `coder::delete-file` — remove one or more paths. Per-path errors are
 //! reported in the result array rather than failing the whole batch.
 //! Directories require `recursive: true`. Non-accessible paths return
-//! `C211`. Trying to delete an allowed root itself is rejected.
+//! `C211`, and a recursive delete refuses a directory holding any unless
+//! `include_protected` is set. Trying to delete an allowed root itself is
+//! rejected.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -22,6 +24,12 @@ pub struct DeleteFileInput {
     /// Required for non-empty directories. Files and empty dirs ignore it.
     #[serde(default)]
     pub recursive: bool,
+    /// With `recursive`, also remove the non-accessible entries under a
+    /// directory (`.env` files, keys, certificates) instead of refusing the
+    /// delete. Only for a delete the user confirmed knowing the folder holds
+    /// protected files; their paths are never named either way.
+    #[serde(default)]
+    pub include_protected: bool,
     /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
@@ -105,6 +113,7 @@ async fn handle_impl(
                 scope_anchor,
                 &p,
                 req.recursive,
+                req.include_protected,
                 resolved,
             )
         })
@@ -118,6 +127,7 @@ fn delete_one(
     scope_root: Option<&str>,
     rel: &str,
     recursive: bool,
+    include_protected: bool,
     resolved: Result<std::path::PathBuf, CoderError>,
 ) -> DeleteFileResult {
     // Resolve up front: deletion operates ONLY on the resolver-returned
@@ -137,7 +147,14 @@ fn delete_one(
         }
     };
     let wire_path = abs.display().to_string();
-    match try_delete_one(resolver, journal, scope_root, &abs, recursive) {
+    match try_delete_one(
+        resolver,
+        journal,
+        scope_root,
+        &abs,
+        recursive,
+        include_protected,
+    ) {
         Ok((removed, change_id)) => DeleteFileResult {
             path: wire_path,
             success: true,
@@ -168,6 +185,7 @@ fn try_delete_one(
     scope_root: Option<&str>,
     abs: &Path,
     recursive: bool,
+    include_protected: bool,
 ) -> Result<(bool, Option<String>), CoderError> {
     if resolver.is_root(abs) {
         return Err(CoderError::BadInput(
@@ -195,7 +213,9 @@ fn try_delete_one(
         Err(e) => return Err(CoderError::from(e)),
     };
     if md.file_type().is_dir() {
-        if recursive {
+        if recursive && include_protected {
+            std::fs::remove_dir_all(abs).map_err(CoderError::from)?;
+        } else if recursive {
             remove_dir_all_safe(abs, resolver)?;
         } else {
             std::fs::remove_dir(abs).map_err(CoderError::from)?;
@@ -257,6 +277,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["a.txt".into()],
                 recursive: false,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -275,6 +296,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["nope.txt".into()],
                 recursive: false,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -293,6 +315,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec![".env".into()],
                 recursive: false,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -313,6 +336,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: false,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -331,6 +355,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: true,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -350,6 +375,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: true,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -358,6 +384,27 @@ mod tests {
         assert!(!out.results[0].success);
         assert_eq!(out.results[0].error.as_ref().unwrap().code, "C211");
         assert!(tmp.path().join("d/.env").exists());
+    }
+
+    #[tokio::test]
+    async fn include_protected_removes_a_subtree_holding_non_accessible_entries() {
+        let (tmp, r) = setup();
+        std::fs::create_dir_all(tmp.path().join("d/venv")).unwrap();
+        std::fs::write(tmp.path().join("d/venv/.env"), "secret").unwrap();
+        std::fs::write(tmp.path().join("d/a.txt"), "x").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec!["d".into()],
+                recursive: true,
+                include_protected: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.results[0].success, "{:?}", out.results[0].error);
+        assert!(!tmp.path().join("d").exists());
     }
 
     // REDACTION INVARIANT: the error message for a recursive-delete blocked
@@ -374,6 +421,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["secrets".into()],
                 recursive: true,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -406,6 +454,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec![".".into()],
                 recursive: true,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -429,6 +478,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec![".".into()],
                 recursive: true,
+                include_protected: false,
                 fs_scope: Some(crate::fs::FsScope {
                     root: session.to_string_lossy().into_owned(),
                     grants: Vec::new(),
@@ -457,6 +507,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec![abs.clone()],
                 recursive: true,
+                include_protected: false,
                 fs_scope: Some(crate::fs::FsScope {
                     root: abs,
                     grants: Vec::new(),
@@ -484,6 +535,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["a.txt".into()],
                 recursive: false,
+                include_protected: false,
                 fs_scope: Some(crate::fs::FsScope {
                     root: session.to_string_lossy().into_owned(),
                     grants: Vec::new(),

@@ -941,11 +941,11 @@ export function ShellExplorerPage({
         else applyTreeChanges([{ rel: to, kind: 'created', dir: false }])
         afterDiskChange()
       },
-      remove: async (rel, isDir) => {
+      remove: async (rel, isDir, includeProtected) => {
         const currentRoot = rootRef.current
         if (!currentRoot) return
         const generation = rootGenerationRef.current
-        await deleteEntry(host, currentRoot, rel, isDir)
+        await deleteEntry(host, currentRoot, rel, isDir, includeProtected)
         if (rootGenerationRef.current !== generation || rootRef.current !== currentRoot) return
         const affected = tabsRef.current.tabs.filter((tab) => tab.target.kind === 'file' && isUnder(tab.target.path, rel))
         if (affected.length > 0) closeTabIds(affected.map((tab) => tab.id))

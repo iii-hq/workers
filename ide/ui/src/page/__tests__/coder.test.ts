@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  coderDelete,
   coderWriteFile,
   flattenTree,
   joinPath,
   relativeTo,
   type TreeNode,
 } from '../coder'
+import { isProtectedSubtreeError } from '../file-actions'
 
 const node = (
   name: string,
@@ -118,5 +120,25 @@ describe('coderWriteFile', () => {
       ],
     })
     expect(result.revision).toBe('sha256:new')
+  })
+})
+
+describe('coderDelete', () => {
+  it('asks to remove protected files only when the user confirmed it', async () => {
+    const trigger = vi.fn(async () => ({ results: [] }))
+    const host = { iii: { trigger } } as unknown as Parameters<typeof coderDelete>[0]
+    await coderDelete(host, ['/r/d'], true)
+    await coderDelete(host, ['/r/d'], true, true)
+    expect(trigger.mock.calls.map((call) => (call as unknown[])[1])).toEqual([
+      { paths: ['/r/d'], recursive: true },
+      { paths: ['/r/d'], recursive: true, include_protected: true },
+    ])
+  })
+
+  it("tells the worker's protected-subtree refusal from other failures", () => {
+    expect(
+      isProtectedSubtreeError('/r/test-worker: subtree contains non-accessible entries; refusing recursive delete.'),
+    ).toBe(true)
+    expect(isProtectedSubtreeError('/r/x: not found or not accessible.')).toBe(false)
   })
 })
