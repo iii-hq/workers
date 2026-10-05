@@ -10,8 +10,10 @@ Bearer token. It is the Claude analog of
 
 Implements the provider protocol from `tech-specs/2026-06-agentic/llm-router.md`:
 `provider::claude-code::stream` (Messages SSE → `AssistantMessageEvent` frames
-into a router-owned channel) and `provider::claude-code::refresh_models` (fetches
-and reconciles the model catalog, with a curated fallback). For **API-key**
+into a router-owned channel), `provider::claude-code::refresh_models` (fetches
+and reconciles the model catalog, with a curated fallback), and
+`provider::claude-code::count_tokens` (exact prompt token counts behind
+`router::count_tokens`). For **API-key**
 billing (teams/CI/production), use [`provider-anthropic`](../provider-anthropic/)
 instead — that provider speaks the same API with `ANTHROPIC_API_KEY`.
 
@@ -73,6 +75,14 @@ provider id `anthropic`.
   an optional router-supplied harness prompt follows as a second block. Headers:
   `authorization: Bearer`, `anthropic-version: 2023-06-01`,
   `anthropic-beta: oauth-2025-04-20`.
+- **Token counting:** `provider::claude-code::count_tokens` (behind
+  `router::count_tokens`) posts the assembled prompt (identity block included;
+  no `max_tokens`, `stream` or cache markers) to the messages endpoint's
+  `count_tokens` sibling (`/v1/messages/count_tokens`) with the same OAuth
+  credential and headers as streaming, for an exact provider-metered count
+  (`estimator: "provider"`). It never runs the model and costs nothing; a
+  non-2xx answer is returned as an error so the router can fall back to an
+  estimate.
 - **SSE:** `content_block_delta` (`text_delta` → text, `thinking_delta` →
   thinking, `input_json_delta` → tool calls), `message_delta` → usage,
   `message_stop` → terminal. Unknown event types are ignored (forward-compat).
