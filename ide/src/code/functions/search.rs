@@ -37,7 +37,9 @@ pub struct SearchInput {
     /// `search_content` is false: a path-only search with no query lists
     /// every path (with `fuzzy_paths`, shallow and short paths first).
     pub query: String,
-    /// Folder to search (default `.`); globs match relative to its root, result
+    /// Folder to search (default `.`). It only narrows the walk: globs are NOT
+    /// relative to this folder, they match paths relative to the session root
+    /// (or to the configured root that contains them; see coder::info). Result
     /// paths are absolute.
     #[serde(default = "default_path")]
     pub path: String,
@@ -45,10 +47,13 @@ pub struct SearchInput {
     pub regex: bool,
     #[serde(default)]
     pub ignore_case: bool,
-    /// Root-relative glob patterns paths must match; empty = everything.
+    /// Glob patterns paths must match, relative to the SESSION ROOT, never to
+    /// `path`: with path `ade`, write `ade/README.md` or `**/README.md`, not
+    /// `README.md`. Empty = everything.
     #[serde(default)]
     pub include_globs: Vec<String>,
-    /// Glob patterns (same relative-to-root matching) that exclude paths.
+    /// Glob patterns (relative to the session root, like include_globs) that
+    /// exclude paths.
     #[serde(default)]
     pub exclude_globs: Vec<String>,
     /// Optional explicit cap. Falls back to config when unset.
