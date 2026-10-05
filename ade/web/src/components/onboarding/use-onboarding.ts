@@ -91,6 +91,22 @@ export function withWorkerPresence(
   })
 }
 
+/**
+ * Chat models the router serves right now from providers whose worker is
+ * connected — the wizard's own reading. Throws when the router or the
+ * engine cannot answer.
+ */
+export async function connectedModelCount(): Promise<number> {
+  const [providers, installed] = await Promise.all([
+    readProviderStates(),
+    installedWorkerNames(),
+  ])
+  return withWorkerPresence(providers, installed).reduce(
+    (sum, provider) => sum + provider.modelCount,
+    0,
+  )
+}
+
 /** Every env var the wizard can reuse: provider keys and the hosted judge's. */
 export const DETECTED_KEY_NAMES = [
   ...KEY_PROVIDERS.map((provider) => provider.envVar),

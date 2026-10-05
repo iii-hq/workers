@@ -26,6 +26,13 @@ export interface OnboardingState {
   updated_at: number
   completed_at?: number
   summary?: unknown
+  /**
+   * Whether the wizard may open by itself on this ADE: `false` where the
+   * configuration's `onboarding.auto_open` or the worker's
+   * `III_CONSOLE_ONBOARDING_AUTO_OPEN` turns it off (a deployed ADE).
+   * Absent from a backend older than the switch.
+   */
+  auto_open?: boolean
 }
 
 /** Progress a running step reports; `progress` is 0..1 when known. */

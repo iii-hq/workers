@@ -28,7 +28,7 @@ import { cn } from '@/lib/utils'
 import { JudgeStep } from './JudgeStep'
 import { ModelsStep } from './ModelsStep'
 import { ReadyStep, type TourState } from './ReadyStep'
-import { useOnboarding } from './use-onboarding'
+import { connectedModelCount, useOnboarding } from './use-onboarding'
 import { WelcomeStep } from './WelcomeStep'
 
 const STEPS: { id: WizardStepId; title: string; optional?: boolean }[] = [
@@ -41,9 +41,11 @@ const STEPS: { id: WizardStepId; title: string; optional?: boolean }[] = [
 /**
  * The first-run setup wizard. Mounted once in `App`: it opens by itself the
  * first time a person loads this machine's ADE (`console::onboarding::get`
- * reports `new`; never in a browser under automation), and whenever
- * something calls `requestOnboardingWizard` — the chat's "configure a
- * provider" call to action, or the command palette.
+ * reports `new` and does not turn auto-open off; never in a browser under
+ * automation; never once a model is connected — see
+ * `shouldAutoOpenOnboarding`), and whenever something calls
+ * `requestOnboardingWizard` — the chat's "configure a provider" call to
+ * action, or the command palette.
  *
  * Finishing records `completed` and skipping records `dismissed`, beside the
  * workspace layout in the ADE's data directory, so it never reopens on its
@@ -76,16 +78,19 @@ export function OnboardingWizardHost() {
     if (!live) return
     let cancelled = false
     void fetchOnboardingState()
-      .then((state) => {
+      .then(async (state) => {
         if (cancelled || !state) return
         status.current = state.status
-        if (shouldAutoOpenOnboarding(state.status, browserIsAutomated())) {
-          setOpen(true)
-        }
         // Someone who finished setup may jump straight to any part of it.
         if (state.status === 'completed') {
           setVisited(new Set(STEPS.map((entry) => entry.id)))
         }
+        if (!shouldAutoOpenOnboarding(state, browserIsAutomated())) return
+        // Models already connected — a deploy with keys in its environment —
+        // mean a project that is set up. A router that cannot answer opens
+        // nothing either: the wizard could not connect a model through it.
+        const models = await connectedModelCount().catch(() => null)
+        if (!cancelled && models === 0) setOpen(true)
       })
       .catch(() => undefined)
     return () => {

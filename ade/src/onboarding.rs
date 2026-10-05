@@ -14,6 +14,11 @@
 //! `<data_dir>/onboarding.json`, beside the workspace layout: whether setup
 //! was finished or dismissed is per-machine state (the credentials it set up
 //! are per-machine too), so it stays out of the committed configuration.
+//!
+//! A fresh `data_dir` — every deploy has one — reads as `new`, so `get` also
+//! reports whether the wizard may open by itself here at all: not where the
+//! ADE configuration sets `onboarding.auto_open: false`, nor where the
+//! worker's environment sets `III_CONSOLE_ONBOARDING_AUTO_OPEN=false`.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -31,6 +36,10 @@ use crate::workspace_store::WorkspaceStore;
 
 /// File name inside `data_dir` holding the wizard's progress.
 pub const ONBOARDING_FILE: &str = "onboarding.json";
+
+/// Turns the wizard's auto-open off for one environment (a deploy) when it
+/// reads `false`, `0`, `off` or `no`, whatever the configuration says.
+pub const AUTO_OPEN_ENV: &str = "III_CONSOLE_ONBOARDING_AUTO_OPEN";
 
 /// How long `<cli> --version` may take before the scan reports no version.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(3);
@@ -134,6 +143,17 @@ pub struct OnboardingState {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetInput {}
 
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct GetOutput {
+    #[serde(flatten)]
+    pub state: OnboardingState,
+    /// Whether the wizard may open by itself on this ADE: `false` when the
+    /// configuration's `onboarding.auto_open` or `III_CONSOLE_ONBOARDING_AUTO_OPEN`
+    /// says so, or when the configuration could not be read. Opening it from
+    /// the command palette is never affected.
+    pub auto_open: bool,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetInput {
     pub status: OnboardingStatus,
@@ -161,16 +181,32 @@ pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
     // cannot interleave a stale copy.
     let lock = Arc::new(Mutex::new(()));
     let store = workspace.clone();
+    let client = iii.clone();
     iii.register_function(
         "console::onboarding::get",
         RegisterFunction::new_async(move |_: GetInput| {
             let store = store.clone();
+            let client = client.clone();
             async move {
                 let dir = store.dir().await;
-                Ok::<_, Error>(load_state(&dir).await)
+                let state = load_state(&dir).await;
+                let environment = std::env::var(AUTO_OPEN_ENV).ok();
+                // A configuration that cannot be read says nothing about the
+                // switch: stay closed rather than open over a deployed ADE.
+                let auto_open = match crate::configuration::existing_value(&client).await {
+                    Ok(value) => auto_open(value.as_ref(), environment.as_deref()),
+                    Err(error) => {
+                        tracing::warn!(%error, "cannot read the ADE configuration; the setup wizard will not open by itself");
+                        false
+                    }
+                };
+                Ok::<_, Error>(GetOutput { state, auto_open })
             }
         })
-        .description("Read whether the ADE setup wizard was finished or dismissed on this machine.")
+        .description(
+            "Read whether the ADE setup wizard was finished or dismissed on this machine, and \
+             whether it may open by itself here.",
+        )
         .metadata(json!({ "internal": true })),
     );
 
@@ -207,6 +243,22 @@ pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
         .description("Record that the ADE setup wizard was finished, dismissed, or reset.")
         .metadata(json!({ "internal": true })),
     );
+}
+
+/// The wizard may open by itself unless the environment variable or the
+/// configuration's `onboarding.auto_open` turns it off.
+fn auto_open(configuration: Option<&Value>, environment: Option<&str>) -> bool {
+    let off_by_environment = environment.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "false" | "0" | "off" | "no"
+        )
+    });
+    let off_by_configuration = configuration
+        .and_then(|value| value.pointer("/onboarding/auto_open"))
+        .and_then(Value::as_bool)
+        == Some(false);
+    !off_by_environment && !off_by_configuration
 }
 
 async fn load_state(dir: &Path) -> OnboardingState {
@@ -442,6 +494,41 @@ fn abbreviate(path: &Path, home: Option<&Path>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_open_is_on_unless_configuration_or_environment_turns_it_off() {
+        assert!(auto_open(None, None));
+        assert!(auto_open(Some(&json!({ "http_port": 3113 })), None));
+        assert!(auto_open(
+            Some(&json!({ "onboarding": { "auto_open": true } })),
+            Some("true")
+        ));
+        assert!(!auto_open(
+            Some(&json!({ "onboarding": { "auto_open": false } })),
+            None
+        ));
+        // A deploy turns it off for its own environment, whatever is committed.
+        for off in ["false", "0", "off", "NO", " False "] {
+            assert!(!auto_open(None, Some(off)), "{off:?} should turn it off");
+        }
+        // Only `false` turns it off: a misspelling is not a reason to hide setup.
+        assert!(auto_open(
+            Some(&json!({ "onboarding": { "auto_open": "false" } })),
+            Some("")
+        ));
+    }
+
+    #[test]
+    fn get_reports_the_state_beside_the_switch() {
+        let output = GetOutput {
+            state: OnboardingState::default(),
+            auto_open: false,
+        };
+        let value = serde_json::to_value(&output).unwrap();
+        assert_eq!(value["status"], "new");
+        assert_eq!(value["updated_at"], 0);
+        assert_eq!(value["auto_open"], false);
+    }
 
     fn scratch_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
