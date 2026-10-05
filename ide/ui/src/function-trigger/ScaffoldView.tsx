@@ -16,7 +16,7 @@ import {
   StatusPanel,
   uiClasses,
 } from '@iii-dev/console-ui'
-import { ExternalLink, LayoutPanelLeft, LayoutTemplate, PackagePlus, Plus } from 'lucide-react'
+import { LayoutTemplate, PackagePlus, Plus } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { unwrapEnvelope } from '../lib/envelope'
 import { ErrorDisplayView } from '../lib/errors'
@@ -28,7 +28,6 @@ import {
   hasAdePage,
   LANGUAGE_LABEL,
   type ListTemplatesResult,
-  publicPageHref,
   type ScaffoldResult,
   type StackPhase,
   sourceLabel,
@@ -357,7 +356,6 @@ function ScaffoldCard({
             }
           />
         ) : null}
-        {running && result ? <WorkerLinks host={host} result={result} /> : null}
       </div>
     </section>
   )
@@ -375,31 +373,6 @@ function OpenFile({ host, path, directory }: { host: Host; path: string; directo
     >
       {label}
     </button>
-  )
-}
-
-/** Where a running worker shows itself: its ADE admin page and public page. */
-function WorkerLinks({ host, result }: { host: Host; result: ScaffoldResult }) {
-  const admin = hasAdePage(result.template) && host.panels
-  const publicPage = result.requires.includes('http')
-  if (!admin && !publicPage) return null
-  return (
-    <div className="shui-scaffold-actions">
-      {admin ? (
-        <Button variant="ghost" size="sm" onClick={() => host.panels?.open({ pageId: result.name })}>
-          <LayoutPanelLeft aria-hidden />
-          Open admin page
-        </Button>
-      ) : null}
-      {publicPage ? (
-        <Button asChild variant="ghost" size="sm">
-          <a href={publicPageHref(result.name)} target="_blank" rel="noreferrer">
-            <ExternalLink aria-hidden />
-            Open public page
-          </a>
-        </Button>
-      ) : null}
-    </div>
   )
 }
 

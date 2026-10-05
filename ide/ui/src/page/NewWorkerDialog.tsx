@@ -19,8 +19,8 @@ import {
   SegmentedControl,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { Check, ExternalLink, LayoutPanelLeft, RefreshCw } from 'lucide-react'
-import { type MouseEvent, type ReactNode, useCallback, useEffect, useId, useReducer, useRef, useState } from 'react'
+import { Check, RefreshCw } from 'lucide-react'
+import { type ReactNode, useCallback, useEffect, useId, useReducer, useRef, useState } from 'react'
 import { joinPath } from './coder'
 import {
   addToStack,
@@ -28,8 +28,6 @@ import {
   entryFile,
   type FunctionEntry,
   formatElapsed,
-  HTTP_PORT,
-  hasAdePage,
   LANGUAGE_LABEL,
   type Language,
   type ListTemplatesResult,
@@ -37,7 +35,6 @@ import {
   newWorkerReducer,
   type ProgressStep,
   pickTemplate,
-  publicPageHref,
   type ScaffoldResult,
   sourceLabel,
   stackSteps,
@@ -47,10 +44,6 @@ import {
   workerFunctions,
 } from './new-worker'
 import { StartFailure, StepList, WorkerFunctions } from './worker-result'
-
-/** Opens a tab in the browser worker: when it is registered, "Open public
-    page" opens there, inside the console, instead of in a new browser tab. */
-const BROWSER_START = 'browser::sessions::start'
 
 export interface NewWorkerDialogProps {
   host: Host
@@ -71,7 +64,6 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
   // (coder::scaffold-worker refuses any other last segment, C232).
   const [folder, setFolder] = useState(baseDir)
   const [start, setStart] = useState(true)
-  const [browser, setBrowser] = useState(false)
   const templateLabelId = useId()
   const templateName = useId()
   const nameId = useId()
@@ -99,15 +91,6 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
     [host],
   )
   useEffect(() => load(false), [load])
-
-  // engine::functions::info answers NOT_FOUND when no browser worker runs.
-  useEffect(() => {
-    if (!host.panels) return
-    host.iii.trigger('engine::functions::info', { function_id: BROWSER_START }).then(
-      () => setBrowser(true),
-      () => undefined,
-    )
-  }, [host])
 
   const templates = state.list?.templates ?? []
   const picked = pickTemplate(template, templates)
@@ -155,7 +138,6 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
   }
 
   const result = state.result
-  const publicHref = result ? publicPageHref(result.name) : null
 
   // The clock beside the step in progress: installs can take a minute.
   const [now, setNow] = useState(0)
@@ -176,26 +158,6 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
       () => setFunctions([]),
     )
   }, [host, runningName])
-
-  // Opens the public page in the browser worker's console page; the browser
-  // worker runs beside the http worker, so it opens 127.0.0.1. Without one, on
-  // a modified click, or when no tab starts, the link opens a new tab as usual.
-  function openInBrowser(event: MouseEvent<HTMLAnchorElement>) {
-    if (!browser || !result || !publicHref || event.metaKey || event.ctrlKey || event.shiftKey) return
-    event.preventDefault()
-    host.iii
-      .trigger<{ session_id: string }>(BROWSER_START, {
-        url: `http://127.0.0.1:${HTTP_PORT}/${result.name}`,
-        preview: false,
-      })
-      .then(
-        ({ session_id }) => {
-          host.panels?.open({ pageId: 'browser', context: { sessionId: session_id } })
-          onClose()
-        },
-        () => window.open(publicHref, '_blank', 'noreferrer'),
-      )
-  }
 
   return (
     <Dialog open onOpenChange={(next) => (next ? undefined : onClose())}>
@@ -361,28 +323,6 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
               />
             ) : null}
             <div className="shui-text-dialog-actions">
-              {state.step === 'running' && hasAdePage(result.template) && host.panels ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    host.panels?.open({ pageId: result.name })
-                    onClose()
-                  }}
-                >
-                  <LayoutPanelLeft aria-hidden />
-                  Open admin page
-                </Button>
-              ) : null}
-              {state.step === 'running' && result.requires.includes('http') && publicHref ? (
-                <Button asChild variant="ghost" size="sm">
-                  <a href={publicHref} target="_blank" rel="noreferrer" onClick={openInBrowser}>
-                    <ExternalLink aria-hidden />
-                    Open public page
-                  </a>
-                </Button>
-              ) : null}
               {state.step === 'result' || state.step === 'failed' ? (
                 <>
                   <Button type="button" variant="ghost" size="sm" onClick={onClose}>

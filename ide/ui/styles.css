@@ -1464,7 +1464,6 @@
   }
   .shui-scaffold-body { display: flex; flex-direction: column; gap: 12px; padding: 12px; }
   .shui-scaffold-body .shui-new-worker-steps { margin: 0; }
-  .shui-scaffold-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   /* The entry file beside "Created N files": a quiet link into the IDE. */
   .shui-scaffold-file {
     padding: 0;

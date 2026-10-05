@@ -115,11 +115,6 @@ export const NEW_WORKER_INITIAL: NewWorkerState = {
 /** The -ade templates register an ADE page with the worker's name as its id. */
 export const hasAdePage = (templateId: string) => templateId.endsWith('-ade')
 
-/** The http worker's port: an -ade worker's public page is `/<name>` on it. */
-export const HTTP_PORT = 3111
-
-/** The public page of worker `name`, on the host the console runs on. */
-export const publicPageHref = (name: string) => `http://${window.location.hostname}:${HTTP_PORT}/${name}`
 const withAdePage = (template: TemplateInfo) => hasAdePage(template.id)
 
 /** The template to create from: `template` while the list still has it, else
