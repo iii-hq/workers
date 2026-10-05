@@ -40,6 +40,8 @@ rules:
   - '!router::abort'
   - '!router::route'
   - '!router::on_config_changed'
+  # Internal: re-reads a rotated or revoked secret:// key and nudges its providers.
+  - '!router::on_secret_changed'
   # Direct provider calls (provider::anthropic::*, provider::openai::*, …)
   # bypass the router's accounting, budgets, and retry policy. The router
   # invokes these worker-to-worker; agents never call them.
@@ -53,6 +55,19 @@ rules:
   # mutation power under a new name); deny it too so an agent cannot bypass the
   # register deny above.
   - '!configuration::ensure'
+  # secrets: credential values live in the secrets worker, referenced from
+  # configuration as secret://NAME. Agents never resolve a value, store,
+  # import or delete one, or change which workers may resolve it; the console
+  # makes those calls on the person's behalf. list/get/status/detect return
+  # metadata only (masked hints, fingerprints) and stay at the default.
+  - '!secrets::resolve'
+  - '!secrets::set'
+  - '!secrets::delete'
+  - '!secrets::access'
+  - '!secrets::import'
+  - '!secrets::on-config-change'
+  # judge-typesafe's own secrets::changed handler (drops a rotated key).
+  - '!judge-typesafe::on-secret-change'
   - '!directory::pre-generate'
   - '!directory::on-functions-change'
   - '!directory::hint-preview'

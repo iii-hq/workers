@@ -2042,6 +2042,18 @@ workers:
         outputs:
         - dist
     publish: true
+  secrets:
+    source:
+      path: secrets
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: secrets
+      targets: *id001
+    publish: true
   security-scan:
     source:
       path: security-scan
