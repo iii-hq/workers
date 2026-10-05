@@ -64,7 +64,7 @@
       },
       "include_hidden": {
         "default": true,
-        "description": "Walk dot-files and dot-folders (`.github`, `.env`, …); default true. `false` leaves them out, the way an editor's quick open does.",
+        "description": "Walk dot-files and dot-folders (`.github`, `.env`, …); default true. `false` leaves them out, the way an editor's quick open does. A `path` that names a dot-file or dot-folder is still searched: naming it is explicit intent.",
         "type": "boolean"
       },
       "max_line_bytes": {

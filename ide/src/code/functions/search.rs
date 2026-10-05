@@ -95,7 +95,9 @@ pub struct SearchInput {
     #[serde(default)]
     pub fuzzy_paths: bool,
     /// Walk dot-files and dot-folders (`.github`, `.env`, …); default true.
-    /// `false` leaves them out, the way an editor's quick open does.
+    /// `false` leaves them out, the way an editor's quick open does. A `path`
+    /// that names a dot-file or dot-folder is still searched: naming it is
+    /// explicit intent.
     #[serde(default = "default_true")]
     pub include_hidden: bool,
     /// Internal harness filesystem scope; omitted from published schema.
@@ -2483,6 +2485,29 @@ mod tests {
         .unwrap();
         assert_eq!(out.content_matches.len(), 1);
         assert_eq!(out.content_matches[0].line, 1);
+    }
+
+    /// `include_hidden: false` filters what the walk finds, not what `path`
+    /// names: a named dot-file is searched like a named dot-folder, while a
+    /// dot-file inside a named folder stays out.
+    #[tokio::test]
+    async fn a_named_hidden_path_is_searched_without_include_hidden() {
+        let (tmp, r, c) = setup();
+        write(&tmp, ".notes.txt", "needle\n");
+        write(&tmp, ".config/app.toml", "needle\n");
+        write(&tmp, "src/.hidden.rs", "needle\n");
+        write(&tmp, "src/shown.rs", "needle\n");
+        let search = |path: &str| SearchInput {
+            path: path.into(),
+            include_hidden: false,
+            ..base_input("needle")
+        };
+        for (path, want) in [(".notes.txt", 1), (".config", 1), ("src", 1)] {
+            let out = handle(r.clone(), c.clone(), search(path)).await.unwrap();
+            assert_eq!(out.content_matches.len(), want, "{path}");
+        }
+        let out = handle(r.clone(), c.clone(), search("src")).await.unwrap();
+        assert!(out.content_matches[0].path.ends_with("src/shown.rs"));
     }
 
     /// Globs match the file's root-relative form, the same form a directory
