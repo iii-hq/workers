@@ -660,6 +660,9 @@ pub async fn wake(deps: &Deps, event: WakeEventV1) -> Result<WakeResponseV1, Eva
     else {
         return Ok(outcome(WakeOutcomeV1::Disabled, None));
     };
+    if !is_user_chat(deps, &event.session_id).await {
+        return Ok(outcome(WakeOutcomeV1::NotUserChat, None));
+    }
     Ok(
         match admit(
             deps,
@@ -707,6 +710,37 @@ pub async fn wake(deps: &Deps, event: WakeEventV1) -> Result<WakeResponseV1, Eva
             }
         },
     )
+}
+
+/// Automatic observation analyzes only the user's chats: session-manager's
+/// kind `user` (its default, so a record without a kind counts). E2E runs,
+/// automations (the monitor's own sessions included) and sessions whose kind
+/// cannot be read are left for a manual analysis.
+async fn is_user_chat(deps: &Deps, session_id: &str) -> bool {
+    match call::<_, Value>(
+        deps,
+        "session::get",
+        json!({ "session_id": session_id }),
+        BUS_TIMEOUT_MS,
+    )
+    .await
+    {
+        Ok(meta) => {
+            let kind = meta["meta"]["kind"].as_str().unwrap_or("user");
+            if kind != "user" {
+                tracing::debug!(
+                    session_id,
+                    kind,
+                    "not a user chat; left for manual analysis"
+                );
+            }
+            kind == "user"
+        }
+        Err(error) => {
+            tracing::warn!(session_id, %error, "session kind unreadable; not analyzed automatically");
+            false
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

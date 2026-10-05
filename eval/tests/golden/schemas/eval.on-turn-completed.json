@@ -53,7 +53,8 @@
           "admitted",
           "reused",
           "at_capacity",
-          "cost_cap"
+          "cost_cap",
+          "not_user_chat"
         ],
         "type": "string"
       }

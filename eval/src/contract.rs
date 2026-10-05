@@ -1075,6 +1075,9 @@ pub enum WakeOutcomeV1 {
     // The day's known cost reached `daily_cost_cap_usd`; a plain comment so
     // the schema stays a flat string enum.
     CostCap,
+    // Automatic observation covers only the user's chats (session kind
+    // `user`); E2E runs and automations are analyzed by hand.
+    NotUserChat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -47,6 +47,8 @@ enum JudgeMode {
 
 struct World {
     state: BTreeMap<(String, String), Value>,
+    /// session-manager kinds by session id; absent means `user`.
+    kinds: HashMap<String, &'static str>,
     steps: VecDeque<Value>,
     calls: Vec<(String, Value)>,
     status: HashMap<String, Value>,
@@ -118,6 +120,7 @@ impl World {
             unanswered_start: None,
             starts: 0,
             executions_down: false,
+            kinds: HashMap::new(),
         };
         world
             .status
@@ -209,7 +212,9 @@ impl World {
                 .unwrap()
             }
             "session::get" => json!({"meta": {"session_id": data["session_id"],
-                "title": "Schedule the follow-up", "metadata": {}}}),
+                "title": "Schedule the follow-up", "metadata": {},
+                "kind": self.kinds.get(data["session_id"].as_str().unwrap_or_default())
+                    .copied().unwrap_or("user")}}),
             "judge::models::list" => json!({"status": "ok",
                 "models": [{"name": "jev-test-1", "description": "", "release_date": ""}],
                 "stats": {"attempts": 1, "requests": 1, "questions": 0, "input_tokens": 0,
@@ -4216,4 +4221,33 @@ async fn the_sweep_fails_runs_that_cannot_finish_and_retries_the_ones_the_e2e_dr
     .unwrap();
     runtime::sweep(&h.deps).await.unwrap();
     assert_eq!(run_state().await.state, ValidationRunStateV1::Failed);
+}
+
+#[tokio::test]
+async fn only_user_chats_are_analyzed_automatically_and_the_rest_by_hand() {
+    for kind in ["e2e", "automation"] {
+        let mut world = World::new();
+        world.kinds.insert(ROOT.into(), kind);
+        let h = Harness::start(world).await;
+        h.configure(true).await;
+        let skipped = h.end_turn(ROOT, TURN).await;
+        assert_eq!(skipped.outcome, WakeOutcomeV1::NotUserChat, "{kind}");
+        assert!(skipped.evaluation_id.is_none());
+        assert_eq!(h.records(), 0, "{kind}: nothing admitted");
+        // A manual analysis still covers it.
+        let manual = runtime::analyze_session(
+            &h.deps,
+            serde_json::from_value(json!({"session_id": ROOT})).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(!manual.reused, "{kind}");
+        assert_eq!(h.records(), 1, "{kind}");
+    }
+    let h = Harness::start(World::new()).await;
+    h.configure(true).await;
+    assert_eq!(
+        h.end_turn(ROOT, TURN).await.outcome,
+        WakeOutcomeV1::Admitted
+    );
 }

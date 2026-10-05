@@ -16,8 +16,13 @@ behavior is specified in
 
 1. **Admission.** A terminal `harness::turn-completed` of a root session (or
    a manual `eval::analyze-session`) admits one analysis per session turn.
-   Progress events, descendants and the monitor's own sessions are never
-   admitted; a redelivered event returns the existing analysis.
+   Automatic observation admits only the user's chats: session-manager's kind
+   `user` (`session::get`; a record without a kind counts as `user`). E2E runs,
+   automations (the monitor opens its investigations as `automation`) and
+   sessions whose kind cannot be read answer `not_user_chat` and can still be
+   analyzed by hand. Progress events, descendants and the monitor's own
+   sessions are never admitted; a redelivered event returns the existing
+   analysis.
 2. **Collection.** The monitor waits until the turn is definitive and every
    descendant has finished (`harness::metrics.complete`), then reads every
    transcript page with `include_custom: true`, failing on malformed pages
