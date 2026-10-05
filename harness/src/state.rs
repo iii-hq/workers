@@ -476,6 +476,13 @@ async fn load_prompt_body(
             HarnessError::State(format!("missing prompt body {digest} for {session_id}"))
         })?
         .to_owned();
+    // Bodies are content-addressed: a body that does not hash to its key was
+    // written by something else and is neither used nor cached.
+    if prompt_digest(&body) != digest {
+        return Err(HarnessError::State(format!(
+            "prompt body {digest} for {session_id} does not match its digest"
+        )));
+    }
     let mut cache = BODY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if cache.len() >= BODY_CACHE_CAP {
         cache.pop_front();
@@ -1603,6 +1610,35 @@ mod tests {
             error.contains("missing prompt body sha256:missing_body_is_an_error for mb_1"),
             "{error}"
         );
+        iii.shutdown();
+        server.abort();
+    }
+
+    /// A body that does not hash to its key is refused, and not cached: the
+    /// next read still sees the stored value, so restoring it recovers.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_body_that_does_not_match_its_digest_is_refused() {
+        let (iii, store, _calls, server) = fake_state().await;
+        let prompt = "the real prompt for a_body_that_does_not_match_its_digest";
+        let digest = prompt_digest(prompt);
+        let mut record = prompt_record("bd_1", None, None);
+        record.options.system_prompt_ref = Some(digest.clone());
+        store.lock().unwrap().insert(
+            (TURN_SCOPE.into(), "bd_1".into()),
+            serde_json::to_value(&record).unwrap(),
+        );
+        store.lock().unwrap().insert(
+            (PROMPT_SCOPE.into(), digest.clone()),
+            json!({ "body": "a tampered prompt", "created_at": 1 }),
+        );
+        let error = get_turn(&iii, "bd_1", 2_000).await.unwrap_err().to_string();
+        assert!(error.contains("does not match its digest"), "{error}");
+        store.lock().unwrap().insert(
+            (PROMPT_SCOPE.into(), digest.clone()),
+            json!({ "body": prompt, "created_at": 1 }),
+        );
+        let read = get_turn(&iii, "bd_1", 2_000).await.unwrap().unwrap();
+        assert_eq!(read.options.system_prompt.as_deref(), Some(prompt));
         iii.shutdown();
         server.abort();
     }

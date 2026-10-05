@@ -2177,8 +2177,9 @@ fn lose_prompt_body(stack: &Stack, id: &str) {
     store.put("harness_turn", id, row);
 }
 
-/// One record whose prompt body is gone does not end the redrive pass: the
-/// orphans after it are still re-enqueued.
+/// A record whose prompt body is gone is redriven like any orphan (its step
+/// then fails the turn instead of leaving it Running), and does not end the
+/// pass for the orphans after it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lost_prompt_body_does_not_stop_the_orphan_redrive() {
     let _view = TURN_VIEW_TESTS.lock().await;
@@ -2196,15 +2197,16 @@ async fn a_lost_prompt_body_does_not_stop_the_orphan_redrive() {
     let redriven = harness::inflight::redrive_orphans(&stack.deps)
         .await
         .unwrap();
-    assert_eq!(redriven, 1);
+    assert_eq!(redriven, 2);
     let store = stack.store.lock().unwrap();
-    let enqueued: Vec<&Value> = store
+    let mut enqueued: Vec<&Value> = store
         .calls
         .iter()
         .filter(|(f, _)| f == "harness::turn")
         .map(|(_, data)| &data["session_id"])
         .collect();
-    assert_eq!(enqueued, [&json!("lb_b_orphan")]);
+    enqueued.sort_by_key(|id| id.to_string());
+    assert_eq!(enqueued, [&json!("lb_a_lost"), &json!("lb_b_orphan")]);
 }
 
 /// Stop and delete-session-tree read only a record's status, turn and calls,

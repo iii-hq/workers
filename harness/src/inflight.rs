@@ -140,9 +140,18 @@ pub async fn redrive_orphans(deps: &Deps) -> Result<u64, HarnessError> {
             continue;
         }
         // Re-check under the session lock against the freshest record so a
-        // step that just advanced or finished is not redriven.
+        // step that just advanced or finished is not redriven. Unhydrated: the
+        // check reads no prompt text, and a turn whose prompt body is gone
+        // must still be redriven so its step fails it instead of leaving it
+        // Running.
         let _guard = deps.locks.guard(&record.session_id).await;
-        match crate::state::get_turn(&deps.iii, &record.session_id, cfg.session_timeout_ms).await {
+        match crate::state::get_turn_unhydrated(
+            &deps.iii,
+            &record.session_id,
+            cfg.session_timeout_ms,
+        )
+        .await
+        {
             Ok(Some(fresh))
                 if fresh.turn_id == record.turn_id
                     && fresh.step == record.step
@@ -154,8 +163,7 @@ pub async fn redrive_orphans(deps: &Deps) -> Result<u64, HarnessError> {
             {
                 record = fresh;
             }
-            // One unreadable record (a lost prompt body) must not strand the
-            // orphans after it.
+            // One unreadable record must not strand the orphans after it.
             Err(e) => {
                 tracing::warn!(
                     session_id = %record.session_id,
