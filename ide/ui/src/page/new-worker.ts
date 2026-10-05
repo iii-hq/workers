@@ -43,6 +43,12 @@ export interface ScaffoldResult {
   compose: Record<string, unknown>
   requires: string[]
   next_steps: string[]
+  /** With start: the compose::add operation that installs and starts it. */
+  operation_id?: string | null
+  /** With start: the containers compose::add was asked to add, the worker first. */
+  started?: string[]
+  /** With start: why compose::add failed; the files are written. */
+  start_error?: string | null
 }
 
 export const WORKER_NAME_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/
@@ -108,6 +114,12 @@ export const NEW_WORKER_INITIAL: NewWorkerState = {
 
 /** The -ade templates register an ADE page with the worker's name as its id. */
 export const hasAdePage = (templateId: string) => templateId.endsWith('-ade')
+
+/** The http worker's port: an -ade worker's public page is `/<name>` on it. */
+export const HTTP_PORT = 3111
+
+/** The public page of worker `name`, on the host the console runs on. */
+export const publicPageHref = (name: string) => `http://${window.location.hostname}:${HTTP_PORT}/${name}`
 const withAdePage = (template: TemplateInfo) => hasAdePage(template.id)
 
 /** The template to create from: `template` while the list still has it, else
@@ -173,7 +185,8 @@ export function newWorkerReducer(state: NewWorkerState, action: NewWorkerAction)
 /* ── the result's progress ───────────────────────────────────────────── */
 
 /** `live` is the last step's ongoing state: the worker runs. */
-export type StepState = 'done' | 'live' | 'active' | 'pending' | 'failed'
+/** `skipped`: a step that will not run, after the one before it failed. */
+export type StepState = 'done' | 'live' | 'active' | 'pending' | 'failed' | 'skipped'
 
 export interface ProgressStep {
   label: string
@@ -182,7 +195,7 @@ export interface ProgressStep {
 
 /** Install and Start, the two steps after the files: where "Add to stack"
     is, and which of them a failure stopped at. */
-export function stackSteps({ step, phase }: NewWorkerState): [ProgressStep, ProgressStep] {
+export function stackSteps({ step, phase }: Pick<NewWorkerState, 'step' | 'phase'>): [ProgressStep, ProgressStep] {
   const installed: ProgressStep = { label: 'Installed', state: 'done' }
   const start: ProgressStep = { label: 'Start', state: 'pending' }
   switch (step) {
@@ -194,7 +207,10 @@ export function stackSteps({ step, phase }: NewWorkerState): [ProgressStep, Prog
         : [installed, { label: 'Starting…', state: 'active' }]
     case 'failed':
       return phase === 'installing'
-        ? [{ label: 'Install failed', state: 'failed' }, start]
+        ? [
+            { label: 'Install failed', state: 'failed' },
+            { label: 'Not started', state: 'skipped' },
+          ]
         : [installed, { label: 'Did not start', state: 'failed' }]
     default:
       return [{ label: 'Install', state: 'pending' }, start]
@@ -268,16 +284,6 @@ export async function addToStack(
   const key = result.name
   // A retry already owns the container, whatever fails before the first compose call.
   let sent = owned
-  const fail = async (error: string): Promise<StackOutcome> => {
-    let logs: string[] = []
-    try {
-      const out = await trigger<ComposeLogs>('compose::logs', { container: key, tail: LOG_TAIL })
-      logs = out.containers.flatMap((container) => container.entries.map((entry) => entry.message.trimEnd()))
-    } catch {
-      // No logs (the container never got declared): the error says enough.
-    }
-    return { ok: false, error, logs, owned: sent }
-  }
   try {
     const before = await trigger<ComposeStatus>('compose::status', {})
     const declared = new Set(before.containers.map((container) => container.container))
@@ -294,17 +300,56 @@ export async function addToStack(
       const workers = [result.compose, ...missing.map((name) => (name === 'http' ? HTTP_CONTAINER : name))]
       operation = (await trigger<{ operation_id: string }>('compose::add', { workers })).operation_id
     }
+    return followStart(trigger, key, operation, onProgress, { owned: sent, sleep })
+  } catch (error) {
+    return withLogs(trigger, key, errorMessage(error), sent)
+  }
+}
+
+/** A failed outcome, with the container's last log lines when it has any. */
+async function withLogs(trigger: Trigger, key: string, error: string, owned: boolean): Promise<StackOutcome> {
+  let logs: string[] = []
+  try {
+    const out = await trigger<ComposeLogs>('compose::logs', { container: key, tail: LOG_TAIL })
+    logs = out.containers.flatMap((container) => container.entries.map((entry) => entry.message.trimEnd()))
+  } catch {
+    // No logs (the container never got declared): the error says enough.
+  }
+  return { ok: false, error, logs, owned }
+}
+
+/** Follows container `key` until it runs or fails: through `operation`
+    (compose::add's) while that runs, then by its compose::status state.
+    Also what a coder::scaffold-worker call that started the worker
+    follows, with the operation id it returned. */
+export async function followStart(
+  trigger: Trigger,
+  key: string,
+  operation: string | null,
+  onProgress: (phase: StackPhase) => void,
+  { owned = true, sleep = pause }: { owned?: boolean; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<StackOutcome> {
+  const fail = (error: string) => withLogs(trigger, key, error, owned)
+  try {
     for (let poll = 0; poll < MAX_POLLS; poll++) {
       // The operation first: once it has ended, the status read after it is final.
-      const op =
-        operation === null
-          ? null
-          : await trigger<ComposeOperation>('compose::operation', { progress_operation_id: operation })
+      let op: ComposeOperation | null = null
+      if (operation !== null) {
+        try {
+          op = await trigger<ComposeOperation>('compose::operation', { progress_operation_id: operation })
+        } catch {
+          // An operation compose no longer knows (an old call): the
+          // container's own state answers from here on.
+          operation = null
+        }
+      }
       const status = await trigger<ComposeStatus>('compose::status', {})
       const container = status.containers.find((entry) => entry.container === key)
       if (container?.state === 'ready') return { ok: true }
       if (container?.state === 'failed') return fail(container.last_error ?? `${key} failed to start.`)
       if (op !== null && op.status !== 'running') return fail(op.last_event?.detail ?? `compose::add ${op.status}.`)
+      // No operation to wait on and no container: nothing will start it.
+      if (op === null && !container) return fail(`${key} is not in the stack.`)
       onProgress(container?.state === 'starting' ? 'starting' : 'installing')
       await sleep(POLL_MS)
     }

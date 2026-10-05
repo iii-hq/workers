@@ -17,11 +17,9 @@ import {
   IconButton,
   Input,
   SegmentedControl,
-  StatusDot,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { useCopyFlash } from '@iii-dev/console-ui/hooks'
-import { Check, Copy, ExternalLink, LayoutPanelLeft, MessageSquarePlus, RefreshCw, X } from 'lucide-react'
+import { Check, ExternalLink, LayoutPanelLeft, RefreshCw } from 'lucide-react'
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useId, useReducer, useRef, useState } from 'react'
 import { joinPath } from './coder'
 import {
@@ -30,6 +28,7 @@ import {
   entryFile,
   type FunctionEntry,
   formatElapsed,
+  HTTP_PORT,
   hasAdePage,
   LANGUAGE_LABEL,
   type Language,
@@ -38,8 +37,8 @@ import {
   newWorkerReducer,
   type ProgressStep,
   pickTemplate,
+  publicPageHref,
   type ScaffoldResult,
-  type StepState,
   sourceLabel,
   stackSteps,
   type Trigger,
@@ -47,10 +46,7 @@ import {
   validateWorkerName,
   workerFunctions,
 } from './new-worker'
-
-/** The http worker's default port; the -ade templates serve their public
-    page at /<name> on it. */
-const HTTP_PORT = 3111
+import { StartFailure, StepList, WorkerFunctions } from './worker-result'
 
 /** Opens a tab in the browser worker: when it is registered, "Open public
     page" opens there, inside the console, instead of in a new browser tab. */
@@ -159,7 +155,7 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
   }
 
   const result = state.result
-  const publicHref = result ? `http://${window.location.hostname}:${HTTP_PORT}/${result.name}` : null
+  const publicHref = result ? publicPageHref(result.name) : null
 
   // The clock beside the step in progress: installs can take a minute.
   const [now, setNow] = useState(0)
@@ -346,14 +342,7 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
               entry={entryLabel(result)}
               steps={stackSteps(state)}
               elapsed={state.step === 'adding' ? formatElapsed(now - addedAt.current) : null}
-              failure={
-                state.step === 'failed' ? (
-                  <>
-                    <p className="shui-new-worker-note warn">{state.error}</p>
-                    {state.logs.length > 0 ? <pre className="shui-new-worker-logs">{state.logs.join('\n')}</pre> : null}
-                  </>
-                ) : null
-              }
+              failure={state.step === 'failed' ? <StartFailure error={state.error ?? ''} logs={state.logs} /> : null}
             />
             {state.step === 'result' ? (
               <p className="shui-new-worker-note">Not in the stack yet: add it to install and start it.</p>
@@ -427,14 +416,6 @@ function entryLabel(result: ScaffoldResult): string | null {
   return entry?.startsWith(`${result.directory}/`) ? entry.slice(result.directory.length + 1) : entry
 }
 
-const STEP_TONE = { live: 'ok', active: 'accent', pending: 'ink' } as const
-
-function StepMark({ state }: { state: StepState }) {
-  if (state === 'done') return <Check aria-hidden />
-  if (state === 'failed') return <X aria-hidden />
-  return <StatusDot tone={STEP_TONE[state]} pulse={state === 'active'} />
-}
-
 /** Create, Install, Start: done, in progress (with its clock), waiting or failed. */
 function ResultSteps({
   files,
@@ -449,65 +430,18 @@ function ResultSteps({
   elapsed: string | null
   failure: ReactNode
 }) {
-  const rows = [
-    {
-      key: 'files',
-      label: `Created ${files} ${files === 1 ? 'file' : 'files'}`,
-      state: 'done' as const,
-      detail: entry && `${entry} is open`,
-    },
-    { key: 'install', ...install, detail: install.state === 'active' ? elapsed : null },
-    { key: 'start', ...start, detail: start.state === 'active' ? elapsed : null },
-  ]
   return (
-    <ol className="shui-new-worker-steps" aria-live="polite">
-      {rows.map((row) => (
-        <li key={row.key} className="shui-new-worker-step" data-state={row.state}>
-          <span className="shui-new-worker-step-mark">
-            <StepMark state={row.state} />
-          </span>
-          <span className="shui-new-worker-step-label">{row.label}</span>
-          {row.detail ? <span className="shui-new-worker-step-detail">{row.detail}</span> : null}
-          {row.state === 'failed' ? <div className="shui-new-worker-step-failure">{failure}</div> : null}
-        </li>
-      ))}
-    </ol>
-  )
-}
-
-/** What the running worker registered: copy an id, or try it in a chat draft. */
-function WorkerFunctions({ functions, onTry }: { functions: FunctionEntry[]; onTry?: (id: string) => void }) {
-  const headingId = useId()
-  return (
-    <section className="shui-new-worker-functions" aria-labelledby={headingId}>
-      <h3 id={headingId} className="shui-text-dialog-label">
-        {functions.length === 1 ? 'Its function' : `Its ${functions.length} functions`}
-      </h3>
-      <ul className="shui-new-worker-function-list">
-        {functions.map((fn) => (
-          <FunctionRow key={fn.function_id} fn={fn} onTry={onTry} />
-        ))}
-      </ul>
-    </section>
-  )
-}
-
-function FunctionRow({ fn, onTry }: { fn: FunctionEntry; onTry?: (id: string) => void }) {
-  const { state, copy } = useCopyFlash(fn.function_id)
-  return (
-    <li className="shui-new-worker-function">
-      <span className="shui-new-worker-function-text">
-        <span className="shui-new-worker-function-id">{fn.function_id}</span>
-        {fn.description ? <span className="shui-new-worker-function-description">{fn.description}</span> : null}
-      </span>
-      <IconButton label={state === 'copied' ? 'Copied' : `Copy ${fn.function_id}`} variant="ghost" onClick={copy}>
-        {state === 'copied' ? <Check aria-hidden /> : <Copy aria-hidden />}
-      </IconButton>
-      {onTry ? (
-        <IconButton label={`Try ${fn.function_id} in a chat`} variant="ghost" onClick={() => onTry(fn.function_id)}>
-          <MessageSquarePlus aria-hidden />
-        </IconButton>
-      ) : null}
-    </li>
+    <StepList
+      rows={[
+        {
+          key: 'files',
+          label: `Created ${files} ${files === 1 ? 'file' : 'files'}`,
+          state: 'done',
+          detail: entry && `${entry} is open`,
+        },
+        { key: 'install', ...install, detail: install.state === 'active' ? elapsed : null, failure },
+        { key: 'start', ...start, detail: start.state === 'active' ? elapsed : null, failure },
+      ]}
+    />
   )
 }

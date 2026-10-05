@@ -3,6 +3,7 @@ import {
   addToStack,
   defaultDirectory,
   entryFile,
+  followStart,
   formatElapsed,
   type ListTemplatesResult,
   MAX_POLLS,
@@ -227,7 +228,7 @@ describe('stackSteps', () => {
     expect(at('adding')).toEqual(['Installing…:active', 'Start:pending'])
     expect(at('adding', 'starting')).toEqual(['Installed:done', 'Starting…:active'])
     expect(at('running', 'starting')).toEqual(['Installed:done', 'Running:live'])
-    expect(at('failed')).toEqual(['Install failed:failed', 'Start:pending'])
+    expect(at('failed')).toEqual(['Install failed:failed', 'Not started:skipped'])
     expect(at('failed', 'starting')).toEqual(['Installed:done', 'Did not start:failed'])
   })
 })
@@ -370,5 +371,46 @@ describe('addToStack', () => {
     const outcome = await addToStack(fake.trigger, RESULT, () => {}, { sleep: noWait })
     expect(outcome).toEqual({ ok: false, error: 'my-thing did not start within 10 minutes.', logs: [], owned: true })
     expect(fake.count('compose::status')).toBe(MAX_POLLS + 1)
+  })
+})
+
+describe('followStart', () => {
+  it('follows a scaffold-started worker through its operation to ready', async () => {
+    const fake = bus({
+      'compose::operation': [{ status: 'running' }, { status: 'succeeded' }],
+      'compose::status': [status(['my-thing', 'starting']), status(['my-thing', 'ready'])],
+    })
+    const progress: StackPhase[] = []
+    expect(
+      await followStart(fake.trigger, 'my-thing', 'op-1', (phase) => progress.push(phase), { sleep: noWait }),
+    ).toEqual({
+      ok: true,
+    })
+    expect(fake.payload('compose::operation')).toEqual({ progress_operation_id: 'op-1' })
+    expect(progress).toEqual(['starting'])
+  })
+
+  it('answers from the container once compose no longer knows the operation', async () => {
+    // An old chat card: the operation is gone, the worker still runs.
+    const fake = bus({
+      'compose::operation': [new Error('operation not found')],
+      'compose::status': [status(['my-thing', 'ready'])],
+    })
+    expect(await followStart(fake.trigger, 'my-thing', 'op-old', () => {}, { sleep: noWait })).toEqual({ ok: true })
+    expect(fake.count('compose::operation')).toBe(1)
+  })
+
+  it('reports a worker that is in no operation and not in the stack', async () => {
+    const fake = bus({
+      'compose::operation': [new Error('operation not found')],
+      'compose::status': [status(['ide', 'ready'])],
+      'compose::logs': [new Error('no container')],
+    })
+    expect(await followStart(fake.trigger, 'my-thing', 'op-old', () => {}, { sleep: noWait })).toEqual({
+      ok: false,
+      error: 'my-thing is not in the stack.',
+      logs: [],
+      owned: true,
+    })
   })
 })

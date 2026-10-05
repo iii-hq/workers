@@ -1349,6 +1349,8 @@
   .shui-new-worker-source > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .shui-new-worker-note { margin: 0; font: 400 11px / 16px var(--font-sans); color: var(--color-ink-faint); overflow-wrap: anywhere; }
   .shui-new-worker-note.warn { color: var(--color-warn); }
+  .shui-new-worker-note.alert { color: var(--color-alert); }
+  .shui-new-worker-code { font-family: var(--font-mono); overflow-wrap: anywhere; }
   .shui-new-worker-path { font-family: var(--font-mono); overflow-wrap: anywhere; }
   /* A function id never breaks at its hyphens; a very long one is clipped. */
   .shui-new-worker-token {
@@ -1375,6 +1377,16 @@
   .shui-new-worker-step[data-state="failed"] .shui-new-worker-step-mark { color: var(--color-alert); }
   .shui-new-worker-step[data-state="pending"] { color: var(--color-ink-faint); }
   .shui-new-worker-step[data-state="pending"] .shui-new-worker-step-mark { opacity: 0.4; }
+  .shui-new-worker-step[data-state="skipped"] { color: var(--color-ink-faint); }
+  .shui-new-worker-step[data-state="skipped"] .shui-new-worker-step-mark { opacity: 0.6; }
+  /* What a step's outcome means, under its label: a human-sized sentence. */
+  .shui-new-worker-step-note {
+    grid-column: 2 / -1;
+    max-width: 72ch;
+    margin: 2px 0 0;
+    font: 400 12px / 18px var(--font-sans);
+    color: var(--color-ink-faint);
+  }
   .shui-new-worker-step-detail {
     font: 400 11px / 16px var(--font-mono);
     color: var(--color-ink-faint);
@@ -1418,6 +1430,72 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
+
+  /* ── worker templates and new workers (coder::list-templates and
+        coder::scaffold-worker chat calls): the file-change card's frame,
+        the New worker dialog's steps ── */
+  .shui-scaffold {
+    container-type: inline-size;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+  }
+  .shui-scaffold-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 10px 12px;
+    background: var(--color-panel-raised);
+  }
+  .shui-scaffold-icon { flex: none; width: 16px; height: 16px; color: var(--color-ink-faint); }
+  .shui-scaffold-heading { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; }
+  .shui-scaffold-title { font: 500 13px / 18px var(--font-sans); overflow-wrap: anywhere; }
+  .shui-scaffold-sub {
+    overflow: hidden;
+    font: 400 11px / 16px var(--font-mono);
+    color: var(--color-ink-faint);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shui-scaffold-body { display: flex; flex-direction: column; gap: 12px; padding: 12px; }
+  .shui-scaffold-body .shui-new-worker-steps { margin: 0; }
+  .shui-scaffold-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  /* The entry file beside "Created N files": a quiet link into the IDE. */
+  .shui-scaffold-file {
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: var(--color-ink-faint);
+    text-decoration: underline;
+    text-decoration-color: var(--color-edge);
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+  .shui-scaffold-file:hover { color: var(--color-ink); text-decoration-color: currentColor; }
+  .shui-scaffold-file:focus-visible { outline: 2px solid var(--color-rule-focus); outline-offset: 2px; }
+  .shui-scaffold-path { font-family: var(--font-mono); overflow-wrap: anywhere; }
+
+  .shui-templates { margin: 0; padding: 0; list-style: none; }
+  .shui-template { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; }
+  .shui-template + .shui-template { border-top: 1px solid var(--color-edge); }
+  .shui-template-head { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: 8px; min-width: 0; }
+  .shui-template-name { font: 500 13px / 18px var(--font-sans); color: var(--color-ink); }
+  .shui-template-id { font: 400 11px / 16px var(--font-mono); color: var(--color-ink-faint); overflow-wrap: anywhere; }
+  .shui-template-description {
+    display: -webkit-box;
+    overflow: hidden;
+    max-width: 72ch;
+    margin: 0;
+    font: 400 12px / 18px var(--font-sans);
+    color: var(--color-ink-faint);
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  .shui-template-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 
   /* stash and history lists */
   .shui-log-rows { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
