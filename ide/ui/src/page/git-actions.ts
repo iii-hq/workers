@@ -4,6 +4,7 @@
    form, cwd-scoped to the browsed root, so nothing is shell-tokenized. */
 
 import type { Host } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { coderDelete, coderReadFile, coderWriteFile, joinPath } from './coder'
 import type { GitChange, GitFileStatus } from './git'
 import { isMissingFileError } from './load-error'
@@ -418,7 +419,8 @@ export async function gitIgnore(host: Host, root: string, paths: readonly string
     mode = out.mode ?? null
     revision = out.revision ?? null
   } catch (err) {
-    if (!isMissingFileError(err instanceof Error ? err.message : String(err))) throw err
+    // The bus rejects with the handler's error body, not an Error.
+    if (!isMissingFileError(errorMessage(err))) throw err
   }
   const next = withIgnored(existing, paths)
   if (next === null) return 0

@@ -158,7 +158,7 @@ export function StashView({
     try {
       const [first] = await gitStashFiles(host, root ?? '', stash.sha)
       if (first) onOpenDiff(first.path, stashFileSource(stash, first), pin)
-      else setNote({ text: `${stash.ref} records no file changes`, failed: false })
+      else setNote({ text: `${stash.ref} changed nothing under this folder`, failed: false })
     } catch (err: unknown) {
       setNote({ text: `show diff failed: ${errorMessage(err)}`, failed: true })
     }

@@ -386,10 +386,13 @@ describe('.gitignore', () => {
   })
 
   it('creates the file when it is missing and writes against the revision read', async () => {
-    const missing = new Error('handler error: {"code":"C211","message":"not found or not accessible"}')
-    const created = hostWith(missing, { results: [{ path: '/r/.gitignore', success: true, bytes_written: 6 }] })
+    // The bus rejects with the handler's error body, not an Error.
+    const created = hostWith({ results: [{ path: '/r/.gitignore', success: true, bytes_written: 6 }] })
+    created.trigger.mockRejectedValueOnce({
+      message: 'handler error: {"code":"C211","message":"/r/.gitignore: not found or not accessible."}',
+    })
     await expect(gitIgnore(created.host, '/r', ['out/'])).resolves.toBe(1)
-    expect(created.calls[1]).toEqual({ files: [{ path: '/r/.gitignore', content: '/out/\n', overwrite: true }] })
+    expect(created.calls[0]).toEqual({ files: [{ path: '/r/.gitignore', content: '/out/\n', overwrite: true }] })
 
     const edited = hostWith(
       { content: 'x\n', mode: 0o644, revision: 'r1' },
