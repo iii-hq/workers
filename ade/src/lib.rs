@@ -8,6 +8,7 @@ pub mod configuration;
 pub mod conversations;
 pub mod functions;
 pub mod manifest;
+pub mod onboarding;
 pub mod probe;
 pub mod proxy;
 pub mod server;

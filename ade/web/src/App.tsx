@@ -15,6 +15,7 @@ import { ConnectionNotice } from '@/components/ConnectionNotice'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 import { EmailPrompt } from '@/components/EmailPrompt'
 import { ExtOverlays } from '@/components/ExtOverlays'
+import { OnboardingWizardHost } from '@/components/onboarding/OnboardingWizard'
 import { PaletteHost, type PaletteWorkspace } from '@/components/PaletteHost'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
@@ -505,6 +506,7 @@ export function App({
         ) : null}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
         <EmailPrompt />
+        <OnboardingWizardHost />
         <PaletteHost
           open={paletteOpen}
           onOpenChange={setPaletteOpen}

@@ -69,6 +69,10 @@ import { ChatFileNavigation, openChatFile } from '@/lib/file-navigation'
 import { createWorkspaceFileSearch } from '@/lib/file-search'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { getIiiClient } from '@/lib/iii-client'
+import {
+  onboardingWizardAvailable,
+  requestOnboardingWizard,
+} from '@/lib/onboarding/open'
 import { withScreenWakeLock } from '@/lib/screen-wake-lock'
 import { newMessageId } from '@/lib/session-id'
 import { isCallSettled } from '@/lib/sessions/entry-mapper'
@@ -287,6 +291,13 @@ export function ChatView({
     if (readOnly) return
     setModelPickerOpenRequest((current) => (current ?? 0) + 1)
   }, [readOnly])
+  /* With no model yet, setup does the whole job — find a signed-in CLI or a
+     key on this machine, add the worker, store the key — where the picker
+     can only list providers. The picker stays the fallback. */
+  const handleConfigureProvider = useCallback(() => {
+    if (onboardingWizardAvailable()) requestOnboardingWizard('machine')
+    else handleOpenModelPicker()
+  }, [handleOpenModelPicker])
   /* An agent profile that pins the model locks the model-and-reasoning panel
      (ChatSettingsSheet passes `modelDisabled` to the panel that carries the
      effort control, not only to the model list). */
@@ -2852,7 +2863,7 @@ export function ChatView({
             onAlwaysAllow={handleAlwaysAllow}
             onResolveFilesystemAccess={handleFilesystemResolve}
             onManageFilesystemAccess={handleManageFilesystemAccess}
-            onConfigureProvider={handleOpenModelPicker}
+            onConfigureProvider={handleConfigureProvider}
             workingDir={conversation.workingDir ?? null}
             onWorkingDirChange={
               workingDirEnabled ? handleWorkingDirChange : undefined

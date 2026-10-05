@@ -17,6 +17,7 @@ import {
   type KeybindingActionId,
   keybinding,
 } from '@/lib/keybindings/registry'
+import { requestOnboardingWizard } from '@/lib/onboarding/open'
 import { usePageCommands } from '@/lib/page-commands'
 import { usePaletteSources } from '@/lib/palette/providers'
 import type { PaletteEntry } from '@/lib/palette/sources'
@@ -274,6 +275,22 @@ export function PaletteHost({
         keywords: ['configuration', 'preferences'],
         shortcut: bindingsFor('app.settings', platform)[0],
         run: onOpenSettings,
+      },
+      {
+        id: 'action:setup',
+        kind: 'action',
+        title: 'Set up the harness',
+        detail: 'Connect models, store keys safely, and set up Judge',
+        keywords: [
+          'onboarding',
+          'provider',
+          'model',
+          'key',
+          'judge',
+          'wizard',
+          'welcome',
+        ],
+        run: () => requestOnboardingWizard(),
       },
       {
         id: 'action:shortcuts',
