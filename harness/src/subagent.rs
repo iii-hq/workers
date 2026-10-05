@@ -1158,6 +1158,7 @@ mod tests {
         assert_eq!(serde_json::to_value(options).unwrap(), inherited);
 
         for requested in [
+            ThinkingLevel::Off,
             ThinkingLevel::Minimal,
             ThinkingLevel::Low,
             ThinkingLevel::Medium,

@@ -332,6 +332,19 @@ providers) never reports one. `default_thinking_level` is copied from the
 declaration; absent means the caller should omit the level and let the
 provider apply its own default.
 
+### Thinking levels
+
+`router::chat` takes `thinking_level`: `off`, `minimal`, `low`, `medium`,
+`high` or `xhigh`. Each provider maps a level onto its own knob and warns
+when a model cannot honour it. `off` asks for no reasoning at all and is
+honoured only where the model's descriptor says `supports_thinking_off:
+true` (a native switch exists: OpenAI `reasoning_effort: none` on the
+models that take it, DeepSeek and GLM `thinking.type: disabled`, Anthropic
+Sonnet 5.5 `between_tools`). `false` means the model always reasons or the
+provider has no switch; absent means the provider does not know. Consoles
+offer, hide or disable the Off choice accordingly. A provider that cannot
+switch reasoning off sends its lowest effort instead and reports a warning.
+
 ### Speech providers
 
 A speech provider is the same kind of worker with no chat stream: it
