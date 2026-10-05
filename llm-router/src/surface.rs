@@ -16,8 +16,8 @@ use crate::types::router::{
     FunctionsChangedEvent, ModelBudgetRequest, ModelBudgetResponse, ModelGetRequest,
     ModelGetResponse, ModelsListRequest, ModelsListResponse, ModelsReconcileRequest,
     ModelsReconcileResponse, ModelsSupportsRequest, ModelsSupportsResponse, ProviderListRequest,
-    ProviderListResponse, ProviderRegisterRequest, ProviderRegisterResponse,
-    ProviderResolveRequest, ProviderResolveResponse, RouteRequest, RouteResponse, RouterAck,
+    ProviderListResponse, ProviderRegisterRequest, ProviderRegisterResponse, ProviderResolveOutput,
+    ProviderResolveRequest, RouteRequest, RouteResponse, RouterAck, SecretChangedEvent,
     UpdateCredentialRequest, UpdateCredentialResponse,
 };
 
@@ -80,7 +80,8 @@ pub const MODELS_SUPPORTS_DESC: &str =
 
 pub const PROVIDER_LIST_ID: &str = "router::provider::list";
 pub const PROVIDER_LIST_DESC: &str =
-    "List registered providers with their configured/available status.";
+    "List registered providers with their configured/available status and where each \
+     credential comes from (credential_source, credential_ref, credential_error; never a value).";
 
 pub const ROUTE_ID: &str = "router::route";
 pub const ROUTE_DESC: &str = "Read-only routing preview: resolve {model, provider?} to the chosen \
@@ -92,7 +93,8 @@ pub const PROVIDER_REGISTER_DESC: &str = "Provider self-declaration at attach ti
 
 pub const PROVIDER_RESOLVE_ID: &str = "router::provider::resolve";
 pub const PROVIDER_RESOLVE_DESC: &str =
-    "Resolve a provider's effective credential + api_url + max_tokens (token-gated).";
+    "Resolve a provider's effective credential + api_url + max_tokens (token-gated); a \
+     secret://NAME api_key resolves through the secrets worker.";
 
 pub const UPDATE_CREDENTIAL_ID: &str = "router::provider::update_credential";
 pub const UPDATE_CREDENTIAL_DESC: &str = "OAuth write-back: store a provider credential in the \
@@ -112,6 +114,11 @@ pub const ON_CONFIG_CHANGED_ID: &str = "router::on_config_changed";
 pub const ON_CONFIG_CHANGED_DESC: &str =
     "Internal: reactively reload the in-memory configuration snapshot and \
      fan out provider model discovery after configuration changes.";
+
+pub const ON_SECRET_CHANGED_ID: &str = "router::on_secret_changed";
+pub const ON_SECRET_CHANGED_DESC: &str =
+    "Internal: a secret changed in the secrets worker — re-resolve the secret:// \
+     credential reference and refresh the providers that use it.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.
@@ -178,7 +185,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
             PROVIDER_REGISTER_ID,
             PROVIDER_REGISTER_DESC,
         ),
-        spec::<ProviderResolveRequest, ProviderResolveResponse>(
+        spec::<ProviderResolveRequest, ProviderResolveOutput>(
             PROVIDER_RESOLVE_ID,
             PROVIDER_RESOLVE_DESC,
         ),
@@ -195,5 +202,6 @@ pub fn catalog() -> Vec<FunctionSpec> {
             ON_FUNCTIONS_CHANGED_ID,
             ON_FUNCTIONS_CHANGED_DESC,
         ),
+        spec::<SecretChangedEvent, RouterAck>(ON_SECRET_CHANGED_ID, ON_SECRET_CHANGED_DESC),
     ]
 }

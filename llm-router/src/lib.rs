@@ -13,6 +13,7 @@ pub mod provider_scaffold;
 pub mod register;
 pub mod registry;
 pub mod routing;
+pub mod secrets;
 pub mod settings;
 pub mod speech;
 pub mod state;

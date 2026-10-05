@@ -31,12 +31,25 @@ pub async fn resolve(
         payload["token"] = json!(t);
     }
     let raw = call(iii, "router::provider::resolve", payload).await?;
+    let explicit_reference = names_a_secret_reference(&raw);
     let resp: ProviderResolveResponse = serde_json::from_value(raw).map_err(|e| Error::Remote {
         code: "provider/bad_resolve_response".into(),
         message: e.to_string(),
         stacktrace: None,
     })?;
+    if explicit_reference {
+        // The operator chose a `secret://` reference: when it does not
+        // resolve, the router's `credential_error` stands rather than this
+        // process's env key quietly taking over.
+        return Ok(resp);
+    }
     Ok(apply_credential_env_fallback(resp, credential_env_var))
+}
+
+/// Whether the router resolved (or failed to resolve) a `secret://`
+/// reference — `credential_source: "secret"`, absent from older routers.
+fn names_a_secret_reference(raw: &Value) -> bool {
+    raw.get("credential_source").and_then(Value::as_str) == Some("secret")
 }
 
 /// `router::models::reconcile` — replace this provider's catalog slice.
@@ -105,7 +118,7 @@ pub fn apply_credential_env_fallback(
 
 #[cfg(test)]
 mod fallback_tests {
-    use super::with_api_key_fallback;
+    use super::{names_a_secret_reference, with_api_key_fallback};
     use crate::types::credential::Credential;
     use crate::types::router::{CredentialSource, ProviderResolveResponse};
 
@@ -167,6 +180,23 @@ mod fallback_tests {
             with_api_key_fallback(none_resp(), Some("  \n".into())).credential,
             None
         );
+    }
+
+    #[test]
+    fn only_a_secret_reference_opts_out_of_the_env_fallback() {
+        assert!(names_a_secret_reference(&serde_json::json!({
+            "configured": false, "source": "none", "credential": null,
+            "credential_source": "secret", "credential_ref": "secret://K",
+            "credential_error": "secret K not found in the secrets worker",
+        })));
+        // older routers carry no credential_source
+        assert!(!names_a_secret_reference(&serde_json::json!({
+            "configured": false, "source": "none", "credential": null,
+        })));
+        assert!(!names_a_secret_reference(&serde_json::json!({
+            "configured": false, "source": "none", "credential": null,
+            "credential_source": "none",
+        })));
     }
 
     #[test]

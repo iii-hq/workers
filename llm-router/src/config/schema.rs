@@ -5,6 +5,12 @@ use crate::settings::MAX_RETRY_MAX;
 use crate::types::errors::{RouterCode, RouterError};
 use serde_json::{json, Value};
 
+/// Shown beside the default slice's `api_key` field.
+pub const API_KEY_DESCRIPTION: &str = "Provider API key, or a secret://NAME reference \
+     (e.g. secret://ANTHROPIC_API_KEY) that llm-router resolves at runtime from the secrets \
+     worker, so the key itself stays out of this versioned entry. Unset falls back to the \
+     provider's environment variable.";
+
 pub fn default_provider_schema(defaults: &Value) -> Value {
     let mut api_url = json!({ "type": "string" });
     if let Some(u) = defaults.get("api_url").and_then(Value::as_str) {
@@ -18,7 +24,12 @@ pub fn default_provider_schema(defaults: &Value) -> Value {
         "type": "object",
         "additionalProperties": true,
         "properties": {
-            "api_key": { "type": "string", "writeOnly": true, "format": "password" },
+            "api_key": {
+                "type": "string",
+                "writeOnly": true,
+                "format": "password",
+                "description": API_KEY_DESCRIPTION,
+            },
             "api_url": api_url,
             "max_tokens": max_tokens,
         }
@@ -99,6 +110,10 @@ mod tests {
         let s = default_provider_schema(&json!({ "api_url": "https://x", "max_tokens": 8192 }));
         assert_eq!(s["properties"]["api_key"]["writeOnly"], true);
         assert_eq!(s["properties"]["api_key"]["format"], "password");
+        assert!(s["properties"]["api_key"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("secret://NAME"));
         assert_eq!(s["properties"]["api_url"]["default"], "https://x");
         assert_eq!(s["properties"]["max_tokens"]["default"], 8192);
     }

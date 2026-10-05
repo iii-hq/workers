@@ -1,6 +1,7 @@
 //! Wiring: restore stores → register and fetch configuration → build the live
-//! in-memory snapshot → register functions → bind and reconcile the
-//! configuration trigger → emit `router::ready`.
+//! in-memory snapshot and the secret-reference cache → register functions →
+//! bind and reconcile the configuration trigger → emit `router::ready` → bind
+//! the (optional) `secrets::changed` trigger.
 //!
 //! Function registrations use `iii_sdk` directly, with the shared typed
 //! registration adapter where malformed payloads have a stable public error
@@ -8,6 +9,7 @@
 //! fan out via worker-owned trigger types (`triggers::RouterEvents`).
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
@@ -27,16 +29,23 @@ use crate::chat::inflight::InflightMap;
 use crate::config::entry::{read_entry_value, register_entry, EntryWriteLock};
 use crate::config::on_changed::make_on_config_changed;
 use crate::config::schema::provider_entry_schema;
-use crate::config::state::{new_config_cell, ConfigCell};
+use crate::config::state::{new_config_cell, snapshot, ConfigCell};
 use crate::provider_scaffold::registration::typed_async_with_bad_request;
 use crate::registry::availability::make_provider_list;
+use crate::registry::refresh::{bus_fire, RefreshQueue};
 use crate::registry::register::make_provider_register;
-use crate::registry::resolve::{make_provider_resolve, make_update_credential};
+use crate::registry::resolve::{make_provider_resolve, make_update_credential, referenced_secrets};
 use crate::registry::store::RegistryStore;
+use crate::secrets::on_changed::{make_on_secret_changed, refresh_referencing_providers};
+use crate::secrets::{bus_fetch, spawn_unavailable_retry, SecretCache};
 use crate::surface;
 use crate::triggers::RouterEvents;
 use crate::types::errors::invalid_request_from_serde;
 use crate::types::router::{ConfigChangedEvent, FunctionsChangedEvent, RouterAck};
+
+/// Quiet period before queued provider follow-ups (discovery after a
+/// configuration change, a credential refresh after a secret change) fire.
+const REFRESH_DEBOUNCE: Duration = Duration::from_millis(2000);
 
 /// `metadata.internal = true` keeps a registration out of the default
 /// `engine::functions::list`: orchestrator/provider plumbing, invoked by id.
@@ -75,6 +84,14 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     register_entry(&iii, &provider_schemas).await?;
     let config = new_config_cell(read_entry_value(&iii).await?);
 
+    // Provider follow-ups share one debounce, and `secret://NAME` references
+    // resolve through the `secrets` worker into an in-memory cache whose
+    // changes refresh the providers that use them.
+    let refresh = RefreshQueue::new(bus_fire(iii.clone()), REFRESH_DEBOUNCE);
+    let secrets = Arc::new(SecretCache::new(bus_fetch(iii.clone())).with_listener(
+        refresh_referencing_providers(config.clone(), refresh.clone()),
+    ));
+
     // 4. Shared runtime state + router event fan-out.
     let inflight = Arc::new(InflightMap::default());
     let events = RouterEvents::register(&iii);
@@ -85,6 +102,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         catalog: catalog.clone(),
         inflight: inflight.clone(),
         config: config.clone(),
+        secrets: secrets.clone(),
         events: events.clone(),
     });
 
@@ -188,8 +206,12 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     );
     iii.register_function(
         surface::PROVIDER_LIST_ID,
-        RegisterFunction::new_async(make_provider_list(config.clone(), registry.clone()))
-            .description(surface::PROVIDER_LIST_DESC),
+        RegisterFunction::new_async(make_provider_list(
+            config.clone(),
+            registry.clone(),
+            secrets.clone(),
+        ))
+        .description(surface::PROVIDER_LIST_DESC),
     );
     iii.register_function(
         surface::ROUTE_ID,
@@ -218,9 +240,13 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     );
     iii.register_function(
         surface::PROVIDER_RESOLVE_ID,
-        RegisterFunction::new_async(make_provider_resolve(config.clone(), registry.clone()))
-            .description(surface::PROVIDER_RESOLVE_DESC)
-            .metadata(internal_meta()),
+        RegisterFunction::new_async(make_provider_resolve(
+            config.clone(),
+            registry.clone(),
+            secrets.clone(),
+        ))
+        .description(surface::PROVIDER_RESOLVE_DESC)
+        .metadata(internal_meta()),
     );
     iii.register_function(
         surface::UPDATE_CREDENTIAL_ID,
@@ -263,7 +289,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             lookup,
             config.clone(),
             entry_lock.clone(),
-            2000,
+            secrets.clone(),
+            refresh.clone(),
         )
     };
     iii.register_function(
@@ -324,17 +351,23 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     // provider's own periodic timer (three minutes for openai-codex). Watch
     // the engine's registration stream and re-run the same nudge, so a
     // returning provider is resolvable in seconds instead of minutes.
+    //
+    // The same stream is how a router that booted before the secrets worker
+    // learns it arrived: references that failed as unreachable are re-read,
+    // and any that now resolve refresh their providers.
     {
         let iii_handler = iii.clone();
         let sweep = crate::registry::rediscover::spawn_debounced_sweep(iii_handler);
+        let secrets_retry = spawn_unavailable_retry(secrets.clone());
         iii.register_function(
             surface::ON_FUNCTIONS_CHANGED_ID,
             RegisterFunction::new_async(move |_event: FunctionsChangedEvent| {
-                let sweep = sweep.clone();
+                let (sweep, secrets_retry) = (sweep.clone(), secrets_retry.clone());
                 async move {
                     // Coalesce the boot burst: the handler only marks work
                     // pending, the sweep task fires once it goes quiet.
                     sweep.request();
+                    secrets_retry.request();
                     Ok::<RouterAck, Error>(RouterAck { ok: true })
                 }
             })
@@ -350,6 +383,32 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             // timer, exactly as before this binding existed.
             tracing::warn!(error = %e, "binding engine::functions-available failed; provider re-discovery falls back to each provider's periodic refresh");
         }
+    }
+
+    // 8. Secret changes. `secrets::changed` belongs to the optional `secrets`
+    // worker: when it is absent the engine parks this binding and activates
+    // it once the type registers (and again after a secrets worker restart),
+    // so nothing here retries. Cache TTLs bound staleness if an event is
+    // ever missed.
+    iii.register_function(
+        surface::ON_SECRET_CHANGED_ID,
+        RegisterFunction::new_async(make_on_secret_changed(config.clone(), secrets.clone()))
+            .description(surface::ON_SECRET_CHANGED_DESC)
+            .metadata(json!({ "internal": true, "trace_hidden": true })),
+    );
+    if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
+        crate::secrets::CHANGED_TRIGGER_TYPE,
+        surface::ON_SECRET_CHANGED_ID,
+        json!({}),
+    )) {
+        tracing::warn!(error = %e, "binding secrets::changed failed; secret references refresh on their cache TTL only");
+    }
+    // Warm the cache off the boot path; a secrets worker that is not up yet
+    // is retried when it registers (see the registration stream above).
+    {
+        let names: Vec<String> = referenced_secrets(&snapshot(&config)).into_keys().collect();
+        let secrets = secrets.clone();
+        tokio::spawn(async move { secrets.ensure(names).await });
     }
 
     Ok(RouterRefs {

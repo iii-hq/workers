@@ -1,22 +1,25 @@
 //! `router::on_config_changed` — the iii function bound to the engine's
 //! `configuration` trigger (paste-a-key flow, spec § Triggers bound).
-//! Fingerprint → diff → debounce → `provider::<id>::refresh_models`
-//! (fire-and-forget iii call) + whole-snapshot configuration refresh.
+//! Fingerprint → diff → resolve the changed slices' `secret://` references →
+//! debounce → `provider::<id>::refresh_models` (fire-and-forget iii call) +
+//! whole-snapshot configuration refresh.
 //!
-//! Engine-backed coverage: tests/integration.rs (paste-a-key flow).
+//! Engine-backed coverage: tests/integration.rs (paste-a-key flow, with a
+//! literal key and with a secret reference).
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use super::entry::{read_entry_value, EntryWriteLock};
 use super::fingerprint::{changed_slices, fingerprint_slices};
 use super::state::{apply_config, snapshot, ConfigCell};
+use crate::registry::refresh::{Refresh, RefreshQueue};
+use crate::registry::resolve::referenced_secrets;
+use crate::secrets::{Refetch, SecretCache};
 use crate::settings::provider_slices;
 use crate::types::router::{ConfigChangedEvent, RouterAck};
 
@@ -29,7 +32,8 @@ pub fn make_on_config_changed(
     supports_model_listing: ListingLookup,
     config: ConfigCell,
     entry_lock: EntryWriteLock,
-    debounce_ms: u64,
+    secrets: Arc<SecretCache>,
+    refresh: RefreshQueue,
 ) -> impl Fn(ConfigChangedEvent) -> BoxFuture<'static, Result<RouterAck, Error>>
        + Send
        + Sync
@@ -41,8 +45,6 @@ pub fn make_on_config_changed(
         fingerprint_slices(&serde_json::to_value(slices).unwrap_or(Value::Null))
     };
     let last_fingerprints = Arc::new(Mutex::new(initial_fingerprints));
-    let pending: Arc<Mutex<BTreeSet<String>>> = Arc::default();
-    let flush_generation: Arc<AtomicU64> = Arc::default();
 
     move |_event: ConfigChangedEvent| {
         let iii = iii.clone();
@@ -50,8 +52,8 @@ pub fn make_on_config_changed(
         let config = config.clone();
         let entry_lock = entry_lock.clone();
         let last_fingerprints = last_fingerprints.clone();
-        let pending = pending.clone();
-        let flush_generation = flush_generation.clone();
+        let secrets = secrets.clone();
+        let refresh = refresh.clone();
         Box::pin(async move {
             // The trigger payload is advisory and this function is also
             // discoverable on the bus. Re-fetching prevents a direct caller
@@ -98,46 +100,90 @@ pub fn make_on_config_changed(
                 );
                 return Ok(RouterAck { ok: false });
             };
-            let mut any_pending = false;
-            for id in changed {
-                if supports(&id).await {
-                    pending.lock().unwrap().insert(id);
-                    any_pending = true;
-                }
-            }
-            if !any_pending && pending.lock().unwrap().is_empty() {
-                return Ok(RouterAck { ok: true });
-            }
-
-            // Debounce: each event arms a fresh flush; a superseded task
-            // notices via the generation check and exits BEFORE draining.
-            // Never abort a task — one past its drain has sole custody of
-            // the taken ids (their fingerprints already advanced), so a
-            // mid-flush kill would silently drop refreshes.
-            let generation = flush_generation.fetch_add(1, Ordering::SeqCst) + 1;
-            let pending = pending.clone();
-            let flush_generation = flush_generation.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(debounce_ms)).await;
-                if flush_generation.load(Ordering::SeqCst) != generation {
-                    return; // a newer event re-armed the flush; it owns the drain
-                }
-                let ids: Vec<String> = std::mem::take(&mut *pending.lock().unwrap())
-                    .into_iter()
-                    .collect();
-                for id in ids {
-                    // fire-and-forget; discovery reports back via models::reconcile
-                    let _ = iii
-                        .trigger(TriggerRequest {
-                            function_id: format!("provider::{id}::refresh_models"),
-                            payload: json!({}),
-                            action: None,
-                            timeout_ms: None,
-                        })
-                        .await;
-                }
-            });
+            follow_up(changed, &config, &secrets, &refresh, &supports).await;
             Ok(RouterAck { ok: true })
         })
+    }
+}
+
+/// After a new snapshot is installed: drop cached secrets no slice
+/// references any more, re-read the references of the changed slices, and
+/// only then queue discovery — so a pasted `secret://NAME` is resolvable by
+/// the time the provider's `refresh_models` asks `router::provider::resolve`.
+async fn follow_up(
+    changed: Vec<String>,
+    config: &ConfigCell,
+    secrets: &SecretCache,
+    refresh: &RefreshQueue,
+    supports_model_listing: &ListingLookup,
+) {
+    let referenced = referenced_secrets(&snapshot(config));
+    secrets.retain(&referenced.keys().cloned().collect());
+    let touched: Vec<String> = referenced
+        .into_iter()
+        .filter(|(_, providers)| providers.iter().any(|id| changed.contains(id)))
+        .map(|(name, _)| name)
+        .collect();
+    secrets.refresh(touched, Refetch::KeepLastGood).await;
+
+    let mut due = BTreeSet::new();
+    for id in changed {
+        if supports_model_listing(&id).await {
+            due.insert(id);
+        }
+    }
+    refresh.schedule(due.into_iter().map(|id| (id, Refresh::Models)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::state::new_config_cell;
+    use crate::registry::refresh::testing::recording_queue;
+    use crate::secrets::testing::FakeSecrets;
+    use serde_json::json;
+    use std::time::Duration;
+
+    fn lists_models() -> ListingLookup {
+        Arc::new(|_id: &str| Box::pin(async { true }))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn changed_slices_resolve_their_references_before_discovery_is_queued() {
+        let fake = FakeSecrets::default();
+        fake.set("ANTHROPIC_API_KEY", Ok("sk-from-secrets"));
+        fake.set("STALE", Ok("old"));
+        let secrets = fake.cache();
+        secrets.ensure(["STALE".to_string()]).await;
+        let (queue, fired) = recording_queue(Duration::from_secs(2));
+        let config = new_config_cell(json!({ "providers": {
+            "anthropic": { "api_key": "secret://ANTHROPIC_API_KEY" },
+            "openai": { "api_key": "secret://OPENAI_API_KEY" },
+        }}));
+
+        follow_up(
+            vec!["anthropic".into()],
+            &config,
+            &secrets,
+            &queue,
+            &lists_models(),
+        )
+        .await;
+
+        // Resolved already — before the debounced refresh_models fires.
+        assert_eq!(
+            secrets.lookup("ANTHROPIC_API_KEY"),
+            Some(Ok("sk-from-secrets".into()))
+        );
+        assert!(fired.lock().unwrap().is_empty());
+        // Unchanged slices are not re-read; unreferenced entries are dropped.
+        assert!(!fake.calls().contains(&"OPENAI_API_KEY".to_string()));
+        assert_eq!(secrets.lookup("STALE"), None);
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert_eq!(
+            *fired.lock().unwrap(),
+            vec!["provider::anthropic::refresh_models".to_string()]
+        );
     }
 }

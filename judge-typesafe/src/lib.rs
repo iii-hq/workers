@@ -12,6 +12,7 @@ pub use transport::{RetryPolicy, DEFAULT_RETRY};
 pub mod config;
 pub mod configuration;
 pub mod register;
+pub mod secrets;
 pub use config::JevConfig;
 pub use configuration::SharedConfig;
 pub use register::register;

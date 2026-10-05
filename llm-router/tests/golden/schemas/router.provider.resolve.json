@@ -1,5 +1,5 @@
 {
-  "description": "Resolve a provider's effective credential + api_url + max_tokens (token-gated).",
+  "description": "Resolve a provider's effective credential + api_url + max_tokens (token-gated); a secret://NAME api_key resolves through the secrets worker.",
   "function_id": "router::provider::resolve",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -87,7 +87,18 @@
           }
         ]
       },
+      "CredentialOrigin": {
+        "description": "`credential_source`: where the precedence found the provider's credential. `secret` is a `secret://NAME` reference in the slice, resolved through the `secrets` worker; `configured` says whether it actually yielded one.",
+        "enum": [
+          "config",
+          "env",
+          "secret",
+          "none"
+        ],
+        "type": "string"
+      },
       "CredentialSource": {
+        "description": "Where the resolved credential came from, as providers read it. A resolved `secret://` reference reports `config` (the reference lives in the configuration entry); `credential_source` tells the two apart.",
         "enum": [
           "config",
           "env",
@@ -96,7 +107,7 @@
         "type": "string"
       }
     },
-    "description": "Output of the `router::provider::resolve` iii function.",
+    "description": "Output of the `router::provider::resolve` iii function: the effective credential and settings plus the credential diagnostics.",
     "properties": {
       "api_url": {
         "type": [
@@ -117,6 +128,31 @@
           }
         ]
       },
+      "credential_error": {
+        "description": "Why the configured credential cannot be used, in words an operator can act on (e.g. the secret is missing or this worker may not read it).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "credential_ref": {
+        "description": "The slice's `secret://NAME` reference, when it uses one.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "credential_source": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CredentialOrigin"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Where the credential comes from: `config`, `env`, `secret` or `none`."
+      },
       "max_tokens": {
         "format": "uint64",
         "minimum": 0.0,
@@ -133,7 +169,7 @@
       "configured",
       "source"
     ],
-    "title": "ProviderResolveResponse",
+    "title": "ProviderResolveOutput",
     "type": "object"
   }
 }
