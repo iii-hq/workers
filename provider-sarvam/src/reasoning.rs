@@ -23,6 +23,7 @@ pub fn reasoning_effort_for(level: Option<ThinkingLevel>, model: &str) -> Option
         return None;
     }
     Some(match level? {
+        ThinkingLevel::Off => return None, // no off switch; the caller warns
         ThinkingLevel::Minimal | ThinkingLevel::Low => "low",
         ThinkingLevel::Medium => "medium",
         ThinkingLevel::High | ThinkingLevel::Xhigh => "high",
@@ -32,6 +33,14 @@ pub fn reasoning_effort_for(level: Option<ThinkingLevel>, model: &str) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn off_has_no_switch_on_sarvam() {
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Off), "sarvam-105b"),
+            None
+        );
+    }
 
     #[test]
     fn catalog_flag_wins_over_id_pattern() {

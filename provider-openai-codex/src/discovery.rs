@@ -151,6 +151,12 @@ fn map_models(mut remote: Vec<CodexModel>) -> Vec<Model> {
                 input_limit: None,
                 supports_thinking: Some(supports_thinking),
                 supports_xhigh: Some(supports_xhigh),
+                supports_thinking_off: supports_thinking.then(|| {
+                    model
+                        .supported_reasoning_levels
+                        .iter()
+                        .any(|level| level.effort == "none")
+                }),
                 reasoning_efforts,
                 supports_tools: Some(true),
                 supports_vision: Some(supports_vision),

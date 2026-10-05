@@ -27,6 +27,11 @@ fn fallback_model(base_id: &str, display_name: &str, adaptive: bool) -> Model {
         input_limit: None,
         supports_thinking: Some(adaptive),
         supports_xhigh: None,
+        supports_thinking_off: if adaptive {
+            crate::thinking::supports_off(base_id)
+        } else {
+            None
+        },
         reasoning_efforts: None,
         supports_tools: Some(true),
         supports_vision: Some(true),

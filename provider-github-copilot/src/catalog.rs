@@ -72,6 +72,7 @@ pub fn model_from_row(row: &Value) -> Option<Model> {
         // unknown rather than unsupported.
         supports_thinking: None,
         supports_xhigh: None,
+        supports_thinking_off: None,
         reasoning_efforts: None,
         supports_tools: Some(supports(row, "tool_calls")),
         supports_vision: Some(supports(row, "vision")),

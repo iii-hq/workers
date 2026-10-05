@@ -9,23 +9,47 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ThinkingConfig {
     #[serde(rename = "type")]
-    pub mode: &'static str, // always "adaptive"
+    pub mode: &'static str, // "adaptive", or "between_tools" for off
     /// Adaptive models default `display` to "omitted" (empty thinking text
     /// on the wire); "summarized" restores readable reasoning for the live
     /// thought panes. The raw chain of thought is never exposed either way.
-    pub display: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display: Option<&'static str>,
 }
 
 pub const ADAPTIVE: ThinkingConfig = ThinkingConfig {
     mode: "adaptive",
-    display: "summarized",
+    display: Some("summarized"),
 };
+
+/// Up-front thinking off. The current generation has thinking on by default
+/// and rejects `{type: "disabled"}`; Sonnet 5.5 documents `between_tools`
+/// as its off switch (build-with-claude/thinking).
+pub const BETWEEN_TOOLS: ThinkingConfig = ThinkingConfig {
+    mode: "between_tools",
+    display: None,
+};
+
+/// Whether `thinking_level: off` can be honoured on `model` (base id, no
+/// provider prefix): `Some(true)` for Sonnet 5.5 (`between_tools`),
+/// `Some(false)` for the always-on models (Opus 5.5, Fable, Mythos), `None`
+/// where the docs read today do not say.
+pub fn supports_off(model: &str) -> Option<bool> {
+    let id = model.to_ascii_lowercase();
+    if id.contains("sonnet-5-5") {
+        Some(true)
+    } else if id.contains("opus-5-5") || id.contains("fable") || id.contains("mythos") {
+        Some(false)
+    } else {
+        None
+    }
+}
 
 /// thinking_level → `output_config.effort`. Minimal has no effort
 /// equivalent; low is the closest depth.
 fn effort_for(level: ThinkingLevel) -> &'static str {
     match level {
-        ThinkingLevel::Minimal | ThinkingLevel::Low => "low",
+        ThinkingLevel::Off | ThinkingLevel::Minimal | ThinkingLevel::Low => "low",
         ThinkingLevel::Medium => "medium",
         ThinkingLevel::High => "high",
         ThinkingLevel::Xhigh => "xhigh",
@@ -65,6 +89,28 @@ pub fn build_thinking_config(level: Option<ThinkingLevel>, model: Option<&Model>
             warnings,
         };
     }
+    if level == ThinkingLevel::Off {
+        return match model.map(|m| m.id.as_str()).and_then(supports_off) {
+            Some(true) => ThinkingBuild {
+                config: Some(BETWEEN_TOOLS),
+                effort: None,
+                warnings,
+            },
+            // Thinking cannot be turned off here (or the docs do not say it
+            // can): the lowest effort is the closest honest answer.
+            _ => {
+                warnings.push(
+                    "thinking_level off degraded to low: this model cannot turn thinking off"
+                        .to_string(),
+                );
+                ThinkingBuild {
+                    config: Some(ADAPTIVE),
+                    effort: Some("low"),
+                    warnings,
+                }
+            }
+        };
+    }
     let effective =
         if level == ThinkingLevel::Xhigh && model.and_then(|m| m.supports_xhigh) == Some(false) {
             warnings.push(format!(
@@ -85,6 +131,32 @@ pub fn build_thinking_config(level: Option<ThinkingLevel>, model: Option<&Model>
 mod tests {
     use super::*;
 
+    #[test]
+    fn off_is_between_tools_on_sonnet_5_5_and_degrades_to_low_elsewhere() {
+        let mut sonnet = model(Some(true), Some(true));
+        sonnet.id = "claude-code/claude-sonnet-5-5".into();
+        let built = build_thinking_config(Some(ThinkingLevel::Off), Some(&sonnet));
+        assert_eq!(built.config, Some(BETWEEN_TOOLS));
+        assert_eq!(built.effort, None);
+        assert!(built.warnings.is_empty());
+        assert_eq!(
+            serde_json::to_value(BETWEEN_TOOLS).unwrap(),
+            serde_json::json!({ "type": "between_tools" }),
+            "no display field rides with between_tools"
+        );
+
+        let mut opus = model(Some(true), Some(true));
+        opus.id = "claude-code/claude-opus-5-5".into();
+        let built = build_thinking_config(Some(ThinkingLevel::Off), Some(&opus));
+        assert_eq!(built.config, Some(ADAPTIVE));
+        assert_eq!(built.effort, Some("low"));
+        assert_eq!(built.warnings.len(), 1, "{:?}", built.warnings);
+
+        assert_eq!(supports_off("claude-sonnet-5-5"), Some(true));
+        assert_eq!(supports_off("claude-fable-5-1"), Some(false));
+        assert_eq!(supports_off("claude-sonnet-4-6"), None);
+    }
+
     fn model(thinking: Option<bool>, xhigh: Option<bool>) -> Model {
         Model {
             id: "claude-test".into(),
@@ -95,6 +167,7 @@ mod tests {
             input_limit: None,
             supports_thinking: thinking,
             supports_xhigh: xhigh,
+            supports_thinking_off: None,
             reasoning_efforts: None,
             supports_tools: Some(true),
             supports_vision: Some(true),

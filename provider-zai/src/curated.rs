@@ -22,6 +22,16 @@ struct Row {
 /// deliberately absent.
 const ROWS: &[Row] = &[
     Row {
+        // guides/llm/glm-5.3 (released 2026-08-18) and guides/overview/pricing,
+        // read 2026-10-05.
+        id: "glm-5.3",
+        display: "GLM 5.3",
+        context_window: 1_000_000,
+        max_output_tokens: 128_000,
+        vision: false,
+        price: (1.40, 0.26, 4.40),
+    },
+    Row {
         id: "glm-5.2",
         display: "GLM 5.2",
         context_window: 1_000_000,
@@ -158,8 +168,9 @@ const ROWS: &[Row] = &[
 /// GLM-5.2, GLM-5-Turbo, GLM-4.7) plus the
 /// additional codes the coding-tools guide documents for that endpoint
 /// (docs.z.ai scenario-example/develop-tools/others: GLM-5.1, GLM-5,
-/// GLM-4.5-air). The coding-only GLM-5.3 record is added separately below.
-const CODING_PLAN_IDS: [&str; 6] = [
+/// GLM-4.5-air), and GLM-5.3.
+const CODING_PLAN_IDS: [&str; 7] = [
+    "glm-5.3",
     "glm-5.2",
     "glm-5.1",
     "glm-5",
@@ -175,38 +186,10 @@ pub fn models() -> Vec<Model> {
 
 /// The Coding Plan subset of the catalog.
 pub fn coding_models() -> Vec<Model> {
-    std::iter::once(glm_53_coding_model())
-        .chain(
-            ROWS.iter()
-                .filter(|r| CODING_PLAN_IDS.contains(&r.id))
-                .map(to_model),
-        )
+    ROWS.iter()
+        .filter(|r| CODING_PLAN_IDS.contains(&r.id))
+        .map(to_model)
         .collect()
-}
-
-/// GLM-5.3 is currently exclusive to the Coding Plan endpoint. Z.AI has not
-/// launched it on the general API or published USD-per-token pricing, so keep
-/// it separate from `ROWS` and leave pricing absent rather than claiming the
-/// plan's credit multipliers are pay-as-you-go prices.
-fn glm_53_coding_model() -> Model {
-    Model {
-        id: "glm-5.3".into(),
-        provider: PROVIDER_ID.into(),
-        display_name: Some("GLM 5.3".into()),
-        context_window: 1_000_000,
-        max_output_tokens: 128_000,
-        input_limit: None,
-        supports_thinking: Some(true),
-        supports_xhigh: Some(true),
-        reasoning_efforts: None,
-        supports_tools: Some(true),
-        supports_vision: Some(false),
-        supports_cache: Some(true),
-        supports_structured_output: Some(false),
-        thinking_budgets: None,
-        pricing: None,
-        speech: None,
-    }
 }
 
 fn to_model(r: &Row) -> Model {
@@ -222,7 +205,11 @@ fn to_model(r: &Row) -> Model {
         // (docs.z.ai guides/capabilities/thinking: GLM-4.5 and newer).
         supports_thinking: Some(true),
         // `reasoning_effort: xhigh` exists on GLM-5.2+ only.
-        supports_xhigh: Some(r.id.starts_with("glm-5.2")),
+        supports_xhigh: Some(r.id.starts_with("glm-5.2") || r.id.starts_with("glm-5.3")),
+        // `thinking: {type: "disabled"}` works up to GLM-5.2; GLM-5.3 and
+        // GLM-5.3-Flash always reason (guides/llm/glm-5.3: "Disabling
+        // reasoning is no longer supported").
+        supports_thinking_off: Some(!crate::reasoning::always_reasons(r.id)),
         reasoning_efforts: None,
         supports_tools: Some(true),
         supports_vision: Some(r.vision),
@@ -271,11 +258,19 @@ mod tests {
     }
 
     #[test]
-    fn glm_53_is_coding_only_and_has_no_invented_usd_pricing() {
-        assert!(models().iter().all(|m| m.id != "glm-5.3"));
-
+    fn glm_53_is_priced_on_the_general_catalog_and_cannot_turn_thinking_off() {
+        let general = models();
+        let m = general.iter().find(|m| m.id == "glm-5.3").unwrap();
+        assert_eq!(m.supports_thinking_off, Some(false));
+        assert_eq!(
+            general
+                .iter()
+                .find(|m| m.id == "glm-5.2")
+                .unwrap()
+                .supports_thinking_off,
+            Some(true)
+        );
         let coding = coding_models();
-        let m = coding.iter().find(|m| m.id == "glm-5.3").unwrap();
         assert_eq!(coding.first().map(|m| m.id.as_str()), Some("glm-5.3"));
         assert_eq!(m.display_name.as_deref(), Some("GLM 5.3"));
         assert_eq!(m.context_window, 1_000_000);
@@ -285,15 +280,15 @@ mod tests {
         assert_eq!(m.supports_tools, Some(true));
         assert_eq!(m.supports_vision, Some(false));
         assert_eq!(m.supports_cache, Some(true));
-        assert_eq!(m.pricing, None);
+        assert_eq!(m.pricing.as_ref().and_then(|p| p.input), Some(1.40));
     }
 
     #[test]
-    fn only_glm_52_supports_xhigh_and_only_v_models_see_images() {
+    fn only_glm_52_and_53_support_xhigh_and_only_v_models_see_images() {
         for m in models() {
             assert_eq!(
                 m.supports_xhigh,
-                Some(m.id.starts_with("glm-5.2")),
+                Some(m.id.starts_with("glm-5.2") || m.id.starts_with("glm-5.3")),
                 "{}",
                 m.id
             );

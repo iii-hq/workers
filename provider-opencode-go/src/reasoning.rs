@@ -32,6 +32,7 @@ fn level_efforts(level: ThinkingLevel) -> &'static [&'static str] {
         // Some catalogs publish "none" as their floor instead of "minimal"
         // (e.g. gpt-5.6-luna); prefer the literal level, fall back to the
         // closest accepted floor rather than omitting the param entirely.
+        ThinkingLevel::Off => &["none"],
         ThinkingLevel::Minimal => &["minimal", "none"],
         ThinkingLevel::Low => &["low"],
         ThinkingLevel::Medium => &["medium"],
@@ -57,6 +58,18 @@ pub fn reasoning_effort_for(level: Option<ThinkingLevel>, model: &str) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn off_maps_to_none_only_where_the_catalog_lists_it() {
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Off), "gpt-5.6-luna"),
+            Some("none")
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Off), "grok-4.5"),
+            None
+        );
+    }
 
     #[test]
     fn catalog_flag_wins_over_curated_lookup() {

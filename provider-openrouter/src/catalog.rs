@@ -111,6 +111,16 @@ pub fn model_from_row(row: &Value) -> Option<Model> {
         } else {
             None
         },
+        // `none` disables reasoning on OpenRouter; a model flagged
+        // `reasoning.mandatory` rejects it even when listed.
+        supports_thinking_off: if supports_thinking {
+            Some(
+                efforts.iter().any(|e| e.effort == "none")
+                    && row.pointer("/reasoning/mandatory").and_then(Value::as_bool) != Some(true),
+            )
+        } else {
+            None
+        },
         reasoning_efforts: if efforts.is_empty() {
             None
         } else {

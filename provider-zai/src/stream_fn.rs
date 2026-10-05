@@ -3,7 +3,7 @@
 //! the router-owned channel, terminal done/error last, then close.
 use crate::config::config_from_resolve;
 use crate::errors::classify_bus_error;
-use crate::reasoning::{is_reasoning_model, reasoning_effort_for, thinking_type};
+use crate::reasoning::{always_reasons, is_reasoning_model, reasoning_effort_for, thinking_type};
 use crate::request::{build_body, build_headers, BodyArgs};
 use crate::sse::synthetic_error_event;
 use crate::upstream::{spawn_upstream, UpstreamArgs};
@@ -17,6 +17,7 @@ use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
 use llm_router::types::events::ErrorKind;
+use llm_router::types::model::ThinkingLevel;
 use llm_router::types::router::{ProviderStreamInput, ProviderStreamOutput};
 
 pub fn make_stream(
@@ -130,9 +131,19 @@ async fn run_stream_call(
             "thinking_level ignored: {model} is not a reasoning model"
         ));
     }
-    let thinking = thinking_type(input.thinking_level, reasoning);
+    // GLM-5.3 cannot turn thinking off: `off` becomes enabled at `low`.
+    let level = match input.thinking_level {
+        Some(ThinkingLevel::Off) if reasoning && always_reasons(&model) => {
+            warnings.push(format!(
+                "thinking_level off degraded to low: {model} always reasons"
+            ));
+            Some(ThinkingLevel::Low)
+        }
+        other => other,
+    };
+    let thinking = thinking_type(level, reasoning);
     let reasoning_effort = if reasoning {
-        reasoning_effort_for(input.thinking_level, &model)
+        reasoning_effort_for(level, &model)
     } else {
         None
     };

@@ -14,13 +14,18 @@ pub fn is_reasoning_model(model: &str, catalog_supports_thinking: Option<bool>) 
         return flag;
     }
     let id = model.to_ascii_lowercase();
-    id.starts_with("gpt-5") || id.starts_with("o1") || id.starts_with("o3") || id.starts_with("o4")
+    id.starts_with("gpt-5")
+        || id.starts_with("gpt-6")
+        || id.starts_with("o1")
+        || id.starts_with("o3")
+        || id.starts_with("o4")
 }
 
 /// Efforts the model family accepts; empty = don't send the param.
 fn supported_efforts(model: &str) -> &'static [&'static str] {
     let id = model.to_ascii_lowercase();
     if !(id.starts_with("gpt-5")
+        || id.starts_with("gpt-6")
         || id.starts_with("o1")
         || id.starts_with("o3")
         || id.starts_with("o4"))
@@ -41,6 +46,15 @@ fn supported_efforts(model: &str) -> &'static [&'static str] {
     if id.contains("pro") {
         return &["high"];
     }
+    // gpt-6 family (api/docs/models/gpt-6-*): Sol and Luna take `none`;
+    // 6.1 Sol and Astra 400 on it. Unknown gpt-6 ids stay on the safe side.
+    if id.starts_with("gpt-6") {
+        return if id.starts_with("gpt-6-sol") || id.starts_with("gpt-6-luna") {
+            &["none", "low", "medium", "high", "xhigh"]
+        } else {
+            &["low", "medium", "high", "xhigh"]
+        };
+    }
     // gpt-5.1: none/low/medium/high; gpt-5.2+ adds xhigh.
     if let Some(minor) = gpt5_minor(&id) {
         return if minor >= 2 {
@@ -57,6 +71,11 @@ fn supported_efforts(model: &str) -> &'static [&'static str] {
     &["low", "medium", "high"]
 }
 
+/// Whether the model accepts `reasoning_effort: none` (the off switch).
+pub fn can_disable(model: &str) -> bool {
+    supported_efforts(model).contains(&"none")
+}
+
 /// `gpt-5.<minor>…` → minor version number.
 fn gpt5_minor(id: &str) -> Option<u32> {
     let rest = id.strip_prefix("gpt-5.")?;
@@ -66,6 +85,7 @@ fn gpt5_minor(id: &str) -> Option<u32> {
 
 fn level_str(level: ThinkingLevel) -> &'static str {
     match level {
+        ThinkingLevel::Off => "none",
         ThinkingLevel::Minimal => "minimal",
         ThinkingLevel::Low => "low",
         ThinkingLevel::Medium => "medium",
@@ -81,6 +101,11 @@ pub fn reasoning_effort_for(level: Option<ThinkingLevel>, model: &str) -> Option
     let ladder = supported_efforts(model);
     if ladder.is_empty() {
         return None;
+    }
+    // `off` is honoured only where the family accepts `none`; nothing
+    // above it is "close enough" to switching reasoning off.
+    if level == Some(ThinkingLevel::Off) {
+        return ladder.contains(&"none").then_some("none");
     }
     let want = level_str(level?);
     if ladder.contains(&want) {
@@ -103,6 +128,44 @@ pub fn reasoning_effort_for(level: Option<ThinkingLevel>, model: &str) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn off_maps_to_none_only_where_the_model_accepts_it() {
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Off), "gpt-6-sol"),
+            Some("none")
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Off), "gpt-6-luna"),
+            Some("none")
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Off), "gpt-6.1-sol"),
+            None
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Off), "gpt-6-astra"),
+            None
+        );
+        assert_eq!(reasoning_effort_for(Some(ThinkingLevel::Off), "o3"), None);
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Off), "gpt-5.2"),
+            Some("none")
+        );
+        // The gpt-6 family is a reasoning family; minimal clamps to its floor.
+        assert!(is_reasoning_model("gpt-6.1-sol", None));
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Minimal), "gpt-6.1-sol"),
+            Some("low")
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Xhigh), "gpt-6-astra"),
+            Some("xhigh")
+        );
+        assert!(can_disable("gpt-6-sol"));
+        assert!(!can_disable("gpt-6.1-sol"));
+        assert!(!can_disable("o3"));
+    }
 
     #[test]
     fn catalog_flag_wins_over_id_pattern() {
