@@ -248,7 +248,15 @@ fn encodes_rows_to_token_embeddings() {
     }
     ctx.encode(&alone).unwrap();
     let together: Vec<f32> = encoded[a.len()..].concat();
-    assert!(gap(&rows(&ctx, b.len()).concat(), &together) < 1e-4);
+    // Relative: the CPU backend picks matmul kernels by batch size (macOS arm64
+    // drifts past 1e-4 on these head scores), while a row leaking into another
+    // would move them by whole units.
+    let scale = together.iter().fold(1f32, |m, v| m.max(v.abs()));
+    let drift = gap(&rows(&ctx, b.len()).concat(), &together);
+    assert!(
+        drift < 1e-3 * scale,
+        "rows drift by {drift} (scale {scale})"
+    );
     // Past n_ubatch an encode is refused (llama.cpp would abort).
     let mut long = Batch::default();
     for pos in 0..65 {
