@@ -25,6 +25,14 @@ refused until you allow globs per send. Sessions are minted by the harness
 (`merged: true`) instead of erroring, and a repeated `idempotency_key` returns
 the original turn without appending.
 
+A session-creating send names a `model`, or only a `provider`: the harness
+then starts on that provider's declared default model (`default_model` in
+`router::provider::list`, checked against its live catalog; a provider that
+reports none fails the send as before). A new session that names neither
+`thinking_level` nor `provider_options` also starts on the provider's
+`default_thinking_level`; an explicit level wins, and later sends into the
+session inherit the prior turn's as usual.
+
 Prerequisites: `session-manager` (required — transcript store and change feed)
 and `llm-router` (required — generation and the model catalog) must be present.
 `context-manager` (token budgeting and compaction) is a soft dependency — absent

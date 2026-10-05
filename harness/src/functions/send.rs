@@ -16,7 +16,7 @@ use crate::policy;
 use crate::prompt::{self, SystemPromptStrategy};
 use crate::turn_loop;
 use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
-use crate::types::model::ThinkingLevel;
+use crate::types::model::{ProviderDefaults, ThinkingLevel};
 use crate::types::output::OutputContract;
 use crate::types::turn::{
     FunctionContractLedgerEntry, FunctionPolicy, IdemRecord, ParentLink, SkillContext, TurnOptions,
@@ -293,32 +293,21 @@ async fn start_with_delivery_lock(
     let agent_route = agent
         .as_ref()
         .and_then(|profile| profile.model_and_provider());
-    let (model, provider) = match (agent_route, req.model.clone(), &prev) {
-        (Some((model, profile_provider)), _, _) => {
-            (model, profile_provider.or_else(|| req.provider.clone()))
-        }
-        (None, Some(model), _) => (model, req.provider.clone()),
-        (None, None, Some(prev)) => (
-            prev.options.model.clone(),
-            req.provider
-                .clone()
-                .or_else(|| prev.options.provider.clone()),
-        ),
-        (None, None, None) if req.session_id.is_some() => {
-            return Err(HarnessError::InvalidRequest(
-                "harness::send without `model` inherits from the session's prior \
-                 turn, but this session has none — name a `model`"
-                    .into(),
-            ))
-        }
-        (None, None, None) => {
-            return Err(HarnessError::InvalidRequest(
-                "harness::send creating a NEW session requires `model` (steering an \
-                 existing session may omit it)"
-                    .into(),
-            ))
-        }
+    // A send naming only a provider starts on that provider's declared
+    // default model (router-checked against its live catalog). One router
+    // round trip, and only on the path that would otherwise fail.
+    let provider_defaults = match (&agent_route, &req.model, &prev, &req.provider) {
+        (None, None, None, Some(provider)) => deps.router().await.provider_defaults(provider).await,
+        _ => None,
     };
+    let (model, provider) = resolve_model_route(
+        agent_route,
+        &req,
+        prev.as_ref().map(|p| &p.options),
+        provider_defaults
+            .as_ref()
+            .and_then(|d| d.default_model.clone()),
+    )?;
 
     // Freeze the per-send options before moving the message out of `req`.
     let inherits_prompt = prev.is_some() && prompt_fields_omitted(req.options.as_ref());
@@ -330,6 +319,12 @@ async fn start_with_delivery_lock(
         crate::prompt::effective_default(&deps.iii).await.identity
     };
     let mut options = build_options(&cfg, &req, model, provider, agent.as_ref(), &identity);
+    // A new session that names neither reasoning field starts on the
+    // provider's declared default level (`None` keeps today's "provider
+    // decides"). An existing session inherits its prior turn's instead.
+    if prev.is_none() && options.thinking_level.is_none() && options.provider_options.is_none() {
+        options.thinking_level = provider_default_thinking(deps, &options, provider_defaults).await;
+    }
     options.functions = functions;
     if let (true, Some(prev)) = (inherits_prompt, prev.as_ref()) {
         inherit_prior_system_prompt(&mut options, &prev.options);
@@ -969,6 +964,73 @@ pub(crate) fn message_preview(message: &AgentMessage) -> Option<String> {
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let preview: String = collapsed.chars().take(PREVIEW_CHARS).collect();
     (!preview.is_empty()).then_some(preview)
+}
+
+/// The model and provider a send runs on. A profile's model is
+/// authoritative (Console locks its picker to the same value; this
+/// server-side precedence keeps other callers from running the identity on
+/// a different model, and catalog keys may carry `provider::model`, split
+/// before routing). Then an explicit `model`, then the prior turn's, then
+/// the named provider's declared default. A new session with none of those
+/// is an error: the harness never picks a provider.
+fn resolve_model_route(
+    agent_route: Option<(String, Option<String>)>,
+    req: &SendRequest,
+    prev: Option<&TurnOptions>,
+    provider_default_model: Option<String>,
+) -> Result<(String, Option<String>), HarnessError> {
+    Ok(match (agent_route, req.model.clone(), prev) {
+        (Some((model, profile_provider)), _, _) => {
+            (model, profile_provider.or_else(|| req.provider.clone()))
+        }
+        (None, Some(model), _) => (model, req.provider.clone()),
+        (None, None, Some(prev)) => (
+            prev.model.clone(),
+            req.provider.clone().or_else(|| prev.provider.clone()),
+        ),
+        (None, None, None) if provider_default_model.is_some() => (
+            provider_default_model.expect("checked by the guard"),
+            req.provider.clone(),
+        ),
+        (None, None, None) if req.session_id.is_some() => {
+            return Err(HarnessError::InvalidRequest(
+                "harness::send without `model` inherits from the session's prior \
+                 turn, but this session has none — name a `model` (or a `provider` \
+                 that declares a default model)"
+                    .into(),
+            ))
+        }
+        (None, None, None) => {
+            return Err(HarnessError::InvalidRequest(
+                "harness::send creating a NEW session requires `model`, or a `provider` \
+                 that declares a default model (steering an existing session may omit both)"
+                    .into(),
+            ))
+        }
+    })
+}
+
+/// The provider's declared default thinking level, for a new session whose
+/// send names neither reasoning field. `provider_defaults` is reused when the
+/// model resolution already fetched it; otherwise the model's catalog entry
+/// names the provider.
+async fn provider_default_thinking(
+    deps: &Deps,
+    options: &TurnOptions,
+    provider_defaults: Option<ProviderDefaults>,
+) -> Option<ThinkingLevel> {
+    if let Some(defaults) = provider_defaults {
+        return defaults.default_thinking_level;
+    }
+    let router = deps.router().await;
+    let provider = match &options.provider {
+        Some(provider) => provider.clone(),
+        None => router.models_get(None, &options.model).await?.provider,
+    };
+    router
+        .provider_defaults(&provider)
+        .await?
+        .default_thinking_level
 }
 
 fn build_options(
@@ -2882,6 +2944,70 @@ mod tests {
                 .unwrap_or_default()
                 .contains("# System rules"),
             "the built-in identity never rides under a profile"
+        );
+    }
+
+    fn provider_only_request(session_id: Option<&str>) -> SendRequest {
+        SendRequest {
+            session_id: session_id.map(String::from),
+            message: MessageInput::Text("hi".into()),
+            model: None,
+            provider: Some("anthropic".into()),
+            idempotency_key: None,
+            session: None,
+            options: None,
+        }
+    }
+
+    #[test]
+    fn a_provider_only_send_starts_on_the_providers_default_model() {
+        let req = provider_only_request(None);
+        let route = resolve_model_route(None, &req, None, Some("claude-sonnet-5-5".into()))
+            .expect("default model fills the gap");
+        assert_eq!(
+            route,
+            ("claude-sonnet-5-5".into(), Some("anthropic".into())),
+            "the default rides with the provider that declared it"
+        );
+        // A session with no prior turn is as new as a session-less send.
+        let req = provider_only_request(Some("s-1"));
+        let route = resolve_model_route(None, &req, None, Some("claude-sonnet-5-5".into()))
+            .expect("default model fills the gap");
+        assert_eq!(route.0, "claude-sonnet-5-5");
+    }
+
+    #[test]
+    fn explicit_and_profile_models_outrank_the_provider_default() {
+        let mut req = provider_only_request(None);
+        req.model = Some("claude-opus-5-5".into());
+        let route =
+            resolve_model_route(None, &req, None, Some("claude-sonnet-5-5".into())).unwrap();
+        assert_eq!(route.0, "claude-opus-5-5");
+        let profile = Some((
+            "codex/gpt-6.1-sol".to_string(),
+            Some("openai-codex".to_string()),
+        ));
+        let route =
+            resolve_model_route(profile, &req, None, Some("claude-sonnet-5-5".into())).unwrap();
+        assert_eq!(
+            route,
+            ("codex/gpt-6.1-sol".into(), Some("openai-codex".into())),
+            "a profile's provider wins over the request's"
+        );
+    }
+
+    #[test]
+    fn without_a_provider_default_the_old_errors_stand() {
+        let err = resolve_model_route(None, &provider_only_request(None), None, None).unwrap_err();
+        assert!(
+            matches!(&err, HarnessError::InvalidRequest(m) if m.contains("NEW session requires `model`")),
+            "{err:?}"
+        );
+        let err =
+            resolve_model_route(None, &provider_only_request(Some("s-1")), None, None).unwrap_err();
+        assert!(
+            matches!(&err, HarnessError::InvalidRequest(m) if m.contains("this session has none")),
+            "{err:?}"
         );
     }
 

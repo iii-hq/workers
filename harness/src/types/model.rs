@@ -69,6 +69,18 @@ pub struct Model {
     pub pricing: Option<Pricing>,
 }
 
+/// A provider's declared starting point, from `router::provider::list`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProviderDefaults {
+    /// The model to start on when a send names none; already checked
+    /// against the provider's live catalog by the router.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    /// The level to pair with it when a send names no reasoning field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_thinking_level: Option<ThinkingLevel>,
+}
+
 /// Function invocation schema — one provider `tools` array entry. The
 /// harness attaches the single `agent_trigger` entry by default, or one
 /// per allowed function in native exposure mode, plus the synthetic
