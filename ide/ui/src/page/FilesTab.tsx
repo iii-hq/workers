@@ -131,6 +131,7 @@ function FilesTabView({
   const [note, setNote] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null)
   const menu = useContextMenu()
+  const stageRef = useRef<HTMLDivElement>(null)
   // The model is created once per component lifetime; data arriving
   // later flows through batch/resetPaths/setGitStatus below. Selection
   // opens through a ref so the creation-time callback never goes stale.
@@ -549,8 +550,34 @@ function FilesTabView({
     [beginCreate, collapseAll],
   )
 
+  // The row a menu acts on, and the rows shown under a folder's, marked in
+  // the tree's shadow DOM while the menu is open (tree-theme styles them).
+  // Resolves to the target row, which the menu opens under.
+  const markMenuRows = useCallback((path: string | null): HTMLElement | null => {
+    const root = stageRef.current?.querySelector('file-tree-container')?.shadowRoot
+    if (!root) return null
+    for (const row of root.querySelectorAll('[data-shui-menu]')) row.removeAttribute('data-shui-menu')
+    if (path === null) return null
+    let target: HTMLElement | null = null
+    for (const row of root.querySelectorAll<HTMLElement>('[data-type="item"][data-item-path]')) {
+      const rowPath = row.dataset.itemPath ?? ''
+      if (rowPath === path) {
+        row.setAttribute('data-shui-menu', 'target')
+        // A sticky copy of a folder row comes first; the row in the list is the one in place.
+        if (row.dataset.fileTreeStickyRow !== 'true') target = row
+      } else if (path.endsWith('/') && rowPath.startsWith(path)) row.setAttribute('data-shui-menu', 'scope')
+    }
+    return target
+  }, [])
+  useEffect(() => {
+    if (!menu.isOpen) markMenuRows(null)
+  }, [menu.isOpen, markMenuRows])
+
   const openMenuAt = useCallback(
     (anchor: { x: number; y: number }, item: { path: string; kind: 'file' | 'directory' } | null) => {
+      const row = markMenuRows(item?.path ?? null)
+      // Under the row, at the pointer's x: the menu leaves the row it marks in sight.
+      if (row !== null) anchor = { x: anchor.x, y: row.getBoundingClientRect().bottom }
       if (item === null) {
         menu.open(anchor, itemsForRoot())
         return
@@ -560,7 +587,7 @@ function FilesTabView({
       model.getItem(item.path)?.focus()
       menu.open(anchor, item.kind === 'directory' ? itemsForDir(rel) : itemsForFile(rel))
     },
-    [menu, model, itemsForDir, itemsForFile, itemsForRoot],
+    [menu, model, itemsForDir, itemsForFile, itemsForRoot, markMenuRows],
   )
 
   const onTreeKeyDown = useCallback(
@@ -626,6 +653,7 @@ function FilesTabView({
 
       {/* biome-ignore lint/a11y/noStaticElementInteractions: the stage relays the empty-space context menu */}
       <div
+        ref={stageRef}
         className="shui-tree-stage"
         onContextMenu={(event) => {
           event.preventDefault()
