@@ -227,6 +227,7 @@ out explicitly below:
 | `C232` | Worker name breaks `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` (1–63 characters), or the scaffold `directory` does not end with the worker name. | n/a |
 | `C233` | Scaffold target directory exists and is not empty; nothing was written. | n/a |
 | `C234` | Invalid template: a bad `template.yaml` or `worker:` block, a `files:` entry that is absolute, contains `..`, is missing or leaves `worker.dir` through a symlink, a worker file that is not UTF-8 text (binary files are not supported), or no `containers.<worker.compose>` in its `worker-compose.yaml`. Nothing was written. | n/a |
+| `C235` | `coder::scaffold-worker` with `start` (the default) found a container named after the worker already in the stack: adding it would repoint that container at the new folder. Checked before any write, so nothing was written; pick another name, or pass `start: false`. | n/a |
 
 No separate install: `iii trigger compose::add worker=ide` brings the whole surface.
 
