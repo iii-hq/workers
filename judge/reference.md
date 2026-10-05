@@ -61,7 +61,7 @@ while the load goes on for the next one, and a failed load answers
 `preload_all: true` keeps every local provider loaded instead, so no request
 waits; each holds its memory (on a GPU, about 6 GB for decider or SemIf at
 its default 16384-token window, 1.3 GB for laya, and for clef about 6 GB at
-rest and 14 GB at peak during a 16384-token evaluation). All four together need
+rest and 10 GB during a 16384-token evaluation). All four together need
 about 18.6 GB: on a 16 GB GPU the driver silently moves part of the last model
 loaded into system memory and it answers several times slower, so preload at
 most three there. Hosted providers such as `judge-typesafe` are unaffected.

@@ -8,23 +8,17 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <exception>
 #include <string>
 #include <strings.h>
 #include <vector>
 
 // llama.cpp logs every tensor while loading (~1300 lines): keep warnings and
-// errors. A continuation line follows its message's fate. Also dropped: the
-// context's "compute buffer size ... does not match expectation" (one line per
-// backend), which llama.cpp logs on freeing a context whose pass reallocated
-// its compute buffers, as 16k clef prompts do (judge-clef/README.md: the 14.1
-// GiB peak).
+// errors. A continuation line follows its message's fate.
 static void log_warnings(ggml_log_level level, const char * text, void *) {
     thread_local bool keep = false;
     if (level != GGML_LOG_LEVEL_CONT) {
-        keep = level >= GGML_LOG_LEVEL_WARN &&
-               !(strncmp(text, "~llama_context:", 15) == 0 && strstr(text, "does not match expectation"));
+        keep = level >= GGML_LOG_LEVEL_WARN;
     }
     if (keep) {
         fputs(text, stderr);

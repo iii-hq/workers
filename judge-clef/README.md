@@ -232,12 +232,12 @@ tokens), created for it and freed after it, so between evaluations only the
 weights hold memory: 5.5 GiB of VRAM on Vulkan. A pass adds its compute
 buffers for its duration: 5.7 GiB of VRAM in all for a 356-token prompt,
 7.6 GiB for 8k tokens and 10.1 GiB for 16384, with 1 GiB of pinned host
-memory. At 16k tokens llama.cpp also reallocates them as the pass starts, since
-it sized them for a head with one question and one option: for about 30 ms
-VRAM reaches 14.1 GiB and pinned memory 1.75 GiB, so the GPU needs that much
-free. The worker's own memory peaks at 0.9 GiB, besides 0.6 GiB of the mapped
-GGUF. Creating and freeing the context costs about 15 ms at 356 tokens and
-0.1–0.2 s at 16k. On the CPU a 16k pass needs about 7 GiB of RAM besides the
+memory. The buffers are allocated once, by the pass itself, for its real head
+(a patch to llama.cpp, which would otherwise size them for a head with one
+question and one option at context creation and reallocate them as the pass
+starts: 14.1 GiB of VRAM for about 30 ms at 16k). The worker's own memory peaks
+at 0.9 GiB, besides 0.6 GiB of the mapped GGUF. Creating and freeing the
+context costs about 15 ms at 356 tokens and 50 ms at 16k. On the CPU a 16k pass needs about 7 GiB of RAM besides the
 mapped GGUF. Flash attention is on: without it the attention scores grow with
 the square of the prompt, and on Vulkan llama.cpp moves them to the CPU (16k
 tokens took 101–110 s instead of 15 s, with about 18 GiB of host compute
@@ -273,7 +273,7 @@ next evaluation waits for it.
 | `model` | `clef-flash` | next start |
 | `threads` | min(8, logical cores) | next start (llama.cpp's CPU threads) |
 | `gpu_layers` | the whole model when a GPU backend and device exist | next start (`0` = CPU) |
-| `context_tokens` | 16384, the reference's `max_length` | next start (512 to 16384; 14.1 GiB of VRAM at peak at 16384, see above) |
+| `context_tokens` | 16384, the reference's `max_length` | next start (512 to 16384; 10.1 GiB of VRAM at 16384, see above) |
 | `max_request_bytes` | 8388608 | new calls |
 | `max_timeout_ms` | 300000 | new calls (raise it for long prompts on the CPU) |
 
