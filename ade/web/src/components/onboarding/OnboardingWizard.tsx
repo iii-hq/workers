@@ -7,31 +7,32 @@ import {
   DialogTitle,
 } from '@/components/ui/Dialog'
 import { Eyebrow } from '@/components/ui/Eyebrow'
-import { insertIntoComposer, requestComposerFocus } from '@/lib/composer-insert'
+import { requestComposerFocus } from '@/lib/composer-insert'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import {
   fetchOnboardingState,
   type OnboardingStatus,
+  readableError,
   saveOnboardingState,
 } from '@/lib/onboarding/api'
-import type { JudgeOption } from '@/lib/onboarding/catalog'
+import { type JudgeOption, TOUR_PAGE } from '@/lib/onboarding/catalog'
 import {
   browserIsAutomated,
   onOnboardingWizardRequest,
   shouldAutoOpenOnboarding,
   type WizardStepId,
 } from '@/lib/onboarding/open'
+import { prepareTour } from '@/lib/onboarding/tour'
+import { requestPanelOpen } from '@/lib/panel-context'
 import { cn } from '@/lib/utils'
 import { JudgeStep } from './JudgeStep'
-import { MachineStep } from './MachineStep'
 import { ModelsStep } from './ModelsStep'
-import { ReadyStep } from './ReadyStep'
+import { ReadyStep, type TourState } from './ReadyStep'
 import { useOnboarding } from './use-onboarding'
 import { WelcomeStep } from './WelcomeStep'
 
 const STEPS: { id: WizardStepId; title: string; optional?: boolean }[] = [
   { id: 'welcome', title: 'Welcome' },
-  { id: 'machine', title: 'Your machine' },
   { id: 'models', title: 'Models' },
   { id: 'judge', title: 'Judge', optional: true },
   { id: 'ready', title: 'Ready' },
@@ -47,6 +48,10 @@ const STEPS: { id: WizardStepId; title: string; optional?: boolean }[] = [
  * Finishing records `completed` and skipping records `dismissed`, beside the
  * workspace layout in the ADE's data directory, so it never reopens on its
  * own after either.
+ *
+ * Once a model is connected, Ready offers the guided tour. Accepting adds
+ * the `onboarding` worker that carries it — quietly: it is how the tour is
+ * delivered, not a choice in setup — and opens its page beside the chat.
  */
 export function OnboardingWizardHost() {
   const ctx = useConversationsCtxOptional()
@@ -57,6 +62,7 @@ export function OnboardingWizardHost() {
     () => new Set(['welcome']),
   )
   const [judge, setJudge] = useState<JudgeOption | null>(null)
+  const [tour, setTour] = useState<TourState>({ kind: 'idle' })
   const status = useRef<OnboardingStatus | null>(null)
   const refreshModels = ctx?.refreshModels
   const onboarding = useOnboarding(open, () => {
@@ -64,7 +70,7 @@ export function OnboardingWizardHost() {
     // registers between two of them would otherwise wait for the next one.
     void refreshModels?.()
   })
-  const busy = onboarding.running !== null
+  const busy = onboarding.running !== null || tour.kind === 'preparing'
 
   useEffect(() => {
     if (!live) return
@@ -144,10 +150,22 @@ export function OnboardingWizardHost() {
     [go, onboarding.activity, onboarding.snapshot.providers, record],
   )
 
-  const start = useCallback((prompt?: string) => {
+  const start = useCallback(() => {
     setOpen(false)
-    if (prompt) insertIntoComposer(prompt)
     window.requestAnimationFrame(requestComposerFocus)
+  }, [])
+
+  const startTour = useCallback(async () => {
+    setTour({ kind: 'preparing' })
+    try {
+      await prepareTour()
+    } catch (error) {
+      setTour({ kind: 'failed', error: readableError(error) })
+      return
+    }
+    setTour({ kind: 'idle' })
+    setOpen(false)
+    requestPanelOpen({ pageId: TOUR_PAGE })
   }, [])
 
   const index = STEPS.findIndex((entry) => entry.id === step)
@@ -243,22 +261,16 @@ export function OnboardingWizardHost() {
           </div>
           {step === 'welcome' ? (
             <WelcomeStep
-              onStart={() => go('machine')}
+              onStart={() => go('models')}
               onSkip={() => {
                 setOpen(false)
                 record('dismissed')
               }}
             />
-          ) : step === 'machine' ? (
-            <MachineStep
-              onboarding={onboarding}
-              onBack={() => go('welcome')}
-              onNext={() => go('models')}
-            />
           ) : step === 'models' ? (
             <ModelsStep
               onboarding={onboarding}
-              onBack={() => go('machine')}
+              onBack={() => go('welcome')}
               onNext={() => go('judge')}
             />
           ) : step === 'judge' ? (
@@ -268,7 +280,13 @@ export function OnboardingWizardHost() {
               onNext={finishTo}
             />
           ) : (
-            <ReadyStep onboarding={onboarding} judge={judge} onStart={start} />
+            <ReadyStep
+              onboarding={onboarding}
+              judge={judge}
+              tour={tour}
+              onStartTour={() => void startTour()}
+              onStart={start}
+            />
           )}
         </div>
       </DialogContent>

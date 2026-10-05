@@ -23,8 +23,12 @@ import {
   type ToolScan,
 } from '@/lib/onboarding/plan'
 
-/** Which part of setup an action belongs to; each step shows its own. */
-export type ActivityGroup = 'machine' | 'models' | 'judge'
+/**
+ * Which part of setup an action belongs to; each step shows its own. `keys`
+ * is the models step's key search (adding the secrets worker), kept apart
+ * from connecting so its log reads as what it is.
+ */
+export type ActivityGroup = 'keys' | 'models' | 'judge'
 
 export interface ActivityEntry {
   id: number

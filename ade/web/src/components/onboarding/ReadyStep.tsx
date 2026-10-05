@@ -1,11 +1,17 @@
-import { ArrowRight, Check } from 'lucide-react'
+import { ArrowRight, Check, Compass, LoaderCircle } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import { Wordmark } from '@/components/ui/Wordmark'
-import { type JudgeOption, PILLARS } from '@/lib/onboarding/catalog'
+import type { JudgeOption } from '@/lib/onboarding/catalog'
 import { Section, StepLayout } from './parts'
 import type { OnboardingController } from './use-onboarding'
-import { PILLAR_ICONS } from './WelcomeStep'
+
+/** The guided tour offered once a model is connected. */
+export type TourState =
+  | { kind: 'idle' }
+  /** Getting the tour ready: adding its worker, waiting for its page. */
+  | { kind: 'preparing' }
+  | { kind: 'failed'; error: string }
 
 /** Counts up to `target` once; lands on it at once under reduced motion. */
 function useCountUp(target: number, durationMs = 900): number {
@@ -35,12 +41,17 @@ function useCountUp(target: number, durationMs = 900): number {
 export function ReadyStep({
   onboarding,
   judge,
+  tour,
+  onStartTour,
   onStart,
 }: {
   onboarding: OnboardingController
   judge: JudgeOption | null
-  /** Close the wizard; with a prompt, hand it to the composer first. */
-  onStart: (prompt?: string) => void
+  tour: TourState
+  /** Accept the tour: the wizard gets it ready, then opens it. */
+  onStartTour: () => void
+  /** Close the wizard and hand the composer the focus. */
+  onStart: () => void
 }) {
   const { snapshot, activity } = onboarding
   const connected = (snapshot.providers ?? []).filter(
@@ -85,17 +96,44 @@ export function ReadyStep({
       : []),
   ]
 
+  // The tour's first stage is a message to the agent: it needs a model.
+  const offerTour = connected.length > 0
+  const preparing = tour.kind === 'preparing'
+
   return (
     <StepLayout
       footer={
         <>
-          <span className="font-sans text-[12px] text-ink-faint">
+          <span className="hidden font-sans text-[12px] text-ink-faint @2xl:inline">
             Reopen this from the command palette: Set up the harness.
           </span>
-          <Button onClick={() => onStart()}>
-            Start building
-            <ArrowRight aria-hidden />
-          </Button>
+          {offerTour ? (
+            <span className="ml-auto flex items-center gap-2">
+              <Button
+                variant="ghost"
+                onClick={() => onStart()}
+                disabled={preparing}
+              >
+                Skip the tour
+              </Button>
+              <Button onClick={onStartTour} disabled={preparing}>
+                {preparing ? (
+                  <LoaderCircle className="iii-ui-spin" aria-hidden />
+                ) : null}
+                {preparing
+                  ? 'Preparing the tour…'
+                  : tour.kind === 'failed'
+                    ? 'Try again'
+                    : 'Start the tour'}
+                {preparing ? null : <ArrowRight aria-hidden />}
+              </Button>
+            </span>
+          ) : (
+            <Button className="ml-auto" onClick={() => onStart()}>
+              Start building
+              <ArrowRight aria-hidden />
+            </Button>
+          )}
         </>
       }
     >
@@ -172,38 +210,36 @@ export function ReadyStep({
         </Section>
       ) : null}
 
-      <Section title="Try one of these first">
-        <div className="grid gap-2 @2xl:grid-cols-2">
-          {PILLARS.map((pillar, index) => {
-            const Icon = PILLAR_ICONS[pillar.id]
-            return (
-              <button
-                key={pillar.id}
-                type="button"
-                onClick={() => onStart(pillar.starter.prompt)}
-                className="onboarding-rise group flex items-start gap-3 rounded-md bg-surface px-3 py-3 text-left hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-                style={{ animationDelay: `${900 + index * 60}ms` }}
+      {offerTour ? (
+        <section
+          aria-label="Guided tour"
+          className="onboarding-rise flex gap-3 rounded-md bg-card-highlight px-4 py-4 [animation-delay:900ms]"
+        >
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-surface text-ink">
+            <Compass className="size-4" aria-hidden />
+          </span>
+          <span className="flex min-w-0 flex-col gap-1">
+            <h3 className="font-sans text-[13px] font-semibold text-ink">
+              Keep going with a guided tour
+            </h3>
+            <p className="text-pretty font-sans text-[12px] leading-relaxed text-ink-faint">
+              It runs right here in the ADE, with the models you just connected,
+              one stage at a time: send your first message, then watch the agent
+              add a worker, call your backend's functions, react to a trigger
+              and trace what it did. Each stage points at the part of the ADE it
+              talks about.
+            </p>
+            {tour.kind === 'failed' ? (
+              <p
+                role="alert"
+                className="font-sans text-[12px] text-alert-strong"
               >
-                <Icon
-                  className="mt-0.5 size-4 shrink-0 text-ink-faint group-hover:text-ink"
-                  aria-hidden
-                />
-                <span className="flex min-w-0 flex-col gap-0.5">
-                  <span className="font-mono text-[11px] text-ink-ghost">
-                    {pillar.title}
-                  </span>
-                  <span className="font-sans text-[13px] font-medium text-ink">
-                    {pillar.starter.label}
-                  </span>
-                </span>
-              </button>
-            )
-          })}
-        </div>
-        <p className="font-sans text-[12px] leading-relaxed text-ink-faint">
-          Picking one puts its prompt in the chat for you to read and send.
-        </p>
-      </Section>
+                The tour could not start: {tour.error}
+              </p>
+            ) : null}
+          </span>
+        </section>
+      ) : null}
     </StepLayout>
   )
 }

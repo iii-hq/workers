@@ -1,8 +1,9 @@
 /**
  * What the setup wizard knows before it asks the engine anything: the
  * subscription providers a local CLI sign-in unlocks, the API-key env var
- * each key provider declares, the judge strategies, and the five things the
- * harness should show a new user as early as possible.
+ * each key provider declares, the judge strategies, the five things the
+ * harness should show a new user as early as possible, and the worker that
+ * carries the guided tour once setup is done.
  *
  * Worker names are registry slugs — what `compose::add` resolves. A
  * development checkout can point any of them at a local directory through
@@ -182,8 +183,6 @@ export interface Pillar {
   title: string
   /** One line for the welcome step. */
   line: string
-  /** The starter task offered once setup is done. */
-  starter: { label: string; prompt: string }
 }
 
 export const PILLARS: readonly Pillar[] = [
@@ -191,53 +190,36 @@ export const PILLARS: readonly Pillar[] = [
     id: 'extensible',
     title: 'Extensible',
     line: 'The harness builds tools for itself — a kanban board for its own work, a stories view to review your UI.',
-    starter: {
-      label: 'Give the agents a kanban board',
-      prompt:
-        'Add the kanban worker to this project and open its board. Then create three tickets that break down what we should build first, and explain how agents pick tickets up from the board.',
-    },
   },
   {
     id: 'discoverable',
     title: 'Discoverable',
     line: 'It runs inside your backend: it knows every function your workers register and can call them directly.',
-    starter: {
-      label: 'Show me what my backend can do',
-      prompt:
-        'List the workers registered in this project and the functions each one exposes. Then call one read-only function to show me how calling my backend directly works.',
-    },
   },
   {
     id: 'optimized',
     title: 'Optimized',
     line: 'Judge finds the function or skill that matters for each step, so prompts stay small and precise.',
-    starter: {
-      label: 'Find the right function for a job',
-      prompt:
-        'Search this project for the function that best fits "store a value and read it back later", explain why it was chosen over the alternatives, and use it once.',
-    },
   },
   {
     id: 'composable',
     title: 'Composable',
     line: 'Most things already exist in the registry at workers.iii.dev — add a worker instead of building it.',
-    starter: {
-      label: 'Find a worker in the registry',
-      prompt:
-        'Browse the workers registry for workers that would be useful in this project, recommend three with one line each on why, and add the one I pick.',
-    },
   },
   {
     id: 'reactive',
     title: 'Reactive',
     line: 'Agents subscribe to triggers and wake the moment something happens — no polling loops.',
-    starter: {
-      label: 'React to an event',
-      prompt:
-        'Set up a trigger that wakes you whenever a value changes in the state worker under scope "demo". Then write a value there so we can watch the trigger fire, and tell me what you received.',
-    },
   },
 ]
+
+/**
+ * The guided tour that follows setup: the `onboarding` worker's page walks
+ * through the ADE stage by stage, with the models just connected. The Ready
+ * step adds the worker when the tour is accepted, then opens its page.
+ */
+export const TOUR_WORKER = 'onboarding'
+export const TOUR_PAGE = 'onboarding'
 
 /** The console configuration key that overrides worker sources (development). */
 export const WORKER_SOURCES_KEY = 'onboarding'
