@@ -1,8 +1,7 @@
-import type { Host } from '@iii-dev/console-ui'
+import type { Host, ModelOption } from '@iii-dev/console-ui'
 import { useEffect, useState } from 'react'
 import { RPC_TIMEOUT_MS } from '../shared'
 import { readCatalog } from './catalog.js'
-import type { CatalogModel } from './catalog.js'
 
 /** Tab-scoped, so two open consoles do not fight over the handler id. */
 const CHANGED_FN = 'sentinel-ui::models-changed'
@@ -15,8 +14,8 @@ const CHANGED_FN = 'sentinel-ui::models-changed'
  * unreachable router leaves the list empty and the form still works: the
  * stored model is shown as configured, and typing a raw id stays possible.
  */
-export function useModelCatalog(host: Host): { catalog: CatalogModel[]; loading: boolean } {
-  const [catalog, setCatalog] = useState<CatalogModel[]>([])
+export function useModelCatalog(host: Host): { catalog: ModelOption[]; loading: boolean } {
+  const [catalog, setCatalog] = useState<ModelOption[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {

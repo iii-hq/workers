@@ -808,6 +808,34 @@
 
 /* ── configuration ────────────────────────────────────────────────────── */
 
+/* The chat's ModelPicker in a settings row: its trigger is transparent in
+   the composer, so here it takes the select-control fill. */
+[data-iii-ui="sentinel"] .sentinel-ui-model {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-model:focus { outline: none; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-model-picker {
+  width: min(100%, 280px);
+  min-width: 180px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-model-picker > button {
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-model-picker > button:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+}
+
 [data-iii-ui="sentinel"] .sentinel-ui-config {
   display: flex;
   flex-direction: column;

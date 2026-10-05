@@ -3,7 +3,7 @@ import {
   Chip,
   DirectoryPicker,
   Input,
-  Selector,
+  ModelPicker,
   SettingsDeck,
   SettingsField,
   SettingsList,
@@ -16,7 +16,7 @@ import type { ConfigFormProps, Host } from '@iii-dev/console-ui'
 import { Folder, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { client } from '../api'
-import { catalogKey, modelGroups, splitKey } from './catalog.js'
+import { catalogKey, splitKey, withStoredModel } from './catalog.js'
 import {
   addRepository,
   normalize,
@@ -183,30 +183,39 @@ export function SentinelConfigForm({
             label="Model"
             description="Picked from what the router can actually serve. Empty means every investigation must name its own, which is the safe default: a model set here spends tokens the moment somebody clicks Investigate."
             renderControl={(props) => (
-              <Selector
-                {...props}
+              // The chat's own picker. It takes no id or label of its own, so
+              // the row's label names the group and deep links focus it.
+              <div
+                role="group"
                 aria-label="Investigation model"
-                value={selectedModel || undefined}
-                groups={modelGroups(catalog, selectedModel)}
-                loading={loading}
-                placeholder="every investigation names its own"
-                searchPlaceholder="model or provider"
-                emptyMessage="The router is serving no models. Configure a provider first."
-                allowEmpty
-                emptyLabel="every investigation names its own"
-                onClear={() => setModel('', '')}
-                // A raw id stays possible: a model the catalog has not caught
-                // up with is still a model the router may serve.
-                onCreate={(query) => {
-                  const { model, provider } = splitKey(query.trim())
-                  if (model) setModel(model, provider)
-                }}
-                createOptionLabel={(query) => `use ${query}`}
-                onChange={(next) => {
-                  const { model, provider } = splitKey(next)
-                  setModel(model, provider)
-                }}
-              />
+                aria-describedby={props['aria-describedby']}
+                data-field={props['data-field']}
+                tabIndex={-1}
+                className="sentinel-ui-model"
+              >
+                <ModelPicker
+                  value={selectedModel || null}
+                  options={withStoredModel(catalog, selectedModel)}
+                  // The investigation config stores a model, not an effort.
+                  thinkingLevel="default"
+                  onThinkingLevelChange={() => {}}
+                  showReasoningEffort={false}
+                  showRefresh={false}
+                  showProviderConfiguration={false}
+                  loading={loading}
+                  placeholder="every investigation names its own"
+                  className="sentinel-ui-model-picker"
+                  onChange={(next) => {
+                    const { model, provider } = splitKey(next)
+                    setModel(model, provider)
+                  }}
+                />
+                {selectedModel ? (
+                  <Button type="button" variant="ghost" size="sm" onClick={() => setModel('', '')}>
+                    No default
+                  </Button>
+                ) : null}
+              </div>
             )}
           />
         </SettingsList>
