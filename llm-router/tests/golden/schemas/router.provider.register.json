@@ -236,6 +236,17 @@
           "modality"
         ],
         "type": "object"
+      },
+      "ThinkingLevel": {
+        "description": "\"minimal\" requests the lowest reasoning effort and needs only `thinking` support; levels map to provider-native knobs via `Model::thinking_budgets`.",
+        "enum": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "type": "string"
       }
     },
     "description": "Input of `router::provider::register` — a provider worker's declaration plus the optional re-registration token.",
@@ -246,6 +257,27 @@
           "string",
           "null"
         ]
+      },
+      "default_models": {
+        "description": "Chat model ids the provider recommends as a starting point, most preferred first (the current mid-range model, then its predecessors). `router::provider::list` reports the first one the catalog slice holds as `default_model`.",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "default_thinking_level": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ThinkingLevel"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The thinking level to use with the default model when a caller names none. Absent means omit the level."
       },
       "defaults": {
         "anyOf": [

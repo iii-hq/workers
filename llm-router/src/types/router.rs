@@ -136,6 +136,17 @@ pub struct ProviderInfo {
     /// when the provider declared none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_svg: Option<String>,
+    /// The model a consumer should start with when nothing else names one:
+    /// the first of the provider's declared `default_models` present in its
+    /// catalog slice, else the closest same-family model, else absent (see
+    /// `registry::availability::resolve_default_model`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    /// The thinking level a consumer should start with when nothing else
+    /// names one; copied from the declaration. Absent means omit the level
+    /// and let the provider apply its own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_thinking_level: Option<ThinkingLevel>,
     /// Where the credential comes from and why it is unusable, if it is.
     #[serde(flatten)]
     pub credential: CredentialStatus,
@@ -189,6 +200,16 @@ pub struct ProviderDeclaration {
     /// the router drops anything larger or not starting with `<svg`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_svg: Option<String>,
+    /// Chat model ids the provider recommends as a starting point, most
+    /// preferred first (the current mid-range model, then its predecessors).
+    /// `router::provider::list` reports the first one the catalog slice
+    /// holds as `default_model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_models: Option<Vec<String>>,
+    /// The thinking level to use with the default model when a caller names
+    /// none. Absent means omit the level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_thinking_level: Option<ThinkingLevel>,
 }
 
 /// Upper bound the router accepts for [`ProviderDeclaration::icon_svg`].

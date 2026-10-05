@@ -1,5 +1,5 @@
 {
-  "description": "List registered providers with their configured/available status and where each credential comes from (credential_source, credential_ref, credential_error; never a value).",
+  "description": "List registered providers with their configured/available status, where each credential comes from (credential_source, credential_ref, credential_error; never a value), and the provider's starting point (default_model: its first declared preference present in the catalog, else the closest same-family model; default_thinking_level).",
   "function_id": "router::provider::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -61,6 +61,24 @@
             ],
             "description": "Where the credential comes from: `config`, `env`, `secret` or `none`."
           },
+          "default_model": {
+            "description": "The model a consumer should start with when nothing else names one: the first of the provider's declared `default_models` present in its catalog slice, else the closest same-family model, else absent (see `registry::availability::resolve_default_model`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_thinking_level": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ThinkingLevel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The thinking level a consumer should start with when nothing else names one; copied from the declaration. Absent means omit the level and let the provider apply its own default."
+          },
           "display_name": {
             "type": "string"
           },
@@ -86,6 +104,17 @@
           "supports_model_listing"
         ],
         "type": "object"
+      },
+      "ThinkingLevel": {
+        "description": "\"minimal\" requests the lowest reasoning effort and needs only `thinking` support; levels map to provider-native knobs via `Model::thinking_budgets`.",
+        "enum": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "type": "string"
       }
     },
     "properties": {

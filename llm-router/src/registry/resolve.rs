@@ -315,6 +315,8 @@ mod tests {
             models: None,
             worker_id: None,
             icon_svg: None,
+            default_models: None,
+            default_thinking_level: None,
         }
     }
 

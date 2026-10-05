@@ -61,7 +61,7 @@ partial content, so consumers never hang on a half-open stream.
 | `router::transcribe` | Speech to text: `{model?, provider?, audio_base64, mime?, language?, prompt?}` → `{provider, model, text, segments[]?, language?, duration_secs?}`. The provider comes from the named `provider`, else from the catalog owner of the `stt` model, else the first provider that declared one. |
 | `router::speak` | Text to speech: `{model?, provider?, text, voice?, format?, language?, speed?}` → `{provider, model, audio_base64, mime, voice?, duration_secs?}`. Same resolution over `tts` models. |
 | `router::count_tokens` | Count prompt tokens: `{model, provider?, system_prompt?, tools?, messages}` → `{provider, model, tokens, estimator}`, resolved with the same routing rules as `router::chat` and forwarded to `provider::<id>::count_tokens`. Never runs the model and costs nothing; `estimator` is `provider` (metering API) or `tiktoken` (local tokenizer). A provider without the surface is a typed `router/no_token_counter` error, so callers can fall back to their own estimate. |
-| `router::provider::list` | Registered providers with `configured` / `available` status and where each credential comes from (`credential_source`, `credential_ref`, `credential_error` — never a value). |
+| `router::provider::list` | Registered providers with `configured` / `available` status, where each credential comes from (`credential_source`, `credential_ref`, `credential_error` — never a value), and each provider's starting point: `default_model` and `default_thinking_level` (see [Default model](#default-model)). |
 
 Only the read surface is agent-callable (`router::models::list` / `get` /
 `supports`, `router::provider::list`); everything else is denied to in-run
@@ -293,6 +293,10 @@ A provider worker must:
    echoes it in `router::provider::list` and the console paints it as a
    `currentColor` mask beside the provider's models; a missing or malformed
    mark falls back to the provider's initial.
+   The declaration may also carry `default_models`, the provider's
+   recommended starting models in preference order (the current mid-range
+   model first, then its predecessors), and `default_thinking_level`, the
+   level to pair with it; see [Default model](#default-model).
 3. Resolve credentials per request via `router::provider::resolve`; never
    read keys directly. A response with `credential_source: "secret"` and no
    credential is an unresolvable `secret://` reference: report its
@@ -309,6 +313,24 @@ system_prompt?, tools?, messages}` → `{model, tokens, estimator}`) to serve
 (`estimator: "provider"`) or a local tokenizer estimate (`estimator:
 "tiktoken"`). Providers without it simply make `router::count_tokens` return
 a typed `router/no_token_counter` error for that provider.
+
+### Default model
+
+`router::provider::list` reports one `default_model` per provider so that a
+caller with no model choice of its own (a fresh `harness::send` naming only
+a provider, a console opening its first chat) starts on something sensible.
+It is resolved at read time against the provider's current catalog slice:
+
+1. the first id in the declared `default_models` the slice holds;
+2. otherwise the slice model sharing the longest id prefix with the first
+   preference, as long as they share the family (the id up to its first
+   `-`: `claude`, `gpt`, `codex/gpt`), newest first on ties;
+3. otherwise absent, and the caller keeps its previous behaviour.
+
+A provider that declares no `default_models` (local model servers, speech
+providers) never reports one. `default_thinking_level` is copied from the
+declaration; absent means the caller should omit the level and let the
+provider apply its own default.
 
 ### Speech providers
 

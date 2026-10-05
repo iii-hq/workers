@@ -210,6 +210,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             config.clone(),
             registry.clone(),
             secrets.clone(),
+            catalog.clone(),
         ))
         .description(surface::PROVIDER_LIST_DESC),
     );
