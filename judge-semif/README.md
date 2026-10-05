@@ -89,7 +89,9 @@ uncalibrated. At most
 Every question of one evaluation shares its state, and SemIf puts the evidence
 first. The worker prefills the prompts' longest common token run once,
 snapshots it, restores it into up to `parallel_questions` sequences and decodes
-their suffixes together in one batch (SemIf's parallel suffixes). The prefix is
+their suffixes together in one batch (SemIf's parallel suffixes). The snapshot
+stays in the model's device memory (VRAM on a GPU; about 270 MB for a
+6.7k-token prefix, held until the next evaluation replaces it). The prefix is
 found on tokens, not re-tokenized text: a state ending in `{}` merges with the
 following `}` two tokens back, which SemIf's own `_state_prefix` rejects.
 `usage.input_tokens` counts the decoded tokens (the shared prefix once).

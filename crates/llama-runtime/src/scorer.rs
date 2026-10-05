@@ -5,9 +5,9 @@
 //!
 //! Every prompt of one evaluation is about one state, and the providers put
 //! the state first, so the scorer prefills the prompts' longest common token
-//! run once, snapshots the sequence (`state_seq_get`; Qwen3.5's hybrid memory
-//! cannot copy sequences), restores it into up to `parallel` sequences and
-//! decodes their suffixes together in one batch.
+//! run once, snapshots the sequence on the device (`state_seq_get`; Qwen3.5's
+//! hybrid memory cannot copy sequences), restores it into up to `parallel`
+//! sequences and decodes their suffixes together in one batch.
 pub use crate::{softmax, Stop};
 use crate::{Runtime, Session};
 use anyhow::{anyhow, bail, Result};
@@ -267,7 +267,7 @@ fn score(
             ctx.clear_kv_cache();
             decode(ctx, &labels.ids, &[(prefix, 0, None)], &check)?;
             tokens += prefix.len() as u64;
-            Some(ctx.state_seq_get(0).map_err(|_| Stop::Failed)?)
+            Some(ctx.state_seq_get(0, true).map_err(|_| Stop::Failed)?)
         } else {
             None
         };

@@ -114,13 +114,18 @@ fn decodes_sequences_in_one_batch_deterministically() {
 
 #[test]
 fn restores_a_sequence_state_into_another_sequence() {
+    restores_into_another_sequence(false);
+    restores_into_another_sequence(true);
+}
+
+fn restores_into_another_sequence(on_device: bool) {
     let model = qwen3();
     let mut ctx = scorer_context(&model);
     let prefix = model.tokenize("STATE: the site is down.", false).unwrap();
     let suffix = model.tokenize("\nQUESTION: which team?", false).unwrap();
     let at = prefix.len() as i32;
     decode(&mut ctx, &[(&prefix, 0, 0)]).unwrap();
-    let state = ctx.state_seq_get(0).unwrap();
+    let state = ctx.state_seq_get(0, on_device).unwrap();
     let whole = decode(&mut ctx, &[(&suffix, at, 0)]).unwrap();
     // Restored into another sequence, the same decode gives the same logits.
     ctx.clear_kv_cache();
@@ -136,7 +141,16 @@ fn restores_a_sequence_state_into_another_sequence() {
     }
     // Sequences outside the context are refused (llama.cpp would abort).
     assert!(ctx.state_seq_set(&state, 2).is_err());
-    assert!(ctx.state_seq_get(-1).is_err());
+    assert!(ctx.state_seq_get(-1, on_device).is_err());
+    // Only this context holds an on-device snapshot's data...
+    let mut other = scorer_context(&model);
+    assert_eq!(other.state_seq_set(&state, 0).is_err(), on_device);
+    // ...until a newer on-device snapshot of the sequence replaces it.
+    ctx.clear_kv_cache();
+    decode(&mut ctx, &[(&suffix, 0, 0)]).unwrap();
+    let newer = ctx.state_seq_get(0, true).unwrap();
+    assert_eq!(ctx.state_seq_set(&state, 1).is_err(), on_device);
+    ctx.state_seq_set(&newer, 1).unwrap();
 }
 
 #[test]

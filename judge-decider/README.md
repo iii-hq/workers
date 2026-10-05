@@ -121,7 +121,10 @@ the levels from the middle of the scale. A question without instructions asks
 Every prompt of one evaluation starts with the same `Context:` tokens. The
 worker prefills them once, snapshots the sequence, restores it into up to
 `parallel_questions` sequences and decodes the question blocks together in
-one batch (`iii_llama_runtime::scorer`, shared with judge-semif).
+one batch (`iii_llama_runtime::scorer`, shared with judge-semif). The
+snapshot stays in the model's device memory (VRAM on a GPU), so restoring it
+never goes through the host; the latest one is held until the next evaluation
+replaces it, about 300 MB for a 7.6k-token context.
 `usage.input_tokens` counts the decoded tokens (the shared prefix once).
 
 `tests/decider.rs` checks the prompts and token ids against decider's own

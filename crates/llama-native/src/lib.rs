@@ -8,12 +8,19 @@
 //! ([`Batch`]), logits or embeddings per output row, sequence state snapshots.
 use anyhow::{anyhow, bail, ensure, Result};
 use std::{
+    collections::HashMap,
     ffi::{c_char, CStr, CString},
     path::Path,
     ptr::{self, NonNull},
     slice,
-    sync::Once,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Once,
+    },
 };
+
+/// `LLAMA_STATE_SEQ_FLAGS_ON_DEVICE`.
+const STATE_ON_DEVICE: u32 = 2;
 
 /// llama.cpp's `llama_model`, opaque.
 #[repr(C)]
@@ -287,7 +294,11 @@ impl Model {
         };
         let raw = NonNull::new(raw)
             .ok_or_else(|| anyhow!("llama.cpp could not create a context ({params:?})"))?;
-        Ok(Context { raw, model: self })
+        Ok(Context {
+            raw,
+            model: self,
+            device_states: HashMap::new(),
+        })
     }
 
     /// One forward over the prompt: `orders[i]` is token i's
@@ -399,13 +410,20 @@ impl Batch {
 /// A sequence's memory, from [`Context::state_seq_get`]: only llama.cpp
 /// writes these bytes.
 #[derive(Clone)]
-pub struct SeqState(Vec<u8>);
+pub struct SeqState {
+    bytes: Vec<u8>,
+    /// On the device: the sequence it came from and its snapshot id. The
+    /// bytes then only describe the tensors, which stay in its context.
+    device: Option<(i32, u64)>,
+}
 
 /// A llama.cpp context over a [`Model`]: its memory (KV cache, recurrent
 /// state) and the outputs of its last pass. Freed on drop; not `Send`.
 pub struct Context<'m> {
     raw: NonNull<RawContext>,
     model: &'m Model,
+    /// Per sequence, the id of the on-device snapshot llama.cpp still holds.
+    device_states: HashMap<i32, u64>,
 }
 
 impl Context<'_> {
@@ -467,32 +485,60 @@ impl Context<'_> {
         unsafe { llama_memory_clear(llama_get_memory(self.raw.as_ptr()), true) }
     }
 
-    /// Snapshot sequence `seq`'s memory (host copy).
-    pub fn state_seq_get(&self, seq: i32) -> Result<SeqState> {
+    /// Snapshot sequence `seq`'s memory. A host snapshot holds the data and
+    /// restores into any context shaped like this one. `on_device` keeps the
+    /// data in a device-side copy this context owns (no round trip through
+    /// host memory): that snapshot restores only here, and only until the
+    /// next on-device snapshot of `seq` replaces the copy.
+    pub fn state_seq_get(&mut self, seq: i32, on_device: bool) -> Result<SeqState> {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         self.check_seq(seq)?;
+        let flags = if on_device { STATE_ON_DEVICE } else { 0 };
+        // Even a failed snapshot may have replaced the device copy.
+        if on_device {
+            self.device_states.remove(&seq);
+        }
         let raw = self.raw.as_ptr();
-        let size = unsafe { llama_state_seq_get_size_ext(raw, seq, 0) };
+        let size = unsafe { llama_state_seq_get_size_ext(raw, seq, flags) };
         let mut bytes = vec![0u8; size];
         let written =
-            unsafe { llama_state_seq_get_data_ext(raw, bytes.as_mut_ptr(), size, seq, 0) };
+            unsafe { llama_state_seq_get_data_ext(raw, bytes.as_mut_ptr(), size, seq, flags) };
         ensure!(
             size > 0 && written == size,
             "llama.cpp: state of sequence {seq}: {written} of {size} bytes"
         );
-        Ok(SeqState(bytes))
+        let device = on_device.then(|| {
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            self.device_states.insert(seq, id);
+            (seq, id)
+        });
+        Ok(SeqState { bytes, device })
     }
 
     /// Restore `state` into sequence `seq` (any sequence of a context shaped
-    /// like the one it came from).
+    /// like the one it came from; this very context for an on-device one).
     pub fn state_seq_set(&mut self, state: &SeqState, seq: i32) -> Result<()> {
         self.check_seq(seq)?;
+        let flags = match state.device {
+            None => 0,
+            // llama.cpp aborts on a device copy it does not hold, and would
+            // read a newer one of the same size without noticing.
+            Some((from, id)) => {
+                ensure!(
+                    self.device_states.get(&from) == Some(&id),
+                    "on-device state of sequence {from} is gone"
+                );
+                STATE_ON_DEVICE
+            }
+        };
+        let bytes = &state.bytes;
         let read = unsafe {
-            llama_state_seq_set_data_ext(self.raw.as_ptr(), state.0.as_ptr(), state.0.len(), seq, 0)
+            llama_state_seq_set_data_ext(self.raw.as_ptr(), bytes.as_ptr(), bytes.len(), seq, flags)
         };
         ensure!(
-            read == state.0.len(),
+            read == bytes.len(),
             "llama.cpp: restoring sequence {seq} read {read} of {} bytes",
-            state.0.len()
+            bytes.len()
         );
         Ok(())
     }
