@@ -203,7 +203,9 @@ export function ModelsStep({
             <span className="text-pretty font-sans text-[12px] leading-relaxed text-ink-faint">
               {choice.reason}
             </span>
-            {tool?.installed ? <ToolDetails tool={tool} /> : null}
+            {tool?.installed || tool?.signed_in ? (
+              <ToolDetails tool={tool} />
+            ) : null}
             {!choice.installed && choice.kind !== 'device' ? (
               <span className="font-mono text-[11px] text-ink-ghost">
                 adds {choice.worker}
