@@ -259,7 +259,7 @@ async fn check(signal: Option<&str>) {
     assert_eq!(ensure["data"]["id"], "secrets");
     assert_eq!(
         ensure["data"]["initial_value"],
-        json!({"data_dir":"data/secrets","key_file":null})
+        json!({"data_dir":"data/secrets","key_file":null,"env_file":".env"})
     );
 
     let result = |step: u32| results[&step]["result"].clone();

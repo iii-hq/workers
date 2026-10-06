@@ -61,6 +61,7 @@ impl Detector {
     pub fn from_env() -> Self {
         Self {
             process_env: true,
+            // The worker reads the configured env file per call (`Ctx`).
             dotenv: Some(iii_worker_paths::project_path(".env")),
             shell: std::env::var_os("SHELL")
                 .filter(|shell| !shell.is_empty())
@@ -143,7 +144,24 @@ async fn read_dotenv(path: &std::path::Path, names: &[String]) -> Vec<Found> {
 }
 
 /// `KEY=VALUE` lines as a dotenv loader reads them; a later definition of
-/// the same key wins.
+/// the same key wins. See [`scan_dotenv`] for the grammar.
+pub fn parse_dotenv(text: &str) -> BTreeMap<String, SecretString> {
+    scan_dotenv(text)
+        .into_iter()
+        .map(|entry| (entry.key, entry.value))
+        .collect()
+}
+
+/// One definition in a dotenv file.
+#[derive(Debug)]
+pub struct DotenvEntry {
+    pub key: String,
+    pub value: SecretString,
+    /// From the start of its first line through its last line's newline.
+    pub span: std::ops::Range<usize>,
+}
+
+/// Every definition, in file order:
 ///
 /// - blank lines and `#` comment lines are skipped, as is a leading `export `;
 /// - `'single'` quotes are literal; `"double"` quotes understand `\n`, `\r`,
@@ -152,11 +170,12 @@ async fn read_dotenv(path: &std::path::Path, names: &[String]) -> Vec<Found> {
 /// - an unquoted value ends at ` #` / `\t#` (inline comment) and is trimmed;
 /// - lines without `=` or with an invalid key are skipped, as is an
 ///   unterminated quote.
-pub fn parse_dotenv(text: &str) -> BTreeMap<String, SecretString> {
-    let mut entries = BTreeMap::new();
+pub fn scan_dotenv(text: &str) -> Vec<DotenvEntry> {
+    let mut entries = Vec::new();
     let len = text.len();
     let mut pos = 0;
     while pos < len {
+        let line_start = pos;
         let line_end = text[pos..].find('\n').map_or(len, |i| pos + i);
         let line = &text[pos..line_end];
         pos = line_end + 1;
@@ -179,14 +198,14 @@ pub fn parse_dotenv(text: &str) -> BTreeMap<String, SecretString> {
         let value = raw.trim_start_matches([' ', '\t']);
         // `value` is a suffix of `line`, so its start in `text` is fixed.
         let value_start = line_end - value.len();
-        match value.chars().next() {
+        let parsed = match value.chars().next() {
             Some(quote @ ('"' | '\'')) => {
                 let Some((parsed, close)) = quoted(text, value_start + 1, quote) else {
                     continue;
                 };
-                entries.insert(key.to_owned(), parsed);
                 // Skip whatever follows the closing quote on its line.
                 pos = text[close..].find('\n').map_or(len, |i| close + i + 1);
+                parsed
             }
             _ => {
                 let end = raw
@@ -194,10 +213,14 @@ pub fn parse_dotenv(text: &str) -> BTreeMap<String, SecretString> {
                     .windows(2)
                     .position(|pair| matches!(pair[0], b' ' | b'\t') && pair[1] == b'#')
                     .unwrap_or(raw.len());
-                let unquoted = raw[..end].trim_matches([' ', '\t', '\r']);
-                entries.insert(key.to_owned(), unquoted.into());
+                raw[..end].trim_matches([' ', '\t', '\r']).into()
             }
-        }
+        };
+        entries.push(DotenvEntry {
+            key: key.to_owned(),
+            value: parsed,
+            span: line_start..pos.min(len),
+        });
     }
     entries
 }

@@ -1,8 +1,13 @@
-//! Secret names, `secret://NAME` references, consumer lists and the masked hint.
+//! Secret names, `secret://NAME` and `env://NAME` references, consumer lists
+//! and the masked hint.
+use crate::api::StoreKind;
 use crate::error::{codes, SecretsError};
 
-/// Scheme of a versionable reference: `secret://NAME`.
+/// Scheme of a versionable reference to a value in the encrypted vault.
 pub const REFERENCE_PREFIX: &str = "secret://";
+/// Scheme of a versionable reference to an environment variable: the
+/// project's `.env`, or this worker's own environment.
+pub const ENV_REFERENCE_PREFIX: &str = "env://";
 /// `^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`: at most 128 bytes.
 pub const MAX_NAME_LEN: usize = 128;
 /// The env var that carries the master key. It is unlock material, never a
@@ -50,30 +55,50 @@ pub fn validate_name(name: &str) -> Result<(), SecretsError> {
     Ok(())
 }
 
-/// `secret://NAME` or a bare `NAME` to the name. Surrounding whitespace is
-/// ignored; anything else that does not match the name pattern is
-/// `INVALID_REFERENCE`, without echoing the input.
-pub fn parse_reference(reference: &str) -> Result<&str, SecretsError> {
-    let trimmed = reference.trim();
-    let name = trimmed.strip_prefix(REFERENCE_PREFIX).unwrap_or(trimmed);
-    if is_valid_name(name) {
-        Ok(name)
-    } else {
-        Err(SecretsError::new(
+/// `secret://NAME`, `env://NAME` or a bare `NAME` (the vault) to the store
+/// and the name. The scheme matches case-insensitively and surrounding
+/// whitespace is ignored; anything else that does not match the name pattern
+/// is `INVALID_REFERENCE`, without echoing the input.
+pub fn parse_reference(reference: &str) -> Result<(StoreKind, &str), SecretsError> {
+    let (store, name) = split_reference(reference);
+    match (store, is_valid_name(name)) {
+        (store, true) => Ok((store.unwrap_or(StoreKind::Vault), name)),
+        _ => Err(SecretsError::new(
             codes::INVALID_REFERENCE,
-            "reference must be secret://NAME or NAME, with NAME matching ^[A-Za-z_][A-Za-z0-9_.-]{0,127}$",
-        ))
+            "reference must be secret://NAME, env://NAME or NAME, with NAME matching ^[A-Za-z_][A-Za-z0-9_.-]{0,127}$",
+        )),
     }
 }
 
-/// Whether a configuration value is a `secret://` reference (as opposed to a
-/// literal credential); consumers use the same test before resolving.
-pub fn is_reference(value: &str) -> bool {
-    value.trim().starts_with(REFERENCE_PREFIX)
+/// The store a reference names (`None` for a bare name) and the rest.
+pub fn split_reference(reference: &str) -> (Option<StoreKind>, &str) {
+    let trimmed = reference.trim();
+    for (prefix, store) in [
+        (REFERENCE_PREFIX, StoreKind::Vault),
+        (ENV_REFERENCE_PREFIX, StoreKind::Env),
+    ] {
+        if trimmed
+            .get(..prefix.len())
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case(prefix))
+        {
+            return (Some(store), &trimmed[prefix.len()..]);
+        }
+    }
+    (None, trimmed)
 }
 
-pub fn reference_for(name: &str) -> String {
-    format!("{REFERENCE_PREFIX}{name}")
+/// Whether a configuration value is a `secret://` or `env://` reference (as
+/// opposed to a literal credential); consumers use the same test before
+/// resolving.
+pub fn is_reference(value: &str) -> bool {
+    split_reference(value).0.is_some()
+}
+
+pub fn reference_for(store: StoreKind, name: &str) -> String {
+    match store {
+        StoreKind::Vault => format!("{REFERENCE_PREFIX}{name}"),
+        StoreKind::Env => format!("{ENV_REFERENCE_PREFIX}{name}"),
+    }
 }
 
 /// The display hint: with 12 or more characters, the first `min(6, len/4)`
@@ -177,15 +202,28 @@ mod tests {
     fn references_parse_with_or_without_the_scheme() {
         assert_eq!(
             parse_reference("secret://ANTHROPIC_API_KEY").unwrap(),
-            "ANTHROPIC_API_KEY"
+            (StoreKind::Vault, "ANTHROPIC_API_KEY")
         );
-        assert_eq!(parse_reference("OPENAI_API_KEY").unwrap(), "OPENAI_API_KEY");
-        assert_eq!(parse_reference("  secret://A.b-c  ").unwrap(), "A.b-c");
+        assert_eq!(
+            parse_reference("OPENAI_API_KEY").unwrap(),
+            (StoreKind::Vault, "OPENAI_API_KEY")
+        );
+        assert_eq!(
+            parse_reference("  secret://A.b-c  ").unwrap(),
+            (StoreKind::Vault, "A.b-c")
+        );
+        assert_eq!(
+            parse_reference("env://OPENAI_API_KEY").unwrap(),
+            (StoreKind::Env, "OPENAI_API_KEY")
+        );
+        assert_eq!(parse_reference(" ENV://X ").unwrap(), (StoreKind::Env, "X"));
         for invalid in [
             "",
             "secret://",
             "secret://9x",
-            "env://X",
+            "env://",
+            "env://a/b",
+            "vault://X",
             "https://example.com",
             "secret://a/b",
             "secret:/X",
@@ -193,8 +231,10 @@ mod tests {
             let error = parse_reference(invalid).unwrap_err();
             assert_eq!(error.code, codes::INVALID_REFERENCE, "{invalid}");
         }
-        assert_eq!(reference_for("X"), "secret://X");
+        assert_eq!(reference_for(StoreKind::Vault, "X"), "secret://X");
+        assert_eq!(reference_for(StoreKind::Env, "X"), "env://X");
         assert!(is_reference(" secret://X"));
+        assert!(is_reference("env://X"));
         assert!(!is_reference("sk-ant-123"));
     }
 
