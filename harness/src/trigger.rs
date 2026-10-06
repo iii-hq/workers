@@ -716,17 +716,26 @@ pub(crate) async fn invoke_target_classified(
     function_id: &str,
     arguments: &Value,
 ) -> (ResultData, bool) {
-    if let Some(denied) = project_wide_compose_denial(function_id, arguments) {
+    let (arguments, start_note) = match scaffold_start_gate(function_id, arguments, policy) {
+        StartGate::Pass => (arguments.clone(), None),
+        StartGate::Deny(denied) => return (denied, false),
+        StartGate::FilesOnly(arguments, note) => (arguments, Some(note)),
+    };
+    if let Some(denied) = project_wide_compose_denial(function_id, &arguments) {
         return (denied, false);
     }
-    match engine.dispatch(function_id, arguments.clone()).await {
+    match engine.dispatch(function_id, arguments).await {
         Ok(mut value) => {
             if function_id == "engine::functions::list" {
                 post_filter_discovery(&mut value, policy);
             } else if function_id == "engine::functions::info" {
                 post_filter_info(&mut value, policy);
             }
-            (normalized_result(value), false)
+            let mut result = normalized_result(value);
+            if let Some(note) = start_note {
+                result.content.push(ContentBlock::text(note));
+            }
+            (result, false)
         }
         Err(e) => {
             let outcome_unknown = e.outcome_unknown;
@@ -827,6 +836,71 @@ pub(crate) fn project_wide_compose_denial(
         Some("compose_project_scope_denied".to_string()),
         message,
     ))
+}
+
+/// What the turn does with a `coder::scaffold-worker` call, whose `start`
+/// (default true) has the ide run compose::add under its own permissions,
+/// in its own stack.
+pub(crate) enum StartGate {
+    Pass,
+    /// An explicit `start: true` this session cannot have.
+    Deny(ResultData),
+    /// No `start` given and this session cannot start: the call goes with
+    /// `start: false`, and the note joins its result.
+    FilesOnly(Value, String),
+}
+
+/// A session may start a scaffold only if it may call compose::add itself:
+/// the flag must not widen its policy. (The ide adds to its own stack, which
+/// compose gives every container it supervises, the harness included, as
+/// the same III_COMPOSE_FILE / III_COMPOSE_NAMESPACE.)
+pub(crate) fn scaffold_start_gate(
+    function_id: &str,
+    arguments: &Value,
+    policy: &CompiledPolicy,
+) -> StartGate {
+    if function_id != crate::clients::engine::SCAFFOLD_WORKER || policy.allows("compose::add") {
+        return StartGate::Pass;
+    }
+    start_refused(
+        arguments,
+        "it runs compose::add, which this session may not call",
+        "Adding it to the stack needs compose::add: ask for it, or for someone who has it to send the compose_add.",
+    )
+}
+
+/// Whether a `coder::scaffold-worker` call would start the worker: `start`
+/// defaults to true.
+pub(crate) fn scaffold_starts(function_id: &str, arguments: &Value) -> bool {
+    function_id == crate::clients::engine::SCAFFOLD_WORKER
+        && arguments.get("start") != Some(&Value::Bool(false))
+}
+
+/// A start this session cannot have: a defaulted one goes files-only, an
+/// explicit one is refused.
+/// `next` is the step that does add the worker, for the agent to take.
+pub(crate) fn start_refused(arguments: &Value, why: &str, next: &str) -> StartGate {
+    match arguments.get("start") {
+        Some(Value::Bool(false)) => StartGate::Pass,
+        None => {
+            let mut files_only = arguments.clone();
+            if let Some(object) = files_only.as_object_mut() {
+                object.insert("start".to_string(), Value::Bool(false));
+            }
+            StartGate::FilesOnly(
+                files_only,
+                format!("[harness] Not started ({why}): only the files were written. {next}"),
+            )
+        }
+        // true, or a value the ide would refuse anyway: never dispatched.
+        Some(_) => StartGate::Deny(invocation_error_result(
+            Some("scaffold_start_denied".to_string()),
+            format!(
+                "coder::scaffold-worker with start: true is refused here: {why}. Call it with \
+                 start: false to write the files only. {next}"
+            ),
+        )),
+    }
 }
 
 pub(crate) fn invocation_error_result(code: Option<String>, message: String) -> ResultData {
@@ -1179,6 +1253,41 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         }))
+    }
+
+    /// Prevents: `start: true` laundering a compose::add the session's policy
+    /// does not grant through the ide's own permissions.
+    #[test]
+    fn a_starting_scaffold_needs_compose_add() {
+        let id = "coder::scaffold-worker";
+        let explicit = json!({ "template": "worker-node-ade", "name": "orders", "start": true });
+        let default = json!({ "template": "worker-node-ade", "name": "orders" });
+        let opt_out = json!({ "template": "worker-node-ade", "name": "orders", "start": false });
+        let coder_only = pol(&["coder::*"]);
+        let allowed = pol(&["coder::*", "compose::add"]);
+
+        let StartGate::Deny(denied) = scaffold_start_gate(id, &explicit, &coder_only) else {
+            panic!("an explicit start without compose::add must be refused");
+        };
+        assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
+        // The default start degrades to the files only, with a note.
+        let StartGate::FilesOnly(sent, note) = scaffold_start_gate(id, &default, &coder_only)
+        else {
+            panic!("a defaulted start without compose::add must go files-only");
+        };
+        assert_eq!(sent, opt_out);
+        assert!(note.contains("Not started"), "{note}");
+        for args in [&opt_out, &explicit, &default] {
+            let policy = if args == &opt_out {
+                &coder_only
+            } else {
+                &allowed
+            };
+            assert!(
+                matches!(scaffold_start_gate(id, args, policy), StartGate::Pass),
+                "{args}"
+            );
+        }
     }
 
     /// Prevents: the self-inflicted restart — a project-wide `compose::restart`

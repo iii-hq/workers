@@ -14,6 +14,9 @@ vi.mock('../../function-trigger/AgentRunView', () => ({
 vi.mock('../../function-trigger/FileChangesView', () => ({
   createFileChangesRenderer: () => ({}),
 }))
+vi.mock('../../function-trigger/ScaffoldView', () => ({
+  createScaffoldRenderer: () => ({}),
+}))
 vi.mock('../index', () => ({ ShellExplorerPage: () => null }))
 vi.mock('../ShellTurnSummary', () => ({ ShellTurnSummary: () => null }))
 vi.mock('../WorktreeSwitcher', () => ({ createWorktreeSwitcher: () => () => null }))
@@ -51,8 +54,6 @@ describe('terminal output router lifecycle', () => {
     teardown()
 
     expect(offOutput).toHaveBeenCalledOnce()
-    expect(() => terminalOutputRouterHost(terminalRouter)).toThrow(
-      'terminal output router is disposed',
-    )
+    expect(() => terminalOutputRouterHost(terminalRouter)).toThrow('terminal output router is disposed')
   })
 })

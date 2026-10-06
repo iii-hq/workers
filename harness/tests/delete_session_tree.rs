@@ -75,6 +75,12 @@ impl Store {
                 Ok(json!({}))
             }
             "state::get" | "harness::state::get" => Ok(self.state(scope, key)),
+            "state::list_keys" => Ok(json!({"keys": self
+                .state
+                .keys()
+                .filter(|(s, _)| s == scope)
+                .map(|(_, k)| k)
+                .collect::<Vec<_>>()})),
             "state::list" | "harness::state::list" => Ok(Value::Array(
                 self.state
                     .iter()
@@ -1471,7 +1477,9 @@ async fn late_external_result_while_tombstoned_lets_the_retry_delete_the_subtree
     assert!(!resolved.turn_resumed);
     let settled = turn(&stack, "grandchild1");
     assert_eq!(settled["status"], "cancelled");
-    assert_eq!(settled["calls"]["ext-1"]["state"], "done");
+    // Settled, not left pending: the finished record drops a done call
+    // without a child (MOT-5166).
+    assert!(settled["calls"].get("ext-1").is_none(), "{settled}");
     {
         let store = stack.store.lock().unwrap();
         // Consumed without a model-visible result or a resumed step.
@@ -1774,4 +1782,522 @@ async fn a_tombstone_after_a_live_answer_refuses_dispatch_and_withdraws_its_witn
     assert!(!store.calls.iter().any(|(f, _)| f == "ext::after"));
     let witnesses = dispatch_witnesses(&store);
     assert!(witnesses.is_empty(), "{witnesses:#?}");
+}
+
+/// The orphan redrive's view of the turn scope is process-wide: tests that
+/// read or refresh it run one at a time.
+static TURN_VIEW_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// `harness_turn` keys read with `state::get` since the calls were cleared.
+fn turn_gets(store: &Store) -> Vec<String> {
+    store
+        .calls
+        .iter()
+        .filter(|(f, data)| f == "state::get" && data["scope"] == "harness_turn")
+        .map(|(_, data)| data["key"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// The orphan redrive reads only the turn records that changed since its last
+/// pass, and the pending sweep's full read refreshes that view: a record
+/// rewritten behind this process (a state-store rollback, a console edit) is
+/// redriven by the next sweep, not only after a restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orphan_redrive_reads_only_changed_turns_and_the_sweep_refreshes_its_view() {
+    use harness::functions::sweep_pending::{self, SweepEvent};
+    use harness::inflight::redrive_orphans;
+    let _view = TURN_VIEW_TESTS.lock().await;
+    let stack = Stack::new("completed").await;
+    // Own keys only: the other tests' writes mark the fixture's ids.
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .state
+        .retain(|(scope, _), _| scope != "harness_turn");
+    stack.session("rd_done", None, "completed");
+    stack.session("rd_parked", None, "awaiting_functions");
+    let pass = || async {
+        stack.store.lock().unwrap().calls.clear();
+        let redriven = redrive_orphans(&stack.deps).await.unwrap();
+        (redriven, turn_gets(&stack.store.lock().unwrap()))
+    };
+    assert_eq!(
+        pass().await,
+        (0, vec!["rd_done".into(), "rd_parked".into()])
+    );
+    // Nothing changed: keys only.
+    assert_eq!(pass().await, (0, vec![]));
+    // Rolled back to Running behind this process: the incremental pass cannot
+    // see it...
+    stack.set_status("rd_done", "running");
+    assert_eq!(pass().await, (0, vec![]));
+    // ...the sweep's one full read refreshes the view, and its redrive pass
+    // then reads (and re-checks) only the orphan and re-enqueues it.
+    stack.store.lock().unwrap().calls.clear();
+    let swept = sweep_pending::handle(&stack.deps, SweepEvent::default())
+        .await
+        .unwrap();
+    assert_eq!(swept.redriven, 1);
+    assert_eq!(
+        turn_gets(&stack.store.lock().unwrap()),
+        ["rd_done", "rd_parked", "rd_done", "rd_done"]
+    );
+}
+
+/// A finished turn's record keeps only what a finished turn is read for
+/// (MOT-5166): open calls and calls with a child stay; done calls without
+/// one, the failure counts, the watermark and the stream id go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finalized_turn_records_drop_what_only_a_running_turn_reads() {
+    let stack = Stack::new("awaiting_functions").await;
+    stack.set_status("grandchild1", "running");
+    for id in ["parent", "child1", "grandchild1"] {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", id);
+        row["calls"] = json!({
+            "done": {"state": "done", "function_id": "x::y"},
+            "spawn": {"state": "done", "function_id": "harness::spawn",
+                "child_session_id": "s_c", "child_turn_id": "t_c"}
+        });
+        row["failed_calls"] = json!({"k": {"error_digest": "e", "count": 2}});
+        row["watermark_entry_id"] = json!("e_w");
+        row["stream_request_id"] = json!("req");
+        store.put("harness_turn", id, row);
+    }
+    // finalize_completed: a step that finds its step cap spent completes the
+    // turn without a generation. First: stopping the parent cascades to it.
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", "grandchild1");
+        row["turn_count"] = json!(16);
+        store.put("harness_turn", "grandchild1", row);
+    }
+    let payload = serde_json::from_value(
+        json!({"session_id":"grandchild1","turn_id":"t_grandchild1","step":0,"depth":0}),
+    )
+    .unwrap();
+    harness::turn_loop::run_step(&stack.deps, payload)
+        .await
+        .unwrap();
+    // finalize_cancelled: a stop on a parked turn with no external call.
+    ordinary_stop(&stack, "parent").await;
+    // finalize_failed: an unexpected step error.
+    harness::turn_loop::fail_turn(&stack.deps, "child1", "t_child1", "boom")
+        .await
+        .unwrap();
+    for (id, status) in [
+        ("parent", "cancelled"),
+        ("child1", "failed"),
+        ("grandchild1", "completed"),
+    ] {
+        let row = turn(&stack, id);
+        assert_eq!(row["status"], status, "{id}");
+        let calls: Vec<&String> = row["calls"].as_object().unwrap().keys().collect();
+        assert_eq!(calls, ["spawn"], "{id}");
+        for field in ["failed_calls", "watermark_entry_id", "stream_request_id"] {
+            assert!(row.get(field).is_none(), "{id}: {field} = {}", row[field]);
+        }
+    }
+}
+
+async fn session_deleted(deps: &Deps, event: Value) {
+    harness::functions::on_session_deleted::handle(deps, serde_json::from_value(event).unwrap())
+        .await
+        .unwrap();
+}
+
+/// `session::deleted` purges the session's turn record with its other rows
+/// (MOT-5166); other sessions' records stay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_deleted_removes_the_turn_record() {
+    let stack = Stack::new("completed").await;
+    session_deleted(&stack.deps, json!({"session_id": "child2", "timestamp": 1})).await;
+    let store = stack.store.lock().unwrap();
+    assert!(store.calls.iter().any(|(f, data)| f == "state::delete"
+        && data["scope"] == "harness_turn"
+        && data["key"] == "child2"));
+    assert!(store.state("harness_turn", "child2").is_null());
+    assert!(!store.state("harness_turn", "grandchild1").is_null());
+}
+
+/// A step holds its record in memory and writes it back when it ends. The
+/// purge waits that step out, so it deletes the step's last write instead of
+/// the step re-creating the record it just deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_deleted_waits_out_a_running_step() {
+    let stack = Stack::new("completed").await;
+    let held = turn(&stack, "child1");
+    let step = stack.deps.turn_activity.guard("child1").await;
+    let deps = stack.deps.clone();
+    let purge = tokio::spawn(async move {
+        session_deleted(&deps, json!({"session_id": "child1", "timestamp": 1})).await
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        turn(&stack, "child1")["turn_id"],
+        "t_child1",
+        "deleted under a running step"
+    );
+    // The step's final put_turn, then the step ends.
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .put("harness_turn", "child1", held);
+    drop(step);
+    tokio::time::timeout(Duration::from_secs(5), purge)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(turn(&stack, "child1").is_null());
+}
+
+/// A finished record written before prompt refs: its frozen texts inline,
+/// one done call a finished record no longer keeps.
+fn inline_prompt_turn(stack: &Stack, id: &str, prompt: &str, index: &str) {
+    stack.session(id, None, "completed");
+    let mut store = stack.store.lock().unwrap();
+    let mut row = store.state("harness_turn", id);
+    row["options"]["system_prompt"] = json!(prompt);
+    row["options"]["skill_context"] = json!({"baseline": index});
+    row["calls"] = json!({"done": {"state": "done", "function_id": "x::y"}});
+    store.put("harness_turn", id, row);
+}
+
+/// `harness::turn_compaction::compact` over a fresh listing of the store.
+async fn compact(stack: &Stack, now: i64) -> harness::turn_compaction::CompactReport {
+    let listing = harness::state::list_turns(&stack.deps.iii, 2_000)
+        .await
+        .unwrap();
+    harness::turn_compaction::compact(&stack.deps, &listing, now).await
+}
+
+fn turn_writes(store: &Store) -> usize {
+    store
+        .calls
+        .iter()
+        .filter(|(f, data)| f == "state::set" && data["scope"] == "harness_turn")
+        .count()
+}
+
+const DAY_MS: i64 = 86_400_000;
+
+// Prompt texts are unique per test: the harness remembers which bodies it
+// stored process-wide, and each test has its own store.
+
+/// A finished record that still holds its prompt inline is rewritten once:
+/// bodies to `harness_prompt`, refs in the record, slimmed, `updated_at`
+/// kept. The next pass finds nothing inline and writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_converts_inline_terminal_records_once() {
+    let stack = Stack::new("completed").await;
+    let (prompt, index) = ("compact_converts prompt", "compact_converts index");
+    inline_prompt_turn(&stack, "cc_old", prompt, index);
+    let now = harness::types::message::AgentMessage::now_ms();
+    assert_eq!(compact(&stack, now).await.converted, 1);
+
+    let row = turn(&stack, "cc_old");
+    assert_eq!(row["updated_at"], 1);
+    assert_eq!(row["calls"], json!({}));
+    {
+        let store = stack.store.lock().unwrap();
+        for (field, text) in [
+            (&row["options"]["system_prompt"], prompt),
+            (&row["options"]["skill_context"]["baseline"], index),
+        ] {
+            let digest = field["$ref"].as_str().expect("a ref, not the text");
+            assert!(digest.starts_with("sha256:"), "{digest}");
+            assert_eq!(store.state("harness_prompt", digest)["body"], text);
+        }
+    }
+    let read = harness::state::get_turn(&stack.deps.iii, "cc_old", 2_000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.options.system_prompt.as_deref(), Some(prompt));
+    assert_eq!(
+        read.options.skill_context.unwrap().baseline.as_deref(),
+        Some(index)
+    );
+
+    stack.store.lock().unwrap().calls.clear();
+    let again = compact(&stack, now).await;
+    assert_eq!((again.converted, again.prompts_collected), (0, 0));
+    assert_eq!(turn_writes(&stack.store.lock().unwrap()), 0);
+}
+
+/// Conversion leaves a turn that is still running, one whose step executes
+/// here, and one rewritten since the listing (it re-reads under the session's
+/// guards and requires the listed `turn_id` and `updated_at`). A step holds
+/// `turn_activity` for its whole run: conversion skips its session without
+/// waiting for the step to end (boot compaction runs in the redrive loop).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_skips_running_and_changed_records() {
+    let stack = Stack::new("completed").await;
+    let prompt = "compact_skips prompt";
+    for id in ["cs_running", "cs_inflight", "cs_changed"] {
+        inline_prompt_turn(&stack, id, prompt, "compact_skips index");
+    }
+    stack.set_status("cs_running", "running");
+    let listing = harness::state::list_turns(&stack.deps.iii, 2_000)
+        .await
+        .unwrap();
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", "cs_changed");
+        row["updated_at"] = json!(2);
+        store.put("harness_turn", "cs_changed", row);
+        store.calls.clear();
+    }
+    let _step = stack.deps.inflight.enter("cs_inflight");
+    let _activity = stack.deps.turn_activity.guard("cs_inflight").await;
+    let now = harness::types::message::AgentMessage::now_ms();
+    let report = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        harness::turn_compaction::compact(&stack.deps, &listing, now),
+    )
+    .await
+    .expect("conversion must not wait for a running step");
+    assert_eq!(report.converted, 0);
+    assert_eq!(turn_writes(&stack.store.lock().unwrap()), 0);
+    for id in ["cs_running", "cs_inflight", "cs_changed"] {
+        assert_eq!(turn(&stack, id)["options"]["system_prompt"], prompt, "{id}");
+    }
+}
+
+/// A body goes only when no record references it and it is older than the
+/// grace period, which covers a send that stored a body but has not yet
+/// written the record that references it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_collects_only_old_unreferenced_bodies() {
+    let stack = Stack::new("completed").await;
+    let now = harness::types::message::AgentMessage::now_ms();
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", "child2");
+        row["options"]["system_prompt"] = json!({"$ref": "sha256:cb_a"});
+        store.put("harness_turn", "child2", row);
+        for (digest, created_at) in [
+            ("sha256:cb_a", now - 2 * DAY_MS),
+            ("sha256:cb_b", now - 2 * DAY_MS),
+            ("sha256:cb_c", now - DAY_MS / 24),
+        ] {
+            store.put(
+                "harness_prompt",
+                digest,
+                json!({"body": digest, "created_at": created_at}),
+            );
+        }
+    }
+    let report = compact(&stack, now).await;
+    assert_eq!((report.converted, report.prompts_collected), (0, 1));
+    let store = stack.store.lock().unwrap();
+    assert!(store.state("harness_prompt", "sha256:cb_b").is_null());
+    for kept in ["sha256:cb_a", "sha256:cb_c"] {
+        assert_eq!(store.state("harness_prompt", kept)["body"], kept);
+    }
+}
+
+/// A record this build cannot parse (a build with a newer record shape wrote
+/// it) is left out of the listing, yet its refs are in use: once that build
+/// runs again, a body collected here would make the session's every read a
+/// "missing prompt body". The collector keeps every body it names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_keeps_the_bodies_of_a_record_it_cannot_parse() {
+    let stack = Stack::new("completed").await;
+    let now = harness::types::message::AgentMessage::now_ms();
+    stack.session("cu_newer", None, "completed");
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", "cu_newer");
+        row["status"] = json!("a_status_from_a_newer_build");
+        row["options"]["system_prompt"] = json!({"$ref": "sha256:cu_used"});
+        store.put("harness_turn", "cu_newer", row);
+        for digest in ["sha256:cu_used", "sha256:cu_unused"] {
+            store.put(
+                "harness_prompt",
+                digest,
+                json!({"body": digest, "created_at": now - 2 * DAY_MS}),
+            );
+        }
+    }
+    let report = compact(&stack, now).await;
+    assert_eq!(report.prompts_collected, 1);
+    let store = stack.store.lock().unwrap();
+    assert!(store.state("harness_prompt", "sha256:cu_unused").is_null());
+    assert_eq!(
+        store.state("harness_prompt", "sha256:cu_used")["body"],
+        "sha256:cu_used"
+    );
+}
+
+/// The pending sweep converts and collects from the one full read of the
+/// turn scope it already makes; the conversion re-reads only the record it
+/// rewrites.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_sweep_compacts_from_its_one_full_read() {
+    use harness::functions::sweep_pending::{self, SweepEvent};
+    let _view = TURN_VIEW_TESTS.lock().await;
+    let stack = Stack::new("completed").await;
+    // Own keys only: the other tests' writes mark the fixture's ids.
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .state
+        .retain(|(scope, _), _| scope != "harness_turn");
+    stack.session("sw_done", None, "completed");
+    inline_prompt_turn(&stack, "sw_old", "sweep prompt", "sweep index");
+    {
+        let mut store = stack.store.lock().unwrap();
+        store.put(
+            "harness_prompt",
+            "sha256:sw_unused",
+            json!({"body": "unused", "created_at": 1}),
+        );
+        store.calls.clear();
+    }
+    let swept = sweep_pending::handle(&stack.deps, SweepEvent::default())
+        .await
+        .unwrap();
+    assert_eq!((swept.converted, swept.prompts_collected), (1, 1));
+    assert_eq!(
+        turn_gets(&stack.store.lock().unwrap()),
+        ["sw_done", "sw_old", "sw_old"]
+    );
+    assert!(turn(&stack, "sw_old")["options"]["system_prompt"]["$ref"].is_string());
+}
+
+/// Point `id`'s record at a prompt body the store does not have.
+fn lose_prompt_body(stack: &Stack, id: &str) {
+    let mut store = stack.store.lock().unwrap();
+    let mut row = store.state("harness_turn", id);
+    row["options"]["system_prompt"] = json!({"$ref": format!("sha256:lost_{id}")});
+    store.put("harness_turn", id, row);
+}
+
+/// A record whose prompt body is gone is redriven like any orphan (its step
+/// then fails the turn instead of leaving it Running), and does not end the
+/// pass for the orphans after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_prompt_body_does_not_stop_the_orphan_redrive() {
+    let _view = TURN_VIEW_TESTS.lock().await;
+    let stack = Stack::new("completed").await;
+    // Own keys only: the other tests' writes mark the fixture's ids.
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .state
+        .retain(|(scope, _), _| scope != "harness_turn");
+    stack.session("lb_a_lost", None, "running");
+    stack.session("lb_b_orphan", None, "running");
+    lose_prompt_body(&stack, "lb_a_lost");
+    let redriven = harness::inflight::redrive_orphans(&stack.deps)
+        .await
+        .unwrap();
+    assert_eq!(redriven, 2);
+    let store = stack.store.lock().unwrap();
+    let mut enqueued: Vec<&Value> = store
+        .calls
+        .iter()
+        .filter(|(f, _)| f == "harness::turn")
+        .map(|(_, data)| &data["session_id"])
+        .collect();
+    enqueued.sort_by_key(|id| id.to_string());
+    assert_eq!(enqueued, [&json!("lb_a_lost"), &json!("lb_b_orphan")]);
+}
+
+/// Stop and delete-session-tree read only a record's status, turn and calls,
+/// so a session whose prompt body is gone can still be stopped and deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_and_delete_work_without_the_prompt_body() {
+    let stack = Stack::new("running").await;
+    stack.set_status("grandchild1", "awaiting_functions");
+    for id in ["child2", "grandchild1"] {
+        lose_prompt_body(&stack, id);
+    }
+    let stopped = harness::functions::stop::handle(
+        &stack.deps,
+        harness::functions::stop::StopRequest {
+            session_id: "grandchild1".into(),
+            turn_id: Some("t_grandchild1".into()),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(stopped.stopping);
+    let row = turn(&stack, "grandchild1");
+    assert_eq!(row["status"], "cancelled");
+    assert_eq!(
+        row["options"]["system_prompt"]["$ref"], "sha256:lost_grandchild1",
+        "the write-back keeps the ref"
+    );
+    let accepted = stack.request("child2").await;
+    let done = stack.run(&accepted.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+    assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
+}
+
+fn step(id: &str) -> harness::turn_loop::TurnStepPayload {
+    serde_json::from_value(json!({"session_id":id,"turn_id":format!("t_{id}"),"step":0,"depth":0}))
+        .unwrap()
+}
+
+/// A stopped step and a failed step finalize from the stored record: neither
+/// needs the prompt body, so a session whose body is gone still ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopped_and_failed_steps_finalize_without_the_prompt_body() {
+    let stack = Stack::new("completed").await;
+    stack.set_status("grandchild1", "running");
+    for id in ["child1", "grandchild1"] {
+        lose_prompt_body(&stack, id);
+    }
+    assert!(ordinary_stop(&stack, "child1").await.stopping);
+    let stopped = harness::turn_loop::run_step(&stack.deps, step("child1"))
+        .await
+        .unwrap();
+    assert_eq!(turn(&stack, "child1")["status"], "cancelled", "{stopped:?}");
+
+    // Not stopped: generating needs the body, so the step fails and the
+    // failure finalizes.
+    let error = harness::turn_loop::run_step(&stack.deps, step("grandchild1"))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("missing prompt body"), "{error}");
+    harness::turn_loop::fail_turn(
+        &stack.deps,
+        "grandchild1",
+        "t_grandchild1",
+        &error.to_string(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(turn(&stack, "grandchild1")["status"], "failed");
+    for id in ["child1", "grandchild1"] {
+        assert_eq!(
+            turn(&stack, id)["options"]["system_prompt"]["$ref"],
+            format!("sha256:lost_{id}"),
+            "{id}: the write-back keeps the ref"
+        );
+    }
+}
+
+/// `harness::status` reads no prompt text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_reports_a_session_without_its_prompt_body() {
+    let stack = Stack::new("completed").await;
+    lose_prompt_body(&stack, "parent");
+    let report = harness::functions::status::handle(
+        &stack.deps,
+        harness::functions::status::StatusRequest {
+            session_id: "parent".into(),
+            verbose: true,
+        },
+    )
+    .await
+    .unwrap()
+    .expect("a report");
+    assert_eq!(report.turn_id.as_deref(), Some("t_parent"));
 }

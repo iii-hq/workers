@@ -9,10 +9,7 @@ use crate::{
 };
 use anyhow::Result;
 pub use iii_llama_runtime::scorer::{Options, Outcome, Stop};
-use iii_llama_runtime::{
-    llama_cpp_2::token::LlamaToken,
-    scorer::{Render, Scorer, Vocab},
-};
+use iii_llama_runtime::scorer::{Render, Scorer, Vocab};
 use std::{
     cell::OnceCell,
     sync::{atomic::AtomicBool, Arc},
@@ -28,7 +25,7 @@ pub struct Evaluation {
     pub state: serde_json::Value,
     pub prompts: Vec<Prompt>,
     /// `Context:\n<state>` tokenized once, as `prompt_fast.build_rows` does.
-    context: OnceCell<Vec<LlamaToken>>,
+    context: OnceCell<Vec<i32>>,
 }
 
 impl Evaluation {
@@ -48,7 +45,7 @@ impl Render for Evaluation {
     fn options(&self, i: usize) -> usize {
         self.prompts[i].1.len()
     }
-    fn tokens(&self, vocab: &Vocab<'_>, i: usize) -> Result<Vec<LlamaToken>, Stop> {
+    fn tokens(&self, vocab: &Vocab<'_>, i: usize) -> Result<Vec<i32>, Stop> {
         let context = match self.context.get() {
             Some(context) => context,
             None => {

@@ -31,6 +31,13 @@ interface WorkerEditorProps {
    * set, the header renders a ← back button that returns to the list.
    */
   onBack?: () => void
+  /**
+   * Inside another surface that titles it (a picker page): no header, and
+   * the form takes that surface's width instead of the settings column.
+   */
+  embedded?: boolean
+  /** A save landed; receives the stored value. */
+  onSaved?: (value: JsonValue) => void
 }
 
 /**
@@ -58,6 +65,8 @@ export function WorkerEditor({
   entry,
   onDirtyChange,
   onBack,
+  embedded = false,
+  onSaved,
 }: WorkerEditorProps) {
   const valueQuery = useConfigurationValue(entry.id)
   const setMutation = useSetConfiguration(entry.id)
@@ -182,8 +191,9 @@ export function WorkerEditor({
     setMutation.mutate(
       { id: entry.id, value: draft },
       {
-        onSuccess: () => {
+        onSuccess: (response) => {
           setStatus({ kind: 'saved', savedAtMs: Date.now() })
+          onSaved?.(response.new_value)
           // The cache invalidation triggered by `useSetConfiguration`
           // will re-seed `draft` via the loaded-value effect; nothing
           // else to do here.
@@ -197,23 +207,29 @@ export function WorkerEditor({
         },
       },
     )
-  }, [draft, entry.id, setMutation, clientErrors])
+  }, [draft, entry.id, setMutation, clientErrors, onSaved])
 
   return (
     <section
-      className="flex-1 flex flex-col min-h-0 min-w-0 bg-panel"
+      className={cn(
+        'flex-1 flex flex-col min-h-0 min-w-0',
+        !embedded && 'bg-panel',
+      )}
       aria-label={`configuration ${entry.id}`}
     >
-      <EditorHeader entry={entry} dirty={dirty} onBack={onBack} />
+      {embedded ? null : (
+        <EditorHeader entry={entry} dirty={dirty} onBack={onBack} />
+      )}
       <div
         className={cn(
           'flex flex-1 min-h-0 min-w-0 flex-col',
           fullForm ? 'overflow-hidden' : 'overflow-y-auto',
         )}
       >
-        {valueQuery.isLoading ? <EditorLoading /> : null}
+        {valueQuery.isLoading ? <EditorLoading embedded={embedded} /> : null}
         {valueQuery.isError ? (
           <EditorError
+            embedded={embedded}
             message={
               (valueQuery.error as Error)?.message ?? 'failed to load value'
             }
@@ -221,7 +237,7 @@ export function WorkerEditor({
         ) : null}
         {!valueQuery.isLoading && !valueQuery.isError && draft !== undefined ? (
           isFormOverrideLoading ? (
-            <EditorLoading />
+            <EditorLoading embedded={embedded} />
           ) : formOverride ? (
             <>
               <div
@@ -229,7 +245,9 @@ export function WorkerEditor({
                   'w-full min-w-0',
                   fullForm
                     ? 'flex flex-1 min-h-0 flex-col'
-                    : 'mx-auto max-w-3xl px-6 py-8',
+                    : embedded
+                      ? 'px-4 pb-4'
+                      : 'mx-auto max-w-3xl px-6 py-8',
                 )}
               >
                 <formOverride.component
@@ -266,7 +284,12 @@ export function WorkerEditor({
           ) : (
             <EditorEmptyState
               title="Worker settings interface unavailable"
-              description="This worker has not loaded a custom configuration interface. Start or enable it, then reopen settings."
+              description={
+                embedded
+                  ? 'This worker has not loaded a custom configuration interface. Start or enable it, then reopen this page.'
+                  : 'This worker has not loaded a custom configuration interface. Start or enable it, then reopen settings.'
+              }
+              className={embedded ? 'bg-transparent py-8' : undefined}
             />
           )
         ) : null}
@@ -338,9 +361,14 @@ export function EditorHeader({
   )
 }
 
-function EditorLoading() {
+function EditorLoading({ embedded = false }: { embedded?: boolean }) {
   return (
-    <div className="mx-auto max-w-3xl w-full px-6 py-8 space-y-4">
+    <div
+      className={cn(
+        'w-full space-y-4',
+        embedded ? 'px-4 py-2' : 'mx-auto max-w-3xl px-6 py-8',
+      )}
+    >
       <Skeleton className="h-5 w-40" />
       <Skeleton className="h-9 w-full" />
       <Skeleton className="h-9 w-full" />
@@ -350,9 +378,20 @@ function EditorLoading() {
   )
 }
 
-function EditorError({ message }: { message: string }) {
+function EditorError({
+  message,
+  embedded = false,
+}: {
+  message: string
+  embedded?: boolean
+}) {
   return (
-    <div className="mx-auto max-w-3xl w-full px-6 py-8">
+    <div
+      className={cn(
+        'w-full',
+        embedded ? 'px-4 py-2' : 'mx-auto max-w-3xl px-6 py-8',
+      )}
+    >
       <p className={cn(wt.bodySm, 'text-alert')}>{message}</p>
     </div>
   )

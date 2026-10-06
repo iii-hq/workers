@@ -101,7 +101,7 @@ export function JudgeStep({
       }
     >
       <StepHeader
-        eyebrow="Step 3 of 3 · Optional"
+        eyebrow="Step 2 of 2 · Optional"
         title="Let Judge make the small decisions"
         lead="Agents make many tiny choices along the way. Judge answers them with a model trained only for typed decisions, so your main model spends its tokens on the work itself."
       />

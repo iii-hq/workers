@@ -4,7 +4,7 @@
  * unregistering restores what it shadowed, and removal is idempotent.
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type {
   RegisteredConfigForm,
   RegisteredOverlay,
@@ -21,9 +21,11 @@ import {
   isExtConfigFormPending,
   registerExtConfigForm,
   registerExtOverlay,
+  registerExtPage,
   registerExtProviderConfigForm,
   registerExtSessionChip,
   registerExtTriggerActivityRenderer,
+  whenExtPage,
 } from './ui-slots'
 
 function chip(id: string, path: string): RegisteredSessionChip {
@@ -182,5 +184,39 @@ describe('trigger activity renderer slot', () => {
 
     offB()
     expect(getExtTriggerActivityRenderers()).toEqual([])
+  })
+})
+
+describe('whenExtPage', () => {
+  const page = (id: string) => ({
+    id,
+    title: id,
+    path: `${id}/page.js`,
+    scope: id,
+    render: () => null,
+  })
+
+  it('resolves at once for a page already registered', async () => {
+    const off = registerExtPage(page('ready-page'))
+    await expect(whenExtPage('ready-page', 1_000)).resolves.toBe(true)
+    off()
+  })
+
+  it('resolves when the page registers, and false when it never does', async () => {
+    vi.useFakeTimers()
+    try {
+      const waiting = whenExtPage('tour', 5_000)
+      const other = registerExtPage(page('something-else'))
+      const off = registerExtPage(page('tour'))
+      await expect(waiting).resolves.toBe(true)
+
+      const late = whenExtPage('never', 5_000)
+      vi.advanceTimersByTime(5_000)
+      await expect(late).resolves.toBe(false)
+      other()
+      off()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

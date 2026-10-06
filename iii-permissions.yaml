@@ -155,6 +155,8 @@ rules:
   - '!judge-decider::on-judge-config-change'
   - '!judge-laya::on-config-change'
   - '!judge-laya::on-judge-config-change'
+  - '!judge-clef::on-config-change'
+  - '!judge-clef::on-judge-config-change'
   - '!directory::on-judge-config-change'
   - '!judge-typesafe::on-config-change'
   - '!session::on-config-change'
@@ -167,8 +169,8 @@ rules:
   # model-reachable way to start new turns and is left at the needs_approval
   # default (the harness self-enforces depth/fan-out and walls spawned
   # children out of the control plane unless the spawn passes
-  # options.orchestrator). The internal config/cron hooks must never be
-  # agent-callable.
+  # options.orchestrator). The internal config/cron/session-deleted hooks
+  # must never be agent-callable.
   - '!harness::send'
   - '!harness::run'
   - '!harness::turn'
@@ -177,6 +179,7 @@ rules:
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
+  - '!harness::on-session-deleted'
   # kanban: console asset delivery and the configuration reload sink are
   # engine plumbing. Deleting/restoring a ticket is the human's call from the
   # ticket screen; the ticket working loop is allowlisted below.
@@ -450,12 +453,16 @@ rules:
   - tailscale::accounts::list
   - tailscale::metrics
   # Read-only code surface (coder::*, now served by the shell worker).
-  # Mutating ops (create/update/move/delete-file) stay approval-gated.
+  # Mutating ops (create/update/move/delete-file) stay approval-gated, and so
+  # does coder::scaffold-worker: it writes a whole worker package, so it has
+  # no rule here and falls through to needs_approval.
   - coder::info
   - coder::read-file
   - coder::search
   - coder::list-folder
   - coder::tree
+  # Lists scaffoldable templates; a refresh only updates the IDE's own cache.
+  - coder::list-templates
   # fp: the twenty-three pure value transforms are side-effect-free reshapes (no
   # I/O, no authority). fp::pipe stays at the needs_approval default ON
   # PURPOSE: its steps run with the fp worker's authority, so the pipe

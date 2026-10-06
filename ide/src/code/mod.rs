@@ -20,5 +20,6 @@ pub mod error;
 pub mod functions;
 pub mod path;
 pub mod state;
+pub mod templates;
 
 pub use functions::register_all;

@@ -148,6 +148,7 @@ pub(crate) fn new_context(requested: Option<&[String]>, view: &EffectiveView) ->
             EffectiveView::Available(view) => Some(view.body.clone()),
             EffectiveView::Unavailable | EffectiveView::Removed { .. } => None,
         },
+        baseline_ref: None,
     }
 }
 
@@ -156,7 +157,7 @@ pub(crate) fn next_context(previous: &SkillContext, requested: Option<&[String]>
         None => previous.clone(),
         Some(requested) => SkillContext {
             filter: canonical_filter(Some(requested)),
-            baseline: previous.baseline.clone(),
+            ..previous.clone()
         },
     }
 }
@@ -830,7 +831,8 @@ mod tests {
             new_context(None, &view),
             SkillContext {
                 filter: None,
-                baseline: Some("baseline all".into())
+                baseline: Some("baseline all".into()),
+                baseline_ref: None,
             }
         );
         assert_eq!(
@@ -841,20 +843,23 @@ mod tests {
         let previous = SkillContext {
             filter: Some(vec!["one".into()]),
             baseline: Some("frozen first view".into()),
+            baseline_ref: None,
         };
         assert_eq!(next_context(&previous, None), previous);
         assert_eq!(
             next_context(&previous, Some(&[])),
             SkillContext {
                 filter: None,
-                baseline: Some("frozen first view".into())
+                baseline: Some("frozen first view".into()),
+                baseline_ref: None,
             }
         );
         assert_eq!(
             next_context(&previous, Some(&["two".into()])),
             SkillContext {
                 filter: Some(vec!["two".into()]),
-                baseline: Some("frozen first view".into())
+                baseline: Some("frozen first view".into()),
+                baseline_ref: None,
             }
         );
     }
@@ -864,6 +869,7 @@ mod tests {
         let context = SkillContext {
             filter: None,
             baseline: Some("names only".into()),
+            baseline_ref: None,
         };
         assert_eq!(
             attribution(Some(&context), Some("legacy body")),
@@ -878,10 +884,12 @@ mod tests {
         let mut local = Some(SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("generation baseline".into()),
+            baseline_ref: None,
         });
         let durable = SkillContext {
             filter: Some(vec!["new".into()]),
             baseline: Some("must not replace baseline".into()),
+            baseline_ref: None,
         };
 
         refresh_filter(&mut local, Some(&durable));
@@ -890,7 +898,8 @@ mod tests {
             local,
             Some(SkillContext {
                 filter: Some(vec!["new".into()]),
-                baseline: Some("generation baseline".into())
+                baseline: Some("generation baseline".into()),
+                baseline_ref: None,
             })
         );
     }

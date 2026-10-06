@@ -1,0 +1,16 @@
+llama.cpp b11379 reserves an n_vocab x n_outputs logits buffer even when the
+context only outputs embeddings: Clef marks every prompt token as an output,
+so a 16k-token prompt holds 15 GiB of host RAM it never writes. Outputs are
+bit-identical with the patch (measured). Upstream: not filed yet.
+
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2124,7 +2124,7 @@
+     const auto n_embd     = hparams.n_embd;
+     const auto n_embd_out = hparams.n_embd_out();
+ 
+-    bool has_logits     = true;
++    bool has_logits     = !cparams.embeddings;
+     bool has_embd       = cparams.embeddings;
+     bool has_embd_nextn = cparams.embeddings_nextn;
+ 

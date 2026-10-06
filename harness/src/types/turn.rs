@@ -72,6 +72,11 @@ pub struct SkillContext {
     pub filter: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<String>,
+    /// `harness_prompt` key of `baseline`'s text. Stored records carry only
+    /// this, as `"baseline": {"$ref": ..}` (`state::put_turn`);
+    /// `state::get_turn` fills `baseline` back in from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_ref: Option<String>,
 }
 
 /// The effective skill view this session most recently admitted. A
@@ -112,6 +117,11 @@ pub struct TurnOptions {
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// `harness_prompt` key of `system_prompt`'s text. Stored records carry
+    /// only this, as `"system_prompt": {"$ref": ..}` (`state::put_turn`);
+    /// `state::get_turn` fills `system_prompt` back in from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_ref: Option<String>,
     /// Legacy-only attribution for skill bodies previously frozen from
     /// session metadata. New sessions never populate this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -451,6 +461,21 @@ impl TurnRecord {
             })
             .count()
     }
+
+    /// Drop what only a running turn reads, before the terminal write: done
+    /// calls without a child, the per-turn failure counts, the steering
+    /// watermark and the stream id. Open calls stay (deletion refuses a
+    /// `Triggered` one; verbose status lists pending ids) and so do calls with
+    /// a child (status children, stop cascade). `seed_new` resets all of these
+    /// for the next turn.
+    pub(crate) fn slim_finished(&mut self) {
+        self.calls.retain(|_, c| {
+            c.state != CallState::Done || c.child_session_id.is_some() || c.child_turn_id.is_some()
+        });
+        self.failed_calls.clear();
+        self.watermark_entry_id = None;
+        self.stream_request_id = None;
+    }
 }
 
 /// `harness::send` webhook dedupe record (`harness_idem/<idempotency_key>`).
@@ -528,6 +553,7 @@ pub(crate) mod tests {
                 max_transient_resumes: 1,
                 preloaded_contracts: None,
                 seeded_contracts: None,
+                system_prompt_ref: None,
             },
             calls: Default::default(),
             parent: None,
@@ -707,6 +733,46 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn slim_finished_keeps_children_and_open_calls() {
+        let mut r = record();
+        r.calls
+            .insert("done".into(), cp(CallState::Done, None, false));
+        r.calls.insert(
+            "done_child".into(),
+            cp(CallState::Done, Some("s_child"), false),
+        );
+        r.calls
+            .insert("pending".into(), cp(CallState::Pending, None, false));
+        r.calls
+            .insert("triggered".into(), cp(CallState::Triggered, None, false));
+        r.failed_calls.insert(
+            "digest".into(),
+            FailedCall {
+                error_digest: "e".into(),
+                count: 2,
+            },
+        );
+        r.watermark_entry_id = Some("e_watermark".into());
+        r.stream_request_id = Some("req_1".into());
+        let children = r.spawned_children();
+        let pending = r.pending_call_ids();
+
+        r.slim_finished();
+
+        assert_eq!(
+            r.calls.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["done_child", "pending", "triggered"]
+        );
+        assert!(r.failed_calls.is_empty());
+        assert_eq!(r.watermark_entry_id, None);
+        assert_eq!(r.stream_request_id, None);
+        // `harness::status` builds `children` and verbose
+        // `pending_function_calls` from these; both are unchanged.
+        assert_eq!(r.spawned_children(), children);
+        assert_eq!(r.pending_call_ids(), pending);
+    }
+
+    #[test]
     fn legacy_spawn_checkpoint_counts_as_a_session_creation() {
         let checkpoint: CallCheckpoint = serde_json::from_value(json!({
             "state": "done",
@@ -782,6 +848,7 @@ pub(crate) mod tests {
         r.options.skill_context = Some(SkillContext {
             filter: Some(vec!["review".into()]),
             baseline: Some("<available_skills>review</available_skills>".into()),
+            baseline_ref: None,
         });
         r.skill_ack = Some(SkillAck {
             generation: 3,

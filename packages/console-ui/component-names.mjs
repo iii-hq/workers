@@ -121,6 +121,7 @@ export const componentNames = [
   'TooltipContent',
   'TooltipTrigger',
   'WorkerConfigurationDialog',
+  'WorkerConfigurationPanel',
   'Wordmark',
 ]
 

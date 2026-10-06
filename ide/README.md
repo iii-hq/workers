@@ -111,6 +111,14 @@ commit_messages:             # the Commit panel's Generate button (read live on 
   model: null                # router model id ("provider::model" or bare); null = the chat's default model, passed by the panel
   thinking: low              # default|minimal|low|medium|high|xhigh; "default" sends no reasoning override
   instructions: ""           # free text appended to the prompt, e.g. "Use Conventional Commits"
+
+code:
+  templates:                 # worker templates for coder::list-templates / coder::scaffold-worker
+    dir: null                # local templates checkout (repo root or its iii/ dir), read on every call; III_TEMPLATE_DIR overrides
+    url: https://github.com/iii-hq/templates.git  # shallow-cloned when dir is unset; III_TEMPLATE_URL overrides
+    ref: main                # branch or tag to clone
+    cache_dir: data/shell/templates  # clone cache; relative paths resolve against III_COMPOSE_DIR
+    refresh_secs: 600        # fetch the clone again after this long (or on coder::list-templates refresh: true)
 ```
 
 ### Zero-config default
@@ -194,6 +202,8 @@ fully unjailed, regardless of `fs.allow_unjailed`.
 | `coder::list-folder` | Paginated single-folder listing. |
 | `coder::tree` | Recursive depth- and per-folder-bounded directory snapshot. |
 | `coder::create-file` / `coder::update-file` / `coder::delete-file` / `coder::move` | Batched create, line/regex edits, delete, and atomic rename/move. |
+| `coder::list-templates` | The worker templates `coder::scaffold-worker` creates from, with their language and the compose containers they need. Read from `code.templates`: a local `dir`, or a cached shallow clone of `url` at `ref` (`refresh: true` re-fetches it). |
+| `coder::scaffold-worker` | Create a worker from a template in a missing or empty folder whose last segment is the worker name (default `workers/<name>`), all or nothing, with the template's name token replaced in paths and text, and return `compose_add`, the `compose::add` payload to send whole, adding `start_after` to its entry and missing `requires` as more entries (`{ workers: [compose] }`; the bare `worker` string form drops the scripts). Writes go through the `coder::create-file` path and show in the turn summary. |
 
 Roots come from `fs.host_roots` (with the cwd+`/tmp` fallback noted above);
 protection globs come from `code.non_accessible_globs` in the shipped
@@ -212,6 +222,12 @@ out explicitly below:
 | `C218` | File exceeds `max_read_bytes`/`max_write_bytes`. | `S218` |
 | `C220` | Path resolves inside a configured root but outside the per-call `scope_root` the session is scoped to. | `S220` |
 | `C221` | Optimistic whole-file save conflict: the file no longer matches `expected_revision`; no bytes were written. | n/a |
+| `C230` | Worker templates unavailable: `code.templates.dir` holds no template manifest, or the templates repo cannot be cloned and no cached copy exists. | n/a |
+| `C231` | `coder::scaffold-worker` named a template that does not exist or has no `worker:` block. | n/a |
+| `C232` | Worker name breaks `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` (1–63 characters), or the scaffold `directory` does not end with the worker name. | n/a |
+| `C233` | Scaffold target directory exists and is not empty; nothing was written. | n/a |
+| `C234` | Invalid template: a bad `template.yaml` or `worker:` block, a `files:` entry that is absolute, contains `..`, is missing or leaves `worker.dir` through a symlink, a worker file that is not UTF-8 text (binary files are not supported), or no `containers.<worker.compose>` in its `worker-compose.yaml`. Nothing was written. | n/a |
+| `C235` | `coder::scaffold-worker` with `start` (the default) found a container named after the worker already in the stack: adding it would repoint that container at the new folder. Checked before any write, so nothing was written; pick another name, or pass `start: false`. | n/a |
 
 No separate install: `iii trigger compose::add worker=ide` brings the whole surface.
 

@@ -412,16 +412,22 @@ async fn generate_step(
     let cfg = deps.cfg().await;
     let session = deps.session().await;
 
-    let mut record =
-        match crate::state::get_turn(&deps.iii, &payload.session_id, cfg.session_timeout_ms).await?
-        {
-            Some(r) => r,
-            // The turn record is the authoritative recovery snapshot. A
-            // transcript alone cannot recover budgets, parent linkage, output
-            // contracts, or dispatch policy safely, so an absent record stays
-            // a stale delivery and is acknowledged without fabricating state.
-            None => return Ok(PreparedStep::Finished(skipped(&payload.session_id))),
-        };
+    // Unhydrated until the step generates: a stale, finished or stopped step
+    // needs no prompt text, so a lost prompt body cannot keep it from ending.
+    let mut record = match crate::state::get_turn_unhydrated(
+        &deps.iii,
+        &payload.session_id,
+        cfg.session_timeout_ms,
+    )
+    .await?
+    {
+        Some(r) => r,
+        // The turn record is the authoritative recovery snapshot. A
+        // transcript alone cannot recover budgets, parent linkage, output
+        // contracts, or dispatch policy safely, so an absent record stays
+        // a stale delivery and is acknowledged without fabricating state.
+        None => return Ok(PreparedStep::Finished(skipped(&payload.session_id))),
+    };
 
     // Stale guards: wrong turn or any non-current step is acked and dropped.
     if !turn_step_matches(&record.turn_id, record.step, &payload.turn_id, payload.step) {
@@ -441,6 +447,7 @@ async fn generate_step(
             .await
             .map(PreparedStep::Finished);
     }
+    crate::state::hydrate(&deps.iii, &mut record, cfg.session_timeout_ms).await?;
 
     // Deliver messages queued while the previous step streamed: append them in
     // arrival order before the context load, so this generation sees them all
@@ -1323,7 +1330,8 @@ async fn generate_step(
     // baseline remains the one used for this generation.
     let _guard = deps.locks.guard(&payload.session_id).await;
     let durable_record =
-        crate::state::get_turn(&deps.iii, &payload.session_id, cfg.session_timeout_ms).await?;
+        crate::state::get_turn_unhydrated(&deps.iii, &payload.session_id, cfg.session_timeout_ms)
+            .await?;
     let durable_abort = durable_record.as_ref().is_some_and(|record| record.abort);
     crate::skills::refresh_filter(
         &mut record.options.skill_context,
@@ -2478,6 +2486,7 @@ async fn finalize_completed(
     record.result = result.clone();
     record.result_error = None;
     record.updated_at = AgentMessage::now_ms();
+    record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
     crate::session_status::project(session, record).await;
@@ -2713,6 +2722,7 @@ async fn finalize_failed(
     record.result_error = Some(summary.clone());
     record.updated_at = AgentMessage::now_ms();
     record_failure_telemetry(record, detail, failure);
+    record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
     let _ = session
@@ -2931,6 +2941,7 @@ pub(crate) async fn finalize_cancelled(
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Cancelled;
     record.updated_at = AgentMessage::now_ms();
+    record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
     // Durable stop marker: without it the transcript just ends mid-thought
@@ -3023,7 +3034,10 @@ pub async fn fail_turn(
     // guard is gone. Lock-free, this finalize could interleave with
     // harness::stop's under-lock "stopping" ack and strand the session status.
     let _guard = deps.locks.guard(session_id).await;
-    let record = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
+    // Unhydrated: finalizing reads no prompt text, and a lost prompt body is
+    // the step error this most often finalizes.
+    let record =
+        crate::state::get_turn_unhydrated(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     match record {
         Some(mut rec) if rec.turn_id == turn_id && !rec.status.is_terminal() => {
             finalize_failed(deps, &session, &mut rec, reason, INTERNAL_FAILURE).await

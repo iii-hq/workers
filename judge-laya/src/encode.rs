@@ -180,22 +180,6 @@ impl Encoder {
         })
     }
 
-    /// `[CLS] text [SEP]` capped at `max` tokens, like `tokenizer(text,
-    /// truncation=True, max_length=max)`.
-    pub fn encode_text(&self, text: &str, max: usize) -> Result<Vec<u32>> {
-        let mut ids = self
-            .tok
-            .encode(text, true)
-            .map_err(|e| anyhow!("tokenize: {e}"))?
-            .get_ids()
-            .to_vec();
-        if ids.len() > max.max(2) {
-            ids.truncate(max.max(2) - 1);
-            ids.push(self.sep);
-        }
-        Ok(ids)
-    }
-
     fn encode(&self, text: &str) -> Result<Vec<u32>> {
         Ok(self
             .tok

@@ -79,6 +79,18 @@ struct State<T> {
     model: Model<T>,
     pinned: bool,
     last_used: Instant,
+    /// Calls holding an [`InUse`].
+    in_flight: usize,
+}
+
+/// Held for a call's whole life (see [`ModelSlot::in_use`]).
+pub struct InUse<T: Clone + Send + 'static>(Arc<ModelSlot<T>>);
+impl<T: Clone + Send + 'static> Drop for InUse<T> {
+    fn drop(&mut self) {
+        let mut state = self.0.lock();
+        state.in_flight -= 1;
+        state.last_used = Instant::now();
+    }
 }
 
 enum Model<T> {
@@ -101,8 +113,16 @@ impl<T: Clone + Send + 'static> ModelSlot<T> {
                 model: Model::Empty,
                 pinned: false,
                 last_used: Instant::now(),
+                in_flight: 0,
             }),
         })
+    }
+
+    /// Held for a call's whole life: an unpinned model is not released while
+    /// any call holds it, and its idle clock restarts when the last one ends.
+    pub fn in_use(self: &Arc<Self>) -> InUse<T> {
+        self.lock().in_flight += 1;
+        InUse(self.clone())
     }
 
     /// The model if it is loaded now; never starts a load.
@@ -208,16 +228,19 @@ impl<T: Clone + Send + 'static> ModelSlot<T> {
         }
     }
 
-    /// Release an unpinned model after `idle` without a call, and retry a
-    /// pinned model's failed load. In-flight calls keep their own handle, so
-    /// the model is freed once the last of them ends. Runs until dropped.
+    /// Release an unpinned model after `idle` without a call (none holding
+    /// [`Self::in_use`]), and retry a pinned model's failed load. Runs until
+    /// dropped.
     pub async fn release_idle(self: Arc<Self>, idle: Duration) {
         let mut tick = tokio::time::interval((idle / 4).max(Duration::from_millis(1)));
         loop {
             tick.tick().await;
             let mut state = self.lock();
             let (release, retry) = match &state.model {
-                Model::Ready(_) => (!state.pinned && state.last_used.elapsed() >= idle, false),
+                Model::Ready(_) => (
+                    !state.pinned && state.in_flight == 0 && state.last_used.elapsed() >= idle,
+                    false,
+                ),
                 Model::Failed { at, .. } => {
                     (false, state.pinned && at.elapsed() >= RETRY_LOAD_AFTER)
                 }
@@ -372,5 +395,19 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(pinned.loaded(), None);
         assert_eq!(pinned.get(within(2_000)).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_model_in_use_is_not_released() {
+        let (slot, loads) = counting(0, true);
+        let call = slot.in_use();
+        assert_eq!(slot.get(within(2_000)).await.unwrap(), 1);
+        tokio::spawn(slot.clone().release_idle(Duration::from_millis(40)));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(slot.loaded(), Some(1), "held past `idle`");
+        drop(call);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(slot.loaded(), None);
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
     }
 }

@@ -14,9 +14,11 @@ pub mod create_file;
 pub mod delete_file;
 pub mod info;
 pub mod list_folder;
+pub mod list_templates;
 pub mod move_file;
 pub mod read_file;
 pub mod read_window;
+pub mod scaffold_worker;
 pub mod search;
 pub mod tree;
 pub mod update_file;
@@ -138,6 +140,33 @@ const MOVE_FILE_DESC: &str = "Move or rename one or more paths; per-entry overwr
      if the delete fails. Paths: relative to the primary root or absolute \
      inside an allowed root (see coder::info).";
 
+const LIST_TEMPLATES_ID: &str = "coder::list-templates";
+const LIST_TEMPLATES_DESC: &str =
+    "List the worker templates coder::scaffold-worker creates from: id, \
+     name, description, language (node | python) and requires (the compose \
+     containers the worker needs, e.g. http). source names where they come \
+     from: a local dir, or a cached git clone with ref and revision; warning \
+     means the clone could not refresh and is stale. refresh: true \
+     re-fetches it now.";
+
+const SCAFFOLD_WORKER_ID: &str = "coder::scaffold-worker";
+const SCAFFOLD_WORKER_DESC: &str =
+    "Create a new iii worker from a coder::list-templates template and start \
+     it: write its files into directory (default workers/<name>; its last \
+     folder must be <name>, C232 otherwise) with the template's name token \
+     replaced, all or nothing (a directory that exists and is not empty fails \
+     C233), then add it to the stack in the same call (compose::add with the \
+     worker, its start_after and the requires the stack lacks) and return \
+     operation_id and started, or start_error with the files kept. A \
+     container already named <name> fails C235 before any write. To be woken \
+     when it is up, register a trigger on an operation_id you pick and pass \
+     it here. start: false writes the files only; send the returned \
+     compose_add whole to compose::add, adding start_after to its workers \
+     entry and one entry per missing requires (never move its fields to the \
+     top level, where scripts are ignored, or use the bare worker string \
+     form, which drops them). Paths: relative to the primary root or \
+     absolute inside an allowed root (see coder::info).";
+
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.
 ///
@@ -203,6 +232,14 @@ pub fn catalog() -> Vec<FunctionSpec> {
         ),
         spec::<tree::TreeInput, tree::TreeOutput>(TREE_ID, TREE_DESC),
         spec::<move_file::MoveFileInput, move_file::MoveFileOutput>(MOVE_FILE_ID, MOVE_FILE_DESC),
+        spec::<list_templates::ListTemplatesInput, list_templates::ListTemplatesOutput>(
+            LIST_TEMPLATES_ID,
+            LIST_TEMPLATES_DESC,
+        ),
+        spec::<scaffold_worker::ScaffoldWorkerInput, scaffold_worker::ScaffoldWorkerOutput>(
+            SCAFFOLD_WORKER_ID,
+            SCAFFOLD_WORKER_DESC,
+        ),
     ]
 }
 
@@ -230,7 +267,11 @@ pub fn register_all(iii: &IIIClient, cells: CodeCells) {
     registered += 1;
     register_tree(iii, cells.clone());
     registered += 1;
-    register_move_file(iii, cells);
+    register_move_file(iii, cells.clone());
+    registered += 1;
+    register_list_templates(iii, cells.clone());
+    registered += 1;
+    register_scaffold_worker(iii, cells);
     registered += 1;
     debug_assert_eq!(
         registered,
@@ -431,6 +472,46 @@ fn register_move_file(iii: &IIIClient, cells: CodeCells) {
             }
         })
         .description(MOVE_FILE_DESC),
+    );
+}
+
+fn register_list_templates(iii: &IIIClient, cells: CodeCells) {
+    iii.register_function(
+        LIST_TEMPLATES_ID,
+        RegisterFunction::new_async(move |req: list_templates::ListTemplatesInput| {
+            let cells = cells.clone();
+            async move {
+                let cfg = cells.config.read().await.clone();
+                list_templates::handle(cfg, req).await.map_err(Error::from)
+            }
+        })
+        .description(LIST_TEMPLATES_DESC),
+    );
+}
+
+fn register_scaffold_worker(iii: &IIIClient, cells: CodeCells) {
+    // `start: true` calls compose::status and compose::add.
+    let trigger: std::sync::Arc<dyn crate::triggers::TriggerFwd> =
+        std::sync::Arc::new(crate::triggers::IiiTriggerFwd::new(iii.clone()));
+    iii.register_function(
+        SCAFFOLD_WORKER_ID,
+        RegisterFunction::new_async(move |req: scaffold_worker::ScaffoldWorkerInput| {
+            let cells = cells.clone();
+            let trigger = trigger.clone();
+            async move {
+                let resolver = cells.resolver.read().await.clone();
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
+                let cfg = cells.config.read().await.clone();
+                scaffold_worker::handle(resolver, cfg, cells.changes.clone(), trigger.clone(), req)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(SCAFFOLD_WORKER_DESC)
+        .metadata(serde_json::json!({ "display": true })),
     );
 }
 

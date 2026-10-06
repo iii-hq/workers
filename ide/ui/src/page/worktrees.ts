@@ -183,13 +183,18 @@ async function readWorktrees(host: Host, cwd: string): Promise<Worktree[]> {
   return worktrees
 }
 
-export async function listWorktrees(host: Host, root: string): Promise<WorktreeList> {
+/** `dirty: false` skips the dirty marks: a `git status` per worktree. */
+export async function listWorktrees(host: Host, root: string, dirty = true): Promise<WorktreeList> {
   // Two independent chains: the worktrees, their dirty marks and what a
   // stopped rebase or bisect left in them, and the default branch and the
   // branches counted against it.
   const [[worktrees, held], [defaultBranch, branches], remotes, reflog, tags] = await Promise.all([
     readWorktrees(host, root).then(async (list) => {
-      const [, , held] = await Promise.all([fillDirty(host, list), fillTips(host, root, list), readHeld(host, list)])
+      const [, , held] = await Promise.all([
+        dirty ? fillDirty(host, list) : undefined,
+        fillTips(host, root, list),
+        readHeld(host, list),
+      ])
       return [list, held] as const
     }),
     findDefaultBranch(host, root).then(async (target) => [target, await readBranches(host, root, target)] as const),

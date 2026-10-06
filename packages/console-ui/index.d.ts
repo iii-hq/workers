@@ -752,6 +752,8 @@ export interface UiClasses {
   readonly motionControl: 'iii-ui-motion-control'
   readonly motionPanel: 'iii-ui-motion-panel'
   readonly motionOverlay: 'iii-ui-motion-overlay'
+  /** A page of a picker that slides between pages: `data-active`, `--picker-page-offset`. */
+  readonly motionPickerPage: 'iii-ui-motion-picker-page'
   readonly eyebrow: 'iii-ui-eyebrow'
   readonly toolbar: 'iii-ui-toolbar'
   readonly toolbarEnd: 'iii-ui-toolbar__end'
@@ -1777,6 +1779,25 @@ export interface WorkerConfigurationDialogProps {
  * `configurationId` in `host.pages.register` instead.
  */
 export declare const WorkerConfigurationDialog: React.ComponentType<WorkerConfigurationDialogProps>
+
+export interface WorkerConfigurationPanelProps {
+  /** The configuration entry to edit (a worker's `<worker>::configuration-id`); `null` renders nothing. */
+  configurationId: string | null
+  /** Unsaved edits appeared or went away: guard leaving the panel. */
+  onDirtyChange?: (dirty: boolean) => void
+  /** A save landed; receives the stored value. */
+  onSaved?: (value: JsonValue) => void
+  className?: string
+}
+/**
+ * One worker's settings inline, where the choice is made (a picker page):
+ * the Settings editor — the worker's registered form, validation and the
+ * save bar — without the Settings chrome; the surface gives the title and
+ * the way back. It fills a flex column and scrolls inside. Read it from
+ * `host.components.WorkerConfigurationPanel` and fall back to
+ * `WorkerConfigurationDialog` when absent: Consoles before it lack it.
+ */
+export declare const WorkerConfigurationPanel: React.ComponentType<WorkerConfigurationPanelProps>
 
 export interface DirectoryPickerProps {
   /** The chosen directory (absolute, as the shell worker echoed it). */

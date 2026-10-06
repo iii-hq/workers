@@ -81,6 +81,13 @@ export function registerShellPalette(host: Host): void {
       run: () => host.palette?.open({ query: '#' }),
     },
     {
+      id: 'new-worker',
+      title: 'New worker…',
+      detail: 'Create an iii worker from a template and add it to the stack',
+      keywords: ['scaffold', 'template', 'worker', 'create', 'compose'],
+      run: () => host.panels?.open({ pageId: 'ide', context: { type: 'new-worker' } }),
+    },
+    {
       id: 'open',
       title: 'Open the IDE',
       detail: 'Files, search, changes and a terminal for the working directory',

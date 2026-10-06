@@ -295,7 +295,7 @@ export function ChatView({
      key on this machine, add the worker, store the key — where the picker
      can only list providers. The picker stays the fallback. */
   const handleConfigureProvider = useCallback(() => {
-    if (onboardingWizardAvailable()) requestOnboardingWizard('machine')
+    if (onboardingWizardAvailable()) requestOnboardingWizard('models')
     else handleOpenModelPicker()
   }, [handleOpenModelPicker])
   /* An agent profile that pins the model locks the model-and-reasoning panel

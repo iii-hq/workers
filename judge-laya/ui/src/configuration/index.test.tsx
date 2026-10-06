@@ -139,7 +139,7 @@ describe('LayaConfigForm', () => {
     expect(onChange).toHaveBeenLastCalledWith({ batch_questions: 8, future: { keep: true } })
   })
 
-  it('edits preload, routing flags and the shortlist', async () => {
+  it('edits preload and routing flags', async () => {
     const value = Object.freeze({ model: 'laya', preload: ['laya-typed-decisions'] })
     const { onChange } = await mount(value)
     await act(async () => changes.get('preload:laya-multilingual')?.('true'))
@@ -149,10 +149,6 @@ describe('LayaConfigForm', () => {
     await act(async () => changes.get('auto_route')?.('true'))
     expect(onChange).toHaveBeenLastCalledWith({ ...value, auto_route: true })
     await act(async () => changes.get('auto_task_detection')?.('false'))
-    expect(onChange).toHaveBeenLastCalledWith({ ...value })
-    await act(async () => changes.get('shortlist_k')?.('20'))
-    expect(onChange).toHaveBeenLastCalledWith({ ...value, shortlist_k: 20 })
-    await act(async () => changes.get('shortlist_k')?.(''))
     expect(onChange).toHaveBeenLastCalledWith({ ...value })
   })
 

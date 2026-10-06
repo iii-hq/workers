@@ -577,6 +577,7 @@ async fn seed_child(
                 identity,
             ),
         },
+        system_prompt_ref: None,
         skills_prompt: None,
         skill_context: None,
         max_turns,
@@ -1034,6 +1035,7 @@ mod tests {
                 max_transient_resumes: 1,
                 preloaded_contracts: None,
                 seeded_contracts: None,
+                system_prompt_ref: None,
             },
             calls: Default::default(),
             parent: None,
@@ -1327,6 +1329,7 @@ mod tests {
         previous_child.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["child-only".into()]),
             baseline: Some("frozen child baseline".into()),
+            baseline_ref: None,
         });
 
         assert!(child_skill_previous(false, Some(&previous_child)).is_none());

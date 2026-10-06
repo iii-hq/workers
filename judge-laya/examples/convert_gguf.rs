@@ -1,14 +1,15 @@
-//! Convert a laya checkpoint directory's encoder to GGUF ahead of time (the
-//! worker does it on first load): `convert_encoder <checkpoint dir> <tokenizer.json> <out.gguf>`.
+//! Convert a laya checkpoint directory to GGUF ahead of time (the worker does
+//! it on first load): `convert_gguf <checkpoint dir> <tokenizer.json> <out.gguf>`.
 fn main() -> anyhow::Result<()> {
     let args: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
     let [dir, tokenizer, out] = args.as_slice() else {
-        anyhow::bail!("usage: convert_encoder <checkpoint dir> <tokenizer.json> <out.gguf>");
+        anyhow::bail!("usage: convert_gguf <checkpoint dir> <tokenizer.json> <out.gguf>");
     };
     let started = std::time::Instant::now();
     judge_laya::gguf::convert(
         &dir.join("model.safetensors"),
         &dir.join("encoder/config.json"),
+        &dir.join("rl_agent_config.json"),
         tokenizer,
         out,
     )?;

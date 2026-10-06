@@ -469,6 +469,18 @@ test('typed controls preserve environment values and derive deliberate literal r
   )
 })
 
+test('the setup switch reads on by default and keeps worker_sources when set', async () => {
+  const preferences = await loadTracePreferences()
+  assert.equal(preferences.onboardingAutoOpen({}), true)
+  assert.equal(preferences.onboardingAutoOpen({ onboarding: { auto_open: true } }), true)
+  assert.equal(preferences.onboardingAutoOpen({ onboarding: { auto_open: false } }), false)
+
+  const sources = { judge: '/src/judge' }
+  const off = preferences.withOnboardingAutoOpen({ http_port: 3113, onboarding: { worker_sources: sources } }, false)
+  assert.deepEqual(off, { http_port: 3113, onboarding: { worker_sources: sources, auto_open: false } })
+  assert.equal(preferences.onboardingAutoOpen(off), false)
+})
+
 test('trace preference edits preserve opaque view and sibling fields', async () => {
   const preferences = await loadTracePreferences()
   const value = {

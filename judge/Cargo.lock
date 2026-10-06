@@ -846,7 +846,7 @@ dependencies = [
 
 [[package]]
 name = "judge"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "judge-typesafe"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",

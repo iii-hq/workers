@@ -25,6 +25,7 @@ import {
   readContainingBranches,
   readLogPage,
   readRefs,
+  readSignature,
   readWorkingDiff,
   showsGraph,
 } from './git-log-window'
@@ -81,8 +82,9 @@ export function useGitLog(
   const [error, setError] = useState<string | null>(null)
   const [refreshes, setRefreshes] = useState(0)
 
-  // A filter picked again as it was reads nothing.
-  const filterKey = JSON.stringify(filter)
+  // A filter picked again as it was reads nothing; nor do Regex and Match
+  // case without a text, which git never sees then.
+  const filterKey = JSON.stringify(filter.text ? filter : { ...filter, regex: undefined, caseSensitive: undefined })
 
   // Everything a page read needs, read at call time: a stale closure must
   // not append to a newer generation.
@@ -310,6 +312,8 @@ export interface CommitDetailsState {
   error: string | null
   /** The branches that have the commit, read once the selection rests. */
   branches: Branches | null
+  /** What `%G?` says of the commit, read once the selection rests. */
+  signature: string | null
 }
 
 type Branches = { names: string[]; total: number; partial: boolean }
@@ -325,6 +329,26 @@ interface DetailsRead {
 // commits it read; the keys name the root, and all else a read depends on.
 const detailsCache = new Map<string, CommitDetails>()
 const branchesCache = new Map<string, Branches>()
+const signatureCache = new Map<string, string>()
+
+// A refs snapshot as a number for the branches key: the snapshot object
+// stays the same until the refs move, and its listing runs to megabytes
+// that a key string would copy once per cached commit. An equal listing
+// read again (Refresh, a root switched back to) gets the same number, from
+// the last few listings only.
+const refsIds = new WeakMap<RefsSnapshot, number>()
+const idsByListing = new Map<string, number>()
+let refsCount = 0
+function refsId(snapshot: RefsSnapshot): number {
+  let id = refsIds.get(snapshot) ?? idsByListing.get(snapshot.signature)
+  if (id === undefined) {
+    id = ++refsCount
+    idsByListing.set(snapshot.signature, id)
+    if (idsByListing.size > 4) idsByListing.delete(idsByListing.keys().next().value as string)
+  }
+  refsIds.set(snapshot, id)
+  return id
+}
 
 function remember<T>(cache: Map<string, T>, key: string, value: T) {
   cache.set(key, value)
@@ -338,7 +362,7 @@ export function detailsFor(
   key: string | null,
   cached: CommitDetails | undefined,
   read: DetailsRead | null,
-): Omit<CommitDetailsState, 'branches'> {
+): Omit<CommitDetailsState, 'branches' | 'signature'> {
   const own = read !== null && read.key === key ? read : null
   const details = key === null ? null : (cached ?? own?.details ?? null)
   const error = details === null ? (own?.error ?? null) : null
@@ -356,12 +380,15 @@ export function useCommitDetails(
   sha: string | null,
 ): CommitDetailsState {
   const prefix = snapshot?.prefix ?? ''
-  const signature = snapshot?.signature ?? ''
   // Each file's folder-relative path depends on the folder: wait for it.
   const key = root === null || sha === null || snapshot === null ? null : `${root}\0${prefix}\0${sha}`
-  const branchesKey = root === null || sha === null ? null : `${root}\0${sha}\0${signature}`
+  // Like the details, both wait for the refs: a Git window hidden across a
+  // root switch has none, and must not read the old commit in the new root.
+  const branchesKey = root === null || sha === null || snapshot === null ? null : `${root}\0${sha}\0${refsId(snapshot)}`
+  const signatureKey = root === null || sha === null || snapshot === null ? null : `${root}\0${sha}`
   const [read, setRead] = useState<DetailsRead | null>(null)
   const [branchesRead, setBranchesRead] = useState<{ key: string; branches: Branches } | null>(null)
+  const [signatureRead, setSignatureRead] = useState<{ key: string; signature: string } | null>(null)
 
   useEffect(() => {
     if (key === null || root === null || sha === null || detailsCache.has(key)) return
@@ -369,9 +396,9 @@ export function useCommitDetails(
     const timer = setTimeout(() => {
       readCommitDetails(host, root, prefix, sha).then(
         (details) => {
-          if (stale) return
+          // A commit's details never change: kept even when the selection moved on.
           remember(detailsCache, key, details)
-          setRead({ key, details, error: null })
+          if (!stale) setRead({ key, details, error: null })
         },
         (err: unknown) => {
           if (!stale) setRead({ key, details: null, error: err instanceof Error ? err.message : String(err) })
@@ -405,6 +432,26 @@ export function useCommitDetails(
     }
   }, [host, branchesKey, root, sha])
 
+  // Whether it is signed: gpg may be slow, so only once the selection
+  // rests, and once per commit.
+  useEffect(() => {
+    if (signatureKey === null || root === null || sha === null || signatureCache.has(signatureKey)) return
+    let stale = false
+    const timer = setTimeout(() => {
+      readSignature(host, root, sha).then(
+        (signature) => {
+          remember(signatureCache, signatureKey, signature)
+          if (!stale) setSignatureRead({ key: signatureKey, signature })
+        },
+        () => {},
+      )
+    }, BRANCHES_DELAY_MS)
+    return () => {
+      stale = true
+      clearTimeout(timer)
+    }
+  }, [host, signatureKey, root, sha])
+
   const cached = key === null ? undefined : detailsCache.get(key)
   const cachedBranches = branchesKey === null ? undefined : branchesCache.get(branchesKey)
   // A cache hit is kept as this pane's own read: another pane's reads may
@@ -414,10 +461,21 @@ export function useCommitDetails(
   if (branchesKey !== null && cachedBranches !== undefined && branchesRead?.branches !== cachedBranches) {
     setBranchesRead({ key: branchesKey, branches: cachedBranches })
   }
+  const cachedSignature = signatureKey === null ? undefined : signatureCache.get(signatureKey)
+  if (signatureKey !== null && cachedSignature !== undefined && signatureRead?.key !== signatureKey) {
+    setSignatureRead({ key: signatureKey, signature: cachedSignature })
+  }
   const { details, loading, error } = detailsFor(key, cached, read)
   const branches =
     branchesKey === null ? null : (cachedBranches ?? (branchesRead?.key === branchesKey ? branchesRead.branches : null))
-  return useMemo(() => ({ details, loading, error, branches }), [details, loading, error, branches])
+  const signature =
+    signatureKey === null
+      ? null
+      : (cachedSignature ?? (signatureRead?.key === signatureKey ? signatureRead.signature : null))
+  return useMemo(
+    () => ({ details, loading, error, branches, signature }),
+    [details, loading, error, branches, signature],
+  )
 }
 
 export interface WorkingDiffState {

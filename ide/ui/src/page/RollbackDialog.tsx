@@ -5,7 +5,7 @@
 
 import { Button, Checkbox, Dialog, DialogContent, DialogDescription, DialogTitle } from '@iii-dev/console-ui'
 import { useEffect, useMemo, useState } from 'react'
-import { ChangesTree } from './ChangesTree'
+import { ChangesTree, ROW_HEIGHT } from './ChangesTree'
 import { changeRows, changeSummary } from './commit-tree'
 import type { GitComparisonEntry } from './git'
 
@@ -48,7 +48,8 @@ export function RollbackDialog({ entries, busy, onCancel, onConfirm }: RollbackD
           Rollback {offered.length} {offered.length === 1 ? 'change' : 'changes'}?
         </DialogTitle>
         <DialogDescription>Working-tree changes to the ticked files are lost. This can't be undone.</DialogDescription>
-        <div className="shui-rollback-tree">
+        {/* A windowed tree has no height of its own: up to 260px of rows, plus the 4px padding. */}
+        <div className="shui-rollback-tree" style={{ height: Math.min(260, rows.length * ROW_HEIGHT) + 8 }}>
           <ChangesTree
             rows={rows}
             isIncluded={(entry) => !unticked.has(entry.path)}

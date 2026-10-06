@@ -16,7 +16,7 @@
 //! and `generate_step` acks any delivery whose `(turn_id, step)` is no longer
 //! current, so a duplicate of a step that was only delayed is dropped.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use crate::deps::Deps;
@@ -99,11 +99,40 @@ pub async fn redrive_if_idle(deps: &Deps, record: &TurnRecord) -> Result<bool, H
     Ok(true)
 }
 
+/// The redrive's view of the turn scope (key -> last seen `Running`), held
+/// for a whole read so the run loop's and the cron sweep's passes (and the
+/// sweep's full read, [`read_all_turns`]) serialize; see
+/// [`crate::state::read_changed_turns`].
+static TURN_VIEW: tokio::sync::Mutex<BTreeMap<String, bool>> =
+    tokio::sync::Mutex::const_new(BTreeMap::new());
+
+/// Every turn record ([`crate::state::list_turns`]), with the redrive's view
+/// rebuilt from them: the pending sweep's full read doubles as the view's
+/// refresh, so a record rewritten behind this process's writes (a state-store
+/// rollback, a console edit, another harness process) is redriven after the
+/// next sweep, not only after a restart. Writes that land during the read
+/// stay marked for the next pass.
+pub async fn read_all_turns(deps: &Deps) -> Result<crate::state::TurnListing, HarnessError> {
+    let cfg = deps.cfg().await;
+    let mut view = TURN_VIEW.lock().await;
+    let listing = crate::state::list_turns(&deps.iii, cfg.session_timeout_ms).await?;
+    *view = listing
+        .records
+        .iter()
+        .map(|r| (r.session_id.clone(), r.status == TurnStatus::Running))
+        .collect();
+    Ok(listing)
+}
+
 /// Re-enqueue the current step of every orphaned `Running` turn. Returns the
-/// number of steps re-enqueued.
+/// number of steps re-enqueued. Reads only the turn records that changed
+/// since the last pass ([`crate::state::read_changed_turns`]).
 pub async fn redrive_orphans(deps: &Deps) -> Result<u64, HarnessError> {
     let cfg = deps.cfg().await;
-    let records = crate::state::list_turns(&deps.iii, cfg.session_timeout_ms).await?;
+    let records = {
+        let mut view = TURN_VIEW.lock().await;
+        crate::state::read_changed_turns(&deps.iii, &mut view, cfg.session_timeout_ms).await?
+    };
     let now = AgentMessage::now_ms();
     let mut redriven = 0;
     for mut record in records {
@@ -111,10 +140,19 @@ pub async fn redrive_orphans(deps: &Deps) -> Result<u64, HarnessError> {
             continue;
         }
         // Re-check under the session lock against the freshest record so a
-        // step that just advanced or finished is not redriven.
+        // step that just advanced or finished is not redriven. Unhydrated: the
+        // check reads no prompt text, and a turn whose prompt body is gone
+        // must still be redriven so its step fails it instead of leaving it
+        // Running.
         let _guard = deps.locks.guard(&record.session_id).await;
-        match crate::state::get_turn(&deps.iii, &record.session_id, cfg.session_timeout_ms).await? {
-            Some(fresh)
+        match crate::state::get_turn_unhydrated(
+            &deps.iii,
+            &record.session_id,
+            cfg.session_timeout_ms,
+        )
+        .await
+        {
+            Ok(Some(fresh))
                 if fresh.turn_id == record.turn_id
                     && fresh.step == record.step
                     && is_orphan_candidate(
@@ -125,7 +163,16 @@ pub async fn redrive_orphans(deps: &Deps) -> Result<u64, HarnessError> {
             {
                 record = fresh;
             }
-            _ => continue,
+            // One unreadable record must not strand the orphans after it.
+            Err(e) => {
+                tracing::warn!(
+                    session_id = %record.session_id,
+                    error = %e,
+                    "could not re-read an orphan candidate; skipped this pass"
+                );
+                continue;
+            }
+            Ok(_) => continue,
         }
         match redrive_if_idle(deps, &record).await {
             Ok(true) => {
@@ -160,11 +207,28 @@ const BOOT_DELAY_MS: u64 = 30_000;
 /// Background loop: one orphan pass shortly after boot (turns stranded by the
 /// outage that preceded a restart), then one per redrive window. The daily
 /// pending sweep alone would leave a wedged session stuck for up to a day.
+///
+/// Boot starts with one full read ([`read_all_turns`]): it seeds the
+/// redrive's view, so the first pass reads only running turns, and the
+/// records feed one compaction ([`crate::turn_compaction`]) after that pass.
 pub async fn run_loop(deps: std::sync::Arc<Deps>) {
     tokio::time::sleep(std::time::Duration::from_millis(BOOT_DELAY_MS)).await;
+    let mut boot_listing = read_all_turns(&deps)
+        .await
+        .inspect_err(|e| tracing::warn!(error = %e, "boot read of the turn records failed"))
+        .ok();
     loop {
         if let Err(e) = redrive_orphans(&deps).await {
             tracing::warn!(error = %e, "orphaned-turn redrive pass failed");
+        }
+        if let Some(listing) = boot_listing.take() {
+            let report =
+                crate::turn_compaction::compact(&deps, &listing, AgentMessage::now_ms()).await;
+            tracing::info!(
+                converted = report.converted,
+                prompts_collected = report.prompts_collected,
+                "turn records compacted after boot"
+            );
         }
         tokio::time::sleep(std::time::Duration::from_millis(ORPHAN_REDRIVE_AFTER_MS)).await;
     }

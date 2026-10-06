@@ -144,3 +144,20 @@ standalone worker) over the **same jail** (`fs.host_roots`): `coder::info`
 `coder::move`. Prefer these structured ops over editing files through
 `shell::exec`. They return `C2xx` error codes (distinct from `shell::*`'s
 `S2xx`); protected paths are the shared `code.non_accessible_globs`.
+`coder::list-templates` lists the worker templates (`code.templates`: a local
+`dir`, or a cached git clone) with their language and the compose containers
+they need.
+`coder::scaffold-worker { template, name, directory?, operation_id?, start_after? }`
+writes one into a missing or empty folder whose last segment is `name`
+(default `workers/<name>`), all or nothing, then adds it to the stack in the
+same call (`compose::add` with the worker, its `start_after` and the
+`requires` the stack lacks): a name the stack already has fails `C235`
+before any write, and the result carries `operation_id` and `started`, or
+`start_error` with the files kept. `start: false` writes the files only and
+returns `compose_add`, the `compose::add` payload to send whole, adding
+`start_after` to its entry and missing `requires` as more entries (never the
+bare `worker` string form, which drops the scripts). It adds to the stack
+the ide runs in, so a harness session without `compose::add`, or whose
+`compose::add` the approval gate would not allow outright, gets the files
+only, with a note (an explicit `start: true` is refused there); its own
+`compose::add` then goes through approval as usual.

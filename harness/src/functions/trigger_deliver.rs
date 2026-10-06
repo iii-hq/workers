@@ -497,6 +497,19 @@ async fn call_target(
     {
         return (payload, Err(e));
     }
+    // A starting scaffold runs compose::add inside the ide, unseen by approval.
+    if crate::trigger::scaffold_starts(target, &payload) {
+        if let Err(e) = crate::functions::subscribe::approval_allows_unattended(
+            deps,
+            crate::functions::subscribe::COMPOSE_ADD_ID,
+            &binding.owner.session_id,
+            &serde_json::json!({}),
+        )
+        .await
+        {
+            return (payload, Err(e));
+        }
+    }
     // AWAITED, not fire-and-forget. A void dispatch reports success the moment
     // the engine accepts it, so a target that then fails — a bad statement, a
     // rejected payload — is recorded as delivered and "why did nothing

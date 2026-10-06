@@ -50,6 +50,33 @@ export interface SourceControlState {
   stash: (entries: readonly GitComparisonEntry[], message: string) => Promise<boolean>
 }
 
+/** The fields a derive can change; the content sources follow from them. */
+function sameEntries(a: readonly GitComparisonEntry[], b: readonly GitComparisonEntry[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((entry, index) => {
+      const other = b[index]
+      return (
+        entry.path === other.path &&
+        entry.status === other.status &&
+        entry.from === other.from &&
+        entry.renameFrom === other.renameFrom &&
+        entry.staged === other.staged &&
+        entry.x === other.x &&
+        entry.y === other.y &&
+        entry.before.kind === other.before.kind &&
+        entry.after.kind === other.after.kind
+      )
+    })
+  )
+}
+
+/** `paths` without the ones no longer changed; the same set when none left. */
+function onlyLive(paths: ReadonlySet<string>, live: ReadonlySet<string>): ReadonlySet<string> {
+  for (const path of paths) if (!live.has(path)) return new Set([...paths].filter((kept) => live.has(kept)))
+  return paths
+}
+
 /** `page` is the page's own git status from `gitChanges` and the call that
     reads it again, which bumps `refreshEpoch` while the view is active
     unless asked to be quiet. The panel derives its view from that status
@@ -105,11 +132,13 @@ export function useSourceControl(
           return
         }
         if (pageGit.kind === 'ready') setBranch(pageGit.status.branch)
-        setAll(state.changes)
+        // An unchanged derive keeps every identity, so a refresh that moved
+        // nothing renders nothing: thousands of rows would redraw otherwise.
+        setAll((current) => (sameEntries(current, state.changes) ? current : state.changes))
         // Forget ticks for paths that are no longer changed.
         const live = new Set(state.changes.map((change) => change.path))
-        setExcluded((current) => new Set([...current].filter((path) => live.has(path))))
-        setAdopted((current) => new Set([...current].filter((path) => live.has(path))))
+        setExcluded((current) => onlyLive(current, live))
+        setAdopted((current) => onlyLive(current, live))
         setError(null)
         setPhase('ready')
       })

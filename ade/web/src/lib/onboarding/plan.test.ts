@@ -312,11 +312,20 @@ describe('judgeFailure', () => {
 
 describe('shouldAutoOpenOnboarding', () => {
   it('opens by itself only for a person on first run', () => {
-    expect(shouldAutoOpenOnboarding('new', false)).toBe(true)
+    expect(shouldAutoOpenOnboarding({ status: 'new' }, false)).toBe(true)
     // An e2e suite, an agent's browser session or a stories render.
-    expect(shouldAutoOpenOnboarding('new', true)).toBe(false)
-    expect(shouldAutoOpenOnboarding('dismissed', false)).toBe(false)
-    expect(shouldAutoOpenOnboarding('completed', false)).toBe(false)
-    expect(shouldAutoOpenOnboarding(null, false)).toBe(false)
+    expect(shouldAutoOpenOnboarding({ status: 'new' }, true)).toBe(false)
+    expect(shouldAutoOpenOnboarding({ status: 'dismissed' }, false)).toBe(false)
+    expect(shouldAutoOpenOnboarding({ status: 'completed' }, false)).toBe(false)
+    expect(shouldAutoOpenOnboarding({ status: null }, false)).toBe(false)
+  })
+
+  it('stays closed where the ADE turned auto-open off, as a deploy does', () => {
+    expect(
+      shouldAutoOpenOnboarding({ status: 'new', auto_open: false }, false),
+    ).toBe(false)
+    expect(
+      shouldAutoOpenOnboarding({ status: 'new', auto_open: true }, false),
+    ).toBe(true)
   })
 })

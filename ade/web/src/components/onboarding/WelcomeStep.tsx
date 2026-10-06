@@ -13,9 +13,9 @@ export const PILLAR_ICONS: Record<PillarId, LucideIcon> = {
 }
 
 const SETUP = [
-  'Look for Claude Code, Codex and API keys already on this machine',
-  'Connect at least one model provider',
+  'Connect a model, starting from the Claude Code, Codex or API keys already on this machine',
   'Optionally, set up Judge for the small decisions agents make',
+  'Then, if you like, take a guided tour of the ADE with everything connected',
 ]
 
 export function WelcomeStep({

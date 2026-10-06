@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: judge-laya
 tags: [evaluation, judge, laya, noul, choice, score, local]
-description: laya provider for the judge hub (judge-laya::evaluate, judge-laya::models::list, judge-laya::cancel) — the ModernBERT typed-decision checkpoints (English, multilingual, typed-decisions) downloaded from the Hugging Face Hub and run in-process with language routing and an optional choice shortlist; no API key or external service.
+description: laya provider for the judge hub (judge-laya::evaluate, judge-laya::models::list, judge-laya::cancel) — the ModernBERT typed-decision checkpoints (English, multilingual, typed-decisions) downloaded from the Hugging Face Hub and run in-process with language routing; no API key or external service.
 config:
   model: laya
   preload: []

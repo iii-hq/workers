@@ -71,9 +71,9 @@ See the [mixed Noul/Choice/Score example](reference.md#evaluate),
 
 **Settings → Workers → judge** selects the default provider from the workers
 registered as `judge-<provider>` (seeded from `JUDGE_PROVIDER`, else `typesafe`).
-Four ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV),
-[`judge-decider`](../judge-decider/), [`judge-semif`](../judge-semif/) and
-[`judge-laya`](../judge-laya/) (open models running inside the worker); a request may name its own with a top-level
+Five ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV),
+[`judge-decider`](../judge-decider/), [`judge-semif`](../judge-semif/),
+[`judge-laya`](../judge-laya/) and [`judge-clef`](../judge-clef/) (open models running inside the worker); a request may name its own with a top-level
 `provider`. Between the two sits
 the calling session's provider: the console's composer (beside the model
 picker) stores it as the session's `judge_provider` metadata, the harness
@@ -85,7 +85,10 @@ or the default. A local provider keeps its model loaded while it is the
 default (all of them with **Keep every local provider loaded**, `preload_all`);
 a request naming any other one loads its model on first use, which that request
 may not outlast, and the model is released after 10 idle minutes. Picking a
-provider in the composer starts that load. A new provider is a
+provider in the composer starts that load. The composer's judge picker is
+laid out like the model picker: each provider shows the model its settings
+name, **Configure** edits a provider's settings (or the hub's) inside the
+picker, and **+** adds a judge worker from the registry. A new provider is a
 worker that registers `judge-<provider>::evaluate`, `::models::list` and
 `::cancel` with the [`judge-contract`](../crates/judge-contract/) types,
 marked `metadata.internal: true` so default discovery shows only the hub, and

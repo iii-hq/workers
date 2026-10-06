@@ -108,6 +108,9 @@ function modelNotice(
 ): SystemMessage[] {
   const d = (data ?? {}) as { text?: unknown; kind?: unknown }
   if (typeof d.text !== 'string' || !d.text.trim()) return []
+  // Under the console's broad policy any worker restart fires it: noise to
+  // the person reading the chat. The model still gets the note.
+  if (d.kind === 'registry-changed') return []
   const kind =
     typeof d.kind === 'string' && d.kind.trim()
       ? d.kind.trim().replace(/[-_]+/g, ' ')
