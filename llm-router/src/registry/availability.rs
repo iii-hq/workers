@@ -94,8 +94,33 @@ pub fn resolve_default_model(preferences: &[String], slice_ids: &[String]) -> Op
         .iter()
         .map(|id| (common_prefix_len(first, id), id))
         .filter(|(shared, _)| *shared >= family_len)
-        .max_by(|(a_len, a), (b_len, b)| a_len.cmp(b_len).then_with(|| natural_cmp(a, b)))
+        .max_by(|(a_len, a), (b_len, b)| {
+            a_len
+                .cmp(b_len)
+                .then_with(|| version(&a[*a_len..]).cmp(&version(&b[*b_len..])))
+                // the plain id over its dated snapshot or a `-mini` variant
+                .then_with(|| b.len().cmp(&a.len()))
+                .then_with(|| natural_cmp(a, b))
+        })
         .map(|(_, id)| id.clone())
+}
+
+/// The version numbers an id starts with after the shared family prefix:
+/// `4.1-2025-04-14` → [4, 1], `4o-mini` → [4], `3.5-turbo` → [3, 5]. Stops
+/// at the first word or at a date-like run of four or more digits.
+fn version(rest: &str) -> Vec<u64> {
+    let mut out = Vec::new();
+    for part in rest.split(['.', '-']) {
+        let digits = part.len() - part.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits == 0 || digits > 3 {
+            break;
+        }
+        out.push(part[..digits].parse().unwrap_or(0));
+        if digits < part.len() {
+            break;
+        }
+    }
+    out
 }
 
 fn common_prefix_len(a: &str, b: &str) -> usize {
@@ -165,6 +190,37 @@ mod tests {
         assert_eq!(
             resolve_default_model(&prefs, &slice).as_deref(),
             Some("claude-sonnet-4-10")
+        );
+    }
+
+    #[test]
+    fn family_ties_go_to_the_highest_version_then_the_plain_id() {
+        // A Copilot account whose catalog has none of the preferred models:
+        // every id shares only `copilot/gpt-`. The newest version wins, and a
+        // plain id wins over its dated snapshot or a `-mini` variant.
+        let prefs = ids(&["copilot/gpt-6.1-sol", "copilot/gpt-6-sol"]);
+        let slice = ids(&[
+            "copilot/gpt-4o-mini-2024-07-18",
+            "copilot/gpt-4o-2024-11-20",
+            "copilot/gpt-4.1-2025-04-14",
+            "copilot/gpt-3.5-turbo-0613",
+            "copilot/gpt-4-o-preview",
+            "copilot/gpt-4.1",
+            "copilot/gpt-4o-mini",
+            "copilot/gpt-4o",
+        ]);
+        assert_eq!(
+            resolve_default_model(&prefs, &slice).as_deref(),
+            Some("copilot/gpt-4.1")
+        );
+        let slice = ids(&[
+            "copilot/gpt-4o-mini",
+            "copilot/gpt-4o-2024-11-20",
+            "copilot/gpt-4o",
+        ]);
+        assert_eq!(
+            resolve_default_model(&prefs, &slice).as_deref(),
+            Some("copilot/gpt-4o")
         );
     }
 

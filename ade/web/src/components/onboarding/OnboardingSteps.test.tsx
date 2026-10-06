@@ -171,6 +171,7 @@ const CONNECTED: MachineSnapshot['providers'] = [
     id: 'claude-code',
     title: 'Claude Code',
     configured: false,
+    ownsAuthentication: true,
     available: true,
     modelCount: 11,
   },

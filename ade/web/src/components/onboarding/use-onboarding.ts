@@ -20,6 +20,7 @@ import {
   type KeyDetection,
   type PlanStep,
   type ProviderState,
+  servesUsableModels,
   type ToolScan,
 } from '@/lib/onboarding/plan'
 
@@ -91,18 +92,12 @@ export function withWorkerPresence(
   })
 }
 
-const SUBSCRIPTION_IDS = new Set(
-  SUBSCRIPTION_PROVIDERS.map((provider) => provider.providerId),
-)
-
 /**
- * Chat models the router serves right now from configured providers whose
- * worker is connected — the wizard's own reading. An unconfigured provider
- * can still list models (a local llama.cpp server), but the picker cannot
- * use them, so they do not count. A subscription (Codex, Claude Code)
- * does not count: it serves models as soon as its CLI is signed in on this
- * machine, and the wizard is where the person sees that and chooses it.
- * Throws when the router or the engine cannot answer.
+ * Chat models the router serves right now from providers whose worker is
+ * connected and whose models are usable (`servesUsableModels`) — the
+ * wizard's own reading. An unconfigured key provider can still list models,
+ * but the picker cannot use them, so they do not count. Throws when the
+ * router or the engine cannot answer.
  */
 export async function connectedModelCount(): Promise<number> {
   const [providers, installed] = await Promise.all([
@@ -110,9 +105,7 @@ export async function connectedModelCount(): Promise<number> {
     installedWorkerNames(),
   ])
   return withWorkerPresence(providers, installed)
-    .filter(
-      (provider) => provider.configured && !SUBSCRIPTION_IDS.has(provider.id),
-    )
+    .filter(servesUsableModels)
     .reduce((sum, provider) => sum + provider.modelCount, 0)
 }
 

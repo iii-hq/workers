@@ -22,6 +22,7 @@ import {
   shouldAutoOpenOnboarding,
   type WizardStepId,
 } from '@/lib/onboarding/open'
+import { servesUsableModels } from '@/lib/onboarding/plan'
 import { prepareTour } from '@/lib/onboarding/tour'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { cn } from '@/lib/utils'
@@ -138,7 +139,7 @@ export function OnboardingWizardHost() {
       setJudge(judgeChoice)
       go('ready')
       const providers = (onboarding.snapshot.providers ?? [])
-        .filter((provider) => provider.modelCount > 0)
+        .filter(servesUsableModels)
         .map((provider) => ({
           id: provider.id,
           models: provider.modelCount,
