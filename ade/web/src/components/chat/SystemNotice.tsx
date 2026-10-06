@@ -30,6 +30,7 @@ import {
   CardHeader,
   CardHighlight,
 } from '@/components/ui/Surface'
+import { rememberedProvider } from '@/lib/models-catalog'
 import { skillUpdateSummary } from '@/lib/skill-update'
 import {
   classifyTurnFailure,
@@ -166,8 +167,12 @@ const OWNER_CHIP: Record<TurnFailureOwner, ChipTone> = {
 
 function TurnFailureCard({ message }: { message: SystemMessage }) {
   const titleId = useId()
-  const presentation = classifyTurnFailure(message)
   const details = message.technicalDetails
+  const presentation = classifyTurnFailure(message, {
+    providerHint: details?.provider
+      ? rememberedProvider(details.provider)?.context_overflow_hint
+      : undefined,
+  })
   const failure = message.failure
   const Icon = CATEGORY_ICON[presentation.category]
   // A transient failure is amber (it will pass); anything someone has to fix
@@ -268,7 +273,11 @@ function TurnFailureCard({ message }: { message: SystemMessage }) {
               aria-hidden
               className="mt-0.5 size-5 shrink-0 stroke-ink-faint sm:size-4"
             />
-            <NextActions actions={presentation.actions} heading />
+            <NextActions
+              actions={presentation.actions}
+              heading
+              note={presentation.providerNote}
+            />
           </CardHighlight>
         </CardBody>
 
@@ -612,10 +621,13 @@ function skillsCopy(update: SkillCatalogUpdate): {
 function NextActions({
   actions,
   heading = false,
+  note,
   className,
 }: {
   actions: string[]
   heading?: boolean
+  /** Provider-declared add-on shown under the steps (see `providerNote`). */
+  note?: string
   className?: string
 }) {
   return (
@@ -636,6 +648,14 @@ function NextActions({
           <li key={action}>{action}</li>
         ))}
       </ol>
+      {note ? (
+        <p
+          data-provider-hint
+          className="text-pretty wrap-break-word text-ink-faint"
+        >
+          {note}
+        </p>
+      ) : null}
     </div>
   )
 }

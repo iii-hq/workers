@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { rememberProviderList } from '@/lib/models-catalog'
 import type { SystemMessage } from '@/types/chat'
 import { Message } from './Message'
 import { SystemNotice } from './SystemNotice'
@@ -130,6 +131,43 @@ describe('SystemNotice · skill index', () => {
 })
 
 describe('SystemNotice · turn failure', () => {
+  it('adds the provider-declared hint under the steps of a context overflow', () => {
+    const overflow: SystemMessage = {
+      id: 'e_t3_error',
+      role: 'system',
+      kind: 'turn-failure',
+      tone: 'error',
+      content:
+        'context/overflow: assembled context requires 5391 tokens but usable budget is 2048',
+      technicalDetails: {
+        code: 'harness.context_overflow',
+        class: 'llm.context_overflow',
+        provider: 'llamacpp',
+        model: 'ggml-org/gemma-4-12B-it-GGUF:Q8_0',
+      },
+      createdAt: 0,
+    }
+    rememberProviderList([
+      {
+        id: 'llamacpp',
+        display_name: 'llama.cpp',
+        supports_model_listing: true,
+        available: true,
+        context_overflow_hint: 'Raise --ctx-size on the server.',
+      },
+    ])
+    try {
+      const out = html(overflow)
+      expect(out).toContain('data-failure-category="context"')
+      expect(out).toContain('What you can do')
+      expect(out).toContain('data-provider-hint')
+      expect(out).toContain('Raise --ctx-size on the server.')
+    } finally {
+      rememberProviderList([])
+    }
+    expect(html(overflow)).not.toContain('data-provider-hint')
+  })
+
   it('leads with who has to act for a credentials failure', () => {
     const out = html({
       id: 'e_t1_error',

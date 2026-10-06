@@ -47,6 +47,7 @@ pub fn declaration() -> ProviderDeclaration {
             "claude-code/claude-sonnet-4-6".into(),
         ]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
+        context_overflow_hint: None,
         models: None,
         // Self-reported; availability mapping only, never authorization.
         worker_id: Some("provider-claude-code".into()),

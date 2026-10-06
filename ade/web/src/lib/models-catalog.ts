@@ -268,6 +268,28 @@ export interface ProviderListEntry {
   default_model?: string
   /** The thinking level the provider pairs with it; absent means omit. */
   default_thinking_level?: string
+  /**
+   * Guidance the provider declared for a context-overflow failure on one of
+   * its models (`context_overflow_hint`): the failure card shows it under the
+   * generic steps. Absent on providers that declared none and on older
+   * routers.
+   */
+  context_overflow_hint?: string
+}
+
+let lastProviderList: ReadonlyMap<string, ProviderListEntry> = new Map()
+
+/**
+ * Keep the latest provider list where message-level UI can reach it without
+ * a fetch (the turn-failure card looks up provider-declared text by id).
+ * `fetchProviderList` calls this on every successful read.
+ */
+export function rememberProviderList(entries: ProviderListEntry[]): void {
+  lastProviderList = new Map(entries.map((entry) => [entry.id, entry]))
+}
+
+export function rememberedProvider(id: string): ProviderListEntry | undefined {
+  return lastProviderList.get(id)
 }
 
 const CREDENTIAL_SOURCES = new Set(['config', 'env', 'secret', 'none'])
@@ -283,7 +305,13 @@ export async function fetchProviderList(): Promise<ProviderListEntry[]> {
     'router::provider::list',
     {},
   )
-  const rows = res?.providers
+  const out = parseProviderList(res?.providers)
+  rememberProviderList(out)
+  return out
+}
+
+/** The `providers` rows of a `router::provider::list` reply, tolerant of older routers. */
+export function parseProviderList(rows: unknown): ProviderListEntry[] {
   if (!Array.isArray(rows)) return []
   const out: ProviderListEntry[] = []
   for (const raw of rows) {
@@ -327,6 +355,11 @@ export async function fetchProviderList(): Promise<ProviderListEntry[]> {
       default_thinking_level:
         typeof o.default_thinking_level === 'string' && o.default_thinking_level
           ? o.default_thinking_level
+          : undefined,
+      context_overflow_hint:
+        typeof o.context_overflow_hint === 'string' &&
+        o.context_overflow_hint.trim()
+          ? o.context_overflow_hint.trim()
           : undefined,
     })
   }

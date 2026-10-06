@@ -59,6 +59,7 @@ pub fn declaration() -> ProviderDeclaration {
             "copilot/gpt-6-sol".into(),
         ]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
+        context_overflow_hint: None,
         // No static slice: GET /models is the source of truth once a login
         // exists, and a refresh fires right after registration.
         models: None,

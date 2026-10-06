@@ -332,6 +332,13 @@ providers) never reports one. `default_thinking_level` is copied from the
 declaration; absent means the caller should omit the level and let the
 provider apply its own default.
 
+A declaration may also carry `context_overflow_hint`: one or two plain
+sentences a console shows under a context-overflow failure on one of the
+provider's models, for causes compacting cannot fix (a self-hosted server
+started with a small window, say), optionally with a link to the provider's
+docs. `router::provider::list` reports it verbatim; absent means the console
+shows only its generic steps.
+
 ### Thinking levels
 
 `router::chat` takes `thinking_level`: `off`, `minimal`, `low`, `medium`,

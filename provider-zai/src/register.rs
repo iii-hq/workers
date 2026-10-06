@@ -43,6 +43,7 @@ pub fn declaration() -> ProviderDeclaration {
         default_models: Some(vec!["glm-5.3".into(), "glm-5.2".into()]),
         // Omitted keeps GLM thinking off; `minimal` would turn it on.
         default_thinking_level: None,
+        context_overflow_hint: None,
         // No static slice: refresh_models reconciles the curated table right
         // after registration (see declare_and_refresh), gated on a credential
         // being configured.

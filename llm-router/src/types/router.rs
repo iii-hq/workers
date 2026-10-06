@@ -147,6 +147,11 @@ pub struct ProviderInfo {
     /// and let the provider apply its own default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_thinking_level: Option<ThinkingLevel>,
+    /// Provider-specific guidance a console appends to a context-overflow
+    /// failure on one of this provider's models; copied from the
+    /// declaration. Absent when the provider declared none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_overflow_hint: Option<String>,
     /// Where the credential comes from and why it is unusable, if it is.
     #[serde(flatten)]
     pub credential: CredentialStatus,
@@ -210,6 +215,13 @@ pub struct ProviderDeclaration {
     /// none. Absent means omit the level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_thinking_level: Option<ThinkingLevel>,
+    /// Guidance a console shows under a context-overflow failure on one of
+    /// this provider's models, for causes the console cannot fix by
+    /// compacting (a self-hosted server started with a small window, say).
+    /// One or two plain sentences, optionally with a link to the provider's
+    /// docs. `router::provider::list` carries it verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_overflow_hint: Option<String>,
 }
 
 /// Upper bound the router accepts for [`ProviderDeclaration::icon_svg`].

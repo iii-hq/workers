@@ -260,6 +260,13 @@
     "description": "Input of `router::provider::register` — a provider worker's declaration plus the optional re-registration token.",
     "properties": {
       "config_schema": true,
+      "context_overflow_hint": {
+        "description": "Guidance a console shows under a context-overflow failure on one of this provider's models, for causes the console cannot fix by compacting (a self-hosted server started with a small window, say). One or two plain sentences, optionally with a link to the provider's docs. `router::provider::list` carries it verbatim.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "credential_env_var": {
         "type": [
           "string",

@@ -3,8 +3,44 @@ import {
   type CatalogModelRow,
   catalogRowsToModelOptions,
   type ProviderListEntry,
+  parseProviderList,
   preferredStartingModel,
+  rememberedProvider,
+  rememberProviderList,
 } from './models-catalog'
+
+describe('parseProviderList', () => {
+  it('keeps a provider-declared context overflow hint and drops a blank one', () => {
+    const rows = parseProviderList([
+      {
+        id: 'llamacpp',
+        display_name: 'llama.cpp',
+        supports_model_listing: true,
+        available: true,
+        context_overflow_hint: 'Raise --ctx-size on the server.',
+      },
+      { id: 'openai', display_name: 'OpenAI', context_overflow_hint: '  ' },
+      { id: 'anthropic', display_name: 'Anthropic' },
+      'not a row',
+    ])
+    expect(rows.map((r) => r.id)).toEqual(['llamacpp', 'openai', 'anthropic'])
+    expect(rows[0].context_overflow_hint).toBe(
+      'Raise --ctx-size on the server.',
+    )
+    expect(rows[1].context_overflow_hint).toBeUndefined()
+    expect(rows[2].context_overflow_hint).toBeUndefined()
+  })
+
+  it('remembers the last list for message-level lookups', () => {
+    rememberProviderList(
+      parseProviderList([{ id: 'llamacpp', context_overflow_hint: 'hint' }]),
+    )
+    expect(rememberedProvider('llamacpp')?.context_overflow_hint).toBe('hint')
+    expect(rememberedProvider('openai')).toBeUndefined()
+    rememberProviderList([])
+    expect(rememberedProvider('llamacpp')).toBeUndefined()
+  })
+})
 
 describe('catalogRowsToModelOptions', () => {
   it('preserves model-specific effort order and descriptions', () => {
