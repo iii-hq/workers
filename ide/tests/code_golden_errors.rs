@@ -568,6 +568,7 @@ async fn error_message_formats_match_golden() {
                 update_file::UpdateFileInput {
                     files: vec![update_file::UpdateFileSpec {
                         path: "tpl-handler.js".into(),
+                        inferred_ops: Vec::new(),
                         ops: vec![update_file::UpdateOp::Replace {
                             pattern: r"iii\.registerFunction\(.*".into(),
                             replacement:

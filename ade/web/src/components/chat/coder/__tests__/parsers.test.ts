@@ -8,6 +8,7 @@ import {
   deleteFileRequestSchema,
   deleteFileResponseSchema,
   formatUpdateOp,
+  inferUpdateOp,
   infoRequestSchema,
   infoResponseSchema,
   isCoderFunction,
@@ -232,6 +233,46 @@ describe('updateFileRequestSchema', () => {
       files: [{ path: 'src/lib.rs', ops: [] }],
     })
     expect(r?.files[0]?.ops).toHaveLength(0)
+  })
+})
+
+describe('inferUpdateOp', () => {
+  it('fills in `op` only when the keys fit exactly one op, like the worker', () => {
+    const r = safeParseRequest(updateFileRequestSchema, {
+      files: [
+        {
+          path: 'a.rs',
+          ops: [
+            { at_line: 3, content: 'x' },
+            { from_line: 1, to_line: 2 },
+            { from_line: 1, to_line: 2, content: 'y' },
+            { pattern: 'a', replacement: 'b', expect_matches: null },
+          ],
+        },
+      ],
+    })
+    expect(r?.files[0]?.ops.map((op) => op.op)).toEqual([
+      'insert',
+      'remove',
+      'update_lines',
+      'replace',
+    ])
+  })
+
+  it('leaves unknown or mixed keys unparseable', () => {
+    for (const op of [
+      { from_line: 10, to_line: 12, new_content: 'x' },
+      { at_line: 10, end_line: 12, content: 'X' },
+      { at_line: 1, content: 'x', pattern: 'a', replacement: 'b' },
+      { content: 'x' },
+    ]) {
+      expect(inferUpdateOp(op)).toBe(op)
+      expect(
+        safeParseRequest(updateFileRequestSchema, {
+          files: [{ path: 'a.rs', ops: [op] }],
+        }),
+      ).toBeNull()
+    }
   })
 })
 

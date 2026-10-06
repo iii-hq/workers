@@ -191,12 +191,40 @@ export const updateOpReplaceSchema = z.object({
   expect_matches: z.number().nullish(),
 })
 
-export const updateOpSchema = z.discriminatedUnion('op', [
-  updateOpInsertSchema,
-  updateOpRemoveSchema,
-  updateOpUpdateLinesSchema,
-  updateOpReplaceSchema,
-])
+/** [required, optional] keys per op, mirroring `update_file.rs::parse_op`. */
+const UPDATE_OP_KEYS: Record<string, [string[], string[]]> = {
+  insert: [['at_line', 'content'], []],
+  remove: [['from_line', 'to_line'], []],
+  update_lines: [['from_line', 'to_line', 'content'], []],
+  replace: [
+    ['pattern', 'replacement'],
+    ['ignore_case', 'dot_matches_newline', 'expect_matches'],
+  ],
+}
+
+/** The worker fills in a missing `op` when the keys fit exactly one op
+ *  (required ⊆ keys ⊆ allowed); do the same so the preview shows the edit
+ *  that will run. Anything else stays unparseable. */
+export function inferUpdateOp(raw: unknown): unknown {
+  if (raw === null || typeof raw !== 'object' || 'op' in raw) return raw
+  const keys = Object.keys(raw)
+  const fits = Object.entries(UPDATE_OP_KEYS).filter(
+    ([, [required, optional]]) =>
+      required.every((k) => keys.includes(k)) &&
+      keys.every((k) => required.includes(k) || optional.includes(k)),
+  )
+  return fits.length === 1 ? { ...raw, op: fits[0][0] } : raw
+}
+
+export const updateOpSchema = z.preprocess(
+  inferUpdateOp,
+  z.discriminatedUnion('op', [
+    updateOpInsertSchema,
+    updateOpRemoveSchema,
+    updateOpUpdateLinesSchema,
+    updateOpReplaceSchema,
+  ]),
+)
 export type UpdateOp = z.infer<typeof updateOpSchema>
 
 export const updateFileSpecSchema = z.object({

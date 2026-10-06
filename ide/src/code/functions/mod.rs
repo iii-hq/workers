@@ -35,35 +35,57 @@ use crate::code::state::CodeCells;
 /// bounced with a raw serde "missing field `files`". Accept it as a
 /// one-entry batch; anything else gets the contract named back. The
 /// published schema stays the canonical batch shape (goldens pin it).
+/// `fields` names the entry's required keys for that message.
 pub(crate) fn files_batch_or_single<T: serde::de::DeserializeOwned>(
-    value: serde_json::Value,
+    mut value: serde_json::Value,
     function_id: &str,
+    fields: &str,
 ) -> Result<(Vec<T>, Option<crate::fs::FsScope>), String> {
-    #[derive(serde::Deserialize)]
-    struct Batch<T> {
-        files: Vec<T>,
-        #[serde(default)]
-        fs_scope: Option<crate::fs::FsScope>,
-    }
-    if value.get("files").is_some() {
-        let batch: Batch<T> = serde_json::from_value(value)
-            .map_err(|e| format!("{function_id}: invalid `files` entry: {e}"))?;
-        return Ok((batch.files, batch.fs_scope));
+    let fs_scope = match value.get("fs_scope") {
+        Some(v) => serde_json::from_value(v.clone())
+            .map_err(|e| format!("{function_id}: invalid `fs_scope`: {e}"))?,
+        None => None,
+    };
+    if let Some(files) = value.as_object_mut().and_then(|m| m.remove("files")) {
+        let entries = match files {
+            serde_json::Value::Array(entries) => entries,
+            other => {
+                return Err(format!(
+                    "{function_id}: `files` must be an array, got {}",
+                    json_type(&other)
+                ))
+            }
+        };
+        let files = entries
+            .into_iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                serde_json::from_value(entry)
+                    .map_err(|e| format!("{function_id}: invalid `files[{i}]`: {e}"))
+            })
+            .collect::<Result<_, _>>()?;
+        return Ok((files, fs_scope));
     }
     if value.get("path").is_some() {
-        let fs_scope = match value.get("fs_scope") {
-            Some(v) => serde_json::from_value(v.clone())
-                .map_err(|e| format!("{function_id}: invalid `fs_scope`: {e}"))?,
-            None => None,
-        };
         let spec: T = serde_json::from_value(value)
             .map_err(|e| format!("{function_id}: invalid file entry: {e}"))?;
         return Ok((vec![spec], fs_scope));
     }
     Err(format!(
-        "{function_id} takes {{ \"files\": [{{ \"path\", \"content\", ... }}] }}; a \
-         single file may also be passed flat as {{ \"path\", \"content\" }}."
+        "{function_id} takes {{ \"files\": [{{ {fields}, ... }}] }}; a single file \
+         may also be passed flat as {{ {fields} }}."
     ))
+}
+
+fn json_type(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
 }
 
 // ---------------------------------------------------------------------------

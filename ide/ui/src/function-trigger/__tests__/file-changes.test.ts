@@ -101,6 +101,44 @@ describe('summarizeFileChanges', () => {
     )
   })
 
+  it('keeps a file row whose op the card cannot read, with counts unknown', () => {
+    expect(
+      summarizeFileChanges(
+        'coder::update-file',
+        {
+          files: [
+            { path: 'a', ops: [{ op: 'insert', at_line: 1, content: 'x' }] },
+            { path: 'b', ops: [{ from_line: 1, to_line: 2, content: 'y' }] },
+          ],
+        },
+        {
+          results: [
+            { path: '/repo/a', success: true, change_id: 'change-a' },
+            { path: '/repo/b', success: true, change_id: 'change-b' },
+          ],
+        },
+      ),
+    ).toEqual({
+      action: 'updated',
+      rows: [
+        {
+          path: 'a',
+          absolutePath: '/repo/a',
+          changeId: 'change-a',
+          status: 'updated',
+          additions: 1,
+          deletions: 0,
+        },
+        {
+          path: 'b',
+          absolutePath: '/repo/b',
+          changeId: 'change-b',
+          status: 'updated',
+        },
+      ],
+    })
+  })
+
   it('reports failed and unchanged deletions from their result entries', () => {
     expect(
       summarizeFileChanges(

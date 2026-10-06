@@ -46,11 +46,13 @@ const updateOpSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('replace') }),
 ])
 
+// Ops are parsed one by one: an op this card cannot read (e.g. sent without
+// `op`, which the worker may infer) only hides the +/- counts, never the row.
 const updateRequestSchema = z.object({
   files: z.array(
     z.object({
       path: z.string(),
-      ops: z.array(updateOpSchema),
+      ops: z.array(z.unknown()),
     }),
   ),
 })
@@ -140,7 +142,13 @@ export function summarizeFileChanges(functionId: string, input: unknown, output?
         let additions = 0
         let deletions = 0
         let countsKnown = true
-        for (const op of file.ops) {
+        for (const raw of file.ops) {
+          const parsed = updateOpSchema.safeParse(raw)
+          if (!parsed.success) {
+            countsKnown = false
+            continue
+          }
+          const op = parsed.data
           if (op.op === 'insert') additions += countLines(op.content)
           else if (op.op === 'remove') {
             deletions += op.to_line - op.from_line + 1
