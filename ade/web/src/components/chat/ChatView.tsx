@@ -2109,6 +2109,11 @@ export function ChatView({
             case 'turn-status': {
               // `queued` renders in the queued-messages strip, not the waiting indicator.
               setTurnPhase(event.phase === 'queued' ? null : event.phase)
+              // The harness resolved a `lowest` request: show what it chose,
+              // and later turns send it like any picked effort.
+              if (event.reasoningEffort) {
+                handleThinkingLevelChange(event.reasoningEffort)
+              }
               break
             }
             case 'stop-reason': {
@@ -2220,6 +2225,7 @@ export function ChatView({
       conversation.workingDir,
       effectiveModel,
       thinkingLevel,
+      handleThinkingLevelChange,
       effectiveSystemPrompt,
       sessionId,
       contextWindow,

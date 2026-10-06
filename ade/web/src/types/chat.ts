@@ -50,6 +50,12 @@ export const THINKING_LEVELS: ThinkingLevel[] = [
 
 export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'default'
 
+/**
+ * A request, not a level: the harness resolves it to the model's lowest
+ * effort on the next send and the console then shows what it chose.
+ */
+export const THINKING_LOWEST: ThinkingLevel = 'lowest'
+
 export type Role = 'user' | 'assistant' | 'thought' | 'function-trigger'
 
 /**

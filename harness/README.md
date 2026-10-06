@@ -299,6 +299,15 @@ omitted field never silently resets the effort (which would also bust the
 provider's messages cache). Naming either field replaces the pair —
 `provider_options: {}` resets to the provider default.
 
+`options.reasoning: "lowest"` asks the harness to choose the effort instead:
+the first entry other than `none` in the model's `reasoning_efforts`, else
+`minimal` for a model that only reports `supports_thinking`, else no effort
+(the provider decides). It cannot be combined with `thinking_level` or
+`provider_options`, fails the send when the router has no catalog row for
+the model, and the send response reports the choice as `reasoning`
+(`thinking_level` and the native `reasoning_effort`). Later sends inherit it
+like any explicit effort.
+
 The prompt reaches `router::chat` in two forms: the flat `system_prompt`,
 and `system_sections` — the STABLE prefix (the frozen profile or identity
 prompt plus the frozen skills index, `cache_boundary: true`) followed by the
