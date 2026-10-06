@@ -96,6 +96,16 @@ async fn handle_impl(
             "`paths` must not be empty".into(),
         )));
     }
+    // The harness stamps fs_scope onto every call an agent makes in a
+    // session with a working directory, and an agent can neither forge nor
+    // drop it: the flag is the console's alone, after the user confirmed.
+    if req.include_protected && req.fs_scope.is_some() {
+        return Err(err_to_string(CoderError::BadInput(
+            "include_protected is only for a delete the user confirmed in the console; \
+             delete the folder without it and its protected files are left in place"
+                .into(),
+        )));
+    }
     let fs_scope = req.fs_scope.as_ref();
     let scope_anchor = crate::fs::scope_anchor(fs_scope);
     let mut entries = Vec::with_capacity(req.paths.len());
@@ -491,35 +501,6 @@ mod tests {
         assert!(tmp.path().join("a.txt").exists());
     }
 
-    // Same for the session-dir guard.
-    #[tokio::test]
-    async fn include_protected_still_refuses_session_dir() {
-        let (tmp, r) = setup();
-        let session = tmp.path().join("project");
-        std::fs::create_dir(&session).unwrap();
-        std::fs::write(session.join(".env"), "secret").unwrap();
-        std::fs::write(session.join("keep.txt"), "x").unwrap();
-        let out = handle(
-            r,
-            DeleteFileInput {
-                paths: vec![".".into()],
-                recursive: true,
-                include_protected: true,
-                fs_scope: Some(crate::fs::FsScope {
-                    root: session.to_string_lossy().into_owned(),
-                    grants: Vec::new(),
-                    boundary: crate::fs::FsBoundary::Workspace,
-                }),
-            },
-        )
-        .await
-        .unwrap();
-        assert!(!out.results[0].success);
-        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C210");
-        assert!(session.join(".env").exists());
-        assert!(session.join("keep.txt").exists());
-    }
-
     // The unguarded remove_dir_all must unlink a symlink inside the subtree,
     // not delete what it points at.
     #[cfg(unix)]
@@ -641,6 +622,34 @@ mod tests {
         assert_eq!(out.results[0].error.as_ref().unwrap().code, "C210");
         assert!(session.exists(), "session dir must survive the delete");
         assert!(session.join("keep.txt").exists());
+    }
+
+    // The harness stamps fs_scope onto an agent's calls (and the agent can
+    // neither forge nor drop it): an agent's delete never takes protected
+    // files with it, whatever it sends.
+    #[tokio::test]
+    async fn include_protected_is_refused_on_an_agent_scoped_call() {
+        let (tmp, r) = setup();
+        let session = tmp.path().join("project");
+        std::fs::create_dir_all(session.join("d")).unwrap();
+        std::fs::write(session.join("d/.env"), "secret").unwrap();
+        let err = handle(
+            r,
+            DeleteFileInput {
+                paths: vec!["d".into()],
+                recursive: true,
+                include_protected: true,
+                fs_scope: Some(crate::fs::FsScope {
+                    root: session.to_string_lossy().into_owned(),
+                    grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("include_protected"), "{err}");
+        assert!(session.join("d/.env").exists());
     }
 
     // The same protection must hold when the session dir is named by an

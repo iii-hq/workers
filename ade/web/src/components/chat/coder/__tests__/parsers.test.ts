@@ -343,6 +343,22 @@ describe('deleteFileRequestSchema', () => {
   })
 })
 
+describe('deleteFileRequestSchema include_protected', () => {
+  it('reads the console-only flag that deletes protected files too, absent by default', () => {
+    const r = safeParseRequest(deleteFileRequestSchema, {
+      paths: ['pkg'],
+      recursive: true,
+      include_protected: true,
+    })
+    expect(r?.include_protected).toBe(true)
+    const plain = safeParseRequest(deleteFileRequestSchema, {
+      paths: ['pkg'],
+      recursive: true,
+    })
+    expect(plain?.include_protected).toBeUndefined()
+  })
+})
+
 describe('deleteFileResponseSchema', () => {
   it('parses idempotent miss (already absent, not a deletion)', () => {
     const r = safeParseResponse(deleteFileResponseSchema, {

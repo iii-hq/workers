@@ -149,6 +149,12 @@ export function FileChangesCard({
         </div>
       </header>
 
+      {summary.protectedToo ? (
+        <p className="shui-file-changes-warning">
+          Protected files under these folders, like .env files and keys, are deleted too.
+        </p>
+      ) : null}
+
       <FileChangeList rows={primaryRows} onOpenDiff={onOpenDiff} />
 
       {overflowRows.length > 0 ? (

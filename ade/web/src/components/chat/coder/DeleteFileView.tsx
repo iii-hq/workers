@@ -59,6 +59,11 @@ export function DeleteFileView({
             true
           </Chip>
         ) : null}
+        {req.include_protected ? (
+          <Chip label="protected files" className="bg-alert-muted text-alert">
+            deleted too
+          </Chip>
+        ) : null}
         {running ? (
           <span className="font-mono text-[11px] text-ink-ghost animate-pulse">
             · removing…

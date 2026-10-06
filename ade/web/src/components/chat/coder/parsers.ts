@@ -256,6 +256,8 @@ export const deleteFileRequestSchema = z.object({
   paths: z.array(z.string()),
   /** Required for non-empty dirs; files and empty dirs ignore it. */
   recursive: z.boolean().optional(),
+  /** Also removes the protected files (.env, keys) under the folders. */
+  include_protected: z.boolean().optional(),
 })
 export type DeleteFileRequest = z.infer<typeof deleteFileRequestSchema>
 
