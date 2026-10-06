@@ -177,12 +177,81 @@ pub fn parse_live_models(json: &Value) -> Vec<Model> {
     json.get("data")
         .and_then(Value::as_array)
         .map(|rows| {
-            rows.iter()
-                .filter(|row| admit(row))
-                .filter_map(model_from_row)
-                .collect()
+            dedupe_snapshots(
+                rows.iter()
+                    .filter(|row| admit(row))
+                    .filter_map(model_from_row)
+                    .filter(|m| m.input_limit.is_none_or(|limit| limit >= MIN_PROMPT_TOKENS))
+                    .collect(),
+            )
         })
         .unwrap_or_default()
+}
+
+/// A model whose prompt limit is under this cannot hold a harness turn (the
+/// system prompt, tools and history): gpt-4o-mini and gpt-3.5-turbo list
+/// 12,288. A row that lists no limit is kept.
+const MIN_PROMPT_TOKENS: u64 = 32_000;
+
+/// The `2024-11-20`, `0613` or `preview` an upstream id ends with, when it
+/// names a snapshot of a model rather than the model itself.
+fn snapshot_suffix(id: &str) -> Option<&str> {
+    let dated = |tail: &str, shape: &str| {
+        tail.len() == shape.len()
+            && tail.bytes().zip(shape.bytes()).all(|(c, s)| {
+                if s == b'd' {
+                    c.is_ascii_digit()
+                } else {
+                    c == s
+                }
+            })
+    };
+    if id.ends_with("-preview") {
+        return Some("preview");
+    }
+    [("-dddd-dd-dd"), ("-dddd")].into_iter().find_map(|shape| {
+        let start = id.len().checked_sub(shape.len())?;
+        let tail = id.get(start..)?;
+        dated(tail, shape).then(|| &tail[1..])
+    })
+}
+
+/// Copilot lists a model beside its dated snapshots, all under one name, so
+/// a picker shows the same name several times. A snapshot whose name a
+/// plain id also carries is dropped (it stays callable by id); twins left
+/// over are told apart by their suffix: "GPT-4o (2024-11-20)".
+fn dedupe_snapshots(models: Vec<Model>) -> Vec<Model> {
+    use std::collections::{HashMap, HashSet};
+    let name = |m: &Model| {
+        m.display_name
+            .clone()
+            .unwrap_or_else(|| crate::catalog::upstream_id(&m.id).to_string())
+    };
+    let suffix = |m: &Model| snapshot_suffix(crate::catalog::upstream_id(&m.id)).map(String::from);
+    let plain: HashSet<String> = models
+        .iter()
+        .filter(|m| suffix(m).is_none())
+        .map(name)
+        .collect();
+    let kept: Vec<Model> = models
+        .into_iter()
+        .filter(|m| suffix(m).is_none() || !plain.contains(&name(m)))
+        .collect();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for m in &kept {
+        *counts.entry(name(m)).or_default() += 1;
+    }
+    kept.into_iter()
+        .map(|mut m| {
+            let n = name(&m);
+            if counts[&n] > 1 {
+                if let Some(sfx) = suffix(&m) {
+                    m.display_name = Some(format!("{n} ({sfx})"));
+                }
+            }
+            m
+        })
+        .collect()
 }
 
 enum FetchOutcome {
@@ -408,6 +477,71 @@ mod tests {
             .map(|m| m.id)
             .collect();
         assert_eq!(ids, ["copilot/gpt-5.2", "copilot/claude-sonnet-4.6"]);
+    }
+
+    fn named(id: &str, name: &str) -> Value {
+        let mut r = row(id, "chat", true);
+        r["name"] = json!(name);
+        r
+    }
+
+    #[test]
+    fn snapshots_of_a_listed_alias_are_hidden_and_other_twins_are_dated() {
+        let listing = json!({ "data": [
+            named("gpt-4o-mini-2024-07-18", "GPT-4o mini"),
+            named("gpt-4o-2024-11-20", "GPT-4o"),
+            named("gpt-4o-2024-08-06", "GPT-4o"),
+            named("gpt-4.1-2025-04-14", "GPT-4.1"),
+            named("gpt-3.5-turbo-0613", "GPT 3.5 Turbo"),
+            named("gpt-4-o-preview", "GPT-4o"),
+            named("gpt-4.1", "GPT-4.1"),
+            named("gpt-4o-mini", "GPT-4o mini"),
+            named("gpt-4o", "GPT-4o"),
+            // no plain id in this group: both stay, told apart by date
+            named("o9-2026-01-02", "o9"),
+            named("o9-2026-03-04", "o9"),
+        ]});
+        let rows: Vec<(String, Option<String>)> = parse_live_models(&listing)
+            .into_iter()
+            .map(|m| (m.id, m.display_name))
+            .collect();
+        let expect = |id: &str, name: &str| (id.to_string(), Some(name.to_string()));
+        assert_eq!(
+            rows,
+            [
+                expect("copilot/gpt-3.5-turbo-0613", "GPT 3.5 Turbo"),
+                expect("copilot/gpt-4.1", "GPT-4.1"),
+                expect("copilot/gpt-4o-mini", "GPT-4o mini"),
+                expect("copilot/gpt-4o", "GPT-4o"),
+                expect("copilot/o9-2026-01-02", "o9 (2026-01-02)"),
+                expect("copilot/o9-2026-03-04", "o9 (2026-03-04)"),
+            ]
+        );
+    }
+
+    #[test]
+    fn models_with_a_small_prompt_limit_are_dropped() {
+        let sized = |id: &str, prompt: u64| {
+            let mut r = row(id, "chat", true);
+            r["capabilities"]["limits"] = json!({ "max_prompt_tokens": prompt });
+            r
+        };
+        let listing = json!({ "data": [
+            sized("gpt-4o-mini", 12_288),
+            sized("gpt-3.5-turbo-0613", 12_288),
+            sized("gpt-4o", 64_000),
+            sized("gpt-4.1", 128_000),
+            // no limit listed: kept, nothing says it is small
+            row("gpt-5.2", "chat", true),
+        ]});
+        let ids: Vec<String> = parse_live_models(&listing)
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            ids,
+            ["copilot/gpt-4o", "copilot/gpt-4.1", "copilot/gpt-5.2"]
+        );
     }
 
     #[test]
