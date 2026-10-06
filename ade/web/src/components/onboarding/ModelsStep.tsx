@@ -104,15 +104,12 @@ export function ModelsStep({
   )
 
   // Recommended choices start selected; the user's own clicks win after.
-  const draftFor = (choice: ProviderChoice): Draft => {
-    const draft = drafts.get(choice.providerId)
-    if (draft) return draft
-    return {
+  const draftFor = (choice: ProviderChoice): Draft =>
+    resolveDraft(drafts.get(choice.providerId), {
       selected: choice.recommended && !choice.ready && usable(choice),
       key:
         choice.kind === 'key' ? defaultKeyInput(choice.detection) : undefined,
-    }
-  }
+    })
   const update = (choice: ProviderChoice, next: Partial<Draft>) =>
     setDrafts((current) =>
       new Map(current).set(choice.providerId, { ...draftFor(choice), ...next }),
@@ -157,7 +154,7 @@ export function ModelsStep({
     const ok = await run('models', plan)
     if (ok) {
       setConnected(true)
-      setDrafts(new Map())
+      setDrafts(draftsAfterConnect)
     }
   }
 
@@ -428,6 +425,25 @@ export function ModelsStep({
       {running !== 'models' ? <PlanPreview steps={plan} /> : null}
     </StepLayout>
   )
+}
+
+/**
+ * After Connect: every checkbox stays as the person left it — a recommended
+ * choice they unchecked must not come back checked — and typed keys are
+ * dropped, so a key is not kept in memory once stored.
+ */
+export function draftsAfterConnect(
+  drafts: ReadonlyMap<string, Draft>,
+): ReadonlyMap<string, Draft> {
+  return new Map(
+    [...drafts].map(([id, draft]) => [id, { selected: draft.selected }]),
+  )
+}
+
+/** The person's draft over the default; a dropped key falls back to it. */
+export function resolveDraft(draft: Draft | undefined, fallback: Draft): Draft {
+  if (!draft) return fallback
+  return { ...draft, key: draft.key ?? fallback.key }
 }
 
 /** Where the coding agent's CLI and its sign-in live — paths, never content. */
