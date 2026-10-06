@@ -86,15 +86,19 @@ describe('summarizeFileChanges', () => {
   })
 
   it('says up front when a delete takes the protected files under its folders too', () => {
-    const pending = summarizeFileChanges('coder::delete-file', { paths: ['pkg'], recursive: true, include_protected: true })
+    const pending = summarizeFileChanges('coder::delete-file', {
+      paths: ['pkg'],
+      recursive: true,
+      include_protected: true,
+    })
     expect(pending).toMatchObject({ action: 'deleted', protectedToo: true })
     expect(summarizeFileChanges('coder::delete-file', { paths: ['pkg'], recursive: true })).not.toHaveProperty(
       'protectedToo',
     )
     // Without recursive the worker ignores the flag: nothing protected goes.
-    expect(
-      summarizeFileChanges('coder::delete-file', { paths: ['pkg'], include_protected: true }),
-    ).not.toHaveProperty('protectedToo')
+    expect(summarizeFileChanges('coder::delete-file', { paths: ['pkg'], include_protected: true })).not.toHaveProperty(
+      'protectedToo',
+    )
   })
 
   it('reports failed and unchanged deletions from their result entries', () => {
