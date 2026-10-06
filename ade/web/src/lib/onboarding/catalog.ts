@@ -40,6 +40,32 @@ export const SUBSCRIPTION_PROVIDERS: readonly SubscriptionProvider[] = [
   },
 ]
 
+/**
+ * A provider that signs in with a device flow from the ADE: the worker hands
+ * out a code, the person enters it on `provider`'s page, the ADE polls.
+ */
+export interface DeviceProvider {
+  providerId: string
+  worker: string
+  title: string
+  plan: string
+  /** Returns `{ user_code, verification_uri, device_code }`. */
+  loginStart: string
+  /** Takes `{ device_code }`, returns `{ status }`. */
+  loginPoll: string
+}
+
+export const DEVICE_PROVIDERS: readonly DeviceProvider[] = [
+  {
+    providerId: 'github-copilot',
+    worker: 'provider-github-copilot',
+    title: 'GitHub Copilot',
+    plan: 'your GitHub Copilot plan',
+    loginStart: 'provider::github-copilot::login::start',
+    loginPoll: 'provider::github-copilot::login::poll',
+  },
+]
+
 /** An API-key provider. `envVar` matches what the worker declares to the router. */
 export interface KeyProvider {
   providerId: string

@@ -2,8 +2,12 @@ import { SquareTerminal } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Chip } from '@/components/ui/Chip'
 import { scanMachine } from '@/lib/onboarding/api'
-import { SUBSCRIPTION_PROVIDERS } from '@/lib/onboarding/catalog'
+import {
+  DEVICE_PROVIDERS,
+  SUBSCRIPTION_PROVIDERS,
+} from '@/lib/onboarding/catalog'
 import type { ToolScan } from '@/lib/onboarding/plan'
+import { DeviceSignIn } from './DeviceSignIn'
 
 /** One scan per page: the CLIs and their sign-in do not change under a form. */
 let scan: Promise<ToolScan[]> | null = null
@@ -18,10 +22,22 @@ function scanOnce(): Promise<ToolScan[]> {
 
 /**
  * Authentication for a provider that signs in on its own (no API key): a
- * subscription provider shows the local CLI sign-in it uses, the same fact
- * the setup wizard shows; any other one says where its login lives.
+ * device-flow provider (GitHub Copilot) signs in from here; a subscription
+ * provider shows the local CLI sign-in it uses, the same fact the setup
+ * wizard shows; any other one says where its login lives.
  */
 export function ProviderSignIn({ providerId }: { providerId: string }) {
+  const device = DEVICE_PROVIDERS.find(
+    (entry) => entry.providerId === providerId,
+  )
+  return device ? (
+    <DeviceSignIn provider={device} />
+  ) : (
+    <CliSignIn providerId={providerId} />
+  )
+}
+
+function CliSignIn({ providerId }: { providerId: string }) {
   const subscription = SUBSCRIPTION_PROVIDERS.find(
     (entry) => entry.providerId === providerId,
   )

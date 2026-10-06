@@ -18,6 +18,8 @@ import {
   sourceLabel,
 } from '@/lib/secrets'
 import {
+  DEVICE_PROVIDERS,
+  type DeviceProvider,
   JUDGE_HUB_WORKER,
   type JudgeOption,
   KEY_PROVIDERS,
@@ -100,6 +102,12 @@ export interface KeyChoice extends BaseChoice {
   credentialError?: string
 }
 
+/** Signs in with a device flow from the ADE (GitHub Copilot). */
+export interface DeviceChoice extends BaseChoice {
+  kind: 'device'
+  provider: DeviceProvider
+}
+
 /** A provider worker from the registry the wizard has no recipe for. */
 export interface RegistryChoice extends BaseChoice {
   kind: 'registry'
@@ -107,7 +115,11 @@ export interface RegistryChoice extends BaseChoice {
   version: string | null
 }
 
-export type ProviderChoice = SubscriptionChoice | KeyChoice | RegistryChoice
+export type ProviderChoice =
+  | SubscriptionChoice
+  | KeyChoice
+  | DeviceChoice
+  | RegistryChoice
 
 /** The registry row a `RegistryChoice` is built from. */
 export interface RegistryProviderRow {
@@ -224,12 +236,31 @@ export function providerChoices({
     }
   })
 
+  const devices: DeviceChoice[] = DEVICE_PROVIDERS.map((provider) => {
+    const state = byProvider.get(provider.providerId)
+    const ready = state !== undefined && servesUsableModels(state)
+    return {
+      kind: 'device',
+      provider,
+      providerId: provider.providerId,
+      worker: provider.worker,
+      title: provider.title,
+      ready,
+      installed: state?.available === true,
+      recommended: false,
+      reason: ready
+        ? `Connected — models from ${provider.plan}.`
+        : `Sign in with GitHub in your browser — uses ${provider.plan}, no API key.`,
+      modelCount: state?.modelCount ?? 0,
+    }
+  })
+
   const rank = (choice: ProviderChoice) =>
     choice.ready ? 0 : choice.recommended ? 1 : 2
   // Any other running provider that already serves usable models (Copilot,
   // llama.cpp): the wizard has no recipe for it but shows it as connected.
   const known = new Set(
-    [...subscriptions, ...keys].map((choice) => choice.providerId),
+    [...subscriptions, ...keys, ...devices].map((choice) => choice.providerId),
   )
   const others: RegistryChoice[] = providers
     .filter(
@@ -251,7 +282,7 @@ export function providerChoices({
     }))
 
   // Stable: catalog order inside each rank.
-  return [...subscriptions, ...keys, ...others]
+  return [...subscriptions, ...keys, ...devices, ...others]
     .map((choice, index) => ({ choice, index }))
     .sort((a, b) => rank(a.choice) - rank(b.choice) || a.index - b.index)
     .map(({ choice }) => choice)

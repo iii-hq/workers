@@ -133,6 +133,41 @@ describe('providerChoices', () => {
   })
 })
 
+describe('device sign-in choices', () => {
+  it('offers GitHub Copilot with a browser sign-in until it serves models', () => {
+    const fresh = byId(
+      providerChoices({ tools: [], providers: [], detections: [] }),
+      'github-copilot',
+    )
+    expect(fresh).toMatchObject({
+      kind: 'device',
+      worker: 'provider-github-copilot',
+      ready: false,
+      installed: false,
+    })
+    expect(fresh.reason).toMatch(/GitHub/)
+
+    const signedIn = byId(
+      providerChoices({
+        tools: [],
+        providers: [
+          {
+            id: 'github-copilot',
+            title: 'GitHub Copilot',
+            configured: false,
+            ownsAuthentication: true,
+            available: true,
+            modelCount: 10,
+          },
+        ],
+        detections: [],
+      }),
+      'github-copilot',
+    )
+    expect(signedIn).toMatchObject({ kind: 'device', ready: true })
+  })
+})
+
 describe('servesUsableModels', () => {
   it('needs models and either a credential or its own authentication', () => {
     const state = {
@@ -259,17 +294,16 @@ describe('connectPlan', () => {
     const [extra] = registryChoices(
       [
         {
-          name: 'provider-github-copilot',
-          description:
-            'GitHub Copilot subscription provider worker; sign in once.',
+          name: 'provider-sarvam',
+          description: 'Sarvam provider worker; needs SARVAM_API_KEY.',
           version: '0.1.11',
         },
       ],
       new Set(),
       choices,
     )
-    expect(extra.title).toBe('Github Copilot')
-    expect(extra.reason).toBe('GitHub Copilot subscription provider worker')
+    expect(extra.title).toBe('Sarvam')
+    expect(extra.reason).toBe('Sarvam provider worker')
     expect(
       connectPlan([{ choice: extra }], new Set()).map((s) => s.kind),
     ).toEqual(['add-workers'])

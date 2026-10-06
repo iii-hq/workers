@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import { DeviceSignIn } from '@/components/chat/DeviceSignIn'
 import { ProviderIcon } from '@/components/chat/ProviderIcon'
 import { Button } from '@/components/ui/Button'
 import { Checkbox } from '@/components/ui/Checkbox'
@@ -173,15 +174,20 @@ export function ModelsStep({
             !usable(choice) && 'opacity-60',
           )}
         >
-          <Checkbox
-            aria-label={`Connect ${choice.title}`}
-            checked={draft.selected}
-            disabled={disabled}
-            onChange={(event) =>
-              update(choice, { selected: event.currentTarget.checked })
-            }
-            className="mt-1.5"
-          />
+          {choice.kind === 'device' ? (
+            // Signs in on its own below, not through Connect.
+            <span className="mt-1.5 size-4 shrink-0" aria-hidden />
+          ) : (
+            <Checkbox
+              aria-label={`Connect ${choice.title}`}
+              checked={draft.selected}
+              disabled={disabled}
+              onChange={(event) =>
+                update(choice, { selected: event.currentTarget.checked })
+              }
+              className="mt-1.5"
+            />
+          )}
           <ProviderIcon
             label={choice.title}
             className="mt-1.5 size-4 text-ink-faint"
@@ -193,7 +199,7 @@ export function ModelsStep({
               </span>
               {tool?.installed && !tool.signed_in ? (
                 <StatusChip tone="warn">Not signed in</StatusChip>
-              ) : choice.kind === 'subscription' ? (
+              ) : choice.kind === 'subscription' || choice.kind === 'device' ? (
                 <StatusChip tone="neutral">No API key</StatusChip>
               ) : null}
             </span>
@@ -201,7 +207,7 @@ export function ModelsStep({
               {choice.reason}
             </span>
             {tool?.installed ? <ToolDetails tool={tool} /> : null}
-            {!choice.installed ? (
+            {!choice.installed && choice.kind !== 'device' ? (
               <span className="font-mono text-[11px] text-ink-ghost">
                 adds {choice.worker}
                 {version ? `@${version}` : ''}
@@ -209,6 +215,22 @@ export function ModelsStep({
             ) : null}
           </span>
         </div>
+        {choice.kind === 'device' ? (
+          <div className="px-3 pb-3 pl-10">
+            <DeviceSignIn
+              provider={choice.provider}
+              onConnected={() =>
+                void run('models', [
+                  {
+                    kind: 'wait-models',
+                    providerId: choice.providerId,
+                    title: choice.title,
+                  },
+                ])
+              }
+            />
+          </div>
+        ) : null}
         {draft.selected && choice.kind === 'key' ? (
           <KeyField
             envVar={choice.provider.envVar}
@@ -433,11 +455,12 @@ function usable(choice: ProviderChoice): boolean {
 }
 
 /**
- * A coding agent installed here but not signed in: one sign-in and a rescan
- * from usable, so it stays beside the recommendations, saying what to do,
- * instead of in the long tail.
+ * A coding agent installed here but not signed in, or a provider that signs
+ * in from here (GitHub Copilot): one sign-in from usable, so it stays beside
+ * the recommendations, saying what to do, instead of in the long tail.
  */
 function oneSignInAway(choice: ProviderChoice): boolean {
+  if (choice.kind === 'device') return true
   return (
     choice.kind === 'subscription' &&
     !choice.usable &&
