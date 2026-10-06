@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 )]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingLevel {
+    /// No reasoning at all; honoured only where the model advertises
+    /// `supports_thinking_off` (elsewhere the provider falls back to its own
+    /// lowest setting, or omits the parameter, and warns).
+    Off,
     Minimal,
     Low,
     Medium,
@@ -53,6 +57,10 @@ pub struct Model {
     pub supports_thinking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_xhigh: Option<bool>,
+    /// Whether `thinking_level: off` can switch the model's reasoning off
+    /// (`None`: the provider does not know).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_thinking_off: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_efforts: Option<Vec<ReasoningEffort>>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -100,15 +100,17 @@ async fn run_stream_call(
         }
     };
 
-    // Any requested level means "think"; absent means "off" (the enum has no
-    // Off variant). Mapped onto the `enable_thinking` chat-template kwarg in
+    // Any requested level but `off` means "think"; absent or `off` means
+    // "off". Mapped onto the `enable_thinking` chat-template kwarg in
     // build_body — llama.cpp's only per-request reasoning lever.
-    let enable_thinking = input.thinking_level.is_some();
+    let enable_thinking = input
+        .thinking_level
+        .is_some_and(|level| level != llm_router::types::model::ThinkingLevel::Off);
 
     // Best-effort: the kwarg only bites if the model's chat template gates its
     // reasoning channel on it; otherwise reasoning stays whatever the server's
     // --reasoning-format / template dictates, so warn rather than promise.
-    if enable_thinking {
+    if input.thinking_level.is_some() {
         warnings.push(
             "thinking_level applied best-effort via chat_template_kwargs.enable_thinking; \
              effective only if the model's chat template gates reasoning on that key \

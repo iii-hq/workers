@@ -155,6 +155,7 @@ mod tests {
             input_limit: None,
             supports_thinking: Some(true),
             supports_xhigh: Some(false),
+            supports_thinking_off: None,
             reasoning_efforts: None,
             supports_tools: Some(true),
             supports_vision: Some(true),
@@ -174,6 +175,7 @@ mod tests {
             max_output_tokens: 0,
             supports_thinking: None,
             supports_xhigh: None,
+            supports_thinking_off: None,
             supports_tools: None,
             supports_vision: None,
             speech: Some(crate::types::model::SpeechModel {

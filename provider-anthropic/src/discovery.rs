@@ -84,6 +84,11 @@ fn model_from_live(row: &Value) -> Option<Model> {
             adaptive.or(thinking)
         },
         supports_xhigh: cap_supported(row, &["effort", "xhigh"]),
+        supports_thinking_off: if thinking == Some(false) {
+            None
+        } else {
+            crate::thinking::supports_off(id)
+        },
         reasoning_efforts: None,
         supports_tools: Some(true), // uniform across the Messages API
         supports_vision: cap_supported(row, &["image_input"]),

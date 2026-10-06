@@ -71,7 +71,17 @@ pub fn make_stream(
 /// less reasoning than asked, not more. No advertised list → send the first
 /// candidate as-is (OpenRouter drops parameters a model does not support).
 pub fn resolve_reasoning_effort(level: ThinkingLevel, meta: Option<&Model>) -> Option<String> {
+    // `none` disables reasoning (use-cases/reasoning-tokens); only sent when
+    // the model advertises it, since `reasoning.mandatory` models reject it.
+    if level == ThinkingLevel::Off {
+        return meta
+            .filter(|m| m.supports_thinking_off != Some(false))
+            .and_then(|m| m.reasoning_efforts.as_ref())
+            .filter(|efforts| efforts.iter().any(|e| e.effort == "none"))
+            .map(|_| "none".to_string());
+    }
     let candidates: &[&str] = match level {
+        ThinkingLevel::Off => &[],
         ThinkingLevel::Minimal => &["minimal", "low"],
         ThinkingLevel::Low => &["low", "minimal"],
         ThinkingLevel::Medium => &["medium", "low"],
@@ -297,6 +307,7 @@ mod tests {
             input_limit: None,
             supports_thinking: Some(true),
             supports_xhigh: None,
+            supports_thinking_off: None,
             reasoning_efforts: Some(
                 efforts
                     .iter()
@@ -314,6 +325,29 @@ mod tests {
             pricing: None,
             speech: None,
         }
+    }
+
+    #[test]
+    fn off_sends_none_only_when_advertised() {
+        let meta = meta_with_efforts(&["none", "low", "high"]);
+        assert_eq!(
+            resolve_reasoning_effort(ThinkingLevel::Off, Some(&meta)),
+            Some("none".to_string())
+        );
+        let meta = meta_with_efforts(&["low", "high"]);
+        assert_eq!(
+            resolve_reasoning_effort(ThinkingLevel::Off, Some(&meta)),
+            None
+        );
+        assert_eq!(resolve_reasoning_effort(ThinkingLevel::Off, None), None);
+        // `reasoning.mandatory` models list `none` yet reject it; the catalog
+        // flag carries that, and it outranks the advertised list.
+        let mut meta = meta_with_efforts(&["none", "low", "high"]);
+        meta.supports_thinking_off = Some(false);
+        assert_eq!(
+            resolve_reasoning_effort(ThinkingLevel::Off, Some(&meta)),
+            None
+        );
     }
 
     #[test]

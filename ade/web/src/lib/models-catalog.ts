@@ -12,6 +12,7 @@ export interface CatalogModelRow {
   /** Absent when the router says nothing about it — see `ModelOption`. */
   supports_vision?: boolean
   reasoning_efforts?: ReasoningEffortOption[]
+  supports_thinking_off?: boolean
 }
 
 function parseReasoningEfforts(
@@ -59,6 +60,10 @@ export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
       typeof o.supports_thinking === 'boolean' ? o.supports_thinking : undefined
     const supports_vision =
       typeof o.supports_vision === 'boolean' ? o.supports_vision : undefined
+    const supports_thinking_off =
+      typeof o.supports_thinking_off === 'boolean'
+        ? o.supports_thinking_off
+        : undefined
     const reasoning_efforts = parseReasoningEfforts(o.reasoning_efforts)
     if (!id || !provider) continue
     out.push({
@@ -68,6 +73,7 @@ export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
       context_window,
       supports_thinking,
       supports_vision,
+      supports_thinking_off,
       reasoning_efforts,
     })
   }
@@ -89,6 +95,8 @@ export function catalogRowsToModelOptions(
     // to stay distinguishable from "no", or every model on an older catalog
     // would refuse images.
     supportsVision: m.supports_vision,
+    // Tri-state too: Off is offered, disabled, or hidden on true/unknown/false.
+    supportsThinkingOff: m.supports_thinking_off,
     reasoningEfforts: m.reasoning_efforts,
   }))
 }

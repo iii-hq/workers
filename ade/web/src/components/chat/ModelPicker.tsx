@@ -34,6 +34,7 @@ import {
   type ModelOption,
   type ReasoningEffortOption,
   THINKING_LEVELS,
+  THINKING_OFF,
   type ThinkingLevel,
 } from '@/types/chat'
 import { AddProviderPanel } from './AddProviderPanel'
@@ -149,25 +150,54 @@ function groupByProvider(options: ModelOption[]): ModelGroup[] {
     .map(([label, opts]) => ({ label, options: opts }))
 }
 
-function effortOptionsFor(
+/**
+ * The Off entry sits right after Default. `supportsThinkingOff` true offers
+ * it, `false` hides it (the model always reasons or the provider has no
+ * switch), unknown shows it disabled so the gap is visible, not silent.
+ */
+function offOptionFor(model: ModelOption): ReasoningEffortOption[] {
+  if (model.supportsThinkingOff === false) return []
+  return [
+    {
+      effort: THINKING_OFF,
+      description:
+        model.supportsThinkingOff === true
+          ? 'no reasoning'
+          : 'not confirmed for this model',
+      disabled: model.supportsThinkingOff !== true,
+    },
+  ]
+}
+
+export function effortOptionsFor(
   model: ModelOption | undefined,
 ): ReasoningEffortOption[] {
   if (!model) return []
   if (model.reasoningEfforts && model.reasoningEfforts.length > 0) {
     return [
       DEFAULT_EFFORT,
-      ...model.reasoningEfforts.filter((option) => option.effort !== 'default'),
+      ...offOptionFor(model),
+      ...model.reasoningEfforts.filter(
+        (option) =>
+          option.effort !== 'default' && option.effort !== THINKING_OFF,
+      ),
     ]
   }
   if (!model.supportsThinking) return []
-  return THINKING_LEVELS.map((effort) => ({ effort }))
+  return [
+    DEFAULT_EFFORT,
+    ...offOptionFor(model),
+    ...THINKING_LEVELS.filter((effort) => effort !== 'default').map(
+      (effort) => ({ effort }),
+    ),
+  ]
 }
 
 function effortSupported(
   options: ReasoningEffortOption[],
   effort: ThinkingLevel,
 ): boolean {
-  return options.some((option) => option.effort === effort)
+  return options.some((option) => option.effort === effort && !option.disabled)
 }
 
 function providerDisplayName(

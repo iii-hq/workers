@@ -113,6 +113,7 @@ fn to_chat_model(r: &Row) -> Model {
         input_limit: None,
         supports_thinking: Some(true),
         supports_xhigh: Some(false),
+        supports_thinking_off: Some(false), // low/medium/high only, no off
         reasoning_efforts: None,
         supports_tools: Some(true),
         supports_vision: Some(false),
@@ -137,6 +138,7 @@ fn to_speech_model(r: &SpeechRow) -> Model {
         input_limit: None,
         supports_thinking: None,
         supports_xhigh: None,
+        supports_thinking_off: None,
         reasoning_efforts: None,
         supports_tools: None,
         supports_vision: None,

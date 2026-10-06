@@ -16,13 +16,24 @@ export interface ModelOption {
    * "assume it can" rather than refusing to send a picture on missing metadata.
    */
   supportsVision?: boolean
+  /**
+   * Whether `off` can switch the model's reasoning off. `true` offers Off,
+   * `false` hides it (the model always reasons or the provider has no
+   * switch), `undefined` means the router did not say: Off shows disabled.
+   */
+  supportsThinkingOff?: boolean
   reasoningEfforts?: ReasoningEffortOption[]
 }
 
 export interface ReasoningEffortOption {
   effort: string
   description?: string
+  /** Shown but not selectable: the catalog could not confirm it works. */
+  disabled?: boolean
 }
+
+/** The level that asks the provider not to reason at all. */
+export const THINKING_OFF: ThinkingLevel = 'off'
 
 /** Model-selected reasoning effort. `default` omits every effort override. */
 export type ThinkingLevel = string

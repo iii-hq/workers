@@ -265,14 +265,25 @@
         ]
       },
       "ThinkingLevel": {
-        "enum": [
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No reasoning at all; honoured only where the model advertises `supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns).",
+            "enum": [
+              "off"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {
@@ -361,14 +372,25 @@
         "type": "object"
       },
       "ThinkingLevel": {
-        "enum": [
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No reasoning at all; honoured only where the model advertises `supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns).",
+            "enum": [
+              "off"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {

@@ -83,6 +83,7 @@ fn enrich(id: &str, model_context_length: Option<u64>, props: &Props) -> Model {
         input_limit: None,
         supports_thinking: None,
         supports_xhigh: None,
+        supports_thinking_off: None,
         reasoning_efforts: None,
         // Best-effort: requires the server run with --jinja and a
         // tool-capable chat template, which `/props` doesn't report;

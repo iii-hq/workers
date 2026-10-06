@@ -31,7 +31,11 @@ then starts on that provider's declared default model (`default_model` in
 reports none fails the send as before). A new session that names neither
 `thinking_level` nor `provider_options` also starts on the provider's
 `default_thinking_level`; an explicit level wins, and later sends into the
-session inherit the prior turn's as usual.
+session inherit the prior turn's as usual. `thinking_level` is `off`,
+`minimal`, `low`, `medium`, `high` or `xhigh`; `off` is honoured only on
+models whose catalog entry says `supports_thinking_off: true`; elsewhere the
+fallback is the provider's own (most send their lowest effort and warn, Kimi
+ignores the level).
 
 Prerequisites: `session-manager` (required — transcript store and change feed)
 and `llm-router` (required — generation and the model catalog) must be present.

@@ -139,7 +139,11 @@ export function ReasoningEffortSlider({
           <span
             key={option.effort}
             aria-hidden
-            className="reasoning-effort__dot"
+            className={cn(
+              'reasoning-effort__dot',
+              option.disabled && 'reasoning-effort__dot--disabled',
+            )}
+            title={option.disabled ? option.description : undefined}
             style={
               {
                 '--effort-stop': effortRatio(optionIndex, options.length),
@@ -158,7 +162,12 @@ export function ReasoningEffortSlider({
           title={current.description}
           disabled={disabled}
           onChange={(event) => {
-            const next = options[Number(event.target.value)]
+            let at = Number(event.target.value)
+            // A disabled stop (Off the catalog could not confirm) is skipped
+            // in the direction of travel, so the thumb never rests on it.
+            const step = at >= index ? 1 : -1
+            while (options[at]?.disabled) at += step
+            const next = options[at]
             if (next && next.effort !== value) onChange(next.effort)
           }}
           className="reasoning-effort__range"
