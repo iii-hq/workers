@@ -23,8 +23,12 @@ import {
   type ToolScan,
 } from '@/lib/onboarding/plan'
 
-/** Which part of setup an action belongs to; each step shows its own. */
-export type ActivityGroup = 'machine' | 'models' | 'judge'
+/**
+ * Which part of setup an action belongs to; each step shows its own. `keys`
+ * is the models step's key search (adding the secrets worker), kept apart
+ * from connecting so its log reads as what it is.
+ */
+export type ActivityGroup = 'keys' | 'models' | 'judge'
 
 export interface ActivityEntry {
   id: number
@@ -85,6 +89,22 @@ export function withWorkerPresence(
       ? { ...provider, available: false, modelCount: 0 }
       : provider
   })
+}
+
+/**
+ * Chat models the router serves right now from providers whose worker is
+ * connected — the wizard's own reading. Throws when the router or the
+ * engine cannot answer.
+ */
+export async function connectedModelCount(): Promise<number> {
+  const [providers, installed] = await Promise.all([
+    readProviderStates(),
+    installedWorkerNames(),
+  ])
+  return withWorkerPresence(providers, installed).reduce(
+    (sum, provider) => sum + provider.modelCount,
+    0,
+  )
 }
 
 /** Every env var the wizard can reuse: provider keys and the hosted judge's. */

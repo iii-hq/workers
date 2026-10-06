@@ -119,6 +119,7 @@ export const {
   TooltipContent,
   TooltipTrigger,
   WorkerConfigurationDialog,
+  WorkerConfigurationPanel,
   Wordmark,
 } = api.components
 export default api

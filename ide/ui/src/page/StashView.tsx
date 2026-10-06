@@ -25,6 +25,7 @@ import { type GitStash, gitStashFiles, gitStashList, type StashFile, stashFileSo
 import { basename, dirname } from './paths'
 import { TextDialog } from './TextDialog'
 import { useSpin } from './use-spin'
+import { VirtualList } from './VirtualList'
 
 interface StashViewProps {
   host: Host
@@ -51,6 +52,11 @@ export function StashView({
   const [list, setList] = useState<Load<GitStash[]>>({ kind: 'loading' })
   const [selected, setSelected] = useState<string | null>(null)
   const [files, setFiles] = useState<Load<StashFile[]> | null>(null)
+  // A reload retries details that failed to load: the sha they are keyed on
+  // comes back the same.
+  const [retry, setRetry] = useState(0)
+  const filesRef = useRef(files)
+  filesRef.current = files
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<{ text: string; failed: boolean } | null>(null)
   const [stashOpen, setStashOpen] = useState(false)
@@ -72,6 +78,7 @@ export function StashView({
         setRefreshing(false)
         setList({ kind: 'ready', value: stashes })
         setSelected((current) => (stashes.some((stash) => stash.sha === current) ? current : (stashes[0]?.sha ?? null)))
+        if (filesRef.current?.kind === 'error') setRetry((value) => value + 1)
       })
       .catch((err: unknown) => {
         if (seqRef.current !== seq) return
@@ -83,6 +90,9 @@ export function StashView({
   const stashes = list.kind === 'ready' ? list.value : []
   const current = stashes.find((stash) => stash.sha === selected) ?? null
 
+  // Keyed on the sha: a reload finds the same entry as a new object, and
+  // a sha's content never changes.
+  const currentSha = current?.sha ?? null
   useEffect(() => {
     if (root === null || current === null) {
       setFiles(null)
@@ -96,7 +106,7 @@ export function StashView({
     return () => {
       live = false
     }
-  }, [host, root, current])
+  }, [host, root, currentSha, retry])
 
   const perform = useCallback(
     async (label: string, action: () => Promise<string>) => {
@@ -364,10 +374,18 @@ export function FileList<T extends FileListItem>({
       </p>
     )
   if (files.value.length === 0) return <p className="shui-log-details-empty">No file changes under this folder.</p>
+  // Windowed: a commit or stash of thousands of files mounts only the rows in view.
   return (
-    <ul className="shui-log-files" aria-label="Files">
-      {files.value.map((file) => (
-        <li key={file.path}>
+    <VirtualList
+      rows={files.value}
+      rowHeight={28}
+      rowKey={(file) => file.path}
+      className="shui-log-files"
+      role="list"
+      aria-label="Files"
+      renderRow={(file) => (
+        // biome-ignore lint/a11y/useSemanticElements: a <li> cannot sit in VirtualList's row
+        <div role="listitem">
           <button
             type="button"
             className="shui-log-file"
@@ -383,8 +401,8 @@ export function FileList<T extends FileListItem>({
               {statusLetter(file.status)}
             </span>
           </button>
-        </li>
-      ))}
-    </ul>
+        </div>
+      )}
+    />
   )
 }

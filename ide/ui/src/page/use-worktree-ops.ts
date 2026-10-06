@@ -316,20 +316,24 @@ function files(count: number): string {
 }
 
 /** The repository `root` sits in, read while `active` (a closed switcher
-    reads nothing). `kind` tells a page's Worktrees view from its menu. */
+    reads nothing). `kind` tells a page's Worktrees view from its menu;
+    `dirty: false` leaves out the dirty marks (a `git status` per worktree). */
 export function useWorktreeOps(
   host: Host,
   root: string | null,
   page: WorktreesPage,
   active = true,
   kind: View['kind'] = 'view',
+  dirty = true,
 ): WorktreeOps {
   const self: View = { page, kind }
   const mine = (from: View | null) =>
     from !== null &&
     from.page === page &&
     (from.kind === kind || (kind === 'menu' && !mountedKinds.get(page)?.includes(from.kind)))
-  useEffect(() => mountKind(page, kind), [page, kind])
+  // Only a view on screen counts: the menu speaks for a hidden Git window
+  // as for a closed one.
+  useEffect(() => (active ? mountKind(page, kind) : undefined), [page, kind, active])
   // Kept with the root they were read for: after the root moves (to another
   // repository, say) the old list is not this view's to act on.
   const [listed, setListed] = useState<{ root: string; list: WorktreeList } | null>(null)
@@ -370,7 +374,7 @@ export function useWorktreeOps(
   useEffect(() => {
     if (!active || root === null) return
     const seq = ++seqRef.current
-    listWorktrees(host, root)
+    listWorktrees(host, root, dirty)
       .then((next) => {
         if (seqRef.current !== seq) return
         listedRef.current = next.worktrees[0]?.path ?? null
@@ -382,7 +386,7 @@ export function useWorktreeOps(
         setListed(null)
         setFailed({ root, message: errorMessage(err) })
       })
-  }, [host, root, active, reloadEpoch, epoch])
+  }, [host, root, active, dirty, reloadEpoch, epoch])
 
   const perform = (
     label: string,

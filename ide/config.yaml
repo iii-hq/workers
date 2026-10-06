@@ -144,3 +144,15 @@ code:
     - "**/dist/**"
     - "**/.venv/**"
     - "**/__pycache__/**"
+  # Worker templates behind coder::list-templates / coder::scaffold-worker.
+  # dir: a local templates checkout (repo root or its iii/ dir), read on
+  # every call; III_TEMPLATE_DIR overrides it. With dir unset, a shallow
+  # clone of url@ref is cached under cache_dir (relative paths resolve
+  # against III_COMPOSE_DIR) and fetched again after refresh_secs;
+  # III_TEMPLATE_URL overrides url.
+  templates:
+    dir: null
+    url: https://github.com/iii-hq/templates.git
+    ref: main
+    cache_dir: data/shell/templates
+    refresh_secs: 600

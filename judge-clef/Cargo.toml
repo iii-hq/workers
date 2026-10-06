@@ -1,0 +1,45 @@
+[workspace]
+
+[package]
+name = "judge-clef"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "clef provider for the judge hub: Cloudflare's Clef-Flash decision model run in-process (llama.cpp's clef arch: the Qwen3.5 backbone and the joint schema head in one graph)."
+
+[features]
+default = ["console-ui"]
+console-ui = ["dep:iii-console-ui"]
+
+[dependencies]
+judge-contract = { path = "../crates/judge-contract" }
+iii-sdk = "=0.23.0"
+iii-config-client = { path = "../crates/config-client" }
+iii-console-ui = { path = "../crates/console-ui", optional = true }
+clap = { version = "4", features = ["derive", "env"] }
+schemars = "0.8"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+iii-llama-runtime = { path = "../crates/llama-runtime" }
+iii-llama-native = { path = "../crates/llama-native" }
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+ryu = "1"
+anyhow = "1"
+hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+tracing = "0.1"
+
+[dev-dependencies]
+futures-util = "0.3"
+tempfile = "3"
+tokio-tungstenite = "0.28"
+
+# The model runs in llama.cpp (cmake's Release flags win); Rust only
+# tokenizes, 1.5x slower at "z" (0.46 s against 0.30 s for a 2 MiB state).
+[profile.release]
+opt-level = "z"
+strip = true
+lto = "fat"
+codegen-units = 1

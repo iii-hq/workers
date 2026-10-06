@@ -107,8 +107,9 @@ fn prompts_match_decider() {
 /// Token ids and answers from a real GGUF against decider's tokenizer and bf16
 /// weights. `DECIDER_GGUF=/path/model.gguf`; `DECIDER_TOLERANCE` bounds
 /// |Δp| and |Δconfidence| (default 0.01). Measured on the CPU: an f16
-/// conversion 0.0025, Q8_0 0.0074, the shipped Q4_K_M 0.12 (the near-flat
-/// 12-option question).
+/// conversion 0.0025, Q8_0 0.0074, the shipped Q4_K_M 0.14 (the near-flat
+/// 12-option question, 0.12 with the GPU visible). On llama.cpp b11379 the
+/// shipped Q4_K_M fails that question's choice: `area0` 0.17 over `auth` 0.16.
 #[tokio::test]
 #[ignore]
 async fn gguf_matches_the_reference() {

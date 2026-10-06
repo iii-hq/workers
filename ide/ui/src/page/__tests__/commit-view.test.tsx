@@ -9,6 +9,7 @@ vi.mock('@iii-dev/console-ui', () => {
   const Pass = ({ children }: { children?: ReactNode }) => <>{children}</>
   return {
     Button: Pass,
+    Checkbox: () => <input type="checkbox" />,
     DropdownMenu: Pass,
     DropdownMenuCheckboxItem: Pass,
     DropdownMenuContent: Pass,
@@ -25,12 +26,12 @@ vi.mock('../CommitBox', () => ({ CommitBox: () => <textarea aria-label="Commit m
 vi.mock('../RollbackDialog', () => ({ RollbackDialog: () => null }))
 vi.mock('../TextDialog', () => ({ TextDialog: () => null }))
 
-function render(phase: SourceControlPhase) {
+function render(phase: SourceControlPhase, unversioned: { path: string; status: 'untracked' }[] = []) {
   const scm = {
     phase,
     branch: 'main',
     changes: [],
-    unversioned: [],
+    unversioned,
     included: [],
     isIncluded: () => true,
     error: 'boom',
@@ -57,5 +58,17 @@ describe('the Commit tab', () => {
     expect(render('not-a-repo')).toMatch(
       /^<div class="shui-side-empty">.*<\/div><div class="shui-commit" hidden="">.*<textarea/,
     )
+  })
+
+  it('mounts only the rows in view, however many files changed', () => {
+    const unversioned = Array.from({ length: 3242 }, (_, index) => ({
+      // At the root: the tree view folds unversioned folders.
+      path: `file-${index}.ts`,
+      status: 'untracked' as const,
+    }))
+    const html = render('ready', unversioned)
+    expect(html).toContain('3242 files')
+    // Before measuring its viewport the window holds 1 row plus the overscan.
+    expect(html.match(/class="shui-ctree-row"/g)?.length).toBeLessThanOrEqual(10)
   })
 })

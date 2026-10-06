@@ -255,6 +255,10 @@ struct ComposeScope {
     file: Option<String>,
 }
 
+/// Scaffolds a worker; with `start: true` it also runs compose::add, in the
+/// stack the ide runs in.
+pub(crate) const SCAFFOLD_WORKER: &str = "coder::scaffold-worker";
+
 impl ComposeScope {
     fn from_env() -> Self {
         Self {

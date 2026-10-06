@@ -1,0 +1,157 @@
+{
+  "description": "Create a new iii worker from a coder::list-templates template and start it: write its files into directory (default workers/<name>; its last folder must be <name>, C232 otherwise) with the template's name token replaced, all or nothing (a directory that exists and is not empty fails C233), then add it to the stack in the same call (compose::add with the worker, its start_after and the requires the stack lacks) and return operation_id and started, or start_error with the files kept. A container already named <name> fails C235 before any write. To be woken when it is up, register a trigger on an operation_id you pick and pass it here. start: false writes the files only; send the returned compose_add whole to compose::add, adding start_after to its workers entry and one entry per missing requires (never move its fields to the top level, where scripts are ignored, or use the bare worker string form, which drops them). Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
+  "function_id": "coder::scaffold-worker",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "examples": [
+      {
+        "directory": "workers/orders",
+        "name": "orders",
+        "template": "worker-node-ade"
+      }
+    ],
+    "properties": {
+      "directory": {
+        "default": null,
+        "description": "Folder to create the worker in: missing or empty, and its last folder must be `name` (compose names the container after it). Defaults to the template's worker folder for this name (`workers/<name>`).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "name": {
+        "description": "The new worker's name: lowercase kebab-case, 1-63 chars. It replaces the template's name token, so it names the folder, the compose container and the function prefix (`<name>::hello`).",
+        "type": "string"
+      },
+      "operation_id": {
+        "default": null,
+        "description": "With start: the compose::add operation id. Pick one and register a trigger on it before this call to be woken when it ends; compose picks one when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "start": {
+        "default": true,
+        "description": "Add the worker to the stack in this call (default true): compose::add with the worker and each requires that compose::status does not list, then return its operation_id. A container with this name already in the stack fails C235 before any file is written. false writes the files only.",
+        "type": "boolean"
+      },
+      "start_after": {
+        "default": [],
+        "description": "With start: containers the worker starts after (its compose entry's start_after), e.g. the console's.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "template": {
+        "description": "Template id from coder::list-templates.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "template"
+    ],
+    "title": "ScaffoldWorkerInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ScaffoldedFile": {
+        "properties": {
+          "bytes": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Canonical absolute path.",
+            "type": "string"
+          },
+          "revision": {
+            "description": "Revision of the bytes written, as coder::read-file reports it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bytes",
+          "path",
+          "revision"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "compose": {
+        "description": "Container object to pass whole in `compose::add { workers: [compose] }` (the bare `worker` string form drops its scripts): `worker` is the absolute folder path; `start_after` is left to the caller."
+      },
+      "compose_add": {
+        "description": "The compose::add payload: send it whole (do not move its entry's fields to the top level, where scripts are ignored), adding start_after to its workers entry and, for each requires that compose::status does not list, one more entry in workers."
+      },
+      "directory": {
+        "description": "Canonical absolute path of the new worker folder.",
+        "type": "string"
+      },
+      "files": {
+        "items": {
+          "$ref": "#/definitions/ScaffoldedFile"
+        },
+        "type": "array"
+      },
+      "name": {
+        "type": "string"
+      },
+      "next_steps": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "operation_id": {
+        "description": "With start: compose::add's operation (follow it with compose::operation, or a trigger registered on its id).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "requires": {
+        "description": "Compose containers the worker needs (e.g. `http`); add the ones `compose::status` does not list in the same `compose::add`.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "start_error": {
+        "description": "With start: why compose::add failed. The files are written; send compose_add to compose::add to add the worker.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "started": {
+        "description": "With start: the containers compose::add was asked to add, the worker first.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "template": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "compose",
+      "compose_add",
+      "directory",
+      "files",
+      "name",
+      "next_steps",
+      "requires",
+      "template"
+    ],
+    "title": "ScaffoldWorkerOutput",
+    "type": "object"
+  }
+}

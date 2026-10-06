@@ -906,8 +906,8 @@ describe('entrySegments', () => {
       custom: {
         custom_type: 'model_notice',
         data: {
-          text: 'Functions changed: fs::read added.',
-          kind: 'registry-changed',
+          text: 'fs::read no longer matches its preloaded contract.',
+          kind: 'preloaded-stale',
         },
       },
     })
@@ -918,8 +918,8 @@ describe('entrySegments', () => {
         custom_type: 'model_notice',
         content: [],
         details: {
-          text: 'Functions changed: fs::read added.',
-          kind: 'registry-changed',
+          text: 'fs::read no longer matches its preloaded contract.',
+          kind: 'preloaded-stale',
         },
         timestamp: 7,
       },
@@ -930,8 +930,10 @@ describe('entrySegments', () => {
         role: 'system',
         kind: 'notice',
         tone: 'info',
-        content: 'Note to the model — registry changed',
-        technicalDetails: { detail: 'Functions changed: fs::read added.' },
+        content: 'Note to the model — preloaded stale',
+        technicalDetails: {
+          detail: 'fs::read no longer matches its preloaded contract.',
+        },
       })
     }
     expect(readBack[0]?.createdAt).toBe(7)
@@ -944,6 +946,21 @@ describe('entrySegments', () => {
       entrySegments({
         entry_id: 'e-empty',
         custom: { custom_type: 'model_notice', data: {} },
+      }),
+    ).toEqual([])
+  })
+
+  it('hides the registry-changed model_notice from the chat', () => {
+    expect(
+      entrySegments({
+        entry_id: 'e_t1_notice_0',
+        custom: {
+          custom_type: 'model_notice',
+          data: {
+            text: 'NOTE: the function registry changed.',
+            kind: 'registry-changed',
+          },
+        },
       }),
     ).toEqual([])
   })

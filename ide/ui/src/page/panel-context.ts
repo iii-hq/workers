@@ -11,6 +11,8 @@ export type ShellPanelContext =
   | { type: 'file'; path: string; line?: number; endLine?: number; column?: number }
   /** Open a terminal on the directory an agent worked in, ready for its CLI. */
   | { type: 'agent-terminal'; cwd: string; command: string }
+  /** Open the New worker dialog (the palette's "New worker…"). */
+  | { type: 'new-worker' }
 
 function asRecord(value: JsonValue): Record<string, JsonValue> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null
@@ -34,6 +36,7 @@ export function parseShellPanelContext(value: JsonValue): ShellPanelContext | nu
       command: typeof record.command === 'string' ? record.command : '',
     }
   }
+  if (record.type === 'new-worker') return { type: 'new-worker' }
   if (typeof record.path !== 'string' || record.path === '') {
     return null
   }

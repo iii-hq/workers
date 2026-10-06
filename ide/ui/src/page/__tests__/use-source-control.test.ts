@@ -116,4 +116,34 @@ describe('the commit panel', () => {
     expect(refresh).toHaveBeenCalledWith({ quiet: true })
     panel.unmount()
   })
+
+  it('keeps every identity when a refresh moved nothing, and forgets ticks of paths gone', async () => {
+    const { repo, host } = repository('## main\0 M a.ts\0?? b.ts\0', 'M\0a.ts\0')
+    const first = await gitChanges(host, '/repo')
+    // The page hands in stable callbacks.
+    const onChanged = () => {}
+    const refresh = async () => null
+    const panel = mount(
+      ({ git, epoch }: { git: GitState | null; epoch: number }) =>
+        useSourceControl(host, '/repo', epoch, true, onChanged, { git, refresh }),
+      { git: first, epoch: 0 },
+    )
+    await settle()
+    panel.result.setIncluded(panel.result.unversioned, true)
+    const ticked = panel.result
+    expect(ticked.included.map((entry) => entry.path)).toEqual(['a.ts', 'b.ts'])
+
+    // Thousands of rows hang off this object: an unchanged derive must not
+    // hand them a new one.
+    panel.rerender({ git: first, epoch: 1 })
+    await settle()
+    expect(panel.result).toBe(ticked)
+
+    repo.status = '## main\0 M a.ts\0'
+    panel.rerender({ git: await gitChanges(host, '/repo', first), epoch: 2 })
+    await settle()
+    expect(panel.result.unversioned).toEqual([])
+    expect(panel.result.included.map((entry) => entry.path)).toEqual(['a.ts'])
+    panel.unmount()
+  })
 })

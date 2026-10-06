@@ -22,11 +22,11 @@ const routingFlags = [
   { field: 'auto_task_detection', label: 'Detect typed-decisions workflows', description: 'Evaluations whose question ids form one of laya’s four workflows go to laya-typed-decisions. Needs that checkpoint preloaded.' },
 ]
 const limitFields = [
-  { field: 'batch_questions', label: 'Questions per batch', fallback: 16, description: 'Questions scored in one forward pass; cancellation and deadlines are checked between batches. Clear to use 16.' },
+  { field: 'batch_questions', label: 'Questions per batch', fallback: 16, description: 'Questions scored in one forward pass (at most 8 for the 1024-token checkpoints); cancellation and deadlines are checked between batches. Clear to use 16.' },
   { field: 'max_request_bytes', label: 'Maximum request bytes', fallback: 8388608, description: 'Maximum encoded request size. Clear to use 8388608 (8 MiB).' },
   { field: 'max_timeout_ms', label: 'Maximum timeout (ms)', fallback: 300000, description: 'Maximum caller timeout. Clear to use 300000 (5 minutes).' },
 ]
-const knownFields = ['model', 'revision', 'threads', 'gpu_layers', 'preload', 'shortlist_k', ...routingFlags.map(({ field }) => field), ...limitFields.map(({ field }) => field)]
+const knownFields = ['model', 'revision', 'threads', 'gpu_layers', 'preload', ...routingFlags.map(({ field }) => field), ...limitFields.map(({ field }) => field)]
 
 interface ModelCard {
   name: string
@@ -199,7 +199,7 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
             id="laya-cfg-gpu_layers"
             field="gpu_layers"
             label="GPU layers"
-            description="Encoder layers offloaded to the GPU in Vulkan or Metal builds, applied at the next start. Clear to offload every layer when a GPU is present; 0 keeps the encoder on the CPU."
+            description="Layers offloaded to the GPU in Vulkan or Metal builds, applied at the next start. Clear to offload every layer when a GPU is present; 0 keeps the model on the CPU."
             error={props.errors?.get('/gpu_layers')}
             renderControl={(controlProps) => (
               <Input
@@ -218,7 +218,7 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
       </SettingsSection>
       <SettingsSection
         title="Routing"
-        description="Extra checkpoints cost about 1.7 GB of RAM each and load at the next worker start; routing flags and the shortlist hot-reload for new calls."
+        description="Extra checkpoints cost about 1 GB of RAM each and load at the next worker start; routing flags hot-reload for new calls."
       >
         <SettingsList>
           <SettingsField
@@ -259,25 +259,6 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
               )}
             />
           ))}
-          <SettingsField
-            id="laya-cfg-shortlist_k"
-            field="shortlist_k"
-            label="Choice shortlist (k)"
-            description="Choice questions with more options than k keep only the k options closest to the state by encoder embedding; the rest answer 0. Clear to disable."
-            error={props.errors?.get('/shortlist_k')}
-            renderControl={(controlProps) => (
-              <Input
-                {...controlProps}
-                type="number"
-                min={1}
-                step={1}
-                aria-label="Choice shortlist (k)"
-                placeholder="off"
-                value={typeof value.shortlist_k === 'number' ? String(value.shortlist_k) : ''}
-                onChange={(next) => setNumber('shortlist_k', next)}
-              />
-            )}
-          />
         </SettingsList>
       </SettingsSection>
       <SettingsSection

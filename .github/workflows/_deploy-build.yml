@@ -242,15 +242,15 @@ jobs:
             echo "ORT_PREFER_DYNAMIC_LINK=0"
           } >> "$GITHUB_ENV"
 
-      # judge-semif, judge-decider and judge-laya compile llama.cpp with cmake and generate its bindings with
-      # bindgen (libclang). Linux x86_64 also builds the runtime-loaded Vulkan
-      # backend module (headers + glslc); macOS links Metal (Xcode ships libclang).
-      - name: Provision llama.cpp build tools (llama-runtime workers, Linux)
-        if: inputs.kind == 'rust-binary' && (inputs.worker == 'judge-semif' || inputs.worker == 'judge-decider' || inputs.worker == 'judge-laya') && runner.os == 'Linux'
-        # A symlink a cache restore left dangling in target/ fails
-        # llama-cpp-sys-2's hard-link step: drop them first.
+      # judge-semif, judge-decider, judge-laya and judge-clef compile llama.cpp
+      # through crates/llama-native (curl, tar, patch, cmake; no libclang).
+      # Linux x86_64 also builds the runtime-loaded Vulkan backend module
+      # (headers + glslc); macOS links Metal. Drop symlinks a cache restore left
+      # dangling in target/.
+      - name: Provision llama.cpp build tools (llama.cpp workers, Linux)
+        if: inputs.kind == 'rust-binary' && (inputs.worker == 'judge-semif' || inputs.worker == 'judge-decider' || inputs.worker == 'judge-laya' || inputs.worker == 'judge-clef') && runner.os == 'Linux'
         run: |
-          sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+          sudo apt-get install -y cmake libvulkan-dev glslc spirv-headers
           find . -path '*/target/*' -xtype l -print -delete 2>/dev/null || true
 
       - name: Build immutable artifact

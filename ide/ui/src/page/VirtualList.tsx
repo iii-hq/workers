@@ -103,9 +103,17 @@ function VirtualListView<T>({
   )
   const visible: ReactNode[] = []
   const kept = keepIndex !== null && keepIndex >= 0 && keepIndex < rows.length ? keepIndex : null
-  if (kept !== null && kept < first) visible.push(row(kept))
+  // A kept row outside the window comes with its neighbours, so Tab and
+  // Shift+Tab from it land on the next row rather than leave the list.
+  const near =
+    kept === null
+      ? []
+      : [kept - 1, kept, kept + 1].filter(
+          (index) => index >= 0 && index < rows.length && (index < first || index >= last),
+        )
+  for (const index of near) if (index < first) visible.push(row(index))
   for (let index = first; index < last; index++) visible.push(row(index))
-  if (kept !== null && kept >= last) visible.push(row(kept))
+  for (const index of near) if (index >= last) visible.push(row(index))
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the scroller carries the caller's role and keyboard handling

@@ -18,6 +18,7 @@ const git = vi.hoisted(() => ({
   notRepo: false,
   hold: false,
   pages: [] as Array<string | undefined>,
+  branchReads: 0,
 }))
 vi.mock('../git-log-window', async (original) => ({
   ...(await original<typeof import('../git-log-window')>()),
@@ -33,7 +34,13 @@ vi.mock('../git-log-window', async (original) => ({
     return { commits: [], done: true }
   },
   readCommitDetails: async (_host: Host, _root: string, _prefix: string, sha: string) => commit(sha),
-  readContainingBranches: async () => ({ names: ['main'], total: 1, partial: false }),
+  readContainingBranches: async () => {
+    git.branchReads += 1
+    return { names: ['main'], total: 1, partial: false }
+  },
+  // gpg wedged (a stale keyboxd lock) for one commit: its check never ends.
+  readSignature: async (_host: Host, _root: string, sha: string) =>
+    sha === 'wedged' ? new Promise<never>(() => {}) : 'G',
 }))
 
 const host = {} as Host
@@ -56,7 +63,6 @@ const commit = (sha: string): CommitDetails => ({
   committerEmail: 'a@x',
   committerDate: 0,
   message: 'm',
-  signature: 'N',
   files: [],
   truncated: false,
 })
@@ -185,5 +191,41 @@ describe('useCommitDetails', () => {
     expect(second.result).toMatchObject({ details: { sha: 'x' }, loading: false, branches: { names: ['main'] } })
     first.unmount()
     second.unmount()
+  })
+
+  it('shows the details without waiting for the signature check, which comes after', async () => {
+    vi.useFakeTimers()
+    const pane = mount((sha: string) => useCommitDetails(host, '/signed', snapshot('s'), sha), 'wedged')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(pane.result).toMatchObject({ details: { sha: 'wedged' }, loading: false, signature: null })
+    pane.rerender('signed')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(pane.result).toMatchObject({ details: { sha: 'signed' }, signature: 'G' })
+    pane.unmount()
+  })
+
+  it('reads the branches again only when the refs moved, and nothing before the refs are read', async () => {
+    vi.useFakeTimers()
+    const pane = mount(
+      ({ refs, sha }: { refs: RefsSnapshot | null; sha: string }) => useCommitDetails(host, '/branches', refs, sha),
+      { refs: null, sha: 'b1' },
+    )
+    // A Git window hidden across a root switch has no refs: it reads nothing.
+    await vi.advanceTimersByTimeAsync(300)
+    const before = git.branchReads
+    expect(pane.result).toMatchObject({ details: null, branches: null, signature: null })
+    pane.rerender({ refs: snapshot('listing'), sha: 'b1' })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(git.branchReads).toBe(before + 1)
+    // Refresh reads an equal listing into a new snapshot: the same branches.
+    pane.rerender({ refs: snapshot('listing'), sha: 'b1' })
+    expect(pane.result.branches).toMatchObject({ names: ['main'] })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(git.branchReads).toBe(before + 1)
+    // The refs moved: read again.
+    pane.rerender({ refs: snapshot('moved'), sha: 'b1' })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(git.branchReads).toBe(before + 2)
+    pane.unmount()
   })
 })

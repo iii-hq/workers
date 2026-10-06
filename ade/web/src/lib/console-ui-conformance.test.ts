@@ -141,6 +141,7 @@ import { components } from '@/lib/console-api'
 import { Markdown } from '@/lib/markdown'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
 import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConfigurationDialog'
+import { WorkerConfigurationPanel } from '@/pages/Workers/components/WorkerConfigurationPanel'
 
 /**
  * The type-level check: assigning each real component to the package's
@@ -257,6 +258,7 @@ const conformance: {
   TooltipContent: typeof ConsoleUi.TooltipContent
   TooltipTrigger: typeof ConsoleUi.TooltipTrigger
   WorkerConfigurationDialog: typeof ConsoleUi.WorkerConfigurationDialog
+  WorkerConfigurationPanel: typeof ConsoleUi.WorkerConfigurationPanel
   DirectoryPicker: typeof ConsoleUi.DirectoryPicker
   Wordmark: typeof ConsoleUi.Wordmark
 } = {
@@ -369,6 +371,7 @@ const conformance: {
   TooltipContent,
   TooltipTrigger,
   WorkerConfigurationDialog,
+  WorkerConfigurationPanel,
   DirectoryPicker,
   Wordmark,
 }

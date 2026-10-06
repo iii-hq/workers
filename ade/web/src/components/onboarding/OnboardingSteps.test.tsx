@@ -1,9 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { ToolScan } from '@/lib/onboarding/plan'
-import { MachineStep } from './MachineStep'
 import { ModelsStep } from './ModelsStep'
-import { ReadyStep } from './ReadyStep'
+import { ReadyStep, type TourState } from './ReadyStep'
 import {
   type ActivityEntry,
   type MachineSnapshot,
@@ -66,57 +65,8 @@ function controller(
 
 const noop = () => undefined
 
-describe('MachineStep', () => {
-  it('reports each coding agent with where its sign-in lives, never what is in it', () => {
-    const html = renderToStaticMarkup(
-      <MachineStep onboarding={controller({})} onBack={noop} onNext={noop} />,
-    )
-    expect(html).toContain('Signed in')
-    expect(html).toContain('~/.claude/.credentials.json')
-    expect(html).toContain('Not signed in')
-    expect(html).toContain('not a ChatGPT account')
-  })
-
-  it('explains the secrets worker before offering to add it', () => {
-    const html = renderToStaticMarkup(
-      <MachineStep onboarding={controller({})} onBack={noop} onNext={noop} />,
-    )
-    expect(html).toContain('Add secrets worker and check for keys')
-    expect(html).toContain('Values never reach the browser')
-  })
-
-  it('lists found keys by name, source and masked hint once the secrets worker runs', () => {
-    const html = renderToStaticMarkup(
-      <MachineStep
-        onboarding={controller({
-          installed: new Set(['secrets']),
-          detections: [
-            {
-              name: 'ANTHROPIC_API_KEY',
-              stored: false,
-              sources: [
-                {
-                  kind: 'login_shell',
-                  location: 'login shell (zsh)',
-                  hint: 'sk-ant…9f2c',
-                  matches_stored: false,
-                },
-              ],
-            },
-          ],
-        })}
-        onBack={noop}
-        onNext={noop}
-      />,
-    )
-    expect(html).toContain('ANTHROPIC_API_KEY')
-    expect(html).toContain('Found in your shell profile')
-    expect(html).toContain('sk-ant…9f2c')
-  })
-})
-
 describe('ModelsStep', () => {
-  it('recommends the signed-in agent and shows the plan before anything runs', () => {
+  it('reports each coding agent with where its sign-in lives, never what is in it', () => {
     const html = renderToStaticMarkup(
       <ModelsStep
         onboarding={controller({ installed: new Set(['llm-router']) })}
@@ -125,10 +75,63 @@ describe('ModelsStep', () => {
       />,
     )
     expect(html).toContain('Recommended for this machine')
+    expect(html).toContain('Sign-in at')
+    expect(html).toContain('~/.claude/.credentials.json')
+    // Installed but not signed in: beside the recommendations, saying why.
+    expect(html).toContain('Not signed in')
+    expect(html).toContain('not a ChatGPT account')
+  })
+
+  it('recommends the signed-in agent and shows the plan before anything runs', () => {
+    const html = renderToStaticMarkup(
+      <ModelsStep
+        onboarding={controller({ installed: new Set(['llm-router']) })}
+        onBack={noop}
+        onNext={noop}
+      />,
+    )
+    expect(html).toContain('Step 1 of 2')
     expect(html).toContain('uses your Claude Pro or Max plan, no API key')
     expect(html).toContain('What happens when you continue')
     expect(html).toContain('Add the provider-claude-code worker')
     expect(html).toContain('router::models::list provider=claude-code')
+  })
+
+  it('holds the choices behind a skeleton until the machine is scanned', () => {
+    const html = renderToStaticMarkup(
+      <ModelsStep
+        onboarding={controller({ tools: null })}
+        onBack={noop}
+        onNext={noop}
+      />,
+    )
+    expect(html).toContain('Looking at this machine')
+    expect(html).not.toContain('Recommended for this machine')
+    expect(html).not.toContain('Add secrets worker and check for keys')
+  })
+
+  it('explains the secrets worker before offering to add it', () => {
+    const html = renderToStaticMarkup(
+      <ModelsStep onboarding={controller({})} onBack={noop} onNext={noop} />,
+    )
+    expect(html).toContain('Keys you already have')
+    expect(html).toContain('Add secrets worker and check for keys')
+    expect(html).toContain('Values never reach the browser')
+  })
+
+  it('says so when the secrets worker found no provider key', () => {
+    const html = renderToStaticMarkup(
+      <ModelsStep
+        onboarding={controller({
+          installed: new Set(['secrets']),
+          detections: [],
+        })}
+        onBack={noop}
+        onNext={noop}
+      />,
+    )
+    expect(html).toContain('No provider keys in your shell profile')
+    expect(html).not.toContain('Add secrets worker and check for keys')
   })
 
   it('offers the found key, its masked hint and where it will be stored', () => {
@@ -163,51 +166,84 @@ describe('ModelsStep', () => {
   })
 })
 
+const CONNECTED: MachineSnapshot['providers'] = [
+  {
+    id: 'claude-code',
+    title: 'Claude Code',
+    configured: false,
+    available: true,
+    modelCount: 11,
+  },
+  {
+    id: 'anthropic',
+    title: 'Anthropic',
+    configured: true,
+    available: true,
+    modelCount: 9,
+    credentialRef: 'secret://ANTHROPIC_API_KEY',
+  },
+]
+
+function ready(
+  snapshot: Partial<MachineSnapshot>,
+  tour: TourState = { kind: 'idle' },
+  activity: ActivityEntry[] = [],
+) {
+  return renderToStaticMarkup(
+    <ReadyStep
+      onboarding={controller(snapshot, activity)}
+      judge={null}
+      tour={tour}
+      onStartTour={noop}
+      onStart={noop}
+    />,
+  )
+}
+
 describe('ReadyStep', () => {
   it('sums up what is connected and every worker setup added', () => {
-    const html = renderToStaticMarkup(
-      <ReadyStep
-        onboarding={controller(
-          {
-            providers: [
-              {
-                id: 'claude-code',
-                title: 'Claude Code',
-                configured: false,
-                available: true,
-                modelCount: 11,
-              },
-              {
-                id: 'anthropic',
-                title: 'Anthropic',
-                configured: true,
-                available: true,
-                modelCount: 9,
-                credentialRef: 'secret://ANTHROPIC_API_KEY',
-              },
-            ],
-          },
-          [
-            {
-              id: 1,
-              group: 'models',
-              title: 'Add 2 workers',
-              detail: 'compose::add secrets provider-claude-code',
-              status: 'done',
-              workers: ['secrets', 'provider-claude-code'],
-            },
-          ],
-        )}
-        judge={null}
-        onStart={noop}
-      />,
-    )
+    const html = ready({ providers: CONNECTED }, { kind: 'idle' }, [
+      {
+        id: 1,
+        group: 'models',
+        title: 'Add 2 workers',
+        detail: 'compose::add secrets provider-claude-code',
+        status: 'done',
+        workers: ['secrets', 'provider-claude-code'],
+      },
+    ])
     expect(html).toContain('Your harness is ready')
     expect(html).toContain('Claude Code connected')
     expect(html).toContain('key at secret://ANTHROPIC_API_KEY')
     expect(html).toContain('Your keys stay out of git')
     expect(html).toContain('Workers added during setup (2)')
-    expect(html).toContain('Give the agents a kanban board')
+  })
+
+  it('offers the guided tour in place of starter prompts, without naming its worker', () => {
+    const html = ready({ providers: CONNECTED })
+    expect(html).toContain('Keep going with a guided tour')
+    expect(html).toContain('Start the tour')
+    expect(html).toContain('Skip the tour')
+    expect(html).not.toContain('Try one of these first')
+    expect(html).not.toContain('onboarding worker')
+  })
+
+  it('shows the tour getting ready, and why it could not start', () => {
+    expect(ready({ providers: CONNECTED }, { kind: 'preparing' })).toContain(
+      'Preparing the tour…',
+    )
+    const failed = ready(
+      { providers: CONNECTED },
+      { kind: 'failed', error: 'compose is not running' },
+    )
+    expect(failed).toContain('The tour could not start: compose is not running')
+    expect(failed).toContain('Try again')
+  })
+
+  it('offers no tour without a model to run it', () => {
+    const html = ready({ providers: [] })
+    expect(html).not.toContain('Keep going with a guided tour')
+    expect(html).toContain('Start building')
   })
 })
 

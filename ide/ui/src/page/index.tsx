@@ -74,6 +74,8 @@ import { copyText } from '@iii-dev/console-ui/format'
 import { createEntry, deleteEntry, duplicateFile, duplicateName, renameEntry } from './file-actions'
 import { createObjectUrlRegistry } from './file-bytes'
 import { type ExplorerActions, FilesTab } from './FilesTab'
+import { NewWorkerDialog } from './NewWorkerDialog'
+import { entryFile, type ScaffoldResult } from './new-worker'
 import { type GitChange, type GitState, gitChanges } from './git'
 import type { CommitDetails, CommitFile } from './git-log-window'
 import { gitDiscard } from './git-actions'
@@ -290,6 +292,11 @@ export function ShellExplorerPage({
   if (terminalOpen && !terminalMounted) setTerminalMounted(true)
   // The Git tool window shares the docked panel with the terminal.
   const [gitOpen, setGitOpen] = useState(false)
+  // Mounted from its first opening, then hidden rather than unmounted: the
+  // terminal and the Git window trade the dock, and a remount re-read the
+  // refs, a page of the log and every worktree, and lost the selection.
+  const [gitMounted, setGitMounted] = useState(false)
+  if (gitOpen && !gitMounted) setGitMounted(true)
   const [gitTab, setGitTab] = useState<GitTab>('log')
   const gitToggleRef = useRef<HTMLButtonElement>(null)
   const [terminalDock, setTerminalDock] = useState<TerminalDock>('bottom')
@@ -338,6 +345,8 @@ export function ShellExplorerPage({
   const expandedRef = useRef(expanded)
   expandedRef.current = expanded
   const [reveal, setReveal] = useState<string | null>(null)
+  // The New worker dialog's root-relative parent folder; null keeps it closed.
+  const [newWorkerBase, setNewWorkerBase] = useState<string | null>(null)
 
   // ── tabs ──
   const [tabs, setTabs] = useState<TabsState>(EMPTY_TABS)
@@ -810,6 +819,20 @@ export function ShellExplorerPage({
     [ensurePath],
   )
   const onRevealed = useCallback(() => setReveal(null), [])
+  // A scaffolded worker: show its folder and open its entry file, when they
+  // live under the browsed root.
+  const onWorkerCreated = useCallback(
+    (result: ScaffoldResult) => {
+      const currentRoot = rootRef.current
+      if (!currentRoot) return
+      const dir = relativeToRoot(result.directory, currentRoot)
+      if (dir !== null) revealFolder(dir)
+      const entry = entryFile(result.files.map((file) => file.path))
+      const rel = entry === null ? null : relativeToRoot(entry, currentRoot)
+      if (rel !== null) openFileTab(rel, { pin: true })
+    },
+    [revealFolder, openFileTab],
+  )
 
   const onDirtyChange = useCallback((relPath: string, dirty: boolean) => {
     setDirtyPaths((prev) => {
@@ -946,6 +969,7 @@ export function ShellExplorerPage({
       },
       compare: (rel) => compareFile(rel),
       findInFolder,
+      newWorker: setNewWorkerBase,
       discard: (rel) => {
         const change = gitRef.current?.kind === 'ready' ? gitRef.current.changes.find((c) => c.path === rel) : undefined
         if (change) setPendingDiscard(change)
@@ -1774,6 +1798,11 @@ export function ShellExplorerPage({
       dispatchTerminalWorkspace({ type: 'tab-created', tabId: `tab-agent-${stamp}`, paneId: `pane-agent-${stamp}`, root: context.cwd })
       setTerminalOpen(true)
       setTerminalActive(true)
+      return
+    }
+    if (context.type === 'new-worker') {
+      appliedContextRef.current = panelContext.id
+      setNewWorkerBase('workers')
       return
     }
     if (root === null) return
@@ -2774,6 +2803,15 @@ export function ShellExplorerPage({
           recent={recentFiles}
           onOpenFile={openPinnedFile}
         />
+        {newWorkerBase !== null && root !== null ? (
+          <NewWorkerDialog
+            host={host}
+            root={root}
+            baseDir={newWorkerBase}
+            onCreated={onWorkerCreated}
+            onClose={() => setNewWorkerBase(null)}
+          />
+        ) : null}
         {confirmDialog}
         <ConfirmDialog
           open={pendingDiscard !== null}
@@ -2791,8 +2829,9 @@ export function ShellExplorerPage({
           }}
           onCancel={() => setPendingDiscard(null)}
         />
-        {gitOpen && root !== null ? (
+        {gitMounted && root !== null ? (
           <DockPanel
+            hidden={!gitOpen}
             dock="bottom"
             size={terminalBottomSize}
             narrow={narrow}
@@ -2805,6 +2844,7 @@ export function ShellExplorerPage({
               host={host}
               root={root}
               page={worktreesPage}
+              open={gitOpen}
               tab={gitTab}
               onTabChange={setGitTab}
               onHide={closeGit}

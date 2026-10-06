@@ -1,27 +1,48 @@
-//! llama.cpp runtime shared by the in-process judge providers (judge-semif,
-//! judge-decider, judge-laya): backend init and module loading, device
-//! selection, model loading, and one thread that owns the `LlamaContext` (not
-//! `Send`) and serves jobs in arrival order, so a single forward runs on the
-//! hardware at a time. What a job does with the model is the provider's
-//! business; `scorer` is the job of the providers that read option labels, and
-//! `lifecycle` loads a provider's model on first use and releases it when idle.
-pub use llama_cpp_2;
+//! llama.cpp runtime shared by the in-process judge providers: device
+//! selection, model loading, and one thread that owns the llama.cpp `Context`
+//! (not `Send`) and serves jobs in arrival order, so a single forward runs on
+//! the hardware at a time. llama.cpp itself is `iii_llama_native`. What a job
+//! does with the model is the provider's business; `scorer` is the job of the
+//! providers that read option labels (judge-decider, judge-semif), and
+//! `lifecycle` loads a provider's model on first use and releases it when idle
+//! (every local provider; judge-clef drives `iii_llama_native` on its own
+//! threads).
+pub use iii_llama_native;
 pub mod lifecycle;
 pub mod scorer;
 
 pub use lifecycle::{ModelSlot, Unloaded, IDLE_RELEASE};
 
 use anyhow::{anyhow, Result};
-use llama_cpp_2::{
-    context::{params::LlamaContextParams, LlamaContext},
-    llama_backend::LlamaBackend,
-    model::{params::LlamaModelParams, LlamaModel},
-};
+use iii_llama_native::{Context, ContextParams, Model};
 use std::{
     path::Path,
-    sync::{mpsc, Arc, OnceLock},
+    sync::{mpsc, Arc},
 };
 use tokio::sync::oneshot;
+
+/// Why a forward stopped short of its scores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    Deadline,
+    Cancelled,
+    /// A prompt does not fit the context window.
+    TooLong,
+    Failed,
+}
+
+/// Softmax over the option logits at `temperature`; `None` for no options or
+/// a non-finite logit. One option is certain (`[1.0]`).
+pub fn softmax(z: &[f32], temperature: f64) -> Option<Vec<f64>> {
+    if z.is_empty() || z.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    let z: Vec<f64> = z.iter().map(|&v| f64::from(v) / temperature).collect();
+    let max = z.iter().fold(f64::NEG_INFINITY, |m, &v| m.max(v));
+    let exp: Vec<f64> = z.iter().map(|&v| (v - max).exp()).collect();
+    let sum: f64 = exp.iter().sum();
+    Some(exp.iter().map(|v| v / sum).collect())
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
@@ -33,8 +54,8 @@ pub struct Options {
 /// The loaded model and its context, owned by the runtime thread; both are
 /// freed when the last `Runtime` handle is dropped and the thread ends.
 pub struct Session<'a> {
-    pub model: &'a LlamaModel,
-    pub ctx: LlamaContext<'a>,
+    pub model: &'a Model,
+    pub ctx: Context<'a>,
 }
 
 type Job = Box<dyn for<'a> FnOnce(&mut Session<'a>) + Send>;
@@ -46,45 +67,6 @@ pub struct Runtime {
     device: Arc<str>,
 }
 
-/// llama.cpp's backend is process-global and initializes once.
-fn backend() -> Result<&'static LlamaBackend> {
-    static BACKEND: OnceLock<Result<LlamaBackend, String>> = OnceLock::new();
-    BACKEND
-        .get_or_init(|| {
-            load_backend_modules();
-            LlamaBackend::init().map_err(|e| e.to_string())
-        })
-        .as_ref()
-        .map_err(|e| anyhow!("llama.cpp init: {e}"))
-}
-
-/// Linux x86_64 and Windows ship llama.cpp's backends as modules (Cargo.toml):
-/// load them from the executable's directory (the published layout), else from
-/// the build's own output (tests). A module whose system library is missing,
-/// such as the Vulkan loader, is skipped, and the CPU module runs the model.
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    target_os = "windows"
-))]
-fn load_backend_modules() {
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf))
-    {
-        llama_cpp_2::llama_backend::load_backends_from_path(&dir);
-    }
-    if llama_cpp_2::list_llama_ggml_backend_devices().is_empty() {
-        llama_cpp_2::llama_backend::load_backends();
-    }
-}
-
-/// Elsewhere the backends are linked in (Metal on macOS, CPU otherwise).
-#[cfg(not(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    target_os = "windows"
-)))]
-fn load_backend_modules() {}
-
 impl Runtime {
     /// Load `gguf` on a new thread and return once it answers (or failed).
     /// `configure` sets the context parameters the provider needs (window,
@@ -92,7 +74,7 @@ impl Runtime {
     pub fn spawn(
         gguf: &Path,
         options: Options,
-        configure: impl FnOnce(LlamaContextParams) -> LlamaContextParams + Send + 'static,
+        configure: impl FnOnce(ContextParams) -> ContextParams + Send + 'static,
     ) -> Result<Self> {
         let (jobs, inbox) = mpsc::channel::<Job>();
         let (ready_tx, ready) = mpsc::channel();
@@ -100,54 +82,29 @@ impl Runtime {
         std::thread::Builder::new()
             .name("llama-runtime".into())
             .spawn(move || {
-                let load = || -> Result<(LlamaModel, String)> {
-                    let backend = backend()?;
-                    let gpu = llama_cpp_2::list_llama_ggml_backend_devices()
-                        .into_iter()
-                        .find(|d| !d.backend.eq_ignore_ascii_case("cpu"));
-                    let layers =
-                        options
-                            .gpu_layers
-                            .unwrap_or(if gpu.is_some() { u32::MAX } else { 0 });
-                    let device = match (&gpu, layers) {
-                        (Some(d), n) if n > 0 => format!("{} ({})", d.description, d.backend),
-                        _ => "CPU".into(),
-                    };
-                    let model = LlamaModel::load_from_file(
-                        backend,
-                        &gguf,
-                        &LlamaModelParams::default().with_n_gpu_layers(layers),
-                    )
-                    .map_err(|e| anyhow!("load {}: {e}", gguf.display()))?;
-                    Ok((model, device))
-                };
-                let (model, device) = match load() {
-                    Ok(loaded) => loaded,
+                // gpu_layers 0 keeps the GPU devices visible, so llama.cpp
+                // still hands them large batch matmuls.
+                let model = match Model::load(&gguf, options.gpu_layers, options.threads, true) {
+                    Ok(model) => model,
                     Err(error) => {
                         let _ = ready_tx.send(Err(error));
                         return;
                     }
                 };
-                let threads = i32::try_from(options.threads).unwrap_or(8);
-                let params = configure(
-                    LlamaContextParams::default()
-                        .with_n_threads(threads)
-                        .with_n_threads_batch(threads),
-                );
+                let params = configure(ContextParams {
+                    threads: i32::try_from(options.threads).unwrap_or(8),
+                    ..ContextParams::default()
+                });
                 // The context borrows the model; both live until the jobs end.
-                let ctx = match backend().and_then(|backend| {
-                    model
-                        .new_context(backend, params)
-                        .map_err(|e| anyhow!("context: {e}"))
-                }) {
+                let ctx = match model.new_context(params) {
                     Ok(ctx) => ctx,
                     Err(error) => {
                         let _ = ready_tx.send(Err(error));
                         return;
                     }
                 };
+                let _ = ready_tx.send(Ok(model.device.clone()));
                 let mut session = Session { model: &model, ctx };
-                let _ = ready_tx.send(Ok(device));
                 for job in inbox {
                     job(&mut session);
                 }

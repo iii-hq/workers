@@ -1110,6 +1110,9 @@
     overflow: auto;
     padding: 0 6px 6px;
   }
+  /* the windowed change tree scrolls itself and carries the padding */
+  .shui-commit-tree:has(> .shui-ctree) { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+  .shui-commit-tree > .shui-ctree { padding: 0 6px 6px; }
   .shui-commit-error { padding: 8px 12px; }
   .shui-commit-skeleton { display: flex; flex-direction: column; gap: 6px; padding: 6px; }
   .shui-commit-skeleton-row { height: 20px; }
@@ -1119,7 +1122,6 @@
   .shui-commit-clean .detail { font: 400 12px / 16px var(--font-sans); color: var(--color-ink-faint); }
 
   /* the change tree: 28px rows, a tick per row, hover-revealed actions */
-  .shui-ctree { display: flex; flex-direction: column; }
   .shui-ctree-row {
     display: flex;
     align-items: center;
@@ -1308,12 +1310,193 @@
   .shui-text-dialog-actions,
   .shui-rollback-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 6px; }
   .shui-rollback-dialog { display: flex; flex-direction: column; gap: 12px; }
-  .shui-rollback-tree { max-height: 260px; overflow: auto; padding: 4px; border-radius: 6px; background: var(--color-surface); }
+  .shui-rollback-tree { display: flex; flex-direction: column; box-sizing: border-box; min-height: 0; padding: 4px; border-radius: 6px; background: var(--color-surface); }
   .shui-rollback-options { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .shui-rollback-summary { margin-left: auto; font: 400 11px / 16px var(--font-sans); color: var(--color-ink-faint); font-variant-numeric: tabular-nums; }
   .shui-danger-button { background: var(--color-alert); color: var(--color-bg); }
   .shui-checkout-files { margin: 0; padding: 4px 8px; list-style: none; font: 400 12px / 18px var(--font-mono); color: var(--color-ink); }
   .shui-danger-button:hover { background: color-mix(in srgb, var(--color-alert) 90%, transparent); }
+
+  /* dialog: new worker */
+  .shui-new-worker { display: flex; flex-direction: column; gap: 10px; }
+  .shui-new-worker-form { display: flex; flex-direction: column; gap: 18px; margin-top: 6px; }
+  .shui-new-worker-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .shui-new-worker-field-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .shui-new-worker-templates {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--color-edge);
+    border-radius: 6px;
+  }
+  .shui-new-worker-template {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: background-color var(--motion-duration-fast) var(--motion-ease-standard);
+  }
+  .shui-new-worker-template + .shui-new-worker-template { border-top: 1px solid var(--color-edge); }
+  .shui-new-worker-template:hover { background: var(--color-surface-hover); }
+  .shui-new-worker-template:has(:checked) { background: var(--color-surface-selected); }
+  .shui-new-worker-template:has(:focus-visible) { outline: 2px solid var(--color-rule-focus); outline-offset: -2px; }
+  .shui-new-worker-template-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+  .shui-new-worker-template-title { font: 500 13px / 18px var(--font-sans); color: var(--color-ink); }
+  .shui-new-worker-template-description { font: 400 12px / 17px var(--font-sans); color: var(--color-ink-faint); text-wrap: pretty; }
+  .shui-new-worker-template-check { flex: none; width: 16px; height: 16px; margin-top: 1px; color: var(--color-accent); opacity: 0; }
+  .shui-new-worker-template:has(:checked) .shui-new-worker-template-check { opacity: 1; }
+  .shui-new-worker-templates-empty { margin: 0; padding: 14px 12px; font: 400 12px / 17px var(--font-sans); color: var(--color-ink-faint); }
+  .shui-new-worker-source { display: flex; align-items: center; gap: 4px; margin-top: -2px; font: 400 11px / 16px var(--font-mono); color: var(--color-ink-faint); }
+  .shui-new-worker-source > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shui-new-worker-note { margin: 0; font: 400 11px / 16px var(--font-sans); color: var(--color-ink-faint); overflow-wrap: anywhere; }
+  .shui-new-worker-note.warn { color: var(--color-warn); }
+  .shui-new-worker-note.alert { color: var(--color-alert); }
+  .shui-new-worker-code { font-family: var(--font-mono); overflow-wrap: anywhere; }
+  .shui-new-worker-path { font-family: var(--font-mono); overflow-wrap: anywhere; }
+  /* A function id never breaks at its hyphens; a very long one is clipped. */
+  .shui-new-worker-token {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    font-family: var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+  .shui-new-worker-steps { display: flex; flex-direction: column; gap: 10px; margin: 6px 0 4px; padding: 0; list-style: none; }
+  .shui-new-worker-step {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: 10px;
+    font: 400 13px / 18px var(--font-sans);
+    color: var(--color-ink);
+  }
+  .shui-new-worker-step-mark { display: grid; place-items: center; width: 16px; height: 16px; }
+  .shui-new-worker-step-mark > svg { width: 16px; height: 16px; }
+  .shui-new-worker-step[data-state="done"] .shui-new-worker-step-mark { color: var(--color-ok); }
+  .shui-new-worker-step[data-state="failed"] .shui-new-worker-step-mark { color: var(--color-alert); }
+  .shui-new-worker-step[data-state="pending"] { color: var(--color-ink-faint); }
+  .shui-new-worker-step[data-state="pending"] .shui-new-worker-step-mark { opacity: 0.4; }
+  .shui-new-worker-step[data-state="skipped"] { color: var(--color-ink-faint); }
+  .shui-new-worker-step[data-state="skipped"] .shui-new-worker-step-mark { opacity: 0.6; }
+  /* What a step's outcome means, under its label: a human-sized sentence. */
+  .shui-new-worker-step-note {
+    grid-column: 2 / -1;
+    max-width: 72ch;
+    margin: 2px 0 0;
+    font: 400 12px / 18px var(--font-sans);
+    color: var(--color-ink-faint);
+  }
+  .shui-new-worker-step-detail {
+    font: 400 11px / 16px var(--font-mono);
+    color: var(--color-ink-faint);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .shui-new-worker-step-failure { display: flex; flex-direction: column; gap: 8px; grid-column: 2 / -1; margin-top: 6px; min-width: 0; }
+  .shui-new-worker-functions { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  .shui-new-worker-functions > h3 { margin: 0; }
+  .shui-new-worker-function-list {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--color-edge);
+    border-radius: 6px;
+    list-style: none;
+  }
+  .shui-new-worker-function { display: flex; align-items: center; gap: 4px; padding: 6px 6px 6px 12px; }
+  .shui-new-worker-function + .shui-new-worker-function { border-top: 1px solid var(--color-edge); }
+  .shui-new-worker-function-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+  .shui-new-worker-function-id { font: 400 12px / 18px var(--font-mono); color: var(--color-ink); overflow-wrap: anywhere; }
+  .shui-new-worker-function-description {
+    overflow: hidden;
+    font: 400 11px / 16px var(--font-sans);
+    color: var(--color-ink-faint);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shui-new-worker .shui-text-dialog-actions { flex-wrap: wrap; }
+  .shui-new-worker-logs {
+    margin: 0;
+    max-height: 200px;
+    overflow: auto;
+    padding: 8px;
+    border-radius: 6px;
+    background: var(--color-surface);
+    font: 400 11px / 16px var(--font-mono);
+    color: var(--color-ink-faint);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* ── worker templates and new workers (coder::list-templates and
+        coder::scaffold-worker chat calls): the file-change card's frame,
+        the New worker dialog's steps ── */
+  .shui-scaffold {
+    container-type: inline-size;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+  }
+  .shui-scaffold-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 10px 12px;
+    background: var(--color-panel-raised);
+  }
+  .shui-scaffold-icon { flex: none; width: 16px; height: 16px; color: var(--color-ink-faint); }
+  .shui-scaffold-heading { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; }
+  .shui-scaffold-title { font: 500 13px / 18px var(--font-sans); overflow-wrap: anywhere; }
+  .shui-scaffold-sub {
+    overflow: hidden;
+    font: 400 11px / 16px var(--font-mono);
+    color: var(--color-ink-faint);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shui-scaffold-body { display: flex; flex-direction: column; gap: 12px; padding: 12px; }
+  .shui-scaffold-body .shui-new-worker-steps { margin: 0; }
+  /* The entry file beside "Created N files": a quiet link into the IDE. */
+  .shui-scaffold-file {
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: var(--color-ink-faint);
+    text-decoration: underline;
+    text-decoration-color: var(--color-edge);
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+  .shui-scaffold-file:hover { color: var(--color-ink); text-decoration-color: currentColor; }
+  .shui-scaffold-file:focus-visible { outline: 2px solid var(--color-rule-focus); outline-offset: 2px; }
+  .shui-scaffold-path { font-family: var(--font-mono); overflow-wrap: anywhere; }
+
+  .shui-templates { margin: 0; padding: 0; list-style: none; }
+  .shui-template { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; }
+  .shui-template + .shui-template { border-top: 1px solid var(--color-edge); }
+  .shui-template-head { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: 8px; min-width: 0; }
+  .shui-template-name { font: 500 13px / 18px var(--font-sans); color: var(--color-ink); }
+  .shui-template-id { font: 400 11px / 16px var(--font-mono); color: var(--color-ink-faint); overflow-wrap: anywhere; }
+  .shui-template-description {
+    display: -webkit-box;
+    overflow: hidden;
+    max-width: 72ch;
+    margin: 0;
+    font: 400 12px / 18px var(--font-sans);
+    color: var(--color-ink-faint);
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  .shui-template-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 
   /* stash and history lists */
   .shui-log-rows { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
@@ -1447,7 +1630,6 @@
   .shui-log-details-empty.pad { padding: 16px 8px; }
   .shui-log-details-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; row-gap: 6px; padding-top: 4px; }
   .shui-log-ref-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .shui-log-files { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
   .shui-log-file {
     width: 100%;
     display: flex;
@@ -3142,6 +3324,8 @@
   .shui-bchanges-tools { display: flex; flex: none; align-items: center; gap: 2px; padding: 0 4px 4px; }
   .shui-bchanges-spacer { flex: 1 1 auto; }
   .shui-bchanges-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 4px 8px; }
+  /* the windowed change tree scrolls itself; a note after it stays below */
+  .shui-bchanges-body:has(> .shui-ctree) { display: flex; flex-direction: column; overflow: hidden; }
   .shui-git-toggle,
   .shui-git-filter {
     display: inline-flex;
@@ -3468,6 +3652,8 @@
   .shui-git-commit-byline > .shui-git-ref { flex: 0 1 auto; min-width: 0; }
   .shui-git-commit-byline > .shui-git-commit-date { flex: none; }
   .shui-git-window[data-narrow] .shui-git-file { height: 44px; touch-action: manipulation; }
+  /* one row height for the windowed file list: folders match the files */
+  .shui-git-window[data-narrow] .shui-git-file-list .shui-scm-folder { height: 44px; }
   .shui-git-window[data-narrow] .shui-git-files { flex: 1 1 auto; max-height: 50%; }
   .shui-git-window[data-narrow] .shui-git-files.shui-git-compare { max-height: none; }
   .shui-git-window[data-narrow] .shui-git-hsash { height: 13px; padding: 6px 0; }
@@ -3569,6 +3755,15 @@
   [data-iii-ui="ide"] .shui-quick-open-input { font-size: 16px; }
   [data-iii-ui="ide"] .shui-quick-open-row { min-height: 48px; }
   [data-iii-ui="ide"] .shui-quick-open-foot { padding-bottom: max(4px, env(safe-area-inset-bottom)); }
+  [data-iii-ui="ide"] .shui-new-worker {
+    inset: 0;
+    width: 100%;
+    max-width: none;
+    height: 100dvh;
+    max-height: none;
+    translate: none;
+    border-radius: 0;
+  }
 }
 
 @keyframes shui-file-change-metric-in {

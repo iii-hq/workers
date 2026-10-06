@@ -249,15 +249,14 @@ jobs:
             echo "ORT_PREFER_DYNAMIC_LINK=0"
           } >> "$GITHUB_ENV"
 
-      # judge-semif, judge-decider and judge-laya compile llama.cpp (cmake) and its bindings
-      # (bindgen needs libclang) through crates/llama-runtime; Linux x86_64
-      # always builds the Vulkan module (loader headers, SPIR-V headers, glslc).
-      # llama-cpp-sys-2 hard-links its shared libraries into target/ unless the
-      # name exists, and fails on a symlink the cache restore left dangling.
-      - name: Provision llama.cpp build tools (llama-runtime workers)
-        if: matrix.worker == 'judge-semif' || matrix.worker == 'judge-decider' || matrix.worker == 'judge-laya'
+      # judge-semif, judge-decider, judge-laya and judge-clef compile llama.cpp
+      # (curl, tar, patch, cmake; no libclang) through crates/llama-native.
+      # Linux x86_64 always builds the Vulkan module (loader headers, SPIR-V
+      # headers, glslc). Drop symlinks a cache restore left dangling in target/.
+      - name: Provision llama.cpp build tools (llama.cpp workers)
+        if: matrix.worker == 'judge-semif' || matrix.worker == 'judge-decider' || matrix.worker == 'judge-laya' || matrix.worker == 'judge-clef'
         run: |
-          sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+          sudo apt-get update && sudo apt-get install -y cmake libvulkan-dev glslc spirv-headers
           find target -xtype l -print -delete 2>/dev/null || true
 
       - name: Run clippy
@@ -323,6 +322,45 @@ jobs:
           SKIP_UI_BUILD: "1"
           III_REQUIRE_MINILM: "1"
         run: cargo test --locked --test minilm_target
+
+  # ──────────────────────────────────────────────────────────────
+  # crates/llama-native builds llama.cpp per target: shared libraries and
+  # runtime-loaded backends on Linux x86_64 (the gates above), static Metal on
+  # macOS, a static CPU build on aarch64 Linux. Only the release pipeline
+  # compiled the last two, so build and test the crate natively on both.
+  # discover fans llama-native and llama-runtime changes into these four
+  # workers. The hosted images ship cmake, a C/C++ toolchain, curl, tar and
+  # patch; the tests load judge-clef/judge-decider/judge-laya's tiny GGUFs.
+  # No rust-cache: it purges the crate's own build dir (llama.cpp), leaving
+  # only four small build dependencies to restore.
+  # ──────────────────────────────────────────────────────────────
+  llama-native-targets:
+    name: "llama-native: llama.cpp build + test (${{ matrix.os }})"
+    needs: discover
+    if: >-
+      contains(needs.discover.outputs.rust, '"judge-clef"')
+      || contains(needs.discover.outputs.rust, '"judge-decider"')
+      || contains(needs.discover.outputs.rust, '"judge-semif"')
+      || contains(needs.discover.outputs.rust, '"judge-laya"')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04-arm]
+    defaults:
+      run:
+        working-directory: crates/llama-native
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+
+      - name: Run tests
+        run: cargo test --locked --all-features
 
   # ──────────────────────────────────────────────────────────────
   # ios-simulator ships for macOS only: it drives Xcode's simulators through
@@ -453,13 +491,14 @@ jobs:
         working-directory: provider-openai-codex/ui
         run: pnpm install --frozen-lockfile && pnpm build
 
-      # llama-runtime compiles llama.cpp (cmake) and its bindings (bindgen
-      # needs libclang); Linux x86_64 always builds the Vulkan module (loader
-      # headers, SPIR-V headers, glslc), as for the llama-runtime workers.
-      - name: Provision llama.cpp build tools (llama-runtime)
-        if: matrix.crate == 'llama-runtime'
+      # llama-native (and llama-runtime through it) compiles llama.cpp (curl,
+      # tar, patch, cmake; no libclang). Linux x86_64 always builds the Vulkan
+      # module (loader headers, SPIR-V headers, glslc), as for the llama.cpp
+      # workers. Drop symlinks a cache restore left dangling in target/.
+      - name: Provision llama.cpp build tools (llama-runtime, llama-native)
+        if: matrix.crate == 'llama-runtime' || matrix.crate == 'llama-native'
         run: |
-          sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+          sudo apt-get update && sudo apt-get install -y cmake libvulkan-dev glslc spirv-headers
           find target -xtype l -print -delete 2>/dev/null || true
 
       - name: Check formatting
@@ -794,12 +833,11 @@ jobs:
             echo "ORT_PREFER_DYNAMIC_LINK=0"
           } >> "$GITHUB_ENV"
 
-      # A symlink the cache restore left dangling in target/ fails
-      # llama-cpp-sys-2's hard-link step: drop them first.
-      - name: Provision llama.cpp build tools (llama-runtime workers)
-        if: steps.optout.outputs.skip != 'true' && (matrix.worker == 'judge-semif' || matrix.worker == 'judge-decider' || matrix.worker == 'judge-laya')
+      # Drop symlinks a cache restore left dangling in target/.
+      - name: Provision llama.cpp build tools (llama.cpp workers)
+        if: steps.optout.outputs.skip != 'true' && (matrix.worker == 'judge-semif' || matrix.worker == 'judge-decider' || matrix.worker == 'judge-laya' || matrix.worker == 'judge-clef')
         run: |
-          sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+          sudo apt-get update && sudo apt-get install -y cmake libvulkan-dev glslc spirv-headers
           find "${{ matrix.worker }}/target" -xtype l -print -delete 2>/dev/null || true
 
       # Build with default features so we boot the same artifact that ships
@@ -880,15 +918,16 @@ jobs:
             echo "Using interface-collection config: $WORKER/config.collect.yaml"
             collect_args+=(--config ./config.collect.yaml)
           fi
-          # The llama.cpp workers register their functions only once a model
-          # loads: boot them on their committed tiny fixtures instead of
-          # downloading gigabytes.
+          # Boot the llama.cpp workers on their committed tiny fixtures so
+          # nothing can trigger a multi-gigabyte download.
           if [[ "$WORKER" == judge-semif ]]; then
             export III_SEMIF_GGUF="$PWD/judge-semif/tests/fixtures/tiny-qwen3.gguf"
           elif [[ "$WORKER" == judge-decider ]]; then
             export III_DECIDER_GGUF="$PWD/judge-decider/tests/fixtures/tiny-qwen3.gguf"
           elif [[ "$WORKER" == judge-laya ]]; then
             export III_LAYA_CHECKPOINT_DIR="$PWD/judge-laya/tests/fixtures/tiny"
+          elif [[ "$WORKER" == judge-clef ]]; then
+            export III_CLEF_CHECKPOINT_DIR="$PWD/judge-clef/tests/fixtures/tiny"
           fi
           # Run from inside the worker dir — this is what makes a relative
           # default db path (sqlite:./data/iii.db) resolve against a clean

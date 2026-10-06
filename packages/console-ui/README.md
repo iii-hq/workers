@@ -71,6 +71,13 @@ Use the shared contracts for repeated Console interactions:
   states, and optional free-form creation. `Select` is for small finite lists.
   `ModelPicker` is the Console-owned responsive model catalog picker for chat
   and injected profile editors; worker UIs provide the catalog and selection.
+- `WorkerConfigurationPanel` edits one worker's settings where the choice is
+  made — a picker page, a sheet — with the Settings editor (the worker's
+  registered form, validation, the save bar) and none of the Settings chrome:
+  the surface around it gives the title and the way back, and
+  `onDirtyChange` lets it guard leaving. Read it from
+  `host.components.WorkerConfigurationPanel` and fall back to
+  `WorkerConfigurationDialog` on Consoles that lack it.
 - Shared `Tooltip`, `Dialog`, `ConfirmDialog`, `DropdownMenu`, `Select`,
   `Selector`, and `BottomSheet` portals preserve an injected worker's
   `data-iii-ui` scope. `IconButton` combines an accessible label with the

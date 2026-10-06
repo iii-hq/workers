@@ -10,7 +10,7 @@ use std::time::Instant;
 async fn main() -> Result<()> {
     let model = std::env::var("LAYA_MODEL").unwrap_or_else(|_| "laya".into());
     let t0 = Instant::now();
-    let gguf = std::env::var_os("III_LAYA_ENCODER_GGUF").map(std::path::PathBuf::from);
+    let gguf = std::env::var_os("III_LAYA_GGUF").map(std::path::PathBuf::from);
     let checkpoint = download::fetch(&model, None, gguf.as_deref())?;
     eprintln!(
         "checkpoint {} @ {} fetched in {:.1}s",
@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
         checkpoint.revision,
         t0.elapsed().as_secs_f32()
     );
-    // LAYA_GPU_LAYERS=0 keeps the encoder on the CPU.
+    // LAYA_GPU_LAYERS=0 keeps the model on the CPU.
     let options = judge_laya::engine::Options {
         gpu_layers: std::env::var("LAYA_GPU_LAYERS")
             .ok()
