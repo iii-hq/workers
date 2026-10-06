@@ -111,6 +111,12 @@ fn models_url(api_url: &str) -> Result<reqwest::Url, Error> {
     Ok(url)
 }
 
+/// Efforts the Responses API accepts in `reasoning.effort`, as its own
+/// rejection lists them. The models catalog also advertises `ultra`
+/// ("automatic task delegation"), which is a Codex app mode: sending it gets
+/// `Invalid value: 'ultra'`, so it never reaches the ladder we offer.
+const API_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 fn map_models(mut remote: Vec<CodexModel>) -> Vec<Model> {
     remote.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.slug.cmp(&b.slug)));
     let mut seen = HashSet::new();
@@ -119,7 +125,10 @@ fn map_models(mut remote: Vec<CodexModel>) -> Vec<Model> {
         .filter(|model| model.visibility == "list")
         .filter(|model| !model.slug.trim().is_empty())
         .filter(|model| seen.insert(model.slug.clone()))
-        .map(|model| {
+        .map(|mut model| {
+            model
+                .supported_reasoning_levels
+                .retain(|level| API_EFFORTS.contains(&level.effort.as_str()));
             let supports_thinking = !model.supported_reasoning_levels.is_empty();
             let supports_xhigh = model
                 .supported_reasoning_levels
@@ -355,8 +364,8 @@ mod tests {
     fn dynamic_mapping_filters_hidden_sorts_and_namespaces() {
         let mut first = model("new-first", "list", 1);
         first.supported_reasoning_levels.push(ReasoningLevel {
-            effort: "ultra".into(),
-            description: Some("Maximum reasoning with delegation".into()),
+            effort: "max".into(),
+            description: Some("Maximum reasoning depth".into()),
         });
         let models = map_models(vec![
             model("old-hidden", "hide", 0),
@@ -382,13 +391,39 @@ mod tests {
                         description: Some("Extra high reasoning depth".into()),
                     },
                     ReasoningEffort {
-                        effort: "ultra".into(),
-                        description: Some("Maximum reasoning with delegation".into()),
+                        effort: "max".into(),
+                        description: Some("Maximum reasoning depth".into()),
                     },
                 ]
                 .as_slice(),
             )
         );
+    }
+
+    /// gpt-5.6-terra's catalog row lists `ultra`, which the Responses API
+    /// rejects (`Invalid value: 'ultra'. Supported values are: 'none',
+    /// 'minimal', 'low', 'medium', 'high', 'xhigh', and 'max'.`); it must
+    /// not become a slider stop that fails on send.
+    #[test]
+    fn efforts_the_api_rejects_are_dropped_from_the_ladder() {
+        let mut terra = model("gpt-5.6-terra", "list", 1);
+        terra.supported_reasoning_levels = ["low", "max", "ultra"]
+            .into_iter()
+            .map(|effort| ReasoningLevel {
+                effort: effort.into(),
+                description: None,
+            })
+            .collect();
+        let models = map_models(vec![terra]);
+        let efforts: Vec<&str> = models[0]
+            .reasoning_efforts
+            .as_deref()
+            .unwrap()
+            .iter()
+            .map(|effort| effort.effort.as_str())
+            .collect();
+        assert_eq!(efforts, vec!["low", "max"]);
+        assert_eq!(models[0].supports_xhigh, Some(false));
     }
 
     #[test]
