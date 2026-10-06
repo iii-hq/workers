@@ -1,7 +1,7 @@
 //! The `router::provider::resolve` and `router::provider::update_credential`
 //! iii functions. Credential precedence: stored slice (`credential` object →
-//! literal `api_key` → `secret://NAME` reference, resolved through the
-//! `secrets` worker) → declared env var → none. A reference that does not
+//! literal `api_key` → `secret://NAME` or `env://NAME` reference, resolved
+//! through the `secrets` worker) → declared env var → none. A reference that does not
 //! resolve leaves the provider unconfigured with a `credential_error`: an
 //! explicit reference wins, so the env var is NOT used as a fallback past it.
 //!
@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 use crate::config::entry::{read_entry_value, write_entry_value, EntryWriteLock};
 use crate::config::state::{apply_config, snapshot, ConfigCell, ConfigSnapshot};
 use crate::registry::store::RegistryStore;
-use crate::secrets::{parse_ref, SecretCache, SecretError, SCHEME};
+use crate::secrets::{parse_ref, SecretCache, SecretError};
 
 /// What a provider slice stores as its credential, first match wins.
 #[derive(Debug, PartialEq)]
@@ -32,15 +32,18 @@ pub enum SliceCredential {
     /// The `credential` object (written by update_credential) or a literal
     /// `api_key`.
     Stored(Credential),
-    /// A `secret://NAME` reference in `api_key` (or in an `api_key`-typed
-    /// `credential`); `Err` when malformed. Never forwarded as a key.
+    /// A `secret://NAME` or `env://NAME` reference in `api_key` (or in an
+    /// `api_key`-typed `credential`), canonical ([`SecretRef::key`]); `Err`
+    /// when malformed. Never forwarded as a key.
+    ///
+    /// [`SecretRef::key`]: crate::secrets::SecretRef::key
     Reference(Result<String, SecretError>),
     Absent,
 }
 
 pub fn slice_credential(slice: &Value) -> SliceCredential {
     let reference =
-        |key: &str| parse_ref(key).map(|r| SliceCredential::Reference(r.map(String::from)));
+        |key: &str| parse_ref(key).map(|r| SliceCredential::Reference(r.map(|r| r.key())));
     if let Ok(credential) = serde_json::from_value::<Credential>(
         slice.get("credential").cloned().unwrap_or(Value::Null),
     ) {
@@ -65,13 +68,13 @@ pub fn slice_credential(slice: &Value) -> SliceCredential {
     }
 }
 
-/// Secret name → ids of the providers whose slice references it.
+/// Canonical reference → ids of the providers whose slice references it.
 pub fn referenced_secrets(config: &ConfigSnapshot) -> BTreeMap<String, BTreeSet<String>> {
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let providers = config.value().get("providers").and_then(Value::as_object);
     for (id, slice) in providers.into_iter().flatten() {
-        if let SliceCredential::Reference(Ok(name)) = slice_credential(slice) {
-            out.entry(name).or_default().insert(id.clone());
+        if let SliceCredential::Reference(Ok(reference)) = slice_credential(slice) {
+            out.entry(reference).or_default().insert(id.clone());
         }
     }
     out
@@ -79,7 +82,7 @@ pub fn referenced_secrets(config: &ConfigSnapshot) -> BTreeMap<String, BTreeSet<
 
 fn provider_reference(config: &ConfigSnapshot, provider: &str) -> Option<String> {
     match slice_credential(config.provider_slice(provider)?) {
-        SliceCredential::Reference(Ok(name)) => Some(name),
+        SliceCredential::Reference(Ok(reference)) => Some(reference),
         _ => None,
     }
 }
@@ -91,13 +94,13 @@ pub async fn ensure_provider_secret(
     provider: &str,
     secrets: &SecretCache,
 ) {
-    if let Some(name) = provider_reference(config, provider) {
-        secrets.ensure([name]).await;
+    if let Some(reference) = provider_reference(config, provider) {
+        secrets.ensure([reference]).await;
     }
 }
 
-/// `Some(reason)` when `provider`'s slice holds a `secret://` reference that
-/// does not resolve — what `router::chat` reports instead of dispatching to
+/// `Some(reason)` when `provider`'s slice holds a reference that does not
+/// resolve — what `router::chat` reports instead of dispatching to
 /// a provider that would only say "not configured".
 pub async fn unresolved_reference(
     config: &ConfigSnapshot,
@@ -107,9 +110,9 @@ pub async fn unresolved_reference(
     ensure_provider_secret(config, provider, secrets).await;
     let slice = config.provider_slice(provider)?;
     match slice_credential(slice) {
-        SliceCredential::Reference(Ok(name)) => match secrets.lookup(&name)? {
+        SliceCredential::Reference(Ok(reference)) => match secrets.lookup(&reference)? {
             Ok(_) => None,
-            Err(error) => Some(error.describe(&name)),
+            Err(error) => Some(error.describe(&reference)),
         },
         SliceCredential::Reference(Err(error)) => Some(error.describe("")),
         _ => None,
@@ -155,21 +158,19 @@ pub fn resolve_provider_config(
             status(CredentialOrigin::Config),
         ),
         SliceCredential::Reference(reference) => {
-            let credential_ref = reference
-                .as_ref()
-                .ok()
-                .map(|name| format!("{SCHEME}{name}"));
+            let credential_ref = reference.as_ref().ok().cloned();
             let resolved = match &reference {
-                Ok(name) => match secrets.lookup(name) {
+                Ok(reference) => match secrets.lookup(reference) {
                     Some(Ok(key)) => Ok(key),
-                    Some(Err(error)) => Err(error.describe(name)),
-                    None => Err(format!("secret {name} has not been resolved yet")),
+                    Some(Err(error)) => Err(error.describe(reference)),
+                    None => Err(format!("{reference} has not been resolved yet")),
                 },
                 Err(error) => Err(error.describe("")),
             };
             match resolved {
                 // `source` stays `config` for providers: the reference lives
-                // in the configuration entry.
+                // in the configuration entry. `credential_source` is
+                // `secret` for both schemes — the secrets worker resolved it.
                 Ok(key) => (
                     Some(Credential::ApiKey { key }),
                     CredentialSource::Config,
@@ -407,7 +408,7 @@ mod tests {
     #[tokio::test]
     async fn a_resolved_reference_supplies_the_key() {
         let fake = FakeSecrets::default();
-        fake.set("ANTHROPIC_API_KEY", Ok("sk-from-secrets"));
+        fake.set("secret://ANTHROPIC_API_KEY", Ok("sk-from-secrets"));
         let out = resolve(
             json!({ "api_key": "secret://ANTHROPIC_API_KEY" }),
             None,
@@ -446,7 +447,7 @@ mod tests {
         ];
         for (outcome, expected) in cases {
             let fake = FakeSecrets::default();
-            fake.set("ANTHROPIC_API_KEY", outcome);
+            fake.set("secret://ANTHROPIC_API_KEY", outcome);
             let out = resolve(
                 json!({ "api_key": "secret://ANTHROPIC_API_KEY" }),
                 Some(env),
@@ -468,6 +469,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_env_reference_resolves_through_the_secrets_worker() {
+        // The router's own variable of the same name never stands in for it.
+        let env = "LLM_ROUTER_UNIT_ENV_REF_KEY";
+        std::env::set_var(env, "sk-router-process-env");
+        let fake = FakeSecrets::default();
+        fake.set("env://LLM_ROUTER_UNIT_ENV_REF_KEY", Ok("sk-from-dotenv"));
+        let out = resolve(
+            json!({ "api_key": "env://LLM_ROUTER_UNIT_ENV_REF_KEY" }),
+            Some(env),
+            &fake,
+        )
+        .await;
+        assert!(out.resolved.configured);
+        assert_eq!(api_key(&out), Some("sk-from-dotenv"));
+        assert_eq!(out.status.credential_source, Some(CredentialOrigin::Secret));
+        assert_eq!(
+            out.status.credential_ref.as_deref(),
+            Some("env://LLM_ROUTER_UNIT_ENV_REF_KEY")
+        );
+        assert_eq!(fake.calls(), vec!["env://LLM_ROUTER_UNIT_ENV_REF_KEY"]);
+
+        let fake = FakeSecrets::default();
+        fake.set(
+            "env://LLM_ROUTER_UNIT_ENV_REF_KEY",
+            Err(SecretError::NotFound),
+        );
+        let out = resolve(
+            json!({ "api_key": "env://LLM_ROUTER_UNIT_ENV_REF_KEY" }),
+            Some(env),
+            &fake,
+        )
+        .await;
+        assert!(!out.resolved.configured);
+        assert_eq!(out.resolved.credential, None);
+        assert!(out
+            .status
+            .credential_error
+            .unwrap()
+            .starts_with("environment variable LLM_ROUTER_UNIT_ENV_REF_KEY is not set"));
+        std::env::remove_var(env);
+    }
+
+    #[tokio::test]
     async fn a_reference_is_never_forwarded_as_a_literal_key() {
         let fake = FakeSecrets::default(); // every lookup: secrets worker absent
         for slice in [
@@ -476,13 +520,18 @@ mod tests {
             json!({ "api_key": "secret://not a name" }),
             json!({ "api_key": "secret://" }),
             json!({ "credential": { "type": "api_key", "key": "secret://ANTHROPIC_API_KEY" } }),
+            json!({ "api_key": "env://ANTHROPIC_API_KEY" }),
+            json!({ "api_key": "ENV://not a name" }),
         ] {
             let out = resolve(slice.clone(), None, &fake).await;
             assert_eq!(out.resolved.credential, None, "{slice}");
             assert!(!out.resolved.configured, "{slice}");
             assert!(out.status.credential_error.is_some(), "{slice}");
-            let wire = serde_json::to_string(&out.resolved).unwrap();
-            assert!(!wire.to_lowercase().contains("secret://"), "{wire}");
+            let wire = serde_json::to_string(&out.resolved).unwrap().to_lowercase();
+            assert!(
+                !wire.contains("secret://") && !wire.contains("env://"),
+                "{wire}"
+            );
         }
     }
 
@@ -497,7 +546,7 @@ mod tests {
         .await;
         assert_eq!(out.status.credential_ref, None);
         let error = out.status.credential_error.unwrap();
-        assert!(error.contains("malformed secret reference"), "{error}");
+        assert!(error.contains("malformed reference"), "{error}");
         assert!(!error.contains("pasted"), "{error}");
         assert!(fake.calls().is_empty(), "malformed references are not sent");
     }
@@ -513,7 +562,7 @@ mod tests {
         assert!(!out.resolved.configured);
         assert_eq!(
             out.status.credential_error.as_deref(),
-            Some("secret LATER has not been resolved yet")
+            Some("secret://LATER has not been resolved yet")
         );
     }
 
@@ -526,14 +575,15 @@ mod tests {
             "d": { "api_key": "sk-literal" },
             "e": { "api_key": "secret://bad name" },
             "f": "not a slice",
+            "g": { "api_key": "env://E_KEY" },
         }}));
         let refs = referenced_secrets(&config);
         assert_eq!(
             refs.keys().cloned().collect::<Vec<_>>(),
-            vec!["C_KEY", "SHARED"]
+            vec!["env://E_KEY", "secret://C_KEY", "secret://SHARED"]
         );
         assert_eq!(
-            refs["SHARED"].iter().cloned().collect::<Vec<_>>(),
+            refs["secret://SHARED"].iter().cloned().collect::<Vec<_>>(),
             vec!["a", "b"]
         );
     }
@@ -541,8 +591,8 @@ mod tests {
     #[tokio::test]
     async fn chat_preflight_names_the_unresolvable_reference() {
         let fake = FakeSecrets::default();
-        fake.set("OK_KEY", Ok("v"));
-        fake.set("GONE", Err(SecretError::NotFound));
+        fake.set("secret://OK_KEY", Ok("v"));
+        fake.set("secret://GONE", Err(SecretError::NotFound));
         let secrets = fake.cache();
         let config = ConfigSnapshot::from_value(json!({ "providers": {
             "ok": { "api_key": "secret://OK_KEY" },

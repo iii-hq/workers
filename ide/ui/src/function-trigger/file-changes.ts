@@ -46,16 +46,22 @@ const updateOpSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('replace') }),
 ])
 
+// Ops are parsed one by one: an op this card cannot read (e.g. sent without
+// `op`, which the worker may infer) only hides the +/- counts, never the row.
 const updateRequestSchema = z.object({
   files: z.array(
     z.object({
       path: z.string(),
-      ops: z.array(updateOpSchema),
+      ops: z.array(z.unknown()),
     }),
   ),
 })
 
-const deleteRequestSchema = z.object({ paths: z.array(z.string()) })
+const deleteRequestSchema = z.object({
+  paths: z.array(z.string()),
+  recursive: z.optional(z.boolean()),
+  include_protected: z.optional(z.boolean()),
+})
 
 export type FileChangeStatus = 'created' | 'updated' | 'deleted' | 'unchanged' | 'failed'
 
@@ -73,6 +79,9 @@ export interface FileChangeRow {
 export interface FileChangesSummary {
   action: 'created' | 'updated' | 'deleted'
   rows: FileChangeRow[]
+  /** A delete that also removes the protected files (.env, keys) under its
+      folders: said up front, above all on a call waiting for approval. */
+  protectedToo?: boolean
 }
 
 export function diffPanelRequest(row: FileChangeRow): PanelOpenRequest {
@@ -133,7 +142,13 @@ export function summarizeFileChanges(functionId: string, input: unknown, output?
         let additions = 0
         let deletions = 0
         let countsKnown = true
-        for (const op of file.ops) {
+        for (const raw of file.ops) {
+          const parsed = updateOpSchema.safeParse(raw)
+          if (!parsed.success) {
+            countsKnown = false
+            continue
+          }
+          const op = parsed.data
           if (op.op === 'insert') additions += countLines(op.content)
           else if (op.op === 'remove') {
             deletions += op.to_line - op.from_line + 1
@@ -160,6 +175,8 @@ export function summarizeFileChanges(functionId: string, input: unknown, output?
     if (!req.success) return null
     return {
       action: 'deleted',
+      // The worker honors the flag only on a recursive delete.
+      ...(req.data.recursive === true && req.data.include_protected === true ? { protectedToo: true } : {}),
       rows: req.data.paths.map((path, index) => {
         const result = results[index]
         return {

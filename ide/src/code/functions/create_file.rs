@@ -33,8 +33,9 @@ pub struct CreateFileInput {
 impl<'de> Deserialize<'de> for CreateFileInput {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
-        let (files, fs_scope) = super::files_batch_or_single(value, "coder::create-file")
-            .map_err(serde::de::Error::custom)?;
+        let (files, fs_scope) =
+            super::files_batch_or_single(value, "coder::create-file", "\"path\", \"content\"")
+                .map_err(serde::de::Error::custom)?;
         Ok(Self { files, fs_scope })
     }
 }

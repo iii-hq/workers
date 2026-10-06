@@ -11,7 +11,7 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
       "CredentialOrigin": {
-        "description": "`credential_source`: where the precedence found the provider's credential. `secret` is a `secret://NAME` reference in the slice, resolved through the `secrets` worker; `configured` says whether it actually yielded one.",
+        "description": "`credential_source`: where the precedence found the provider's credential. `secret` is a `secret://NAME` or `env://NAME` reference in the slice, resolved through the `secrets` worker; `configured` says whether it actually yielded one.",
         "enum": [
           "config",
           "env",
@@ -51,7 +51,7 @@
             ]
           },
           "credential_ref": {
-            "description": "The slice's `secret://NAME` reference, when it uses one.",
+            "description": "The slice's `secret://NAME` or `env://NAME` reference, when it uses one.",
             "type": [
               "string",
               "null"

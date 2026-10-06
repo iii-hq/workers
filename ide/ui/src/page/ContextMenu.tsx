@@ -2,7 +2,12 @@
    an invisible fixed-position trigger placed at the pointer, so Radix
    handles placement, collisions, keyboard traversal and dismissal exactly
    as it does for every other console menu. One hook per surface; items
-   are computed at open time from whatever was clicked. */
+   are computed at open time from whatever was clicked.
+
+   The trigger lives in the document body: the page's frame is a size
+   container, which makes it the containing block of fixed boxes inside it,
+   so an anchor there lands off by the pane's offset in the console. Out
+   there the page's scoped styles do not reach it, hence the inline style. */
 
 import {
   DropdownMenu,
@@ -18,6 +23,7 @@ import {
 } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 import { useCallback, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 export type ContextMenuItem =
   | {
@@ -33,7 +39,8 @@ export type ContextMenuItem =
       onSelect: () => void
     }
   | { type: 'separator'; id: string }
-  | { type: 'label'; id: string; label: string }
+  /** What the menu acts on, as its first row: `icon`, `label` and a quieter `detail`. */
+  | { type: 'label'; id: string; label: string; icon?: ReactNode; detail?: string }
   /** A row that opens `items` beside it. */
   | {
       type: 'submenu'
@@ -62,7 +69,11 @@ export function anchorFromEvent(event: {
   currentTarget?: EventTarget | null
   target?: EventTarget | null
 }): ContextMenuAnchor {
-  if (typeof event.clientX === 'number' && typeof event.clientY === 'number' && (event.clientX !== 0 || event.clientY !== 0)) {
+  if (
+    typeof event.clientX === 'number' &&
+    typeof event.clientY === 'number' &&
+    (event.clientX !== 0 || event.clientY !== 0)
+  ) {
     return { x: event.clientX, y: event.clientY }
   }
   const el = (event.target ?? event.currentTarget) as Element | null
@@ -81,7 +92,7 @@ export function useContextMenu() {
   return { open, close, element, isOpen: state !== null }
 }
 
-function ContextMenuSurface({ state, onClose }: { state: ContextMenuState; onClose: () => void }) {
+export function ContextMenuSurface({ state, onClose }: { state: ContextMenuState; onClose: () => void }) {
   return (
     <DropdownMenu
       open
@@ -89,13 +100,23 @@ function ContextMenuSurface({ state, onClose }: { state: ContextMenuState; onClo
         if (!next) onClose()
       }}
     >
-      <DropdownMenuTrigger asChild>
-        <span
-          aria-hidden
-          className="shui-context-anchor"
-          style={{ left: state.anchor.x, top: state.anchor.y }}
-        />
-      </DropdownMenuTrigger>
+      {createPortal(
+        <DropdownMenuTrigger asChild>
+          <span
+            aria-hidden
+            className="shui-context-anchor"
+            style={{
+              position: 'fixed',
+              left: state.anchor.x,
+              top: state.anchor.y,
+              width: 0,
+              height: 0,
+              pointerEvents: 'none',
+            }}
+          />
+        </DropdownMenuTrigger>,
+        document.body,
+      )}
       <DropdownMenuContent align="start" side="bottom" sideOffset={2} className="shui-context-menu">
         {state.items.map((item) => renderItem(item, onClose))}
       </DropdownMenuContent>
@@ -105,7 +126,17 @@ function ContextMenuSurface({ state, onClose }: { state: ContextMenuState; onClo
 
 function renderItem(item: ContextMenuItem, onClose: () => void): ReactNode {
   if (item.type === 'separator') return <DropdownMenuSeparator key={item.id} />
-  if (item.type === 'label') return <DropdownMenuLabel key={item.id}>{item.label}</DropdownMenuLabel>
+  if (item.type === 'label') {
+    return (
+      <DropdownMenuLabel key={item.id} className="shui-context-head" title={item.label}>
+        <span className="menu-icon" aria-hidden>
+          {item.icon}
+        </span>
+        <span className="menu-label">{item.label}</span>
+        {item.detail ? <span className="menu-detail">{item.detail}</span> : null}
+      </DropdownMenuLabel>
+    )
+  }
   if (item.type === 'submenu') {
     return (
       <DropdownMenuSub key={item.id}>
@@ -128,7 +159,10 @@ function renderItem(item: ContextMenuItem, onClose: () => void): ReactNode {
       disabled={item.disabled}
       onSelect={() => {
         onClose()
-        item.onSelect()
+        // After the menu is gone: while open it holds focus inside itself,
+        // so an action that moves focus (a rename field, the commit
+        // message) would see it pulled back and then dropped to the body.
+        queueMicrotask(item.onSelect)
       }}
     >
       <span className="menu-icon" aria-hidden>

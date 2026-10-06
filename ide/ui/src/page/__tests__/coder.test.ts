@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  coderDelete,
   coderWriteFile,
   flattenTree,
   joinPath,
   relativeTo,
   type TreeNode,
 } from '../coder'
+import { deleteAfterRefusal, deleteEntry, isProtectedSubtreeError } from '../file-actions'
 
 const node = (
   name: string,
@@ -118,5 +120,62 @@ describe('coderWriteFile', () => {
       ],
     })
     expect(result.revision).toBe('sha256:new')
+  })
+})
+
+describe('coderDelete', () => {
+  it('asks to remove protected files only when the user confirmed it', async () => {
+    const trigger = vi.fn(async () => ({ results: [] }))
+    const host = { iii: { trigger } } as unknown as Parameters<typeof coderDelete>[0]
+    await coderDelete(host, ['/r/d'], true)
+    await coderDelete(host, ['/r/d'], true, true)
+    expect(trigger.mock.calls.map((call) => (call as unknown[])[1])).toEqual([
+      { paths: ['/r/d'], recursive: true },
+      { paths: ['/r/d'], recursive: true, include_protected: true },
+    ])
+  })
+
+  it("tells the worker's protected-subtree refusal from other failures", () => {
+    expect(
+      isProtectedSubtreeError('/r/test-worker: subtree contains non-accessible entries; refusing recursive delete.'),
+    ).toBe(true)
+    expect(isProtectedSubtreeError('/r/x: not found or not accessible.')).toBe(false)
+  })
+})
+
+describe('deleteEntry', () => {
+  it('deletes a folder recursively, its protected entries only when confirmed', async () => {
+    const trigger = vi.fn(async () => ({ results: [{ path: '/r/pkg', success: true, removed: true }] }))
+    const host = { iii: { trigger } } as unknown as Parameters<typeof deleteEntry>[0]
+    await deleteEntry(host, '/r', 'pkg', true)
+    await deleteEntry(host, '/r', 'pkg', true, true)
+    expect(trigger.mock.calls).toEqual([
+      ['coder::delete-file', { paths: ['/r/pkg'], recursive: true }],
+      ['coder::delete-file', { paths: ['/r/pkg'], recursive: true, include_protected: true }],
+    ])
+  })
+
+  it("throws the worker's error for a path it could not delete", async () => {
+    const trigger = vi.fn(async () => ({ results: [{ success: false, error: { message: 'x' } }] }))
+    const host = { iii: { trigger } } as unknown as Parameters<typeof deleteEntry>[0]
+    await expect(deleteEntry(host, '/r', 'pkg', true)).rejects.toThrow(/^x$/)
+  })
+})
+
+describe('deleteAfterRefusal', () => {
+  const refused = '/r/pkg: subtree contains non-accessible entries; refusing recursive delete.'
+
+  it('asks again, naming the protected files, when a folder delete was refused for them', () => {
+    expect(deleteAfterRefusal({ path: 'pkg', isDir: true }, refused)).toEqual({
+      path: 'pkg',
+      isDir: true,
+      protectedInside: true,
+    })
+  })
+
+  it('never asks a third time, nor for a file or another failure', () => {
+    expect(deleteAfterRefusal({ path: 'pkg', isDir: true, protectedInside: true }, refused)).toBeNull()
+    expect(deleteAfterRefusal({ path: 'a.pem', isDir: false }, refused)).toBeNull()
+    expect(deleteAfterRefusal({ path: 'pkg', isDir: true }, 'permission denied')).toBeNull()
   })
 })

@@ -151,10 +151,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn changed_slices_resolve_their_references_before_discovery_is_queued() {
         let fake = FakeSecrets::default();
-        fake.set("ANTHROPIC_API_KEY", Ok("sk-from-secrets"));
-        fake.set("STALE", Ok("old"));
+        fake.set("secret://ANTHROPIC_API_KEY", Ok("sk-from-secrets"));
+        fake.set("secret://STALE", Ok("old"));
         let secrets = fake.cache();
-        secrets.ensure(["STALE".to_string()]).await;
+        secrets.ensure(["secret://STALE".to_string()]).await;
         let (queue, fired) = recording_queue(Duration::from_secs(2));
         let config = new_config_cell(json!({ "providers": {
             "anthropic": { "api_key": "secret://ANTHROPIC_API_KEY" },
@@ -172,13 +172,15 @@ mod tests {
 
         // Resolved already — before the debounced refresh_models fires.
         assert_eq!(
-            secrets.lookup("ANTHROPIC_API_KEY"),
+            secrets.lookup("secret://ANTHROPIC_API_KEY"),
             Some(Ok("sk-from-secrets".into()))
         );
         assert!(fired.lock().unwrap().is_empty());
         // Unchanged slices are not re-read; unreferenced entries are dropped.
-        assert!(!fake.calls().contains(&"OPENAI_API_KEY".to_string()));
-        assert_eq!(secrets.lookup("STALE"), None);
+        assert!(!fake
+            .calls()
+            .contains(&"secret://OPENAI_API_KEY".to_string()));
+        assert_eq!(secrets.lookup("secret://STALE"), None);
 
         tokio::time::sleep(Duration::from_secs(3)).await;
         assert_eq!(

@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { Host } from '@iii-dev/console-ui'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   branchStanding,
@@ -305,6 +306,30 @@ describe('worktrees', () => {
     await expect(mergeWorktree(host, list, wt, { squash: true, message: 'feat: h' })).rejects.toThrow(/lint failed/)
     expect(sh(repo, 'rev-parse', 'feat/h')).toBe(tip)
     expect(sh(repo, 'log', '-1', '--format=%s', 'main')).toBe('base')
+  })
+
+  it('names the commit failure when the branch cannot be put back', async () => {
+    const { list, path } = await withBranch('feat/r')
+    commit(path, 'r.txt', 'r\n', 'r')
+    const tip = sh(repo, 'rev-parse', 'feat/r')
+    const wt = list.worktrees.find((entry) => entry.path === path)!
+    // `shell::exec` itself rejects the commit, with the bus's plain error
+    // body, and the reset back to the tip fails too.
+    const failing = {
+      iii: {
+        trigger: (fn: string, payload: { args?: string[] }) => {
+          const args = payload.args ?? []
+          if (args[0] === 'commit')
+            return Promise.reject({ message: 'handler error: {"code":"S210","message":"git timed out"}' })
+          if (args[0] === 'reset' && args[2] === tip)
+            return Promise.resolve({ exit_code: 1, stdout: '', stderr: 'locked' })
+          return host.iii.trigger(fn, payload)
+        },
+      },
+    } as unknown as Host
+    await expect(mergeWorktree(failing, list, wt, { squash: true, message: 'feat: r' })).rejects.toThrow(
+      `S210: git timed out; feat/r was not put back: git reset --soft ${tip} restores it`,
+    )
   })
 
   it('fast-forwards main where it is checked out now, not where the list saw it', async () => {

@@ -1745,9 +1745,9 @@ export declare const ModelPicker: React.ComponentType<ModelPickerProps>
 export interface SecretKeyFieldProps {
   /** Secret name — also the environment variable the key is looked up under. */
   name: string
-  /** The field's configuration value: `secret://NAME`, `${VAR}`, a literal, or empty. */
+  /** The field's configuration value: `secret://NAME`, `env://NAME`, `${VAR}`, a literal, or empty. */
   value: string | undefined
-  /** Write the field: a `secret://` reference, or `undefined` to clear it. */
+  /** Write the field: a `secret://` or `env://` reference, or `undefined` to clear it. */
   onChange: (next: string | undefined) => unknown
   /** Workers allowed to read the key. */
   consumers: readonly string[]
@@ -1755,15 +1755,23 @@ export interface SecretKeyFieldProps {
   /** What the consumer reports about the credential (llm-router's provider status). */
   status?: { connected?: boolean; source?: string; error?: string; checking?: boolean; detail?: string }
   keysUrl?: string
+  /**
+   * The consumer also resolves `env://NAME` through the secrets worker (as
+   * llm-router does): offer keeping the key as an environment variable in the
+   * project's `.env`. Consoles before it ignore the prop and offer the
+   * encrypted store only.
+   */
+  environment?: boolean
   disabled?: boolean
   className?: string
 }
 /**
- * One credential, kept the way the Console keeps credentials: encrypted in
- * the `secrets` worker, with only `secret://NAME` in configuration. Reuses a
- * key found on the machine, keeps a stored one or takes a pasted one; moves a
- * plain-text or `${VAR}` value into the store; adds the secrets worker when
- * it is missing. Read it from `host.components.SecretKeyField` and fall back
+ * One credential, kept by the `secrets` worker: encrypted, with only
+ * `secret://NAME` in configuration, or — with `environment` — as a variable
+ * in the project's `.env`, with `env://NAME`. Reuses a key found on the
+ * machine, keeps a stored one or takes a pasted one; moves a plain-text or
+ * `${VAR}` value into the secrets worker; starts the secrets worker when it
+ * is not running. Read it from `host.components.SecretKeyField` and fall back
  * to a plain input when absent: Consoles before it do not have it.
  */
 export declare const SecretKeyField: React.ComponentType<SecretKeyFieldProps>

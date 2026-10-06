@@ -1,3 +1,4 @@
+import type { z } from 'zod'
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
 import type { FunctionTriggerMessage } from '@/types/chat'
@@ -7,9 +8,14 @@ import { InfoView } from './InfoView'
 import { ListFolderView } from './ListFolderView'
 import { MovePreview, MoveView } from './MoveView'
 import {
+  createFileRequestSchema,
+  deleteFileRequestSchema,
   isCoderFunction,
   isCoderMutateFunction,
+  moveFileRequestSchema,
+  safeParseRequest,
   unwrapEnvelope,
+  updateFileRequestSchema,
 } from './parsers'
 import { ReadFileView } from './ReadFileView'
 import { SearchView } from './SearchView'
@@ -68,14 +74,25 @@ function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
   }
 }
 
+const PREVIEW_REQUEST_SCHEMAS: Record<string, z.ZodType> = {
+  'coder::create-file': createFileRequestSchema,
+  'coder::update-file': updateFileRequestSchema,
+  'coder::delete-file': deleteFileRequestSchema,
+  'coder::move': moveFileRequestSchema,
+}
+
 /** Only the mutators (create/update/delete/move) gate on approval — the
  *  read-side functions never reach the pending state, so they have no
- *  Preview components to dispatch to. */
+ *  Preview components to dispatch to. A request the preview cannot parse
+ *  returns null so the card shows the raw request instead of an empty
+ *  preview above Approve. */
 function tryRenderPreview(
   message: FunctionTriggerMessage,
 ): React.ReactNode | null {
-  if (!isCoderMutateFunction(message.functionId)) return null
+  const schema = PREVIEW_REQUEST_SCHEMAS[message.functionId]
+  if (!schema) return null
   const input = unwrapEnvelope(message.input)
+  if (!safeParseRequest(schema, input)) return null
   switch (message.functionId) {
     case 'coder::create-file':
       return <CreateFilePreview input={input} />

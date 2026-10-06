@@ -84,7 +84,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     register_entry(&iii, &provider_schemas).await?;
     let config = new_config_cell(read_entry_value(&iii).await?);
 
-    // Provider follow-ups share one debounce, and `secret://NAME` references
+    // Provider follow-ups share one debounce, and `secret://` / `env://` references
     // resolve through the `secrets` worker into an in-memory cache whose
     // changes refresh the providers that use them.
     let refresh = RefreshQueue::new(bus_fire(iii.clone()), REFRESH_DEBOUNCE);

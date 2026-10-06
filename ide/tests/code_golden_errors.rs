@@ -269,6 +269,7 @@ async fn error_message_formats_match_golden() {
             delete_file::DeleteFileInput {
                 paths: vec!["blocked-dir".into()],
                 recursive: true,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -567,6 +568,7 @@ async fn error_message_formats_match_golden() {
                 update_file::UpdateFileInput {
                     files: vec![update_file::UpdateFileSpec {
                         path: "tpl-handler.js".into(),
+                        inferred_ops: Vec::new(),
                         ops: vec![update_file::UpdateOp::Replace {
                             pattern: r"iii\.registerFunction\(.*".into(),
                             replacement:

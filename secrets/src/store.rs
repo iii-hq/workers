@@ -1,5 +1,7 @@
 //! The vault in memory: every operation runs under one lock, writes go to a
-//! copy that replaces the in-memory vault only after it is on disk.
+//! copy that replaces the in-memory vault only after it is on disk. The env
+//! store's operations take the same lock: its grants live in the vault, its
+//! values in `.env`.
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -9,16 +11,18 @@ use tokio::sync::Mutex;
 use crate::access::is_authorized;
 use crate::api::{
     DetectResponse, DetectResult, DetectedSource, KeySourceKind, SecretMeta, StatusResponse,
+    StoreKind,
 };
 use crate::config::SecretsConfig;
 use crate::crypto::MasterKey;
 use crate::detect::Found;
+use crate::envstore::EnvSource;
 use crate::error::{codes, SecretsError};
 use crate::events::{ChangeAction, ChangedEvent};
 use crate::keys::{self, EnvKey, KeyRequest};
 use crate::names::{self, mask, normalize_consumers, validate_name};
 use crate::secret::SecretString;
-use crate::vault::{SecretRecord, Vault, VAULT_FILE};
+use crate::vault::{EnvGrant, SecretRecord, Vault, VAULT_FILE};
 
 pub const MAX_VALUE_BYTES: usize = 64 * 1024;
 const MAX_DESCRIPTION_CHARS: usize = 1024;
@@ -34,6 +38,8 @@ pub struct StorePaths {
     pub key_dir: Option<PathBuf>,
     /// `III_COMPOSE_DIR`, when the worker runs under Compose.
     pub project_dir: Option<PathBuf>,
+    /// The project's `.env`: where the env store reads and writes.
+    pub dotenv: Option<PathBuf>,
 }
 
 impl StorePaths {
@@ -48,6 +54,7 @@ impl StorePaths {
             project_dir: std::env::var_os(iii_worker_paths::COMPOSE_DIR_ENV)
                 .filter(|dir| !dir.is_empty())
                 .map(PathBuf::from),
+            dotenv: Some(iii_worker_paths::resolve_path(&config.env_file)),
         }
     }
 
@@ -62,14 +69,22 @@ impl StorePaths {
 
 pub struct Store {
     env_key: EnvKey,
+    /// Whether the env store falls back to this worker's environment.
+    process_env: bool,
     state: Mutex<State>,
 }
+
+/// What the env store last saw of a shared variable: a digest of its value,
+/// `None` while it is unset. Kept in memory only.
+type Seen = Option<[u8; 32]>;
 
 struct State {
     paths: StorePaths,
     /// Loaded on first use; `None` again after a reconfiguration.
     vault: Option<Vault>,
     key: Option<MasterKey>,
+    /// Per shared variable; filled by the first scan.
+    env_seen: HashMap<String, Seen>,
 }
 
 impl State {
@@ -78,6 +93,7 @@ impl State {
             paths,
             vault: None,
             key: None,
+            env_seen: HashMap::new(),
         }
     }
 
@@ -140,6 +156,11 @@ fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+fn digest(value: &SecretString) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(value.expose().as_bytes()).into()
+}
+
 fn validate_value(value: &SecretString) -> Result<(), SecretsError> {
     if value.is_blank() {
         return Err(SecretsError::invalid_request("value must not be empty"));
@@ -191,13 +212,32 @@ impl Store {
     pub fn new(paths: StorePaths, env_key: EnvKey) -> Self {
         Self {
             env_key,
+            process_env: true,
             state: Mutex::new(State::new(paths)),
         }
     }
 
-    /// Load (or create) the vault now; returns how many secrets it holds.
+    /// Read the env store from `.env` only (tests).
+    pub fn without_process_env(mut self) -> Self {
+        self.process_env = false;
+        self
+    }
+
+    fn env_source(&self, state: &State) -> EnvSource {
+        EnvSource {
+            dotenv: state.paths.dotenv.clone(),
+            process_env: self.process_env,
+        }
+    }
+
+    /// Load (or create) the vault now and take a first look at the shared
+    /// variables; returns how many vault secrets it holds.
     pub async fn open(&self) -> Result<usize, SecretsError> {
-        Ok(self.state.lock().await.vault()?.secrets.len())
+        let mut guard = self.state.lock().await;
+        let state = &mut *guard;
+        let count = state.vault()?.secrets.len();
+        self.scan_env(state);
+        Ok(count)
     }
 
     pub async fn vault_path(&self) -> PathBuf {
@@ -205,13 +245,18 @@ impl Store {
     }
 
     /// Point the store at new locations. The cached vault and key are
-    /// dropped (the key is zeroized) and re-read on next use.
+    /// dropped (the key is zeroized) and re-read on next use; call
+    /// [`Store::env_changes`] after it to report what a new env file changed.
     pub async fn reconfigure(&self, paths: StorePaths) -> bool {
         let mut state = self.state.lock().await;
         if state.paths == paths {
             return false;
         }
+        // What the env store last saw carries over, so a new env file is
+        // compared with the old one and the difference reported.
+        let seen = std::mem::take(&mut state.env_seen);
         *state = State::new(paths);
+        state.env_seen = seen;
         if let Err(error) = state.vault() {
             tracing::warn!(error = %error, "re-configured vault is not usable yet");
         }
@@ -304,7 +349,7 @@ impl Store {
         let event = ChangedEvent::new(
             name,
             ChangeAction::AccessChanged,
-            Some(meta.fingerprint.clone()),
+            meta.fingerprint.clone(),
             &at,
         );
         Ok((meta, event))
@@ -371,7 +416,12 @@ impl Store {
             .get(name)
             .ok_or_else(|| SecretsError::not_found(name))?;
         if !is_authorized(&record.consumers, caller) {
-            return Err(forbidden(name, caller, record.consumers.is_empty()));
+            return Err(forbidden(
+                StoreKind::Vault,
+                name,
+                caller,
+                record.consumers.is_empty(),
+            ));
         }
         let sealed = record.sealed()?;
         let plaintext = state.key(&self.env_key, false)?.open(name, &sealed)?;
@@ -467,18 +517,246 @@ impl Store {
         } else {
             (KeySourceKind::File, state.paths.key_path(&vault_id))
         };
+        let env_count = state.vault()?.env.len();
         Ok(StatusResponse {
             vault_path: state.paths.vault_path().display().to_string(),
             key_source,
             key_path: key_path.map(|path| path.display().to_string()),
             count,
             version,
+            env_file: state
+                .paths
+                .dotenv
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            env_count,
         })
+    }
+
+    /// Share an environment variable: write `value` to `.env` when one is
+    /// given, then create or update its grant. `consumers`/`description` of
+    /// `None` keep the current values (`[]`/none for a new grant). A
+    /// variable may be shared before it is set.
+    pub async fn set_env(
+        &self,
+        name: &str,
+        value: Option<&SecretString>,
+        consumers: Option<Vec<String>>,
+        description: Option<String>,
+    ) -> Result<(SecretMeta, ChangedEvent), SecretsError> {
+        validate_name(name)?;
+        if let Some(value) = value {
+            validate_value(value)?;
+        }
+        let consumers = consumers.map(normalize_consumers).transpose()?;
+        let description = normalize_description(description)?;
+        let mut guard = self.state.lock().await;
+        let state = &mut *guard;
+        let source = self.env_source(state);
+        let before = source.read_one(name).map(|found| digest(&found.value));
+        let mut next = state.vault()?.clone();
+        if let Some(value) = value {
+            source.write(name, value)?;
+        }
+        let current = source.read_one(name);
+        let seen = current.as_ref().map(|found| digest(&found.value));
+        let at = now();
+        let created = !next.env.contains_key(name);
+        let grant = next.env.entry(name.to_owned()).or_insert_with(|| EnvGrant {
+            name: name.to_owned(),
+            description: None,
+            consumers: Vec::new(),
+            created_at: at.clone(),
+            updated_at: at.clone(),
+            last_resolved_at: None,
+            last_resolved_by: None,
+        });
+        if let Some(consumers) = consumers {
+            grant.consumers = consumers;
+        }
+        if let Some(description) = description {
+            grant.description = description;
+        }
+        grant.updated_at = at.clone();
+        let meta = grant.meta(current.as_ref());
+        state.commit(next)?;
+        // The watcher must not report this write again.
+        state.env_seen.insert(name.to_owned(), seen);
+        // As the watcher reports it: a variable that appears is created.
+        let action = if created || (before.is_none() && seen.is_some()) {
+            ChangeAction::Created
+        } else if before != seen {
+            ChangeAction::Rotated
+        } else {
+            ChangeAction::AccessChanged
+        };
+        Ok((meta, ChangedEvent::env(name, action, &at)))
+    }
+
+    /// Stop sharing a variable. Its value stays in `.env`. `None` when it
+    /// was not shared.
+    pub async fn delete_env(&self, name: &str) -> Result<Option<ChangedEvent>, SecretsError> {
+        validate_name(name)?;
+        let mut guard = self.state.lock().await;
+        let state = &mut *guard;
+        if !state.vault()?.env.contains_key(name) {
+            return Ok(None);
+        }
+        let mut next = state.vault()?.clone();
+        next.env.remove(name);
+        state.commit(next)?;
+        state.env_seen.remove(name);
+        Ok(Some(ChangedEvent::env(name, ChangeAction::Deleted, &now())))
+    }
+
+    pub async fn get_env(&self, name: &str) -> Result<Option<SecretMeta>, SecretsError> {
+        validate_name(name)?;
+        let mut guard = self.state.lock().await;
+        let state = &mut *guard;
+        let source = self.env_source(state);
+        Ok(state
+            .vault()?
+            .env
+            .get(name)
+            .map(|grant| grant.meta(source.read_one(name).as_ref())))
+    }
+
+    /// Every vault secret, then every shared variable with its current hint.
+    pub async fn list_all(&self) -> Result<Vec<SecretMeta>, SecretsError> {
+        let mut guard = self.state.lock().await;
+        let state = &mut *guard;
+        let source = self.env_source(state);
+        let vault = state.vault()?;
+        let names: Vec<String> = vault.env.keys().cloned().collect();
+        let values = source.read(&names);
+        Ok(vault
+            .secrets
+            .values()
+            .map(SecretRecord::meta)
+            .chain(
+                vault
+                    .env
+                    .values()
+                    .map(|grant| grant.meta(values.get(&grant.name))),
+            )
+            .collect())
+    }
+
+    /// The allowlist of a shared variable, `None` when it is not shared.
+    pub async fn env_consumers_of(&self, name: &str) -> Result<Option<Vec<String>>, SecretsError> {
+        let mut state = self.state.lock().await;
+        Ok(state
+            .vault()?
+            .env
+            .get(name)
+            .map(|grant| grant.consumers.clone()))
+    }
+
+    /// The variable's current value for `caller` if its grant admits it,
+    /// then record the resolution. Nothing about the value is revealed to a
+    /// caller the grant does not admit.
+    pub async fn resolve_env(
+        &self,
+        name: &str,
+        caller: Option<&str>,
+    ) -> Result<SecretString, SecretsError> {
+        let mut guard = self.state.lock().await;
+        let state = &mut *guard;
+        let source = self.env_source(state);
+        let grant = state.vault()?.env.get(name).ok_or_else(not_shared)?;
+        if !is_authorized(&grant.consumers, caller) {
+            return Err(forbidden(
+                StoreKind::Env,
+                name,
+                caller,
+                grant.consumers.is_empty(),
+            ));
+        }
+        let value = source.read_one(name).ok_or_else(|| {
+            SecretsError::new(
+                codes::SECRET_NOT_FOUND,
+                match source.dotenv_path() {
+                    Some(path) => format!(
+                        "environment variable `{name}` is not set in {} or in the secrets worker's environment",
+                        path.display()
+                    ),
+                    None => format!(
+                        "environment variable `{name}` is not set in the secrets worker's environment"
+                    ),
+                },
+            )
+        })?;
+        let mut next = state.vault()?.clone();
+        if let Some(grant) = next.env.get_mut(name) {
+            grant.last_resolved_at = Some(now());
+            grant.last_resolved_by = caller.map(str::to_owned);
+        }
+        if let Err(error) = state.commit(next) {
+            tracing::warn!(error = %error, "could not record the resolution");
+        }
+        Ok(value.value)
+    }
+
+    /// Changes to shared variables since the last look, called when the
+    /// operating system reports that `.env` changed: one event per variable
+    /// set, changed or removed by an edit this worker did not make.
+    pub async fn env_changes(&self) -> Vec<ChangedEvent> {
+        let mut guard = self.state.lock().await;
+        self.scan_env(&mut guard)
+    }
+
+    /// The `.env` the env store reads and writes.
+    pub async fn dotenv_path(&self) -> Option<PathBuf> {
+        self.state.lock().await.paths.dotenv.clone()
+    }
+
+    /// Compare every shared variable with what was last seen. A variable
+    /// seen for the first time only sets the baseline.
+    fn scan_env(&self, state: &mut State) -> Vec<ChangedEvent> {
+        let names: Vec<String> = match state.vault() {
+            Ok(vault) => vault.env.keys().cloned().collect(),
+            Err(_) => return Vec::new(),
+        };
+        if names.is_empty() {
+            return Vec::new();
+        }
+        let values = self.env_source(state).read(&names);
+        let at = now();
+        let mut events = Vec::new();
+        for name in names {
+            let seen = values.get(&name).map(|found| digest(&found.value));
+            match state.env_seen.insert(name.clone(), seen) {
+                Some(previous) if previous != seen => {
+                    let action = match (previous, seen) {
+                        (None, Some(_)) => ChangeAction::Created,
+                        (Some(_), None) => ChangeAction::Deleted,
+                        _ => ChangeAction::Rotated,
+                    };
+                    events.push(ChangedEvent::env(&name, action, &at));
+                }
+                _ => {}
+            }
+        }
+        events
     }
 }
 
-fn forbidden(name: &str, caller: Option<&str>, no_consumers: bool) -> SecretsError {
-    let reference = names::reference_for(name);
+/// A grant-less `env://` reference. The name is not echoed: a caller may have
+/// put a raw credential after the scheme.
+fn not_shared() -> SecretsError {
+    SecretsError::new(
+        codes::SECRET_FORBIDDEN,
+        "that environment variable is not shared with any worker; allow one with secrets::access and store \"env\"",
+    )
+}
+
+fn forbidden(
+    store: StoreKind,
+    name: &str,
+    caller: Option<&str>,
+    no_consumers: bool,
+) -> SecretsError {
+    let reference = names::reference_for(store, name);
     let message = match caller {
         _ if no_consumers => {
             format!("`{reference}` has no consumers yet; allow a worker with secrets::access")
@@ -508,6 +786,7 @@ mod tests {
             key_file: None,
             key_dir: Some(root.path().join("home/.config/iii/secrets")),
             project_dir: Some(root.path().join("project")),
+            dotenv: Some(root.path().join("project/.env")),
         };
         Fixture { _root: root, paths }
     }
@@ -531,10 +810,8 @@ mod tests {
         assert_eq!(meta.hint, "sk-ant…9f2c");
         assert_eq!(meta.consumers, vec!["llm-router"]);
         assert_eq!(event.action, ChangeAction::Created);
-        assert_eq!(
-            event.fingerprint.as_deref(),
-            Some(meta.fingerprint.as_str())
-        );
+        assert!(meta.fingerprint.is_some());
+        assert_eq!(event.fingerprint, meta.fingerprint);
 
         let listed = serde_json::to_string(&store.list().await.unwrap()).unwrap();
         assert!(
@@ -789,6 +1066,246 @@ mod tests {
         assert_eq!(b.sources.len(), 1);
         assert!(!b.sources[0].matches_stored);
         assert!(response.results[2].sources.is_empty());
+    }
+
+    fn dotenv(fx: &Fixture) -> PathBuf {
+        let path = fx.paths.dotenv.clone().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn env_store_shares_a_variable_and_reads_it_live() {
+        let fx = fixture();
+        let path = dotenv(&fx);
+        std::fs::write(&path, format!("ANTHROPIC_API_KEY={VALUE}\n")).unwrap();
+        let store = Store::new(fx.paths.clone(), EnvKey::default()).without_process_env();
+        let (meta, event) = store
+            .set_env(
+                "ANTHROPIC_API_KEY",
+                None,
+                Some(vec!["llm-router".into()]),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(meta.reference, "env://ANTHROPIC_API_KEY");
+        assert_eq!(meta.store, StoreKind::Env);
+        assert_eq!(meta.hint, "sk-ant…9f2c");
+        assert_eq!(meta.location.as_deref(), Some(path.to_str().unwrap()));
+        assert!(meta.fingerprint.is_none());
+        assert_eq!(event.reference, "env://ANTHROPIC_API_KEY");
+        assert_eq!(event.action, ChangeAction::Created);
+
+        let value = store
+            .resolve_env("ANTHROPIC_API_KEY", Some("llm-router"))
+            .await
+            .unwrap();
+        assert_eq!(value.expose(), VALUE);
+        assert_eq!(
+            store
+                .resolve_env("ANTHROPIC_API_KEY", Some("harness"))
+                .await
+                .unwrap_err()
+                .code,
+            codes::SECRET_FORBIDDEN
+        );
+        // An edit to .env is what the next resolution returns.
+        std::fs::write(&path, "ANTHROPIC_API_KEY=sk-ant-edited-by-hand-0000\n").unwrap();
+        assert_eq!(
+            store
+                .resolve_env("ANTHROPIC_API_KEY", Some("llm-router"))
+                .await
+                .unwrap()
+                .expose(),
+            "sk-ant-edited-by-hand-0000"
+        );
+        let meta = store.get_env("ANTHROPIC_API_KEY").await.unwrap().unwrap();
+        assert_eq!(meta.last_resolved_by.as_deref(), Some("llm-router"));
+
+        // The vault keeps who may read it, never the value.
+        let on_disk = std::fs::read_to_string(fx.paths.vault_path()).unwrap();
+        assert!(on_disk.contains("\"env\""), "{on_disk}");
+        assert!(!on_disk.contains("edited-by-hand") && !on_disk.contains("abcdefghij"));
+        // Both stores list, each with its own reference.
+        store.set("OTHER", &VALUE.into(), None, None).await.unwrap();
+        let refs: Vec<String> = store
+            .list_all()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|meta| meta.reference)
+            .collect();
+        assert_eq!(refs, vec!["secret://OTHER", "env://ANTHROPIC_API_KEY"]);
+    }
+
+    #[tokio::test]
+    async fn env_store_writes_dotenv_and_reports_edits_made_elsewhere() {
+        let fx = fixture();
+        let path = dotenv(&fx);
+        std::fs::write(&path, "# Provider keys\n# OPENAI_API_KEY=\nA=1\n").unwrap();
+        let store = Store::new(fx.paths.clone(), EnvKey::default()).without_process_env();
+        store.open().await.unwrap();
+        let (meta, event) = store
+            .set_env(
+                "OPENAI_API_KEY",
+                Some(&"sk-proj-first-0000".into()),
+                Some(vec!["llm-router".into()]),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(event.action, ChangeAction::Created);
+        assert_eq!(meta.hint, "sk-p…0000");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# Provider keys\nOPENAI_API_KEY=sk-proj-first-0000\nA=1\n"
+        );
+        // Its own write is not reported again.
+        assert!(store.env_changes().await.is_empty());
+
+        let (_, event) = store
+            .set_env(
+                "OPENAI_API_KEY",
+                Some(&"sk-proj-second-1111".into()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(event.action, ChangeAction::Rotated);
+        let (meta, event) = store
+            .set_env("OPENAI_API_KEY", None, Some(vec!["judge".into()]), None)
+            .await
+            .unwrap();
+        assert_eq!(event.action, ChangeAction::AccessChanged);
+        assert_eq!(meta.consumers, vec!["judge"]);
+
+        let edit = |text: &str| std::fs::write(&path, text).unwrap();
+        edit("OPENAI_API_KEY=sk-proj-by-hand-2222\n");
+        let events = store.env_changes().await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].reference, "env://OPENAI_API_KEY");
+        assert_eq!(events[0].action, ChangeAction::Rotated);
+        assert!(store.env_changes().await.is_empty(), "unchanged file");
+        edit("# removed\n");
+        assert_eq!(store.env_changes().await[0].action, ChangeAction::Deleted);
+        edit("OPENAI_API_KEY=sk-proj-is-back-3333\n");
+        assert_eq!(store.env_changes().await[0].action, ChangeAction::Created);
+    }
+
+    #[tokio::test]
+    async fn a_new_env_file_is_compared_with_the_old_one() {
+        let fx = fixture();
+        let path = dotenv(&fx);
+        std::fs::write(
+            &path,
+            "A=same-value-0000\nB=dev-value-1111\nC=only-in-dev-2222\n",
+        )
+        .unwrap();
+        let store = Store::new(fx.paths.clone(), EnvKey::default()).without_process_env();
+        for name in ["A", "B", "C", "D"] {
+            store
+                .set_env(name, None, Some(vec!["w".into()]), None)
+                .await
+                .unwrap();
+        }
+        let staging = path.with_file_name(".env.staging");
+        std::fs::write(
+            &staging,
+            "A=same-value-0000\nB=staging-value-3333\nD=only-in-staging\n",
+        )
+        .unwrap();
+        assert!(
+            store
+                .reconfigure(StorePaths {
+                    dotenv: Some(staging.clone()),
+                    ..fx.paths.clone()
+                })
+                .await
+        );
+        let changes: Vec<(String, ChangeAction)> = store
+            .env_changes()
+            .await
+            .into_iter()
+            .map(|event| (event.name, event.action))
+            .collect();
+        assert_eq!(
+            changes,
+            vec![
+                ("B".to_owned(), ChangeAction::Rotated),
+                ("C".to_owned(), ChangeAction::Deleted),
+                ("D".to_owned(), ChangeAction::Created),
+            ]
+        );
+        assert_eq!(
+            store.resolve_env("B", Some("w")).await.unwrap().expose(),
+            "staging-value-3333"
+        );
+        // Writes go to the configured file, never the old one.
+        store
+            .set_env("E", Some(&"written-to-staging".into()), None, None)
+            .await
+            .unwrap();
+        assert!(std::fs::read_to_string(&staging)
+            .unwrap()
+            .contains("E=written-to-staging"));
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("E="));
+        assert_eq!(
+            store.status().await.unwrap().env_file.as_deref(),
+            staging.to_str()
+        );
+    }
+
+    #[tokio::test]
+    async fn env_references_need_a_grant_and_a_value() {
+        let fx = fixture();
+        let path = dotenv(&fx);
+        let store = Store::new(fx.paths.clone(), EnvKey::default()).without_process_env();
+        // Not shared: refused without echoing the name.
+        let error = store
+            .resolve_env("sk-live-pasted", Some("w"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, codes::SECRET_FORBIDDEN);
+        assert!(!error.message.contains("sk-live-pasted"), "{error}");
+        // Shared with nobody yet.
+        store.set_env("K", None, None, None).await.unwrap();
+        assert_eq!(
+            store.resolve_env("K", Some("w")).await.unwrap_err().code,
+            codes::SECRET_FORBIDDEN
+        );
+        // Shared but unset.
+        let (meta, _) = store
+            .set_env("K", None, Some(vec!["w".into()]), None)
+            .await
+            .unwrap();
+        assert_eq!(meta.hint, "");
+        assert!(meta.location.is_none());
+        let error = store.resolve_env("K", Some("w")).await.unwrap_err();
+        assert_eq!(error.code, codes::SECRET_NOT_FOUND);
+        assert!(error.message.contains(path.to_str().unwrap()), "{error}");
+        // A value .env cannot hold is refused before anything is written.
+        assert_eq!(
+            store
+                .set_env("K", Some(&"two\nlines-value".into()), None, None)
+                .await
+                .unwrap_err()
+                .code,
+            codes::INVALID_REQUEST
+        );
+        assert!(!path.exists());
+        // Unsharing keeps the variable and restores the original vault layout.
+        std::fs::write(&path, "K=still-here-value\n").unwrap();
+        assert!(store.delete_env("K").await.unwrap().is_some());
+        assert!(store.delete_env("K").await.unwrap().is_none());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "K=still-here-value\n"
+        );
+        let on_disk = std::fs::read_to_string(fx.paths.vault_path()).unwrap();
+        assert!(!on_disk.contains("\"env\""), "{on_disk}");
+        assert_eq!(store.status().await.unwrap().env_count, 0);
     }
 
     #[tokio::test]

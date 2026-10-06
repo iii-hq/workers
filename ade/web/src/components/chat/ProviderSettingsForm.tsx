@@ -32,7 +32,8 @@ interface ProviderSettingsFormProps {
     detail?: string
   }
   /**
-   * Apply a key change at once (`secret://NAME`, or `undefined` to clear it)
+   * Apply a key change at once (`secret://NAME` or `env://NAME`, or
+   * `undefined` to clear it)
    * instead of leaving it in the draft for Save — what the model picker does,
    * so storing a key connects the provider in one step.
    */
@@ -79,9 +80,11 @@ function FieldMessage({ message }: { message?: string }) {
 
 /**
  * Friendly fallback for the router's common provider settings. An API-key
- * provider's key goes through the secrets store like everywhere else in the
- * console (`SecretKeyField`), so the router slice only ever holds
- * `secret://NAME`; a provider that signs in on its own shows that sign-in.
+ * provider's key goes through the secrets worker like everywhere else in the
+ * console (`SecretKeyField`): encrypted, or kept in this project's `.env`
+ * when the user prefers an environment variable, so the router slice only
+ * ever holds `secret://NAME` or `env://NAME`; a provider that signs in on its
+ * own shows that sign-in.
  */
 export function ProviderSettingsForm({
   providerId,
@@ -125,6 +128,7 @@ export function ProviderSettingsForm({
               : patch('api_key', next)
           }
           consumers={ROUTER_CONSUMERS}
+          environment
           status={{ ...credentialStatus, connected: configured }}
           keysUrl={
             KEY_PROVIDERS.find((entry) => entry.providerId === providerId)

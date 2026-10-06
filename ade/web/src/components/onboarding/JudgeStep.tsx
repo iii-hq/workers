@@ -31,7 +31,7 @@ export function JudgeStep({
   /** `judge` is the option set up, `null` when skipped. */
   onNext: (judge: JudgeOption | null) => void
 }) {
-  const { snapshot, activity, running, run, secretsInstalled } = onboarding
+  const { snapshot, activity, running, run } = onboarding
   const installedOption = JUDGE_OPTIONS.find((option) =>
     snapshot.installed.has(option.worker),
   )
@@ -193,7 +193,6 @@ export function JudgeStep({
                         )
                       }
                       keysUrl={option.keysUrl}
-                      secretsReady={secretsInstalled}
                     />
                   ) : null}
                 </div>

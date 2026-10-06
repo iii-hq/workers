@@ -300,6 +300,9 @@ def build_payload(
     }
     if not isinstance(registry_projection, dict) or set(registry_projection) != required:
         raise ValueError("registry_projection differs from the current Registry metadata contract")
+    config = registry_projection["config"]
+    if config is not None and not isinstance(config, dict):
+        raise ValueError("registry_projection.config must be an object or null")
     if interface_capture not in {"required", "skipped"}:
         raise ValueError("interface_capture must be required or skipped")
     if not isinstance(interface, dict) or set(interface) != {"functions", "triggers"}:
@@ -324,6 +327,9 @@ def build_payload(
         raise ValueError("prepared artifacts differ from the public deploy type")
     payload: dict[str, Any] = {
         **registry_projection,
+        # The Registry nullable-config rollout requires an explicit key while
+        # treating an empty public default as absent.
+        "config": config or None,
         "version": published_version,
         "repo": repo_url,
         "functions": [

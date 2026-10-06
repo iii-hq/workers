@@ -30,6 +30,7 @@ function GitToolWindowView({
   onOpenCompareFile,
   onOpenWorkingFile,
   onOpenRevision,
+  focusPaths,
 }: {
   host: Host
   root: string
@@ -52,6 +53,8 @@ function GitToolWindowView({
   /** The file as commit `sha` left it (`git show <sha>:<file.path>`), in a
       read-only editor tab. */
   onOpenRevision(file: CommitFile, sha: string): void
+  /** "Show history" from the Commit panel: root-relative paths the Log narrows to. */
+  focusPaths?: { paths: string[]; seq: number } | null
 }) {
   // The dirty marks cost a `git status` per worktree and only the
   // Worktrees tab shows them: read from the first time it does.
@@ -127,6 +130,7 @@ function GitToolWindowView({
             active={open && tab === 'log'}
             paneKey={paneKey}
             focusBranch={focusBranch}
+            focusPaths={focusPaths ?? null}
             narrow={narrow}
             onOpenCommitFile={onOpenCommitFile}
             onOpenCompareFile={onOpenCompareFile}

@@ -10,10 +10,13 @@
  */
 
 import {
+  DEFAULT_ENV_FILE,
   type KeyDetection,
   type KeyInput,
   type KeySource,
   type KeySourceKind,
+  keyReference,
+  keyStore,
   preferredSource,
   sourceLabel,
 } from '@/lib/secrets'
@@ -28,7 +31,6 @@ import {
   SECRETS_WORKER,
   SUBSCRIPTION_PROVIDERS,
   type SubscriptionProvider,
-  secretRef,
 } from './catalog'
 
 export type { KeyDetection, KeyInput, KeySource, KeySourceKind }
@@ -339,6 +341,8 @@ export type PlanStep =
       /** Human description of where the value comes from. */
       from: string
       consumers: string[]
+      /** The secrets worker's env file, by name, for an env store key. */
+      envFile?: string
     }
   | {
       kind: 'set-config'
@@ -367,6 +371,8 @@ export interface ProviderSelection {
 export function connectPlan(
   selections: readonly ProviderSelection[],
   installedWorkers: ReadonlySet<string>,
+  /** The secrets worker's env file, by name. */
+  envFile: string = DEFAULT_ENV_FILE,
 ): PlanStep[] {
   const pending = selections.filter(({ choice }) => !choice.ready)
   if (pending.length === 0) return []
@@ -374,9 +380,11 @@ export function connectPlan(
   const keyed = pending.filter(
     (selection) => selection.choice.kind === 'key' && selection.key,
   )
+  // llm-router depends on it, so it is normally running already; a project
+  // set up before that gets it here, without a question of its own.
   if (keyed.length > 0 && !installedWorkers.has(SECRETS_WORKER)) {
     why[SECRETS_WORKER] =
-      'Stores API keys encrypted, outside every file you commit.'
+      'Keeps API keys encrypted or in this project’s .env, outside every file you commit.'
   }
   for (const { choice } of pending) {
     if (choice.installed || installedWorkers.has(choice.worker)) continue
@@ -394,13 +402,18 @@ export function connectPlan(
   for (const { choice, key } of keyed) {
     if (choice.kind !== 'key' || !key) continue
     steps.push(
-      ...keyReferenceSteps(choice.provider.envVar, key, ['llm-router']),
+      ...keyReferenceSteps(
+        choice.provider.envVar,
+        key,
+        ['llm-router'],
+        envFile,
+      ),
     )
     steps.push({
       kind: 'set-config',
       configuration: ROUTER_CONFIGURATION,
       path: ['providers', choice.providerId, 'api_key'],
-      value: secretRef(choice.provider.envVar),
+      value: keyReference(choice.provider.envVar, key),
     })
   }
   // A registry provider the wizard has no recipe for may need a sign-in
@@ -417,14 +430,15 @@ export function connectPlan(
 }
 
 /**
- * Put the key in the store for `consumers` — or, when it is already there,
- * make sure they may read it. An import's value never passes through the
- * browser.
+ * Put the key where `key` says for `consumers` — or, when it is already
+ * there, make sure they may read it. An import's value never passes through
+ * the browser.
  */
 function keyReferenceSteps(
   name: string,
   key: KeyInput,
   consumers: string[],
+  envFile: string = DEFAULT_ENV_FILE,
 ): PlanStep[] {
   return [
     {
@@ -436,8 +450,11 @@ function keyReferenceSteps(
           ? 'the key you pasted'
           : key.mode === 'stored'
             ? 'the secrets store'
-            : sourceLabel(key.source),
+            : key.mode === 'env'
+              ? `this project’s ${envFile}`
+              : sourceLabel(key.source),
       consumers,
+      ...(keyStore(key) === 'env' ? { envFile } : {}),
     },
   ]
 }
@@ -469,7 +486,7 @@ export function judgePlan(
       kind: 'set-config',
       configuration: option.worker,
       path: ['api_key'],
-      value: secretRef(option.envVar),
+      value: keyReference(option.envVar, key),
     })
   }
   steps.push({
@@ -500,17 +517,29 @@ export function describeStep(step: PlanStep): {
             : `Add ${step.workers.length} workers`,
         detail: `compose::add ${step.workers.join(' ')}`,
       }
-    case 'store-secret':
-      if (step.input.mode === 'stored') {
+    case 'store-secret': {
+      const reference = keyReference(step.name, step.input)
+      const readers = step.consumers.join(', ')
+      if (step.input.mode === 'stored' || step.input.mode === 'env') {
         return {
-          title: `Let ${step.consumers.join(', ')} read ${step.name}`,
-          detail: `secrets::access ${step.name} → ${secretRef(step.name)}`,
+          title:
+            step.input.mode === 'env'
+              ? `Let ${readers} read ${step.name} from ${step.from}`
+              : `Let ${readers} read ${step.name}`,
+          detail: `secrets::access ${step.name} → ${reference}`,
         }
       }
-      return {
-        title: `Store ${step.name} encrypted, from ${step.from}`,
-        detail: `secrets::${step.input.mode === 'import' ? 'import' : 'set'} ${step.name} → ${secretRef(step.name)}`,
-      }
+      const call = `secrets::${step.input.mode === 'import' ? 'import' : 'set'}`
+      return keyStore(step.input) === 'env'
+        ? {
+            title: `Write ${step.name} to this project’s ${step.envFile ?? DEFAULT_ENV_FILE}, from ${step.from}`,
+            detail: `${call} ${step.name} store=env → ${reference}`,
+          }
+        : {
+            title: `Store ${step.name} encrypted, from ${step.from}`,
+            detail: `${call} ${step.name} → ${reference}`,
+          }
+    }
     case 'set-config':
       return {
         title: `Point ${step.configuration} at ${step.value}`,

@@ -59,6 +59,7 @@ function StubSecretField(props: SecretKeyFieldProps) {
       data-name={props.name}
       data-value={props.value ?? ''}
       data-consumers={props.consumers.join(',')}
+      data-environment={String(props.environment ?? false)}
       data-error={props.status?.error ?? ''}
     />
   )
@@ -83,8 +84,24 @@ describe('provider keys in the router form', () => {
     expect(html).toContain('data-name="MOONSHOT_API_KEY"')
     expect(html).toContain('data-value="secret://MOONSHOT_API_KEY"')
     expect(html).toContain('data-consumers="llm-router"')
+    // The router resolves env://NAME too, so the field may offer .env.
+    expect(html).toContain('data-environment="true"')
     expect(html).toContain('data-error="secret MOONSHOT_API_KEY not found"')
     expect(html).not.toContain('type="password"')
+  })
+
+  it('hands an env:// reference to the field as it is', () => {
+    const html = renderToStaticMarkup(
+      <LlmRouterConfigForm
+        id="llm-router"
+        schema={schema}
+        value={{ providers: { kimi: { api_key: 'env://MOONSHOT_API_KEY' } } }}
+        onChange={() => undefined}
+        secretField={StubSecretField}
+        credentials={new Map([['kimi', { envVar: 'MOONSHOT_API_KEY', connected: true, source: 'secret' }]])}
+      />,
+    )
+    expect(html).toContain('data-value="env://MOONSHOT_API_KEY"')
   })
 
   it('keeps the plain key input on a Console without the secret field', () => {

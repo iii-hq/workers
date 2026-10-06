@@ -1,18 +1,20 @@
 //! The vault file: `<data_dir>/vault.json`, a header plus one sealed record
 //! per secret. Nothing in it is plaintext: values are XChaCha20-Poly1305
 //! ciphertexts, and the hint and fingerprint reveal at most a masked prefix
-//! and suffix and a keyed hash.
+//! and suffix and a keyed hash. Environment variables shared through the
+//! `env` store add a grant each (who may read it), never a value.
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::SecretMeta;
+use crate::api::{SecretMeta, StoreKind};
 use crate::crypto::{self, Sealed, NONCE_LEN};
+use crate::envstore::EnvValue;
 use crate::error::SecretsError;
 use crate::fsutil;
-use crate::names::{is_valid_name, reference_for};
+use crate::names::{is_valid_name, mask, reference_for};
 
 pub const VAULT_FILE: &str = "vault.json";
 pub const VAULT_VERSION: u32 = 1;
@@ -29,6 +31,27 @@ pub struct Vault {
     pub key_check: Option<String>,
     #[serde(default)]
     pub secrets: BTreeMap<String, SecretRecord>,
+    /// `env://NAME` grants. Omitted while empty, so a vault that never
+    /// shared a variable keeps the original layout.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, EnvGrant>,
+}
+
+/// Who may resolve one environment variable through `env://NAME`. The value
+/// stays in `.env` or the worker's environment.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EnvGrant {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub consumers: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_resolved_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_resolved_by: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,6 +91,7 @@ impl Vault {
             cipher: CIPHER.to_owned(),
             key_check: None,
             secrets: BTreeMap::new(),
+            env: BTreeMap::new(),
         }
     }
 
@@ -135,8 +159,13 @@ impl Vault {
                 path.display()
             )));
         }
-        for (key, record) in &self.secrets {
-            if key != &record.name || !is_valid_name(key) {
+        let names = self
+            .secrets
+            .iter()
+            .map(|(key, record)| (key, &record.name))
+            .chain(self.env.iter().map(|(key, grant)| (key, &grant.name)));
+        for (key, name) in names {
+            if key != name || !is_valid_name(key) {
                 return Err(SecretsError::vault(format!(
                     "vault {} has a record whose name does not match its key",
                     path.display()
@@ -166,11 +195,34 @@ impl SecretRecord {
     pub fn meta(&self) -> SecretMeta {
         SecretMeta {
             name: self.name.clone(),
-            reference: reference_for(&self.name),
+            reference: reference_for(StoreKind::Vault, &self.name),
+            store: StoreKind::Vault,
             description: self.description.clone(),
             consumers: self.consumers.clone(),
             hint: self.hint.clone(),
-            fingerprint: self.fingerprint.clone(),
+            fingerprint: Some(self.fingerprint.clone()),
+            location: None,
+            created_at: self.created_at.clone(),
+            updated_at: self.updated_at.clone(),
+            last_resolved_at: self.last_resolved_at.clone(),
+            last_resolved_by: self.last_resolved_by.clone(),
+        }
+    }
+}
+
+impl EnvGrant {
+    /// Metadata with the variable's current hint and location (`value` is
+    /// `None` while it is not set).
+    pub fn meta(&self, value: Option<&EnvValue>) -> SecretMeta {
+        SecretMeta {
+            name: self.name.clone(),
+            reference: reference_for(StoreKind::Env, &self.name),
+            store: StoreKind::Env,
+            description: self.description.clone(),
+            consumers: self.consumers.clone(),
+            hint: value.map(|v| mask(v.value.expose())).unwrap_or_default(),
+            fingerprint: None,
+            location: value.map(|v| v.location.clone()),
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
             last_resolved_at: self.last_resolved_at.clone(),

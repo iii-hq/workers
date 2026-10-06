@@ -1,5 +1,5 @@
 {
-  "description": "Resolve a provider's effective credential + api_url + max_tokens (token-gated); a secret://NAME api_key resolves through the secrets worker.",
+  "description": "Resolve a provider's effective credential + api_url + max_tokens (token-gated); a secret://NAME or env://NAME api_key resolves through the secrets worker.",
   "function_id": "router::provider::resolve",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -88,7 +88,7 @@
         ]
       },
       "CredentialOrigin": {
-        "description": "`credential_source`: where the precedence found the provider's credential. `secret` is a `secret://NAME` reference in the slice, resolved through the `secrets` worker; `configured` says whether it actually yielded one.",
+        "description": "`credential_source`: where the precedence found the provider's credential. `secret` is a `secret://NAME` or `env://NAME` reference in the slice, resolved through the `secrets` worker; `configured` says whether it actually yielded one.",
         "enum": [
           "config",
           "env",
@@ -98,7 +98,7 @@
         "type": "string"
       },
       "CredentialSource": {
-        "description": "Where the resolved credential came from, as providers read it. A resolved `secret://` reference reports `config` (the reference lives in the configuration entry); `credential_source` tells the two apart.",
+        "description": "Where the resolved credential came from, as providers read it. A resolved `secret://` or `env://` reference reports `config` (the reference lives in the configuration entry); `credential_source` tells them apart.",
         "enum": [
           "config",
           "env",
@@ -136,7 +136,7 @@
         ]
       },
       "credential_ref": {
-        "description": "The slice's `secret://NAME` reference, when it uses one.",
+        "description": "The slice's `secret://NAME` or `env://NAME` reference, when it uses one.",
         "type": [
           "string",
           "null"

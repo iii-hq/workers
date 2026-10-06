@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { envFileName } from '@/lib/secrets'
 import { JUDGE_OPTIONS, workerSource } from './catalog'
 import { shouldAutoOpenOnboarding } from './open'
 import {
@@ -11,6 +12,7 @@ import {
   registryChoices,
   servesUsableModels,
   setPath,
+  sourceLabel,
   type ToolScan,
 } from './plan'
 
@@ -285,6 +287,62 @@ describe('connectPlan', () => {
     )
   })
 
+  it('keeps a key in .env as an environment variable when the user prefers it', () => {
+    const shared = connectPlan(
+      [{ choice: byId(choices, 'anthropic'), key: { mode: 'env' } }],
+      new Set(['secrets', 'provider-anthropic']),
+    )
+    expect(describeStep(shared[0])).toEqual({
+      title: 'Let llm-router read ANTHROPIC_API_KEY from this project’s .env',
+      detail: 'secrets::access ANTHROPIC_API_KEY → env://ANTHROPIC_API_KEY',
+    })
+    expect(shared[1]).toMatchObject({
+      kind: 'set-config',
+      path: ['providers', 'anthropic', 'api_key'],
+      value: 'env://ANTHROPIC_API_KEY',
+    })
+    const pasted = connectPlan(
+      [
+        {
+          choice: byId(choices, 'anthropic'),
+          key: {
+            mode: 'paste',
+            value: 'sk-ant-very-secret-value',
+            store: 'env',
+          },
+        },
+      ],
+      new Set(['secrets', 'provider-anthropic']),
+    )
+    const { title, detail } = describeStep(pasted[0])
+    expect(title).toBe(
+      'Write ANTHROPIC_API_KEY to this project’s .env, from the key you pasted',
+    )
+    expect(detail).toBe(
+      'secrets::set ANTHROPIC_API_KEY store=env → env://ANTHROPIC_API_KEY',
+    )
+    expect(`${title} ${detail}`).not.toContain('very-secret')
+    expect(pasted[1]).toMatchObject({ value: 'env://ANTHROPIC_API_KEY' })
+    // A namespace whose secrets worker uses another env file says so.
+    const staging = connectPlan(
+      [
+        {
+          choice: byId(choices, 'anthropic'),
+          key: {
+            mode: 'paste',
+            value: 'sk-ant-very-secret-value',
+            store: 'env',
+          },
+        },
+      ],
+      new Set(['secrets', 'provider-anthropic']),
+      '.env.staging',
+    )
+    expect(describeStep(staging[0]).title).toBe(
+      'Write ANTHROPIC_API_KEY to this project’s .env.staging, from the key you pasted',
+    )
+  })
+
   it('does nothing for providers that are already connected', () => {
     const ready = providerChoices({
       tools: [],
@@ -455,5 +513,21 @@ describe('shouldAutoOpenOnboarding', () => {
     expect(
       shouldAutoOpenOnboarding({ status: 'new', auto_open: true }, false, 0),
     ).toBe(true)
+  })
+})
+
+describe('envFileName', () => {
+  it('names the configured env file, .env by default', () => {
+    expect(envFileName('/home/me/project/.env.staging')).toBe('.env.staging')
+    expect(envFileName('C:\\project\\.env.prod')).toBe('.env.prod')
+    expect(envFileName(undefined)).toBe('.env')
+    expect(
+      sourceLabel({
+        kind: 'dotenv',
+        location: '/p/.env.staging',
+        hint: 'x',
+        matches_stored: false,
+      }),
+    ).toBe("this project's .env.staging")
   })
 })

@@ -349,7 +349,11 @@ export function logArgs(filter: LogFilter, skip: number, limit: number): string[
   if (filter.since !== undefined) args.push(`--since=@${filter.since}`)
   if (filter.until !== undefined) args.push(`--until=@${filter.until}`)
   // Parents rewritten to the commits that touch the paths keep the lines joined.
-  if (filter.paths && filter.paths.length > 0) args.push('--parents', '--', ...filter.paths)
+  // The paths are the repository's while git runs in the browsed folder,
+  // which may sit below the top: anchored at the top, taken as written.
+  if (filter.paths && filter.paths.length > 0) {
+    args.push('--parents', '--', ...filter.paths.map((path) => `:(top,literal)${path}`))
+  }
   return args
 }
 

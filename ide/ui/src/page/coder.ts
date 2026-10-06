@@ -334,15 +334,19 @@ export interface DeleteResult {
   error?: { code: string; message: string } | null
 }
 
-/** Remove files or folders; folders need `recursive` when non-empty. */
+/** Remove files or folders; folders need `recursive` when non-empty.
+    `includeProtected` also removes the non-accessible entries under a
+    recursive delete (`.env`, keys); only after the user confirmed that. */
 export async function coderDelete(
   host: Host,
   paths: readonly string[],
   recursive: boolean,
+  includeProtected = false,
 ): Promise<DeleteResult[]> {
   const out = await host.iii.trigger<{ results?: DeleteResult[] }>('coder::delete-file', {
     paths,
     recursive,
+    ...(includeProtected ? { include_protected: true } : {}),
   })
   return out.results ?? []
 }

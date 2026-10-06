@@ -1,6 +1,7 @@
 //! Bridge to the `configuration` worker through `iii-config-client`: register
 //! the `secrets` entry (seeding the defaults only when nothing is stored),
-//! fetch the authoritative value, and re-point the store when it changes.
+//! fetch the authoritative value, and re-point the store — and the watch on
+//! its env file — when it changes.
 use std::sync::Arc;
 
 use iii_config_client::{EntrySpec, Reload};
@@ -8,7 +9,8 @@ use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 
 use crate::config::{SecretsConfig, CONFIG_DESCRIPTION, CONFIG_ID, CONFIG_NAME};
-use crate::store::{Store, StorePaths};
+use crate::functions::Ctx;
+use crate::store::StorePaths;
 
 pub const RELOAD_FN_ID: &str = "secrets::on-config-change";
 
@@ -49,9 +51,11 @@ pub async fn fetch(iii: &IIIClient) -> Result<SecretsConfig, String> {
     }
 }
 
-/// Bind `configuration:updated` → refetch → re-point the store. Run the
-/// returned handle once at boot to close the subscription gap.
-pub fn bind_reload(iii: &Arc<IIIClient>, store: Arc<Store>) -> Result<Reload, Error> {
+/// Bind `configuration:updated` → refetch → re-point the store. A new env
+/// file is followed from then on, and every shared variable whose value
+/// differs there is reported on `secrets::changed`. Run the returned handle
+/// once at boot to close the subscription gap.
+pub fn bind_reload(iii: &Arc<IIIClient>, ctx: Arc<Ctx>) -> Result<Reload, Error> {
     let engine = iii.clone();
     iii_config_client::on_change(
         iii,
@@ -60,16 +64,25 @@ pub fn bind_reload(iii: &Arc<IIIClient>, store: Arc<Store>) -> Result<Reload, Er
         "Internal: re-read the secrets configuration after an operator change.",
         move || {
             let engine = engine.clone();
-            let store = store.clone();
+            let ctx = ctx.clone();
             async move {
                 match fetch(&engine).await {
                     Ok(config) => {
-                        if store.reconfigure(StorePaths::from_config(&config)).await {
-                            let vault = store.vault_path().await;
+                        if ctx
+                            .store
+                            .reconfigure(StorePaths::from_config(&config))
+                            .await
+                        {
+                            let vault = ctx.store.vault_path().await;
                             tracing::info!(
                                 vault = %vault.display(),
+                                env_file = config.env_file,
                                 "secrets configuration reloaded; vault re-opened"
                             );
+                            crate::envwatch::follow(&ctx).await;
+                            for event in ctx.store.env_changes().await {
+                                ctx.changed(&event);
+                            }
                         }
                     }
                     Err(error) => {
