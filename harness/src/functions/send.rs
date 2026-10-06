@@ -16,7 +16,7 @@ use crate::policy;
 use crate::prompt::{self, SystemPromptStrategy};
 use crate::turn_loop;
 use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
-use crate::types::model::{ProviderDefaults, ThinkingLevel};
+use crate::types::model::{Model, ProviderDefaults, ThinkingLevel};
 use crate::types::output::OutputContract;
 use crate::types::turn::{
     FunctionContractLedgerEntry, FunctionPolicy, IdemRecord, ParentLink, SkillContext, TurnOptions,
@@ -94,6 +94,13 @@ pub struct SendOptions {
     /// Provider-native per-call options, namespaced by provider id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_options: Option<BTreeMap<String, Value>>,
+    /// Ask the harness to pick the effort from the model's catalog row
+    /// instead of naming one: `lowest` is the model's lowest reasoning effort
+    /// (never `off`), or the provider default when the model offers no effort
+    /// choices. Exclusive with `thinking_level` and `provider_options`; the
+    /// choice is returned as `reasoning` on the send response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningPreset>,
     /// The turn's deliverable; default `{ type: "text" }`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputContract>,
@@ -150,6 +157,68 @@ pub struct SendRequest {
     pub options: Option<SendOptions>,
 }
 
+/// An effort the harness resolves from the model's catalog row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningPreset {
+    Lowest,
+}
+
+/// What a `reasoning` preset resolved to for this send. `reasoning_effort`
+/// is the provider-native effort (the catalog's own string); both fields are
+/// absent when the model offers no effort choices and the provider decides.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ResolvedReasoning {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<ThinkingLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
+/// The model's lowest reasoning effort. A catalog effort list is in
+/// ascending order, so its first entry other than `none` wins; a model that
+/// only says it can reason takes the lowest shared level, `minimal`; anything
+/// else gets no effort at all.
+fn lowest_reasoning(model: &Model) -> ResolvedReasoning {
+    let native = model
+        .reasoning_efforts
+        .iter()
+        .flatten()
+        .map(|effort| effort.effort.trim())
+        .find(|effort| !effort.is_empty() && *effort != "none" && *effort != "off");
+    match native {
+        Some(effort) => ResolvedReasoning {
+            thinking_level: serde_json::from_value(Value::String(effort.to_lowercase())).ok(),
+            reasoning_effort: Some(effort.to_string()),
+        },
+        None if model.supports_thinking == Some(true)
+            && model.reasoning_efforts.as_ref().is_none_or(Vec::is_empty) =>
+        {
+            ResolvedReasoning {
+                thinking_level: Some(ThinkingLevel::Minimal),
+                reasoning_effort: None,
+            }
+        }
+        None => ResolvedReasoning::default(),
+    }
+}
+
+/// Apply a resolved preset to the turn's reasoning fields: the native effort
+/// rides under the model's provider, exactly as an explicit send would.
+fn apply_resolved_reasoning(
+    options: &mut TurnOptions,
+    provider: &str,
+    resolved: &ResolvedReasoning,
+) {
+    options.thinking_level = resolved.thinking_level;
+    options.provider_options = resolved.reasoning_effort.as_ref().map(|effort| {
+        BTreeMap::from([(
+            provider.to_string(),
+            serde_json::json!({ "reasoning_effort": effort }),
+        )])
+    });
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SendResponse {
     pub session_id: String,
@@ -165,6 +234,9 @@ pub struct SendResponse {
     /// True when `idempotency_key` matched an earlier send.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deduplicated: Option<bool>,
+    /// What `options.reasoning` resolved to; absent when the send named none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ResolvedReasoning>,
 }
 
 /// The shared result of starting (or merging) a turn.
@@ -174,6 +246,8 @@ pub struct StartOutcome {
     pub merged: bool,
     pub queued: bool,
     pub deduplicated: bool,
+    /// What `options.reasoning` resolved to, when the send named a preset.
+    pub reasoning: Option<ResolvedReasoning>,
 }
 
 pub async fn handle(deps: &Deps, req: SendRequest) -> Result<SendResponse, HarnessError> {
@@ -209,6 +283,7 @@ async fn handle_with_delivery_lock(
         merged: out.merged.then_some(true),
         queued: out.queued.then_some(true),
         deduplicated: out.deduplicated.then_some(true),
+        reasoning: out.reasoning,
     })
 }
 
@@ -335,6 +410,33 @@ async fn start_with_delivery_lock(
     ) {
         inherit_prior_reasoning(&mut options, &prev.options);
     }
+    let resolved_reasoning = match req.options.as_ref().and_then(|o| o.reasoning) {
+        Some(ReasoningPreset::Lowest) => {
+            if !reasoning_fields_omitted(req.options.as_ref()) {
+                return Err(HarnessError::InvalidRequest(
+                    "options.reasoning names the effort itself; send it without \
+                     thinking_level or provider_options"
+                        .into(),
+                ));
+            }
+            let model = deps
+                .router()
+                .await
+                .models_get(options.provider.as_deref(), &options.model)
+                .await
+                .ok_or_else(|| {
+                    HarnessError::InvalidRequest(format!(
+                        "options.reasoning: no catalog row for model {}",
+                        options.model
+                    ))
+                })?;
+            let resolved = lowest_reasoning(&model);
+            let provider = options.provider.clone().unwrap_or(model.provider);
+            apply_resolved_reasoning(&mut options, &provider, &resolved);
+            Some(resolved)
+        }
+        None => None,
+    };
     // A profile's skills are PRELOADED into its prompt (agents.rs), never a
     // filter: only an explicit `options.skills` narrows the skills index.
     prepare_skill_context(
@@ -441,7 +543,10 @@ async fn start_with_delivery_lock(
         let _ = crate::state::put_idem(&deps.iii, key, &rec, cfg.session_timeout_ms).await;
     }
 
-    Ok(outcome)
+    Ok(StartOutcome {
+        reasoning: resolved_reasoning,
+        ..outcome
+    })
 }
 
 /// Label the send's own root span with the message preview. The turn step
@@ -731,6 +836,7 @@ async fn try_enqueue(
                     merged: true,
                     queued: true,
                     deduplicated: false,
+                    reasoning: None,
                 }
             }
         }
@@ -1170,6 +1276,7 @@ fn resolve_send_gate(
             merged: false,
             queued: false,
             deduplicated: true,
+            reasoning: None,
         }));
     }
     validate_active_skill_request(active, skills_explicit)?;
@@ -1385,6 +1492,7 @@ async fn seed_or_merge(
                         merged: true,
                         queued: false,
                         deduplicated: false,
+                        reasoning: None,
                     })
                 }
                 recheck => {
@@ -1586,12 +1694,93 @@ pub(crate) async fn seed_new(
         merged: false,
         queued: false,
         deduplicated: false,
+        reasoning: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn catalog_model(row: serde_json::Value) -> Model {
+        let mut base = serde_json::json!({
+            "id": "m", "provider": "p", "context_window": 1000, "max_output_tokens": 100
+        });
+        base.as_object_mut()
+            .unwrap()
+            .extend(row.as_object().unwrap().clone());
+        serde_json::from_value(base).unwrap()
+    }
+
+    #[test]
+    fn lowest_takes_the_first_native_effort_other_than_none() {
+        // Codex: the API rejects `minimal`, so the ladder starts at `low`.
+        let codex = catalog_model(serde_json::json!({
+            "supports_thinking": true,
+            "reasoning_efforts": [{"effort": "low"}, {"effort": "medium"}, {"effort": "max"}]
+        }));
+        assert_eq!(
+            lowest_reasoning(&codex),
+            ResolvedReasoning {
+                thinking_level: Some(ThinkingLevel::Low),
+                reasoning_effort: Some("low".into()),
+            }
+        );
+        let with_none = catalog_model(serde_json::json!({
+            "supports_thinking": true,
+            "reasoning_efforts": [{"effort": "none"}, {"effort": "minimal"}, {"effort": "low"}]
+        }));
+        assert_eq!(
+            lowest_reasoning(&with_none).reasoning_effort.as_deref(),
+            Some("minimal")
+        );
+    }
+
+    #[test]
+    fn lowest_without_a_native_list_is_minimal_and_without_reasoning_is_default() {
+        let flag_only = catalog_model(serde_json::json!({ "supports_thinking": true }));
+        assert_eq!(
+            lowest_reasoning(&flag_only),
+            ResolvedReasoning {
+                thinking_level: Some(ThinkingLevel::Minimal),
+                reasoning_effort: None,
+            }
+        );
+        let fixed = catalog_model(serde_json::json!({ "supports_thinking": false }));
+        assert_eq!(lowest_reasoning(&fixed), ResolvedReasoning::default());
+        let unknown = catalog_model(serde_json::json!({}));
+        assert_eq!(lowest_reasoning(&unknown), ResolvedReasoning::default());
+    }
+
+    #[test]
+    fn a_resolved_native_effort_rides_under_the_provider() {
+        let mut options = bare_options();
+        options.thinking_level = Some(ThinkingLevel::High);
+        let resolved = ResolvedReasoning {
+            thinking_level: Some(ThinkingLevel::Low),
+            reasoning_effort: Some("low".into()),
+        };
+        apply_resolved_reasoning(&mut options, "openai-codex", &resolved);
+        assert_eq!(options.thinking_level, Some(ThinkingLevel::Low));
+        assert_eq!(
+            options.provider_options,
+            Some(BTreeMap::from([(
+                "openai-codex".to_string(),
+                serde_json::json!({ "reasoning_effort": "low" })
+            )]))
+        );
+        apply_resolved_reasoning(&mut options, "openai-codex", &ResolvedReasoning::default());
+        assert_eq!(options.thinking_level, None);
+        assert_eq!(options.provider_options, None);
+    }
+
+    #[test]
+    fn the_reasoning_preset_reads_lowest_on_the_wire() {
+        let options: SendOptions =
+            serde_json::from_value(serde_json::json!({ "reasoning": "lowest" })).unwrap();
+        assert_eq!(options.reasoning, Some(ReasoningPreset::Lowest));
+        assert!(reasoning_fields_omitted(Some(&options)));
+    }
     use iii_helpers::observability::opentelemetry::trace::{
         TraceContextExt, Tracer, TracerProvider,
     };
