@@ -1,6 +1,5 @@
 import { ArrowLeft, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { lowestSupportedEffort } from '@/components/chat/ModelPicker'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
@@ -2524,23 +2523,10 @@ export function ChatView({
         // model-and-reasoning panel, effort included, so a page must not
         // reach past a control the operator cannot use.
         if (sessionId !== conversation.id || modelLocked) return false
-        // The page cannot see the model's ladder: `minimal` on a Codex model
-        // would be sent as a native effort the provider rejects.
-        handleThinkingLevelChange(
-          lowestSupportedEffort(
-            modelOptions.find((option) => option.id === effectiveModel),
-            level,
-          ),
-        )
+        handleThinkingLevelChange(level)
         return true
       }),
-    [
-      conversation.id,
-      handleThinkingLevelChange,
-      modelLocked,
-      modelOptions,
-      effectiveModel,
-    ],
+    [conversation.id, handleThinkingLevelChange, modelLocked],
   )
 
   // Picking a worktree claims it for this session; the working dir itself
