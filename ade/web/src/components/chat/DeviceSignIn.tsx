@@ -16,6 +16,7 @@ import {
   type DeviceCode,
   type DevicePollStatus,
   type LoginPoller,
+  POLL_TRIES,
   pollDeviceLogin,
   startDeviceLogin,
 } from '@/lib/onboarding/device-login'
@@ -45,24 +46,16 @@ function liveCode(providerId: string): DeviceCode | null {
     : null
 }
 
-function clock(date: Date): string {
-  return date.toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
-}
-
 /**
  * The device-flow sign-in (GitHub Copilot). The one-time code shows first —
  * at once when the worker runs, after Get code (which adds the worker) when
  * it does not — so the person has it before GitHub's page opens. The code is
  * kept until it expires, and an unused one is replaced before that.
- * Authenticate copies it, opens the page, and the ADE checks for the sign-in
- * when this tab is shown again and 4, 8, 16 and 32 seconds after the click
- * or the return, with a spinner while checks are due. Retry, shown from
- * Authenticate until the sign-in lands, checks again at once; only an
- * expired or denied code gets a new one. The reload icon beside the code
+ * Authenticate copies it, opens the page, and the ADE checks for the
+ * sign-in 8 s later and then every 5 s, five tries; a return to this tab or
+ * Retry starts a new round of five, 5 s apart. A spinner turns while checks
+ * are due, and the status counts the tries that failed. Only an expired or
+ * denied code gets a new one from Retry. The reload icon beside the code
  * gets a new code at any time.
  */
 export function DeviceSignIn({
@@ -81,7 +74,8 @@ export function DeviceSignIn({
   const [message, setMessage] = useState<string | null>(null)
   /** Checks are scheduled (the spinner turns). */
   const [checking, setChecking] = useState(false)
-  const [checkedAt, setCheckedAt] = useState<Date | null>(null)
+  /** Checks in the current round that did not return the token. */
+  const [failed, setFailed] = useState(0)
   const poller = useRef<LoginPoller | null>(null)
   const generation = useRef(0)
   const onConnectedRef = useRef(onConnected)
@@ -142,7 +136,8 @@ export function DeviceSignIn({
 
   const checkNow = useCallback(() => {
     setChecking(true)
-    poller.current?.focus()
+    setFailed(0)
+    poller.current?.restart()
   }, [])
 
   // Back on this tab: switching tabs does not always focus the window, so
@@ -165,12 +160,13 @@ export function DeviceSignIn({
     setPhase('waiting')
     setMessage(MESSAGES.pending ?? null)
     setChecking(true)
+    setFailed(0)
     const next = createLoginPoller({
       poll: () => pollDeviceLogin(provider, current.device_code),
       minIntervalMs: (current.interval ?? 5) * 1_000,
       onIdle: () => setChecking(false),
-      onResult: (result) => {
-        setCheckedAt(new Date())
+      onResult: (result, attempt) => {
+        if (result !== 'ok') setFailed(attempt)
         if (result instanceof Error) {
           setMessage(readableError(result))
         } else if (result === 'ok') {
@@ -279,8 +275,8 @@ export function DeviceSignIn({
           ) : null}
           <span>
             {message ?? (phase === 'fetching' ? 'Getting a code…' : null)}
-            {phase === 'waiting' && checkedAt
-              ? ` Last checked ${clock(checkedAt)}.`
+            {phase === 'waiting' && failed > 0
+              ? ` ${failed}/${POLL_TRIES} retries failed.`
               : null}
             {phase === 'waiting' && !checking
               ? ' Come back to this tab or click Retry to check again.'

@@ -25,8 +25,12 @@ export interface DeviceCode {
   interval?: number
 }
 
-/** After the code is out, and again after each focus: 4, 8, 16, 32 s apart. */
-export const POLL_DELAYS_MS: readonly number[] = [4_000, 8_000, 16_000, 32_000]
+/** The first check comes this long after Authenticate. */
+export const FIRST_POLL_MS = 8_000
+/** Then, and in a round started by a return to the tab or Retry, this apart. */
+export const POLL_EVERY_MS = 5_000
+/** Checks per round. */
+export const POLL_TRIES = 5
 
 const TERMINAL: ReadonlySet<DevicePollStatus> = new Set([
   'ok',
@@ -35,30 +39,29 @@ const TERMINAL: ReadonlySet<DevicePollStatus> = new Set([
 ])
 
 export interface LoginPoller {
-  /** The code is out: poll on the schedule. */
+  /** Authenticate: a round whose first check is `FIRST_POLL_MS` away. */
   begin(): void
-  /** The tab is back in focus, or Retry: poll now, then restart the schedule. */
-  focus(): void
+  /** Back on the tab, or Retry: a new round, first check `POLL_EVERY_MS` away. */
+  restart(): void
   stop(): void
 }
 
 /**
- * Polls on a backoff schedule, once at a time, and stops for good on a
- * terminal status (`ok`, `expired`, `denied`). An error is reported and the
- * schedule goes on.
+ * Polls in rounds of `POLL_TRIES` checks, one at a time, and stops for good
+ * on a terminal status (`ok`, `expired`, `denied`). `onResult` gets each
+ * result with its try number in the round; an error counts as a try. After
+ * the last try of a round, `onIdle`.
  */
 export function createLoginPoller({
   poll,
   onResult,
   onIdle,
-  delays = POLL_DELAYS_MS,
   minIntervalMs = 0,
 }: {
   poll: () => Promise<DevicePollStatus>
-  onResult: (result: DevicePollStatus | Error) => void
-  /** The schedule ran out; nothing is checked until the next focus. */
+  onResult: (result: DevicePollStatus | Error, attempt: number) => void
+  /** The round ran out; nothing is checked until the next restart. */
   onIdle?: () => void
-  delays?: readonly number[]
   /**
    * GitHub's `interval`: a poll sooner than this after the last one (or
    * after `begin`) gets `slow_down`, never the token, so a due poll waits
@@ -67,31 +70,24 @@ export function createLoginPoller({
   minIntervalMs?: number
 }): LoginPoller {
   let timer: ReturnType<typeof setTimeout> | undefined
-  let step = 0
+  let attempt = 0
+  let round = 0
   let stopped = false
-  let inFlight = false
   let gap = minIntervalMs
   let last = Date.now()
 
-  const schedule = () => {
+  const schedule = (delay: number) => {
     clearTimeout(timer)
     if (stopped) return
-    if (step >= delays.length) {
-      onIdle?.()
-      return
-    }
-    timer = setTimeout(() => void check(), delays[step++])
+    const mine = round
+    timer = setTimeout(
+      () => void check(mine),
+      Math.max(delay, last + gap - Date.now()),
+    )
   }
 
-  const check = async () => {
-    if (stopped || inFlight) return
-    clearTimeout(timer)
-    const wait = last + gap - Date.now()
-    if (wait > 0) {
-      timer = setTimeout(() => void check(), wait)
-      return
-    }
-    inFlight = true
+  const check = async (mine: number) => {
+    if (stopped || mine !== round) return
     last = Date.now()
     let result: DevicePollStatus | Error
     try {
@@ -99,27 +95,37 @@ export function createLoginPoller({
     } catch (error) {
       result = error instanceof Error ? error : new Error(String(error))
     }
-    inFlight = false
-    if (stopped) return
+    // A restart while this poll was out started a new round; it owns the
+    // count and the schedule now.
+    if (stopped || mine !== round) return
     if (result === 'slow_down') gap += 5_000
-    onResult(result)
+    attempt += 1
+    onResult(result, attempt)
     if (typeof result === 'string' && TERMINAL.has(result)) {
       stopped = true
       return
     }
-    schedule()
+    if (attempt >= POLL_TRIES) {
+      onIdle?.()
+      return
+    }
+    schedule(POLL_EVERY_MS)
+  }
+
+  const startRound = (delay: number) => {
+    if (stopped) return
+    round += 1
+    attempt = 0
+    schedule(delay)
   }
 
   return {
     begin() {
-      step = 0
       last = Date.now()
-      schedule()
+      startRound(FIRST_POLL_MS)
     },
-    focus() {
-      if (stopped) return
-      step = 0
-      void check()
+    restart() {
+      startRound(POLL_EVERY_MS)
     },
     stop() {
       stopped = true
