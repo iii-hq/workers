@@ -14,6 +14,13 @@ also tries `http://127.0.0.1:9931`, the Llama desktop app's default port, and
 every later request follows whichever of the two answered. Point `api_url` at
 any running `llama-server` instance (local, LAN, or a remote box) to use it.
 
+Default model: after each discovery the provider re-declares `default_models`
+as the served models ranked loaded first (router-mode servers report
+`status.value`; a classic single-model server is loaded), then by the
+parameter count in the id (`27B` beats `8B`), ties in the server's listing
+order. A `harness::send` that names only the provider, and a new ADE chat,
+start on the first of those the router finds in the catalog.
+
 ## Embeddings
 
 `provider::llamacpp::embed` serves batch text embeddings from the same configured server when llama-server runs with `--embeddings` and an embedding-capable model (e.g. a nomic-embed GGUF). One vector per input, order preserved; behind `router::embed`, this gives the memory worker fully local semantic recall with no cloud call.

@@ -23,6 +23,16 @@ use std::time::Duration;
 pub const CREDENTIAL_ENV_VAR: &str = "LLAMACPP_API_KEY";
 
 pub fn declaration() -> ProviderDeclaration {
+    declaration_with(None)
+}
+
+/// The boot declaration plus the default-model list discovery ranked
+/// (loaded first, then largest; see `discovery::rank_default_models`).
+pub fn declaration_with_defaults(default_models: Vec<String>) -> ProviderDeclaration {
+    declaration_with(Some(default_models))
+}
+
+fn declaration_with(default_models: Option<Vec<String>>) -> ProviderDeclaration {
     ProviderDeclaration {
         id: PROVIDER_ID.into(),
         display_name: Some("llama.cpp".into()),
@@ -38,8 +48,10 @@ pub fn declaration() -> ProviderDeclaration {
         // refresh-on-config-change call, which must fire so the catalog
         // appears the moment an operator points api_url at a running server.
         supports_model_listing: Some(true),
-        // Local, user-supplied models: nothing to recommend.
-        default_models: None,
+        // Local, user-supplied models: nothing to recommend at boot. After
+        // each discovery the provider re-declares with the served models
+        // ranked, loaded first then largest (redeclare_with_defaults).
+        default_models,
         default_thinking_level: None,
         // No static slice: refresh_models discovers the catalog live from
         // the resolved server's `/v1/models` + `/props` right after
@@ -58,8 +70,35 @@ pub fn declaration() -> ProviderDeclaration {
 /// One registration attempt: declare (with the persisted token when present)
 /// and persist the token the router returns.
 pub async fn declare_once(iii: &IIIClient) -> Result<(), Error> {
+    declare_payload(iii, declaration()).await
+}
+
+/// The last default list sent, so a refresh that finds the same listing
+/// does not re-register for nothing.
+static DECLARED_DEFAULTS: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+/// Re-register with discovery's ranked default list when it changed.
+pub async fn redeclare_with_defaults(iii: &IIIClient, preferred: Vec<String>) -> Result<(), Error> {
+    if preferred.is_empty() {
+        return Ok(());
+    }
+    let unchanged = DECLARED_DEFAULTS
+        .lock()
+        .map(|last| last.as_ref() == Some(&preferred))
+        .unwrap_or(false);
+    if unchanged {
+        return Ok(());
+    }
+    declare_payload(iii, declaration_with_defaults(preferred.clone())).await?;
+    if let Ok(mut last) = DECLARED_DEFAULTS.lock() {
+        *last = Some(preferred);
+    }
+    Ok(())
+}
+
+async fn declare_payload(iii: &IIIClient, declaration: ProviderDeclaration) -> Result<(), Error> {
     let token = state::load_token(iii).await;
-    let mut payload = serde_json::to_value(declaration()).expect("serializable declaration");
+    let mut payload = serde_json::to_value(declaration).expect("serializable declaration");
     if let Some(t) = &token {
         payload["token"] = json!(t);
     }
@@ -225,7 +264,18 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::declaration;
+    use super::{declaration, declaration_with_defaults};
+
+    #[test]
+    fn discovered_defaults_ride_the_redeclaration() {
+        assert_eq!(declaration().default_models, None);
+        let decl = declaration_with_defaults(vec!["a-27B".into(), "b-7B".into()]);
+        assert_eq!(
+            decl.default_models,
+            Some(vec!["a-27B".to_string(), "b-7B".to_string()])
+        );
+        assert_eq!(decl.id, declaration().id);
+    }
 
     #[test]
     fn declaration_uses_credential_env_var_const() {

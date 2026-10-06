@@ -134,8 +134,66 @@ async fn fetch_props(http: &reqwest::Client, url: &str, credential: Option<&str>
         .unwrap_or_default()
 }
 
+/// Parameter count in billions read from the id (`Qwen3.8-27B-GGUF:Q8_0` →
+/// 27): a number followed by `B`, standing alone between separators. Hand
+/// named aliases carry no size and rank after every sized model.
+pub fn params_billions(id: &str) -> Option<f64> {
+    let b: Vec<char> = id.chars().collect();
+    let mut i = 0;
+    while i < b.len() {
+        let starts_token = i == 0 || !b[i - 1].is_ascii_alphanumeric();
+        if starts_token && b[i].is_ascii_digit() {
+            let mut j = i;
+            while j < b.len() && (b[j].is_ascii_digit() || b[j] == '.') {
+                j += 1;
+            }
+            let ends_token = j + 1 == b.len() || !b[j + 1].is_ascii_alphanumeric();
+            if j < b.len() && b[j].eq_ignore_ascii_case(&'b') && ends_token {
+                if let Ok(n) = b[i..j].iter().collect::<String>().parse::<f64>() {
+                    return Some(n);
+                }
+            }
+            i = j.max(i + 1);
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// The provider's default-model preference list for this listing: loaded
+/// models first (router-mode servers report `status.value`; a classic
+/// single-model server reports nothing and is loaded), then larger
+/// parameter counts, ties in the server's own order.
+pub fn rank_default_models(json: &Value) -> Vec<String> {
+    let Some(rows) = json.get("data").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut ranked: Vec<(bool, f64, &str)> = rows
+        .iter()
+        .filter_map(|row| {
+            let id = row
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())?;
+            let loaded = row
+                .pointer("/status/value")
+                .and_then(Value::as_str)
+                .is_none_or(|v| v == "loaded");
+            Some((loaded, params_billions(id).unwrap_or(-1.0), id))
+        })
+        .collect();
+    // Stable: equal keys keep the listing order.
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.total_cmp(&a.1)));
+    ranked
+        .into_iter()
+        .map(|(_, _, id)| id.to_string())
+        .collect()
+}
+
 enum FetchOutcome {
-    Ok(Vec<Model>),
+    /// The catalog slice and the default-model preference list for it.
+    Ok(Vec<Model>, Vec<String>),
     AuthFailed,
     Transient(String),
 }
@@ -164,7 +222,7 @@ async fn fetch_live_models(
         return FetchOutcome::Transient(format!("models fetch http {status}"));
     }
     match resp.json::<Value>().await {
-        Ok(v) => FetchOutcome::Ok(parse_live_models(&v, props)),
+        Ok(v) => FetchOutcome::Ok(parse_live_models(&v, props), rank_default_models(&v)),
         Err(e) => FetchOutcome::Transient(format!("models response not json: {e}")),
     }
 }
@@ -207,9 +265,14 @@ pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<u
         )
         .await
         {
-            FetchOutcome::Ok(models) => {
+            FetchOutcome::Ok(models, preferred) => {
                 if probing {
                     remember_probed_api_url(api_url);
+                }
+                // Re-declare the default list before the slice lands so the
+                // router never holds a slice without its preference.
+                if let Err(e) = crate::register::redeclare_with_defaults(iii, preferred).await {
+                    eprintln!("[provider-llamacpp] default-model redeclare failed ({e})");
                 }
                 let count = models.len();
                 router_client::reconcile(iii, models, token.as_deref()).await?;
@@ -259,6 +322,38 @@ pub fn make_refresh_models(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parameter_count_comes_from_the_id() {
+        assert_eq!(
+            params_billions("ggml-org/Qwen3.8-27B-GGUF:Q8_0"),
+            Some(27.0)
+        );
+        assert_eq!(params_billions("Llama-3.2-1.5B-Instruct-Q4_K_M"), Some(1.5));
+        assert_eq!(params_billions("gemma-3-270m"), None);
+        assert_eq!(params_billions("my-model"), None);
+        assert_eq!(params_billions("Q8_0-8bit"), None, "8bit is not a size");
+    }
+
+    #[test]
+    fn default_preference_is_loaded_first_then_largest_then_listing_order() {
+        let listing = json!({ "data": [
+            { "id": "small-7B", "status": { "value": "unloaded" } },
+            { "id": "big-27B", "status": { "value": "unloaded" } },
+            { "id": "tiny-3B", "status": { "value": "loaded" } },
+            { "id": "other-7B", "status": { "value": "unloaded" } },
+            { "id": "unsized", "status": { "value": "unloaded" } },
+        ]});
+        assert_eq!(
+            rank_default_models(&listing),
+            vec!["tiny-3B", "big-27B", "small-7B", "other-7B", "unsized"]
+        );
+        // Classic single-model llama-server reports no status: it is loaded.
+        let classic = json!({ "data": [{ "id": "served-8B" }] });
+        assert_eq!(rank_default_models(&classic), vec!["served-8B"]);
+        assert!(rank_default_models(&json!({ "object": "list" })).is_empty());
+    }
 
     #[test]
     fn probe_order_is_the_configured_url_or_both_local_defaults() {
