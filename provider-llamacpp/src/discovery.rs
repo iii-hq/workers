@@ -47,10 +47,13 @@ struct Props {
 }
 
 fn parse_props(json: &Value) -> Props {
+    // Router-mode servers (`llama serve`, the Llama desktop app) report
+    // `n_ctx: 0` here because nothing is loaded in the router process.
     let context_window = json
         .pointer("/default_generation_settings/n_ctx")
         .and_then(Value::as_u64)
-        .or_else(|| json.get("n_ctx").and_then(Value::as_u64));
+        .or_else(|| json.get("n_ctx").and_then(Value::as_u64))
+        .filter(|&n| n > 0);
     let supports_vision = json.pointer("/modalities/vision").and_then(Value::as_bool);
     Props {
         context_window,
@@ -97,6 +100,21 @@ fn enrich(id: &str, model_context_length: Option<u64>, props: &Props) -> Model {
     }
 }
 
+/// Router mode lists each instance's launch args under `status.args`; the
+/// operator's `--ctx-size N` (or `-c N`) there is the window that instance
+/// will run with, loaded or not.
+fn ctx_size_arg(row: &Value) -> Option<u64> {
+    let args = row.pointer("/status/args")?.as_array()?;
+    let flag = args
+        .iter()
+        .position(|a| matches!(a.as_str(), Some("--ctx-size" | "-c")))?;
+    args.get(flag + 1)?
+        .as_str()?
+        .parse()
+        .ok()
+        .filter(|&n| n > 0)
+}
+
 fn parse_live_models(json: &Value, props: &Props) -> Vec<Model> {
     json.get("data")
         .and_then(Value::as_array)
@@ -107,7 +125,10 @@ fn parse_live_models(json: &Value, props: &Props) -> Vec<Model> {
                     // llama.cpp-compatible frontends (e.g. Unsloth Studio)
                     // have no /props but declare the configured window
                     // per model here; vanilla llama-server omits it.
-                    let context_length = raw.get("context_length").and_then(Value::as_u64);
+                    let context_length = raw
+                        .get("context_length")
+                        .and_then(Value::as_u64)
+                        .or_else(|| ctx_size_arg(raw));
                     Some((id, context_length))
                 })
                 .filter(|(id, _)| !id.is_empty())
@@ -428,6 +449,34 @@ mod tests {
         let models = parse_live_models(&json, &Props::default());
         assert_eq!(models[0].context_window, DEFAULT_CONTEXT_WINDOW);
         assert_eq!(models[0].supports_vision, None);
+    }
+
+    #[test]
+    fn router_mode_reads_ctx_size_from_status_args_and_ignores_zero_props() {
+        // Real shapes from `llama serve` in router mode (the Llama desktop
+        // app): `/props` reports `n_ctx: 0` because no model is loaded in
+        // the router process, and each `/v1/models` row carries the
+        // instance's launch args. Regression: n_ctx 0 was trusted and every
+        // model registered with a zero window and a zero usable budget.
+        let props = parse_props(&serde_json::json!({
+            "role": "router", "model_path": "none",
+            "default_generation_settings": { "params": null, "n_ctx": 0 }
+        }));
+        assert_eq!(props.context_window, None);
+        let json = serde_json::json!({
+            "data": [
+                { "id": "ggml-org/gemma-4-12B-it-GGUF:Q8_0", "object": "model",
+                  "status": { "value": "unloaded", "args": [
+                      "/Users/tony/.llama-app/llama", "serve", "--jinja",
+                      "--alias", "ggml-org/gemma-4-12B-it-GGUF:Q8_0",
+                      "--ctx-size", "4096", "--fit-target", "1024" ] } },
+                { "id": "no-args", "object": "model", "status": { "value": "unloaded" } },
+            ]
+        });
+        let models = parse_live_models(&json, &props);
+        assert_eq!(models[0].context_window, 4096);
+        assert_eq!(models[0].max_output_tokens, 2048);
+        assert_eq!(models[1].context_window, DEFAULT_CONTEXT_WINDOW);
     }
 
     #[test]
