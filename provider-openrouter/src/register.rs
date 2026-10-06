@@ -38,8 +38,8 @@ pub fn declaration() -> ProviderDeclaration {
         // mid-range model first, then its predecessors (router picks the
         // first one the live catalog holds).
         default_models: Some(vec![
-            "anthropic/claude-sonnet-5.5".into(),
-            "anthropic/claude-sonnet-5".into(),
+            "openrouter/anthropic/claude-sonnet-5.5".into(),
+            "openrouter/anthropic/claude-sonnet-5".into(),
         ]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
         // No static slice: GET /api/v1/models is the source of truth, and a
