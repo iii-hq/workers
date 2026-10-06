@@ -59,7 +59,7 @@ export function DeleteFileView({
             true
           </Chip>
         ) : null}
-        {req.include_protected ? (
+        {req.recursive && req.include_protected ? (
           <Chip label="protected files" className="bg-alert-muted text-alert">
             deleted too
           </Chip>

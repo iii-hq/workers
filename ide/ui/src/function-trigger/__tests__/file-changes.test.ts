@@ -91,6 +91,10 @@ describe('summarizeFileChanges', () => {
     expect(summarizeFileChanges('coder::delete-file', { paths: ['pkg'], recursive: true })).not.toHaveProperty(
       'protectedToo',
     )
+    // Without recursive the worker ignores the flag: nothing protected goes.
+    expect(
+      summarizeFileChanges('coder::delete-file', { paths: ['pkg'], include_protected: true }),
+    ).not.toHaveProperty('protectedToo')
   })
 
   it('reports failed and unchanged deletions from their result entries', () => {

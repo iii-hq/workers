@@ -55,7 +55,11 @@ const updateRequestSchema = z.object({
   ),
 })
 
-const deleteRequestSchema = z.object({ paths: z.array(z.string()), include_protected: z.optional(z.boolean()) })
+const deleteRequestSchema = z.object({
+  paths: z.array(z.string()),
+  recursive: z.optional(z.boolean()),
+  include_protected: z.optional(z.boolean()),
+})
 
 export type FileChangeStatus = 'created' | 'updated' | 'deleted' | 'unchanged' | 'failed'
 
@@ -163,7 +167,8 @@ export function summarizeFileChanges(functionId: string, input: unknown, output?
     if (!req.success) return null
     return {
       action: 'deleted',
-      ...(req.data.include_protected === true ? { protectedToo: true } : {}),
+      // The worker honors the flag only on a recursive delete.
+      ...(req.data.recursive === true && req.data.include_protected === true ? { protectedToo: true } : {}),
       rows: req.data.paths.map((path, index) => {
         const result = results[index]
         return {
