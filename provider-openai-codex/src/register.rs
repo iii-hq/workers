@@ -50,6 +50,7 @@ pub fn declaration() -> ProviderDeclaration {
         ]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
         context_overflow_hint: None,
+        credential_optional: None,
         models: None,
         worker_id: Some("provider-openai-codex".into()),
         // The mark the console paints beside this provider's models; the

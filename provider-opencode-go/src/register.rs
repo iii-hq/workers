@@ -41,6 +41,7 @@ pub fn declaration() -> ProviderDeclaration {
         default_models: Some(vec!["kimi-k3".into()]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
         context_overflow_hint: None,
+        credential_optional: None,
         models: None,
         worker_id: Some("provider-opencode-go".into()),
         // The mark the console paints beside this provider's models; the

@@ -62,6 +62,9 @@ fn declaration_with(default_models: Option<Vec<String>>) -> ProviderDeclaration 
         // The server rejects any prompt over its --ctx-size, so compacting
         // in a console cannot fix an overflow against a small window.
         context_overflow_hint: Some(CONTEXT_OVERFLOW_HINT.into()),
+        // llama-server asks for a key only when started with --api-key, so
+        // the router reports llama.cpp configured without one.
+        credential_optional: Some(true),
         // No static slice: refresh_models discovers the catalog live from
         // the resolved server's `/v1/models` + `/props` right after
         // registration (see declare_and_refresh) — no credential required.
@@ -292,6 +295,13 @@ mod tests {
         // The router hands `defaults.api_url` back as the resolved url, and
         // discovery only probes both local ports when it is unset.
         assert_eq!(declaration().defaults.and_then(|d| d.api_url), None);
+    }
+
+    #[test]
+    fn the_key_is_optional() {
+        // llama-server needs a key only when started with --api-key; the
+        // router then reports the provider configured without one.
+        assert_eq!(declaration().credential_optional, Some(true));
     }
 
     #[test]

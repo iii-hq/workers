@@ -60,6 +60,7 @@ pub fn declaration() -> ProviderDeclaration {
         ]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
         context_overflow_hint: None,
+        credential_optional: None,
         // No static slice: GET /models is the source of truth once a login
         // exists, and a refresh fires right after registration.
         models: None,

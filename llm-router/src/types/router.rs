@@ -222,6 +222,12 @@ pub struct ProviderDeclaration {
     /// docs. `router::provider::list` carries it verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_overflow_hint: Option<String>,
+    /// `true` when the provider works without a credential (a local server
+    /// started without a key): the router then reports it `configured` with
+    /// no key. A key that is set is still resolved and sent. Absent means a
+    /// key is required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_optional: Option<bool>,
 }
 
 /// Upper bound the router accepts for [`ProviderDeclaration::icon_svg`].

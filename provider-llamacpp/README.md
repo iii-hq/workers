@@ -51,6 +51,8 @@ chose. Counting is local and never runs the model.
   not a configuration error: requests simply go out with no `Authorization`
   header. If the server *does* have `--api-key` set and ours is missing or
   wrong, the server's 401/403 surfaces as the normal `auth_expired` error.
+  The declaration sets `credential_optional: true`, so the router reports
+  llama.cpp `configured` without a key and consoles offer its models.
 - **Catalog:** `src/discovery.rs` discovers the catalog live — `GET
   /v1/models` lists every id the server serves (no "gpt-"-style family gate:
   llama.cpp serves arbitrary GGUF aliases, so every id is kept), enriched
