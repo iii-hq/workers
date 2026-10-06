@@ -320,11 +320,11 @@ impl HostFsBackend {
         Ok(canon)
     }
 
-    /// Lexical operand for handlers whose semantics forbid canonicalizing
-    /// (rm/chmod/mv/sed act on the link itself, not its target). Relative
-    /// inputs anchor to the SAME jail root `validate_path` validated
-    /// against, so the validated path and the operated-on path can never
-    /// diverge (the worker's CWD is unrelated to the jail).
+    /// Operand for handlers whose semantics forbid canonicalizing the LAST
+    /// component (rm/chmod/mv/sed act on the link itself, not its target).
+    /// Relative inputs anchor to the SAME jail root `validate_path` validated
+    /// against (the worker's CWD is unrelated to the jail); see
+    /// [`lexical_operand_with`] for why the parent is canonical.
     fn lexical_operand(&self, path: &str) -> PathBuf {
         lexical_operand_with(path, self.primary_root())
     }
@@ -334,16 +334,32 @@ impl HostFsBackend {
     /// (the directory `validate_path_scoped` validated against) so the
     /// validated and operated-on paths cannot diverge. `None` ⇒ delegates to
     /// [`Self::lexical_operand`] (the unchanged primary-root-anchored operand).
+    ///
+    /// A symlink leaf is the one place they still differ: validation checked
+    /// the link's target, the operation acts on the link. So the directory
+    /// holding the link is confined too (`R/ext -> O` with `O/back -> R/x`
+    /// must not let `ext/back` unlink or overwrite `O/back`).
     fn lexical_operand_scoped(
         &self,
         path: &str,
         scope_root_canon: Option<&Path>,
-        _scope_grants_canon: &[PathBuf],
-    ) -> PathBuf {
-        match scope_root_canon {
+        scope_grants_canon: &[PathBuf],
+        boundary: crate::fs::FsBoundary,
+    ) -> Result<PathBuf, FsError> {
+        let operand = match scope_root_canon {
             None => self.lexical_operand(path),
             Some(base) => lexical_operand_with(path, Some(base)),
+        };
+        let is_link = std::fs::symlink_metadata(&operand).is_ok_and(|m| m.file_type().is_symlink());
+        if let (true, Some(parent)) = (is_link, operand.parent()) {
+            self.validate_path_scoped(
+                &parent.to_string_lossy(),
+                scope_root_canon,
+                scope_grants_canon,
+                boundary,
+            )?;
         }
+        Ok(operand)
     }
 }
 
@@ -525,14 +541,25 @@ fn display_roots(roots: &[PathBuf]) -> String {
 /// `spawn_blocking` closure that can't borrow `&self`. Anchors relative inputs
 /// to the given anchor (the primary jail root, or a session `scope_root`),
 /// identical to the method form.
+///
+/// The LAST component stays as written (rm/mv of a symlink act on the link),
+/// but everything before it resolves the way validation resolves it: a
+/// symlink followed by `..` (`R/link/../x`) must not collapse lexically to a
+/// path outside the one that was checked. A trailing `..` has no leaf to
+/// keep, so that path resolves whole.
 fn lexical_operand_with(path: &str, anchor_canon: Option<&Path>) -> PathBuf {
     let p = Path::new(path);
-    if p.is_relative() {
-        if let Some(anchor) = anchor_canon {
-            return normalize_lexical(&anchor.join(p));
-        }
+    let anchored = match anchor_canon {
+        Some(anchor) if p.is_relative() => anchor.join(p),
+        _ => p.to_path_buf(),
+    };
+    // Validation already resolved this same prefix, so the lexical fallback
+    // only covers inputs it rejects (an unanchored relative path).
+    let resolve = |q: &Path| canonicalize_with_fallback(q).unwrap_or_else(|_| normalize_lexical(q));
+    match (anchored.parent(), anchored.file_name()) {
+        (Some(parent), Some(name)) => resolve(parent).join(name),
+        _ => resolve(&anchored),
     }
-    normalize_lexical(p)
 }
 
 /// Resolve and validate an OPTIONAL trusted per-call `scope_root`. Returns:
@@ -1098,11 +1125,10 @@ impl FsBackend for HostFsBackend {
     }
 
     async fn rm(&self, req: crate::fs::RmArgs) -> FsCallResult<crate::fs::RmResponse> {
-        // Lexical form required: rm of a symlink must remove the link, not
-        // the target. validate_path canonicalizes for jail confinement; we
-        // operate on the lexical path to preserve unlink semantics. Both the
-        // validation and the operand anchor at the session scope_root when set,
-        // so they cannot diverge.
+        // The leaf stays as written: rm of a symlink must remove the link, not
+        // the target. validate_path canonicalizes the whole path; the operand
+        // canonicalizes only the parent, and for a symlink leaf that parent is
+        // confined as well. Both anchor at the session scope_root when set.
         let base = self.confine_scope_root(crate::fs::scope_anchor(req.fs_scope.as_ref()))?;
         let extra = self.confine_scope_grants(crate::fs::scope_grants(req.fs_scope.as_ref()));
         self.validate_path_scoped(
@@ -1111,7 +1137,12 @@ impl FsBackend for HostFsBackend {
             &extra,
             crate::fs::scope_boundary(req.fs_scope.as_ref()),
         )?;
-        let p = self.lexical_operand_scoped(&req.path, base.as_deref(), &extra);
+        let p = self.lexical_operand_scoped(
+            &req.path,
+            base.as_deref(),
+            &extra,
+            crate::fs::scope_boundary(req.fs_scope.as_ref()),
+        )?;
 
         // The symlink_metadata stat, recursive remove_dir_all, the non-recursive
         // read_dir emptiness probe, and the unlink are all blocking std::fs work
@@ -1161,7 +1192,12 @@ impl FsBackend for HostFsBackend {
             &extra,
             crate::fs::scope_boundary(req.fs_scope.as_ref()),
         )?;
-        let p = self.lexical_operand_scoped(&req.path, base.as_deref(), &extra);
+        let p = self.lexical_operand_scoped(
+            &req.path,
+            base.as_deref(),
+            &extra,
+            crate::fs::scope_boundary(req.fs_scope.as_ref()),
+        )?;
         let bits = crate::fs::error::parse_mode(&req.mode)?;
         check_special_bits(bits, self.cfg.allow_special_bits)?;
 
@@ -1250,8 +1286,18 @@ impl FsBackend for HostFsBackend {
             &extra,
             crate::fs::scope_boundary(req.fs_scope.as_ref()),
         )?;
-        let src_p = self.lexical_operand_scoped(&req.src, base.as_deref(), &extra);
-        let dst_p = self.lexical_operand_scoped(&req.dst, base.as_deref(), &extra);
+        let src_p = self.lexical_operand_scoped(
+            &req.src,
+            base.as_deref(),
+            &extra,
+            crate::fs::scope_boundary(req.fs_scope.as_ref()),
+        )?;
+        let dst_p = self.lexical_operand_scoped(
+            &req.dst,
+            base.as_deref(),
+            &extra,
+            crate::fs::scope_boundary(req.fs_scope.as_ref()),
+        )?;
         if !src_p.exists() {
             return Err(FsError::new("S211", format!("src not found: {}", req.src)));
         }
@@ -4379,5 +4425,161 @@ mod tests {
             .await
             .expect("configured-roots mode permits siblings inside shell policy");
         assert_eq!(sibling.0.name, "shared.txt");
+    }
+
+    /// `outer/R` is the session root, `R/s -> R/a/b`, and both `R/x` and
+    /// `outer/x` exist. `R/s/../../x` resolves to `R/x` (what validation
+    /// checks), but collapses lexically to `outer/x`.
+    fn symlink_dotdot_fixture() -> (PathBuf, crate::fs::FsScope) {
+        let outer = tmp();
+        let r = outer.join("R");
+        fs::create_dir_all(r.join("a/b")).unwrap();
+        std::os::unix::fs::symlink(r.join("a/b"), r.join("s")).unwrap();
+        fs::write(r.join("x"), "inside").unwrap();
+        fs::write(outer.join("x"), "outside").unwrap();
+        let scope = crate::fs::FsScope {
+            root: r.to_string_lossy().into_owned(),
+            grants: Vec::new(),
+            boundary: crate::fs::FsBoundary::Workspace,
+        };
+        (outer, scope)
+    }
+
+    #[tokio::test]
+    async fn rm_through_a_symlink_dotdot_stays_inside_the_root() {
+        let (outer, scope) = symlink_dotdot_fixture();
+        let b = stub_backend(HostFsConfig::default());
+        b.rm(crate::fs::RmArgs {
+            path: "s/../../x".into(),
+            recursive: false,
+            fs_scope: Some(scope),
+        })
+        .await
+        .expect("rm of the validated path succeeds");
+        assert!(!outer.join("R/x").exists(), "the validated path is removed");
+        assert!(
+            outer.join("x").exists(),
+            "the file outside the root survives"
+        );
+    }
+
+    #[tokio::test]
+    async fn chmod_sed_mv_through_a_symlink_dotdot_stay_inside_the_root() {
+        let (outer, scope) = symlink_dotdot_fixture();
+        let b = stub_backend(HostFsConfig::default());
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        fs::set_permissions(outer.join("x"), fs::Permissions::from_mode(0o644)).unwrap();
+
+        b.chmod(crate::fs::ChmodArgs {
+            path: "s/../../x".into(),
+            mode: "0600".into(),
+            uid: None,
+            gid: None,
+            recursive: false,
+            fs_scope: Some(scope.clone()),
+        })
+        .await
+        .expect("chmod of the validated path succeeds");
+        assert_eq!(mode(&outer.join("R/x")), 0o600);
+        assert_eq!(mode(&outer.join("x")), 0o644, "outside file untouched");
+
+        b.sed(crate::fs::SedArgs {
+            fs_scope: Some(scope.clone()),
+            files: vec!["s/../../x".into()],
+            path: None,
+            recursive: false,
+            include_glob: vec![],
+            exclude_glob: vec![],
+            pattern: "side".into(),
+            replacement: "SIDE".into(),
+            regex: false,
+            first_only: false,
+            ignore_case: false,
+        })
+        .await
+        .expect("sed of the validated path succeeds");
+        assert_eq!(fs::read_to_string(outer.join("R/x")).unwrap(), "inSIDE");
+        assert_eq!(fs::read_to_string(outer.join("x")).unwrap(), "outside");
+
+        b.mv(crate::fs::MvArgs {
+            src: "s/../../x".into(),
+            dst: "s/../../y".into(),
+            overwrite: false,
+            fs_scope: Some(scope),
+        })
+        .await
+        .expect("mv of the validated paths succeeds");
+        assert!(outer.join("R/y").exists() && !outer.join("R/x").exists());
+        assert!(outer.join("x").exists() && !outer.join("y").exists());
+    }
+
+    /// `R/ext -> O` and `O/back -> R/x`: `ext/back` validates as `R/x`, but
+    /// rm/mv act on the link itself, `O/back`, outside the root. Refused.
+    #[tokio::test]
+    async fn rm_mv_of_a_symlink_leaf_outside_the_root_are_refused() {
+        let outer = tmp();
+        let (r, o) = (outer.join("R"), outer.join("O"));
+        fs::create_dir_all(&r).unwrap();
+        fs::create_dir_all(&o).unwrap();
+        fs::write(r.join("x"), "x").unwrap();
+        fs::write(r.join("y"), "y").unwrap();
+        std::os::unix::fs::symlink(&o, r.join("ext")).unwrap();
+        std::os::unix::fs::symlink(r.join("x"), o.join("back")).unwrap();
+        let scope = crate::fs::FsScope {
+            root: r.to_string_lossy().into_owned(),
+            grants: Vec::new(),
+            boundary: crate::fs::FsBoundary::Workspace,
+        };
+        let b = stub_backend(HostFsConfig::default());
+        let rm = b
+            .rm(crate::fs::RmArgs {
+                path: "ext/back".into(),
+                recursive: false,
+                fs_scope: Some(scope.clone()),
+            })
+            .await;
+        assert!(rm.is_err(), "rm of O/back is refused: {rm:?}");
+        for (src, dst) in [("ext/back", "z"), ("y", "ext/back")] {
+            let mv = b
+                .mv(crate::fs::MvArgs {
+                    src: src.into(),
+                    dst: dst.into(),
+                    overwrite: true,
+                    fs_scope: Some(scope.clone()),
+                })
+                .await;
+            assert!(mv.is_err(), "mv {src} -> {dst} is refused: {mv:?}");
+        }
+        assert!(fs::symlink_metadata(o.join("back"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(r.join("y").exists() && !r.join("z").exists());
+    }
+
+    /// The operand keeps its last component as written: rm of a symlink
+    /// removes the link, not its target.
+    #[tokio::test]
+    async fn rm_of_a_symlink_leaf_removes_the_link() {
+        let r = tmp();
+        fs::write(r.join("target"), "t").unwrap();
+        std::os::unix::fs::symlink(r.join("target"), r.join("link")).unwrap();
+        let b = stub_backend(HostFsConfig::default());
+        b.rm(crate::fs::RmArgs {
+            path: "link".into(),
+            recursive: false,
+            fs_scope: Some(crate::fs::FsScope {
+                root: r.to_string_lossy().into_owned(),
+                grants: Vec::new(),
+                boundary: crate::fs::FsBoundary::Workspace,
+            }),
+        })
+        .await
+        .expect("rm of a symlink leaf succeeds");
+        assert!(
+            fs::symlink_metadata(r.join("link")).is_err(),
+            "link removed"
+        );
+        assert!(r.join("target").exists(), "target kept");
     }
 }

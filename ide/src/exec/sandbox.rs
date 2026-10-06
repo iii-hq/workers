@@ -310,6 +310,7 @@ mod tests {
             cwd: Some(std::path::PathBuf::from("/tmp")),
             env: None,
             stdin: None,
+            write_roots: None,
         };
         let err = b
             .run(&["echo".into()], 1000, &overrides)

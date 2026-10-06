@@ -57,6 +57,15 @@ agents, pair with the `skills` worker.
   always refuses denylisted paths regardless; paths must be absolute (unless
   jailed, where a relative path resolves against the primary root) and
   symlinks are never followed.
+- In a harness session every call carries a trusted `fs_scope.root`. Under
+  the `workspace` boundary (harness `filesystem_boundary`), `coder::*`,
+  `shell::fs::*` and an exec `cwd` refuse paths outside that root and the
+  session's grants (`C220`/`S220`, `C215`/`S215`); under `configured_roots`
+  the root is only the default directory for relative paths.
+- With `fs.exec_confinement: landlock`, a session's host `shell::exec` /
+  `exec_bg` can write only under its root, its grants, the repository's git
+  dir and `fs.exec_writable` (`/tmp`, `/dev`, caches, toolchains); reads stay
+  open. Without Landlock such a call fails closed with `S222`.
 - Sandbox-backed background jobs cannot be hard-killed: `shell::kill` flips the
   record but the in-VM process runs until its `timeout_ms` (or `sandbox::stop`).
 - Not for inlining file bytes into an LLM tool result: `shell::fs::read`/

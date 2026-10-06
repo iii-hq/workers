@@ -143,6 +143,11 @@ pub struct ExecOverrides {
     /// not a path or env key — but like cwd/env it is HOST-only (the sandbox
     /// exec protocol does not forward stdin), enforced via [`is_empty`].
     pub stdin: Option<String>,
+    /// The only paths the child may write under (Landlock, applied in
+    /// `build_command`). `Some` only for a scoped host exec with
+    /// `fs.exec_confinement: landlock`; it implies `cwd` is set, so a sandbox
+    /// call carrying it is already refused through [`is_empty`].
+    pub write_roots: Option<Vec<PathBuf>>,
 }
 
 impl ExecOverrides {
@@ -354,6 +359,20 @@ pub fn build_overrides(
     let confinement_root = (boundary == crate::fs::FsBoundary::Workspace)
         .then_some(scope_root_canon.as_deref())
         .flatten();
+    // Only a call carrying a scope is confined: the console terminal and other
+    // workers exec without one and keep running unconfined.
+    let write_roots = (cfg.fs.exec_confinement == crate::config::ExecConfinement::Landlock)
+        .then_some(scope_root_canon.as_deref())
+        .flatten()
+        .map(|root| {
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            crate::exec::confine::writable_roots(
+                root,
+                &scope_grants_canon,
+                &cfg.fs.exec_writable,
+                home.as_deref(),
+            )
+        });
 
     let cwd = match cwd {
         Some(c) => {
@@ -392,6 +411,7 @@ pub fn build_overrides(
         cwd,
         env,
         stdin: None,
+        write_roots,
     })
 }
 
@@ -749,6 +769,74 @@ mod tests {
             "relative cwd anchors at the primary jail root when scope_root is absent"
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn cfg_landlock(root: &std::path::Path) -> ShellConfig {
+        let mut c = cfg_jailed(root);
+        c.fs.exec_confinement = crate::config::ExecConfinement::Landlock;
+        c
+    }
+
+    /// The console terminal and other workers call exec without `fs_scope`:
+    /// turning Landlock on must not confine them.
+    #[test]
+    fn unscoped_exec_gets_no_write_roots_even_with_landlock() {
+        let root = tempfile::tempdir().unwrap();
+        let c = cfg_landlock(root.path());
+        let ov = build_overrides(None, None, None, None, crate::fs::FsBoundary::Workspace, &c)
+            .expect("ok");
+        assert_eq!(ov.write_roots, None);
+    }
+
+    #[test]
+    fn scoped_exec_gets_write_roots_only_when_landlock_is_on() {
+        let root = tempfile::tempdir().unwrap();
+        let session = root.path().join("session");
+        std::fs::create_dir_all(&session).unwrap();
+        let base = session.to_string_lossy().into_owned();
+        let scoped = |c: &ShellConfig| {
+            build_overrides(
+                None,
+                None,
+                Some(&base),
+                None,
+                crate::fs::FsBoundary::Workspace,
+                c,
+            )
+            .expect("scope_root is valid")
+        };
+
+        assert_eq!(scoped(&cfg_jailed(root.path())).write_roots, None);
+        let roots = scoped(&cfg_landlock(root.path()))
+            .write_roots
+            .expect("a scoped exec under landlock carries its write roots");
+        assert!(
+            roots.contains(&session.canonicalize().unwrap()),
+            "{roots:?}"
+        );
+    }
+
+    /// A scope root that is missing or denylisted keeps its existing error:
+    /// confinement never turns it into an unconfined run.
+    #[test]
+    fn a_missing_or_denied_scope_root_keeps_its_error_under_landlock() {
+        let root = tempfile::tempdir().unwrap();
+        let mut c = cfg_landlock(root.path());
+        let denied = root.path().join("denied");
+        std::fs::create_dir_all(&denied).unwrap();
+        c.fs.denylist_paths = vec![denied.clone()];
+        for scope in [root.path().join("missing"), denied] {
+            let err = build_overrides(
+                None,
+                None,
+                Some(scope.to_str().unwrap()),
+                None,
+                crate::fs::FsBoundary::Workspace,
+                &c,
+            )
+            .expect_err("a missing or denied scope root must not run");
+            assert_eq!(err.code, "S211", "{scope:?}: {}", err.message);
+        }
     }
 
     #[test]

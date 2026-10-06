@@ -75,9 +75,13 @@ fs:
   # against it), and allow_unjailed stops mattering once host_roots is
   # non-empty. (the 0.6.x `host_root` single-root form was removed in 0.7.0)
   #
-  # Note: coder::* does NOT follow this setting — it falls back to its own
-  # default roots (engine workspace cwd + /tmp) whenever host_roots is
-  # empty, regardless of allow_unjailed.
+  # coder::* follows the same switch: unjailed, it reaches the real
+  # filesystem too and keeps the engine workspace cwd + /tmp only as
+  # relative-path anchors.
+  #
+  # A harness call stamped with fs_scope boundary `workspace` is further
+  # held to fs_scope.root plus its grants by coder::* and shell::fs::*;
+  # under `configured_roots` the root only anchors relative paths.
   host_roots: []
   allow_unjailed: true
   max_read_bytes: 16777216
@@ -97,6 +101,21 @@ fs:
   # escalation primitive when the worker runs as root, so they are rejected
   # with S210. Set true only if your workload genuinely needs them.
   # allow_special_bits: false
+  # Write confinement for a host shell::exec/exec_bg that carries the
+  # harness fs_scope. `landlock` lets it write only under fs_scope.root, its
+  # grants, the root's git dir, and exec_writable; reads stay open. It fails
+  # closed: without Landlock (Linux 5.13+) such an exec is refused with S222.
+  # Unscoped execs (console terminal, other workers) are never confined.
+  exec_confinement: "off"
+  # Extra writable paths for a confined exec; `~/` is $HOME, missing paths
+  # are skipped.
+  exec_writable:
+    - /tmp
+    - /dev
+    - ~/.cache
+    - ~/.cargo
+    - ~/.local/share/pnpm
+    - ~/.gnupg
 
 # When enabled is true, callers can target a live sandbox via the
 # top-level `target` field on shell::exec, shell::exec_bg, and every

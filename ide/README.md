@@ -103,6 +103,8 @@ fs:
   max_write_bytes: 16777216  # 0 = unlimited
   denylist_paths: [/etc/passwd, /etc/shadow]  # primary protection while unjailed; defense in depth once you set host_roots
   allow_special_bits: false  # permit setuid/setgid/sticky bits in mode (default false)
+  exec_confinement: "off"    # landlock = a host exec carrying fs_scope writes only under its root, grants, git dir and exec_writable; fails closed (S222) without Landlock
+  exec_writable: [/tmp, /dev, ~/.cache, ~/.cargo, ~/.local/share/pnpm, ~/.gnupg]  # extra writable paths for a confined exec; missing paths skipped
 
 sandbox:
   enabled: true              # false -> every target: sandbox call returns S210
@@ -123,7 +125,7 @@ code:
 
 ### Zero-config default
 
-With no `--config` file and no value stored in the `configuration` worker, the worker seeds a built-in default on first registration — so it boots with nothing configured (database-style). That built-in default is the shipped [`config.yaml`](config.yaml): unjailed (`fs.allow_unjailed: true`, empty `host_roots`), env forwarded, deny-only exec with a catastrophic-only denylist (kept in sync by a unit test). Unjailed means `shell::fs::*` and `shell::exec`'s per-call `cwd` operate against the real filesystem, confined only by `fs.denylist_paths` — matching `shell::exec` itself, which has never been confinement-based. `coder::*` is the one exception: it falls back to its own default roots (engine workspace cwd + `/tmp`) whenever `fs.host_roots` is empty, so it stays reasonably scoped even under the zero-config default. Set `fs.host_roots` if you want `shell::fs::*`/`cwd` jailed too. If the stored value is later nulled, the worker does not silently fall back to this seed: boot fails closed and a hot-reload keeps the last-good config. A config that is *present* but leaves `fs.host_roots` unset (without `fs.allow_unjailed: true`) also fails closed — the failure mode only disappears once you explicitly opt in, one way or another.
+With no `--config` file and no value stored in the `configuration` worker, the worker seeds a built-in default on first registration — so it boots with nothing configured (database-style). That built-in default is the shipped [`config.yaml`](config.yaml): unjailed (`fs.allow_unjailed: true`, empty `host_roots`), env forwarded, deny-only exec with a catastrophic-only denylist (kept in sync by a unit test). Unjailed means `shell::fs::*` and `shell::exec`'s per-call `cwd` operate against the real filesystem, confined only by `fs.denylist_paths` — matching `shell::exec` itself, which has never been confinement-based. `coder::*` follows the same policy, keeping the engine workspace cwd + `/tmp` only as relative-path anchors. Set `fs.host_roots` to jail all of them. If the stored value is later nulled, the worker does not silently fall back to this seed: boot fails closed and a hot-reload keeps the last-good config. A config that is *present* but leaves `fs.host_roots` unset (without `fs.allow_unjailed: true`) also fails closed — the failure mode only disappears once you explicitly opt in, one way or another.
 
 Host `shell::exec` is not a security boundary: any interpreter (`sh`, `node`, `python3`) can construct a denylisted token at runtime and bypass the regex. Run untrusted input with `target: { kind: "sandbox", sandbox_id }`, which forwards through the `iii-sandbox` microVM. The denylist still applies on top of either backend.
 
@@ -136,6 +138,15 @@ Host `shell::exec` is not a security boundary: any interpreter (`sh`, `node`, `p
 - **`stdin`** (string): written to the program's standard input, which is then closed (EOF). Use it to feed `tee`, `patch`, `cat`, or any stdin filter instead of a shell heredoc. Omit it and stdin is `/dev/null`.
 
 All three fields are **host-only**. The `sandbox::exec` protocol does not forward `cwd`/`env`/`stdin`, so a sandbox-targeted call that supplies any of them is rejected with `S210` rather than silently ignoring it. Omit them and behaviour is identical to prior versions.
+
+### Harness session scope (`fs_scope`)
+
+The harness stamps a trusted `fs_scope { root, grants, boundary }` on every `shell::*`/`coder::*` call of a session. What `root` means depends on `boundary`, which the harness's `filesystem_boundary` config picks (`auto`, the default, is `workspace` only while approval-gate's access watch is bound):
+
+- `workspace`: `coder::*`, `shell::fs::*` and an exec `cwd` stay inside `root` plus `grants` (`C220`/`S220` for a path in an allowed root but outside the session, `C215`/`S215` otherwise).
+- `configured_roots`: `root` only anchors relative paths and is the default exec `cwd`; `fs.host_roots` is the jail.
+
+What a host `shell::exec`/`exec_bg` process writes is a separate switch: with `fs.exec_confinement: landlock`, a scoped exec may write only under `root`, `grants`, the root's git dir and `fs.exec_writable`, in either mode. Reads stay open, and setuid binaries do not work in a confined exec. Without Landlock the exec fails closed with `S222`. Unscoped execs (the console terminal, other workers) and sandbox targets are never confined.
 
 ## Quick start
 
@@ -187,12 +198,10 @@ Every `shell::fs::*` call accepts the same optional `target` as `exec`, so host 
 
 The shell worker also serves the **`coder::*`** code-file functions (the former
 standalone `coder` worker, folded in). They are agent-ergonomic, structured
-file operations that share `shell::fs::*`'s jail **when `fs.host_roots` is
-set**. When it's empty (the shipped default — see
-[Zero-config default](#zero-config-default)), the two surfaces diverge:
-`shell::fs::*` becomes fully unjailed, but `coder::*` falls back to its own
-default roots (engine workspace cwd + `/tmp`) instead — it never runs
-fully unjailed, regardless of `fs.allow_unjailed`.
+file operations that share `shell::fs::*`'s jail (`fs.host_roots`). When it's
+empty (the shipped default — see [Zero-config default](#zero-config-default)),
+both surfaces are unjailed and `coder::*` keeps the engine workspace cwd +
+`/tmp` only as relative-path anchors.
 
 | Function | Purpose |
 |---|---|
@@ -592,6 +601,8 @@ Returned error bodies carry a stable `code` field. Denylist rejections come back
 | `S216` | Generic shell-internal failure: host spawn error, channel error, or a bad engine response. |
 | `S217` | Invalid regex passed to `grep`/`sed`. |
 | `S218` | `fs.max_read_bytes` / `fs.max_write_bytes` cap exceeded. |
+| `S220` | Path (or a per-call `cwd`) is inside an allowed root but outside the session's `fs_scope.root` and grants (`workspace` boundary). |
+| `S222` | A scoped host exec under `fs.exec_confinement: landlock` could not be confined (no Landlock: kernel, seccomp, non-Linux); it did not run. Set `fs.exec_confinement: off` to run unconfined. |
 | `S300` | Sandbox VM boot failed (needs a virtualization host: Apple Silicon or `/dev/kvm`). |
 
 Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim instead of collapsing to `S216`: `S001`–`S004` (sandbox lifecycle), `S100`–`S102` (image/VM/resource), `S300`, and `S400`. Branch on the specific code where relevant; only an unrecognized engine code falls back to `S216`.
