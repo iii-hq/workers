@@ -23,7 +23,7 @@ use std::time::Duration;
 pub const CREDENTIAL_ENV_VAR: &str = "LLAMACPP_API_KEY";
 
 /// Shown by consoles under a context-overflow failure on a llama.cpp model.
-pub const CONTEXT_OVERFLOW_HINT: &str = "llama.cpp serves each model with the context size it was started with (--ctx-size) and rejects anything larger, so compacting cannot fix this. Raise it on the server or in the per-model configuration options in the desktop app; see the llama.cpp server docs: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md";
+pub const CONTEXT_OVERFLOW_HINT: &str = "llama.cpp serves each model with the context size it was started with (--ctx-size) and rejects anything larger, so compacting cannot fix this. Raise it on the server or in the per-model configuration options in the desktop app (see the llama.cpp server docs: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md), then restart the llama.cpp provider so it picks up the new size: run `iii trigger compose::restart --json '{\"worker\":\"provider-llamacpp\"}'`, or restart it from the Workers page.";
 
 pub fn declaration() -> ProviderDeclaration {
     declaration_with(None)
