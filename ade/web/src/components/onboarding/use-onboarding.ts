@@ -96,8 +96,10 @@ const SUBSCRIPTION_IDS = new Set(
 )
 
 /**
- * Chat models the router serves right now from providers whose worker is
- * connected — the wizard's own reading. A subscription (Codex, Claude Code)
+ * Chat models the router serves right now from configured providers whose
+ * worker is connected — the wizard's own reading. An unconfigured provider
+ * can still list models (a local llama.cpp server), but the picker cannot
+ * use them, so they do not count. A subscription (Codex, Claude Code)
  * does not count: it serves models as soon as its CLI is signed in on this
  * machine, and the wizard is where the person sees that and chooses it.
  * Throws when the router or the engine cannot answer.
@@ -108,7 +110,9 @@ export async function connectedModelCount(): Promise<number> {
     installedWorkerNames(),
   ])
   return withWorkerPresence(providers, installed)
-    .filter((provider) => !SUBSCRIPTION_IDS.has(provider.id))
+    .filter(
+      (provider) => provider.configured && !SUBSCRIPTION_IDS.has(provider.id),
+    )
     .reduce((sum, provider) => sum + provider.modelCount, 0)
 }
 
