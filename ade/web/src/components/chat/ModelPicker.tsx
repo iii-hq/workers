@@ -163,6 +163,29 @@ function effortOptionsFor(
   return THINKING_LEVELS.map((effort) => ({ effort }))
 }
 
+/**
+ * The effort to apply when something other than the operator (a worker page
+ * such as the onboarding tour) asks for `level`: the level itself when the
+ * model offers it, else the model's lowest real effort (its ladder is in
+ * ascending order), else Default. Without a catalog row there is nothing to
+ * check against, so the level passes through.
+ */
+export function lowestSupportedEffort(
+  model: ModelOption | undefined,
+  level: ThinkingLevel,
+): ThinkingLevel {
+  if (!model) return level
+  const options = effortOptionsFor(model)
+  if (effortSupported(options, level)) return level
+  const lowest = options.find(
+    (option) =>
+      option.effort !== 'default' &&
+      option.effort !== 'off' &&
+      !option.disabled,
+  )
+  return lowest?.effort ?? 'default'
+}
+
 function effortSupported(
   options: ReasoningEffortOption[],
   effort: ThinkingLevel,
