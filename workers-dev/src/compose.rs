@@ -1060,13 +1060,12 @@ fn is_missing_daemon(error: &anyhow::Error) -> bool {
 }
 
 /// The env stem is the name the worker registers its UI under, which is not
-/// always the container key: `ade` registers as `console` (ade/src/ui.rs) and
-/// `ide` as `shell` (ide/src/ui.rs). Deriving from the key fails silently for
-/// exactly those two — the watcher runs and nothing hot-reloads.
+/// always the container key: `ade` registers as `console` (ade/src/ui.rs).
+/// Deriving from the key fails silently for that one — the watcher runs and
+/// nothing hot-reloads. `ide` registers as `ide` (ide/src/ui.rs).
 pub fn ui_watch_env(container: &str) -> String {
     let stem = match container {
         "ade" => "console",
-        "ide" => "shell",
         other => other,
     };
     let upper: String = stem
@@ -1196,7 +1195,7 @@ mod tests {
     #[test]
     fn ui_watch_env_uses_the_registered_name_not_the_container_key() {
         assert_eq!(ui_watch_env("ade"), "III_CONSOLE_UI_WATCH");
-        assert_eq!(ui_watch_env("ide"), "III_SHELL_UI_WATCH");
+        assert_eq!(ui_watch_env("ide"), "III_IDE_UI_WATCH");
         assert_eq!(ui_watch_env("harness"), "III_HARNESS_UI_WATCH");
         assert_eq!(ui_watch_env("llm-router"), "III_LLM_ROUTER_UI_WATCH");
     }
