@@ -73,12 +73,26 @@ fn declaration_with(default_models: Option<Vec<String>>) -> ProviderDeclaration 
 /// One registration attempt: declare (with the persisted token when present)
 /// and persist the token the router returns.
 pub async fn declare_once(iii: &IIIClient) -> Result<(), Error> {
-    declare_payload(iii, declaration()).await
+    declare_payload(iii, current_declaration()).await
 }
 
 /// The last default list sent, so a refresh that finds the same listing
 /// does not re-register for nothing.
 static DECLARED_DEFAULTS: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+fn remember_defaults(preferred: Vec<String>) {
+    if let Ok(mut last) = DECLARED_DEFAULTS.lock() {
+        *last = Some(preferred);
+    }
+}
+
+/// The boot declaration plus whatever discovery ranked so far: a
+/// router::ready rebind re-declares through here, so it never erases the
+/// default list from the router's record (which the unchanged-check in
+/// `redeclare_with_defaults` would then not restore).
+fn current_declaration() -> ProviderDeclaration {
+    declaration_with(DECLARED_DEFAULTS.lock().ok().and_then(|last| last.clone()))
+}
 
 /// Re-register with discovery's ranked default list when it changed.
 pub async fn redeclare_with_defaults(iii: &IIIClient, preferred: Vec<String>) -> Result<(), Error> {
@@ -93,9 +107,7 @@ pub async fn redeclare_with_defaults(iii: &IIIClient, preferred: Vec<String>) ->
         return Ok(());
     }
     declare_payload(iii, declaration_with_defaults(preferred.clone())).await?;
-    if let Ok(mut last) = DECLARED_DEFAULTS.lock() {
-        *last = Some(preferred);
-    }
+    remember_defaults(preferred);
     Ok(())
 }
 
@@ -267,7 +279,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{declaration, declaration_with_defaults};
+    use super::{current_declaration, declaration, declaration_with_defaults, remember_defaults};
 
     #[test]
     fn declaration_leaves_api_url_unset_so_discovery_probes() {
@@ -285,6 +297,18 @@ mod tests {
             Some(vec!["a-27B".to_string(), "b-7B".to_string()])
         );
         assert_eq!(decl.id, declaration().id);
+    }
+
+    #[test]
+    fn rebind_redeclares_with_the_last_discovered_defaults() {
+        // router::ready re-runs declare_once after discovery already sent a
+        // ranked list; the plain boot declaration would wipe it from the
+        // router's record and the unchanged-check would then skip the fix.
+        remember_defaults(vec!["served-27B".into(), "served-7B".into()]);
+        assert_eq!(
+            current_declaration().default_models,
+            Some(vec!["served-27B".to_string(), "served-7B".to_string()])
+        );
     }
 
     #[test]
