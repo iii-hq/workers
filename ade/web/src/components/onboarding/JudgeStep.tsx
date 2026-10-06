@@ -110,16 +110,16 @@ export function JudgeStep({
         <Rows>
           {JUDGE_USES.map((use) => (
             <div key={use.where} className="flex flex-col gap-0.5 px-3 py-2.5">
-              <span className="font-sans text-[13px] font-medium text-ink">
+              <span className="font-sans text-[14px] font-medium text-ink">
                 {use.where}
               </span>
-              <span className="text-pretty font-sans text-[12px] leading-relaxed text-ink-faint">
+              <span className="text-pretty font-sans text-[13px] leading-relaxed text-ink">
                 {use.what}
               </span>
             </div>
           ))}
         </Rows>
-        <p className="font-sans text-[12px] leading-relaxed text-ink-faint">
+        <p className="font-sans text-[13px] leading-relaxed text-ink">
           Without Judge, function search falls back to keyword matching and
           broken tool calls go back to the main model.
         </p>
@@ -127,7 +127,7 @@ export function JudgeStep({
 
       {alreadySetUp ? (
         <div className="flex items-center justify-between gap-3 rounded-md bg-ok-muted px-3 py-2">
-          <p className="font-sans text-[13px] text-ink">
+          <p className="font-sans text-[14px] text-ink">
             Judge is already running with {installedOption?.title}.
           </p>
           <Button
@@ -167,17 +167,17 @@ export function JudgeStep({
                     />
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <span className="flex flex-wrap items-center gap-2">
-                        <span className="font-sans text-[13px] font-medium text-ink">
+                        <span className="font-sans text-[14px] font-medium text-ink">
                           {option.title}
                         </span>
                         {option.recommended ? (
                           <StatusChip tone="neutral">Recommended</StatusChip>
                         ) : null}
                       </span>
-                      <span className="text-pretty font-sans text-[12px] leading-relaxed text-ink-faint">
+                      <span className="text-pretty font-sans text-[13px] leading-relaxed text-ink">
                         {option.summary}
                       </span>
-                      <span className="font-mono text-[11px] text-ink-ghost">
+                      <span className="font-mono text-[12px] text-ink">
                         {option.runs}
                       </span>
                     </span>

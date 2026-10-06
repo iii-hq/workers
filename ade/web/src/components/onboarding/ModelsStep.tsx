@@ -74,7 +74,7 @@ export function ModelsStep({
   } = onboarding
   const [registry, setRegistry] = useState<RegistryProviderRow[]>([])
   const [drafts, setDrafts] = useState<ReadonlyMap<string, Draft>>(new Map())
-  const [showMore, setShowMore] = useState(false)
+  const [showMore, setShowMore] = useState(true)
   const [connected, setConnected] = useState(false)
 
   useEffect(() => {
@@ -187,11 +187,11 @@ export function ModelsStep({
           )}
           <ProviderIcon
             label={choice.title}
-            className="mt-1.5 size-4 text-ink-faint"
+            className="mt-1.5 size-4 text-ink"
           />
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="flex flex-wrap items-center gap-2">
-              <span className="font-sans text-[13px] font-medium text-ink">
+              <span className="font-sans text-[14px] font-medium text-ink">
                 {choice.title}
               </span>
               {tool?.installed && !tool.signed_in ? (
@@ -200,14 +200,14 @@ export function ModelsStep({
                 <StatusChip tone="neutral">No API key</StatusChip>
               ) : null}
             </span>
-            <span className="text-pretty font-sans text-[12px] leading-relaxed text-ink-faint">
+            <span className="text-pretty font-sans text-[13px] leading-relaxed text-ink">
               {choice.reason}
             </span>
             {tool?.installed || tool?.signed_in ? (
               <ToolDetails tool={tool} />
             ) : null}
             {!choice.installed && choice.kind !== 'device' ? (
-              <span className="font-mono text-[11px] text-ink-ghost">
+              <span className="font-mono text-[12px] text-ink">
                 adds {choice.worker}
                 {version ? `@${version}` : ''}
               </span>
@@ -300,7 +300,7 @@ export function ModelsStep({
       />
 
       {snapshot.toolsError ? (
-        <p className="font-sans text-[12px] text-alert-strong">
+        <p className="font-sans text-[13px] text-alert-strong">
           Could not scan this machine: {snapshot.toolsError}
         </p>
       ) : null}
@@ -315,9 +315,9 @@ export function ModelsStep({
               >
                 <ProviderIcon
                   label={choice.title}
-                  className="size-4 text-ink-faint"
+                  className="size-4 text-ink"
                 />
-                <span className="flex-1 font-sans text-[13px] text-ink">
+                <span className="flex-1 font-sans text-[14px] text-ink">
                   {choice.title}
                 </span>
                 <StatusChip tone="ok">
@@ -363,7 +363,7 @@ export function ModelsStep({
       {firstScan ? null : !secretsInstalled ? (
         <Section title="Keys you already have">
           <div className="flex flex-col gap-3 rounded-md bg-surface px-3 py-3">
-            <p className="font-sans text-[13px] leading-relaxed text-ink">
+            <p className="font-sans text-[14px] leading-relaxed text-ink">
               Looking for keys you've already exported uses the{' '}
               <span className="font-mono">secrets</span> worker. It keeps API
               keys out of every file you commit — today a key pasted into
@@ -385,7 +385,7 @@ export function ModelsStep({
           </div>
         </Section>
       ) : snapshot.detections !== null && !keysFound ? (
-        <p className="rounded-md bg-surface px-3 py-3 font-sans text-[13px] text-ink-faint">
+        <p className="rounded-md bg-surface px-3 py-3 font-sans text-[14px] text-ink">
           No provider keys in your shell profile or this project's .env. Paste
           one below, or sign in to a coding agent and scan again.
         </p>
@@ -454,15 +454,13 @@ function ToolDetails({ tool }: { tool: ToolScan }) {
   return (
     <>
       {tool.signed_in && tool.credentials_path ? (
-        <span className="truncate font-sans text-[12px] text-ink-faint">
+        <span className="truncate font-sans text-[13px] text-ink">
           Sign-in at{' '}
-          <span className="font-mono text-[11px]">{tool.credentials_path}</span>
+          <span className="font-mono text-[12px]">{tool.credentials_path}</span>
         </span>
       ) : null}
       {cli ? (
-        <span className="truncate font-mono text-[11px] text-ink-ghost">
-          {cli}
-        </span>
+        <span className="truncate font-mono text-[12px] text-ink">{cli}</span>
       ) : null}
     </>
   )

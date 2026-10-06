@@ -54,10 +54,10 @@ export function WelcomeStep({
                 <Icon className="size-4" aria-hidden />
               </span>
               <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="font-sans text-[13px] font-semibold text-ink">
+                <span className="font-sans text-[14px] font-semibold text-ink">
                   {pillar.title}
                 </span>
-                <span className="text-pretty font-sans text-[12px] leading-relaxed text-ink-faint">
+                <span className="text-pretty font-sans text-[13px] leading-relaxed text-ink">
                   {pillar.line}
                 </span>
               </span>
@@ -70,16 +70,16 @@ export function WelcomeStep({
           {SETUP.map((line, index) => (
             <li
               key={line}
-              className="flex gap-3 font-sans text-[13px] text-ink"
+              className="flex gap-3 font-sans text-[14px] text-ink"
             >
-              <span className="w-4 shrink-0 text-right font-mono text-[11px] leading-5 tabular-nums text-ink-ghost">
+              <span className="w-4 shrink-0 text-right font-mono text-[12px] leading-5 tabular-nums text-ink">
                 {index + 1}
               </span>
               <span className="leading-5">{line}</span>
             </li>
           ))}
         </ol>
-        <p className="font-sans text-[12px] leading-relaxed text-ink-faint">
+        <p className="font-sans text-[13px] leading-relaxed text-ink">
           Nothing is installed without your click. Every worker this setup adds,
           and every setting it writes, is shown before it runs and logged as it
           happens.
