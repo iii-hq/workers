@@ -460,8 +460,13 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
                   {step.condition?.prompt && state !== 'complete' ? (
                     <Copyable label="or ask the agent" text={step.condition.prompt} />
                   ) : null}
-                  {step.id === 'stay-in-touch' && state !== 'complete' ? (
-                    <StayInTouch host={host} onDone={() => complete(step.id)} />
+                  {step.id === 'stay-in-touch' ? (
+                    // Reopening the step after a Skip shows the form again;
+                    // a done step has nothing left to skip.
+                    <StayInTouch
+                      host={host}
+                      onDone={state === 'complete' ? undefined : () => complete(step.id)}
+                    />
                   ) : null}
                   {step.on_closed && closed === step.on_closed.screen ? (
                     <p className="ob-note" role="status">
@@ -632,7 +637,7 @@ const SOCIALS: { label: string; href: string; path: string }[] = [
  * The signup step's own way onward: `Sign me up` subscribes and closes the
  * step, `Skip` closes it without an email. It replaces the generic `Got it`.
  */
-function StayInTouch({ host, onDone }: { host: Host; onDone: () => void }) {
+function StayInTouch({ host, onDone }: { host: Host; onDone?: () => void }) {
   const [email, setEmail] = useState('')
   const [status, setStatus] = useState<'idle' | 'sending' | 'done' | 'failed'>('idle')
   const [message, setMessage] = useState('')
@@ -647,7 +652,7 @@ function StayInTouch({ host, onDone }: { host: Host; onDone: () => void }) {
         .then(() => {
           setStatus('done')
           setMessage('You are on the list.')
-          onDone()
+          onDone?.()
         })
         .catch((error: unknown) => {
           setStatus('failed')
@@ -675,9 +680,11 @@ function StayInTouch({ host, onDone }: { host: Host; onDone: () => void }) {
           <Button type="submit" disabled={status === 'sending'}>
             {status === 'sending' ? 'Sending…' : 'Sign me up'}
           </Button>
-          <Button type="button" variant="ghost" onClick={onDone} disabled={status === 'sending'}>
-            Skip
-          </Button>
+          {onDone ? (
+            <Button type="button" variant="ghost" onClick={onDone} disabled={status === 'sending'}>
+              Skip
+            </Button>
+          ) : null}
         </form>
       )}
       {status === 'failed' ? <StatusPanel variant="alert" headline={message} role="alert" /> : null}
