@@ -6,7 +6,9 @@
 //! whether a credential is configured** — most local llama.cpp servers run
 //! with no `--api-key` at all — and the catalog is only pruned on an actual
 //! 401/403 from the server (an operator-configured key we don't have).
-use crate::config::{credential_parts, DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
+use crate::config::{
+    credential_parts, remember_probed_api_url, DEFAULT_API_URL_CANDIDATES, DEFAULT_MAX_TOKENS,
+};
 use crate::{router_client, state, PROVIDER_ID};
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
@@ -168,50 +170,75 @@ async fn fetch_live_models(
     }
 }
 
+/// The servers discovery tries, in order: the configured `api_url` alone, or
+/// with none set, llama-server's own default port and then the Llama
+/// desktop app's.
+pub fn probe_order(configured: Option<&str>) -> Vec<String> {
+    match configured.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(url) => vec![url.to_string()],
+        None => DEFAULT_API_URL_CANDIDATES
+            .iter()
+            .map(|u| u.to_string())
+            .collect(),
+    }
+}
+
 /// The refresh flow; returns the reconciled slice size.
 pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<usize, Error> {
     let token = state::load_token(iii).await;
     let resolved = router_client::resolve(iii, token.as_deref()).await?;
 
-    let api_url = resolved
-        .api_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(DEFAULT_API_URL);
+    let configured = resolved.api_url.as_deref();
+    let candidates = probe_order(configured);
+    let probing = candidates.len() > 1;
     let credential_value = resolved
         .credential
         .as_ref()
         .map(|c| credential_parts(c).trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let props = fetch_props(http, &props_url(api_url), credential_value.as_deref()).await;
-    match fetch_live_models(
-        http,
-        &models_url(api_url),
-        credential_value.as_deref(),
-        &props,
-    )
-    .await
-    {
-        FetchOutcome::Ok(models) => {
-            let count = models.len();
-            router_client::reconcile(iii, models, token.as_deref()).await?;
-            Ok(count)
+    let mut last_failure = String::new();
+    for api_url in &candidates {
+        let props = fetch_props(http, &props_url(api_url), credential_value.as_deref()).await;
+        match fetch_live_models(
+            http,
+            &models_url(api_url),
+            credential_value.as_deref(),
+            &props,
+        )
+        .await
+        {
+            FetchOutcome::Ok(models) => {
+                if probing {
+                    remember_probed_api_url(api_url);
+                }
+                let count = models.len();
+                router_client::reconcile(iii, models, token.as_deref()).await?;
+                return Ok(count);
+            }
+            FetchOutcome::AuthFailed => {
+                // `--api-key` is configured on the server and ours is
+                // missing/wrong: the models are genuinely unusable.
+                if probing {
+                    remember_probed_api_url(api_url);
+                }
+                router_client::reconcile(iii, vec![], token.as_deref()).await?;
+                return Ok(0);
+            }
+            // Blip: try the next candidate; keep the previous slice if none
+            // answers (spec § reconcile-to-empty guidance).
+            FetchOutcome::Transient(msg) => last_failure = msg,
         }
-        FetchOutcome::AuthFailed => {
-            // `--api-key` is configured on the server and ours is
-            // missing/wrong: the models are genuinely unusable.
-            router_client::reconcile(iii, vec![], token.as_deref()).await?;
-            Ok(0)
-        }
-        // Blip: keep the previous slice (spec § reconcile-to-empty guidance).
-        FetchOutcome::Transient(msg) => Err(Error::Remote {
-            code: "provider/upstream_unavailable".into(),
-            message: msg,
-            stacktrace: None,
-        }),
     }
+    Err(Error::Remote {
+        code: "provider/upstream_unavailable".into(),
+        message: if probing {
+            format!("{last_failure} (tried {})", candidates.join(" and "))
+        } else {
+            last_failure
+        },
+        stacktrace: None,
+    })
 }
 
 pub fn make_refresh_models(
@@ -233,6 +260,23 @@ pub fn make_refresh_models(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_order_is_the_configured_url_or_both_local_defaults() {
+        // An operator-set api_url is authoritative; with none, llama-server's
+        // 8080 is tried first and the Llama desktop app's 9931 second.
+        assert_eq!(
+            probe_order(Some("https://box.example/custom")),
+            vec!["https://box.example/custom".to_string()]
+        );
+        assert_eq!(
+            probe_order(None),
+            vec![
+                "http://127.0.0.1:8080/v1/chat/completions".to_string(),
+                "http://127.0.0.1:9931/v1/chat/completions".to_string(),
+            ]
+        );
+    }
 
     #[test]
     fn models_url_derives_from_completions_endpoint() {
