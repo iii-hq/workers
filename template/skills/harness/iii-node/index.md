@@ -312,9 +312,15 @@ import type { TriggerConfig } from 'iii-sdk/trigger'
 type ChangeConfig = { record_id?: string; events?: string[]; metadata?: unknown }
 const subscribers = new Map<string, TriggerConfig<ChangeConfig>>()
 
-/** A subscription's metadata: declared in the config, or on the binding itself. */
+const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+
+/** A subscription's metadata: the binding's own, overlaid by the config's (config wins on shared keys). */
 function subscriptionMetadata(binding: TriggerConfig<ChangeConfig>): unknown {
-  return binding.config.metadata ?? binding.metadata
+  const own = binding.metadata
+  const declared = binding.config.metadata
+  if (declared === undefined) return own
+  if (own === undefined) return declared
+  return isObject(own) && isObject(declared) ? { ...own, ...declared } : declared
 }
 
 iii.registerTriggerType<ChangeConfig>(
@@ -351,7 +357,7 @@ function emit(event: Record<string, unknown>) {
 
 Emit from the store after each persisted mutation and include the **whole record** in the payload so consumers can upsert without a round trip. The UI side of this contract is in the designer's `console-injectable-ui` (`host.iii` → live data) and `patterns` §8.
 
-**Every trigger type the worker provides must carry trigger metadata.** A registration's `metadata` arrives at the provider as `binding.metadata` (`TriggerConfig.metadata`) and must come back out on every `iii.trigger` as `metadata`; the bound handler receives it as its **second argument**, a channel separate from the payload, and a fan-out that omits it silently drops it. Because the top-level `metadata` slot also carries the harness's own control fields (`{ payload, event_into }`) for call-to-function bindings, also accept a `metadata` field inside the trigger's config, name it in the trigger type's `description`, and forward whichever the subscriber set (config first). Never merge metadata into the payload.
+**Every trigger type the worker provides must carry trigger metadata.** A registration's `metadata` arrives at the provider as `binding.metadata` (`TriggerConfig.metadata`) and must come back out on every `iii.trigger` as `metadata`; the bound handler receives it as its **second argument**, a channel separate from the payload, and a fan-out that omits it silently drops it. Because the top-level `metadata` slot also carries the harness's own control fields (`{ payload, event_into }`) for call-to-function bindings, also accept a `metadata` field inside the trigger's config, name it in the trigger type's `description`, and forward both, merged: the binding's own `metadata` overlaid by the config's (config wins on shared keys). Never let one replace the other. The binding's own metadata carries the harness's wake fields, so dropping it means a session wake bound with a config `metadata` never fires. Never merge metadata into the payload.
 
 ## Injectable UI builder
 
