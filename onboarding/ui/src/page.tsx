@@ -101,6 +101,7 @@ const DOT_TONE: Record<StepState, 'ok' | 'accent' | 'ink'> = { complete: 'ok', a
 
 /** Guide initial setup and react to the console's workspace layout changes. */
 export function OnboardingPage({ host, onRequestClose, conversationId }: { host: Host } & PageRenderProps) {
+  const removeButton = <RemoveOnboarding host={host} onClose={onRequestClose} />
   const [tour, setTour] = useState<Tour | null>(null)
   const [records, setRecords] = useState<StepRecords>({})
   const [open, setOpen] = useState<string | null>(null)
@@ -385,14 +386,14 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
 
   if (error) {
     return (
-      <Frame onClose={onRequestClose}>
+      <Frame onClose={onRequestClose} footer={removeButton}>
         <StatusPanel variant="alert" headline={error} role="alert" />
       </Frame>
     )
   }
   if (!tour) {
     return (
-      <Frame onClose={onRequestClose}>
+      <Frame onClose={onRequestClose} footer={removeButton}>
         <Skeleton className="ob-skeleton" />
         <Skeleton className="ob-skeleton" />
         <Skeleton className="ob-skeleton" />
@@ -404,7 +405,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
   const done = tour.steps.filter((step) => records[step.id]?.status === 'complete').length
 
   return (
-    <Frame title={tour.title} description={tour.description} onClose={onRequestClose}>
+    <Frame title={tour.title} description={tour.description} onClose={onRequestClose} footer={removeButton}>
       <div className="ob-progress">
         <div
           className="ob-bar"
@@ -459,7 +460,9 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
                   {step.condition?.prompt && state !== 'complete' ? (
                     <Copyable label="or ask the agent" text={step.condition.prompt} />
                   ) : null}
-                  {step.id === 'stay-in-touch' ? <StayInTouch host={host} /> : null}
+                  {step.id === 'stay-in-touch' && state !== 'complete' ? (
+                    <StayInTouch host={host} onDone={() => complete(step.id)} />
+                  ) : null}
                   {step.on_closed && closed === step.on_closed.screen ? (
                     <p className="ob-note" role="status">
                       {step.on_closed.body}
@@ -473,7 +476,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
                       <pre className="ob-pre">{step.ask.text}</pre>
                     </div>
                   ) : null}
-                  {state !== 'complete' && !step.condition && !step.ask ? (
+                  {state !== 'complete' && !step.condition && !step.ask && step.id !== 'stay-in-touch' ? (
                     step.screen && opened !== step.id ? (
                       <Button className="ob-start" disabled={opening === step.id} onClick={() => openScreen(step)}>
                         {opening === step.id ? 'Opening…' : `Open ${step.screen}`}
@@ -510,6 +513,38 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
         })}
       </ol>
     </Frame>
+  )
+}
+
+/**
+ * Leave the tour for good from any step: remove the onboarding worker from
+ * the compose project (its page and functions go with it), then close this
+ * pane. The same move the Clean up step asks the agent for, without the
+ * agent. A failed removal keeps the pane open and says why.
+ */
+function RemoveOnboarding({ host, onClose }: { host: Host; onClose?: () => void }) {
+  const [removing, setRemoving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const remove = useCallback(async () => {
+    setRemoving(true)
+    setError(null)
+    try {
+      await host.iii.trigger('compose::remove', { workers: ['onboarding'] })
+    } catch (err) {
+      setError(`Could not remove the onboarding worker: ${errorMessage(err)}`)
+      setRemoving(false)
+      return
+    }
+    if (onClose) onClose()
+    else await host.iii.trigger('console::workspace::close', { screen: 'ext:onboarding' }).catch(() => undefined)
+  }, [host, onClose])
+  return (
+    <>
+      {error ? <StatusPanel variant="alert" headline={error} role="alert" /> : null}
+      <Button variant="ghost" size="sm" onClick={remove} disabled={removing}>
+        {removing ? 'Removing…' : 'Close and Remove Onboarding'}
+      </Button>
+    </>
   )
 }
 
@@ -593,7 +628,11 @@ const SOCIALS: { label: string; href: string; path: string }[] = [
  * The signup box, then the same places as links. The worker does the POST —
  * the page only carries the address the operator typed.
  */
-function StayInTouch({ host }: { host: Host }) {
+/**
+ * The signup step's own way onward: `Sign me up` subscribes and closes the
+ * step, `Skip` closes it without an email. It replaces the generic `Got it`.
+ */
+function StayInTouch({ host, onDone }: { host: Host; onDone: () => void }) {
   const [email, setEmail] = useState('')
   const [status, setStatus] = useState<'idle' | 'sending' | 'done' | 'failed'>('idle')
   const [message, setMessage] = useState('')
@@ -608,13 +647,14 @@ function StayInTouch({ host }: { host: Host }) {
         .then(() => {
           setStatus('done')
           setMessage('You are on the list.')
+          onDone()
         })
         .catch((error: unknown) => {
           setStatus('failed')
           setMessage(error instanceof Error ? error.message : 'the signup did not go through')
         })
     },
-    [email, host, status],
+    [email, host, status, onDone],
   )
 
   return (
@@ -633,7 +673,10 @@ function StayInTouch({ host }: { host: Host }) {
             className="ob-grow"
           />
           <Button type="submit" disabled={status === 'sending'}>
-            {status === 'sending' ? 'Sending…' : 'Keep me posted'}
+            {status === 'sending' ? 'Sending…' : 'Sign me up'}
+          </Button>
+          <Button type="button" variant="ghost" onClick={onDone} disabled={status === 'sending'}>
+            Skip
           </Button>
         </form>
       )}
@@ -650,11 +693,6 @@ function StayInTouch({ host }: { host: Host }) {
           </Button>
         ))}
       </div>
-      <Button asChild variant="ghost" size="sm" className="ob-start">
-        <a href="https://iii.dev/docs" target="_blank" rel="noreferrer">
-          Read the docs
-        </a>
-      </Button>
     </div>
   )
 }
@@ -680,6 +718,7 @@ function Frame({
   title = 'onboarding',
   description,
   onClose,
+  footer,
   children,
 }: {
   title?: string
@@ -687,6 +726,8 @@ function Frame({
   /** The console's own pane close, from `PageRenderProps.onRequestClose`.
       Absent when the page is not rendered in a closable pane. */
   onClose?: () => void
+  /** Pinned under the scroller, so it stays in view on every step. */
+  footer?: React.ReactNode
   children: React.ReactNode
 }) {
   return (
@@ -705,6 +746,7 @@ function Frame({
               stranded on one edge. */}
           <div className="ob-column">{children}</div>
         </div>
+        {footer ? <div className="ob-footer">{footer}</div> : null}
       </PageMain>
     </PageShell>
   )
