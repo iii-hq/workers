@@ -75,6 +75,7 @@ pub fn resolve_reasoning_effort(level: ThinkingLevel, meta: Option<&Model>) -> O
     // the model advertises it, since `reasoning.mandatory` models reject it.
     if level == ThinkingLevel::Off {
         return meta
+            .filter(|m| m.supports_thinking_off != Some(false))
             .and_then(|m| m.reasoning_efforts.as_ref())
             .filter(|efforts| efforts.iter().any(|e| e.effort == "none"))
             .map(|_| "none".to_string());
@@ -339,6 +340,14 @@ mod tests {
             None
         );
         assert_eq!(resolve_reasoning_effort(ThinkingLevel::Off, None), None);
+        // `reasoning.mandatory` models list `none` yet reject it; the catalog
+        // flag carries that, and it outranks the advertised list.
+        let mut meta = meta_with_efforts(&["none", "low", "high"]);
+        meta.supports_thinking_off = Some(false);
+        assert_eq!(
+            resolve_reasoning_effort(ThinkingLevel::Off, Some(&meta)),
+            None
+        );
     }
 
     #[test]

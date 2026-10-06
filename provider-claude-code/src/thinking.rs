@@ -30,13 +30,36 @@ pub const BETWEEN_TOOLS: ThinkingConfig = ThinkingConfig {
     display: None,
 };
 
+/// Thinking off on Sonnet 5 and Opus 5, which still accept `{type:
+/// "disabled"}` (Opus 5 only at effort high or below, which the server
+/// default satisfies). The 5.5 generation and later reject it.
+pub const DISABLED: ThinkingConfig = ThinkingConfig {
+    mode: "disabled",
+    display: None,
+};
+
+/// The `thinking` config that turns reasoning off on `model`, when the docs
+/// (thinking-troubleshooting#supported-models) name one.
+fn off_config(id: &str) -> Option<ThinkingConfig> {
+    if id.contains("sonnet-5-5") {
+        Some(BETWEEN_TOOLS)
+    } else if id.contains("opus-5-5") || id.contains("fable") || id.contains("mythos") {
+        None
+    } else if id.contains("sonnet-5") || id.contains("opus-5") {
+        Some(DISABLED)
+    } else {
+        None
+    }
+}
+
 /// Whether `thinking_level: off` can be honoured on `model` (base id, no
-/// provider prefix): `Some(true)` for Sonnet 5.5 (`between_tools`),
-/// `Some(false)` for the always-on models (Opus 5.5, Fable, Mythos), `None`
-/// where the docs read today do not say.
+/// provider prefix): `Some(true)` where `off_config` names a switch (Sonnet
+/// 5.5 `between_tools`, Sonnet 5 and Opus 5 `disabled`), `Some(false)` for
+/// the always-on models (Opus 5.5, Fable, Mythos), `None` where the docs
+/// read today do not say.
 pub fn supports_off(model: &str) -> Option<bool> {
     let id = model.to_ascii_lowercase();
-    if id.contains("sonnet-5-5") {
+    if off_config(&id).is_some() {
         Some(true)
     } else if id.contains("opus-5-5") || id.contains("fable") || id.contains("mythos") {
         Some(false)
@@ -90,9 +113,9 @@ pub fn build_thinking_config(level: Option<ThinkingLevel>, model: Option<&Model>
         };
     }
     if level == ThinkingLevel::Off {
-        return match model.map(|m| m.id.as_str()).and_then(supports_off) {
-            Some(true) => ThinkingBuild {
-                config: Some(BETWEEN_TOOLS),
+        return match model.and_then(|m| off_config(&m.id.to_ascii_lowercase())) {
+            Some(config) => ThinkingBuild {
+                config: Some(config),
                 effort: None,
                 warnings,
             },
@@ -155,6 +178,32 @@ mod tests {
         assert_eq!(supports_off("claude-sonnet-5-5"), Some(true));
         assert_eq!(supports_off("claude-fable-5-1"), Some(false));
         assert_eq!(supports_off("claude-sonnet-4-6"), None);
+    }
+
+    #[test]
+    fn off_is_disabled_on_sonnet_5_and_opus_5() {
+        // thinking-troubleshooting#supported-models: Sonnet 5 and Opus 5 accept
+        // `{type: "disabled"}` (Opus 5 at effort high or below, the default).
+        for id in [
+            "claude-code/claude-sonnet-5",
+            "claude-code/claude-opus-5",
+            "claude-code/claude-opus-5-20260301",
+        ] {
+            let mut m = model(Some(true), Some(true));
+            m.id = id.into();
+            let built = build_thinking_config(Some(ThinkingLevel::Off), Some(&m));
+            assert_eq!(built.config, Some(DISABLED), "{id}");
+            assert_eq!(built.effort, None, "{id}");
+            assert!(built.warnings.is_empty(), "{id}: {:?}", built.warnings);
+        }
+        assert_eq!(
+            serde_json::to_value(DISABLED).unwrap(),
+            serde_json::json!({ "type": "disabled" })
+        );
+        assert_eq!(supports_off("claude-opus-5"), Some(true));
+        assert_eq!(supports_off("claude-sonnet-5"), Some(true));
+        assert_eq!(supports_off("claude-opus-5-5-20260901"), Some(false));
+        assert_eq!(supports_off("claude-opus-4-8"), None);
     }
 
     fn model(thinking: Option<bool>, xhigh: Option<bool>) -> Model {

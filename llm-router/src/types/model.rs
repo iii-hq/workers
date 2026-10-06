@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 /// "off" asks the provider not to reason at all and is honoured only where
 /// the model advertises `Model::supports_thinking_off` (elsewhere the
-/// provider omits its reasoning parameter and warns). "minimal" requests the
+/// provider falls back to its own lowest setting, or omits the parameter,
+/// and warns). "minimal" requests the
 /// lowest reasoning effort and needs only `thinking` support; levels map to
 /// provider-native knobs via `Model::thinking_budgets`.
 #[derive(

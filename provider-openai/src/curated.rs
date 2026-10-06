@@ -35,7 +35,11 @@ pub fn is_legacy_generation(model_id: &str) -> bool {
 /// Unknown families use conservative limits; pricing is USD per MTok.
 fn family_meta(base: &str) -> Option<(&'static str, u64, u64, bool, Option<Pricing>)> {
     match base {
+        // GPT-6 family: tiered pricing above 272K input, so no flat rates.
         "gpt-6-astra" => Some(("GPT-6 Astra", 1_050_000, 128_000, true, None)),
+        "gpt-6.1-sol" => Some(("GPT-6.1 Sol", 1_050_000, 128_000, true, None)),
+        "gpt-6-sol" => Some(("GPT-6 Sol", 1_050_000, 128_000, true, None)),
+        "gpt-6-luna" => Some(("GPT-6 Luna", 1_050_000, 128_000, true, None)),
         "gpt-5.2" => Some(("GPT-5.2", 400_000, 128_000, true, Some(price(1.75, 14.0)))),
         "gpt-5.1" => Some(("GPT-5.1", 400_000, 128_000, false, Some(price(1.25, 10.0)))),
         "gpt-5-mini" => Some((
@@ -89,8 +93,7 @@ pub fn enrich(id: &str) -> Model {
         },
         None => {
             let (context_window, max_output_tokens) = match base {
-                "gpt-6.1-sol" | "gpt-6-sol" | "gpt-6-luna" | "gpt-5.5" | "gpt-5.5-pro"
-                | "gpt-5.4" | "gpt-5.4-pro" => (1_050_000, 128_000),
+                "gpt-5.5" | "gpt-5.5-pro" | "gpt-5.4" | "gpt-5.4-pro" => (1_050_000, 128_000),
                 "gpt-5.3-codex" | "gpt-5.4-mini" | "gpt-5.4-nano" => (400_000, 128_000),
                 _ => (128_000, 16_384),
             };
@@ -211,6 +214,27 @@ mod tests {
                 model.pricing.is_none(),
                 "the >272K pricing tier cannot be represented by flat rates"
             );
+        }
+    }
+
+    #[test]
+    fn enrich_marks_the_gpt_6_sol_and_luna_families_as_reasoning() {
+        // These ids reach `enrich` from live discovery; leaving `supports_thinking`
+        // unknown hides every effort choice in the console, Off included.
+        for (id, display, off) in [
+            ("gpt-6.1-sol", "GPT-6.1 Sol", false),
+            ("gpt-6-sol", "GPT-6 Sol", true),
+            ("gpt-6-luna", "GPT-6 Luna", true),
+            ("gpt-6-sol-2026-09-15", "GPT-6 Sol", true),
+        ] {
+            let m = enrich(id);
+            assert_eq!(m.display_name.as_deref(), Some(display), "{id}");
+            assert_eq!(m.context_window, 1_050_000, "{id}");
+            assert_eq!(m.max_output_tokens, 128_000, "{id}");
+            assert_eq!(m.supports_thinking, Some(true), "{id}");
+            assert_eq!(m.supports_xhigh, Some(true), "{id}");
+            assert_eq!(m.supports_thinking_off, Some(off), "{id}");
+            assert!(m.pricing.is_none(), "{id}: tiered pricing is not flat");
         }
     }
 

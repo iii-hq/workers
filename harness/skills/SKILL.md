@@ -33,8 +33,9 @@ reports none fails the send as before). A new session that names neither
 `default_thinking_level`; an explicit level wins, and later sends into the
 session inherit the prior turn's as usual. `thinking_level` is `off`,
 `minimal`, `low`, `medium`, `high` or `xhigh`; `off` is honoured only on
-models whose catalog entry says `supports_thinking_off: true`, elsewhere the
-provider sends its lowest effort and warns.
+models whose catalog entry says `supports_thinking_off: true`; elsewhere the
+fallback is the provider's own (most send their lowest effort and warn, Kimi
+ignores the level).
 
 Prerequisites: `session-manager` (required — transcript store and change feed)
 and `llm-router` (required — generation and the model catalog) must be present.

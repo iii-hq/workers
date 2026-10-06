@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingLevel {
     /// No reasoning at all; honoured only where the model advertises
-    /// `supports_thinking_off` (the provider omits its parameter and warns
-    /// elsewhere).
+    /// `supports_thinking_off` (elsewhere the provider falls back to its own
+    /// lowest setting, or omits the parameter, and warns).
     Off,
     Minimal,
     Low,

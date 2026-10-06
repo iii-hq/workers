@@ -110,7 +110,7 @@ async fn run_stream_call(
     // Best-effort: the kwarg only bites if the model's chat template gates its
     // reasoning channel on it; otherwise reasoning stays whatever the server's
     // --reasoning-format / template dictates, so warn rather than promise.
-    if enable_thinking {
+    if input.thinking_level.is_some() {
         warnings.push(
             "thinking_level applied best-effort via chat_template_kwargs.enable_thinking; \
              effective only if the model's chat template gates reasoning on that key \
