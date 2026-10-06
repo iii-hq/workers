@@ -210,8 +210,12 @@ export async function subscribeProviderChanges(
 
 /**
  * The catalog key a new chat should start on when the person has picked
- * nothing yet: the declared default of the first (by id) configured and
- * available provider that has one and whose default is in `catalogKeys`.
+ * nothing yet: the declared default of the first (by id) available provider
+ * that has one, whose default is in `catalogKeys`, and that is configured.
+ * A provider that owns its authentication (no `credential_env_var`: OAuth,
+ * companion apps) reports `configured: false` to the router even when it is
+ * signed in, so for those a default that reached the catalog is proof enough,
+ * the same rule the picker uses to call its catalog usable.
  * `null` when no provider qualifies; callers fall back to the first key.
  */
 export function preferredStartingModel(
@@ -220,7 +224,8 @@ export function preferredStartingModel(
 ): string | null {
   const ranked = [...providers].sort((a, b) => a.id.localeCompare(b.id))
   for (const p of ranked) {
-    if (!p.default_model || p.configured === false || !p.available) continue
+    if (!p.default_model || !p.available) continue
+    if (p.configured === false && p.credential_env_var !== undefined) continue
     const key = makeCatalogModelKey(p.id, p.default_model)
     if (catalogKeys.has(key)) return key
   }

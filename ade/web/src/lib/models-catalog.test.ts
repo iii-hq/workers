@@ -133,6 +133,7 @@ describe('preferredStartingModel', () => {
     const providers = [
       provider('anthropic', {
         default_model: 'claude-sonnet-5-5',
+        credential_env_var: 'ANTHROPIC_API_KEY',
         configured: false,
       }),
       provider('deepseek', {
@@ -151,5 +152,29 @@ describe('preferredStartingModel', () => {
     ])
     expect(preferredStartingModel(providers, keys)).toBe('xai::grok-4.3')
     expect(preferredStartingModel(providers, new Set())).toBeNull()
+  })
+
+  it('trusts a listed default from a provider that owns its authentication', () => {
+    // openai-codex is signed in through ~/.codex/auth.json; the router has no
+    // key for it and reports configured: false, yet its catalog is live.
+    const providers = [
+      provider('openai-codex', {
+        default_model: 'codex/gpt-6-luna',
+        configured: false,
+      }),
+      provider('openai', {
+        default_model: 'gpt-6.1-sol',
+        credential_env_var: 'OPENAI_API_KEY',
+        configured: false,
+      }),
+    ]
+    const keys = new Set([
+      'openai-codex::codex/gpt-5.6-luna',
+      'openai-codex::codex/gpt-6-luna',
+      'openai::gpt-6.1-sol',
+    ])
+    expect(preferredStartingModel(providers, keys)).toBe(
+      'openai-codex::codex/gpt-6-luna',
+    )
   })
 })
