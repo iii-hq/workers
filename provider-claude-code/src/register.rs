@@ -48,6 +48,7 @@ pub fn declaration() -> ProviderDeclaration {
         ]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
         context_overflow_hint: None,
+        credential_optional: None,
         models: None,
         // Self-reported; availability mapping only, never authorization.
         worker_id: Some("provider-claude-code".into()),

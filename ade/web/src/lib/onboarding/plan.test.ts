@@ -311,21 +311,33 @@ describe('judgeFailure', () => {
 })
 
 describe('shouldAutoOpenOnboarding', () => {
-  it('opens by itself only for a person on first run', () => {
-    expect(shouldAutoOpenOnboarding({ status: 'new' }, false)).toBe(true)
+  it('opens on first run, whatever the router serves', () => {
+    // A signed-in Codex or a local llama.cpp server fills the catalog before
+    // setup; the person still sees the wizard once.
+    expect(shouldAutoOpenOnboarding({ status: 'new' }, false, null)).toBe(true)
+    expect(shouldAutoOpenOnboarding({ status: 'new' }, false, 5)).toBe(true)
+  })
+
+  it('opens again after setup only when no model is connected', () => {
+    for (const status of ['completed', 'dismissed', null]) {
+      expect(shouldAutoOpenOnboarding({ status }, false, 0)).toBe(true)
+      expect(shouldAutoOpenOnboarding({ status }, false, 3)).toBe(false)
+      // A router that cannot answer opens nothing.
+      expect(shouldAutoOpenOnboarding({ status }, false, null)).toBe(false)
+    }
+  })
+
+  it('never opens in a browser under automation', () => {
     // An e2e suite, an agent's browser session or a stories render.
-    expect(shouldAutoOpenOnboarding({ status: 'new' }, true)).toBe(false)
-    expect(shouldAutoOpenOnboarding({ status: 'dismissed' }, false)).toBe(false)
-    expect(shouldAutoOpenOnboarding({ status: 'completed' }, false)).toBe(false)
-    expect(shouldAutoOpenOnboarding({ status: null }, false)).toBe(false)
+    expect(shouldAutoOpenOnboarding({ status: 'new' }, true, 0)).toBe(false)
   })
 
   it('stays closed where the ADE turned auto-open off, as a deploy does', () => {
     expect(
-      shouldAutoOpenOnboarding({ status: 'new', auto_open: false }, false),
+      shouldAutoOpenOnboarding({ status: 'new', auto_open: false }, false, 0),
     ).toBe(false)
     expect(
-      shouldAutoOpenOnboarding({ status: 'new', auto_open: true }, false),
+      shouldAutoOpenOnboarding({ status: 'new', auto_open: true }, false, 0),
     ).toBe(true)
   })
 })

@@ -42,6 +42,7 @@ pub fn declaration() -> ProviderDeclaration {
         default_models: Some(vec!["sarvam-105b".into()]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
         context_overflow_hint: None,
+        credential_optional: None,
         models: None,
         worker_id: Some("provider-sarvam".into()),
     }

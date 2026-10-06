@@ -273,6 +273,13 @@
           "null"
         ]
       },
+      "credential_optional": {
+        "description": "`true` when the provider works without a credential (a local server started without a key): the router then reports it `configured` with no key. A key that is set is still resolved and sent. Absent means a key is required.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
       "default_models": {
         "description": "Chat model ids the provider recommends as a starting point, most preferred first (the current mid-range model, then its predecessors). `router::provider::list` reports the first one the catalog slice holds as `default_model`.",
         "items": {

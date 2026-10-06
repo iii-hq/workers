@@ -339,6 +339,11 @@ started with a small window, say), optionally with a link to the provider's
 docs. `router::provider::list` reports it verbatim; absent means the console
 shows only its generic steps.
 
+A provider that works without a key (a local server started without one)
+declares `credential_optional: true`. The router then reports it
+`configured` when no credential resolves; a key that is set is still
+resolved and sent. Absent or `false` means a key is required.
+
 ### Thinking levels
 
 `router::chat` takes `thinking_level`: `off`, `minimal`, `low`, `medium`,

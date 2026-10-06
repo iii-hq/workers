@@ -44,6 +44,7 @@ pub fn declaration() -> ProviderDeclaration {
         // Omitted keeps GLM thinking off; `minimal` would turn it on.
         default_thinking_level: None,
         context_overflow_hint: None,
+        credential_optional: None,
         // No static slice: refresh_models reconciles the curated table right
         // after registration (see declare_and_refresh), gated on a credential
         // being configured.

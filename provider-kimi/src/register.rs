@@ -40,6 +40,7 @@ pub fn declaration() -> ProviderDeclaration {
         // Moonshot has no reasoning-effort knob: omit the level.
         default_thinking_level: None,
         context_overflow_hint: None,
+        credential_optional: None,
         // No static slice: GET /v1/models is the source of truth, and a
         // refresh fires right after registration (see declare_and_refresh),
         // so the catalog fills from the API within seconds of boot.

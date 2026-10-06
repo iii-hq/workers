@@ -37,6 +37,7 @@ pub fn declaration() -> ProviderDeclaration {
         default_models: None,
         default_thinking_level: None,
         context_overflow_hint: None,
+        credential_optional: None,
         // A static slice so a fresh install has speech models to pick before
         // the first refresh; refresh_models replaces it with the live list.
         models: Some(static_models()),
