@@ -2858,11 +2858,13 @@ async fn env_reference_resolves_through_secrets_and_follows_env_edits() {
     .await
     .unwrap();
 
+    // Until the configuration lands, the provider's declared variable is the
+    // fallback, so wait for the reference rather than for any credential.
     let res = call_until(
         &provider.iii,
         "router::provider::resolve",
         resolve.clone(),
-        |v| v["configured"] == json!(true),
+        |v| v["configured"] == json!(true) && v["credential_ref"] == json!(reference),
     )
     .await;
     assert_eq!(res["credential"]["key"], "sk-from-dotenv");
