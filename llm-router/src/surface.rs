@@ -94,7 +94,7 @@ pub const PROVIDER_REGISTER_DESC: &str = "Provider self-declaration at attach ti
 pub const PROVIDER_RESOLVE_ID: &str = "router::provider::resolve";
 pub const PROVIDER_RESOLVE_DESC: &str =
     "Resolve a provider's effective credential + api_url + max_tokens (token-gated); a \
-     secret://NAME api_key resolves through the secrets worker.";
+     secret://NAME or env://NAME api_key resolves through the secrets worker.";
 
 pub const UPDATE_CREDENTIAL_ID: &str = "router::provider::update_credential";
 pub const UPDATE_CREDENTIAL_DESC: &str = "OAuth write-back: store a provider credential in the \
@@ -117,8 +117,8 @@ pub const ON_CONFIG_CHANGED_DESC: &str =
 
 pub const ON_SECRET_CHANGED_ID: &str = "router::on_secret_changed";
 pub const ON_SECRET_CHANGED_DESC: &str =
-    "Internal: a secret changed in the secrets worker — re-resolve the secret:// \
-     credential reference and refresh the providers that use it.";
+    "Internal: a secret changed in the secrets worker — re-resolve the secret:// or \
+     env:// credential reference and refresh the providers that use it.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

@@ -11,21 +11,25 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 
-use super::{parse_ref, valid_name, ChangeListener, Refetch, SecretCache};
+use super::{parse_ref, valid_name, ChangeListener, Refetch, SecretCache, SecretRef};
 use crate::config::state::{snapshot, ConfigCell};
 use crate::registry::refresh::{Refresh, RefreshQueue};
 use crate::registry::resolve::referenced_secrets;
 use crate::types::router::{RouterAck, SecretChangedEvent};
 
-/// The secret an event is about, from `name` or else from `ref`.
+/// The reference an event is about, canonical: from `ref` (which names the
+/// store), or else from `name` as a vault secret.
 fn event_secret(event: &SecretChangedEvent) -> Option<String> {
-    if let Some(name) = event.name.as_deref().filter(|name| valid_name(name)) {
-        return Some(name.to_string());
+    if let Some(reference) = event.reference.as_deref() {
+        if let Some(Ok(reference)) = parse_ref(reference) {
+            return Some(reference.key());
+        }
     }
-    match parse_ref(event.reference.as_deref()?)? {
-        Ok(name) => Some(name.to_string()),
-        Err(_) => None,
-    }
+    event
+        .name
+        .as_deref()
+        .filter(|name| valid_name(name))
+        .map(|name| SecretRef::vault(name).key())
 }
 
 pub fn make_on_secret_changed(
@@ -36,12 +40,12 @@ pub fn make_on_secret_changed(
     move |event: SecretChangedEvent| {
         let (config, secrets) = (config.clone(), secrets.clone());
         Box::pin(async move {
-            let Some(name) = event_secret(&event) else {
+            let Some(reference) = event_secret(&event) else {
                 return Ok(RouterAck { ok: false });
             };
             // Secrets no slice references are none of this router's business.
-            if referenced_secrets(&snapshot(&config)).contains_key(&name) {
-                secrets.refresh([name], Refetch::Invalidate).await;
+            if referenced_secrets(&snapshot(&config)).contains_key(&reference) {
+                secrets.refresh([reference], Refetch::Invalidate).await;
             }
             Ok(RouterAck { ok: true })
         })
@@ -51,12 +55,12 @@ pub fn make_on_secret_changed(
 /// The [`SecretCache`] change listener: queue a credential refresh for every
 /// provider whose slice references a changed secret.
 pub fn refresh_referencing_providers(config: ConfigCell, refresh: RefreshQueue) -> ChangeListener {
-    Arc::new(move |names: Vec<String>| {
+    Arc::new(move |references: Vec<String>| {
         let referenced = referenced_secrets(&snapshot(&config));
         refresh.schedule(
-            names
+            references
                 .iter()
-                .filter_map(|name| referenced.get(name))
+                .filter_map(|reference| referenced.get(reference))
                 .flatten()
                 .map(|provider| (provider.clone(), Refresh::Credential)),
         );
@@ -85,10 +89,18 @@ mod tests {
             reference: reference.map(String::from),
             action: Some("rotated".into()),
         };
-        assert_eq!(event_secret(&event(Some("A"), None)).as_deref(), Some("A"));
+        assert_eq!(
+            event_secret(&event(Some("A"), None)).as_deref(),
+            Some("secret://A")
+        );
         assert_eq!(
             event_secret(&event(None, Some("secret://B"))).as_deref(),
-            Some("B")
+            Some("secret://B")
+        );
+        // The reference names the store; the bare name alone means the vault.
+        assert_eq!(
+            event_secret(&event(Some("C"), Some("env://C"))).as_deref(),
+            Some("env://C")
         );
         assert_eq!(event_secret(&event(Some("bad name"), None)), None);
         assert_eq!(event_secret(&event(None, None)), None);
@@ -103,16 +115,16 @@ mod tests {
         }}));
         let (queue, fired) = recording_queue(Duration::from_secs(2));
         let fake = FakeSecrets::default();
-        fake.set("SHARED", Ok("v1"));
+        fake.set("secret://SHARED", Ok("v1"));
         let secrets = Arc::new(
             fake.cache()
                 .with_listener(refresh_referencing_providers(config.clone(), queue)),
         );
-        secrets.ensure(["SHARED".to_string()]).await;
+        secrets.ensure(["secret://SHARED".to_string()]).await;
         let handler = make_on_secret_changed(config, secrets.clone());
 
         // rotated
-        fake.set("SHARED", Ok("v2"));
+        fake.set("secret://SHARED", Ok("v2"));
         let ack = handler(SecretChangedEvent {
             name: Some("SHARED".into()),
             reference: Some("secret://SHARED".into()),
@@ -121,7 +133,7 @@ mod tests {
         .await
         .unwrap();
         assert!(ack.ok);
-        assert_eq!(secrets.lookup("SHARED"), Some(Ok("v2".into())));
+        assert_eq!(secrets.lookup("secret://SHARED"), Some(Ok("v2".into())));
         flush().await;
         assert_eq!(
             *fired.lock().unwrap(),
@@ -133,7 +145,7 @@ mod tests {
 
         // deleted: the cached value is gone, not served stale
         fired.lock().unwrap().clear();
-        fake.set("SHARED", Err(SecretError::NotFound));
+        fake.set("secret://SHARED", Err(SecretError::NotFound));
         handler(SecretChangedEvent {
             name: Some("SHARED".into()),
             reference: None,
@@ -141,7 +153,10 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(secrets.lookup("SHARED"), Some(Err(SecretError::NotFound)));
+        assert_eq!(
+            secrets.lookup("secret://SHARED"),
+            Some(Err(SecretError::NotFound))
+        );
         flush().await;
         assert_eq!(fired.lock().unwrap().len(), 2);
 
@@ -156,6 +171,30 @@ mod tests {
         .unwrap();
         flush().await;
         assert!(fired.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_env_event_refreshes_only_the_env_reference() {
+        let config = new_config_cell(json!({ "providers": {
+            "openai": { "api_key": "env://OPENAI_API_KEY" },
+            "other": { "api_key": "secret://OPENAI_API_KEY" },
+        }}));
+        let fake = FakeSecrets::default();
+        fake.set("env://OPENAI_API_KEY", Ok("from-dotenv"));
+        let secrets = Arc::new(fake.cache());
+        let handler = make_on_secret_changed(config, secrets.clone());
+        handler(SecretChangedEvent {
+            name: Some("OPENAI_API_KEY".into()),
+            reference: Some("env://OPENAI_API_KEY".into()),
+            action: Some("rotated".into()),
+        })
+        .await
+        .unwrap();
+        assert_eq!(fake.calls(), vec!["env://OPENAI_API_KEY".to_string()]);
+        assert_eq!(
+            secrets.lookup("env://OPENAI_API_KEY"),
+            Some(Ok("from-dotenv".into()))
+        );
     }
 
     #[tokio::test]
