@@ -38,14 +38,13 @@ import { disposeSpotlight, hideSpotlight, showSpotlight, waitForAnchor } from '.
  * operator spends watching a spinner. The console owns the setting — the page
  * asks, and a console too old to be asked simply is not.
  *
- * `off_or_lowest`, not a named level: the harness switches reasoning off
- * where the model can, else picks the model's lowest effort (ladders start
- * in different places: Codex has no `minimal`), and the console shows what
- * it chose. A console that predates the preset refuses the request and the
- * tour runs at the usual level.
+ * `lowest`, not a named level: models start their effort ladders in
+ * different places (Codex has no `minimal`), so the harness picks the
+ * model's lowest effort and the console shows what it chose. A console that
+ * predates `lowest` refuses the request and the tour runs at the usual level.
  */
 const FIRST_STEP_ID = 'message'
-const TOUR_THINKING_LEVEL = 'off_or_lowest'
+const TOUR_THINKING_LEVEL = 'lowest'
 
 /**
  * How long `Opening…` may stand before the button gives up and offers

@@ -12,7 +12,6 @@
 import {
   THINKING_LEVELS,
   THINKING_LOWEST,
-  THINKING_OFF_OR_LOWEST,
   type ThinkingLevel,
 } from '@/types/chat'
 
@@ -35,13 +34,12 @@ export function requestThinkingLevelChange(
     level: request.level.trim(),
   }
   if (!normalized.sessionId || !normalized.level) return false
-  // Only a level the console offers, or a preset the harness resolves
+  // Only a level the console offers, or `lowest`, which the harness resolves
   // against the model. An unknown one would be stored on the conversation
   // and then sent to the provider as a reasoning effort it has never heard of.
   if (
     !THINKING_LEVELS.includes(normalized.level) &&
-    normalized.level !== THINKING_LOWEST &&
-    normalized.level !== THINKING_OFF_OR_LOWEST
+    normalized.level !== THINKING_LOWEST
   )
     return false
 

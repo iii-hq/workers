@@ -56,9 +56,6 @@ export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'default'
  */
 export const THINKING_LOWEST: ThinkingLevel = 'lowest'
 
-/** Like `lowest`, but the harness switches reasoning off where the model can. */
-export const THINKING_OFF_OR_LOWEST: ThinkingLevel = 'off_or_lowest'
-
 export type Role = 'user' | 'assistant' | 'thought' | 'function-trigger'
 
 /**

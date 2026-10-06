@@ -17,11 +17,7 @@ import { getIiiClient } from '@/lib/iii-client'
 import { newMessageId, newSessionId } from '@/lib/session-id'
 import { appendCustomEntry, fetchTranscript } from '@/lib/sessions/api'
 import { COMPACTION_CUSTOM_TYPE } from '@/lib/sessions/entry-mapper'
-import {
-  type ModelId,
-  THINKING_LOWEST,
-  THINKING_OFF_OR_LOWEST,
-} from '@/types/chat'
+import { type ModelId, THINKING_LOWEST } from '@/types/chat'
 import type { PendingApprovalRecord } from '@/types/iii-agent-event'
 import {
   acceptPendingApprovalRevision,
@@ -36,7 +32,6 @@ import {
   type HarnessFileBlock,
   type HarnessFunctionPolicy,
   type HarnessImageBlock,
-  type HarnessReasoningPreset,
   type HarnessSendRequest,
   type HarnessThinkingLevel,
   isTurnActive,
@@ -142,21 +137,16 @@ export function toProviderOptions(
   // `off` is a harness level, not a provider-native effort string: each
   // provider maps it to its own switch (or warns), so nothing rides here.
   if (effort === 'off') return undefined
-  // The harness resolves the presets itself (see toReasoningPreset).
-  if (toReasoningPreset(effort)) return undefined
+  // The harness resolves `lowest` itself (see toReasoningPreset).
+  if (effort === THINKING_LOWEST) return undefined
   return { [provider]: { reasoning_effort: effort } }
 }
 
-/**
- * `lowest` asks the harness for the model's lowest effort; `off_or_lowest`
- * for Off where the model supports it, else the lowest effort.
- */
+/** `lowest` asks the harness to choose the model's lowest effort. */
 export function toReasoningPreset(
   effort: ChatStreamOptions['thinkingLevel'],
-): HarnessReasoningPreset | undefined {
-  return effort === THINKING_LOWEST || effort === THINKING_OFF_OR_LOWEST
-    ? effort
-    : undefined
+): 'lowest' | undefined {
+  return effort === THINKING_LOWEST ? 'lowest' : undefined
 }
 
 /** Build `harness::send` `options.metadata` for filesystem scope. */

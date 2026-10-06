@@ -73,11 +73,6 @@ describe('lowest effort request', () => {
     expect(toReasoningPreset('low')).toBeUndefined()
     expect(toProviderOptions('openai-codex', 'lowest')).toBeUndefined()
   })
-
-  it('carries off_or_lowest the same way', () => {
-    expect(toReasoningPreset('off_or_lowest')).toBe('off_or_lowest')
-    expect(toProviderOptions('claude-code', 'off_or_lowest')).toBeUndefined()
-  })
 })
 
 describe('harness send error formatting', () => {

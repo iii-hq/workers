@@ -291,13 +291,6 @@ describe('translateTurnSource — pre-content turn status', () => {
     ).toEqual([
       { kind: 'turn-status', phase: 'accepted', reasoningEffort: 'low' },
     ])
-    expect(
-      translateTurnSource(
-        sendResolved({ reasoning: { thinking_level: 'off' } }),
-      ),
-    ).toEqual([
-      { kind: 'turn-status', phase: 'accepted', reasoningEffort: 'off' },
-    ])
     // A model with no effort choices: the provider decides, the slider reads Default.
     expect(translateTurnSource(sendResolved({ reasoning: {} }))).toEqual([
       { kind: 'turn-status', phase: 'accepted', reasoningEffort: 'default' },
