@@ -21,6 +21,8 @@ export interface DeviceCode {
   verification_uri: string
   device_code: string
   expires_in?: number
+  /** Seconds GitHub wants between polls. */
+  interval?: number
 }
 
 /** After the code is out, and again after each focus: 4, 8, 16, 32 s apart. */
@@ -35,7 +37,7 @@ const TERMINAL: ReadonlySet<DevicePollStatus> = new Set([
 export interface LoginPoller {
   /** The code is out: poll on the schedule. */
   begin(): void
-  /** The tab is back in focus: poll now, then restart the schedule. */
+  /** The tab is back in focus, or Retry: poll now, then restart the schedule. */
   focus(): void
   stop(): void
 }
@@ -48,27 +50,49 @@ export interface LoginPoller {
 export function createLoginPoller({
   poll,
   onResult,
+  onIdle,
   delays = POLL_DELAYS_MS,
+  minIntervalMs = 0,
 }: {
   poll: () => Promise<DevicePollStatus>
   onResult: (result: DevicePollStatus | Error) => void
+  /** The schedule ran out; nothing is checked until the next focus. */
+  onIdle?: () => void
   delays?: readonly number[]
+  /**
+   * GitHub's `interval`: a poll sooner than this after the last one (or
+   * after `begin`) gets `slow_down`, never the token, so a due poll waits
+   * for it. Each `slow_down` adds 5 s, as GitHub does.
+   */
+  minIntervalMs?: number
 }): LoginPoller {
   let timer: ReturnType<typeof setTimeout> | undefined
   let step = 0
   let stopped = false
   let inFlight = false
+  let gap = minIntervalMs
+  let last = Date.now()
 
   const schedule = () => {
     clearTimeout(timer)
-    if (stopped || step >= delays.length) return
+    if (stopped) return
+    if (step >= delays.length) {
+      onIdle?.()
+      return
+    }
     timer = setTimeout(() => void check(), delays[step++])
   }
 
   const check = async () => {
     if (stopped || inFlight) return
-    inFlight = true
     clearTimeout(timer)
+    const wait = last + gap - Date.now()
+    if (wait > 0) {
+      timer = setTimeout(() => void check(), wait)
+      return
+    }
+    inFlight = true
+    last = Date.now()
     let result: DevicePollStatus | Error
     try {
       result = await poll()
@@ -77,6 +101,7 @@ export function createLoginPoller({
     }
     inFlight = false
     if (stopped) return
+    if (result === 'slow_down') gap += 5_000
     onResult(result)
     if (typeof result === 'string' && TERMINAL.has(result)) {
       stopped = true
@@ -88,6 +113,7 @@ export function createLoginPoller({
   return {
     begin() {
       step = 0
+      last = Date.now()
       schedule()
     },
     focus() {

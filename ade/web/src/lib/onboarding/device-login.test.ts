@@ -74,6 +74,40 @@ describe('createLoginPoller', () => {
     expect(results[1]).toBe('pending')
   })
 
+  it('reports when the schedule runs out, and again after a focus', async () => {
+    const poll = vi.fn(async (): Promise<DevicePollStatus> => 'pending')
+    const onIdle = vi.fn()
+    const handle = createLoginPoller({ poll, onResult: () => {}, onIdle })
+    handle.begin()
+    await vi.advanceTimersByTimeAsync(59_999)
+    expect(onIdle).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1) // the 32 s poll, the last one
+    expect(onIdle).toHaveBeenCalledTimes(1)
+    handle.focus()
+    await vi.advanceTimersByTimeAsync(200_000)
+    expect(onIdle).toHaveBeenCalledTimes(2)
+  })
+
+  it("keeps GitHub's interval between polls and widens it on slow_down", async () => {
+    const statuses: DevicePollStatus[] = ['slow_down']
+    const poll = vi.fn(async () => statuses.shift() ?? 'pending')
+    const handle = createLoginPoller({
+      poll,
+      onResult: () => {},
+      minIntervalMs: 5_000,
+    })
+    handle.begin()
+    await vi.advanceTimersByTimeAsync(4_999) // 4 s is due, 5 s is the floor
+    expect(poll).toHaveBeenCalledTimes(0)
+    await vi.advanceTimersByTimeAsync(1) // 5 s: slow_down, floor now 10 s
+    expect(poll).toHaveBeenCalledTimes(1)
+    handle.focus() // too early: waits for the floor
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(poll).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(poll).toHaveBeenCalledTimes(2)
+  })
+
   it('does nothing after stop', async () => {
     const { poll, handle } = poller()
     handle.begin()

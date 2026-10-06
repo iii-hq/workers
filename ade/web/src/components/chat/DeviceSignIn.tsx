@@ -1,4 +1,10 @@
-import { Copy, ExternalLink, LoaderCircle, RotateCw } from 'lucide-react'
+import {
+  Copy,
+  ExternalLink,
+  LoaderCircle,
+  RefreshCw,
+  RotateCw,
+} from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import { Chip } from '@/components/ui/Chip'
@@ -27,14 +33,37 @@ const MESSAGES: Partial<Record<DevicePollStatus, string>> = {
 const RENEW_MARGIN_MS = 30_000
 
 /**
+ * The code each provider handed out, kept across remounts: a wizard that
+ * re-renders must not swap the code the person is typing for a new one.
+ */
+const issued = new Map<string, { code: DeviceCode; expiresAt: number }>()
+
+function liveCode(providerId: string): DeviceCode | null {
+  const entry = issued.get(providerId)
+  return entry && entry.expiresAt - Date.now() > RENEW_MARGIN_MS
+    ? entry.code
+    : null
+}
+
+function clock(date: Date): string {
+  return date.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
+/**
  * The device-flow sign-in (GitHub Copilot). The one-time code shows first —
  * at once when the worker runs, after Get code (which adds the worker) when
- * it does not — so the person has it before GitHub's page opens. A code left
- * unused is replaced before it expires. Authenticate copies the code, opens
- * the page, and the ADE checks for the sign-in when this tab gets focus
- * again and 4, 8, 16 and 32 seconds after the click or the focus. Retry,
- * shown from Authenticate until the sign-in lands, gets a new code and opens
- * the page again.
+ * it does not — so the person has it before GitHub's page opens. The code is
+ * kept until it expires, and an unused one is replaced before that.
+ * Authenticate copies it, opens the page, and the ADE checks for the sign-in
+ * when this tab is shown again and 4, 8, 16 and 32 seconds after the click
+ * or the return, with a spinner while checks are due. Retry, shown from
+ * Authenticate until the sign-in lands, checks again at once; only an
+ * expired or denied code gets a new one. The reload icon beside the code
+ * gets a new code at any time.
  */
 export function DeviceSignIn({
   provider,
@@ -50,6 +79,9 @@ export function DeviceSignIn({
   const [phase, setPhase] = useState<Phase>(installed ? 'fetching' : 'idle')
   const [code, setCode] = useState<DeviceCode | null>(null)
   const [message, setMessage] = useState<string | null>(null)
+  /** Checks are scheduled (the spinner turns). */
+  const [checking, setChecking] = useState(false)
+  const [checkedAt, setCheckedAt] = useState<Date | null>(null)
   const poller = useRef<LoginPoller | null>(null)
   const generation = useRef(0)
   const onConnectedRef = useRef(onConnected)
@@ -66,6 +98,10 @@ export function DeviceSignIn({
         if (note && generation.current === mine) setMessage(note)
       })
       if (generation.current !== mine) return null
+      issued.set(provider.providerId, {
+        code: next,
+        expiresAt: Date.now() + (next.expires_in ?? 900) * 1_000,
+      })
       setCode(next)
       setMessage(null)
       setPhase('code')
@@ -78,14 +114,21 @@ export function DeviceSignIn({
     }
   }, [provider])
 
-  // A running worker hands out a code without being asked.
+  // A running worker hands out a code without being asked; one already
+  // handed out (before a remount) is shown again instead.
   useEffect(() => {
-    if (installed) void fetchCode()
+    const kept = liveCode(provider.providerId)
+    if (kept) {
+      setCode(kept)
+      setPhase('code')
+    } else if (installed) {
+      void fetchCode()
+    }
     return () => {
       generation.current++
       poller.current?.stop()
     }
-  }, [installed, fetchCode])
+  }, [installed, fetchCode, provider.providerId])
 
   // An unused code is replaced before GitHub expires it.
   useEffect(() => {
@@ -97,28 +140,52 @@ export function DeviceSignIn({
     return () => clearTimeout(timer)
   }, [phase, code, fetchCode])
 
+  const checkNow = useCallback(() => {
+    setChecking(true)
+    poller.current?.focus()
+  }, [])
+
+  // Back on this tab: switching tabs does not always focus the window, so
+  // listen for both.
   useEffect(() => {
     if (phase !== 'waiting') return
-    const onFocus = () => poller.current?.focus()
-    window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
-  }, [phase])
+    const onReturn = () => {
+      if (document.visibilityState === 'visible') checkNow()
+    }
+    window.addEventListener('focus', onReturn)
+    document.addEventListener('visibilitychange', onReturn)
+    return () => {
+      window.removeEventListener('focus', onReturn)
+      document.removeEventListener('visibilitychange', onReturn)
+    }
+  }, [phase, checkNow])
 
   const watch = (current: DeviceCode) => {
+    poller.current?.stop()
     setPhase('waiting')
     setMessage(MESSAGES.pending ?? null)
+    setChecking(true)
     const next = createLoginPoller({
       poll: () => pollDeviceLogin(provider, current.device_code),
+      minIntervalMs: (current.interval ?? 5) * 1_000,
+      onIdle: () => setChecking(false),
       onResult: (result) => {
+        setCheckedAt(new Date())
         if (result instanceof Error) {
           setMessage(readableError(result))
         } else if (result === 'ok') {
+          issued.delete(provider.providerId)
+          setChecking(false)
           setPhase('connected')
           setMessage(null)
           onConnectedRef.current?.()
         } else {
           setMessage(MESSAGES[result] ?? null)
-          if (result === 'expired' || result === 'denied') setPhase('stopped')
+          if (result === 'expired' || result === 'denied') {
+            issued.delete(provider.providerId)
+            setChecking(false)
+            setPhase('stopped')
+          }
         }
       },
     })
@@ -132,20 +199,14 @@ export function DeviceSignIn({
     watch(current)
   }
 
-  const retry = async () => {
-    // Opened inside the click, so the browser allows it; pointed at the
-    // page once the new code is back.
-    const tab = window.open('', '_blank')
-    if (tab) tab.opener = null
-    const next = await fetchCode()
-    if (!next) {
-      tab?.close()
-      return
-    }
-    void copyTextToClipboard(next.user_code)
-    if (tab) tab.location.href = next.verification_uri
-    else window.open(next.verification_uri, '_blank', 'noopener')
-    watch(next)
+  /**
+   * Check again at once with the same code. A code GitHub expired or
+   * refused cannot be checked again: that one is replaced, and Authenticate
+   * opens the page with the new one.
+   */
+  const retry = () => {
+    if (phase === 'waiting') checkNow()
+    else void fetchCode()
   }
 
   const started = phase === 'waiting' || phase === 'stopped'
@@ -181,6 +242,15 @@ export function DeviceSignIn({
             <Copy aria-hidden />
             Copy
           </Button>
+          <Button
+            variant="icon"
+            size="icon"
+            aria-label="New code"
+            title="New code"
+            onClick={() => void fetchCode()}
+          >
+            <RefreshCw aria-hidden />
+          </Button>
           {started ? (
             <Button variant="ghost" size="sm" asChild>
               <a
@@ -201,10 +271,21 @@ export function DeviceSignIn({
           role="status"
           aria-live="polite"
         >
-          {phase === 'fetching' ? (
-            <LoaderCircle className="iii-ui-spin size-3.5" aria-hidden />
+          {phase === 'fetching' || (phase === 'waiting' && checking) ? (
+            <LoaderCircle
+              className="iii-ui-spin size-3.5 shrink-0"
+              aria-hidden
+            />
           ) : null}
-          {message ?? (phase === 'fetching' ? 'Getting a code…' : null)}
+          <span>
+            {message ?? (phase === 'fetching' ? 'Getting a code…' : null)}
+            {phase === 'waiting' && checkedAt
+              ? ` Last checked ${clock(checkedAt)}.`
+              : null}
+            {phase === 'waiting' && !checking
+              ? ' Come back to this tab or click Retry to check again.'
+              : null}
+          </span>
         </p>
       ) : null}
       {phase !== 'connected' ? (
@@ -220,7 +301,7 @@ export function DeviceSignIn({
             </Button>
           ) : null}
           {started ? (
-            <Button variant="pill" size="sm" onClick={() => void retry()}>
+            <Button variant="pill" size="sm" onClick={retry}>
               <RotateCw aria-hidden />
               Retry
             </Button>
