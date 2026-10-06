@@ -200,7 +200,7 @@ export function OnboardingWizardHost() {
       }}
     >
       <DialogContent
-        className="@container flex h-[min(760px,calc(100dvh-24px))] max-h-none w-[min(960px,calc(100vw-24px))] max-w-none flex-row overflow-hidden p-0"
+        className="@container flex h-[min(920px,calc(100dvh-24px))] max-h-none w-[min(960px,calc(100vw-24px))] max-w-none flex-row overflow-hidden p-0"
         onOpenAutoFocus={(event) => {
           // Land on the step's primary action, not the first button in it.
           event.preventDefault()
@@ -220,7 +220,9 @@ export function OnboardingWizardHost() {
           aria-label="Setup steps"
           className="hidden w-[208px] shrink-0 flex-col gap-1 bg-sidebar px-3 py-6 @2xl:flex"
         >
-          <Eyebrow className="mb-3 px-2">Set up the harness</Eyebrow>
+          <Eyebrow className="mb-3 px-2 text-[12px] text-ink">
+            Set up the harness
+          </Eyebrow>
           {STEPS.map((entry, position) => {
             const current = entry.id === step
             const done = position < index || (entry.id === 'ready' && current)
@@ -233,7 +235,7 @@ export function OnboardingWizardHost() {
                 aria-current={current ? 'step' : undefined}
                 onClick={() => go(entry.id)}
                 className={cn(
-                  'flex h-9 items-center gap-2.5 rounded-sm px-2 text-left font-sans text-[13px] text-ink-faint',
+                  'flex h-9 items-center gap-2.5 rounded-sm px-2 text-left font-sans text-[14px] text-ink',
                   current && 'bg-surface-selected text-ink',
                   reachable &&
                     !current &&
@@ -244,7 +246,7 @@ export function OnboardingWizardHost() {
                 <StepMark done={done && !current} current={current} />
                 <span className="min-w-0 flex-1 truncate">{entry.title}</span>
                 {entry.optional ? (
-                  <span className="font-sans text-[11px] text-ink-ghost">
+                  <span className="font-sans text-[12px] text-ink">
                     optional
                   </span>
                 ) : null}
@@ -255,7 +257,9 @@ export function OnboardingWizardHost() {
         </nav>
         <div ref={content} className="flex min-w-0 flex-1 flex-col">
           <div className="flex items-center gap-3 px-5 pt-4 pr-14 @2xl:hidden">
-            <Eyebrow>Set up the harness</Eyebrow>
+            <Eyebrow className="text-[12px] text-ink">
+              Set up the harness
+            </Eyebrow>
             <span
               role="progressbar"
               aria-label="Setup progress"
@@ -338,7 +342,7 @@ function StepMark({ done, current }: { done: boolean; current: boolean }) {
 /** The rail's running tally of what setup changed, so none of it is hidden. */
 function ChangesCounter({ count }: { count: number }) {
   return (
-    <p className="mt-auto px-2 font-sans text-[12px] leading-relaxed text-ink-ghost">
+    <p className="mt-auto px-2 font-sans text-[13px] leading-relaxed text-ink">
       {count === 0
         ? 'Nothing changed yet.'
         : `${count} ${count === 1 ? 'change' : 'changes'} made — each one is listed in its step.`}

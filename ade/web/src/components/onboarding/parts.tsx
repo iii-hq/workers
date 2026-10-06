@@ -30,15 +30,17 @@ export function StepHeader({
     <header className="flex flex-col gap-2">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1.5">
-          {eyebrow ? <Eyebrow>{eyebrow}</Eyebrow> : null}
-          <h2 className="text-pretty font-sans text-[20px] font-semibold leading-tight tracking-[-0.01em] text-ink">
+          {eyebrow ? (
+            <Eyebrow className="text-[12px] text-ink">{eyebrow}</Eyebrow>
+          ) : null}
+          <h2 className="text-pretty font-sans text-[22px] font-semibold leading-tight tracking-[-0.01em] text-ink">
             {title}
           </h2>
         </div>
         {action}
       </div>
       {lead ? (
-        <p className="max-w-[60ch] text-pretty font-sans text-[13px] leading-relaxed text-ink-faint">
+        <p className="max-w-[60ch] text-pretty font-sans text-[14px] leading-relaxed text-ink">
           {lead}
         </p>
       ) : null}
@@ -58,7 +60,7 @@ export function Section({
   return (
     <section className="flex flex-col gap-2" aria-label={title}>
       <div className="flex items-center justify-between gap-3">
-        <h3 className="font-sans text-[12px] font-semibold text-ink-faint">
+        <h3 className="font-sans text-[13px] font-semibold text-ink">
           {title}
         </h3>
         {aside}
@@ -129,9 +131,9 @@ export function PlanPreview({
             <li
               // biome-ignore lint/suspicious/noArrayIndexKey: a plan is rebuilt whole; its order is its identity
               key={index}
-              className="flex gap-3 font-sans text-[13px] text-ink"
+              className="flex gap-3 font-sans text-[14px] text-ink"
             >
-              <span className="w-4 shrink-0 text-right font-mono text-[11px] leading-5 tabular-nums text-ink-ghost">
+              <span className="w-4 shrink-0 text-right font-mono text-[12px] leading-5 tabular-nums text-ink">
                 {index + 1}
               </span>
               <span className="flex min-w-0 flex-col gap-0.5">
@@ -141,7 +143,7 @@ export function PlanPreview({
                     {step.workers.map((worker) => (
                       <span
                         key={worker}
-                        className="text-[12px] leading-relaxed text-ink-faint"
+                        className="text-[13px] leading-relaxed text-ink"
                       >
                         <span className="font-mono text-ink">{worker}</span>
                         {' — '}
@@ -150,7 +152,7 @@ export function PlanPreview({
                     ))}
                   </span>
                 ) : (
-                  <span className="break-all font-mono text-[11px] text-ink-ghost">
+                  <span className="break-all font-mono text-[12px] text-ink">
                     {detail}
                   </span>
                 )}
@@ -206,7 +208,7 @@ export function ActivityLog({
               <span className="flex items-baseline justify-between gap-3">
                 <span
                   className={cn(
-                    'font-sans text-[13px]',
+                    'font-sans text-[14px]',
                     entry.status === 'failed'
                       ? 'text-alert-strong'
                       : 'text-ink',
@@ -215,21 +217,21 @@ export function ActivityLog({
                   {entry.title}
                 </span>
                 {typeof entry.progress === 'number' ? (
-                  <span className="shrink-0 font-mono text-[11px] tabular-nums text-ink-ghost">
+                  <span className="shrink-0 font-mono text-[12px] tabular-nums text-ink">
                     {Math.round(entry.progress * 100)}%
                   </span>
                 ) : null}
               </span>
-              <span className="break-all font-mono text-[11px] text-ink-ghost">
+              <span className="break-all font-mono text-[12px] text-ink">
                 {entry.detail}
               </span>
               {entry.note ? (
                 <span
                   className={cn(
-                    'break-words font-sans text-[12px]',
+                    'break-words font-sans text-[13px]',
                     entry.status === 'failed'
                       ? 'text-alert-strong'
-                      : 'text-ink-faint',
+                      : 'text-ink',
                   )}
                 >
                   {entry.note}
@@ -291,7 +293,7 @@ export function KeyField({
         onChange={onChange}
         keysUrl={keysUrl}
       />
-      <p className="font-sans text-[12px] leading-relaxed text-ink-faint">
+      <p className="font-sans text-[13px] leading-relaxed text-ink">
         {secretsReady
           ? 'Stored encrypted by the secrets worker as '
           : 'The secrets worker will store it encrypted as '}
