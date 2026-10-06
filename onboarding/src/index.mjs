@@ -94,7 +94,7 @@ const stateUpdate = (key, ops) =>
   })
 
 /** The shape the page reads, whether or not anything is stored yet. */
-const emptyProgress = () => ({ tours: {}, updated_at: null })
+const emptyProgress = () => ({ tours: {}, updated_at: null, subscribed_at: null })
 
 const readProgress = async (subject) => {
   const stored = await stateGet(progressKey(subject))
@@ -141,7 +141,11 @@ iii.registerFunction(
       'Read an operator\u2019s tour progress: per tour, the status of every step and the trigger evidence that closed it, plus which tour to offer next.',
     request_format: object({ subject: string }),
     response_format: object(
-      { tours: object(), next_tour_id: { type: ['string', 'null'] } },
+      {
+        tours: object(),
+        next_tour_id: { type: ['string', 'null'] },
+        subscribed_at: { type: ['number', 'null'] },
+      },
       ['tours', 'next_tour_id'],
     ),
   },
@@ -354,11 +358,19 @@ iii.registerFunction(
     // Mailmodo answers 200 "added/updated" for an address already on the list,
     // so there is nothing to tell the caller apart from success.
     await publishIdentify(email, String(input.source ?? 'onboarding'))
+    // Remembered beside the tour progress (the time only, never the address),
+    // so a reopened Stay in touch step says the person is on the list instead
+    // of asking again.
+    const at = Date.now()
+    await stateUpdate(progressKey(input?.subject ?? 'local'), [
+      { type: 'merge', value: { subscribed_at: at, updated_at: at } },
+    ])
     return { subscribed: true }
   },
   {
-    description: 'Add an email address to the iii product-update list.',
-    request_format: object({ email: string, source: string }, ['email']),
+    description:
+      'Add an email address to the iii product-update list, and record the signup time (not the address) on the subject\u2019s progress as `subscribed_at`.',
+    request_format: object({ email: string, source: string, subject: string }, ['email']),
     response_format: object({ subscribed: { type: 'boolean' } }, ['subscribed']),
   },
 )

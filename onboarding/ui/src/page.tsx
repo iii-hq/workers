@@ -93,6 +93,8 @@ type StepRecords = Record<string, StepRecord | undefined>
 interface ProgressResponse {
   tours: Record<string, { steps?: StepRecords } | undefined>
   next_tour_id: string | null
+  /** When this subject signed up for updates; absent on an older worker. */
+  subscribed_at?: number | null
 }
 
 type StepState = 'complete' | 'active' | 'pending'
@@ -120,6 +122,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
   // of looking like the click was missed.
   const [opening, setOpening] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [subscribed, setSubscribed] = useState(false)
 
   useEffect(() => {
     let live = true
@@ -139,6 +142,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
         const stored = progress.tours[id]?.steps ?? {}
         setTour(loaded)
         setRecords(stored)
+        setSubscribed(Boolean(progress.subscribed_at))
         setOpen(firstIncomplete(loaded, stored)?.id ?? loaded.steps[0]?.id ?? null)
       } catch (cause) {
         if (live) setError(errorMessage(cause))
@@ -461,11 +465,17 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
                     <Copyable label="or ask the agent" text={step.condition.prompt} />
                   ) : null}
                   {step.id === 'stay-in-touch' ? (
-                    // Reopening the step after a Skip shows the form again;
-                    // a done step has nothing left to skip.
+                    // Signed up: the step says so. Otherwise (first visit, or
+                    // reopened after a Skip) the form with both buttons; on a
+                    // done step Skip just folds the step away.
                     <StayInTouch
                       host={host}
-                      onDone={state === 'complete' ? undefined : () => complete(step.id)}
+                      subscribed={subscribed}
+                      onSubscribed={() => {
+                        setSubscribed(true)
+                        if (state !== 'complete') complete(step.id)
+                      }}
+                      onSkip={() => (state === 'complete' ? setOpen(null) : complete(step.id))}
                     />
                   ) : null}
                   {step.on_closed && closed === step.on_closed.screen ? (
@@ -636,8 +646,19 @@ const SOCIALS: { label: string; href: string; path: string }[] = [
 /**
  * The signup step's own way onward: `Sign me up` subscribes and closes the
  * step, `Skip` closes it without an email. It replaces the generic `Got it`.
+ * Once the worker has a signup on record the step only says so.
  */
-function StayInTouch({ host, onDone }: { host: Host; onDone?: () => void }) {
+function StayInTouch({
+  host,
+  subscribed,
+  onSubscribed,
+  onSkip,
+}: {
+  host: Host
+  subscribed: boolean
+  onSubscribed: () => void
+  onSkip: () => void
+}) {
   const [email, setEmail] = useState('')
   const [status, setStatus] = useState<'idle' | 'sending' | 'done' | 'failed'>('idle')
   const [message, setMessage] = useState('')
@@ -651,21 +672,20 @@ function StayInTouch({ host, onDone }: { host: Host; onDone?: () => void }) {
         .trigger('onboarding::subscribe', { email: email.trim(), source: 'onboarding_flow' })
         .then(() => {
           setStatus('done')
-          setMessage('You are on the list.')
-          onDone?.()
+          onSubscribed()
         })
         .catch((error: unknown) => {
           setStatus('failed')
           setMessage(error instanceof Error ? error.message : 'the signup did not go through')
         })
     },
-    [email, host, status, onDone],
+    [email, host, status, onSubscribed],
   )
 
   return (
     <div className="ob-stack">
-      {status === 'done' ? (
-        <StatusPanel variant="success" headline={message} role="status" />
+      {subscribed || status === 'done' ? (
+        <StatusPanel variant="success" headline="You are on the list." role="status" />
       ) : (
         <form className="ob-form" onSubmit={submit}>
           <Input
@@ -680,11 +700,9 @@ function StayInTouch({ host, onDone }: { host: Host; onDone?: () => void }) {
           <Button type="submit" disabled={status === 'sending'}>
             {status === 'sending' ? 'Sending…' : 'Sign me up'}
           </Button>
-          {onDone ? (
-            <Button type="button" variant="ghost" onClick={onDone} disabled={status === 'sending'}>
-              Skip
-            </Button>
-          ) : null}
+          <Button type="button" variant="ghost" onClick={onSkip} disabled={status === 'sending'}>
+            Skip
+          </Button>
         </form>
       )}
       {status === 'failed' ? <StatusPanel variant="alert" headline={message} role="alert" /> : null}
