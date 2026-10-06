@@ -17,7 +17,7 @@ import { getIiiClient } from '@/lib/iii-client'
 import { newMessageId, newSessionId } from '@/lib/session-id'
 import { appendCustomEntry, fetchTranscript } from '@/lib/sessions/api'
 import { COMPACTION_CUSTOM_TYPE } from '@/lib/sessions/entry-mapper'
-import type { ModelId } from '@/types/chat'
+import { type ModelId, THINKING_LOWEST } from '@/types/chat'
 import type { PendingApprovalRecord } from '@/types/iii-agent-event'
 import {
   acceptPendingApprovalRevision,
@@ -133,7 +133,16 @@ export function toProviderOptions(
 ): Record<string, unknown> | undefined {
   if (!effort) return undefined
   if (effort === 'default') return {}
+  // The harness resolves `lowest` itself (see toReasoningPreset).
+  if (effort === THINKING_LOWEST) return undefined
   return { [provider]: { reasoning_effort: effort } }
+}
+
+/** `lowest` asks the harness to choose the model's lowest effort. */
+export function toReasoningPreset(
+  effort: ChatStreamOptions['thinkingLevel'],
+): 'lowest' | undefined {
+  return effort === THINKING_LOWEST ? 'lowest' : undefined
 }
 
 /** Build `harness::send` `options.metadata` for filesystem scope. */
@@ -203,6 +212,7 @@ async function buildSendRequest(
   const { provider, model: modelId } = resolveRunParams(model)
   const thinkingLevel = toThinkingLevel(opts?.thinkingLevel)
   const providerOptions = toProviderOptions(provider, opts?.thinkingLevel)
+  const reasoning = toReasoningPreset(opts?.thinkingLevel)
 
   let functionPolicy = FALLBACK_FUNCTION_POLICY
   try {
@@ -237,6 +247,7 @@ async function buildSendRequest(
       ...toSkillOptions(opts?.skills),
       ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
       ...(providerOptions ? { provider_options: providerOptions } : {}),
+      ...(reasoning ? { reasoning } : {}),
       metadata: buildTurnMetadata(sessionId, messageId, opts?.workingDir),
     },
   }

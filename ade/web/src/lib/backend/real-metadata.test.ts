@@ -4,6 +4,7 @@ import {
   FALLBACK_FUNCTION_POLICY,
   toHarnessSendError,
   toProviderOptions,
+  toReasoningPreset,
   toThinkingLevel,
 } from './real'
 
@@ -63,6 +64,14 @@ describe('model reasoning effort forwarding', () => {
     expect(toProviderOptions('openai-codex', 'high')).toEqual({
       'openai-codex': { reasoning_effort: 'high' },
     })
+  })
+})
+
+describe('lowest effort request', () => {
+  it('travels as the reasoning preset, never as a level or native effort', () => {
+    expect(toReasoningPreset('lowest')).toBe('lowest')
+    expect(toReasoningPreset('low')).toBeUndefined()
+    expect(toProviderOptions('openai-codex', 'lowest')).toBeUndefined()
   })
 })
 

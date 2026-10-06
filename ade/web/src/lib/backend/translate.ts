@@ -103,6 +103,14 @@ export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
             : response.merged
               ? 'merged'
               : 'accepted',
+          ...(response.reasoning
+            ? {
+                reasoningEffort:
+                  response.reasoning.reasoning_effort ??
+                  response.reasoning.thinking_level ??
+                  'default',
+              }
+            : {}),
         },
       ]
     }

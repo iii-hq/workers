@@ -56,6 +56,8 @@ export interface HarnessSendOptions {
   thinking_level?: HarnessThinkingLevel
   /** Provider-native options, namespaced by provider id. */
   provider_options?: Record<string, unknown>
+  /** The harness picks the model's lowest effort; exclusive with the two above. */
+  reasoning?: 'lowest'
   output?: HarnessOutputContract
   functions?: HarnessFunctionPolicy
   /** Omitted/empty means all model-invocable skills; otherwise exact IDs. */
@@ -143,6 +145,8 @@ export interface HarnessSendResponse {
   queued?: boolean
   /** True when `idempotency_key` matched an earlier send. */
   deduplicated?: boolean
+  /** What `options.reasoning` resolved to; both fields absent = provider decides. */
+  reasoning?: { thinking_level?: string; reasoning_effort?: string }
 }
 
 /** The coarse, harness-internal turn lifecycle (harness.md § API Reference). */
