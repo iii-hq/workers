@@ -57,8 +57,8 @@ export interface HarnessSendOptions {
   thinking_level?: HarnessThinkingLevel
   /** Provider-native options, namespaced by provider id. */
   provider_options?: Record<string, unknown>
-  /** The harness picks the model's lowest effort; exclusive with the two above. */
-  reasoning?: 'lowest'
+  /** The harness picks the effort from the model; exclusive with the two above. */
+  reasoning?: HarnessReasoningPreset
   output?: HarnessOutputContract
   functions?: HarnessFunctionPolicy
   /** Omitted/empty means all model-invocable skills; otherwise exact IDs. */
@@ -132,6 +132,9 @@ export interface HarnessSendRequest {
   session?: HarnessSessionInit
   options?: HarnessSendOptions
 }
+
+/** Efforts the harness resolves against the model's catalog row. */
+export type HarnessReasoningPreset = 'lowest' | 'off_or_lowest'
 
 export interface HarnessSendResponse {
   session_id: string

@@ -41,6 +41,12 @@ describe('thinking-level requests', () => {
       sessionId: 'session-1',
       level: 'lowest',
     })
+    expect(
+      requestThinkingLevelChange({
+        sessionId: 'session-1',
+        level: 'off_or_lowest',
+      }),
+    ).toBe(true)
     dispose()
   })
 
