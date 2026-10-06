@@ -10,6 +10,7 @@ import {
   gitPush,
   gitRestoreFrom,
   gitStashApply,
+  gitStashClear,
   gitStashPush,
   gitTags,
   gitUnstage,
@@ -342,6 +343,12 @@ describe('unstash', () => {
       ['stash', 'pop', '--index', 'stash@{1}'],
     ])
   })
+
+  it('drops every stash at once', async () => {
+    const { host, calls } = hostWith(reply())
+    await gitStashClear(host, '/r')
+    expect(calls).toEqual([expect.objectContaining({ args: ['stash', 'clear'], cwd: '/r' })])
+  })
 })
 
 describe('a patch of local changes', () => {
@@ -385,6 +392,11 @@ describe('.gitignore', () => {
     expect(withIgnored('/a.log\r\n', ['a.log'])).toBeNull()
   })
 
+  it('keeps the line endings of a CRLF file', () => {
+    expect(withIgnored('node_modules\r\n', ['out/'])).toEqual({ content: 'node_modules\r\n/out/\r\n', added: 1 })
+    expect(withIgnored('a\r\nb', ['out/', 'c'])).toEqual({ content: 'a\r\nb\r\n/out/\r\n/c\r\n', added: 2 })
+  })
+
   it('creates the file when it is missing and writes against the revision read', async () => {
     // The bus rejects with the handler's error body, not an Error.
     const created = hostWith({ results: [{ path: '/r/.gitignore', success: true, bytes_written: 6 }] })
@@ -409,5 +421,35 @@ describe('.gitignore', () => {
     await expect(gitIgnore(listed.host, '/r', ['y'])).resolves.toBe(0)
     expect(listed.calls).toHaveLength(1)
     await expect(gitIgnore(hostWith(new Error('permission denied')).host, '/r', ['y'])).rejects.toThrow('permission')
+  })
+
+  it('never writes over a file it could not read whole as text', async () => {
+    // Writing the partial or mangled content back would lose the rest; a
+    // write would also hit the empty queue and fail as an unexpected call.
+    for (const read of [
+      { content: 'a\n', more_lines: true },
+      { content: 'a\n', is_utf8: false },
+    ]) {
+      const { host, calls } = hostWith(read)
+      await expect(gitIgnore(host, '/r', ['y'])).rejects.toThrow('.gitignore is too large or not text')
+      expect(calls).toHaveLength(1)
+    }
+  })
+
+  it('fails with the error of a write the worker refused', async () => {
+    const { host } = hostWith(
+      { content: 'a\n', revision: 'r1' },
+      {
+        results: [
+          {
+            path: '/r/.gitignore',
+            success: false,
+            bytes_written: 0,
+            error: { code: 'C2xx', message: 'revision mismatch' },
+          },
+        ],
+      },
+    )
+    await expect(gitIgnore(host, '/r', ['y'])).rejects.toThrow('revision mismatch')
   })
 })

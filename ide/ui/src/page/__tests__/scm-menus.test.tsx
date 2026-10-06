@@ -251,7 +251,8 @@ describe('a change row menu', () => {
 
   it('rolls back only the tracked files of a group, and has no path to copy', () => {
     const { ctx, calls } = context()
-    const files = [entry('a.ts'), entry('b.ts', 'added')]
+    const tracked = [entry('a.ts'), entry('b.ts', 'added')]
+    const files = [...tracked, entry('new.md', 'untracked')]
     const row: ChangeRow = {
       kind: 'group',
       key: 'changes',
@@ -268,7 +269,7 @@ describe('a change row menu', () => {
     select(items, 'Rollback…')
     select(items, 'Copy as patch to clipboard')
     expect(calls).toEqual([
-      ['rollback', files],
+      ['rollback', tracked],
       ['copyPatch', files],
     ])
   })
@@ -306,13 +307,16 @@ describe('a stash row menu', () => {
       'Show diff',
       'Show diff in a new tab',
     ])
-    for (const label of ['Pop', 'Apply', 'Unstash…', 'Drop…', 'Clear…', 'Show diff in a new tab']) select(items, label)
+    for (const label of ['Pop', 'Apply', 'Unstash…', 'Drop…', 'Clear…', 'Show diff', 'Show diff in a new tab']) {
+      select(items, label)
+    }
     expect(calls).toEqual([
       ['apply', 'stash@{1}', true],
       ['apply', 'stash@{1}', false],
       ['unstash', 'stash@{1}'],
       ['drop', 'stash@{1}'],
       ['clear'],
+      ['diff', 'stash@{1}', false],
       ['diff', 'stash@{1}', true],
     ])
   })

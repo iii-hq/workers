@@ -47,6 +47,7 @@ function render(phase: SourceControlPhase, unversioned: { path: string; status: 
       onOpenFile={() => {}}
       onCompare={() => {}}
       onShowHistory={() => {}}
+      onDeleteFile={async () => {}}
     />,
   )
 }
