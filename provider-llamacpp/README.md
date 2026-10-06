@@ -65,7 +65,9 @@ chose. Counting is local and never runs the model.
   `context_overflow_hint` (`register.rs`) that the router reports on
   `router::provider::list` and the ADE shows under its context-overflow
   card, pointing at the server's `--ctx-size`, the desktop app's per-model
-  options and the llama.cpp server docs. No pricing (self-hosted).
+  options, the llama.cpp server docs and the provider restart that picks the
+  new size up (`iii trigger compose::restart` or the Workers page). No
+  pricing (self-hosted).
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
   channel write (caller gone / `router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request.
