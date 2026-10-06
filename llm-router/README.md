@@ -89,7 +89,7 @@ registration token, and every later protocol call must present it.
 | Function | Purpose |
 |---|---|
 | `router::provider::register` | Self-declaration at attach time; idempotent re-declare with the token. |
-| `router::provider::resolve` | Per-request credential + endpoint resolution (config > `secret://` reference > env > none, see [Credentials](#credentials-and-secret-references)). |
+| `router::provider::resolve` | Per-request credential + endpoint resolution (config > `secret://` / `env://` reference > env > none, see [Credentials](#credentials-and-secret-references)). |
 | `router::provider::update_credential` | Persist a refreshed credential (OAuth write-back). |
 | `router::models::reconcile` | Replace the provider's catalog slice in one write. |
 
@@ -159,25 +159,36 @@ within seconds — no restart.
 
 The configuration service's default filesystem adapter persists this entry at
 `./config/<entry-id>.yaml` (`llm-router` unless `III_CONFIG_NAME` overrides it),
-a folder meant to be committed, so keep keys out of it: store the key in the
-[`secrets`](https://github.com/iii-hq/workers/tree/main/secrets) worker and put a versionable reference in the slice,
-`"api_key": "secret://ANTHROPIC_API_KEY"` (provider keys reuse their env var
-name; `NAME` matches `^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`). The secret's
-`consumers` must list `llm-router`.
+a folder meant to be committed, so keep keys out of it: keep the key in the
+[`secrets`](https://github.com/iii-hq/workers/tree/main/secrets) worker, which `llm-router` depends on, and put a versionable
+reference in the slice:
+
+- `"api_key": "secret://ANTHROPIC_API_KEY"` — encrypted in the secrets
+  worker's vault;
+- `"api_key": "env://ANTHROPIC_API_KEY"` — the variable in the project's
+  env file (`.env`, or the secrets worker's `env_file` for this namespace;
+  else the secrets worker's environment), read by the secrets worker each
+  time, so an edit to the file applies without restarting the router.
+
+Provider keys reuse their env var name; `NAME` matches
+`^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`. Either way the secret's `consumers` must
+list `llm-router`; the Console's key field does this for you.
 
 A provider's credential is the first of:
 
 1. the slice's `credential` object (OAuth write-back via `update_credential`);
 2. a literal `api_key`;
-3. an `api_key` reference, resolved through `secrets::resolve`;
+3. an `api_key` reference (`secret://` or `env://`), resolved through
+   `secrets::resolve`;
 4. the provider's `credential_env_var`, read in the router's process;
 5. none.
 
 A reference is never forwarded to a provider as a key. When it does not
 resolve, the provider is **not configured**, and the error says why: `secret
-NAME not found in the secrets worker`, `llm-router is not allowed to read
-secret NAME; add llm-router to the secret's consumers`, or `secrets worker is
-not running`. The env var is deliberately **not** used as a fallback past an
+NAME not found in the secrets worker`, `environment variable NAME is not set
+in the project's .env or the secrets worker's environment`, `llm-router is not
+allowed to read secret NAME; add llm-router to the secret's consumers`, or
+`secrets worker is not running`. The env var is deliberately **not** used as a fallback past an
 explicit reference: you chose the stored secret, so a missing one is reported
 rather than silently replaced by a different key. Providers built on the
 shared scaffold skip their own env fallback in that case too, and
@@ -186,7 +197,9 @@ reason.
 
 `router::provider::list` entries and the `router::provider::resolve` response
 carry `credential_source` (`config` | `env` | `secret` | `none`),
-`credential_ref` (the `secret://` reference, when the slice uses one) and
+`credential_ref` (the `secret://` or `env://` reference, when the slice uses
+one; `credential_source` is `secret` for both, as the secrets worker resolved
+it) and
 `credential_error`. All three are optional on the wire. The older `source`
 field keeps its `config` | `env` | `none` values: a resolved reference reports
 `config` there.
@@ -210,18 +223,20 @@ logs or traces, and a cached value is wiped when replaced. They are re-read:
   while it is down.
 
 The reference itself is not secret: it is committed, listed and logged. Never
-paste a key after `secret://`.
+paste a key after `secret://` or `env://`.
 
 ### Operational notes
 
 - **Secret references resolve as `llm-router`.** The secrets worker checks
   the router's engine-stamped worker identity against the secret's
   `consumers`, not the provider's.
-- **Env-var credential fallback resolves in the router's process.** A
-  provider's `credential_env_var` (e.g. `ANTHROPIC_API_KEY`) is read by the
-  llm-router binary, not by the provider worker — launch the router with
-  those variables set, or put keys in the entry. A key present only in
-  another worker's environment shows up as `configured: false`.
+- **Env-var credential fallback resolves in the router's process.** Without
+  a reference, a provider's `credential_env_var` (e.g. `ANTHROPIC_API_KEY`)
+  is read by the llm-router binary, not by the provider worker — launch the
+  router with those variables set, or put a reference in the entry. A key
+  present only in another worker's environment shows up as
+  `configured: false`. `env://NAME` is different: the secrets worker reads it
+  from the project's `.env`, so the router needs no `env_file` for it.
 - **Registration-token recovery.** Re-registering a provider id without its
   original token is rejected (anti-takeover). If a provider durably lost its
   token, delete the router's registry state (state scope `llm-router`,
@@ -245,7 +260,7 @@ file. In-run agents may only **read** the catalog and provider list:
 Worker-to-worker calls bypass the agent gate, so the harness, context-manager,
 and provider workers reach the full surface — only in-run agents are
 restricted. Provider credentials live in the configuration entry, or behind a
-`secret://` reference in the `secrets` worker, and are never readable back
+`secret://` or `env://` reference in the `secrets` worker, and are never readable back
 through any allowed function: `router::provider::list` reports where a
 credential comes from, never its value.
 
@@ -299,7 +314,7 @@ A provider worker must:
    level to pair with it; see [Default model](#default-model).
 3. Resolve credentials per request via `router::provider::resolve`; never
    read keys directly. A response with `credential_source: "secret"` and no
-   credential is an unresolvable `secret://` reference: report its
+   credential is an unresolvable `secret://` or `env://` reference: report its
    `credential_error`, do not substitute a key of your own.
 4. Treat closure of its stream channel as cancellation: abort the upstream
    request and stop writing frames.
@@ -388,8 +403,8 @@ cargo test --test integration    # engine-backed suite; self-skips without an en
 The integration suite spawns a throwaway engine per test when `iii` is on
 `PATH` (or `III_ENGINE_BIN` points at a binary) and covers the chat relay,
 cancellation, abort, restart recovery, registration token gating, paste-a-key
-discovery (literal keys and `secret://` references, against a fake `secrets`
-worker), and event delivery end to end.
+discovery (literal keys, `secret://` and `env://` references, against a fake
+`secrets` worker), and event delivery end to end.
 
 To run the worker locally against an engine:
 

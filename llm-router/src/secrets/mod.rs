@@ -1,16 +1,19 @@
-//! Credential references: a provider slice's `api_key: "secret://NAME"` is
-//! resolved through the `secrets` worker (`secrets::resolve`) and is never
-//! forwarded to a provider as a literal key.
+//! Credential references: a provider slice's `api_key` of `secret://NAME`
+//! (a value in the `secrets` worker's encrypted vault) or `env://NAME` (an
+//! environment variable the `secrets` worker reads from the project's `.env`
+//! or its own environment) is resolved through `secrets::resolve`, and is
+//! never forwarded to a provider as a literal key.
 //!
 //! Resolved values live only in [`SecretCache`] — never in the configuration
 //! snapshot, logs or traces — and are wiped from memory when replaced or
-//! evicted (copies handed to a resolve response are ordinary strings). An
-//! entry is re-read on `secrets::changed`, on a configuration change of a
-//! slice that references it, after [`RESOLVED_TTL`] / [`FAILED_TTL`] on
-//! demand, and when new functions register while the secrets worker was
-//! unreachable — so the router keeps working when the secrets worker starts
-//! after it. Every observed change of a cached outcome is reported to the
-//! change listener, which nudges the providers referencing that secret.
+//! evicted (copies handed to a resolve response are ordinary strings). The
+//! cache is keyed by the canonical reference ([`SecretRef::key`]). An entry
+//! is re-read on `secrets::changed`, on a configuration change of a slice
+//! that references it, after [`RESOLVED_TTL`] / [`FAILED_TTL`] on demand,
+//! and when new functions register while the secrets worker was unreachable
+//! — so the router keeps working when the secrets worker starts after it.
+//! Every observed change of a cached outcome is reported to the change
+//! listener, which nudges the providers referencing that secret.
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -26,8 +29,10 @@ use crate::types::errors::is_function_not_found;
 
 pub mod on_changed;
 
-/// Reference scheme in a slice's `api_key`.
+/// Reference scheme in a slice's `api_key` for a value in the vault.
 pub const SCHEME: &str = "secret://";
+/// Reference scheme for an environment variable kept by the secrets worker.
+pub const ENV_SCHEME: &str = "env://";
 pub const RESOLVE_ID: &str = "secrets::resolve";
 /// Trigger type the `secrets` worker fires on create / rotate / delete /
 /// access change. Payload: `{name, ref, action, fingerprint?, updated_at}`.
@@ -53,19 +58,69 @@ pub fn valid_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
-/// `Some(Ok(NAME))` for a `secret://NAME` reference, `Some(Err(_))` for a
-/// malformed one — still a reference, never a literal key — and `None` for
-/// anything else. The scheme matches case-insensitively and surrounding
-/// whitespace is ignored, so no spelling of a reference reaches a provider.
-pub fn parse_ref(value: &str) -> Option<Result<&str, SecretError>> {
-    let value = value.trim();
-    let scheme = value.get(..SCHEME.len())?;
-    if !scheme.eq_ignore_ascii_case(SCHEME) {
-        return None;
+/// Where the secrets worker keeps a referenced value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Store {
+    /// `secret://NAME`: encrypted in the vault.
+    Vault,
+    /// `env://NAME`: an environment variable.
+    Env,
+}
+
+impl Store {
+    pub fn scheme(self) -> &'static str {
+        match self {
+            Self::Vault => SCHEME,
+            Self::Env => ENV_SCHEME,
+        }
     }
-    let name = &value[SCHEME.len()..];
+}
+
+/// A well-formed reference.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SecretRef {
+    pub store: Store,
+    pub name: String,
+}
+
+impl SecretRef {
+    pub fn vault(name: &str) -> Self {
+        Self {
+            store: Store::Vault,
+            name: name.to_string(),
+        }
+    }
+
+    /// The canonical spelling (lowercase scheme): the cache key, the `ref`
+    /// sent to `secrets::resolve`, and the reported `credential_ref`.
+    pub fn key(&self) -> String {
+        format!("{}{}", self.store.scheme(), self.name)
+    }
+
+    /// Parse a canonical key back; `None` for anything else.
+    pub fn from_key(key: &str) -> Option<Self> {
+        parse_ref(key)?.ok()
+    }
+}
+
+/// `Some(Ok(_))` for a `secret://NAME` or `env://NAME` reference,
+/// `Some(Err(_))` for a malformed one — still a reference, never a literal
+/// key — and `None` for anything else. The scheme matches
+/// case-insensitively and surrounding whitespace is ignored, so no spelling
+/// of a reference reaches a provider.
+pub fn parse_ref(value: &str) -> Option<Result<SecretRef, SecretError>> {
+    let value = value.trim();
+    let store = [Store::Vault, Store::Env].into_iter().find(|store| {
+        value
+            .get(..store.scheme().len())
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case(store.scheme()))
+    })?;
+    let name = &value[store.scheme().len()..];
     Some(if valid_name(name) {
-        Ok(name)
+        Ok(SecretRef {
+            store,
+            name: name.to_string(),
+        })
     } else {
         Err(SecretError::InvalidReference)
     })
@@ -149,45 +204,63 @@ impl SecretError {
         }
     }
 
-    /// What an operator should do about it, naming the secret but never a
-    /// value. A malformed reference is not echoed: it may be a pasted key.
-    pub fn describe(&self, name: &str) -> String {
-        match self {
-            Self::NotFound => format!(
+    /// What an operator should do about it, naming the reference (a
+    /// canonical [`SecretRef::key`]) but never a value. A malformed
+    /// reference is not echoed: it may be a pasted key.
+    pub fn describe(&self, reference: &str) -> String {
+        let parsed = SecretRef::from_key(reference);
+        let (store, name) = parsed
+            .as_ref()
+            .map_or((Store::Vault, ""), |r| (r.store, r.name.as_str()));
+        match (self, store) {
+            (Self::NotFound, Store::Vault) => format!(
                 "secret {name} not found in the secrets worker; store it there or fix the reference"
             ),
-            Self::Forbidden => format!(
+            (Self::NotFound, Store::Env) => format!(
+                "environment variable {name} is not set in the project's .env or the secrets \
+                 worker's environment; set it there or fix the reference"
+            ),
+            (Self::Forbidden, Store::Vault) => format!(
                 "{CONSUMER} is not allowed to read secret {name}; add {CONSUMER} to the secret's consumers"
             ),
-            Self::InvalidReference => format!(
-                "api_key holds a malformed secret reference; the name after {SCHEME} must match \
-                 ^[A-Za-z_][A-Za-z0-9_.-]{{0,127}}$"
+            (Self::Forbidden, Store::Env) => format!(
+                "{CONSUMER} is not allowed to read environment variable {name}; share it with \
+                 {CONSUMER} in the secrets worker (secrets::access with store \"env\")"
             ),
-            Self::Unavailable => {
-                format!("secrets worker is not running; start it to resolve {SCHEME}{name}")
+            (Self::InvalidReference, _) => format!(
+                "api_key holds a malformed reference; the name after {SCHEME} or {ENV_SCHEME} \
+                 must match ^[A-Za-z_][A-Za-z0-9_.-]{{0,127}}$"
+            ),
+            (Self::Unavailable, _) => {
+                format!("secrets worker is not running; start it to resolve {reference}")
             }
-            Self::Failed(code) => format!("secrets::resolve failed for secret {name} ({code})"),
+            (Self::Failed(code), Store::Vault) => {
+                format!("secrets::resolve failed for secret {name} ({code})")
+            }
+            (Self::Failed(code), Store::Env) => {
+                format!("secrets::resolve failed for environment variable {name} ({code})")
+            }
         }
     }
 }
 
-/// One `secrets::resolve` round trip for a valid name.
+/// One `secrets::resolve` round trip for a canonical reference.
 pub type Fetch =
     Arc<dyn Fn(String) -> BoxFuture<'static, Result<SecretValue, SecretError>> + Send + Sync>;
 
-/// Called with the names whose cached outcome changed.
+/// Called with the references whose cached outcome changed.
 pub type ChangeListener = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 
 /// [`Fetch`] over the bus. The engine stamps the caller's worker id on the
 /// call, which is what the secrets worker checks against `consumers`.
 pub fn bus_fetch(iii: IIIClient) -> Fetch {
-    Arc::new(move |name: String| {
+    Arc::new(move |reference: String| {
         let iii = iii.clone();
         Box::pin(async move {
             let response = iii
                 .trigger(TriggerRequest {
                     function_id: RESOLVE_ID.into(),
-                    payload: json!({ "ref": format!("{SCHEME}{name}") }),
+                    payload: json!({ "ref": reference }),
                     action: None,
                     timeout_ms: Some(RESOLVE_TIMEOUT_MS),
                 })
@@ -242,7 +315,7 @@ fn same_outcome(
     }
 }
 
-/// Name → last `secrets::resolve` outcome. Reads are sync (the resolve
+/// Reference → last `secrets::resolve` outcome. Reads are sync (the resolve
 /// precedence stays a pure function over a snapshot); the async methods
 /// fill it. The lock is never held across an await.
 pub struct SecretCache {
@@ -485,17 +558,27 @@ mod tests {
     fn parses_references_and_rejects_malformed_names() {
         assert_eq!(
             parse_ref("secret://ANTHROPIC_API_KEY"),
-            Some(Ok("ANTHROPIC_API_KEY"))
+            Some(Ok(SecretRef::vault("ANTHROPIC_API_KEY")))
         );
-        assert_eq!(parse_ref("  SECRET://a.b-c_1\n"), Some(Ok("a.b-c_1")));
+        assert_eq!(
+            parse_ref("  SECRET://a.b-c_1\n"),
+            Some(Ok(SecretRef::vault("a.b-c_1")))
+        );
+        let env = parse_ref(" ENV://OPENAI_API_KEY").unwrap().unwrap();
+        assert_eq!(env.store, Store::Env);
+        assert_eq!(env.key(), "env://OPENAI_API_KEY");
+        assert_eq!(SecretRef::from_key("env://OPENAI_API_KEY"), Some(env));
         assert_eq!(parse_ref("sk-ant-123"), None);
         assert_eq!(parse_ref(""), None);
         assert_eq!(parse_ref("secret:/X"), None);
+        assert_eq!(parse_ref("${OPENAI_API_KEY}"), None);
         for bad in [
             "secret://",
             "secret://1ABC",
             "secret://has space",
             "secret://a/b",
+            "env://",
+            "env://a b",
         ] {
             assert_eq!(
                 parse_ref(bad),
@@ -543,16 +626,25 @@ mod tests {
         );
 
         assert_eq!(
-            SecretError::NotFound.describe("ANTHROPIC_API_KEY"),
+            SecretError::NotFound.describe("secret://ANTHROPIC_API_KEY"),
             "secret ANTHROPIC_API_KEY not found in the secrets worker; store it there or fix the reference"
         );
         assert_eq!(
-            SecretError::Forbidden.describe("X"),
+            SecretError::Forbidden.describe("secret://X"),
             "llm-router is not allowed to read secret X; add llm-router to the secret's consumers"
         );
-        assert!(SecretError::Unavailable
-            .describe("X")
-            .starts_with("secrets worker is not running"));
+        assert_eq!(
+            SecretError::NotFound.describe("env://X"),
+            "environment variable X is not set in the project's .env or the secrets worker's \
+             environment; set it there or fix the reference"
+        );
+        assert!(SecretError::Forbidden
+            .describe("env://X")
+            .starts_with("llm-router is not allowed to read environment variable X;"));
+        assert_eq!(
+            SecretError::Unavailable.describe("env://X"),
+            "secrets worker is not running; start it to resolve env://X"
+        );
         assert!(!SecretError::InvalidReference
             .describe("sk-pasted-key")
             .contains("sk-pasted-key"));

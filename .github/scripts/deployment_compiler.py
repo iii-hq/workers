@@ -88,8 +88,7 @@ def read_yaml(path: Path) -> Any:
         raise ValueError("PyYAML is required by the deployment compiler") from error
     if not path.is_file():
         fail(f"{path}: file does not exist")
-    value = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return {} if value is None else value
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def safe_relative(root: Path, value: Any, field: str, *, directory: bool = False) -> Path:
@@ -185,16 +184,20 @@ def normalize_tags(value: Any, field: str) -> list[str]:
     return sorted(dict.fromkeys(tag.strip().lower() for tag in value))
 
 
-def normalize_config(worker_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+def normalize_config(worker_dir: Path, manifest: dict[str, Any]) -> dict[str, Any] | None:
+    # Preserve the established precedence: a non-null inline value wins;
+    # otherwise the legacy config.yaml is the public-default source.
     if "config" in manifest and manifest["config"] is not None:
         config = manifest["config"]
     else:
         config_path = worker_dir / "config.yaml"
-        config = read_yaml(config_path) if config_path.is_file() else {}
-    if not isinstance(config, dict):
-        fail(f"{worker_dir}/iii.worker.yaml: public config must be a mapping")
+        config = read_yaml(config_path) if config_path.is_file() else None
+    if config is not None and not isinstance(config, dict):
+        fail(f"{worker_dir}/iii.worker.yaml: public config must be a mapping or null")
+    if config is None:
+        return None
     validate_public_defaults(config, f"{worker_dir.name}.config")
-    return config
+    return config or None
 
 
 def normalize_runtime(

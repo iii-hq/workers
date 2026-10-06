@@ -253,8 +253,8 @@ pub struct ProviderRegisterResponse {
 }
 
 /// Where the resolved credential came from, as providers read it. A resolved
-/// `secret://` reference reports `config` (the reference lives in the
-/// configuration entry); `credential_source` tells the two apart.
+/// `secret://` or `env://` reference reports `config` (the reference lives
+/// in the configuration entry); `credential_source` tells them apart.
 // Kept to three values: provider builds deserialize this enum strictly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -265,8 +265,9 @@ pub enum CredentialSource {
 }
 
 /// `credential_source`: where the precedence found the provider's credential.
-/// `secret` is a `secret://NAME` reference in the slice, resolved through the
-/// `secrets` worker; `configured` says whether it actually yielded one.
+/// `secret` is a `secret://NAME` or `env://NAME` reference in the slice,
+/// resolved through the `secrets` worker; `configured` says whether it
+/// actually yielded one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum CredentialOrigin {
@@ -284,7 +285,7 @@ pub struct CredentialStatus {
     /// Where the credential comes from: `config`, `env`, `secret` or `none`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_source: Option<CredentialOrigin>,
-    /// The slice's `secret://NAME` reference, when it uses one.
+    /// The slice's `secret://NAME` or `env://NAME` reference, when it uses one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_ref: Option<String>,
     /// Why the configured credential cannot be used, in words an operator
@@ -617,7 +618,8 @@ pub struct SecretChangedEvent {
     /// Secret name (advisory).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// The same secret as a `secret://NAME` reference (advisory).
+    /// The same secret as a `secret://NAME` or `env://NAME` reference; it
+    /// names the store (advisory).
     #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
     /// `created`, `rotated`, `deleted` or `access_changed` (advisory).

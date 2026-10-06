@@ -71,6 +71,10 @@ export function ReadyStep({
   const secretRefs = connected.flatMap((provider) =>
     provider.credentialRef ? [provider.credentialRef] : [],
   )
+  // `secret://` (encrypted) and `env://` (this project's .env), as used.
+  const schemes = [
+    ...new Set(secretRefs.map((ref) => `${ref.split('://')[0]}://`)),
+  ]
 
   const lines: { title: string; detail?: string }[] = [
     ...connected.map((provider) => ({
@@ -88,8 +92,10 @@ export function ReadyStep({
     ...(secretRefs.length > 0
       ? [
           {
-            title: 'Your keys stay out of git',
-            detail: 'configuration holds only secret:// references',
+            title: schemes.includes('env://')
+              ? 'Your keys stay out of configuration'
+              : 'Your keys stay out of git',
+            detail: `configuration holds only ${schemes.join(' and ')} references`,
           },
         ]
       : []),

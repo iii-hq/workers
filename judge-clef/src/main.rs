@@ -103,8 +103,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::task::spawn_blocking(move || iii.shutdown()).await?;
     result?;
     // Do not wait for a pass whose caller already has its error (seconds on a
-    // GPU, minutes on the CPU), nor, by dropping the runtime, for a model load
-    // on its blocking pool: exit now.
+    // GPU, minutes on the CPU): exit now.
     std::process::exit(0)
 }
 /// Keep the clef model loaded while the judge hub selects this provider (see

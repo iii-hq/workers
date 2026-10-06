@@ -284,6 +284,13 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "notice": {
+            "description": "Set when ops were sent without `op` and it was inferred from their keys; send `op` explicitly.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "path": {
             "description": "Canonical absolute path (resolved through the jail); the caller's input verbatim when resolution failed.",
             "type": "string"

@@ -2,9 +2,10 @@
  * llm-router's injectable console UI: a custom configuration form for the
  * `llm-router` entry (provider credentials, routing heuristics, stream
  * budgets). Provider keys use the Console's shared `SecretKeyField` when it
- * has one — stored in the secrets worker, referenced as `secret://NAME` —
- * and the plain-text-secret detection otherwise. Registered per the
- * injectable-ui contract (docs/sops/injectable-console-ui.md).
+ * has one — kept by the secrets worker, encrypted (`secret://NAME`) or in the
+ * project's `.env` (`env://NAME`) — and the plain-text-secret detection
+ * otherwise. Registered per the injectable-ui contract
+ * (docs/sops/injectable-console-ui.md).
  */
 
 import type { ConfigFormProps, Host, SecretKeyFieldProps } from '@iii-dev/console-ui'

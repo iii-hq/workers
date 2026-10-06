@@ -6,11 +6,13 @@
    `coder::change-diff`. */
 
 import type { Host } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { coderReadFile, joinPath } from './coder'
 import { type DiffSource, diffSourceLabel } from './diff-source'
 import { imageMimeFromPath } from './file-kinds'
 import { gitHeadBaseline } from './git'
 import { EDITOR_FULL_READ_BUDGET } from './large-file'
+import { isMissingFileError } from './load-error'
 import { fetchSessionTurn, relativeToRoot, type SessionTurn, type TurnFileRecord, type TurnPreImage } from './turns'
 
 /** What a diff tab says above the diff, or instead of it: a headline in
@@ -103,11 +105,14 @@ export async function loadRevisionFile(host: Host, root: string, path: string, s
   return body
 }
 
-/** The working copy as text; null when the file is gone. */
+/** The working copy as text; null when the file is gone. `isProtected`
+    names the worker's protected paths (`protected-paths.ts`), whose read
+    fails like a missing file's though the file is there. */
 export async function worktreeSide(
   host: Host,
   root: string,
   path: string,
+  isProtected?: (path: string) => boolean,
 ): Promise<{ contents: string | null; revision?: string }> {
   try {
     const out = await coderReadFile(host, joinPath(root, path), { maxOutputBytes: EDITOR_FULL_READ_BUDGET })
@@ -115,9 +120,12 @@ export async function worktreeSide(
     if (out.more_lines === true) throw new Error('the working copy is larger than the diff budget')
     return { contents: out.content ?? '', revision: out.revision ?? undefined }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (message.includes('C211') || message.includes('not found or not accessible')) return { contents: null }
-    throw error
+    // The bus rejects with the handler's error body, not an Error.
+    if (!isMissingFileError(errorMessage(error))) throw error
+    if (isProtected?.(path)) {
+      throw new Error("it matches the IDE's protected paths (Settings › IDE), so its working copy is never read")
+    }
+    return { contents: null }
   }
 }
 
@@ -148,7 +156,13 @@ export function turnFileFor(turn: SessionTurn, root: string, rel: string): TurnF
   return turn.files.find((file) => relativeToRoot(file.path, root) === rel) ?? null
 }
 
-export async function loadTurnDiff(host: Host, root: string, rel: string, turn: SessionTurn): Promise<DiffContents> {
+export async function loadTurnDiff(
+  host: Host,
+  root: string,
+  rel: string,
+  turn: SessionTurn,
+  isProtected?: (path: string) => boolean,
+): Promise<DiffContents> {
   const file = turnFileFor(turn, root, rel)
   if (file === null) {
     return {
@@ -169,7 +183,7 @@ export async function loadTurnDiff(host: Host, root: string, rel: string, turn: 
   // The working copy, when the new side needs it, is read beside the old
   // side's lookup rather than after it.
   const keptAfter = file.after ? preImageBody(file.after) : null
-  const worktreeRead = file.kind !== 'deleted' && keptAfter === null ? worktreeSide(host, root, rel) : null
+  const worktreeRead = file.kind !== 'deleted' && keptAfter === null ? worktreeSide(host, root, rel, isProtected) : null
   // An early return below leaves it unread: its failure is nobody's then.
   worktreeRead?.catch(() => {})
   if (file.before == null && file.kind === 'created') {
@@ -236,13 +250,15 @@ export interface ChangeDiffResponse {
 }
 
 /** Resolve a diff tab's two sides. `turns` answers turn sources from a
-    per-turn cache the page keeps (one `shell::turns::get` per turn). */
+    per-turn cache the page keeps (one `shell::turns::get` per turn);
+    `isProtected` is `worktreeSide`'s. */
 export async function loadDiffContents(
   host: Host,
   root: string,
   path: string,
   source: DiffSource,
   turns: { get(turnId: string): Promise<SessionTurn | null> },
+  isProtected?: (path: string) => boolean,
 ): Promise<DiffContents> {
   switch (source.type) {
     case 'uncommitted': {
@@ -252,7 +268,7 @@ export async function loadDiffContents(
           if (error instanceof Error && /unknown revision/.test(error.message)) return null
           throw error
         }),
-        worktreeSide(host, root, path),
+        worktreeSide(host, root, path, isProtected),
       ])
       return imageOrText(path, head, current.contents, { worktreeRevision: current.revision })
     }
@@ -275,13 +291,16 @@ export async function loadDiffContents(
       return imageOrText(path, head, index)
     }
     case 'unstaged': {
-      const [index, current] = await Promise.all([gitSide(host, root, `:./${path}`), worktreeSide(host, root, path)])
+      const [index, current] = await Promise.all([
+        gitSide(host, root, `:./${path}`),
+        worktreeSide(host, root, path, isProtected),
+      ])
       // An untracked file has no index side: everything reads as added.
       return imageOrText(path, index, current.contents, { worktreeRevision: current.revision })
     }
     case 'compare': {
       const spec = source.from ? `${source.ref}:${source.from}` : `${source.ref}:./${path}`
-      const [ref, current] = await Promise.all([gitSide(host, root, spec), worktreeSide(host, root, path)])
+      const [ref, current] = await Promise.all([gitSide(host, root, spec), worktreeSide(host, root, path, isProtected)])
       // Swapped: the working copy is the old side, read-only like the revision.
       if (source.reverse) {
         return imageOrText(path, current.contents, ref, {
@@ -319,7 +338,7 @@ export async function loadDiffContents(
           },
         }
       }
-      return loadTurnDiff(host, root, path, turn)
+      return loadTurnDiff(host, root, path, turn, isProtected)
     }
     case 'commit': {
       // Both sides are revisions. The file is absent on the old side when

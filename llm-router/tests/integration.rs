@@ -2536,11 +2536,12 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
     router_iii.shutdown();
 }
 
-// ── secret references (`secret://NAME`) ─────────────────────────────────────
+// ── secret references (`secret://NAME`, `env://NAME`) ──────────────────────
 
 /// Stand-in for the `secrets` worker: `secrets::resolve` answers from a
-/// name → value / error-code table, and the `secrets::changed` trigger type
-/// fans out to whoever bound it.
+/// name → value / error-code table (`env://NAME` references under that full
+/// key), and the `secrets::changed` trigger type fans out to whoever bound
+/// it.
 #[derive(Clone)]
 struct FakeSecretsWorker {
     iii: IIIClient,
@@ -2634,6 +2635,11 @@ impl FakeSecretsWorker {
     /// Fire `secrets::changed` to every binding, synchronously, once the
     /// engine has handed this (late) type its parked bindings.
     async fn announce(&self, name: &str, action: &str) {
+        self.announce_ref(name, &format!("secret://{name}"), action)
+            .await;
+    }
+
+    async fn announce_ref(&self, name: &str, reference: &str, action: &str) {
         let deadline = Instant::now() + Duration::from_secs(5);
         let targets = loop {
             let targets: Vec<String> = self.bindings.lock().unwrap().values().cloned().collect();
@@ -2650,7 +2656,7 @@ impl FakeSecretsWorker {
             call(
                 &self.iii,
                 &function_id,
-                json!({ "name": name, "ref": format!("secret://{name}"), "action": action, "updated_at": "2026-10-02T00:00:00Z" }),
+                json!({ "name": name, "ref": reference, "action": action, "updated_at": "2026-10-02T00:00:00Z" }),
             )
             .await
             .expect("secrets::changed subscriber answers");
@@ -2817,6 +2823,88 @@ async fn secret_reference_resolves_late_and_follows_secret_changes() {
 
     std::env::remove_var(env_var);
     consumer.shutdown();
+    secrets.iii.shutdown();
+    router_iii.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn env_reference_resolves_through_secrets_and_follows_env_edits() {
+    let engine = engine_or_skip!();
+    // The router's own variable of the same name never stands in for it.
+    let env_var = "LLM_ROUTER_IT_ENV_REF_KEY";
+    std::env::set_var(env_var, "sk-router-env-must-not-win");
+    let secrets = start_fake_secrets(&engine.url).await;
+    let reference = format!("env://{env_var}");
+    secrets.set(&reference, Ok("sk-from-dotenv"));
+
+    let router_iii = register_worker(&engine.url, test_init_options());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+    let provider = start_live_provider(
+        &engine.url,
+        ProviderOptions {
+            credential_env_var: Some(env_var.into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    let resolve = json!({ "id": "real", "token": provider.token });
+    call(
+        &router_iii,
+        "configuration::set",
+        json!({ "id": "llm-router", "value": { "providers": { "real": { "api_key": reference } } } }),
+    )
+    .await
+    .unwrap();
+
+    // Until the configuration lands, the provider's declared variable is the
+    // fallback, so wait for the reference rather than for any credential.
+    let res = call_until(
+        &provider.iii,
+        "router::provider::resolve",
+        resolve.clone(),
+        |v| v["configured"] == json!(true) && v["credential_ref"] == json!(reference),
+    )
+    .await;
+    assert_eq!(res["credential"]["key"], "sk-from-dotenv");
+    assert_eq!(res["credential_source"], "secret");
+    assert_eq!(res["credential_ref"], reference);
+
+    // An edit to .env, announced by the secrets worker, is served at once.
+    let ready_before = provider.ready_calls.load(Ordering::SeqCst);
+    secrets.set(&reference, Ok("sk-edited-in-dotenv"));
+    secrets.announce_ref(env_var, &reference, "rotated").await;
+    let res = call(&provider.iii, "router::provider::resolve", resolve.clone())
+        .await
+        .unwrap();
+    assert_eq!(res["credential"]["key"], "sk-edited-in-dotenv");
+    wait_for_count(
+        &provider.ready_calls,
+        ready_before,
+        "credential refresh nudge after an .env edit",
+    )
+    .await;
+
+    // Removed from .env: reported in those words, and the router's own
+    // variable still does not take over.
+    secrets.set(&reference, Err("SECRET_NOT_FOUND"));
+    secrets.announce_ref(env_var, &reference, "deleted").await;
+    let res = call(&provider.iii, "router::provider::resolve", resolve.clone())
+        .await
+        .unwrap();
+    assert_eq!(res["configured"], false);
+    assert_eq!(res["credential"], Value::Null);
+    assert!(
+        res["credential_error"]
+            .as_str()
+            .is_some_and(|e| e.starts_with(&format!(
+                "environment variable {env_var} is not set in the project's .env"
+            ))),
+        "{res}"
+    );
+
+    std::env::remove_var(env_var);
     secrets.iii.shutdown();
     router_iii.shutdown();
 }

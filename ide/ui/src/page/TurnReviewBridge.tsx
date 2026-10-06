@@ -12,6 +12,7 @@ export function TurnReviewBridge({
   root,
   turn,
   turnCache,
+  isProtected,
   epoch,
   written,
   sessionId,
@@ -22,6 +23,8 @@ export function TurnReviewBridge({
   root: string | null
   turn: SessionTurnSummary | null
   turnCache: { get(turnId: string): Promise<SessionTurn | null>; forget(turnId: string): void }
+  /** The worker's protected paths, whose reads fail like a missing file's. */
+  isProtected(path: string): boolean
   /** Bumps when the disk changed; the totals follow. */
   epoch: number
   /** The absolute paths written since the summary last looked. */
@@ -30,7 +33,7 @@ export function TurnReviewBridge({
   sourceId: string
   onSelectFile(path: string): void
 }) {
-  const files = useTurnSummary(host, root, turn, turnCache, epoch, written)
+  const files = useTurnSummary(host, root, turn, turnCache, epoch, written, isProtected)
   useShellReviewSummaryBridge({ sessionId, sourceId, turnId: turn?.turn_id ?? null, files, onSelectFile })
   return null
 }

@@ -38,7 +38,7 @@ pub async fn resolve(
         stacktrace: None,
     })?;
     if explicit_reference {
-        // The operator chose a `secret://` reference: when it does not
+        // The operator chose a `secret://` or `env://` reference: when it does not
         // resolve, the router's `credential_error` stands rather than this
         // process's env key quietly taking over.
         return Ok(resp);
@@ -46,8 +46,9 @@ pub async fn resolve(
     Ok(apply_credential_env_fallback(resp, credential_env_var))
 }
 
-/// Whether the router resolved (or failed to resolve) a `secret://`
-/// reference — `credential_source: "secret"`, absent from older routers.
+/// Whether the router resolved (or failed to resolve) a `secret://` or
+/// `env://` reference — `credential_source: "secret"`, absent from older
+/// routers.
 fn names_a_secret_reference(raw: &Value) -> bool {
     raw.get("credential_source").and_then(Value::as_str) == Some("secret")
 }

@@ -941,11 +941,11 @@ export function ShellExplorerPage({
         else applyTreeChanges([{ rel: to, kind: 'created', dir: false }])
         afterDiskChange()
       },
-      remove: async (rel, isDir) => {
+      remove: async (rel, isDir, includeProtected) => {
         const currentRoot = rootRef.current
         if (!currentRoot) return
         const generation = rootGenerationRef.current
-        await deleteEntry(host, currentRoot, rel, isDir)
+        await deleteEntry(host, currentRoot, rel, isDir, includeProtected)
         if (rootGenerationRef.current !== generation || rootRef.current !== currentRoot) return
         const affected = tabsRef.current.tabs.filter((tab) => tab.target.kind === 'file' && isUnder(tab.target.path, rel))
         if (affected.length > 0) closeTabIds(affected.map((tab) => tab.id))
@@ -1074,7 +1074,7 @@ export function ShellExplorerPage({
     if (previous?.phase !== 'ready') setDiffVersion((value) => value + 1)
     const generation = rootGenerationRef.current
     const target = activeDiff
-    void loadDiffContents(host, root, target.path, target.source, turnCache)
+    void loadDiffContents(host, root, target.path, target.source, turnCache, isProtected)
       .then<DiffTabState>((contents) => ({ phase: 'ready', contents }))
       .catch<DiffTabState>((error: unknown) => ({ phase: 'error', message: errorMessage(error) }))
       .then((state) => {
@@ -1088,7 +1088,7 @@ export function ShellExplorerPage({
         diffCacheRef.current.set(activeDiffId, { epoch: diskEpoch, state })
         setDiffVersion((value) => value + 1)
       })
-  }, [activeDiff, activeDiffId, root, diskEpoch, host, turnCache])
+  }, [activeDiff, activeDiffId, root, diskEpoch, host, turnCache, isProtected])
   // biome-ignore lint/correctness/useExhaustiveDependencies: diffVersion is the cache's change signal
   const activeDiffState: DiffTabState = useMemo(
     () => (activeDiffId !== null ? diffCacheRef.current.get(activeDiffId)?.state : undefined) ?? { phase: 'loading' },
@@ -1842,6 +1842,15 @@ export function ShellExplorerPage({
     },
     [showTab],
   )
+  // "Show history" from a change's menu: the Git window's log, narrowed.
+  const [historyFor, setHistoryFor] = useState<{ paths: string[]; seq: number } | null>(null)
+  const showHistory = useCallback(
+    (paths: string[]) => {
+      setHistoryFor((previous) => ({ paths, seq: (previous?.seq ?? 0) + 1 }))
+      openGit('log')
+    },
+    [openGit],
+  )
   const closeGit = useCallback(() => {
     // Focus inside the window would fall to the page body with it, where
     // the pane's keys stop working; its toggle keeps them.
@@ -2407,6 +2416,7 @@ export function ShellExplorerPage({
         root={root}
         turn={newestTurn}
         turnCache={turnCache}
+        isProtected={isProtected}
         epoch={diskEpoch}
         written={summaryWritesRef.current}
         sessionId={conversationId}
@@ -2525,6 +2535,9 @@ export function ShellExplorerPage({
                     activeDiff={activeDiff ? { path: activeDiff.path, source: activeDiff.source } : null}
                     onOpenDiff={openDiffTab}
                     onOpenFile={openPinnedFile}
+                    onCompare={compareFile}
+                    onShowHistory={showHistory}
+                    onDeleteFile={(rel) => explorerActions.remove(rel, false)}
                     onChanged={afterDiskChange}
                   />
                 ) : (
@@ -2854,6 +2867,7 @@ export function ShellExplorerPage({
               onOpenCompareFile={openCompareFile}
               onOpenWorkingFile={openWorkingFile}
               onOpenRevision={openRevision}
+              focusPaths={historyFor}
             />
           </DockPanel>
         ) : null}

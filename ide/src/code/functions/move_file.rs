@@ -250,6 +250,11 @@ fn try_move_one(
     let to_root = resolver.containing_root(abs_to);
     let same_root = match (from_root, to_root) {
         (Some(fr), Some(tr)) => fr == tr,
+        // Only the unjailed mode resolves paths outside every root: with
+        // neither end in one there is no root boundary to cross, so the
+        // move runs as within one root (a folder the IDE browses past the
+        // worker's own roots renames like any other).
+        (None, None) => true,
         _ => false,
     };
 
@@ -883,6 +888,44 @@ mod tests {
     // ------------------------------------------------------------------
     // Cross-root directory move → C210
     // ------------------------------------------------------------------
+    #[tokio::test]
+    async fn unjailed_dir_rename_outside_every_root_succeeds() {
+        // Unjailed (`fs.allow_unjailed`), a folder the IDE browses may sit
+        // outside every allowed root: both ends have no root, so there is no
+        // root boundary to cross and the rename runs as within one root.
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("worker");
+        std::fs::create_dir(&root).unwrap();
+        let cfg = Arc::new(crate::code::config::CoderConfig {
+            base_paths: vec![root],
+            unjailed: true,
+            ..crate::code::config::CoderConfig::default()
+        });
+        let r = Arc::new(PathResolver::new(&cfg).unwrap());
+        std::fs::create_dir(tmp.path().join("mydir")).unwrap();
+        std::fs::write(tmp.path().join("mydir/f.txt"), "x").unwrap();
+        let out = handle(
+            r,
+            MoveFileInput {
+                files: vec![MoveFileSpec {
+                    from: tmp.path().join("mydir").display().to_string(),
+                    to: tmp.path().join("renamed").display().to_string(),
+                    overwrite: false,
+                    parents: true,
+                }],
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.results[0].success, "{:?}", out.results[0].error);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("renamed/f.txt")).unwrap(),
+            "x"
+        );
+        assert!(!tmp.path().join("mydir").exists());
+    }
+
     #[tokio::test]
     async fn cross_root_dir_rejected_c210() {
         let (tmp0, tmp1, r) = setup_two_roots();

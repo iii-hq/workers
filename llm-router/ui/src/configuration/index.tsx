@@ -112,8 +112,9 @@ export interface ProviderCredential {
 export interface LlmRouterConfigFormProps extends ConfigFormProps {
   /**
    * The Console's shared key field (`host.components.SecretKeyField`). When
-   * present, keys go to the secrets store and the slice holds `secret://NAME`;
-   * Consoles without it keep the plain input below.
+   * present, keys go to the secrets worker — encrypted (`secret://NAME`) or,
+   * if the user prefers, as a variable in the project's `.env`
+   * (`env://NAME`); Consoles without it keep the plain input below.
    */
   secretField?: ComponentType<SecretKeyFieldProps>
   /** `router::provider::list`, by provider id. */
@@ -419,9 +420,10 @@ function ProviderFieldRow({
         ? `Provider default: ${String(field.defaultValue)}`
         : undefined)
 
-  // The provider's key goes through the Console's secrets store, the same
+  // The provider's key goes through the Console's secrets worker, the same
   // field the model picker and the setup wizard use; the slice keeps only
-  // `secret://NAME`. The save is still this form's.
+  // `secret://NAME` or `env://NAME` (the router resolves both through the
+  // secrets worker). The save is still this form's.
   // A provider that declares no key variable signs in on its own (Claude
   // Code, Codex): its slice still lists `api_key`, but there is nothing to set.
   if (field.key === 'api_key' && credential && !credential.envVar && !value) {
@@ -444,6 +446,7 @@ function ProviderFieldRow({
           value={typeof value === 'string' ? value : undefined}
           onChange={(next) => onChange(next)}
           consumers={['llm-router']}
+          environment
           status={
             field.key === 'api_key' && credential
               ? { connected: credential.connected, source: credential.source, error: credential.error }

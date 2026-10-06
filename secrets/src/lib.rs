@@ -1,16 +1,21 @@
 //! `secrets`: a local protected store for credentials referenced from
-//! versioned configuration as `secret://NAME`.
+//! versioned configuration as `secret://NAME` or `env://NAME`.
 //!
-//! Values are sealed with XChaCha20-Poly1305 in `<data_dir>/vault.json`
-//! under a master key that never lives in the project (`III_SECRETS_KEY`, or
-//! a key file under `~/.config/iii/secrets`). Only workers named in a
-//! secret's `consumers` can resolve it; everything else sees metadata.
+//! A `secret://` value is sealed with XChaCha20-Poly1305 in
+//! `<data_dir>/vault.json` under a master key that never lives in the
+//! project (`III_SECRETS_KEY`, or a key file under `~/.config/iii/secrets`).
+//! An `env://` value is an environment variable: the project's `.env`, which
+//! this worker reads and writes, or its own environment. Either way only
+//! workers named in the secret's `consumers` can resolve it; everything else
+//! sees metadata.
 pub mod access;
 pub mod api;
 pub mod config;
 pub mod configuration;
 pub mod crypto;
 pub mod detect;
+pub mod envstore;
+pub mod envwatch;
 pub mod error;
 pub mod events;
 pub mod fsutil;

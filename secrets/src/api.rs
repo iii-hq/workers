@@ -1,5 +1,10 @@
 //! Request and response shapes of every `secrets::*` function.
 //!
+//! Every function that names a secret takes an optional `store`: `vault`
+//! (the default: the value is encrypted in `vault.json`, referenced as
+//! `secret://NAME`) or `env` (the value is an environment variable in the
+//! project's `.env` or this worker's environment, referenced as `env://NAME`).
+//!
 //! Only two types carry a value: [`SetRequest`] (in) and [`ResolveResponse`]
 //! (out). Both hold it in a [`SecretString`], so their derived `Debug`
 //! prints `[REDACTED]`. Requests ignore unknown fields: the engine stamps
@@ -27,21 +32,44 @@ pub mod ids {
     ];
 }
 
+/// Where a secret's value lives.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum StoreKind {
+    /// Encrypted in `vault.json`; referenced as `secret://NAME`.
+    #[default]
+    Vault,
+    /// An environment variable: the project's `.env`, else this worker's
+    /// environment; referenced as `env://NAME`. Only who may read it is
+    /// recorded here.
+    Env,
+}
+
 /// Everything about a secret except its value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SecretMeta {
     pub name: String,
-    /// `secret://NAME`, the string to put in versioned configuration.
+    /// `secret://NAME` or `env://NAME`, the string to put in versioned
+    /// configuration.
     #[serde(rename = "ref")]
     pub reference: String,
+    pub store: StoreKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Worker names allowed to resolve the value. Empty: nobody.
     pub consumers: Vec<String>,
-    /// Masked value, e.g. `sk-ant…9f2c`; `••••` under 12 characters.
+    /// Masked value, e.g. `sk-ant…9f2c`; `••••` under 12 characters. Empty
+    /// for an environment variable that is not set.
     pub hint: String,
-    /// First 16 hex characters of HMAC-SHA256(master key, value). Changes on rotation.
-    pub fingerprint: String,
+    /// First 16 hex characters of HMAC-SHA256(master key, value). Changes on
+    /// rotation. Vault only: an environment value can change outside this
+    /// worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    /// Env store: where the variable's value is read from now (the `.env`
+    /// path, or this worker's environment); absent when it is not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -55,8 +83,12 @@ pub struct SecretMeta {
 pub struct SetRequest {
     /// `^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`; provider keys reuse their env var name.
     pub name: String,
-    /// The credential. Stored encrypted; never returned except by `secrets::resolve`.
+    /// The credential. Encrypted in the vault, or written as `NAME=value` to
+    /// the project's `.env`; never returned except by `secrets::resolve`.
     pub value: SecretString,
+    /// `vault` (default) or `env`.
+    #[serde(default)]
+    pub store: StoreKind,
     /// Worker names allowed to resolve. Omit to keep the current list (`[]` for a new secret).
     #[serde(default)]
     pub consumers: Option<Vec<String>>,
@@ -70,11 +102,18 @@ pub struct AccessRequest {
     pub name: String,
     /// The complete new allowlist of worker names; `[]` revokes everyone.
     pub consumers: Vec<String>,
+    /// `vault` (default; the secret must exist) or `env` (shares the
+    /// variable, whether or not it is set yet).
+    #[serde(default)]
+    pub store: StoreKind,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct NameRequest {
     pub name: String,
+    /// `vault` (default) or `env`.
+    #[serde(default)]
+    pub store: StoreKind,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -82,7 +121,7 @@ pub struct EmptyRequest {}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ResolveRequest {
-    /// `secret://NAME` or a bare `NAME`.
+    /// `secret://NAME`, `env://NAME`, or a bare `NAME` (the vault).
     #[serde(rename = "ref")]
     pub reference: String,
     /// Engine-stamped id of the calling connection; any client value is overwritten.
@@ -102,6 +141,10 @@ pub struct ImportRequest {
     pub name: String,
     /// Where the worker re-reads the value; it never travels through the caller.
     pub source: SourceKind,
+    /// `vault` (default) or `env`: copied into the project's `.env` (a
+    /// `dotenv` source is only shared, it is already there).
+    #[serde(default)]
+    pub store: StoreKind,
     /// Omit to keep the current list (`[]` for a new secret).
     #[serde(default)]
     pub consumers: Option<Vec<String>>,
@@ -169,6 +212,11 @@ pub struct StatusResponse {
     pub count: usize,
     /// Vault file format version.
     pub version: u32,
+    /// The `.env` the env store reads and writes, when the worker has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_file: Option<String>,
+    /// Environment variables shared with at least one worker.
+    pub env_count: usize,
 }
 
 #[cfg(test)]
@@ -189,6 +237,18 @@ mod tests {
         }
         serde_json::from_value::<EmptyRequest>(json!({"_caller_worker_id":"w"})).unwrap();
         serde_json::from_value::<NameRequest>(json!({"name":"A","_caller_worker_id":"w"})).unwrap();
+    }
+
+    #[test]
+    fn store_defaults_to_the_vault() {
+        let set: SetRequest = serde_json::from_value(json!({"name":"A","value":"v"})).unwrap();
+        assert_eq!(set.store, StoreKind::Vault);
+        let set: SetRequest =
+            serde_json::from_value(json!({"name":"A","value":"v","store":"env"})).unwrap();
+        assert_eq!(set.store, StoreKind::Env);
+        let name: NameRequest = serde_json::from_value(json!({"name":"A"})).unwrap();
+        assert_eq!(name.store, StoreKind::Vault);
+        assert!(serde_json::from_value::<NameRequest>(json!({"name":"A","store":"disk"})).is_err());
     }
 
     #[test]

@@ -10,6 +10,7 @@
    superseded is dropped: `shell::exec` cannot be aborted. */
 
 import type { Host } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { emptyGraphState, type GraphRow, type GraphState, layoutPage } from './commit-graph'
 import {
@@ -140,7 +141,7 @@ export function useGitLog(
       } catch (err: unknown) {
         if (state.generation !== generation) return
         state.failed = true
-        setError(err instanceof Error ? err.message : String(err))
+        setError(errorMessage(err))
         // The first page failed: what shows would be another filter's rows.
         if (skip === 0) {
           state.commits = []
@@ -218,7 +219,7 @@ export function useGitLog(
       },
       (err: unknown) => {
         if (seq !== refSeq.current) return
-        setError(err instanceof Error ? err.message : String(err))
+        setError(errorMessage(err))
         // A new filter or branch still applies, from the refs already read.
         if (force.current === 'filter' && live.current.snapshot !== null) {
           force.current = null
@@ -401,7 +402,7 @@ export function useCommitDetails(
           if (!stale) setRead({ key, details, error: null })
         },
         (err: unknown) => {
-          if (!stale) setRead({ key, details: null, error: err instanceof Error ? err.message : String(err) })
+          if (!stale) setRead({ key, details: null, error: errorMessage(err) })
         },
       )
     }, DETAILS_DEBOUNCE_MS)
@@ -509,8 +510,7 @@ export function useWorkingDiff(
         if (live) setState({ for: key, ...read, error: null })
       },
       (err: unknown) => {
-        if (live)
-          setState({ for: key, files: [], truncated: false, error: err instanceof Error ? err.message : String(err) })
+        if (live) setState({ for: key, files: [], truncated: false, error: errorMessage(err) })
       },
     )
     return () => {

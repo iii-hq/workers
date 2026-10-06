@@ -4,7 +4,7 @@
 //! `III_SECRETS_KEY` out of the environment; connect; register the `secrets`
 //! configuration entry and read it; open the vault; register the
 //! `secrets::changed` trigger type and the `secrets::*` functions; follow
-//! configuration changes; sleep until SIGINT/SIGTERM.
+//! configuration changes and edits to `.env`; sleep until SIGINT/SIGTERM.
 use std::sync::Arc;
 
 use clap::Parser;
@@ -79,10 +79,16 @@ async fn run(cli: Cli, env_key: EnvKey) -> anyhow::Result<()> {
         callers: CallerDirectory::new(iii.clone()),
         subscribers: Subscribers::default(),
         detector: Detector::from_env(),
+        env_watch: Default::default(),
     });
     secrets::register(&ctx);
-    configuration::bind_reload(&iii, store)?.run().await;
+    secrets::envwatch::follow(&ctx).await;
+    configuration::bind_reload(&iii, ctx.clone())?.run().await;
     let result = wait_for_shutdown().await;
+    ctx.env_watch
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take();
     // shutdown() joins the SDK's connection thread so pending telemetry can
     // flush before main returns.
     tokio::task::spawn_blocking(move || iii.shutdown()).await?;

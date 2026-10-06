@@ -23,13 +23,10 @@ import {
   servesUsableModels,
   type ToolScan,
 } from '@/lib/onboarding/plan'
+import { envFileName, getSecretsStatus } from '@/lib/secrets'
 
-/**
- * Which part of setup an action belongs to; each step shows its own. `keys`
- * is the models step's key search (adding the secrets worker), kept apart
- * from connecting so its log reads as what it is.
- */
-export type ActivityGroup = 'keys' | 'models' | 'judge'
+/** Which part of setup an action belongs to; each step shows its own. */
+export type ActivityGroup = 'models' | 'judge'
 
 export interface ActivityEntry {
   id: number
@@ -50,8 +47,13 @@ export interface MachineSnapshot {
   toolsError: string | null
   providers: ProviderState[] | null
   providersError: string | null
-  /** `null` until the secrets worker is running to look. */
+  /**
+   * `null` when the secrets worker is not running to look (it comes with
+   * llm-router, so only a project set up before that lacks it).
+   */
   detections: KeyDetection[] | null
+  /** The secrets worker's env file, by name (`.env` unless configured). */
+  envFile: string
   installed: ReadonlySet<string>
   consoleConfig: Record<string, unknown> | null
 }
@@ -62,6 +64,7 @@ const EMPTY: MachineSnapshot = {
   providers: null,
   providersError: null,
   detections: null,
+  envFile: envFileName(null),
   installed: new Set(),
   consoleConfig: null,
 }
@@ -153,9 +156,15 @@ export function useOnboarding(
       readConsoleConfig(),
     ])
     const names = installed.value ?? new Set<string>()
-    const detections = names.has(SECRETS_WORKER)
-      ? await settle(detectKeys(DETECTED_KEY_NAMES))
-      : { value: null, error: null }
+    const [detections, secrets] = names.has(SECRETS_WORKER)
+      ? await Promise.all([
+          settle(detectKeys(DETECTED_KEY_NAMES)),
+          settle(getSecretsStatus()),
+        ])
+      : [
+          { value: null, error: null },
+          { value: undefined, error: null },
+        ]
     setSnapshot({
       tools: tools.value ?? [],
       toolsError: tools.error,
@@ -164,6 +173,7 @@ export function useOnboarding(
         : null,
       providersError: providers.error,
       detections: detections.value,
+      envFile: envFileName(secrets.value?.env_file),
       installed: names,
       consoleConfig,
     })
@@ -232,7 +242,6 @@ export function useOnboarding(
     [patch, refresh, snapshot.consoleConfig],
   )
 
-  const secretsInstalled = snapshot.installed.has(SECRETS_WORKER)
   const judgeInstalled = snapshot.installed.has(JUDGE_HUB_WORKER)
 
   return {
@@ -242,7 +251,6 @@ export function useOnboarding(
     activity,
     running,
     run,
-    secretsInstalled,
     judgeInstalled,
   }
 }

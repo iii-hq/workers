@@ -16,6 +16,16 @@ const summary: FileChangesSummary = {
 }
 
 describe('FileChangesCard', () => {
+  it('warns, before anything runs, that a delete takes protected files too', () => {
+    const deleting = { action: 'deleted' as const, rows: [{ path: 'pkg', status: 'deleted' as const }] }
+    expect(renderToStaticMarkup(<FileChangesCard summary={{ ...deleting, protectedToo: true }} running />)).toContain(
+      'shui-file-changes-warning',
+    )
+    expect(renderToStaticMarkup(<FileChangesCard summary={deleting} running />)).not.toContain(
+      'shui-file-changes-warning',
+    )
+  })
+
   it('keeps running and settled titles in one transition slot', () => {
     const running = renderToStaticMarkup(<FileChangesCard summary={summary} running />)
     const settled = renderToStaticMarkup(<FileChangesCard summary={summary} running={false} />)
