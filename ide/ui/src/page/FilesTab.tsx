@@ -38,7 +38,7 @@ import {
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FlatTree } from './coder'
 import { anchorFromEvent, type ContextMenuItem, useContextMenu } from './ContextMenu'
-import { isProtectedSubtreeError } from './file-actions'
+import { type DeleteRequest, deleteAfterRefusal } from './file-actions'
 import type { GitFileStatus } from './git'
 import { statusLetter, statusTitle } from './git-actions'
 import { ancestorDirs, basename, dirname, joinRel, stripDirSlash } from './paths'
@@ -105,12 +105,7 @@ interface FilesTabProps {
   actions: ExplorerActions
 }
 
-interface PendingDelete {
-  path: string
-  isDir: boolean
-  /** The first delete was refused for protected files under the folder. */
-  protectedInside?: boolean
-}
+type PendingDelete = DeleteRequest
 
 function FilesTabView({
   tree,
@@ -460,7 +455,8 @@ function FilesTabView({
     void actionsRef.current.remove(target.path, target.isDir, confirmed).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       // A second confirmation, naming what the first one did not.
-      if (!confirmed && target.isDir && isProtectedSubtreeError(message)) setPendingDelete({ ...target, protectedInside: true })
+      const next = deleteAfterRefusal(target, message)
+      if (next !== null) setPendingDelete(next)
       else setNote(message)
     })
   }, [pendingDelete])

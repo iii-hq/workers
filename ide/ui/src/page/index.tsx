@@ -2536,6 +2536,7 @@ export function ShellExplorerPage({
                     onOpenFile={openPinnedFile}
                     onCompare={compareFile}
                     onShowHistory={showHistory}
+                    onDeleteFile={(rel) => explorerActions.remove(rel, false)}
                     onChanged={afterDiskChange}
                   />
                 ) : (

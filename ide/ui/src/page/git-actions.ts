@@ -401,8 +401,10 @@ export function withIgnored(existing: string, paths: readonly string[]): { conte
   const lines = new Set(existing.split(/\r?\n/))
   const added = [...new Set(paths.map(ignorePattern))].filter((line) => !lines.has(line))
   if (added.length === 0) return null
-  const base = existing === '' || existing.endsWith('\n') ? existing : `${existing}\n`
-  return { content: `${base}${added.join('\n')}\n`, added: added.length }
+  // A CRLF file stays CRLF rather than ending up with mixed line endings.
+  const eol = existing.includes('\r\n') ? '\r\n' : '\n'
+  const base = existing === '' || existing.endsWith('\n') ? existing : `${existing}${eol}`
+  return { content: `${base}${added.join(eol)}${eol}`, added: added.length }
 }
 
 /** Lists root-relative `paths` in the root's .gitignore, made when missing.

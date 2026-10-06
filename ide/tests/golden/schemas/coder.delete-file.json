@@ -1,5 +1,5 @@
 {
-  "description": "Remove one or more paths. Directories need recursive: true; missing paths succeed; recursion refuses to descend through non-accessible entries unless include_protected: true, which is only for a delete the user confirmed. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
+  "description": "Remove one or more paths. Directories need recursive: true; missing paths succeed; recursion refuses to descend through non-accessible entries. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
   "function_id": "coder::delete-file",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -13,11 +13,6 @@
       }
     ],
     "properties": {
-      "include_protected": {
-        "default": false,
-        "description": "With `recursive`, also remove the non-accessible entries under a directory (`.env` files, keys, certificates) instead of refusing the delete. Only for a delete the user confirmed knowing the folder holds protected files; their paths are never named either way.",
-        "type": "boolean"
-      },
       "paths": {
         "description": "Paths to remove.",
         "items": {

@@ -26,9 +26,11 @@ pub struct DeleteFileInput {
     pub recursive: bool,
     /// With `recursive`, also remove the non-accessible entries under a
     /// directory (`.env` files, keys, certificates) instead of refusing the
-    /// delete. Only for a delete the user confirmed knowing the folder holds
-    /// protected files; their paths are never named either way.
+    /// delete. Sent only by the console UI after the user confirmed the
+    /// delete twice; kept out of the published schema so agents are not
+    /// offered it.
     #[serde(default)]
+    #[schemars(skip)]
     pub include_protected: bool,
     /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
@@ -407,6 +409,145 @@ mod tests {
         assert!(!tmp.path().join("d").exists());
     }
 
+    // include_protected only widens a recursive delete; without `recursive`
+    // a non-empty directory is still refused.
+    #[tokio::test]
+    async fn include_protected_without_recursive_still_refuses_non_empty_dir() {
+        let (tmp, r) = setup();
+        std::fs::create_dir(tmp.path().join("d")).unwrap();
+        std::fs::write(tmp.path().join("d/.env"), "secret").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec!["d".into()],
+                recursive: false,
+                include_protected: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert!(tmp.path().join("d/.env").exists());
+    }
+
+    // Hidden from the published schema, the flag still reaches the handler
+    // from the wire: the console UI sends it after the second confirmation.
+    #[test]
+    fn include_protected_is_read_from_the_wire_and_defaults_off() {
+        let sent: DeleteFileInput = serde_json::from_value(serde_json::json!({
+            "paths": ["d"], "recursive": true, "include_protected": true
+        }))
+        .unwrap();
+        assert!(sent.include_protected);
+        let omitted: DeleteFileInput =
+            serde_json::from_value(serde_json::json!({ "paths": ["d"], "recursive": true }))
+                .unwrap();
+        assert!(!omitted.include_protected);
+    }
+
+    // Naming a protected path directly is still C211: the flag covers
+    // entries under a directory, never the target itself.
+    #[tokio::test]
+    async fn include_protected_does_not_unlock_a_protected_path() {
+        let (tmp, r) = setup();
+        std::fs::write(tmp.path().join(".env"), "secret").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec![".env".into()],
+                recursive: true,
+                include_protected: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C211");
+        assert!(tmp.path().join(".env").exists());
+    }
+
+    // The allowed-root guard runs before the flag is looked at.
+    #[tokio::test]
+    async fn include_protected_still_refuses_base_root() {
+        let (tmp, r) = setup();
+        std::fs::write(tmp.path().join(".env"), "secret").unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "x").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec![".".into()],
+                recursive: true,
+                include_protected: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C210");
+        assert!(tmp.path().join(".env").exists());
+        assert!(tmp.path().join("a.txt").exists());
+    }
+
+    // Same for the session-dir guard.
+    #[tokio::test]
+    async fn include_protected_still_refuses_session_dir() {
+        let (tmp, r) = setup();
+        let session = tmp.path().join("project");
+        std::fs::create_dir(&session).unwrap();
+        std::fs::write(session.join(".env"), "secret").unwrap();
+        std::fs::write(session.join("keep.txt"), "x").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec![".".into()],
+                recursive: true,
+                include_protected: true,
+                fs_scope: Some(crate::fs::FsScope {
+                    root: session.to_string_lossy().into_owned(),
+                    grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C210");
+        assert!(session.join(".env").exists());
+        assert!(session.join("keep.txt").exists());
+    }
+
+    // The unguarded remove_dir_all must unlink a symlink inside the subtree,
+    // not delete what it points at.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn include_protected_does_not_follow_symlinks() {
+        let (tmp, r) = setup();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("f.txt"), "x").unwrap();
+        std::fs::create_dir(tmp.path().join("d")).unwrap();
+        std::os::unix::fs::symlink(&outside, tmp.path().join("d/link")).unwrap();
+        std::fs::write(tmp.path().join("d/.env"), "secret").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec!["d".into()],
+                recursive: true,
+                include_protected: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.results[0].success, "{:?}", out.results[0].error);
+        assert!(!tmp.path().join("d").exists());
+        assert!(outside.join("f.txt").exists());
+    }
+
     // REDACTION INVARIANT: the error message for a recursive-delete blocked
     // by a non-accessible child MUST NOT contain the child's filename. The
     // caller supplied "d", so only "d" (its canonical absolute form) may
@@ -431,6 +572,14 @@ mod tests {
         let err = out.results[0].error.as_ref().unwrap();
         // Code must be C211.
         assert_eq!(err.code, "C211", "expected C211, got: {:?}", err.code);
+        // ide/ui/src/page/file-actions.ts isProtectedSubtreeError matches
+        // this text to offer the second confirmation; keep them in sync.
+        assert!(
+            err.message
+                .contains("subtree contains non-accessible entries"),
+            "got: {}",
+            err.message
+        );
         // The discovered child name must NOT appear in the error.
         assert!(
             !err.message.contains(".env"),

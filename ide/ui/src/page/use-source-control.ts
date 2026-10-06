@@ -10,7 +10,6 @@ import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { changeSummary, entryPaths } from './commit-tree'
-import { deleteEntry } from './file-actions'
 import { type GitComparisonEntry, type GitState, gitUncommittedFrom } from './git'
 import { gitCommitChanges, gitDiscard, gitIgnore, gitLocalPatch, gitPush, gitStage, gitStashPush } from './git-actions'
 
@@ -53,8 +52,10 @@ export interface SourceControlState {
   add: (entries: readonly GitComparisonEntry[]) => Promise<boolean>
   /** List root-relative paths (a folder ending in `/`) in the root's .gitignore. */
   ignore: (paths: readonly string[]) => Promise<boolean>
-  /** Delete these entries' files from disk. */
-  remove: (entries: readonly GitComparisonEntry[]) => Promise<boolean>
+  /** Runs `action` with the panel's busy state; what it resolves to (or
+      `label failed: …`) is the status line, and the page reads its status
+      again afterwards. Resolves true on success. */
+  run: (label: string, action: () => Promise<string>) => Promise<boolean>
   /** These entries' changes as one patch, handed to `use`; what it resolves
       to is the status line. Nothing in the working tree moves. */
   patch: (entries: readonly GitComparisonEntry[], use: (patch: string) => Promise<string>) => Promise<void>
@@ -309,15 +310,6 @@ export function useSourceControl(
     [host, root, perform],
   )
 
-  const remove = useCallback(
-    (entries: readonly GitComparisonEntry[]) =>
-      perform('delete', async () => {
-        for (const entry of entries) await deleteEntry(host, root ?? '', entry.path, false)
-        return `deleted ${files(entries.length)}`
-      }),
-    [host, root, perform],
-  )
-
   const patch = useCallback(
     async (entries: readonly GitComparisonEntry[], use: (patch: string) => Promise<string>) => {
       if (root === null) return
@@ -352,7 +344,7 @@ export function useSourceControl(
       stash,
       add,
       ignore,
-      remove,
+      run: perform,
       patch,
     }),
     [
@@ -373,7 +365,7 @@ export function useSourceControl(
       stash,
       add,
       ignore,
-      remove,
+      perform,
       patch,
     ],
   )

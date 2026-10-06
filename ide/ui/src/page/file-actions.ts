@@ -40,6 +40,21 @@ export function isProtectedSubtreeError(message: string): boolean {
   return message.includes('subtree contains non-accessible entries')
 }
 
+export interface DeleteRequest {
+  path: string
+  isDir: boolean
+  /** The user confirmed deleting the protected files under the folder too. */
+  protectedInside?: boolean
+}
+
+/** What a refused delete asks next: the same folder again, now naming its
+    protected files, when that was the reason and they were not included
+    yet; else null, and the refusal is the answer. */
+export function deleteAfterRefusal(request: DeleteRequest, message: string): DeleteRequest | null {
+  if (request.protectedInside === true || !request.isDir || !isProtectedSubtreeError(message)) return null
+  return { ...request, protectedInside: true }
+}
+
 /** `a/b.ts` → `a/b copy.ts`, then `a/b copy 2.ts`, … */
 export function duplicateName(rel: string, taken: (candidate: string) => boolean): string {
   const slash = rel.lastIndexOf('/')

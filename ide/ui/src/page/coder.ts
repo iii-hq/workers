@@ -334,8 +334,8 @@ export interface DeleteResult {
   error?: { code: string; message: string } | null
 }
 
-/** Remove files or folders; folders need `recursive` when non-empty. */
-/** `includeProtected` also removes the non-accessible entries under a
+/** Remove files or folders; folders need `recursive` when non-empty.
+    `includeProtected` also removes the non-accessible entries under a
     recursive delete (`.env`, keys); only after the user confirmed that. */
 export async function coderDelete(
   host: Host,

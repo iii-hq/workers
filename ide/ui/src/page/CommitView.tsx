@@ -48,6 +48,8 @@ interface CommitViewProps {
   onCompare: (path: string) => void
   /** The Git window's log, narrowed to these root-relative paths. */
   onShowHistory: (paths: string[]) => void
+  /** Deletes the file the way the Explorer does: tabs on it close, the tree updates. */
+  onDeleteFile: (path: string) => Promise<void>
 }
 
 /** Hands `text` to the browser as a file download. */
@@ -75,6 +77,7 @@ export function CommitView({
   onOpenFile,
   onCompare,
   onShowHistory,
+  onDeleteFile,
 }: CommitViewProps) {
   // Grouped by directory until told otherwise.
   const [byDirectory, setByDirectory] = useState(() => readScmViewMode(undefined, 'tree') === 'tree')
@@ -307,7 +310,11 @@ export function CommitView({
           onConfirm={() => {
             const entry = deleteEntry
             setDeleteEntry(null)
-            if (entry) void scm.remove([entry])
+            if (!entry) return
+            void scm.run('delete', async () => {
+              await onDeleteFile(entry.path)
+              return `deleted ${basename(entry.path)}`
+            })
           }}
         />
         <TextDialog

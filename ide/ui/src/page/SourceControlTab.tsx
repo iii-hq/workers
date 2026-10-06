@@ -51,6 +51,8 @@ interface SourceControlTabProps {
   onCompare: (path: string) => void
   /** "Show history" from a change's menu: the Git log narrowed to these paths. */
   onShowHistory: (paths: string[]) => void
+  /** "Delete…" from a change's menu: the Explorer's delete, so tabs on the file close. */
+  onDeleteFile: (path: string) => Promise<void>
   onChanged: () => void
 }
 
@@ -65,6 +67,7 @@ export function SourceControlTab({
   onOpenFile,
   onCompare,
   onShowHistory,
+  onDeleteFile,
   onChanged,
 }: SourceControlTabProps) {
   const [tab, setTab] = useState<ScmTab>(readTab)
@@ -114,6 +117,7 @@ export function SourceControlTab({
           onOpenFile={onOpenFile}
           onCompare={onCompare}
           onShowHistory={onShowHistory}
+          onDeleteFile={onDeleteFile}
         />
       </TabsContent>
       <TabsContent value="stash" className="shui-scm-panel">
