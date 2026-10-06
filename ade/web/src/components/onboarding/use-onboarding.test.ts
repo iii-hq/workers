@@ -43,8 +43,19 @@ describe('connectedModelCount', () => {
     await expect(connectedModelCount()).resolves.toBe(9)
   })
 
+  it('does not count a subscription signed in on this machine', async () => {
+    // A fresh project with only the Codex CLI signed in still opens the
+    // wizard, so the person sees that subscription and chooses it.
+    harness.providers = [provider('openai-codex', 3), provider('anthropic', 0)]
+    harness.workers = new Set(['llm-router', 'provider-openai-codex'])
+    await expect(connectedModelCount()).resolves.toBe(0)
+    harness.providers.push(provider('openai', 4))
+    harness.workers.add('provider-openai')
+    await expect(connectedModelCount()).resolves.toBe(4)
+  })
+
   it('does not count a provider whose worker left', async () => {
-    harness.providers = [provider('claude-code', 11)]
+    harness.providers = [provider('anthropic', 11)]
     await expect(connectedModelCount()).resolves.toBe(0)
   })
 

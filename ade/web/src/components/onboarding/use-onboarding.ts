@@ -91,20 +91,25 @@ export function withWorkerPresence(
   })
 }
 
+const SUBSCRIPTION_IDS = new Set(
+  SUBSCRIPTION_PROVIDERS.map((provider) => provider.providerId),
+)
+
 /**
  * Chat models the router serves right now from providers whose worker is
- * connected — the wizard's own reading. Throws when the router or the
- * engine cannot answer.
+ * connected — the wizard's own reading. A subscription (Codex, Claude Code)
+ * does not count: it serves models as soon as its CLI is signed in on this
+ * machine, and the wizard is where the person sees that and chooses it.
+ * Throws when the router or the engine cannot answer.
  */
 export async function connectedModelCount(): Promise<number> {
   const [providers, installed] = await Promise.all([
     readProviderStates(),
     installedWorkerNames(),
   ])
-  return withWorkerPresence(providers, installed).reduce(
-    (sum, provider) => sum + provider.modelCount,
-    0,
-  )
+  return withWorkerPresence(providers, installed)
+    .filter((provider) => !SUBSCRIPTION_IDS.has(provider.id))
+    .reduce((sum, provider) => sum + provider.modelCount, 0)
 }
 
 /** Every env var the wizard can reuse: provider keys and the hosted judge's. */
