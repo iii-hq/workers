@@ -97,7 +97,8 @@ pub struct SendOptions {
     /// Ask the harness to pick the effort from the model's catalog row
     /// instead of naming one: `lowest` is the model's lowest reasoning effort
     /// (never `off`), or the provider default when the model offers no effort
-    /// choices. Exclusive with `thinking_level` and `provider_options`; the
+    /// choices; `off_or_lowest` is `off` where the model supports it, else
+    /// the same as `lowest`. Exclusive with `thinking_level` and `provider_options`; the
     /// choice is returned as `reasoning` on the send response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ReasoningPreset>,
@@ -161,7 +162,11 @@ pub struct SendRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningPreset {
+    /// The model's lowest reasoning effort.
     Lowest,
+    /// `off` where the catalog says the model can switch reasoning off,
+    /// else the model's lowest effort.
+    OffOrLowest,
 }
 
 /// What a `reasoning` preset resolved to for this send. `reasoning_effort`
@@ -200,6 +205,18 @@ fn lowest_reasoning(model: &Model) -> ResolvedReasoning {
             }
         }
         None => ResolvedReasoning::default(),
+    }
+}
+
+fn preset_reasoning(preset: ReasoningPreset, model: &Model) -> ResolvedReasoning {
+    match preset {
+        ReasoningPreset::OffOrLowest if model.supports_thinking_off == Some(true) => {
+            ResolvedReasoning {
+                thinking_level: Some(ThinkingLevel::Off),
+                reasoning_effort: None,
+            }
+        }
+        _ => lowest_reasoning(model),
     }
 }
 
@@ -411,7 +428,7 @@ async fn start_with_delivery_lock(
         inherit_prior_reasoning(&mut options, &prev.options);
     }
     let resolved_reasoning = match req.options.as_ref().and_then(|o| o.reasoning) {
-        Some(ReasoningPreset::Lowest) => {
+        Some(preset) => {
             if !reasoning_fields_omitted(req.options.as_ref()) {
                 return Err(HarnessError::InvalidRequest(
                     "options.reasoning names the effort itself; send it without \
@@ -430,7 +447,7 @@ async fn start_with_delivery_lock(
                         options.model
                     ))
                 })?;
-            let resolved = lowest_reasoning(&model);
+            let resolved = preset_reasoning(preset, &model);
             let provider = options.provider.clone().unwrap_or(model.provider);
             apply_resolved_reasoning(&mut options, &provider, &resolved);
             Some(resolved)
@@ -1775,7 +1792,40 @@ mod tests {
     }
 
     #[test]
+    fn off_or_lowest_switches_reasoning_off_only_where_the_model_can() {
+        let can_disable = catalog_model(serde_json::json!({
+            "supports_thinking": true, "supports_thinking_off": true
+        }));
+        assert_eq!(
+            preset_reasoning(ReasoningPreset::OffOrLowest, &can_disable),
+            ResolvedReasoning {
+                thinking_level: Some(ThinkingLevel::Off),
+                reasoning_effort: None,
+            }
+        );
+        // Unknown (`None`) is not "supported": the model gets its lowest effort.
+        for off in [serde_json::json!(false), serde_json::Value::Null] {
+            let codex = catalog_model(serde_json::json!({
+                "supports_thinking": true,
+                "supports_thinking_off": off,
+                "reasoning_efforts": [{"effort": "low"}, {"effort": "high"}]
+            }));
+            assert_eq!(
+                preset_reasoning(ReasoningPreset::OffOrLowest, &codex),
+                lowest_reasoning(&codex)
+            );
+        }
+        assert_eq!(
+            preset_reasoning(ReasoningPreset::Lowest, &can_disable),
+            lowest_reasoning(&can_disable)
+        );
+    }
+
+    #[test]
     fn the_reasoning_preset_reads_lowest_on_the_wire() {
+        let options: SendOptions =
+            serde_json::from_value(serde_json::json!({ "reasoning": "off_or_lowest" })).unwrap();
+        assert_eq!(options.reasoning, Some(ReasoningPreset::OffOrLowest));
         let options: SendOptions =
             serde_json::from_value(serde_json::json!({ "reasoning": "lowest" })).unwrap();
         assert_eq!(options.reasoning, Some(ReasoningPreset::Lowest));

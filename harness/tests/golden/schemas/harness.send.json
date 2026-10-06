@@ -75,10 +75,22 @@
       },
       "ReasoningPreset": {
         "description": "An effort the harness resolves from the model's catalog row.",
-        "enum": [
-          "lowest"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "description": "The model's lowest reasoning effort.",
+            "enum": [
+              "lowest"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`off` where the catalog says the model can switch reasoning off, else the model's lowest effort.",
+            "enum": [
+              "off_or_lowest"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "SendOptions": {
         "description": "Per-send options frozen onto the turn record (harness.md § `harness::send`).",
@@ -175,7 +187,7 @@
                 "type": "null"
               }
             ],
-            "description": "Ask the harness to pick the effort from the model's catalog row instead of naming one: `lowest` is the model's lowest reasoning effort (never `off`), or the provider default when the model offers no effort choices. Exclusive with `thinking_level` and `provider_options`; the choice is returned as `reasoning` on the send response."
+            "description": "Ask the harness to pick the effort from the model's catalog row instead of naming one: `lowest` is the model's lowest reasoning effort (never `off`), or the provider default when the model offers no effort choices; `off_or_lowest` is `off` where the model supports it, else the same as `lowest`. Exclusive with `thinking_level` and `provider_options`; the choice is returned as `reasoning` on the send response."
           },
           "skills": {
             "description": "Exact skill ids advertised to the model; omitted or empty means all on a new session (existing: omitted inherits, empty resets).",
