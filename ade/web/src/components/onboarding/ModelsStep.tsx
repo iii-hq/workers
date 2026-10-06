@@ -4,11 +4,9 @@ import { ProviderIcon } from '@/components/chat/ProviderIcon'
 import { Button } from '@/components/ui/Button'
 import { Checkbox } from '@/components/ui/Checkbox'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { SECRETS_WORKER } from '@/lib/onboarding/catalog'
 import {
   connectPlan,
   type KeyInput,
-  type PlanStep,
   type ProviderChoice,
   type ProviderSelection,
   providerChoices,
@@ -37,16 +35,11 @@ interface Draft {
   key?: KeyInput
 }
 
-const SECRETS_PLAN: PlanStep[] = [
-  {
-    kind: 'add-workers',
-    workers: [SECRETS_WORKER],
-    why: {
-      [SECRETS_WORKER]:
-        'Looks for keys in your shell profile and this project’s .env, and stores the ones you pick encrypted. Values never reach the browser.',
-    },
-  },
-]
+/**
+ * llm-router resolves `secret://` and `env://` references alike, so a
+ * provider key can stay encrypted or live in this project's `.env`.
+ */
+const ROUTER_KEY_STORES = ['vault', 'env'] as const
 
 /**
  * The one step that gets a model connected. It starts from what this
@@ -62,15 +55,7 @@ export function ModelsStep({
   onBack: () => void
   onNext: () => void
 }) {
-  const {
-    snapshot,
-    scanning,
-    refresh,
-    activity,
-    running,
-    run,
-    secretsInstalled,
-  } = onboarding
+  const { snapshot, scanning, refresh, activity, running, run } = onboarding
   const [registry, setRegistry] = useState<RegistryProviderRow[]>([])
   const [drafts, setDrafts] = useState<ReadonlyMap<string, Draft>>(new Map())
   const [showMore, setShowMore] = useState(false)
@@ -142,10 +127,8 @@ export function ModelsStep({
   const incomplete = selections.some(
     ({ choice, key }) => choice.kind === 'key' && !keyInputReady(key),
   )
-  const plan = connectPlan(selections, snapshot.installed)
-  const log = activity.filter(
-    (entry) => entry.group === 'keys' || entry.group === 'models',
-  )
+  const plan = connectPlan(selections, snapshot.installed, snapshot.envFile)
+  const log = activity.filter((entry) => entry.group === 'models')
   const busy = running !== null
   const anyReady = ready.length > 0
   // Once something is connected or recommended, the long tail waits behind
@@ -216,7 +199,8 @@ export function ModelsStep({
             value={draft.key}
             onChange={(key) => update(choice, { key })}
             keysUrl={choice.provider.keysUrl}
-            secretsReady={secretsInstalled}
+            stores={ROUTER_KEY_STORES}
+            envFile={snapshot.envFile}
           />
         ) : null}
       </div>
@@ -312,13 +296,7 @@ export function ModelsStep({
           the same steps, now with what actually happened. */}
       <ActivityLog
         entries={log}
-        title={
-          running === 'models'
-            ? 'Connecting'
-            : running === 'keys'
-              ? 'Adding the secrets worker'
-              : 'What setup did'
-        }
+        title={running === 'models' ? 'Connecting' : 'What setup did'}
       />
 
       {firstScan ? (
@@ -338,34 +316,11 @@ export function ModelsStep({
         </Section>
       ) : null}
 
-      {firstScan ? null : !secretsInstalled ? (
-        <Section title="Keys you already have">
-          <div className="flex flex-col gap-3 rounded-md bg-surface px-3 py-3">
-            <p className="font-sans text-[13px] leading-relaxed text-ink">
-              Looking for keys you've already exported uses the{' '}
-              <span className="font-mono">secrets</span> worker. It keeps API
-              keys out of every file you commit — today a key pasted into
-              configuration is saved as plain text under{' '}
-              <span className="font-mono">./config</span>.
-            </p>
-            <PlanPreview steps={SECRETS_PLAN} title="Adding it does this" />
-            <div>
-              <Button
-                variant="pill"
-                onClick={() => void run('keys', SECRETS_PLAN)}
-                disabled={busy}
-              >
-                {running === 'keys'
-                  ? 'Adding the secrets worker…'
-                  : 'Add secrets worker and check for keys'}
-              </Button>
-            </div>
-          </div>
-        </Section>
-      ) : snapshot.detections !== null && !keysFound ? (
+      {!firstScan && snapshot.detections !== null && !keysFound ? (
         <p className="rounded-md bg-surface px-3 py-3 font-sans text-[13px] text-ink-faint">
-          No provider keys in your shell profile or this project's .env. Paste
-          one below, or sign in to a coding agent and scan again.
+          No provider keys in your shell profile or this project's{' '}
+          {snapshot.envFile}. Paste one below, or sign in to a coding agent and
+          scan again.
         </p>
       ) : null}
 

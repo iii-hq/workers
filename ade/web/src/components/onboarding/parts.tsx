@@ -1,7 +1,7 @@
 import { Check, CircleAlert, LoaderCircle } from 'lucide-react'
 import type * as React from 'react'
 import { useEffect, useRef } from 'react'
-import { KeyChoice } from '@/components/secrets/KeyChoice'
+import { KeyChoice, KeyDestination } from '@/components/secrets/KeyChoice'
 import { Chip } from '@/components/ui/Chip'
 import { Eyebrow } from '@/components/ui/Eyebrow'
 import { describeStep, type PlanStep } from '@/lib/onboarding/plan'
@@ -9,8 +9,8 @@ import {
   defaultKeyInput,
   type KeyDetection,
   type KeyInput,
+  type KeyStore,
   keyInputReady,
-  secretRef,
 } from '@/lib/secrets'
 import { cn } from '@/lib/utils'
 import type { ActivityEntry } from './use-onboarding'
@@ -273,14 +273,18 @@ export function KeyField({
   value,
   onChange,
   keysUrl,
-  secretsReady,
+  stores,
+  envFile,
 }: {
   envVar: string
   detection: KeyDetection | null
   value: KeyInput | undefined
   onChange: (next: KeyInput) => void
   keysUrl?: string
-  secretsReady: boolean
+  /** Where the consumer can read the key from (default: encrypted only). */
+  stores?: readonly KeyStore[]
+  /** The secrets worker's env file, by name. */
+  envFile?: string
 }) {
   return (
     <div className="flex flex-col gap-2 px-3 pb-3">
@@ -290,15 +294,14 @@ export function KeyField({
         value={value}
         onChange={onChange}
         keysUrl={keysUrl}
+        stores={stores}
+        envFile={envFile}
       />
-      <p className="font-sans text-[12px] leading-relaxed text-ink-faint">
-        {secretsReady
-          ? 'Stored encrypted by the secrets worker as '
-          : 'The secrets worker will store it encrypted as '}
-        <span className="font-mono text-ink">{secretRef(envVar)}</span>. Only
-        that reference is written to configuration, so the key never lands in a
-        file you commit.
-      </p>
+      <KeyDestination
+        name={envVar}
+        input={value ?? defaultKeyInput(detection)}
+        envFile={envFile}
+      />
     </div>
   )
 }

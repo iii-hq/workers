@@ -13,7 +13,12 @@ import { resolveConfigurationFamily } from '@/lib/configuration-family'
 import { fetchConsoleConfigValue } from '@/lib/console-config'
 import { getIiiClient } from '@/lib/iii-client'
 import { normalizeErrorMessage } from '@/lib/providers'
-import { isMissingFunction, storeKey } from '@/lib/secrets'
+import {
+  DEFAULT_ENV_FILE,
+  isMissingFunction,
+  keyStore,
+  storeKey,
+} from '@/lib/secrets'
 import { fetchEngineWorkersList } from '@/pages/Workers/api/workers'
 import { workerSource } from './catalog'
 import type { PlanStep, ProviderState, ToolScan } from './plan'
@@ -297,9 +302,11 @@ async function storeSecret(
   )
   return {
     note:
-      step.input.mode === 'stored'
+      step.input.mode === 'stored' || step.input.mode === 'env'
         ? `${meta.consumers.join(', ')} can read it`
-        : `stored ${meta.hint}`,
+        : keyStore(step.input) === 'env'
+          ? `written to ${step.envFile ?? DEFAULT_ENV_FILE} (${meta.hint})`
+          : `stored ${meta.hint}`,
   }
 }
 

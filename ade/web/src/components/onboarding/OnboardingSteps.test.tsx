@@ -49,6 +49,7 @@ function controller(
       providers: [],
       providersError: null,
       detections: null,
+      envFile: '.env',
       installed,
       consoleConfig: null,
       ...snapshot,
@@ -58,7 +59,6 @@ function controller(
     activity,
     running: null,
     run: async () => true,
-    secretsInstalled: installed.has('secrets'),
     judgeInstalled: installed.has('judge'),
   }
 }
@@ -110,13 +110,14 @@ describe('ModelsStep', () => {
     expect(html).not.toContain('Add secrets worker and check for keys')
   })
 
-  it('explains the secrets worker before offering to add it', () => {
+  it('never asks to add the secrets worker: it comes with llm-router', () => {
     const html = renderToStaticMarkup(
       <ModelsStep onboarding={controller({})} onBack={noop} onNext={noop} />,
     )
-    expect(html).toContain('Keys you already have')
-    expect(html).toContain('Add secrets worker and check for keys')
-    expect(html).toContain('Values never reach the browser')
+    expect(html).not.toContain('Keys you already have')
+    expect(html).not.toContain('Add secrets worker')
+    // Nothing was looked for, so nothing is claimed about keys either.
+    expect(html).not.toContain('No provider keys')
   })
 
   it('says so when the secrets worker found no provider key', () => {
@@ -163,6 +164,10 @@ describe('ModelsStep', () => {
     expect(html).toContain('sk-ant…9f2c')
     expect(html).toContain('secret://ANTHROPIC_API_KEY')
     expect(html).toContain('Point llm-router at secret://ANTHROPIC_API_KEY')
+    // llm-router reads env:// too, so the key may stay a variable instead.
+    expect(html).toContain('role="radiogroup"')
+    expect(html).toContain('Encrypted')
+    expect(html).toContain('Environment variable')
   })
 })
 
@@ -216,7 +221,29 @@ describe('ReadyStep', () => {
     expect(html).toContain('Claude Code connected')
     expect(html).toContain('key at secret://ANTHROPIC_API_KEY')
     expect(html).toContain('Your keys stay out of git')
+    expect(html).toContain('configuration holds only secret:// references')
     expect(html).toContain('Workers added during setup (2)')
+  })
+
+  it('says where the keys are when one stays an environment variable', () => {
+    const html = ready({
+      providers: [
+        ...(CONNECTED ?? []),
+        {
+          id: 'openai',
+          title: 'OpenAI',
+          configured: true,
+          available: true,
+          modelCount: 4,
+          credentialRef: 'env://OPENAI_API_KEY',
+        },
+      ],
+    })
+    expect(html).toContain('key at env://OPENAI_API_KEY')
+    expect(html).toContain('Your keys stay out of configuration')
+    expect(html).toContain(
+      'configuration holds only secret:// and env:// references',
+    )
   })
 
   it('offers the guided tour in place of starter prompts, without naming its worker', () => {
