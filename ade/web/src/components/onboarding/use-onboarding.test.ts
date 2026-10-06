@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { shouldAutoOpenOnboarding } from '@/lib/onboarding/open'
 import type { ProviderState } from '@/lib/onboarding/plan'
 
 const harness = vi.hoisted(() => ({
@@ -57,6 +58,35 @@ describe('connectedModelCount', () => {
     ]
     harness.workers = new Set(['llm-router', 'provider-openai-codex'])
     return expect(connectedModelCount()).resolves.toBe(3)
+  })
+
+  it('keeps a finished project that uses only Codex closed', async () => {
+    // Setup finished with Codex alone: no key provider is configured, and
+    // the wizard must not open again on every visit.
+    harness.providers = [
+      {
+        ...provider('openai-codex', 3),
+        configured: false,
+        ownsAuthentication: true,
+      },
+      { ...provider('anthropic', 0), configured: false },
+      { ...provider('openai', 0), configured: false },
+    ]
+    harness.workers = new Set(['llm-router', 'provider-openai-codex'])
+    const models = await connectedModelCount()
+    expect(models).toBe(3)
+    for (const status of ['completed', 'dismissed']) {
+      expect(shouldAutoOpenOnboarding({ status }, false, models)).toBe(false)
+    }
+    // Signed out of Codex later: nothing is connected, so it opens again.
+    harness.providers[0] = { ...harness.providers[0], modelCount: 0 }
+    expect(
+      shouldAutoOpenOnboarding(
+        { status: 'completed' },
+        false,
+        await connectedModelCount(),
+      ),
+    ).toBe(true)
   })
 
   it('does not count a provider that reports no credentials', async () => {
