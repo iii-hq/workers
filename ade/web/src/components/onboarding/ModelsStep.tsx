@@ -219,6 +219,7 @@ export function ModelsStep({
           <div className="px-3 pb-3 pl-10">
             <DeviceSignIn
               provider={choice.provider}
+              installed={choice.installed}
               onConnected={() =>
                 void run('models', [
                   {
