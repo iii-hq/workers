@@ -10,6 +10,7 @@
    instead of trusting the list the view loaded, which can be stale. */
 
 import type { Host } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { parseRecentBranches, readRecentReflog, readRemoteBranches, readTags } from './branch-actions'
 import { coderReadFiles, joinPath, workspaceValidate } from './coder'
 import { git, run } from './git-actions'
@@ -520,7 +521,7 @@ export async function removeWorktree(
     await run(host, main.path, ['branch', '-D', wt.branch], 'git branch -D')
     return { branchDeleted: true }
   } catch (err) {
-    return { branchDeleted: false, branchError: err instanceof Error ? err.message : String(err) }
+    return { branchDeleted: false, branchError: errorMessage(err) }
   }
 }
 
@@ -608,7 +609,7 @@ export async function mergeWorktree(
     } catch (err) {
       const back = await git(host, cwd, ['reset', '--soft', tip])
       if (back.exit_code === 0) throw err
-      throw new Error(`${(err as Error).message}; ${branch} was not put back: git reset --soft ${tip} restores it`)
+      throw new Error(`${errorMessage(err)}; ${branch} was not put back: git reset --soft ${tip} restores it`)
     }
   } else {
     if (status.stdout.trim() !== '') throw new Error('commit the changes first, or merge with squash')

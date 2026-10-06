@@ -207,7 +207,7 @@ async function discardBatch(
     })
   } catch (error) {
     if (live.length === 1) {
-      failed.set(live[0].change, error instanceof Error ? error.message : String(error))
+      failed.set(live[0].change, errorMessage(error))
       return
     }
     for (const target of live) await discardBatch([target], call, failed)

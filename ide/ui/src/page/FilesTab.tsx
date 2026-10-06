@@ -16,6 +16,7 @@
    diff so expansion, focus and selection survive a watcher burst. */
 
 import { ConfirmDialog, EmptyState, IconButton, SearchField } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import type { FileTreeDirectoryHandle, FileTreeRowDecoration, GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import {
@@ -43,6 +44,7 @@ import type { GitFileStatus } from './git'
 import { statusLetter, statusTitle } from './git-actions'
 import { ancestorDirs, basename, dirname, joinRel, stripDirSlash } from './paths'
 import {
+  markTreeMenuRows,
   reactivateSelectedFile,
   shouldActivateTreeSelection,
   treeItemFromEvent,
@@ -176,7 +178,7 @@ function FilesTabView({
         if (placeholder !== undefined) {
           placeholdersRef.current.delete(sourcePath)
           void actionsRef.current.create(placeholder, to).catch((error: unknown) => {
-            setNote(error instanceof Error ? error.message : String(error))
+            setNote(errorMessage(error))
             try {
               model.remove(destinationPath, { recursive: true })
             } catch {
@@ -187,7 +189,7 @@ function FilesTabView({
         }
         if (from === to) return
         void actionsRef.current.rename(from, to, isFolder).catch((error: unknown) => {
-          setNote(error instanceof Error ? error.message : String(error))
+          setNote(errorMessage(error))
           try {
             model.move(destinationPath, sourcePath)
           } catch {
@@ -453,7 +455,7 @@ function FilesTabView({
     if (!target) return
     const confirmed = target.protectedInside === true
     void actionsRef.current.remove(target.path, target.isDir, confirmed).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = errorMessage(error)
       // A second confirmation, naming what the first one did not.
       const next = deleteAfterRefusal(target, message)
       if (next !== null) setPendingDelete(next)
@@ -494,7 +496,7 @@ function FilesTabView({
           icon: <Copy />,
           onSelect: () =>
             void actionsRef.current.duplicate(rel).catch((error: unknown) => {
-              setNote(error instanceof Error ? error.message : String(error))
+              setNote(errorMessage(error))
             }),
         },
         {
@@ -554,24 +556,10 @@ function FilesTabView({
     [beginCreate, collapseAll],
   )
 
-  // The row a menu acts on, and the rows shown under a folder's, marked in
-  // the tree's shadow DOM while the menu is open (tree-theme styles them).
-  // Resolves to the target row, which the menu opens under.
+  // The menu's rows, marked while it is open.
   const markMenuRows = useCallback((path: string | null): HTMLElement | null => {
     const root = stageRef.current?.querySelector('file-tree-container')?.shadowRoot
-    if (!root) return null
-    for (const row of root.querySelectorAll('[data-shui-menu]')) row.removeAttribute('data-shui-menu')
-    if (path === null) return null
-    let target: HTMLElement | null = null
-    for (const row of root.querySelectorAll<HTMLElement>('[data-type="item"][data-item-path]')) {
-      const rowPath = row.dataset.itemPath ?? ''
-      if (rowPath === path) {
-        row.setAttribute('data-shui-menu', 'target')
-        // A sticky copy of a folder row comes first; the row in the list is the one in place.
-        if (row.dataset.fileTreeStickyRow !== 'true') target = row
-      } else if (path.endsWith('/') && rowPath.startsWith(path)) row.setAttribute('data-shui-menu', 'scope')
-    }
-    return target
+    return root ? markTreeMenuRows(root, path) : null
   }, [])
   useEffect(() => {
     if (!menu.isOpen) markMenuRows(null)

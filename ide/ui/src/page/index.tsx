@@ -1074,7 +1074,7 @@ export function ShellExplorerPage({
     if (previous?.phase !== 'ready') setDiffVersion((value) => value + 1)
     const generation = rootGenerationRef.current
     const target = activeDiff
-    void loadDiffContents(host, root, target.path, target.source, turnCache)
+    void loadDiffContents(host, root, target.path, target.source, turnCache, isProtected)
       .then<DiffTabState>((contents) => ({ phase: 'ready', contents }))
       .catch<DiffTabState>((error: unknown) => ({ phase: 'error', message: errorMessage(error) }))
       .then((state) => {
@@ -1088,7 +1088,7 @@ export function ShellExplorerPage({
         diffCacheRef.current.set(activeDiffId, { epoch: diskEpoch, state })
         setDiffVersion((value) => value + 1)
       })
-  }, [activeDiff, activeDiffId, root, diskEpoch, host, turnCache])
+  }, [activeDiff, activeDiffId, root, diskEpoch, host, turnCache, isProtected])
   // biome-ignore lint/correctness/useExhaustiveDependencies: diffVersion is the cache's change signal
   const activeDiffState: DiffTabState = useMemo(
     () => (activeDiffId !== null ? diffCacheRef.current.get(activeDiffId)?.state : undefined) ?? { phase: 'loading' },
@@ -2416,6 +2416,7 @@ export function ShellExplorerPage({
         root={root}
         turn={newestTurn}
         turnCache={turnCache}
+        isProtected={isProtected}
         epoch={diskEpoch}
         written={summaryWritesRef.current}
         sessionId={conversationId}

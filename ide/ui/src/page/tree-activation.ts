@@ -75,3 +75,21 @@ export function treeItemFromEvent(event: TreeRowEvent): TreeItemRef | null {
   }
   return null
 }
+
+/** Mark the row a menu acts on, and the rows shown under a folder's, in
+    the tree's shadow root (tree-theme styles them); null clears them.
+    Resolves to the target row, which the menu opens under. */
+export function markTreeMenuRows(root: ParentNode, path: string | null): HTMLElement | null {
+  for (const row of root.querySelectorAll('[data-shui-menu]')) row.removeAttribute('data-shui-menu')
+  if (path === null) return null
+  let target: HTMLElement | null = null
+  for (const row of root.querySelectorAll<HTMLElement>('[data-type="item"][data-item-path]')) {
+    const rowPath = row.dataset.itemPath ?? ''
+    if (rowPath === path) {
+      row.setAttribute('data-shui-menu', 'target')
+      // A sticky copy of a folder row comes first; the row in the list is the one in place.
+      if (row.dataset.fileTreeStickyRow !== 'true') target = row
+    } else if (path.endsWith('/') && rowPath.startsWith(path)) row.setAttribute('data-shui-menu', 'scope')
+  }
+  return target
+}

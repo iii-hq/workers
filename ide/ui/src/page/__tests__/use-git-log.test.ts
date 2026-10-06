@@ -1,5 +1,5 @@
 import type { Host } from '@iii-dev/console-ui'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CommitDetails, LogFilter, RefsSnapshot } from '../git-log-window'
 import { detailsFor, useCommitDetails, useGitLog } from '../use-git-log'
 import { mount } from './bare-hooks'
@@ -9,17 +9,23 @@ vi.mock('react', async (original) => ({
   ...(await import('./bare-hooks')).hooks,
 }))
 
-// What the mocked reads saw: the refs' listing a read finds, how many ran,
-// and the author filter of each first page of the log.
-const git = vi.hoisted(() => ({
-  signature: 'a',
-  refs: 0,
-  fail: false,
-  notRepo: false,
-  hold: false,
-  pages: [] as Array<string | undefined>,
-  branchReads: 0,
-}))
+// What the mocked reads saw since the test began: the refs' listing a read
+// finds, how many ran, and the author filter of each first page of the log.
+const { git, fresh } = vi.hoisted(() => {
+  const fresh = () => ({
+    signature: 'a',
+    refs: 0,
+    fail: false,
+    notRepo: false,
+    hold: false,
+    pages: [] as Array<string | undefined>,
+    branchReads: 0,
+  })
+  return { git: fresh(), fresh }
+})
+beforeEach(() => {
+  Object.assign(git, fresh())
+})
 vi.mock('../git-log-window', async (original) => ({
   ...(await original<typeof import('../git-log-window')>()),
   readRefs: async () => {

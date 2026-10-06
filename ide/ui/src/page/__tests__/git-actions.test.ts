@@ -120,6 +120,14 @@ describe('gitDiscard', () => {
     expect(results[0].error).toBeNull()
     expect(trigger).toHaveBeenCalledWith('coder::delete-file', { paths: ['/r/new.ts'], recursive: false })
   })
+
+  it('reports a failed call by its handler message', async () => {
+    const { host, trigger } = hostWith()
+    // The bus rejects with the handler's error body, not an Error.
+    trigger.mockRejectedValueOnce({ message: 'handler error: {"code":"C210","message":"path escapes the root"}' })
+    const results = await gitDiscard(host, '/r', [{ path: 'new.ts', status: 'untracked', staged: false }])
+    expect(results).toEqual([{ path: 'new.ts', error: 'C210: path escapes the root' }])
+  })
 })
 
 describe('gitUnstage', () => {
