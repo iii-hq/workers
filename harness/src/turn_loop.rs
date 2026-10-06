@@ -593,6 +593,7 @@ async fn generate_step(
     let current_aid = runtime_context_aid(
         &record.session_id,
         record.options.filesystem_root(),
+        deps.filesystem_boundary("shell::exec").await,
         record.options.response_language.as_ref(),
         record.options.functions.as_ref(),
         record.options.seeded_contracts.as_deref(),
@@ -1738,12 +1739,13 @@ async fn finish_step(
             // args ALREADY carrying the filesystem scope stamp so an approver
             // reviews the fs_scope the call will actually run under; the stamp is
             // re-applied after the chain so a hook rewrite can never widen it.
+            let filesystem_boundary = deps.filesystem_boundary(&call.function_id).await;
             let trusted_call_args = crate::filesystem_scope::inject(
                 &call.function_id,
                 call_args.clone(),
                 filesystem_root.as_deref(),
                 &session_grants,
-                deps.hooks.filesystem_boundary(&call.function_id),
+                filesystem_boundary,
             );
             let (eff_args, pre_ann) = match deps
                 .hooks
@@ -1766,7 +1768,7 @@ async fn finish_step(
                         arguments,
                         filesystem_root.as_deref(),
                         &session_grants,
-                        deps.hooks.filesystem_boundary(&call.function_id),
+                        filesystem_boundary,
                     );
                     (arguments, annotations)
                 }
@@ -3673,19 +3675,27 @@ fn with_runtime_context(
 /// Kept separate so read-only previews use the same construction as a turn.
 /// The response-language line names the session's pinned language, once one
 /// is (`crate::language`), right after the working directory, whose path must
-/// never be read as a hint of it. A spawned child's seeded
-/// `<preloaded_functions>` block closes it: after the cache seam, so it never
-/// forks the stable prefix sessions share.
+/// never be read as a hint of it. Under `configured_roots` the working
+/// directory only anchors relative paths, and its line says so. A spawned
+/// child's seeded `<preloaded_functions>` block closes it: after the cache
+/// seam, so it never forks the stable prefix sessions share.
 pub(crate) fn runtime_context_aid(
     session_id: &str,
     filesystem_root: Option<&str>,
+    boundary: crate::filesystem_scope::FilesystemBoundary,
     response_language: Option<&ResponseLanguage>,
     functions: Option<&FunctionPolicy>,
     seeded_contracts: Option<&str>,
 ) -> String {
     let mut lines = vec![format!("Your session id is {session_id}.")];
     if let Some(dir) = filesystem_root {
-        lines.push(format!("Your working directory is {dir}."));
+        let note = match boundary {
+            crate::filesystem_scope::FilesystemBoundary::Workspace => "",
+            crate::filesystem_scope::FilesystemBoundary::ConfiguredRoots => {
+                " (default directory, not an access boundary)"
+            }
+        };
+        lines.push(format!("Your working directory is {dir}{note}."));
     }
     if let Some(language) = response_language {
         lines.push(crate::language::runtime_line(language));
@@ -4802,12 +4812,25 @@ mod tests {
             code: "eng".into(),
             name: "English".into(),
         };
-        let named =
-            super::runtime_context_aid("s_1", Some("/home/sergio/app"), Some(&english), None, None);
+        let named = super::runtime_context_aid(
+            "s_1",
+            Some("/home/sergio/app"),
+            crate::filesystem_scope::FilesystemBoundary::Workspace,
+            Some(&english),
+            None,
+            None,
+        );
         let lines: Vec<&str> = named.lines().collect();
         assert_eq!(lines[1], "Your working directory is /home/sergio/app.");
         assert!(lines[2].starts_with("Response language: English (from the user's first message)."));
-        let unknown = super::runtime_context_aid("s_1", Some("/home/sergio/app"), None, None, None);
+        let unknown = super::runtime_context_aid(
+            "s_1",
+            Some("/home/sergio/app"),
+            crate::filesystem_scope::FilesystemBoundary::Workspace,
+            None,
+            None,
+            None,
+        );
         assert!(
             !unknown.contains("Response language"),
             "an unpinned session's runtime context is unchanged"
@@ -4848,8 +4871,16 @@ mod tests {
             .unwrap()
         };
         let block = "<preloaded_functions>\n### `state::get`\n</preloaded_functions>";
-        let aid =
-            |seeded: Option<&str>| super::runtime_context_aid("s_1", None, None, None, seeded);
+        let aid = |seeded: Option<&str>| {
+            super::runtime_context_aid(
+                "s_1",
+                None,
+                crate::filesystem_scope::FilesystemBoundary::Workspace,
+                None,
+                None,
+                seeded,
+            )
+        };
         let (plain_stable, plain_full) =
             super::with_runtime_context(Some("identity".into()), &record(None), &aid(None));
         let (stable, full) = super::with_runtime_context(
@@ -4867,13 +4898,35 @@ mod tests {
         assert!(rest.ends_with(&format!("\n\n{block}")));
     }
 
+    /// Prevents: the model reading its working directory as an access
+    /// boundary when the worker only uses it to anchor relative paths
+    /// (MOT-5167).
+    #[test]
+    fn working_directory_line_says_when_it_is_not_a_boundary() {
+        use crate::filesystem_scope::FilesystemBoundary::*;
+        let aid =
+            |boundary| super::runtime_context_aid("s_1", Some("/w"), boundary, None, None, None);
+        assert!(aid(Workspace).contains("Your working directory is /w.\n"));
+        assert!(aid(ConfiguredRoots).contains(
+            "Your working directory is /w (default directory, not an access boundary).\n"
+        ));
+    }
+
     /// Prevents: a runtime context that changed after it was frozen into the
     /// system prompt (a re-seeded contract block included) never reaching the
     /// model, or reaching it again on every step (MOT-4845).
     #[test]
     fn runtime_change_notice_carries_the_whole_changed_aid_once() {
-        let aid =
-            |seeded: Option<&str>| super::runtime_context_aid("s_1", None, None, None, seeded);
+        let aid = |seeded: Option<&str>| {
+            super::runtime_context_aid(
+                "s_1",
+                None,
+                crate::filesystem_scope::FilesystemBoundary::Workspace,
+                None,
+                None,
+                seeded,
+            )
+        };
         let frozen = aid(None);
         assert_eq!(super::runtime_change_notice(&frozen, &frozen, None), None);
 

@@ -108,7 +108,7 @@ pub async fn handle(
         .as_ref()
         .and_then(|rec| rec.options.filesystem_root())
         .map(str::to_string);
-    let filesystem_boundary = deps.hooks.filesystem_boundary(&req.call.function_id);
+    let filesystem_boundary = deps.filesystem_boundary(&req.call.function_id).await;
     let mut arguments = crate::filesystem_scope::inject(
         &req.call.function_id,
         req.call.arguments.clone(),

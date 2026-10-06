@@ -137,6 +137,15 @@ pub struct WorkerConfig {
     #[serde(default)]
     pub default_filesystem_root: Option<String>,
 
+    /// The boundary stamped on scoped `shell::*`/`coder::*` calls. `auto` →
+    /// `workspace` iff approval-gate's filesystem access watch is bound, else
+    /// `configured_roots`; `workspace` makes `fs_scope.root` plus the
+    /// session's grants the boundary without approval-gate;
+    /// `configured_roots` leaves it to the worker's own roots (the root only
+    /// anchors relative paths).
+    #[serde(default)]
+    pub filesystem_boundary: crate::filesystem_scope::BoundaryMode,
+
     /// JSON file used for the operator's durable project catalog. Resolved
     /// like every other worker path: absolute and `~/` paths are kept, relative
     /// paths resolve under `III_COMPOSE_DIR` (or the process cwd outside
@@ -359,6 +368,7 @@ impl Default for WorkerConfig {
             sweep_expression: default_sweep_expression(),
             default_functions: default_functions(),
             default_filesystem_root: None,
+            filesystem_boundary: Default::default(),
             projects_file_path: default_projects_file_path(),
         }
     }
@@ -392,6 +402,25 @@ mod tests {
         let cfg =
             WorkerConfig::from_json(&serde_json::json!({ "default_functions": null })).unwrap();
         assert!(cfg.default_functions.is_none());
+    }
+
+    #[test]
+    fn filesystem_boundary_defaults_to_auto_and_parses() {
+        use crate::filesystem_scope::BoundaryMode;
+        let cfg = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
+        assert_eq!(cfg.filesystem_boundary, BoundaryMode::Auto);
+        for (raw, mode) in [
+            ("auto", BoundaryMode::Auto),
+            ("workspace", BoundaryMode::Workspace),
+            ("configured_roots", BoundaryMode::ConfiguredRoots),
+        ] {
+            let cfg = WorkerConfig::from_json(&serde_json::json!({ "filesystem_boundary": raw }))
+                .unwrap();
+            assert_eq!(cfg.filesystem_boundary, mode);
+        }
+        assert!(
+            WorkerConfig::from_json(&serde_json::json!({ "filesystem_boundary": "jail" })).is_err()
+        );
     }
 
     #[test]

@@ -457,7 +457,7 @@ async fn call_target(
         payload,
         root,
         &grants,
-        deps.hooks.filesystem_boundary(target),
+        deps.filesystem_boundary(target).await,
     );
     // Argument-constrained approval rules must see the payload that will
     // actually run, after event projection and trusted filesystem stamping.

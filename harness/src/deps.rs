@@ -90,6 +90,18 @@ impl Deps {
         self.config.read().await.clone()
     }
 
+    /// The boundary stamped on a scoped call to `function_id`: the configured
+    /// [`WorkerConfig::filesystem_boundary`] over the hook-detected one.
+    pub async fn filesystem_boundary(
+        &self,
+        function_id: &str,
+    ) -> crate::filesystem_scope::FilesystemBoundary {
+        crate::filesystem_scope::effective_boundary(
+            self.cfg().await.filesystem_boundary,
+            self.hooks.filesystem_boundary(function_id),
+        )
+    }
+
     /// The current cached function-registry snapshot (cheap `Arc` clone). Kept
     /// live by the `engine::functions-available` trigger; see [`crate::discovery`].
     /// Carries both the callable set (`.functions`) and its `.generation`.

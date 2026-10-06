@@ -59,6 +59,27 @@ pub async fn revoke(
     Ok(grants.roots())
 }
 
+/// A spawned child starts with its parent's grants. A snapshot: later grants
+/// to the parent do not propagate.
+pub async fn copy(
+    iii: &IIIClient,
+    from_session_id: &str,
+    to_session_id: &str,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
+    let parent = read(iii, from_session_id, timeout_ms).await?;
+    if parent.roots.is_empty() {
+        return Ok(());
+    }
+    let child = merged(&parent, read(iii, to_session_id, timeout_ms).await?);
+    write(iii, to_session_id, &child, timeout_ms).await
+}
+
+fn merged(parent: &GrantSet, mut child: GrantSet) -> GrantSet {
+    child.roots.extend(parent.roots.iter().cloned());
+    child
+}
+
 pub async fn purge(iii: &IIIClient, session_id: &str, timeout_ms: u64) -> Result<(), HarnessError> {
     crate::state::state_delete(iii, FILESYSTEM_GRANTS_SCOPE, session_id, timeout_ms).await
 }
@@ -106,5 +127,19 @@ mod tests {
         assert!(grants.revoke("/tmp/z"));
         assert!(!grants.revoke("/tmp/missing"));
         assert_eq!(grants.roots(), vec!["/tmp/a".to_string()]);
+    }
+
+    #[test]
+    fn a_child_starts_with_its_parents_grants() {
+        let mut parent = GrantSet::default();
+        parent.grant("/a".into());
+        parent.grant("/b".into());
+        let mut child = GrantSet::default();
+        child.grant("/b".into());
+        child.grant("/c".into());
+        assert_eq!(
+            merged(&parent, child).roots(),
+            vec!["/a".to_string(), "/b".to_string(), "/c".to_string()]
+        );
     }
 }

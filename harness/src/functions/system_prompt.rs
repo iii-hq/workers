@@ -94,6 +94,7 @@ pub async fn handle(
     let runtime = crate::turn_loop::runtime_context_aid(
         &req.session_id,
         filesystem_root.as_deref(),
+        deps.filesystem_boundary("shell::exec").await,
         response_language,
         policy,
         seeded,

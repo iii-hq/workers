@@ -96,6 +96,29 @@ Internal — the harness drives these; never trigger them directly:
 `harness::sweep-pending` (cron expiry), and `harness::on-config-change`
 (hot-reload).
 
+## Filesystem scope
+
+`options.metadata.fs_scope.root` on a send is the session's working
+directory; a later send that omits `fs_scope` keeps it. The harness stamps a
+trusted `fs_scope { root, grants, boundary }` onto every `shell::*` /
+`coder::*` call and strips any the model supplies. `boundary` decides what
+`root` means to the `ide` worker:
+
+- `workspace` — `coder::*`, `shell::fs::*` and an exec `cwd` stay inside
+  `root` plus the session's grants (`harness::filesystem::grant`).
+- `configured_roots` — `root` only anchors relative paths; the worker's own
+  roots apply. The model's prompt says so ("default directory, not an access
+  boundary").
+
+The `filesystem_boundary` config picks it: `auto` (the default) is
+`workspace` only while approval-gate's access watch is bound; `workspace` or
+`configured_roots` pins it. `harness::filesystem::info` reports the boundary
+in effect. A sub-agent spawned in a turn into a new session starts with a
+copy of its parent's grants; later grants to the parent do not reach it.
+Under `workspace`, an in-turn spawn's `options.filesystem_root` must lie
+inside the parent's root or grants. What an exec'd process itself writes is
+the `ide` worker's `fs.exec_confinement` switch.
+
 ## Reactive triggers
 
 The harness emits two async turn-boundary trigger types so consumers and siblings

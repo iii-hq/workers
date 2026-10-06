@@ -2,9 +2,12 @@
 //!
 //! The harness owns this control plane. When a turn carries
 //! `metadata.fs_scope.root`, the harness stamps one trusted `fs_scope` object
-//! onto every outbound `shell::*` / `coder::*` call. The worker enforces the
-//! root and grants; this module only stamps trusted metadata and strips any
-//! model-supplied scope.
+//! onto every outbound `shell::*` / `coder::*` call; this module only stamps
+//! trusted metadata and strips any model-supplied scope. What the worker does
+//! with the root depends on the stamped `boundary`
+//! ([`crate::config::WorkerConfig::filesystem_boundary`]): under `workspace`
+//! it enforces root plus grants; under `configured_roots` the root only
+//! anchors relative paths and the worker's own roots apply.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -30,6 +33,32 @@ impl FilesystemBoundary {
             Self::Workspace => "workspace",
             Self::ConfiguredRoots => "configured_roots",
         }
+    }
+}
+
+/// Operator choice for the boundary stamped on scoped calls
+/// ([`crate::config::WorkerConfig::filesystem_boundary`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundaryMode {
+    /// `workspace` iff approval-gate's access watch is bound, otherwise
+    /// `configured_roots`.
+    #[default]
+    Auto,
+    /// `fs_scope.root` plus grants are the boundary, with or without
+    /// approval-gate.
+    Workspace,
+    /// The worker's configured roots are the boundary; `fs_scope.root` only
+    /// anchors relative paths.
+    ConfiguredRoots,
+}
+
+/// `auto` keeps the hook-detected boundary; the other modes pin it.
+pub fn effective_boundary(mode: BoundaryMode, detected: FilesystemBoundary) -> FilesystemBoundary {
+    match mode {
+        BoundaryMode::Auto => detected,
+        BoundaryMode::Workspace => FilesystemBoundary::Workspace,
+        BoundaryMode::ConfiguredRoots => FilesystemBoundary::ConfiguredRoots,
     }
 }
 
@@ -237,6 +266,26 @@ mod tests {
             workspace(),
         );
         assert_eq!(out, scalar);
+    }
+
+    #[test]
+    fn boundary_mode_overrides_the_detected_boundary() {
+        use FilesystemBoundary::*;
+        assert_eq!(effective_boundary(BoundaryMode::Auto, Workspace), Workspace);
+        assert_eq!(
+            effective_boundary(BoundaryMode::Auto, ConfiguredRoots),
+            ConfiguredRoots
+        );
+        for detected in [Workspace, ConfiguredRoots] {
+            assert_eq!(
+                effective_boundary(BoundaryMode::Workspace, detected),
+                Workspace
+            );
+            assert_eq!(
+                effective_boundary(BoundaryMode::ConfiguredRoots, detected),
+                ConfiguredRoots
+            );
+        }
     }
 
     #[test]
