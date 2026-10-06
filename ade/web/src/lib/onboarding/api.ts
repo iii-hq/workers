@@ -162,6 +162,7 @@ export async function readProviderStates(): Promise<ProviderState[]> {
       credentialSource: asString(row.credential_source),
       credentialRef: asString(row.credential_ref),
       credentialError: asString(row.credential_error),
+      ownsAuthentication: asString(row.credential_env_var) === undefined,
     })
   }
   return out

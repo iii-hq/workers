@@ -43,15 +43,20 @@ describe('connectedModelCount', () => {
     await expect(connectedModelCount()).resolves.toBe(9)
   })
 
-  it('does not count a subscription signed in on this machine', async () => {
-    // A fresh project with only the Codex CLI signed in still opens the
-    // wizard, so the person sees that subscription and chooses it.
-    harness.providers = [provider('openai-codex', 3), provider('anthropic', 0)]
+  it('counts a provider that owns its authentication', () => {
+    // Codex or Copilot signed in: the router holds no credential, so it
+    // reports configured: false, but the models are usable. First run opens
+    // the wizard on its status alone, so these count as connected.
+    harness.providers = [
+      {
+        ...provider('openai-codex', 3),
+        configured: false,
+        ownsAuthentication: true,
+      },
+      provider('anthropic', 0),
+    ]
     harness.workers = new Set(['llm-router', 'provider-openai-codex'])
-    await expect(connectedModelCount()).resolves.toBe(0)
-    harness.providers.push(provider('openai', 4))
-    harness.workers.add('provider-openai')
-    await expect(connectedModelCount()).resolves.toBe(4)
+    return expect(connectedModelCount()).resolves.toBe(3)
   })
 
   it('does not count a provider that reports no credentials', async () => {

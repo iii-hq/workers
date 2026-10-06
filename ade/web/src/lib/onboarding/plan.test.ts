@@ -9,6 +9,7 @@ import {
   type ProviderChoice,
   providerChoices,
   registryChoices,
+  servesUsableModels,
   setPath,
   type ToolScan,
 } from './plan'
@@ -85,6 +86,73 @@ describe('providerChoices', () => {
     expect(choices[0].providerId).toBe('openai')
     expect(choices[0].ready).toBe(true)
     expect(choices[0].installed).toBe(true)
+  })
+
+  it('lists other running providers that serve models as connected', () => {
+    const choices = providerChoices({
+      tools: [],
+      providers: [
+        // Device flow: the router holds no credential, the worker does.
+        {
+          id: 'github-copilot',
+          title: 'GitHub Copilot',
+          configured: false,
+          ownsAuthentication: true,
+          available: true,
+          modelCount: 10,
+        },
+        // Keyless local server.
+        {
+          id: 'llamacpp',
+          title: 'llama.cpp',
+          configured: true,
+          available: true,
+          modelCount: 2,
+        },
+        // A key provider the wizard has no recipe for, with no key: its
+        // catalog is not usable, so it is not connected.
+        {
+          id: 'sarvam',
+          title: 'Sarvam',
+          configured: false,
+          available: true,
+          modelCount: 3,
+        },
+      ],
+      detections: [],
+    })
+    const copilot = byId(choices, 'github-copilot')
+    expect(copilot).toMatchObject({
+      ready: true,
+      installed: true,
+      worker: 'provider-github-copilot',
+      modelCount: 10,
+    })
+    expect(byId(choices, 'llamacpp').ready).toBe(true)
+    expect(choices.some((choice) => choice.providerId === 'sarvam')).toBe(false)
+  })
+})
+
+describe('servesUsableModels', () => {
+  it('needs models and either a credential or its own authentication', () => {
+    const state = {
+      id: 'x',
+      title: 'X',
+      available: true,
+      modelCount: 4,
+    }
+    expect(servesUsableModels({ ...state, configured: true })).toBe(true)
+    expect(
+      servesUsableModels({
+        ...state,
+        configured: false,
+        ownsAuthentication: true,
+      }),
+    ).toBe(true)
+    expect(servesUsableModels({ ...state, configured: false })).toBe(false)
+    expect(
+      servesUsableModels({ ...state, configured: true, modelCount: 0 }),
+    ).toBe(false)
   })
 })
 

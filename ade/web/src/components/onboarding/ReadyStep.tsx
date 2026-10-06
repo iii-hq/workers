@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import { Wordmark } from '@/components/ui/Wordmark'
 import type { JudgeOption } from '@/lib/onboarding/catalog'
+import { servesUsableModels } from '@/lib/onboarding/plan'
 import { Section, StepLayout } from './parts'
 import type { OnboardingController } from './use-onboarding'
 
@@ -54,9 +55,7 @@ export function ReadyStep({
   onStart: () => void
 }) {
   const { snapshot, activity } = onboarding
-  const connected = (snapshot.providers ?? []).filter(
-    (provider) => provider.modelCount > 0,
-  )
+  const connected = (snapshot.providers ?? []).filter(servesUsableModels)
   const totalModels = connected.reduce(
     (sum, provider) => sum + provider.modelCount,
     0,

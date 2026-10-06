@@ -55,6 +55,20 @@ export interface ProviderState {
   credentialSource?: string
   credentialRef?: string
   credentialError?: string
+  /**
+   * The provider declares no credential env var: it signs in by itself (OAuth,
+   * device flow, a local CLI) and the router holds no key for it, so it
+   * reports `configured: false` even when its models are usable.
+   */
+  ownsAuthentication?: boolean
+}
+
+/** Its models are usable: it has some, and a credential or its own sign-in. */
+export function servesUsableModels(provider: ProviderState): boolean {
+  return (
+    provider.modelCount > 0 &&
+    (provider.configured || provider.ownsAuthentication === true)
+  )
 }
 
 interface BaseChoice {
@@ -212,8 +226,32 @@ export function providerChoices({
 
   const rank = (choice: ProviderChoice) =>
     choice.ready ? 0 : choice.recommended ? 1 : 2
+  // Any other running provider that already serves usable models (Copilot,
+  // llama.cpp): the wizard has no recipe for it but shows it as connected.
+  const known = new Set(
+    [...subscriptions, ...keys].map((choice) => choice.providerId),
+  )
+  const others: RegistryChoice[] = providers
+    .filter(
+      (state) =>
+        !known.has(state.id) && state.available && servesUsableModels(state),
+    )
+    .map((state) => ({
+      kind: 'registry',
+      providerId: state.id,
+      worker: `provider-${state.id}`,
+      title: state.title,
+      description: null,
+      version: null,
+      ready: true,
+      installed: true,
+      recommended: false,
+      reason: 'Connected.',
+      modelCount: state.modelCount,
+    }))
+
   // Stable: catalog order inside each rank.
-  return [...subscriptions, ...keys]
+  return [...subscriptions, ...keys, ...others]
     .map((choice, index) => ({ choice, index }))
     .sort((a, b) => rank(a.choice) - rank(b.choice) || a.index - b.index)
     .map(({ choice }) => choice)
