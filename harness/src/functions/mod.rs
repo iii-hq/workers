@@ -3,6 +3,8 @@
 //! `pub async fn handle(deps, req)` the registration closure wraps; tests call
 //! the same `handle` functions directly (SOP §7).
 
+pub mod context_policy;
+pub mod delete_session_tree;
 pub mod filesystem;
 pub mod function_resolve;
 pub mod function_trigger;
@@ -47,6 +49,14 @@ pub const SPAWN_DESC: &str =
      through whatever destination its task names. Check `harness::status` for child health; children are leaves unless \
      options.orchestrator is true.";
 
+pub const ASK_ID: &str = "harness::ask";
+pub const ASK_DESC: &str =
+    "Ask the user for a decision between discrete options: 1-4 questions, 2-4 options each; \
+     the UI adds a free-text \"Other\" choice, so do not include one. The questions are shown \
+     as a clickable card in the chat, your turn ends, and the answer arrives as the user's next \
+     message, so do not repeat the questions in text. Not available to sub-agents or \
+     structured-output turns.";
+
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =
     "Internal durable loop step (enqueued onto the harness-turn queue); not called directly.";
@@ -68,6 +78,9 @@ pub const STATUS_ID: &str = "harness::status";
 pub const STATUS_DESC: &str =
     "Read a session's current turn. Returns a lean summary by default; pass verbose: true for the \
      full runtime report and untruncated result.";
+pub const CONTEXT_POLICY_ID: &str = "harness::context-policy";
+pub const CONTEXT_POLICY_DESC: &str =
+    "Return the Harness context-pruning policy for a destination model without making a model request.";
 
 pub const SYSTEM_PROMPT_ID: &str = "harness::system-prompt::get";
 pub const SYSTEM_PROMPT_DESC: &str =
@@ -270,11 +283,31 @@ fn register_with_metadata_meta<Req, Resp, F, Fut>(
 }
 
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
+    register_internal(iii, deps, delete_session_tree::DELETE_ID, "Durably cancel and delete only the selected session subtree; returns an operation snapshot.", |d, r| async move { delete_session_tree::handle(&d, r).await });
+    register_internal(
+        iii,
+        deps,
+        delete_session_tree::STATUS_ID,
+        "Read a durable session subtree deletion snapshot, or null if unknown.",
+        |d, r| async move { delete_session_tree::status(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        delete_session_tree::RUN_ID,
+        "Internal queued subtree deletion continuation.",
+        |d, r| async move { delete_session_tree::run(&d, r).await },
+    );
     register_internal(iii, deps, SEND_ID, SEND_DESC, |d, r| async move {
         send::handle(&d, r).await
     });
     register(iii, deps, SPAWN_ID, SPAWN_DESC, |d, r| async move {
         spawn::handle(&d, r).await
+    });
+    // Catalog-visible so the model finds it; the turn loop intercepts the
+    // call, and this handler only answers direct calls (always an error).
+    register(iii, deps, ASK_ID, ASK_DESC, |_d, r| async move {
+        crate::ask::direct_handle(r).await
     });
     // The ONE fire handler every agent-registered binding routes through.
     // Registered, kept off the catalog: agents describe their target in the
@@ -317,6 +350,13 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         SYSTEM_PROMPT_ID,
         SYSTEM_PROMPT_DESC,
         |d, r| async move { system_prompt::handle(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        CONTEXT_POLICY_ID,
+        CONTEXT_POLICY_DESC,
+        |d, r| async move { context_policy::handle(&d, r).await },
     );
     register(
         iii,

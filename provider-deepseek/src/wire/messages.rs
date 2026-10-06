@@ -27,7 +27,10 @@ use crate::wire::names::encode_tool_name;
 use llm_router::types::content::ContentBlock;
 use llm_router::types::messages::{AgentMessage, FunctionResultMessage};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::sync::{Mutex, OnceLock};
 
 /// Body of the synthetic `role: "tool"` row injected for an orphan tool call
 /// (Chat Completions rejects assistant `tool_calls` without a tool message
@@ -99,32 +102,57 @@ fn tool_row(tool_call_id: &str, content: String) -> Value {
     json!({ "role": "tool", "tool_call_id": tool_call_id, "content": content })
 }
 
+/// Which rewrite produced a wire row, to name the one that changed a row an
+/// earlier request already sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// An input message in its own position.
+    Input,
+    /// Moved by `reorder_displaced_results` (a result pulled up, or a row it
+    /// jumped over).
+    Reordered,
+    /// The orphan-call placeholder.
+    Placeholder,
+    /// Overwritten by a later duplicate result.
+    Upserted,
+}
+
 /// Latest-wins dedup: replace an existing `role:"tool"` row with the same id
 /// (strict gateways reject duplicates; lenient ones silently overwrite).
-fn upsert_tool_row(out: &mut Vec<Value>, row: Value) {
+fn upsert_tool_row(out: &mut Vec<(Value, Origin)>, row: Value, origin: Origin) {
     let id = row
         .get("tool_call_id")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let existing = out.iter().position(|e| {
+    let existing = out.iter().position(|(e, _)| {
         e.get("role").and_then(Value::as_str) == Some("tool")
             && e.get("tool_call_id").and_then(Value::as_str) == Some(id)
     });
     match existing {
-        Some(i) => out[i] = row,
-        None => out.push(row),
+        Some(i) => out[i] = (row, Origin::Upserted),
+        None => out.push((row, origin)),
     }
 }
 
 pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<Value> {
+    wire_rows(messages, system_prompt)
+        .into_iter()
+        .map(|(row, _)| row)
+        .collect()
+}
+
+fn wire_rows(input: &[AgentMessage], system_prompt: &str) -> Vec<(Value, Origin)> {
     // Results displaced behind an interleaved user message (notification /
     // steering injected mid call-window) must be pulled back next to their
     // call: Chat Completions rejects a user row between tool_calls and its
     // tool rows.
-    let messages = llm_router::types::messages::reorder_displaced_results(messages);
-    let mut out: Vec<Value> = Vec::new();
+    let messages = llm_router::types::messages::reorder_displaced_results(input);
+    let mut out: Vec<(Value, Origin)> = Vec::new();
     if !system_prompt.is_empty() {
-        out.push(json!({ "role": "system", "content": system_prompt }));
+        out.push((
+            json!({ "role": "system", "content": system_prompt }),
+            Origin::Input,
+        ));
     }
 
     // Pre-pass: every function_call_id that has a matching function_result
@@ -138,10 +166,18 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
         })
         .collect();
 
-    for m in messages {
+    for (position, m) in messages.into_iter().enumerate() {
+        let origin = if std::ptr::eq(m, &input[position]) {
+            Origin::Input
+        } else {
+            Origin::Reordered
+        };
         match m {
             AgentMessage::User(u) => {
-                out.push(json!({ "role": "user", "content": flatten(&u.content) }));
+                out.push((
+                    json!({ "role": "user", "content": flatten(&u.content) }),
+                    origin,
+                ));
             }
             AgentMessage::Assistant(a) => {
                 let text = flatten(&a.content);
@@ -193,13 +229,16 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
                     }
                     entry["tool_calls"] = Value::Array(tool_calls);
                 }
-                out.push(entry);
+                out.push((entry, origin));
                 // Placeholders for orphans go directly after the assistant
                 // row — exactly where the API expects the tool messages.
                 for block in &a.content {
                     if let ContentBlock::FunctionCall { id, .. } = block {
                         if !resolved_ids.contains(id) {
-                            out.push(tool_row(id, ORPHAN_TOOL_PLACEHOLDER.to_string()));
+                            out.push((
+                                tool_row(id, ORPHAN_TOOL_PLACEHOLDER.to_string()),
+                                Origin::Placeholder,
+                            ));
                             resolved_ids.insert(id.clone());
                         }
                     }
@@ -209,6 +248,7 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
                 upsert_tool_row(
                     &mut out,
                     tool_row(&r.function_call_id, format_function_result_content(r)),
+                    origin,
                 );
             }
             // Never reach the provider per spec (stripped upstream); defensive.
@@ -216,6 +256,71 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
         }
     }
     out
+}
+
+/// How the final-message warning for a rewritten wire row starts; the
+/// harness files warnings with this prefix next to its own measurement
+/// (`harness/src/context_snapshot.rs`, `PROVIDER_PREFIX_NOTE`).
+pub const PREFIX_CHANGED_NOTE: &str = "context prefix changed";
+
+const MAX_TRACKED_SESSIONS: usize = 256;
+
+// ponytail: in-process, forgotten on restart and cleared wholesale past
+// MAX_TRACKED_SESSIONS; enough to name the rewrite while a session runs.
+type SentRows = Mutex<HashMap<String, Vec<(u64, Origin)>>>;
+
+fn sent_rows() -> &'static SentRows {
+    static ROWS: OnceLock<SentRows> = OnceLock::new();
+    ROWS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Compare this request's wire rows with the session's previous request and
+/// remember them for the next. `Some(note)` names the first row both carry
+/// that differs and which rewrite produced it: `orphan_replaced` (the
+/// placeholder gave way), `upsert` (a duplicate result overwrote the row),
+/// `reorder` (a displaced result moved in), or `input` (the messages the
+/// harness sent changed there).
+pub fn prefix_change_note(
+    session_id: &str,
+    messages: &[AgentMessage],
+    system_prompt: &str,
+) -> Option<String> {
+    let rows = wire_rows(messages, system_prompt);
+    let sent: Vec<(u64, Origin)> = rows
+        .iter()
+        .map(|(row, origin)| {
+            let mut hasher = DefaultHasher::new();
+            row.to_string().hash(&mut hasher);
+            (hasher.finish(), *origin)
+        })
+        .collect();
+    let mut tracked = sent_rows().lock().ok()?;
+    if tracked.len() >= MAX_TRACKED_SESSIONS && !tracked.contains_key(session_id) {
+        tracked.clear();
+    }
+    let prev = tracked.insert(session_id.to_string(), sent)?;
+    let current = &tracked[session_id];
+    let index = prev
+        .iter()
+        .zip(current)
+        .position(|(before, after)| before.0 != after.0)?;
+    let cause = match (prev[index].1, current[index].1) {
+        (Origin::Placeholder, _) => "orphan_replaced",
+        (_, Origin::Upserted) => "upsert",
+        (Origin::Reordered, _) | (_, Origin::Reordered) => "reorder",
+        _ => "input",
+    };
+    let row = &rows[index].0;
+    let role = row.get("role").and_then(Value::as_str).unwrap_or("?");
+    let call = row
+        .get("tool_call_id")
+        .and_then(Value::as_str)
+        .map(|id| format!(" {id}"))
+        .unwrap_or_default();
+    Some(format!(
+        "{PREFIX_CHANGED_NOTE} at wire row {index}/{} ({role}{call}): {cause}",
+        prev.len()
+    ))
 }
 
 #[cfg(test)]
@@ -616,5 +721,74 @@ mod tests {
             "",
         );
         assert!(wire.is_empty(), "thinking-only assistant omitted: {wire:?}");
+    }
+    fn say(text: &str) -> Vec<ContentBlock> {
+        vec![ContentBlock::Text { text: text.into() }]
+    }
+
+    #[test]
+    fn appended_rows_are_no_prefix_change() {
+        let mut msgs = vec![
+            user(say("go")),
+            assistant(vec![call("c1")]),
+            result("c1", "ok", json!({})),
+        ];
+        assert_eq!(prefix_change_note("s_append", &msgs, "sys"), None);
+        msgs.push(assistant(say("done")));
+        assert_eq!(prefix_change_note("s_append", &msgs, "sys"), None);
+    }
+
+    #[test]
+    fn user_message_landing_mid_call_window_keeps_the_wire_prefix() {
+        // Suspected in linkly: a notice/steering message lands while c2 runs,
+        // so the transcript holds it between the call and its result.
+        let mut msgs = vec![
+            user(say("go")),
+            assistant(vec![call("c1")]),
+            result("c1", "ok", json!({})),
+        ];
+        assert_eq!(prefix_change_note("s_mid", &msgs, "sys"), None);
+        msgs.extend([
+            assistant(vec![call("c2")]),
+            user(say("also check the logs")),
+            result("c2", "ok", json!({})),
+        ]);
+        assert_eq!(prefix_change_note("s_mid", &msgs, "sys"), None);
+        msgs.extend([assistant(vec![call("c3")]), result("c3", "ok", json!({}))]);
+        assert_eq!(prefix_change_note("s_mid", &msgs, "sys"), None);
+    }
+
+    #[test]
+    fn a_late_result_reordered_over_the_harness_placeholder_is_named() {
+        // The harness patched c1's missing result in place; the real one
+        // lands after a user message and the reorder pulls it up.
+        let before = vec![
+            user(say("go")),
+            assistant(vec![call("c1")]),
+            result("c1", "result unknown", json!({})),
+            user(say("status?")),
+        ];
+        assert_eq!(prefix_change_note("s_reorder", &before, ""), None);
+        let after = vec![
+            user(say("go")),
+            assistant(vec![call("c1")]),
+            user(say("status?")),
+            result("c1", "ok", json!({})),
+        ];
+        assert_eq!(
+            prefix_change_note("s_reorder", &after, "").as_deref(),
+            Some("context prefix changed at wire row 2/4 (tool c1): reorder")
+        );
+    }
+
+    #[test]
+    fn the_orphan_placeholder_giving_way_is_named() {
+        let mut msgs = vec![user(say("go")), assistant(vec![call("c1")])];
+        assert_eq!(prefix_change_note("s_orphan", &msgs, ""), None);
+        msgs.push(result("c1", "ok", json!({})));
+        assert_eq!(
+            prefix_change_note("s_orphan", &msgs, "").as_deref(),
+            Some("context prefix changed at wire row 2/3 (tool c1): orphan_replaced")
+        );
     }
 }

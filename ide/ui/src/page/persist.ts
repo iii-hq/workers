@@ -52,8 +52,9 @@ export interface TabUiState {
   /** The active sidebar view; absent in legacy saves = explorer. */
   sideView?: string
   diffOptions?: Partial<DiffOptions>
-  /** Files-tab dot-entries toggle; absent in legacy saves = hidden. */
-  showHidden?: boolean
+  /** Files-tab dot entries hidden; absent = shown. It replaces `showHidden`,
+      whose saved `false` was only the old default, never a choice. */
+  hideDotfiles?: boolean
   /** Sidebar width in px from the drag handle; absent = default. */
   sideWidth?: number
   /** Dockable terminal panel; absent in legacy saves = closed at bottom. */
@@ -64,6 +65,9 @@ export interface TabUiState {
   terminalRightSize?: number
   terminalJobIds?: string[]
   terminalWorkspace?: TerminalWorkspaceState
+  /** The Git tool window in the docked panel, and its tab; absent = closed on Log. */
+  gitOpen?: boolean
+  gitTab?: 'log' | 'worktrees'
 }
 
 /** The stored object for the pane (or its legacy key), null when the
@@ -160,8 +164,8 @@ export async function loadTabUiState(
       raw.diffOptions && typeof raw.diffOptions === 'object' && !Array.isArray(raw.diffOptions)
         ? (raw.diffOptions as Partial<DiffOptions>)
         : undefined,
-    showHidden:
-      typeof raw.showHidden === 'boolean' ? raw.showHidden : undefined,
+    hideDotfiles:
+      typeof raw.hideDotfiles === 'boolean' ? raw.hideDotfiles : undefined,
     sideWidth: typeof raw.sideWidth === 'number' ? raw.sideWidth : undefined,
     terminalOpen,
     terminalDock:
@@ -184,6 +188,8 @@ export async function loadTabUiState(
       ? raw.terminalJobIds.filter((id): id is string => typeof id === 'string')
       : undefined,
     terminalWorkspace,
+    gitOpen: raw.gitOpen === true ? true : undefined,
+    gitTab: raw.gitTab === 'log' || raw.gitTab === 'worktrees' ? raw.gitTab : undefined,
   }
 }
 

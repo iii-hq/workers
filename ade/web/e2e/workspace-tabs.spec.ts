@@ -112,8 +112,9 @@ test('workspace tabs stay deterministic across keys, reloads, deep links and oth
       'data-tab-id',
       mineBefore ?? '',
     )
-    // Longer than one poll interval: the other pointer has reached us by now.
-    await page.waitForTimeout(6_500)
+    // The other browser's pointer write rings here within milliseconds; well
+    // past that, this browser has still not followed it.
+    await page.waitForTimeout(2_000)
     await expect(activeTab(page)).toHaveAttribute(
       'data-tab-id',
       mineBefore ?? '',
@@ -131,6 +132,34 @@ test('workspace tabs stay deterministic across keys, reloads, deep links and oth
   await expect(page.getByRole('list', { name: 'Workspaces' })).toHaveCount(0)
   await page.setViewportSize({ width: 1280, height: 800 })
   await expect(activeTab(page)).toHaveAttribute('data-tab-id', homeId ?? '')
+
+  expectPassingResult(await stack.finish())
+})
+
+test('an engine-side open or close reaches the console without waiting for the poll', async ({
+  page,
+  stack,
+}) => {
+  const completed = stack.waitForTurnCompleted()
+  await stack.trigger()
+  expect(await completed).toMatchObject({ status: 'completed' })
+
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await openSession(page, stack)
+  // The home tab starts as chat + traces, and an `open` of a mounted screen
+  // writes nothing, so the check starts from a close. The ring binding went
+  // up when the console mounted, long before the session opened.
+  const traces = page.locator('section[aria-label="traces"]')
+  await expect(traces).toBeVisible()
+  await stack.invoke('console::workspace::close', { screen: 'traces' })
+  await expect(traces).toHaveCount(0)
+
+  // Nothing polls the layout: without the ring, each check fails every run.
+  await stack.invoke('console::workspace::open', { screen: 'traces' })
+  await expect(traces).toBeVisible({ timeout: 2_000 })
+  await stack.invoke('console::workspace::close', { screen: 'traces' })
+  await expect(traces).toHaveCount(0, { timeout: 2_000 })
 
   expectPassingResult(await stack.finish())
 })

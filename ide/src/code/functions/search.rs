@@ -1,9 +1,9 @@
 //! `coder::search` — combined path + content search.
 //!
-//! Walks the resolved folder with `walkdir`, filtering by include/exclude
-//! globs (matched against the path relative to its containing root) and
-//! skipping non-accessible files entirely so the search can't reveal
-//! their content. Noise paths matching `default_exclude_globs` are also
+//! Walks the resolved folder (or the one file `path` names) with `walkdir`,
+//! filtering by include/exclude globs (matched against the path relative to
+//! its containing root) and skipping non-accessible files entirely so the
+//! search can't reveal their content. Noise paths matching `default_exclude_globs` are also
 //! skipped by default — descent into matching directories is suppressed
 //! and matching files are omitted; opt out per call with
 //! `use_default_excludes: false`. That filter is hide-only and
@@ -28,27 +28,35 @@ use crate::code::config::CoderConfig;
 use crate::code::error::{err_to_string, CoderError};
 use crate::code::path::PathResolver;
 
-// examples are wire-contract; goldens pin them.
+// examples are wire-contract; goldens pin them. `remote = "Self"` derives
+// an inherent `deserialize` for the hand-rolled impl below to wrap; the
+// schemars rename keeps the published schema's name.
 #[derive(Debug, Deserialize, JsonSchema)]
-#[schemars(example = "example_search_input")]
+#[serde(remote = "Self")]
+#[schemars(rename = "SearchInput", example = "example_search_input")]
 pub struct SearchInput {
     /// Pattern to search for. Treated as a regex when `regex: true`,
     /// otherwise as a literal substring. May be empty only when
     /// `search_content` is false: a path-only search with no query lists
     /// every path (with `fuzzy_paths`, shallow and short paths first).
     pub query: String,
-    /// Folder to search (default `.`); globs match relative to its root, result
-    /// paths are absolute.
+    /// Folder or file to search (default `.`); a file searches just that file.
+    /// It only narrows the walk: globs are NOT relative to it, they match paths
+    /// relative to the session root (or to the configured root that contains
+    /// them; see coder::info). Result paths are absolute.
     #[serde(default = "default_path")]
     pub path: String,
     #[serde(default)]
     pub regex: bool,
     #[serde(default)]
     pub ignore_case: bool,
-    /// Root-relative glob patterns paths must match; empty = everything.
+    /// Glob patterns paths must match, relative to the SESSION ROOT, never to
+    /// `path`: with path `ade`, write `ade/README.md` or `**/README.md`, not
+    /// `README.md`. Empty = everything.
     #[serde(default)]
     pub include_globs: Vec<String>,
-    /// Glob patterns (same relative-to-root matching) that exclude paths.
+    /// Glob patterns (relative to the session root, like include_globs) that
+    /// exclude paths.
     #[serde(default)]
     pub exclude_globs: Vec<String>,
     /// Optional explicit cap. Falls back to config when unset.
@@ -87,13 +95,35 @@ pub struct SearchInput {
     #[serde(default)]
     pub fuzzy_paths: bool,
     /// Walk dot-files and dot-folders (`.github`, `.env`, …); default true.
-    /// `false` leaves them out, the way an editor's quick open does.
+    /// `false` leaves them out, the way an editor's quick open does. A `path`
+    /// that names a dot-file or dot-folder is still searched: naming it is
+    /// explicit intent.
     #[serde(default = "default_true")]
     pub include_hidden: bool,
     /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
     pub fs_scope: Option<crate::fs::FsScope>,
+}
+
+/// `{ pattern }` without `query` (the rg/grep name) gets the fix named back
+/// instead of serde's bare "missing field `query`"; `pattern` is not an
+/// alias, the published schema keeps one name.
+impl<'de> Deserialize<'de> for SearchInput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value.get("query").is_none() && value.get("pattern").is_some() {
+            return Err(serde::de::Error::custom(
+                CoderError::BadInput(
+                    "coder::search takes `query`, not `pattern`: send \
+                     {\"query\": \"...\"}, plus \"regex\": true for a regex."
+                        .into(),
+                )
+                .to_wire_string(),
+            ));
+        }
+        SearchInput::deserialize(value).map_err(serde::de::Error::custom)
+    }
 }
 
 fn default_true() -> bool {
@@ -210,12 +240,23 @@ fn inner(
     // message names the path the caller supplied (standardized wording —
     // REDACTION INVARIANT: identical to the glob-denied message).
     let md = std::fs::metadata(&walk_root).map_err(|e| CoderError::io_for_path(e, &req.path))?;
-    if !md.is_dir() {
+    if !md.is_dir() && !md.is_file() {
         return Err(CoderError::BadInput(format!(
-            "not a directory: {}",
+            "not a directory or file: {}",
             req.path
         )));
     }
+    // A file as `path` is searched alone, like rg/grep. A non-accessible
+    // one is refused with the C211 a missing path gets (REDACTION
+    // INVARIANT); a folder's children are filtered in the walk below.
+    if md.is_file() && resolver.is_non_accessible(&walk_root) {
+        return Err(CoderError::not_found_or_denied(&req.path));
+    }
+    // The folder searched: the walk root, or the parent of a file.
+    let searched_dir = match walk_root.parent() {
+        Some(parent) if md.is_file() => parent.to_path_buf(),
+        _ => walk_root.clone(),
+    };
 
     // Glob/path matching runs on the form relative to the CONTAINING root.
     // In unjailed mode the walk root can sit outside every configured root
@@ -223,11 +264,11 @@ fn inner(
     // root-relative form exists — every entry would be dropped and the
     // search would return a false empty. Fall back to the same anchor that
     // resolved the wire path: the session scope when it contains the walk
-    // root, else the walk root itself.
+    // root, else the folder searched.
     let match_anchor = crate::fs::scope_anchor(req.fs_scope.as_ref())
         .and_then(|root| resolver.session_root(root))
         .filter(|scope| walk_root.starts_with(scope))
-        .unwrap_or_else(|| walk_root.clone());
+        .unwrap_or_else(|| searched_dir.clone());
 
     let include = build_globset(&req.include_globs)?;
     let exclude = build_globset(&req.exclude_globs)?;
@@ -255,8 +296,9 @@ fn inner(
     // Explicitly naming an excluded folder as the walk root expresses
     // the caller's intent to see inside it: the default-exclude filter
     // is disabled for that ENTIRE walk (mirrors coder::tree's behavior).
+    // Naming a file is the same intent.
     let use_default_excludes =
-        req.use_default_excludes && !resolver.is_default_excluded_dir(&walk_root);
+        req.use_default_excludes && md.is_dir() && !resolver.is_default_excluded_dir(&walk_root);
 
     let mut content_matches: Vec<ContentMatch> = Vec::new();
     let mut path_matches: Vec<PathMatch> = Vec::new();
@@ -365,7 +407,7 @@ fn inner(
                     // then drops the leading folder for those entries only;
                     // one anchor for the whole walk keeps the ranking, and the
                     // highlight a UI derives from it, consistent.
-                    let seen = relative_to(&walk_root, abs).unwrap_or_else(|| rel.clone());
+                    let seen = relative_to(&searched_dir, abs).unwrap_or_else(|| rel.clone());
                     if let Some(score) = fuzzy_path_score(query, &seen) {
                         fuzzy_seen += 1;
                         fuzzy_candidates.push(std::cmp::Reverse(FuzzyCandidate {
@@ -2377,5 +2419,293 @@ mod tests {
             .to_string();
         let paths: Vec<&str> = out.path_matches.iter().map(|m| m.path.as_str()).collect();
         assert_eq!(paths, vec![expected.as_str()]);
+    }
+
+    // ------------------------------------------------------------------
+    // A file as `path`: search that one file, like rg/grep.
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn file_path_searches_that_one_file() {
+        let (tmp, r, c) = setup();
+        write(
+            &tmp,
+            "src/a.ts",
+            "one\nregisterTrigger(x)\nthree\nsubscribe()\n",
+        );
+        write(&tmp, "src/b.ts", "registerTrigger elsewhere\n");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                path: "src/a.ts".into(),
+                regex: true,
+                context_lines_before: Some(1),
+                ..base_input("registerTrigger|subscribe")
+            },
+        )
+        .await
+        .unwrap();
+        let a = abs(&tmp, "src/a.ts");
+        let hits: Vec<_> = out
+            .content_matches
+            .iter()
+            .map(|m| (m.path.as_str(), m.line, m.text.as_str()))
+            .collect();
+        assert_eq!(
+            hits,
+            vec![
+                (a.as_str(), 2, "registerTrigger(x)"),
+                (a.as_str(), 4, "subscribe()")
+            ]
+        );
+        assert_eq!(out.content_matches[0].before, ctx(&["one"]));
+        assert!(!out.truncated);
+    }
+
+    /// The live case: a `.d.ts` under node_modules. Naming the file is
+    /// explicit intent, like naming an excluded folder as the walk root.
+    #[tokio::test]
+    async fn file_path_under_a_default_excluded_folder_is_searched() {
+        let (tmp, r, c) = setup();
+        write(
+            &tmp,
+            "node_modules/@iii-dev/console-ui/index.d.ts",
+            "export declare function registerTrigger(): void;\n",
+        );
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                path: "node_modules/@iii-dev/console-ui/index.d.ts".into(),
+                ..base_input("registerTrigger")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].line, 1);
+    }
+
+    /// `include_hidden: false` filters what the walk finds, not what `path`
+    /// names: a named dot-file is searched like a named dot-folder, while a
+    /// dot-file inside a named folder stays out.
+    #[tokio::test]
+    async fn a_named_hidden_path_is_searched_without_include_hidden() {
+        let (tmp, r, c) = setup();
+        write(&tmp, ".notes.txt", "needle\n");
+        write(&tmp, ".config/app.toml", "needle\n");
+        write(&tmp, "src/.hidden.rs", "needle\n");
+        write(&tmp, "src/shown.rs", "needle\n");
+        let search = |path: &str| SearchInput {
+            path: path.into(),
+            include_hidden: false,
+            ..base_input("needle")
+        };
+        for (path, want) in [(".notes.txt", 1), (".config", 1), ("src", 1)] {
+            let out = handle(r.clone(), c.clone(), search(path)).await.unwrap();
+            assert_eq!(out.content_matches.len(), want, "{path}");
+        }
+        let out = handle(r.clone(), c.clone(), search("src")).await.unwrap();
+        assert!(out.content_matches[0].path.ends_with("src/shown.rs"));
+    }
+
+    /// Globs match the file's root-relative form, the same form a directory
+    /// search matches it by; path-only search returns the file when it
+    /// matches; a binary file is skipped, not an error.
+    #[tokio::test]
+    async fn file_path_globs_path_search_and_binary_match_a_directory_search() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "src/a.rs", "needle\n");
+        write(&tmp, "src/bin.dat", "needle\0\n");
+        let a = abs(&tmp, "src/a.rs");
+        for (include, exclude, want) in [
+            (vec!["**/*.rs"], vec![], 1),
+            (vec!["**/*.ts"], vec![], 0),
+            (vec![], vec!["src/**"], 0),
+        ] {
+            let input = SearchInput {
+                path: "src/a.rs".into(),
+                include_globs: include.iter().map(|g| g.to_string()).collect(),
+                exclude_globs: exclude.iter().map(|g| g.to_string()).collect(),
+                ..base_input("needle")
+            };
+            let file = handle(r.clone(), c.clone(), input).await.unwrap();
+            let dir = handle(
+                r.clone(),
+                c.clone(),
+                SearchInput {
+                    path: "src".into(),
+                    include_globs: include.iter().map(|g| g.to_string()).collect(),
+                    exclude_globs: exclude.iter().map(|g| g.to_string()).collect(),
+                    ..base_input("needle")
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(file.content_matches.len(), want, "{include:?} {exclude:?}");
+            assert_eq!(dir.content_matches.len(), want, "{include:?} {exclude:?}");
+        }
+        let path_only = |query: &str| SearchInput {
+            path: "src/a.rs".into(),
+            search_content: false,
+            search_paths: true,
+            ..base_input(query)
+        };
+        let out = handle(r.clone(), c.clone(), path_only("a.rs"))
+            .await
+            .unwrap();
+        let paths: Vec<_> = out.path_matches.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(paths, vec![a.as_str()]);
+        assert!(matches!(out.path_matches[0].kind, PathMatchKind::File));
+        let out = handle(r.clone(), c.clone(), path_only("zzz"))
+            .await
+            .unwrap();
+        assert!(out.path_matches.is_empty());
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                path: "src/bin.dat".into(),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.content_matches.is_empty());
+    }
+
+    /// Unjailed, no session scope, file outside every root: globs and
+    /// fuzzy ranking anchor at the file's folder (a directory search anchors
+    /// at the folder it walks), so the file is not dropped as a false empty.
+    #[tokio::test]
+    async fn file_path_outside_every_root_anchors_at_its_folder() {
+        let root = tempdir().unwrap();
+        let other = tempdir().unwrap();
+        std::fs::write(other.path().join("index.d.ts"), "subscribe()\n").unwrap();
+        let cfg = Arc::new(CoderConfig {
+            base_paths: vec![root.path().to_path_buf()],
+            unjailed: true,
+            max_read_bytes: 1024 * 1024,
+            search_default_max_matches: 1000,
+            search_default_max_line_bytes: 4096,
+            ..CoderConfig::default()
+        });
+        let r = Arc::new(PathResolver::new(&cfg).unwrap());
+        let file = other.path().join("index.d.ts").display().to_string();
+        let out = handle(
+            r.clone(),
+            cfg.clone(),
+            SearchInput {
+                path: file.clone(),
+                include_globs: vec!["*.ts".into()],
+                ..base_input("subscribe")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        let out = handle(
+            r,
+            cfg,
+            SearchInput {
+                path: file,
+                search_content: false,
+                search_paths: true,
+                fuzzy_paths: true,
+                ..base_input("index")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.path_matches.len(), 1);
+    }
+
+    /// A non-accessible file is refused with the C211 a missing path gets
+    /// (REDACTION INVARIANT); a file outside the session is refused C220
+    /// and one outside every root C215, as any path is.
+    #[tokio::test]
+    async fn file_path_refusals_match_any_other_path() {
+        let (tmp, r, c) = setup();
+        write(&tmp, ".env", "API_KEY=needle\n");
+        write(&tmp, "sub/in.txt", "needle\n");
+        write(&tmp, "other.txt", "needle\n");
+        let err = handle(
+            r.clone(),
+            c.clone(),
+            SearchInput {
+                path: ".env".into(),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            err,
+            CoderError::not_found_or_denied(".env").to_wire_string()
+        );
+        let scoped = |path: String| SearchInput {
+            path,
+            fs_scope: Some(crate::fs::FsScope {
+                root: tmp.path().join("sub").display().to_string(),
+                grants: vec![],
+                boundary: crate::fs::FsBoundary::Workspace,
+            }),
+            ..base_input("needle")
+        };
+        let err = handle(r.clone(), c.clone(), scoped(abs(&tmp, "other.txt")))
+            .await
+            .unwrap_err();
+        assert!(err.contains("C220"), "got: {err}");
+        let out = handle(r.clone(), c.clone(), scoped("in.txt".into()))
+            .await
+            .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join("x.txt"), "needle\n").unwrap();
+        let err = handle(
+            r,
+            c,
+            SearchInput {
+                path: outside.path().join("x.txt").display().to_string(),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("C215"), "got: {err}");
+    }
+
+    // ------------------------------------------------------------------
+    // `pattern` sent in place of `query`.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn pattern_without_query_names_the_fix() {
+        let err = serde_json::from_value::<SearchInput>(serde_json::json!({
+            "path": "src",
+            "pattern": "registerTrigger|subscribe"
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("\"code\":\"C210\""), "got: {err}");
+        assert!(
+            err.contains("coder::search takes `query`, not `pattern`"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn query_alone_and_other_bad_input_keep_their_behaviour() {
+        let ok: SearchInput =
+            serde_json::from_value(serde_json::json!({ "query": "needle" })).unwrap();
+        assert_eq!((ok.query.as_str(), ok.path.as_str()), ("needle", "."));
+        let both: SearchInput =
+            serde_json::from_value(serde_json::json!({ "query": "a", "pattern": "b" })).unwrap();
+        assert_eq!(both.query, "a");
+        let err = serde_json::from_value::<SearchInput>(serde_json::json!({ "path": "src" }))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "missing field `query`");
     }
 }

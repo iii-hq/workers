@@ -411,6 +411,15 @@ async fn seed_child(
     reuse_only: bool,
 ) -> Result<ChildIds, HarnessError> {
     let session = deps.session().await;
+    if let Some(id) = req.session_id.as_deref() {
+        crate::functions::delete_session_tree::ensure_live(deps, id).await?;
+    }
+    if let Some(id) = parent
+        .map(|p| p.session_id.as_str())
+        .or(req.parent_session_id.as_deref())
+    {
+        crate::functions::delete_session_tree::ensure_live(deps, id).await?;
+    }
 
     let names_own_prompt = req
         .options
@@ -568,6 +577,7 @@ async fn seed_child(
                 identity,
             ),
         },
+        system_prompt_ref: None,
         skills_prompt: None,
         skill_context: None,
         max_turns,
@@ -624,9 +634,25 @@ async fn seed_child(
             req.parent_session_id.as_deref(),
             depth,
             display.as_ref(),
+            crate::judge::current_provider().as_deref(),
         ),
         agent.as_ref(),
     );
+    let topology = deps.topology.lock().await;
+    if let Some(parent_id) = parent
+        .map(|p| p.session_id.as_str())
+        .or(req.parent_session_id.as_deref())
+    {
+        crate::functions::delete_session_tree::ensure_live(deps, parent_id).await?;
+        if !session.exists(parent_id).await? {
+            return Err(HarnessError::InvalidRequest(
+                "spawn parent is absent".into(),
+            ));
+        }
+    }
+    if let Some(id) = req.session_id.as_deref() {
+        crate::functions::delete_session_tree::ensure_live(deps, id).await?;
+    }
     let title = display.as_ref().map(|value| value.name.as_str());
     let mut reused = false;
     let child_session_id = match &req.session_id {
@@ -638,6 +664,7 @@ async fn seed_child(
                      cannot recreate one — retry after the session exists again"
                 ))
             })?;
+            send::ensure_writable(&metadata, id)?;
             if let Some(p) = parent {
                 validate_turn_reuse(
                     &p.session_id,
@@ -654,6 +681,8 @@ async fn seed_child(
                 .ensure(id, title, linkage.as_ref(), kind.as_deref())
                 .await?;
             if !ensured.created {
+                // A reused session takes the child's task as a new message: it must be writable.
+                send::ensure_writable(&ensured.metadata, id)?;
                 // Reuse is legitimate for a parentless caller (a fork, or
                 // delivering a reaction into an existing chat). From a live
                 // turn it is almost always a cross-run id collision — models
@@ -685,6 +714,7 @@ async fn seed_child(
         }
     };
 
+    drop(topology);
     let previous_child = if reused {
         crate::state::get_turn(&deps.iii, &child_session_id, cfg.session_timeout_ms).await?
     } else {
@@ -821,13 +851,19 @@ fn normalize_display(
     }))
 }
 
+/// `judge_provider` is the spawning turn's (its baggage): a sub-agent keeps
+/// its parent's judge from then on, like it keeps the parent's model.
 fn child_session_metadata(
     parent: Option<&ParentLink>,
     display_parent_session_id: Option<&str>,
     depth: u32,
     display: Option<&SubagentDisplay>,
+    judge_provider: Option<&str>,
 ) -> Option<Value> {
     let mut metadata = serde_json::Map::new();
+    if let Some(provider) = judge_provider {
+        metadata.insert("judge_provider".into(), Value::String(provider.into()));
+    }
     if let Some(parent) = parent {
         metadata.insert(
             "parent_session_id".into(),
@@ -999,11 +1035,12 @@ mod tests {
                 max_transient_resumes: 1,
                 preloaded_contracts: None,
                 seeded_contracts: None,
+                system_prompt_ref: None,
             },
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
-            functions_generation: None,
+            functions_acknowledged: None,
             function_contract_ledger: Default::default(),
             failed_calls: Default::default(),
             skill_ack: None,
@@ -1015,6 +1052,8 @@ mod tests {
             dispatch_only_functions: Vec::new(),
             validation_retries: 0,
             transient_resumes: 0,
+            ask_step: None,
+            ask_seen_step: None,
             created_at: 1,
             updated_at: 1,
         }
@@ -1205,7 +1244,7 @@ mod tests {
             function_call_id: "call_spawn".into(),
         };
         assert_eq!(
-            child_session_metadata(Some(&parent), None, 1, Some(&display("Frontend"))),
+            child_session_metadata(Some(&parent), None, 1, Some(&display("Frontend")), None),
             Some(json!({
                 "parent_session_id": "s_parent",
                 "parent_turn_id": "t_parent",
@@ -1224,7 +1263,7 @@ mod tests {
     #[test]
     fn parentless_display_still_creates_session_metadata() {
         assert_eq!(
-            child_session_metadata(None, None, 0, Some(&display("Explorer"))),
+            child_session_metadata(None, None, 0, Some(&display("Explorer")), None),
             Some(json!({
                 "subagent_display": {
                     "name": "Explorer",
@@ -1233,7 +1272,11 @@ mod tests {
                 }
             }))
         );
-        assert_eq!(child_session_metadata(None, None, 0, None), None);
+        assert_eq!(child_session_metadata(None, None, 0, None, None), None);
+        assert_eq!(
+            child_session_metadata(None, None, 0, None, Some("semif")),
+            Some(json!({ "judge_provider": "semif" }))
+        );
     }
 
     #[test]
@@ -1285,6 +1328,7 @@ mod tests {
         previous_child.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["child-only".into()]),
             baseline: Some("frozen child baseline".into()),
+            baseline_ref: None,
         });
 
         assert!(child_skill_previous(false, Some(&previous_child)).is_none());

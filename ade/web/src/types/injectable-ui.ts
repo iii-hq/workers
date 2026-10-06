@@ -86,6 +86,20 @@ export interface PanelOpenRequest<T extends JsonValue = JsonValue> {
   context?: T
 }
 
+/** A workspace screen placed from this browser, in the tab on screen. */
+export interface ScreenOpenRequest {
+  /** `traces`, `workers`, `chat`, `chat:<session-id>`, or `ext:<page-id>`. */
+  screen: string
+  /** Screen the new column goes beside; a named one is looked for in every
+   *  tab, the one on screen first. Defaults to chat. */
+  relativeTo?: string
+  /** Side of `relativeTo`: `right` (default) or `left`. */
+  direction?: 'left' | 'right'
+  /** Widths of the tab the screen is placed in, one positive number per
+   *  column; ignored when the screen is reused or the count does not match. */
+  sizes?: number[]
+}
+
 /** Props the host passes to every registered page render component. */
 export interface PageRenderProps {
   panelSide: PanelSide
@@ -482,6 +496,55 @@ export interface ComposerActionRegistration {
 }
 
 /**
+ * Props a composer control receives: the active session, its live turn
+ * state, and that session's metadata with a writer. The console persists
+ * `setMetadata` through its own session-metadata writer (drafts included:
+ * the keys land when the session is created), so the control never calls
+ * `session::set-meta` itself.
+ */
+export interface ComposerControlProps {
+  /** Active conversation id (a draft's id until its first send). */
+  sessionId: string
+  isStreaming: boolean
+  /** The session's stored metadata. */
+  metadata: Readonly<Record<string, unknown>>
+  /** Merge keys into the metadata; an `undefined` value removes the key. */
+  setMetadata(patch: Record<string, unknown>): void
+  /**
+   * The session's working directory; `null` when it has none. A control
+   * moves it with `host.chat.requestWorkingDirectoryChange`. Absent on
+   * consoles that predate it.
+   */
+  workingDir?: string | null
+  /**
+   * The composer's options are locked, as the folder beside them is: a turn
+   * is running or the harness is unavailable. Absent on consoles that
+   * predate it; `isStreaming` is the fallback.
+   */
+  locked?: boolean
+}
+
+/**
+ * A compact per-session control rendered in the composer: beside the model
+ * picker (a value that applies to the session from its next turn on, the way
+ * the model does), or with `placement: 'project'` in the working-directory
+ * strip after the folder. Duplicate `id`: last registration wins.
+ */
+export interface ComposerControlRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType<ComposerControlProps>
+  /**
+   * `footer` (the default) sits beside the model picker. `project` sits in
+   * the working-directory strip above the composer, right after the folder,
+   * for what belongs to that folder (its git branch); it shows only where
+   * the console shows that strip. Consoles that predate it render every
+   * control in the footer.
+   */
+  placement?: 'footer' | 'project'
+}
+
+/**
  * A floating surface the console renders above the workspace whatever page
  * or tab is showing — a live thumbnail, a recording indicator. The
  * component positions itself (`position: fixed`) and opts back into
@@ -507,6 +570,15 @@ export interface Host {
   uiClasses: ConsoleApi['uiClasses']
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
+  /**
+   * Import a `console:module` asset on demand, e.g.
+   * `host.importModule<typeof import('./xterm')>('ide/xterm.js')`. The
+   * console serves modules but never imports them at mount, so code only
+   * one view needs stays out of every tab's first load. Resolves to the
+   * module namespace; rejects when nothing is served at `/ui/<path>`.
+   * Absent on older consoles; feature-detect.
+   */
+  importModule?<T = unknown>(path: string): Promise<T>
   workspace?: { recentDirectories(): string[] }
   /** Best-effort visible-screen lease for finite foreground work (e.g. dictation).
    * Release on completion/error/cancel; also auto-released on script dispose. */
@@ -538,6 +610,8 @@ export interface Host {
   panels: {
     /** Place/reuse a registered page and deliver its worker-defined context. */
     open(request: PanelOpenRequest): void
+    /** Place/reuse any workspace screen locally: no bus round trip. */
+    openScreen(request: ScreenOpenRequest): void
   }
   overlays: {
     /** A floating surface above the workspace, alive as long as the script. */
@@ -581,6 +655,7 @@ export interface Host {
     registerSessionChip(chip: SessionChipRegistration): () => void
     registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
     registerComposerAction(action: ComposerActionRegistration): () => void
+    registerComposerControl(control: ComposerControlRegistration): () => void
     /** Jump the sidebar to this session. Feature-detect on older consoles. */
     selectConversation?(sessionId: string): void
     /**
@@ -615,7 +690,7 @@ export type SetupFn = (
   host: Host,
 ) => void | (() => void) | Promise<void | (() => void)>
 
-export type UiAssetKind = 'script' | 'style'
+export type UiAssetKind = 'script' | 'style' | 'module'
 
 export interface UiAssetRef {
   path: string

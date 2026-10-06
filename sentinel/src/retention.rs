@@ -30,8 +30,16 @@ pub async fn prune<D: Db>(
     store: &Store<D>,
     config: &WorkerConfig,
 ) -> Result<PruneOutcome, SentinelError> {
-    let now = ids::now_ms();
+    prune_at(store, config, ids::now_ms()).await
+}
 
+/// [`prune`] as of `now`: every age it compares is relative to this, so a
+/// caller with a fixed clock gets the same answer on any calendar day.
+pub async fn prune_at<D: Db>(
+    store: &Store<D>,
+    config: &WorkerConfig,
+    now: i64,
+) -> Result<PruneOutcome, SentinelError> {
     let buckets_removed = store
         .db()
         .execute(

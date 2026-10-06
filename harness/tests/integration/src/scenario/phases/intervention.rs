@@ -58,6 +58,7 @@ impl ScenarioRunner<'_> {
                 )
                 .await
             }
+            ScenarioIntervention::StopHeldCall => self.run_stop_held_call(services, active).await,
         };
 
         match result {
@@ -70,6 +71,7 @@ impl ScenarioRunner<'_> {
                 // A failed premise must never leave the scripted router
                 // parked on a gate while the stack is being torn down.
                 services.router().release_all_gates();
+                services.probe().release_target_response();
                 Err(error)
             }
         }
@@ -243,6 +245,84 @@ impl ScenarioRunner<'_> {
         let mut tree_sessions = vec![self.session_id.clone()];
         tree_sessions.extend(child_sessions.into_iter().map(|(session_id, _)| session_id));
         Ok((control, tree_sessions))
+    }
+
+    /// `harness::stop` while the target still holds its response. The turn
+    /// must reach `cancelled` before the runner releases the target: a stop
+    /// that waits for the call (the session lock it holds) never gets there.
+    async fn run_stop_held_call(
+        &self,
+        services: &RunServices,
+        active: &ActiveTurn,
+    ) -> Result<(Value, Vec<String>), RunError> {
+        let phase = RunPhase::Intervene;
+        let deadline = active.deadline;
+        let turn_id = active.turn_id.clone().ok_or_else(|| {
+            RunError::new(
+                phase,
+                RunErrorKind::Contract,
+                "stop-held-call requires a turn id from harness::send",
+            )
+        })?;
+
+        services
+            .probe()
+            .wait_for_target_calls(1, deadline)
+            .await
+            .map_err(|error| {
+                RunError::with_source(
+                    phase,
+                    RunErrorKind::Contract,
+                    "wait for the controlled function to be in flight",
+                    error,
+                )
+            })?;
+
+        let stop_request = json!({
+            "session_id": self.session_id,
+            "turn_id": turn_id,
+        });
+        let stop_response = services
+            .client()
+            .call_with_deadline(
+                "harness::stop",
+                stop_request.clone(),
+                deadline,
+                DEFAULT_CALL_TIMEOUT_MS,
+            )
+            .await
+            .map_err(|error| {
+                RunError::with_source(
+                    phase,
+                    RunErrorKind::Contract,
+                    "stop the turn while its function call is held",
+                    anyhow::anyhow!(error),
+                )
+            })?;
+        if stop_response.get("stopping") != Some(&Value::Bool(true)) {
+            return Err(RunError::new(
+                phase,
+                RunErrorKind::Contract,
+                format!("harness::stop did not acknowledge stopping=true: {stop_response}"),
+            ));
+        }
+
+        let status_while_held =
+            wait_for_status(services.client(), &self.session_id, deadline, |status| {
+                status.get("status").and_then(Value::as_str) == Some("cancelled")
+            })
+            .await?;
+        services.probe().release_target_response();
+
+        let control = json!({
+            "kind": "stop_held_call",
+            "turn_id": turn_id,
+            "stop_request": stop_request,
+            "stop_response": stop_response,
+            "status_while_held": status_while_held,
+            "released": true,
+        });
+        Ok((control, vec![self.session_id.clone()]))
     }
 
     // The five message labels are deliberately explicit at this fixture seam:

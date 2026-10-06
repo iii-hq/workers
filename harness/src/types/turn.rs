@@ -72,6 +72,11 @@ pub struct SkillContext {
     pub filter: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<String>,
+    /// `harness_prompt` key of `baseline`'s text. Stored records carry only
+    /// this, as `"baseline": {"$ref": ..}` (`state::put_turn`);
+    /// `state::get_turn` fills `baseline` back in from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_ref: Option<String>,
 }
 
 /// The effective skill view this session most recently admitted. A
@@ -112,6 +117,11 @@ pub struct TurnOptions {
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// `harness_prompt` key of `system_prompt`'s text. Stored records carry
+    /// only this, as `"system_prompt": {"$ref": ..}` (`state::put_turn`);
+    /// `state::get_turn` fills `system_prompt` back in from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_ref: Option<String>,
     /// Legacy-only attribution for skill bodies previously frozen from
     /// session metadata. New sessions never populate this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -295,6 +305,15 @@ pub struct FunctionContractLedgerEntry {
     /// still model-visible. Newly appended and legacy rows start ineligible.
     #[serde(default)]
     pub eligible: bool,
+    /// How many times this turn answered a request for this contract from
+    /// the ledger instead of sending it. Drives the re-fetch loop breaker in
+    /// `trigger::prepare_info_result`; reset at the start of every turn.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub repeats: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 /// Consecutive identical failures of one call (same function and arguments)
@@ -340,11 +359,15 @@ pub struct TurnRecord {
     /// nest them. Never set alongside `parent`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_parent_session_id: Option<String>,
-    /// Function-registry generation this session last acknowledged; a mismatch
-    /// at generate time appends a registry-change notice so session-cached
-    /// contracts get re-fetched.
+    /// Digests of the functions this session's policy permits, as it last
+    /// acknowledged them ([`FunctionsSnapshot::permitted_digests`]). One that
+    /// changed or left by generate time appends a registry-change notice so
+    /// session-cached contracts get re-fetched; a function that only joined,
+    /// or one the session cannot call, never reaches it.
+    ///
+    /// [`FunctionsSnapshot::permitted_digests`]: crate::discovery::FunctionsSnapshot::permitted_digests
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub functions_generation: Option<u64>,
+    pub functions_acknowledged: Option<Vec<u32>>,
     /// Function contracts whose exact full source result was retained in the
     /// most recently assembled model context for this session.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -385,6 +408,16 @@ pub struct TurnRecord {
     pub validation_retries: u32,
     #[serde(default)]
     pub transient_resumes: u32,
+    /// The step whose `harness::ask` was accepted (its card is shown). Read
+    /// back to end the turn on the question, also when the step is
+    /// redelivered after a crash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_step: Option<u64>,
+    /// The step in which a `harness::ask` was last decided, accepted OR
+    /// refused. Read back to refuse any further ask in that step (one per
+    /// step), also when the step is redelivered after a crash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_seen_step: Option<u64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -428,6 +461,21 @@ impl TurnRecord {
             })
             .count()
     }
+
+    /// Drop what only a running turn reads, before the terminal write: done
+    /// calls without a child, the per-turn failure counts, the steering
+    /// watermark and the stream id. Open calls stay (deletion refuses a
+    /// `Triggered` one; verbose status lists pending ids) and so do calls with
+    /// a child (status children, stop cascade). `seed_new` resets all of these
+    /// for the next turn.
+    pub(crate) fn slim_finished(&mut self) {
+        self.calls.retain(|_, c| {
+            c.state != CallState::Done || c.child_session_id.is_some() || c.child_turn_id.is_some()
+        });
+        self.failed_calls.clear();
+        self.watermark_entry_id = None;
+        self.stream_request_id = None;
+    }
 }
 
 /// `harness::send` webhook dedupe record (`harness_idem/<idempotency_key>`).
@@ -443,6 +491,34 @@ pub struct IdemRecord {
 pub(crate) mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_ledger_row_stores_a_repeat_count_only_when_there_is_one() {
+        let legacy = json!({
+            "contract_digest": "digest",
+            "source_function_call_id": "call_1",
+            "source_content_digest": "content",
+            "eligible": true
+        });
+        let row: FunctionContractLedgerEntry = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(
+            row.repeats, 0,
+            "a row stored before the count reads as zero"
+        );
+        assert_eq!(
+            serde_json::to_value(&row).unwrap(),
+            legacy,
+            "a zero count is not stored"
+        );
+
+        let counted = FunctionContractLedgerEntry { repeats: 2, ..row };
+        let stored = serde_json::to_value(&counted).unwrap();
+        assert_eq!(stored["repeats"], 2);
+        assert_eq!(
+            serde_json::from_value::<FunctionContractLedgerEntry>(stored).unwrap(),
+            counted
+        );
+    }
 
     pub(crate) fn record() -> TurnRecord {
         TurnRecord {
@@ -477,11 +553,12 @@ pub(crate) mod tests {
                 max_transient_resumes: 1,
                 preloaded_contracts: None,
                 seeded_contracts: None,
+                system_prompt_ref: None,
             },
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
-            functions_generation: None,
+            functions_acknowledged: None,
             function_contract_ledger: Default::default(),
             failed_calls: Default::default(),
             skill_ack: None,
@@ -493,9 +570,51 @@ pub(crate) mod tests {
             dispatch_only_functions: Vec::new(),
             validation_retries: 0,
             transient_resumes: 0,
+            ask_step: None,
+            ask_seen_step: None,
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn ask_seen_step_is_omitted_when_unset_and_defaults_on_legacy_records() {
+        let value = serde_json::to_value(record()).unwrap();
+        assert!(value.get("ask_seen_step").is_none(), "{value}");
+
+        let mut legacy = value.clone();
+        legacy.as_object_mut().unwrap().remove("ask_seen_step");
+        let decoded: TurnRecord = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.ask_seen_step, None);
+
+        let seen = TurnRecord {
+            ask_seen_step: Some(4),
+            ..record()
+        };
+        let wire = serde_json::to_value(&seen).unwrap();
+        assert_eq!(wire["ask_seen_step"], json!(4));
+        let decoded: TurnRecord = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded.ask_seen_step, Some(4));
+    }
+
+    #[test]
+    fn ask_step_is_omitted_when_unset_and_defaults_on_legacy_records() {
+        let value = serde_json::to_value(record()).unwrap();
+        assert!(value.get("ask_step").is_none(), "{value}");
+
+        let mut legacy = value.clone();
+        legacy.as_object_mut().unwrap().remove("ask_step");
+        let decoded: TurnRecord = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.ask_step, None);
+
+        let asked = TurnRecord {
+            ask_step: Some(3),
+            ..record()
+        };
+        let wire = serde_json::to_value(&asked).unwrap();
+        assert_eq!(wire["ask_step"], json!(3));
+        let decoded: TurnRecord = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded.ask_step, Some(3));
     }
 
     #[test]
@@ -614,6 +733,46 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn slim_finished_keeps_children_and_open_calls() {
+        let mut r = record();
+        r.calls
+            .insert("done".into(), cp(CallState::Done, None, false));
+        r.calls.insert(
+            "done_child".into(),
+            cp(CallState::Done, Some("s_child"), false),
+        );
+        r.calls
+            .insert("pending".into(), cp(CallState::Pending, None, false));
+        r.calls
+            .insert("triggered".into(), cp(CallState::Triggered, None, false));
+        r.failed_calls.insert(
+            "digest".into(),
+            FailedCall {
+                error_digest: "e".into(),
+                count: 2,
+            },
+        );
+        r.watermark_entry_id = Some("e_watermark".into());
+        r.stream_request_id = Some("req_1".into());
+        let children = r.spawned_children();
+        let pending = r.pending_call_ids();
+
+        r.slim_finished();
+
+        assert_eq!(
+            r.calls.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["done_child", "pending", "triggered"]
+        );
+        assert!(r.failed_calls.is_empty());
+        assert_eq!(r.watermark_entry_id, None);
+        assert_eq!(r.stream_request_id, None);
+        // `harness::status` builds `children` and verbose
+        // `pending_function_calls` from these; both are unchanged.
+        assert_eq!(r.spawned_children(), children);
+        assert_eq!(r.pending_call_ids(), pending);
+    }
+
+    #[test]
     fn legacy_spawn_checkpoint_counts_as_a_session_creation() {
         let checkpoint: CallCheckpoint = serde_json::from_value(json!({
             "state": "done",
@@ -689,6 +848,7 @@ pub(crate) mod tests {
         r.options.skill_context = Some(SkillContext {
             filter: Some(vec!["review".into()]),
             baseline: Some("<available_skills>review</available_skills>".into()),
+            baseline_ref: None,
         });
         r.skill_ack = Some(SkillAck {
             generation: 3,

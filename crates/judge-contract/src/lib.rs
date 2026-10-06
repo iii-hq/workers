@@ -207,7 +207,8 @@ pub enum ErrorCode {
     Http,
     Transport,
     InvalidResponse,
-    /// The selected `judge-<provider>` worker is not registered on the engine.
+    /// The selected `judge-<provider>` worker is not registered on the engine,
+    /// or (a local provider) its model failed to load.
     ProviderUnavailable,
 }
 

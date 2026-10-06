@@ -7,11 +7,18 @@
 //! side effects, or an editor outside the engine entirely. No harness
 //! coupling, no polling.
 //!
-//! One watcher per subscription, torn down when the binding unregisters
-//! (the console page binds per open tab; the binding is GC'd with the
-//! tab). Raw OS events storm, so each watcher coalesces per path in a
-//! short window before emitting. Emission is best-effort: a slow or
-//! absent subscriber must never delay anything.
+//! One watcher per root (and `include_ignored`), shared by its bindings and
+//! torn down when the last unregisters (the console page binds per open
+//! pane; the binding is GC'd with the pane). Raw OS events storm, so each
+//! watcher coalesces per path in a short window before emitting. Emission
+//! is best-effort: a slow or absent subscriber must never delay anything.
+//!
+//! The watch is bounded (`DirWatch`): set up off the runtime, one
+//! non-recursive inotify watch per directory, `.git`, symlinks and — unless
+//! the binding sets `include_ignored` — gitignored trees left out. A root
+//! with more such directories than `CHANGED_WATCH_BUDGET` (or the host's
+//! share) is watched breadth-first up to it, never refused. On macOS one
+//! recursive FSEvents watch covers the root instead.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -28,6 +35,8 @@ use notify::{RecursiveMode, Watcher};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::mpsc::Sender;
 
 use crate::code::path::PathResolver;
 use crate::code::state::ResolverCell;
@@ -39,6 +48,13 @@ pub const CHANGED: &str = "shell::changed";
 /// enough to fold an editor's write-rename dance into one event, short
 /// enough to read as live.
 const COALESCE_MS: u64 = 200;
+/// Directories one `shell::changed` watch may hold, one inotify watch each,
+/// out of a per-user budget shared with editors and every other watcher:
+/// a sixteenth of the 524288 many distributions set, and `host_budget` cuts
+/// it to a sixteenth of a smaller limit. A tree with more is watched
+/// breadth-first from the root up to it (VS Code and JetBrains degrade the
+/// same way), and the log says so once.
+const CHANGED_WATCH_BUDGET: usize = 32_768;
 
 /// What changed. Lean by design: a subscriber that wants content asks
 /// `coder::read-file`; one that wants the diff asks git.
@@ -60,7 +76,14 @@ pub struct ChangedEvent {
     pub ignored: bool,
 }
 
+/// The bindings one watch serves: binding id → its function and delivery.
+type Subscribers = Arc<Mutex<HashMap<String, (String, Delivery)>>>;
+
+/// One watch, shared by every binding on its root and `include_ignored`.
 struct WatchEntry {
+    subscribers: Subscribers,
+    /// `Some(started)` once the setup is over.
+    ready: tokio::sync::watch::Receiver<Option<bool>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -70,15 +93,25 @@ impl Drop for WatchEntry {
     }
 }
 
-/// The `shell::changed` trigger type: each registration starts a watcher,
-/// each unregistration stops one.
+/// The `shell::changed` trigger type: the first binding on a root (and
+/// `include_ignored`) starts its watch, the last to unregister stops it.
 struct ChangedTriggerHandler {
     iii: IIIClient,
-    watches: Arc<Mutex<HashMap<String, WatchEntry>>>,
+    watches: Arc<Mutex<HashMap<(PathBuf, bool), WatchEntry>>>,
     /// The coder surface's path policy — a watch is a read of every
     /// filename under a tree, so it obeys the SAME jail and denylist as
     /// `coder::*`/`shell::fs::*` (hot-reload aware through the cell).
     resolver: ResolverCell,
+    /// Directories one watch may hold: `CHANGED_WATCH_BUDGET`.
+    budget: usize,
+}
+
+/// The map is plain data: a panic elsewhere must not silently drop a
+/// registration (an entry's Drop aborts its pump) while we still return Ok.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Resolve and validate the watched directory out of a binding's config —
@@ -184,21 +217,10 @@ pub(crate) async fn ignored_under<'a>(
     root: &Path,
     paths: impl Iterator<Item = &'a String> + Clone,
 ) -> HashSet<String> {
-    // A watch root inside a repository (any ancestor owns a `.git`) is git's
-    // domain too: `git -C root check-ignore` resolves the containing
-    // repository and its parent .gitignore rules from a subdirectory.
-    if root.ancestors().any(|dir| dir.join(".git").exists()) {
+    if in_repo(root) {
         return git_ignored(root, paths).await;
     }
-    let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
-    for line in ["data/", "config/", ".iii/", "node_modules/", ".git/"] {
-        let _ = builder.add_line(None, line);
-    }
-    let gitignore = root.join(".gitignore");
-    if gitignore.is_file() {
-        let _ = builder.add(&gitignore);
-    }
-    let Ok(matcher) = builder.build() else {
+    let Some(matcher) = plain_ignores(root) else {
         return HashSet::new();
     };
     paths
@@ -210,6 +232,274 @@ pub(crate) async fn ignored_under<'a>(
         })
         .cloned()
         .collect()
+}
+
+/// A watch root inside a repository (any ancestor owns a `.git`) is git's
+/// domain too: `git -C root check-ignore` resolves the containing
+/// repository and its parent .gitignore rules from a subdirectory.
+fn in_repo(root: &Path) -> bool {
+    root.ancestors().any(|dir| dir.join(".git").exists())
+}
+
+/// What a root outside any repository ignores: its `.gitignore` plus the
+/// built-in engine-owned directories.
+fn plain_ignores(root: &Path) -> Option<ignore::gitignore::Gitignore> {
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+    for line in ["data/", "config/", ".iii/", "node_modules/", ".git/"] {
+        let _ = builder.add_line(None, line);
+    }
+    let gitignore = root.join(".gitignore");
+    if gitignore.is_file() {
+        let _ = builder.add(&gitignore);
+    }
+    builder.build().ok()
+}
+
+/// A bounded workspace watch: one non-recursive OS watch per directory
+/// kept. notify's recursive inotify watch walks every directory under the
+/// root, symlinks followed and gitignored trees included; on a monorepo
+/// root that held the worker for 44 s and nearly every inotify watch the
+/// user had.
+pub(crate) struct DirWatch {
+    watcher: notify::RecommendedWatcher,
+    root: PathBuf,
+    /// What is under watch. A directory deleted or moved away leaves
+    /// notify's map at once and this one when the budget is reached, so a
+    /// tree replaced or renamed does not count twice.
+    pub(crate) watched: HashSet<PathBuf>,
+    /// How many directories `watched` may hold.
+    budget: usize,
+    /// Gitignored trees are watched too (a binding's `include_ignored`).
+    all: bool,
+    /// The budget ran out once, and the log said so.
+    spent: bool,
+    /// Directories made (`true`) or moved in whose event the full channel
+    /// dropped, the root when the kernel's queue overflowed: what
+    /// `watch_new_dirs` must still take.
+    missed: Arc<Mutex<HashMap<PathBuf, bool>>>,
+}
+
+impl DirWatch {
+    /// Blocking: watch `root` and the directories the walk keeps under it
+    /// (gitignored ones too with `all`), up to `budget` of them and the
+    /// host's share. `None` when the watcher will not start.
+    pub(crate) fn open(
+        root: &Path,
+        tx: Sender<notify::Event>,
+        budget: usize,
+        all: bool,
+    ) -> Option<Self> {
+        let missed = Arc::new(Mutex::new(HashMap::new()));
+        let (dropped, overflow_root) = (missed.clone(), root.to_path_buf());
+        let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            use notify::event::{EventKind, ModifyKind};
+            let Ok(event) = res else { return };
+            // Reads and metadata touches must not take a slot from a change.
+            if is_noise_kind(&event.kind) {
+                return;
+            }
+            if event.need_rescan() {
+                lock(&dropped).insert(overflow_root.clone(), false);
+            }
+            // A full channel drops the event; a directory's is the only
+            // trace of it, so the directory is kept for the pump to watch.
+            let Err(TrySendError::Full(event)) = tx.try_send(event) else {
+                return;
+            };
+            let made = matches!(event.kind, EventKind::Create(_));
+            if made || matches!(event.kind, EventKind::Modify(ModifyKind::Name(_))) {
+                let mut missed = lock(&dropped);
+                for path in event.paths {
+                    // The pump and the walk skip .git; so must this way in.
+                    if !is_git_internal(&path) && path.symlink_metadata().is_ok_and(|m| m.is_dir())
+                    {
+                        *missed.entry(path).or_default() |= made;
+                    }
+                }
+            }
+        });
+        let max_user_watches = std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches")
+            .ok()
+            .and_then(|max| max.trim().parse().ok());
+        let mut watch = match watcher {
+            Ok(watcher) => Self {
+                watcher,
+                root: root.to_path_buf(),
+                watched: HashSet::new(),
+                budget: host_budget(budget, max_user_watches),
+                all,
+                spent: false,
+                missed,
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "watcher start failed");
+                return None;
+            }
+        };
+        if cfg!(target_os = "macos") {
+            // FSEvents watches a tree natively at no cost per directory,
+            // while each NonRecursive watch restarts its stream over every
+            // path (quadratic for a tree). One recursive watch: the pumps
+            // filter what it reports, and it covers directories made later.
+            if let Err(e) = watch.watcher.watch(root, RecursiveMode::Recursive) {
+                tracing::warn!(error = %e, "watcher start failed");
+                return None;
+            }
+            watch.watched.insert(root.to_path_buf());
+        } else {
+            watch.add_tree(root, false, &mut false);
+        }
+        Some(watch)
+    }
+
+    /// Blocking: watch `dir` and the directories `walk` keeps under it,
+    /// breadth-first while the budget lasts, so a tree too big for it keeps
+    /// the directories nearest its top (what a file tree shows first). Each
+    /// is watched before the walk reads it, so what is made there meanwhile
+    /// is walked or reported. With `files`, returns the files met: written
+    /// before their directory had a watch, no event names them. `pruned`
+    /// says gone directories were already dropped from the count.
+    fn add_tree(&mut self, dir: &Path, files: bool, pruned: &mut bool) -> Vec<PathBuf> {
+        let (mut level, mut found) = (vec![dir.to_path_buf()], Vec::new());
+        while !level.is_empty() {
+            let (mut read, mut full) = (Vec::new(), false);
+            for path in level {
+                if !self.watched.contains(&path) && self.watched.len() >= self.budget {
+                    // Directories deleted or moved away still count: drop them.
+                    if !*pruned {
+                        self.watched.retain(|dir| dir.is_dir());
+                        *pruned = true;
+                    }
+                    if self.watched.len() >= self.budget {
+                        if !self.spent {
+                            self.spent = true;
+                            tracing::warn!(
+                                root = %self.root.display(),
+                                budget = self.budget,
+                                "too many directories to watch; those deepest under the root go unwatched"
+                            );
+                        }
+                        full = true;
+                        break;
+                    }
+                }
+                match self.watcher.watch(&path, RecursiveMode::NonRecursive) {
+                    Ok(()) => {
+                        self.watched.insert(path.clone());
+                        read.push(path);
+                    }
+                    // Out of inotify watches: the rest would fail too.
+                    Err(e) if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) => {
+                        tracing::warn!(error = %e, root = %self.root.display(), "watch failed");
+                        full = true;
+                        break;
+                    }
+                    // Gone since the walk, or unreadable: nothing to watch.
+                    Err(_) => {}
+                }
+            }
+            if read.is_empty() {
+                break;
+            }
+            let mut next = Vec::new();
+            for entry in walk(&self.root, &read, files, self.all) {
+                let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
+                let path = entry.into_path();
+                if is_dir {
+                    next.push(path);
+                } else {
+                    found.push(path);
+                }
+            }
+            if full {
+                break;
+            }
+            level = next;
+        }
+        found
+    }
+}
+
+/// `budget`, cut to a sixteenth of the user's inotify watches
+/// (`fs.inotify.max_user_watches`): one watch leaves the rest to editors, dev
+/// servers and this worker's other watches. 32768 of the 524288 many
+/// distributions set, 512 of the 8192 kernels before 5.11 default to.
+fn host_budget(budget: usize, max_user_watches: Option<usize>) -> usize {
+    max_user_watches.map_or(budget, |max| budget.min(max / 16))
+}
+
+/// One level of the walk a watch takes: the entries right under `dirs`
+/// (not empty), sorted by name. By `root`'s ignore rules unless `all`:
+/// gitignored trees (outside a repository, what `ignored_under` ignores)
+/// stay out. `.git` and symlinks always do; regular files come along with
+/// `files`.
+fn walk(
+    root: &Path,
+    dirs: &[PathBuf],
+    files: bool,
+    all: bool,
+) -> impl Iterator<Item = ignore::DirEntry> {
+    let plain = if all || in_repo(root) {
+        None
+    } else {
+        plain_ignores(root)
+    };
+    let mut walker = ignore::WalkBuilder::new(&dirs[0]);
+    for dir in &dirs[1..] {
+        walker.add(dir);
+    }
+    walker
+        .max_depth(Some(1))
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .follow_links(false)
+        .standard_filters(!all)
+        .hidden(false)
+        .ignore(false)
+        .filter_entry(move |entry| {
+            let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
+            (is_dir || (files && entry.file_type().is_some_and(|t| t.is_file())))
+                && entry.file_name() != ".git"
+                && !plain
+                    .as_ref()
+                    .is_some_and(|m| m.matched(entry.path(), is_dir).is_ignore())
+        });
+    walker.build().flatten().filter(|entry| entry.depth() == 1)
+}
+
+/// Watch the trees of directories that appeared under a watch — `true`
+/// for one made, `false` for one moved in — plus those whose event the
+/// channel dropped, gitignored ones left out unless the watch takes them,
+/// off the runtime: a tree copied in can be big. Returns the files already
+/// inside the ones made: a tool writes into a directory it just made before
+/// a watch can exist. Called for every batch, new directories or not.
+pub(crate) async fn watch_new_dirs(
+    root: &Path,
+    mut watch: DirWatch,
+    mut dirs: HashMap<PathBuf, bool>,
+) -> Option<(DirWatch, Vec<PathBuf>)> {
+    for (dir, made) in lock(&watch.missed).drain() {
+        *dirs.entry(dir).or_default() |= made;
+    }
+    // FSEvents: the root's recursive watch covers them, files included.
+    if dirs.is_empty() || cfg!(target_os = "macos") {
+        return Some((watch, Vec::new()));
+    }
+    if !watch.all {
+        let rels: Vec<String> = dirs.keys().filter_map(|dir| rel_to(root, dir)).collect();
+        let ignored = ignored_under(root, rels.iter()).await;
+        dirs.retain(|dir, _| {
+            dir == root || rel_to(root, dir).is_some_and(|rel| !ignored.contains(&rel))
+        });
+    }
+    tokio::task::spawn_blocking(move || {
+        let (mut found, mut pruned) = (Vec::new(), false);
+        for (dir, made) in dirs {
+            found.extend(watch.add_tree(&dir, made, &mut pruned));
+        }
+        (watch, found)
+    })
+    .await
+    .ok()
 }
 
 /// The subset of root-relative `paths` git ignores under `root`. A root
@@ -327,15 +617,14 @@ impl Delivery {
     }
 }
 
-/// Consume raw watcher events, coalesce per path, fan out to the bound
+/// Consume raw watcher events, coalesce per path, fan out to each bound
 /// function. Owns the watcher: aborting this task tears the watch down.
 async fn pump(
     iii: IIIClient,
-    function_id: String,
     root: PathBuf,
-    _watcher: notify::RecommendedWatcher,
+    mut watch: DirWatch,
     mut rx: tokio::sync::mpsc::Receiver<notify::Event>,
-    delivery: Delivery,
+    subscribers: Subscribers,
 ) {
     let root_str = root.to_string_lossy().into_owned();
     loop {
@@ -346,16 +635,19 @@ async fn pump(
         // (macOS reports a create and the write that fills it separately).
         let mut batch: HashMap<String, &'static str> = HashMap::new();
         let mut born: HashSet<String> = HashSet::new();
+        let mut new_dirs: HashMap<PathBuf, bool> = HashMap::new();
         let mut fold = |event: notify::Event| {
-            if is_noise_kind(&event.kind) {
-                return;
-            }
             let kind = kind_of(&event.kind);
             for p in &event.paths {
                 if is_git_internal(p) || is_own_temp(p) {
                     continue;
                 }
                 if let Some(rel) = rel_to(&root, p) {
+                    if kind != "deleted" && p.is_dir() && !p.is_symlink() {
+                        // Made or moved in under a watched directory: a
+                        // recursive watch would cover it, so this one does.
+                        *new_dirs.entry(p.clone()).or_default() |= kind == "created";
+                    }
                     if kind == "created" {
                         born.insert(rel.clone());
                     }
@@ -378,7 +670,20 @@ async fn pump(
                 () = &mut window => break,
             }
         }
+        let Some((grown, found)) = watch_new_dirs(&root, watch, new_dirs).await else {
+            return;
+        };
+        watch = grown;
+        for rel in found
+            .iter()
+            .filter(|p| !is_own_temp(p))
+            .filter_map(|p| rel_to(&root, p))
+        {
+            born.insert(rel.clone());
+            batch.insert(rel, "created");
+        }
         let ignored_paths = ignored_under(&root, batch.keys()).await;
+        let bound: Vec<(String, Delivery)> = lock(&subscribers).values().cloned().collect();
         for (path, kind) in batch.drain() {
             let on_disk = root.join(&path).exists();
             let Some(kind) = resolve_kind(kind, on_disk, born.contains(&path)) else {
@@ -386,14 +691,6 @@ async fn pump(
             };
             let dir = kind != "deleted" && root.join(&path).is_dir();
             let ignored = ignored_paths.contains(&path);
-            if ignored && !delivery.include_ignored {
-                tracing::debug!(
-                    function_id = %function_id,
-                    path = %path,
-                    "shell::changed skipped an ignored path (bind with include_ignored: true to receive it)"
-                );
-                continue;
-            }
             let event = ChangedEvent {
                 path,
                 kind: kind.to_string(),
@@ -405,80 +702,145 @@ async fn pump(
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            // Deliveries ride their own tasks: awaiting them here would
-            // let one hung send stop the pump from draining `rx`, fill
-            // the channel, and silently drop distinct events — the exact
-            // "slow subscriber never delays anything" violation.
-            let iii = iii.clone();
-            let function_id = function_id.clone();
-            let request = delivery.request(&function_id, payload);
-            tokio::spawn(async move {
-                if let Err(e) = iii.trigger(request).await {
-                    tracing::warn!(function_id = %function_id, error = %e, "shell::changed fan-out failed");
-                } else {
-                    tracing::info!(
+            for (function_id, delivery) in &bound {
+                if ignored && !delivery.include_ignored {
+                    tracing::debug!(
                         function_id = %function_id,
                         path = %event.path,
-                        kind = %event.kind,
-                        "shell::changed delivered"
+                        "shell::changed skipped an ignored path (bind with include_ignored: true to receive it)"
                     );
+                    continue;
                 }
-            });
+                // Deliveries ride their own tasks: awaiting them here would
+                // let one hung send stop the pump from draining `rx`, fill
+                // the channel, and silently drop distinct events — the exact
+                // "slow subscriber never delays anything" violation.
+                let iii = iii.clone();
+                let function_id = function_id.clone();
+                let request = delivery.request(&function_id, payload.clone());
+                let (path, kind) = (event.path.clone(), event.kind.clone());
+                tokio::spawn(async move {
+                    if let Err(e) = iii.trigger(request).await {
+                        tracing::warn!(function_id = %function_id, error = %e, "shell::changed fan-out failed");
+                    } else {
+                        tracing::info!(
+                            function_id = %function_id,
+                            path = %path,
+                            kind = %kind,
+                            "shell::changed delivered"
+                        );
+                    }
+                });
+            }
         }
+    }
+}
+
+/// Start the watch a first binding on `root` needs. The walk and the
+/// watches go on a blocking thread: the SDK runs every handler on one
+/// runtime thread. The caller puts the entry in the map before the walk
+/// ends, so an unregister landing meanwhile drops the watch too.
+fn start_watch(
+    iii: IIIClient,
+    root: PathBuf,
+    subscribers: Subscribers,
+    open: impl FnOnce(&Path, Sender<notify::Event>) -> Option<DirWatch> + Send + 'static,
+) -> WatchEntry {
+    let (started, ready) = tokio::sync::watch::channel(None);
+    let bound = subscribers.clone();
+    let task = tokio::spawn(async move {
+        let (tx, rx) = tokio::sync::mpsc::channel::<notify::Event>(1024);
+        let walk_root = root.clone();
+        let Ok(Some(watch)) = tokio::task::spawn_blocking(move || open(&walk_root, tx)).await
+        else {
+            started.send_replace(Some(false));
+            return;
+        };
+        started.send_replace(Some(true));
+        pump(iii, root, watch, rx, bound).await;
+    });
+    WatchEntry {
+        subscribers,
+        ready,
+        task,
     }
 }
 
 #[async_trait]
 impl TriggerHandler for ChangedTriggerHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let resolver = self.resolver.read().await.clone();
-        let root = watch_root(&config.config, &resolver)?;
-
-        let (tx, rx) = tokio::sync::mpsc::channel::<notify::Event>(1024);
-        let mut watcher = notify::recommended_watcher(move |res| {
-            if let Ok(event) = res {
-                // A full channel means the pump already has a backlog to
-                // coalesce; dropping here loses nothing distinct.
-                let _ = tx.try_send(event);
-            }
+        let (budget, all) = (self.budget, Delivery::from_config(&config).include_ignored);
+        self.subscribe(config, move |root, tx| {
+            DirWatch::open(root, tx, budget, all)
         })
-        .map_err(|e| Error::Handler(format!("watcher start failed: {e}")))?;
-        watcher
-            .watch(&root, RecursiveMode::Recursive)
-            .map_err(|e| Error::Handler(format!("watch {} failed: {e}", root.display())))?;
-
-        tracing::info!(
-            trigger_type = CHANGED,
-            id = %config.id,
-            function_id = %config.function_id,
-            root = %root.display(),
-            "watch registered"
-        );
-        let delivery = Delivery::from_config(&config);
-        let task = tokio::spawn(pump(
-            self.iii.clone(),
-            config.function_id,
-            root,
-            watcher,
-            rx,
-            delivery,
-        ));
-        // Poison recovery: the map is plain data — a panic elsewhere must
-        // not silently drop this registration (the entry's Drop aborts
-        // the pump) while we still return Ok.
-        self.watches
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(config.id, WatchEntry { task });
-        Ok(())
+        .await
     }
 
     async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         tracing::info!(trigger_type = CHANGED, id = %config.id, "watch unregistered");
-        self.watches
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&config.id);
+        self.unbind(&config.id);
+        Ok(())
+    }
+}
+
+impl ChangedTriggerHandler {
+    /// Take a binding off its watch, and the watch down with its last.
+    fn unbind(&self, id: &str) {
+        lock(&self.watches).retain(|_, entry| {
+            let mut subscribers = lock(&entry.subscribers);
+            subscribers.remove(id);
+            !subscribers.is_empty()
+        });
+    }
+
+    /// `register_trigger` with the watch setup handed in.
+    async fn subscribe(
+        &self,
+        config: TriggerConfig,
+        open: impl FnOnce(&Path, Sender<notify::Event>) -> Option<DirWatch> + Send + 'static,
+    ) -> Result<(), Error> {
+        let resolver = self.resolver.read().await.clone();
+        let root = watch_root(&config.config, &resolver)?;
+        let shown = root.display().to_string();
+        let delivery = Delivery::from_config(&config);
+        // A binding registered again (a reconnect) may name another root.
+        self.unbind(&config.id);
+        let mut ready = {
+            let mut watches = lock(&self.watches);
+            let key = (root.clone(), delivery.include_ignored);
+            // A pump that died (a panic) must not swallow every later binding:
+            // its replacement serves the bindings it had too.
+            let orphans = match watches.get(&key) {
+                Some(entry) if entry.task.is_finished() => {
+                    watches.remove(&key).map(|e| e.subscribers.clone())
+                }
+                _ => None,
+            };
+            let entry = watches.entry(key).or_insert_with(|| {
+                start_watch(self.iii.clone(), root, orphans.unwrap_or_default(), open)
+            });
+            lock(&entry.subscribers)
+                .insert(config.id.clone(), (config.function_id.clone(), delivery));
+            entry.ready.clone()
+        };
+        // An unregister landing mid-setup drops the sender: not a failure.
+        let failed = ready
+            .wait_for(Option::is_some)
+            .await
+            .is_ok_and(|started| *started == Some(false));
+        if failed {
+            self.unbind(&config.id);
+            return Err(Error::Handler(format!(
+                "shell::changed cannot watch {shown}: the watcher did not start"
+            )));
+        }
+        tracing::info!(
+            trigger_type = CHANGED,
+            id = %config.id,
+            function_id = %config.function_id,
+            root = %shown,
+            "watch registered"
+        );
         Ok(())
     }
 }
@@ -488,15 +850,22 @@ impl TriggerHandler for ChangedTriggerHandler {
 pub fn register_changed_trigger(iii: &IIIClient, resolver: ResolverCell) {
     let _handle = iii.register_trigger_type(RegisterTriggerType::new(
         CHANGED,
-        "Fires when anything under the watched directory changes, whoever changed \
-         it — bind with config: { path } naming the directory (jail-checked like \
-         every coder::* path). Ignored paths (git-ignored; outside a repository \
-         data/, config/, .iii/, node_modules/) are skipped unless config also sets \
-         include_ignored: true.",
+        format!(
+            "Fires when anything under the watched directory changes, whoever changed \
+             it — bind with config: {{ path }} naming the directory (jail-checked like \
+             every coder::* path). Ignored paths (git-ignored; outside a repository \
+             data/, config/, .iii/, node_modules/) are skipped unless config also sets \
+             include_ignored: true, which also watches inside ignored trees. Symlinks \
+             are not followed. A tree holding more than {CHANGED_WATCH_BUDGET} \
+             directories (fewer on a host with a low inotify limit) is watched \
+             breadth-first from the top for that many: changes deeper down go \
+             unreported."
+        ),
         ChangedTriggerHandler {
             iii: iii.clone(),
             watches: Arc::new(Mutex::new(HashMap::new())),
             resolver,
+            budget: CHANGED_WATCH_BUDGET,
         },
     ));
     tracing::info!(
@@ -743,6 +1112,338 @@ mod tests {
             ..Default::default()
         };
         PathResolver::new(&cfg).unwrap()
+    }
+
+    fn open_watch(
+        root: &Path,
+        budget: usize,
+        all: bool,
+    ) -> (DirWatch, tokio::sync::mpsc::Receiver<notify::Event>) {
+        let (tx, rx) = tokio::sync::mpsc::channel(1024);
+        (DirWatch::open(root, tx, budget, all).unwrap(), rx)
+    }
+
+    /// The directories a watch holds, relative to `root`, sorted.
+    fn watched_dirs(watch: &DirWatch, root: &Path) -> Vec<String> {
+        let mut names: Vec<String> = watch
+            .watched
+            .iter()
+            .map(|dir| {
+                dir.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Whether `rx` names `path` within half a second.
+    async fn saw(rx: &mut tokio::sync::mpsc::Receiver<notify::Event>, path: &Path) -> bool {
+        let seen = async {
+            while let Some(event) = rx.recv().await {
+                if event.paths.iter().any(|p| p == path) {
+                    return true;
+                }
+            }
+            false
+        };
+        tokio::time::timeout(Duration::from_millis(500), seen)
+            .await
+            .unwrap_or(false)
+    }
+
+    #[tokio::test]
+    #[cfg_attr(target_os = "macos", ignore = "FSEvents watches the root recursively")]
+    async fn the_watch_walk_leaves_out_ignored_trees_git_and_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().canonicalize().unwrap().join("repo");
+        for sub in [".git/objects", ".github", "src/deep", "target/debug"] {
+            std::fs::create_dir_all(repo.join(sub)).unwrap();
+        }
+        std::fs::write(repo.join(".gitignore"), "target/\n*.log\n").unwrap();
+        std::fs::write(repo.join("src/a.rs"), "").unwrap();
+        std::fs::write(repo.join("src/b.log"), "").unwrap();
+        std::os::unix::fs::symlink(repo.join("src"), repo.join("link")).unwrap();
+        let (watch, _rx) = open_watch(&repo, 64, false);
+        assert_eq!(
+            watched_dirs(&watch, &repo),
+            ["", ".github", "src", "src/deep"]
+        );
+        let made = HashMap::from([(repo.join("src"), true)]);
+        let (_, found) = watch_new_dirs(&repo, watch, made).await.unwrap();
+        assert_eq!(found, [repo.join("src/a.rs")]);
+        // Bound with include_ignored: ignored trees too, never .git or a symlink.
+        let (watch, _rx) = open_watch(&repo, 64, true);
+        assert_eq!(
+            watched_dirs(&watch, &repo),
+            ["", ".github", "src", "src/deep", "target", "target/debug"]
+        );
+        // Outside a repository: what `ignored_under` ignores there.
+        let plain = dir.path().canonicalize().unwrap().join("plain");
+        for sub in ["node_modules/pkg", ".iii/state", "app"] {
+            std::fs::create_dir_all(plain.join(sub)).unwrap();
+        }
+        let (watch, _rx) = open_watch(&plain, 64, false);
+        assert_eq!(watched_dirs(&watch, &plain), ["", "app"]);
+        let (watch, _rx) = open_watch(&plain, 64, true);
+        assert_eq!(
+            watched_dirs(&watch, &plain),
+            [
+                "",
+                ".iii",
+                ".iii/state",
+                "app",
+                "node_modules",
+                "node_modules/pkg"
+            ]
+        );
+    }
+
+    /// The IDE page binds with include_ignored to follow build output and
+    /// dependency trees: its watch must reach inside them, at bind time and
+    /// for directories made there later. A plain binding's must not.
+    #[tokio::test]
+    #[cfg_attr(target_os = "macos", ignore = "FSEvents watches the root recursively")]
+    async fn only_an_include_ignored_watch_sees_inside_ignored_trees() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "-q"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::create_dir(root.join("target")).unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        for all in [false, true] {
+            let (watch, mut rx) = open_watch(&root, 64, all);
+            let file = root.join(format!("target/{all}.txt"));
+            std::fs::write(&file, "x").unwrap();
+            assert_eq!(saw(&mut rx, &file).await, all, "include_ignored: {all}");
+
+            let made = root.join(format!("target/made-{all}"));
+            std::fs::create_dir(&made).unwrap();
+            std::fs::write(made.join("y.txt"), "y").unwrap();
+            let new_dirs = HashMap::from([(made.clone(), true)]);
+            let (watch, found) = watch_new_dirs(&root, watch, new_dirs).await.unwrap();
+            assert_eq!(watch.watched.contains(&made), all, "include_ignored: {all}");
+            assert_eq!(found == [made.join("y.txt")], all, "include_ignored: {all}");
+        }
+    }
+
+    /// A new directory is found only through its event. A build fills the
+    /// channel, and the event of a directory made meanwhile is dropped: the
+    /// watch must still take it, and the files written into it.
+    #[tokio::test]
+    #[cfg_attr(target_os = "macos", ignore = "FSEvents watches the root recursively")]
+    async fn a_directory_made_while_the_channel_is_full_is_still_watched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let watch = DirWatch::open(&root, tx, 64, true).unwrap();
+        for i in 0..16 {
+            std::fs::write(root.join(format!("f{i}.txt")), "x").unwrap();
+        }
+        let late = root.join("late");
+        std::fs::create_dir(&late).unwrap();
+        std::fs::write(late.join("x.txt"), "x").unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        while let Ok(event) = rx.try_recv() {
+            assert!(!event.paths.contains(&late), "the channel had room");
+        }
+        let (watch, found) = watch_new_dirs(&root, watch, HashMap::new()).await.unwrap();
+        assert!(watch.watched.contains(&late));
+        assert_eq!(found, [late.join("x.txt")]);
+        let file = late.join("y.txt");
+        std::fs::write(&file, "y").unwrap();
+        assert!(saw(&mut rx, &file).await);
+
+        // The kernel's own queue overflowed: the tree is walked again from
+        // the root, a plain watch's too, its files not reported as made.
+        let (watch, _rx) = open_watch(&root, 64, false);
+        std::fs::create_dir(root.join("unseen")).unwrap();
+        lock(&watch.missed).insert(root.clone(), false);
+        let (watch, found) = watch_new_dirs(&root, watch, HashMap::new()).await.unwrap();
+        assert!(watch.watched.contains(&root.join("unseen")));
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    /// One watch leaves most of the user's inotify watches to everyone
+    /// else, whatever the host's limit: older kernels default to 8192.
+    #[test]
+    fn a_watch_takes_a_sixteenth_of_the_host_inotify_watches() {
+        assert_eq!(host_budget(CHANGED_WATCH_BUDGET, Some(8_192)), 512);
+        assert_eq!(host_budget(CHANGED_WATCH_BUDGET, Some(524_288)), 32_768);
+        assert_eq!(host_budget(CHANGED_WATCH_BUDGET, Some(1_048_576)), 32_768);
+        assert_eq!(host_budget(64, None), 64);
+    }
+
+    fn handler_at(root: &Path, budget: usize) -> ChangedTriggerHandler {
+        ChangedTriggerHandler {
+            iii: IIIClient::new("ws://127.0.0.1:1"),
+            watches: Default::default(),
+            resolver: Arc::new(tokio::sync::RwLock::new(Arc::new(resolver_rooted_at(root)))),
+            budget,
+        }
+    }
+
+    fn binding(id: &str, path: &Path, include_ignored: bool) -> TriggerConfig {
+        TriggerConfig {
+            id: id.into(),
+            function_id: format!("probe::{id}"),
+            config: json!({ "path": path, "include_ignored": include_ignored }),
+            metadata: None,
+            namespace: None,
+        }
+    }
+
+    /// A tree past the budget is watched from its top down as far as the
+    /// budget goes — what a file tree shows first — and its binding is
+    /// accepted: refusing it left the page with no live updates at all.
+    #[tokio::test]
+    #[cfg_attr(target_os = "macos", ignore = "FSEvents watches the root recursively")]
+    async fn a_root_past_the_budget_keeps_its_top_and_is_still_bound() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for sub in ["a/b/c", "e", "f"] {
+            std::fs::create_dir_all(root.join(sub)).unwrap();
+        }
+        let (watch, _rx) = open_watch(&root, 4, false);
+        assert_eq!(watched_dirs(&watch, &root), ["", "a", "e", "f"]);
+        // A directory made once the budget is spent stays out.
+        std::fs::create_dir(root.join("g")).unwrap();
+        let made = HashMap::from([(root.join("g"), true)]);
+        let (watch, _) = watch_new_dirs(&root, watch, made).await.unwrap();
+        assert!(!watch.watched.contains(&root.join("g")));
+
+        let handler = handler_at(&root, 4);
+        handler
+            .register_trigger(binding("b1", &root, false))
+            .await
+            .unwrap();
+    }
+
+    /// A directory whose create event found the channel full is kept for
+    /// the pump to watch, but never a .git: the pump and the walk skip it.
+    #[tokio::test]
+    #[cfg_attr(target_os = "macos", ignore = "FSEvents watches the root recursively")]
+    async fn a_dropped_git_directory_is_not_kept_for_watching() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let watch = DirWatch::open(&root, tx, 64, true).unwrap();
+        std::fs::write(root.join("fill"), "x").unwrap(); // the one slot
+        std::thread::sleep(Duration::from_millis(200));
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::create_dir(root.join("sub")).unwrap();
+        let missed = || lock(&watch.missed).keys().cloned().collect::<HashSet<_>>();
+        for _ in 0..50 {
+            if missed().contains(&root.join("sub")) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(missed().contains(&root.join("sub")), "{:?}", missed());
+        assert!(!missed().contains(&root.join(".git")), "{:?}", missed());
+    }
+
+    /// A watch whose pump died is replaced on the next binding, and the
+    /// replacement keeps serving every binding the dead one had.
+    #[tokio::test]
+    async fn a_replaced_watch_keeps_the_bindings_of_the_dead_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let handler = handler_at(&root, 64);
+        handler
+            .register_trigger(binding("b1", &root, false))
+            .await
+            .unwrap();
+        lock(&handler.watches)
+            .values()
+            .for_each(|entry| entry.task.abort());
+        while lock(&handler.watches)
+            .values()
+            .any(|entry| !entry.task.is_finished())
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        handler
+            .register_trigger(binding("b2", &root, false))
+            .await
+            .unwrap();
+        let watches = lock(&handler.watches);
+        assert_eq!(watches.len(), 1);
+        let entry = watches.values().next().unwrap();
+        assert!(!entry.task.is_finished());
+        let mut bound: Vec<String> = lock(&entry.subscribers).keys().cloned().collect();
+        bound.sort();
+        assert_eq!(bound, ["b1", "b2"]);
+    }
+
+    /// Every open pane binds its root: one watch per root (and
+    /// include_ignored) serves them all, and lives until the last goes.
+    #[tokio::test]
+    async fn bindings_on_one_root_share_one_watch_until_the_last_goes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        let handler = handler_at(&root, 64);
+        for (id, all) in [("b1", false), ("b2", false), ("b3", true)] {
+            handler
+                .register_trigger(binding(id, &root, all))
+                .await
+                .unwrap();
+        }
+        let live = || {
+            let watches = handler.watches.lock().unwrap();
+            watches.values().filter(|w| !w.task.is_finished()).count()
+        };
+        assert_eq!(live(), 2, "one watch per root and include_ignored");
+        for (id, all, left) in [("b1", false, 2), ("b2", false, 1), ("b3", true, 0)] {
+            handler
+                .unregister_trigger(binding(id, &root, all))
+                .await
+                .unwrap();
+            assert_eq!(live(), left, "after unregistering {id}");
+        }
+    }
+
+    /// The SDK runs every handler on one current-thread runtime, as this
+    /// test does: the walk must not hold it, and an unregister landing
+    /// mid-walk drops the watch instead of leaking it.
+    #[tokio::test]
+    async fn a_binding_sets_its_watch_up_off_the_runtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let handler = handler_at(&root, 64);
+        let (started, walking) = tokio::sync::oneshot::channel::<()>();
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let open = move |root: &Path, tx| {
+            let _ = started.send(());
+            let _ = gate.recv_timeout(Duration::from_secs(10));
+            DirWatch::open(root, tx, 64, false)
+        };
+        let begun = std::time::Instant::now();
+        let (registered, ()) = tokio::join!(
+            handler.subscribe(binding("b1", &root, false), open),
+            async {
+                walking.await.unwrap();
+                handler
+                    .unregister_trigger(binding("b1", &root, false))
+                    .await
+                    .unwrap();
+                release.send(()).unwrap();
+            }
+        );
+        registered.unwrap();
+        assert!(
+            begun.elapsed() < Duration::from_secs(5),
+            "the walk held the runtime"
+        );
+        assert!(handler.watches.lock().unwrap().is_empty());
     }
 
     #[test]

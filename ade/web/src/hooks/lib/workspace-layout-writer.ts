@@ -1,7 +1,9 @@
+import { errorCode } from '@iii-dev/console-ui/format'
 import type { QueryClient } from '@tanstack/react-query'
 import {
   fetchWorkspaceLayout,
   setWorkspaceLayout,
+  WORKSPACE_CONFLICT,
   type WorkspaceLayoutValue,
 } from '@/lib/workspace-layout'
 import { SerializedConfigWriter } from './serialized-config-writer'
@@ -38,6 +40,13 @@ export function workspaceLayoutWriter(qc: QueryClient): SerializedConfigWriter {
         exact: true,
       })
     },
+    // A failed write re-reads the server copy instead of leaving its
+    // optimistic value on screen until the next ring.
+    onCommitError: () => {
+      void qc.invalidateQueries({ queryKey: WORKSPACE_LAYOUT_QUERY_KEY })
+    },
+    // An agent's open or another browser wrote between this read and write.
+    retryOn: (error) => errorCode(error) === WORKSPACE_CONFLICT,
   })
   writers.set(qc, writer)
   return writer

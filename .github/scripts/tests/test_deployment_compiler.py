@@ -125,11 +125,12 @@ def test_compiler_derives_registry_interface_capture_policy_for_every_worker():
 
     assert descriptors["acp"]["interface_capture"] == "skipped"
     assert descriptors["lsp"]["interface_capture"] == "skipped"
+    assert descriptors["ios-simulator"]["interface_capture"] == "skipped"
     assert {
         worker
         for worker, descriptor in descriptors.items()
         if descriptor["interface_capture"] != "required"
-    } == {"acp", "lsp"}
+    } == {"acp", "ios-simulator", "lsp"}
     assert descriptors["database"]["runtime"]["interface_config"] == {
         "path": "config.collect.yaml",
         "sha256": deployment_compiler.file_sha256(ROOT / "database" / "config.collect.yaml"),

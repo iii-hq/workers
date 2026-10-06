@@ -15,6 +15,12 @@ interface ExecResponse {
   stderr_truncated: boolean
 }
 
+/** Every read here runs with `--no-optional-locks`: these re-run on each
+    file change, and a `git status` that takes `index.lock` to refresh stat
+    data makes a concurrent commit, stash or rollback fail with "could not
+    write index". The worker's own git does the same (`GIT_OPTIONAL_LOCKS=0`). */
+export const READ_ONLY = '--no-optional-locks'
+
 async function git(
   host: Host,
   cwd: string,
@@ -22,7 +28,7 @@ async function git(
 ): Promise<ExecResponse> {
   return host.iii.trigger<ExecResponse>('shell::exec', {
     command: 'git',
-    args,
+    args: [READ_ONLY, ...args],
     cwd,
     timeout_ms: 15_000,
   })
@@ -52,7 +58,13 @@ export interface GitChange {
 export type GitState =
   | { kind: 'not-a-repo' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; changes: GitChange[] }
+  | {
+      kind: 'ready'
+      changes: GitChange[]
+      /** The read `changes` came from: the commit panel derives its own
+          view from it (`gitUncommittedFrom`) instead of reading again. */
+      status: PorcelainRead
+    }
 
 /** The three useful snapshots exposed by the review UI. */
 export type GitComparisonScope = 'uncommitted' | 'unstaged' | 'staged'
@@ -120,10 +132,19 @@ interface PorcelainEntry {
   renameFrom?: string
 }
 
+/** One `git status` read: the browsed root's prefix in the repository,
+    its records, and the branch the `## ` header names (`HEAD` when
+    detached). */
+interface PorcelainRead {
+  prefix: string
+  entries: PorcelainEntry[]
+  branch: string | null
+}
+
 type PorcelainState =
   | { kind: 'not-a-repo' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; prefix: string; entries: PorcelainEntry[] }
+  | ({ kind: 'ready' } & PorcelainRead)
 
 type RepositoryState =
   | { kind: 'not-a-repo' }
@@ -143,31 +164,56 @@ function execFailure(out: ExecResponse, operation: string): string | null {
   return null
 }
 
-async function probeRepository(host: Host, root: string): Promise<RepositoryState> {
-  try {
-    const probe = await git(host, root, ['rev-parse', '--is-inside-work-tree'])
-    const failure = execFailure(probe, 'git rev-parse')
-    if (failure !== null) {
-      // A normal non-zero rev-parse is the expected non-repository signal;
-      // timeout, truncation, signal termination, and safety failures are not.
-      if (
-        !probe.timed_out &&
-        !probe.stdout_truncated &&
-        !probe.stderr_truncated &&
-        probe.exit_code !== null &&
-        probe.exit_code !== 0
-      ) {
-        const detail = probe.stderr.trim()
-        if (detail === '' || detail.toLowerCase().includes('not a git repository')) {
-          return { kind: 'not-a-repo' }
-        }
-      }
-      return { kind: 'error', message: failure }
-    }
-    return probe.stdout.startsWith('true') ? { kind: 'ready' } : { kind: 'not-a-repo' }
-  } catch (error) {
-    return { kind: 'error', message: `git execution failed: ${errorMessage(error)}` }
+/** The repository probe, run beside the commands that need a repository: one
+    round trip instead of two or three. Outside a repository those commands
+    just fail, and the probe's verdict comes first. */
+async function probed(
+  host: Host,
+  root: string,
+  ...commands: string[][]
+): Promise<[RepositoryState & { prefix?: string }, ...PromiseSettledResult<ExecResponse>[]]> {
+  const [probe, ...rest] = await Promise.allSettled([
+    git(host, root, ['rev-parse', '--is-inside-work-tree', '--show-prefix']),
+    ...commands.map((args) => git(host, root, args)),
+  ])
+  if (probe.status === 'rejected') {
+    return [{ kind: 'error', message: `git execution failed: ${errorMessage(probe.reason)}` }, ...rest]
   }
+  const repository = repositoryOf(probe.value)
+  if (repository.kind !== 'ready') return [repository, ...rest]
+  // `true`, then the prefix: strip rev-parse's line terminator without
+  // corrupting a legal leading space in a directory name.
+  const out = probe.value.stdout
+  return [{ kind: 'ready', prefix: out.slice(out.indexOf('\n') + 1).replace(/\r?\n$/, '') }, ...rest]
+}
+
+/** A command that ran beside the probe: its reply, or its failure thrown. */
+function settled(result: PromiseSettledResult<ExecResponse> | undefined): ExecResponse {
+  if (result === undefined) throw new Error('git was not run')
+  if (result.status === 'rejected') throw result.reason
+  return result.value
+}
+
+function repositoryOf(probe: ExecResponse): RepositoryState {
+  const failure = execFailure(probe, 'git rev-parse')
+  if (failure !== null) {
+    // A normal non-zero rev-parse is the expected non-repository signal;
+    // timeout, truncation, signal termination, and safety failures are not.
+    if (
+      !probe.timed_out &&
+      !probe.stdout_truncated &&
+      !probe.stderr_truncated &&
+      probe.exit_code !== null &&
+      probe.exit_code !== 0
+    ) {
+      const detail = probe.stderr.trim()
+      if (detail === '' || detail.toLowerCase().includes('not a git repository')) {
+        return { kind: 'not-a-repo' }
+      }
+    }
+    return { kind: 'error', message: failure }
+  }
+  return probe.stdout.startsWith('true') ? { kind: 'ready' } : { kind: 'not-a-repo' }
 }
 
 async function checkedGit(
@@ -191,7 +237,7 @@ function rootRelative(prefix: string, path: string): string {
   return prefix !== '' && path.startsWith(prefix) ? path.slice(prefix.length) : path
 }
 
-interface NameStatusEntry {
+export interface NameStatusEntry {
   path: string
   status: Exclude<GitFileStatus, 'untracked' | 'ignored'>
   from?: string
@@ -220,7 +266,7 @@ function diffStatus(code: string): NameStatusEntry['status'] | null {
 /** Parse `git diff --name-status -z`: status, then one path; rename/copy
     records carry old and new paths. NUL framing keeps all legal path bytes
     except NUL unambiguous. */
-function parseNameStatus(stdout: string, prefix: string): NameStatusEntry[] | string {
+export function parseNameStatus(stdout: string, prefix: string): NameStatusEntry[] | string {
   if (stdout === '') return []
   if (!stdout.endsWith('\0')) return 'git diff returned an incomplete name-status record'
 
@@ -285,6 +331,16 @@ function parsePorcelain(stdout: string, prefix: string): PorcelainEntry[] | stri
   return entries
 }
 
+/** The branch in `git status --branch`'s header, past its `## `: `main`,
+    `main...origin/main [ahead 1]` (a ref name holds neither `...` nor a
+    space), `No commits yet on main` (older Git: `Initial commit on main`)
+    while HEAD is unborn, and `HEAD (no branch)` when detached, which
+    reads as `HEAD`, the name `git rev-parse --abbrev-ref HEAD` gives it. */
+export function parseBranchHeader(header: string): string | null {
+  const name = header.replace(/^(No commits yet|Initial commit) on /, '')
+  return name.split(/\.\.\.| /)[0] || null
+}
+
 function recreatedAfterStagedDelete(entries: PorcelainEntry[]): Set<string> {
   const deleted = new Set(
     entries
@@ -299,35 +355,37 @@ function recreatedAfterStagedDelete(entries: PorcelainEntry[]): Set<string> {
 }
 
 async function porcelainStatus(host: Host, root: string): Promise<PorcelainState> {
-  const repository = await probeRepository(host, root)
+  // `--untracked-files=all` lists new files individually; `--renames`
+  // makes the rename contract explicit rather than depending on config.
+  // `--branch` names the branch in the same read; only its name is used,
+  // so the counts against the upstream, a walk of history, are skipped.
+  const [repository, status] = await probed(host, root, [
+    'status',
+    '--porcelain=v1',
+    '-z',
+    '--branch',
+    '--no-ahead-behind',
+    '--untracked-files=all',
+    '--renames',
+    '--',
+    '.',
+  ])
   if (repository.kind !== 'ready') return repository
+  const prefix = repository.prefix ?? ''
 
   try {
-    const prefixOut = await git(host, root, ['rev-parse', '--show-prefix'])
-    const prefixFailure = execFailure(prefixOut, 'git rev-parse --show-prefix')
-    if (prefixFailure !== null) return { kind: 'error', message: prefixFailure }
-    // Strip rev-parse's line terminator without corrupting a legal leading
-    // space in a directory name.
-    const prefix = prefixOut.stdout.replace(/\r?\n$/, '')
-
-    // `--untracked-files=all` lists new files individually; `--renames`
-    // makes the rename contract explicit rather than depending on config.
-    const out = await git(host, root, [
-      'status',
-      '--porcelain=v1',
-      '-z',
-      '--untracked-files=all',
-      '--renames',
-      '--',
-      '.',
-    ])
+    const out = settled(status)
     const statusFailure = execFailure(out, 'git status')
     if (statusFailure !== null) return { kind: 'error', message: statusFailure }
 
-    const entries = parsePorcelain(out.stdout, prefix)
+    // The `## ` header is the first record; an unterminated one is left
+    // to the record parser, which reports it.
+    const headerEnd = out.stdout.startsWith('## ') ? out.stdout.indexOf('\0') + 1 : 0
+    const branch = headerEnd === 0 ? null : parseBranchHeader(out.stdout.slice(3, headerEnd - 1))
+    const entries = parsePorcelain(out.stdout.slice(headerEnd), prefix)
     return typeof entries === 'string'
       ? { kind: 'error', message: entries }
-      : { kind: 'ready', prefix, entries }
+      : { kind: 'ready', prefix, entries, branch }
   } catch (error) {
     return { kind: 'error', message: `git execution failed: ${errorMessage(error)}` }
   }
@@ -361,10 +419,21 @@ function statusFromCode(x: string, y: string): GitFileStatus | null {
     paths are repo-TOPLEVEL-relative, so when the browsed root is a
     subdirectory the `--show-prefix` is stripped to keep the page's
     root-relative vocabulary (the `-- .` pathspec already scopes the
-    report to the subtree). */
-export async function gitChanges(host: Host, root: string): Promise<GitState> {
+    report to the subtree). An answer that reads like `previous` returns
+    it: what is drawn from it stays put. Like means the same records and
+    branch, not only the same changes: the commit panel derives from both
+    status columns, which a change folds into one status. */
+export async function gitChanges(
+  host: Host,
+  root: string,
+  previous: GitState | null = null,
+): Promise<GitState> {
   const state = await porcelainStatus(host, root)
-  if (state.kind !== 'ready') return state
+  if (state.kind === 'error') {
+    return previous?.kind === 'error' && previous.message === state.message ? previous : state
+  }
+  if (state.kind === 'not-a-repo') return previous?.kind === 'not-a-repo' ? previous : state
+  if (previous?.kind === 'ready' && sameRead(previous.status, state)) return previous
 
   const changes: GitChange[] = []
   const recreated = recreatedAfterStagedDelete(state.entries)
@@ -382,7 +451,40 @@ export async function gitChanges(host: Host, root: string): Promise<GitState> {
     if (entry.renameFrom !== undefined) change.from = entry.renameFrom
     changes.push(change)
   }
-  return { kind: 'ready', changes }
+  return {
+    kind: 'ready',
+    changes,
+    status: { prefix: state.prefix, entries: state.entries, branch: state.branch },
+  }
+}
+
+function sameRead(a: PorcelainRead, b: PorcelainRead): boolean {
+  return (
+    a.prefix === b.prefix &&
+    a.branch === b.branch &&
+    a.entries.length === b.entries.length &&
+    a.entries.every((entry, index) => {
+      const other = b.entries[index]
+      return (
+        entry.path === other.path &&
+        entry.x === other.x &&
+        entry.y === other.y &&
+        entry.renameFrom === other.renameFrom
+      )
+    })
+  )
+}
+
+/** The commit panel's HEAD → working-copy comparison, drawn from a status
+    `gitChanges` already read: only what its records cannot tell is run
+    (HEAD's diff, a recreated file's bytes). */
+export async function gitUncommittedFrom(
+  host: Host,
+  root: string,
+  state: GitState,
+): Promise<GitComparisonState> {
+  if (state.kind !== 'ready') return state
+  return uncommittedComparison(host, root, state.status.prefix, state.status.entries)
 }
 
 function statusForScope(entry: PorcelainEntry, scope: GitComparisonScope): GitFileStatus | null {
@@ -637,9 +739,15 @@ export async function gitComparison(
   if (scope === 'uncommitted') {
     return uncommittedComparison(host, root, state.prefix, state.entries)
   }
+  return comparisonFrom(state.entries, scope)
+}
 
+function comparisonFrom(
+  entries: readonly PorcelainEntry[],
+  scope: 'staged' | 'unstaged',
+): { kind: 'ready'; scope: GitComparisonScope; changes: GitComparisonEntry[] } {
   const changes: GitComparisonEntry[] = []
-  for (const entry of state.entries) {
+  for (const entry of entries) {
     const status = statusForScope(entry, scope)
     if (status === null || status === 'ignored') continue
     // `??` has no index side, and must not leak into the staged scope.
@@ -722,11 +830,18 @@ export async function gitRecentCommits(
   root: string,
   limit = 20,
 ): Promise<GitRecentCommitsState> {
-  const repository = await probeRepository(host, root)
+  const count = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.trunc(limit))) : 20
+  // The log runs beside HEAD's check: an unborn HEAD only fails it.
+  const [repository, headRun, logRun] = await probed(
+    host,
+    root,
+    ['rev-parse', '--verify', '--quiet', 'HEAD'],
+    ['log', `--max-count=${String(count)}`, '--format=%H%x00%s'],
+  )
   if (repository.kind !== 'ready') return repository
 
   try {
-    const head = await git(host, root, ['rev-parse', '--verify', '--quiet', 'HEAD'])
+    const head = settled(headRun)
     if (
       head.exit_code === 1 &&
       !head.timed_out &&
@@ -738,14 +853,7 @@ export async function gitRecentCommits(
     const headFailure = execFailure(head, 'git rev-parse HEAD')
     if (headFailure !== null) return { kind: 'error', message: headFailure }
 
-    const count = Number.isFinite(limit)
-      ? Math.max(1, Math.min(100, Math.trunc(limit)))
-      : 20
-    const out = await git(host, root, [
-      'log',
-      `--max-count=${String(count)}`,
-      '--format=%H%x00%s',
-    ])
+    const out = settled(logRun)
     const failure = execFailure(out, 'git log')
     if (failure !== null) return { kind: 'error', message: failure }
     const commits = parseCommitSummaries(out.stdout)
@@ -790,17 +898,17 @@ function parseRefs(stdout: string): GitRefSummary[] | string {
 /** Local and remote-tracking branch refs. Symbolic aliases such as
     `refs/remotes/origin/HEAD` are omitted so menu entries are unique. */
 export async function gitRefs(host: Host, root: string): Promise<GitRefsState> {
-  const repository = await probeRepository(host, root)
+  const [repository, refsRun] = await probed(host, root, [
+    'for-each-ref',
+    '--sort=refname',
+    '--format=%(refname)%00%(objectname)%00%(HEAD)%00%(symref)',
+    'refs/heads/',
+    'refs/remotes/',
+  ])
   if (repository.kind !== 'ready') return repository
 
   try {
-    const out = await git(host, root, [
-      'for-each-ref',
-      '--sort=refname',
-      '--format=%(refname)%00%(objectname)%00%(HEAD)%00%(symref)',
-      'refs/heads/',
-      'refs/remotes/',
-    ])
+    const out = settled(refsRun)
     const failure = execFailure(out, 'git for-each-ref')
     if (failure !== null) return { kind: 'error', message: failure }
     const refs = parseRefs(out.stdout)

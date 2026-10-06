@@ -55,6 +55,24 @@ pub struct FunctionsSnapshot {
     pub internal_ids: BTreeSet<String>,
 }
 
+impl FunctionsSnapshot {
+    /// One digest per function `policy` permits, sorted: what a session can
+    /// call, each contract on its own. Comparing two of these tells a
+    /// function that changed or left (a contract the session may hold went
+    /// stale) from one that only joined (nothing the session holds changed).
+    pub fn permitted_digests(&self, policy: &crate::policy::CompiledPolicy) -> Vec<u32> {
+        let mut digests: Vec<u32> = self
+            .functions
+            .iter()
+            .filter(|f| policy.allows(&f.function_id))
+            .map(|f| fingerprint_of(std::iter::once(f)) as u32)
+            .collect();
+        digests.sort_unstable();
+        digests.dedup();
+        digests
+    }
+}
+
 /// Hot-swappable function-registry snapshot shared with the turn loop.
 pub type FunctionsCell = Arc<RwLock<Arc<FunctionsSnapshot>>>;
 
@@ -81,9 +99,9 @@ pub fn snapshot_of(functions: Vec<FunctionDescriptor>) -> FunctionsSnapshot {
 /// Content fingerprint over the sorted (id, description, serialized schema)
 /// tuples — stable across reloads of an unchanged registry, so a re-apply of
 /// the same set is a no-op.
-fn fingerprint_of(functions: &[FunctionDescriptor]) -> u64 {
+fn fingerprint_of<'a>(functions: impl IntoIterator<Item = &'a FunctionDescriptor>) -> u64 {
     let mut tuples: Vec<(&str, &str, String)> = functions
-        .iter()
+        .into_iter()
         .map(|f| {
             (
                 f.function_id.as_str(),

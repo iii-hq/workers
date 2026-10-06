@@ -3,6 +3,8 @@ import {
   createTerminalWorkspace,
   normalizeTerminalWorkspace,
   reduceTerminalWorkspace,
+  type TerminalLayoutNode,
+  terminalLayoutItems,
 } from '../terminal-layout'
 
 describe('terminal workspace layout', () => {
@@ -133,5 +135,64 @@ describe('terminal workspace layout', () => {
     })
 
     expect(next).toBe(restored)
+  })
+
+  it('places panes and split handles flat, in reading order', () => {
+    const layout: TerminalLayoutNode = {
+      type: 'split',
+      id: 'outer',
+      direction: 'horizontal',
+      ratio: 0.25,
+      first: { type: 'pane', paneId: 'pane-1' },
+      second: {
+        type: 'split',
+        id: 'inner',
+        direction: 'vertical',
+        ratio: 0.5,
+        first: { type: 'pane', paneId: 'pane-2' },
+        second: { type: 'pane', paneId: 'pane-3' },
+      },
+    }
+    const rectOf = (
+      items: ReturnType<typeof terminalLayoutItems>,
+      paneId: string,
+    ) =>
+      items.find((item) => item.type === 'pane' && item.paneId === paneId)
+        ?.rect
+
+    const items = terminalLayoutItems(layout)
+    expect(
+      items.map((item) => (item.type === 'pane' ? item.paneId : item.split.id)),
+    ).toEqual(['pane-1', 'outer', 'pane-2', 'inner', 'pane-3'])
+    expect(rectOf(items, 'pane-1')).toEqual({
+      left: 0,
+      top: 0,
+      width: 0.25,
+      height: 1,
+    })
+    expect(rectOf(items, 'pane-3')).toEqual({
+      left: 0.25,
+      top: 0.5,
+      width: 0.75,
+      height: 0.5,
+    })
+
+    // A narrow page stacks the side-by-side split; a drag shows its ratio.
+    const stacked = terminalLayoutItems(layout, { stacked: true })
+    expect(rectOf(stacked, 'pane-1')).toEqual({
+      left: 0,
+      top: 0,
+      width: 1,
+      height: 0.25,
+    })
+    const dragged = terminalLayoutItems(layout, {
+      drag: { splitId: 'outer', ratio: 0.5 },
+    })
+    expect(rectOf(dragged, 'pane-1')).toEqual({
+      left: 0,
+      top: 0,
+      width: 0.5,
+      height: 1,
+    })
   })
 })

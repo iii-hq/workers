@@ -10,16 +10,29 @@
 //!
 //! The directory can be re-pointed live (`configuration:updated`); a new
 //! location that has no file yet simply starts from the default layout.
-//! Writes are atomic (temp file + rename) so a browser polling the file
+//! Writes are atomic (temp file + rename) so a browser re-reading the file
 //! through `console::workspace::get` never observes a half-written document.
+//! Every save and re-point bumps [`WorkspaceStore::subscribe`], which the
+//! `console::workspace::changed` trigger turns into a ring to each browser.
+//! Every save also stamps the document's [`revision`], so a read-modify-write
+//! can tell whether another writer moved it in between.
 
 use std::path::PathBuf;
 
 use serde_json::Value;
-use tokio::sync::{Mutex, MutexGuard, RwLock};
+use tokio::sync::{watch, Mutex, MutexGuard, RwLock};
 
 /// File name inside `data_dir` holding the layout document.
 pub const WORKSPACE_FILE: &str = "workspace.json";
+
+/// The document's `revision`, bumped by every save. A document written
+/// before revisions existed, or none at all, reads as 0.
+pub fn revision(document: &Value) -> u64 {
+    document
+        .get("revision")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
 
 /// Portable default for `data_dir`, relative to the Compose project
 /// directory. Resolve with [`iii_worker_paths::resolve_path`] before use.
@@ -33,6 +46,8 @@ pub struct WorkspaceStore {
     /// Serializes every read-modify-write of the document (SPA `set`,
     /// `open`, `close`) so two writers cannot interleave a stale copy.
     write_lock: Mutex<()>,
+    /// Bumped after every save and every re-point: what `get` returns changed.
+    changed: watch::Sender<()>,
 }
 
 impl WorkspaceStore {
@@ -41,6 +56,7 @@ impl WorkspaceStore {
         Self {
             dir: RwLock::new(dir),
             write_lock: Mutex::new(()),
+            changed: watch::Sender::new(()),
         }
     }
 
@@ -55,7 +71,13 @@ impl WorkspaceStore {
             return false;
         }
         *current = dir;
+        self.changed.send_replace(());
         true
+    }
+
+    /// Wakes after every save and every re-point.
+    pub fn subscribe(&self) -> watch::Receiver<()> {
+        self.changed.subscribe()
     }
 
     pub async fn path(&self) -> PathBuf {
@@ -110,16 +132,22 @@ impl WorkspaceStore {
         }
     }
 
-    /// Replace the document wholesale. Creates `data_dir` on first use and
-    /// writes through a temp file + rename so readers see old or new, never
-    /// a torn file.
+    /// Replace the document wholesale, stamping `revision` one past the
+    /// stored one (the caller holds [`Self::lock`]); whatever revision `value`
+    /// carries is ignored. Creates `data_dir` on first use and writes through
+    /// a temp file + rename so readers see old or new, never a torn file.
     pub async fn save(&self, value: &Value) -> Result<(), String> {
+        let next = self.load().await?.as_ref().map_or(0, revision) + 1;
+        let mut value = value.clone();
+        if let Value::Object(map) = &mut value {
+            map.insert("revision".to_string(), next.into());
+        }
         let dir = self.dir().await;
         let path = dir.join(WORKSPACE_FILE);
         tokio::fs::create_dir_all(&dir)
             .await
             .map_err(|error| format!("cannot create data_dir {}: {error}", dir.display()))?;
-        let body = serde_json::to_vec_pretty(value)
+        let body = serde_json::to_vec_pretty(&value)
             .map_err(|error| format!("cannot serialize workspace layout: {error}"))?;
         let tmp = dir.join(format!("{WORKSPACE_FILE}.{}.tmp", std::process::id()));
         tokio::fs::write(&tmp, &body)
@@ -133,6 +161,7 @@ impl WorkspaceStore {
                 path.display()
             ));
         }
+        self.changed.send_replace(());
         Ok(())
     }
 }
@@ -166,11 +195,23 @@ mod tests {
     async fn save_creates_the_directory_and_round_trips() {
         let dir = scratch_dir("roundtrip").join("nested");
         let store = WorkspaceStore::new(dir.clone());
+        let changed = store.subscribe();
         let doc = json!({ "tabs": [{ "id": "a", "screens": ["chat"] }], "activeTabId": "a" });
         store.save(&doc).await.unwrap();
+        assert!(changed.has_changed().unwrap());
         assert!(store.exists().await);
         assert_eq!(store.path().await, dir.join(WORKSPACE_FILE));
-        assert_eq!(store.load().await.unwrap(), Some(doc));
+        let mut stored = doc.clone();
+        stored["revision"] = json!(1);
+        assert_eq!(store.load().await.unwrap(), Some(stored));
+        // The store owns the revision: the next save stamps 2, whatever the
+        // value carries.
+        store
+            .save(&json!({ "tabs": [], "revision": 99 }))
+            .await
+            .unwrap();
+        let stored = store.load().await.unwrap().unwrap();
+        assert_eq!(revision(&stored), 2);
         // No temp file is left behind.
         let mut entries = tokio::fs::read_dir(&dir).await.unwrap();
         let mut names = Vec::new();
@@ -192,7 +233,10 @@ mod tests {
         assert_eq!(store.load().await.unwrap(), None);
         // A later save replaces the bad file.
         store.save(&json!({ "tabs": [] })).await.unwrap();
-        assert_eq!(store.load().await.unwrap(), Some(json!({ "tabs": [] })));
+        assert_eq!(
+            store.load().await.unwrap(),
+            Some(json!({ "tabs": [], "revision": 1 }))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -205,8 +249,11 @@ mod tests {
             .save(&json!({ "tabs": [], "activeTabId": "one" }))
             .await
             .unwrap();
+        let changed = store.subscribe();
         assert!(!store.set_dir(first.clone()).await);
+        assert!(!changed.has_changed().unwrap());
         assert!(store.set_dir(second.clone()).await);
+        assert!(changed.has_changed().unwrap());
         assert_eq!(store.dir().await, second);
         // The new location starts empty; the old file is untouched.
         assert_eq!(store.load().await.unwrap(), None);

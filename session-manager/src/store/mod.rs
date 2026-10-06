@@ -9,8 +9,8 @@
 //! - [`BridgeStore`] — defers every raw operation to a **main**
 //!   session-manager on another iii instance via its internal
 //!   `session::store::*` protocol (see `functions::store_protocol`).
-//!   The bridged instance keeps all domain logic and locks; the main
-//!   is pure durable storage plus the event fan-out point.
+//!   The main atomically resolves and commits appends so concurrent
+//!   bridged instances share one authoritative leaf and message count.
 //!
 //! A future SQL/blob backend can implement the same interface.
 
@@ -25,6 +25,13 @@ use async_trait::async_trait;
 use crate::error::SessionError;
 use crate::types::{AttachmentMeta, SessionEntry, SessionMeta};
 
+#[derive(Debug, serde::Deserialize)]
+pub struct CommitAppendResult {
+    pub entry: SessionEntry,
+    pub meta: SessionMeta,
+    pub committed: bool,
+}
+
 /// Storage-level failure; the service maps it to `session/storage`.
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -36,8 +43,7 @@ impl From<StoreError> for SessionError {
     }
 }
 
-/// Persistence interface for sessions. Implementations only store and
-/// fetch — every ordering / chain / counting rule lives in the service.
+/// Persistence interface for sessions.
 #[async_trait]
 pub trait SessionStore: Send + Sync {
     async fn get_meta(&self, session_id: &str) -> Result<Option<SessionMeta>, StoreError>;
@@ -52,6 +58,14 @@ pub trait SessionStore: Send + Sync {
         entry_id: &str,
     ) -> Result<Option<SessionEntry>, StoreError>;
     async fn put_entry(&self, session_id: &str, entry: &SessionEntry) -> Result<(), StoreError>;
+    /// Atomically persist an append's entry, active leaf and updated metadata.
+    /// Returns the stored entry and whether this call completed the append.
+    async fn commit_append(
+        &self,
+        session_id: &str,
+        entry: &SessionEntry,
+        parent_explicit: bool,
+    ) -> Result<CommitAppendResult, StoreError>;
     /// All entries of a session, unordered (entries carry `id` inline).
     async fn list_entries(&self, session_id: &str) -> Result<Vec<SessionEntry>, StoreError>;
     /// Remove every entry of the session.

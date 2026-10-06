@@ -52,6 +52,10 @@ pub struct StartOutput {
     pub read_only: bool,
     /// True for a private tab; see `incognito` on the request.
     pub incognito: bool,
+    /// True when the requested url's load event did not fire inside the
+    /// default navigation timeout; the tab is open and the page may still be
+    /// usable; snapshot to check.
+    pub timed_out: bool,
     /// Chromium's error text when the requested url did not load and the tab
     /// shows the browser's error page instead (a network failure, or an
     /// empty HTTP error response such as a 400). Absent when the page came

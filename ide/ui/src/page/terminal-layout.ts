@@ -64,6 +64,70 @@ export function countTerminalPanes(layout: TerminalLayoutNode): number {
   return countTerminalPanes(layout.first) + countTerminalPanes(layout.second)
 }
 
+/** A share of a tab's area: each edge a fraction of its width or height. */
+export interface TerminalRect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+export type TerminalLayoutItem =
+  | { type: 'pane'; paneId: string; rect: TerminalRect }
+  | {
+      type: 'separator'
+      split: Extract<TerminalLayoutNode, { type: 'split' }>
+      /** As laid out: a stacked page turns side-by-side splits on end. */
+      direction: 'horizontal' | 'vertical'
+      /** As shown: the drag's ratio while one is under way. */
+      ratio: number
+      /** The split's whole area; the handle sits `ratio` of the way in. */
+      rect: TerminalRect
+    }
+
+/**
+ * A tab's panes and split handles as one flat list in reading order, each
+ * placed in the tab's area. Panes render from this list keyed by id instead
+ * of nested in the split tree, so splitting a pane or closing its neighbour
+ * moves it rather than remounting it, which would drop its xterm and replay
+ * its output. `stacked` lays side-by-side splits top to bottom, as a narrow
+ * page does; `drag` is a split mid-drag, shown at the pointer's ratio.
+ */
+export function terminalLayoutItems(
+  node: TerminalLayoutNode,
+  options: {
+    stacked?: boolean
+    drag?: { splitId: string; ratio: number } | null
+  } = {},
+  rect: TerminalRect = { left: 0, top: 0, width: 1, height: 1 },
+): TerminalLayoutItem[] {
+  if (node.type === 'pane') return [{ type: 'pane', paneId: node.paneId, rect }]
+  const direction = options.stacked ? 'vertical' : node.direction
+  const ratio =
+    options.drag?.splitId === node.id ? options.drag.ratio : node.ratio
+  const first =
+    direction === 'horizontal'
+      ? { ...rect, width: rect.width * ratio }
+      : { ...rect, height: rect.height * ratio }
+  const second =
+    direction === 'horizontal'
+      ? {
+          ...rect,
+          left: rect.left + first.width,
+          width: rect.width - first.width,
+        }
+      : {
+          ...rect,
+          top: rect.top + first.height,
+          height: rect.height - first.height,
+        }
+  return [
+    ...terminalLayoutItems(node.first, options, first),
+    { type: 'separator', split: node, direction, ratio, rect },
+    ...terminalLayoutItems(node.second, options, second),
+  ]
+}
+
 function findTabIndexById(
   state: TerminalWorkspaceState,
   tabId: string,
@@ -427,7 +491,8 @@ export function reduceTerminalWorkspace(
     }
     case 'pane-focused': {
       const tab = findTabByPaneId(state, action.paneId)
-      if (!tab) return state
+      // A click in the pane that already has focus changes nothing.
+      if (!tab || (state.activeTabId === tab.id && state.focusedPaneId === action.paneId)) return state
       return {
         ...state,
         activeTabId: tab.id,

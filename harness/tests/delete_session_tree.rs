@@ -1,0 +1,2303 @@
+//! Behavioral tests execute the production handlers through an isolated mock
+//! SDK transport. No deployed engine, real session, model, or worker restart.
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use futures_util::{SinkExt, StreamExt};
+use harness::config::WorkerConfig;
+use harness::deps::Deps;
+use harness::functions::delete_session_tree::{
+    self as deletion, DeleteRequest, DeletionStatus, StatusRequest,
+};
+use harness::types::turn::TurnRecord;
+use iii_sdk::{register_worker, InitOptions};
+use serde_json::{json, Value};
+use tokio::sync::{oneshot, Notify, RwLock};
+
+#[derive(Default)]
+struct Store {
+    state: BTreeMap<(String, String), Value>,
+    sessions: BTreeMap<String, Value>,
+    messages: BTreeMap<String, Vec<Value>>,
+    calls: Vec<(String, Value)>,
+    fail: BTreeSet<String>,
+    fail_delete: Option<String>,
+    delete_reply: Option<Value>,
+    fail_after_queue_once: bool,
+    /// Reply to these functions with a remote error carrying this code.
+    codes: BTreeMap<String, String>,
+    /// Fail the deletion-runner enqueue for these operation ids.
+    fail_enqueue: BTreeSet<String>,
+    /// The harness's process-wide topology lock; `session::delete` records
+    /// whether it was still held while the delete RPC was in flight.
+    topology_probe: Option<Arc<tokio::sync::Mutex<()>>>,
+    topology_held_on_delete: Vec<bool>,
+}
+impl Store {
+    fn state(&self, scope: &str, key: &str) -> Value {
+        self.state
+            .get(&(scope.into(), key.into()))
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+    fn put(&mut self, scope: &str, key: &str, value: Value) {
+        self.state.insert((scope.into(), key.into()), value);
+    }
+    fn respond(&mut self, function: &str, data: &Value, action: &Value) -> Result<Value, String> {
+        self.calls.push((function.into(), data.clone()));
+        if self.fail.contains(function) || self.codes.contains_key(function) {
+            return Err(format!("injected failure: {function}"));
+        }
+        if action["type"] == "enqueue" {
+            if data["operation_id"]
+                .as_str()
+                .is_some_and(|id| self.fail_enqueue.contains(id))
+            {
+                return Err("injected enqueue failure".into());
+            }
+            return Ok(json!({"message_receipt_id":"receipt"}));
+        }
+        let sid = data["session_id"].as_str().unwrap_or_default();
+        let scope = data["scope"].as_str().unwrap_or_default();
+        let key = data["key"].as_str().unwrap_or_default();
+        match function {
+            "state::set" | "harness::state::set" => {
+                self.put(scope, key, data["value"].clone());
+                if self.fail_after_queue_once && scope == "harness_queue" {
+                    self.fail_after_queue_once = false;
+                    return Err("injected acknowledgement loss after queue persistence".into());
+                }
+                Ok(json!({}))
+            }
+            "state::delete" | "harness::state::delete" => {
+                self.state.remove(&(scope.into(), key.into()));
+                Ok(json!({}))
+            }
+            "state::get" | "harness::state::get" => Ok(self.state(scope, key)),
+            "state::list_keys" => Ok(json!({"keys": self
+                .state
+                .keys()
+                .filter(|(s, _)| s == scope)
+                .map(|(_, k)| k)
+                .collect::<Vec<_>>()})),
+            "state::list" | "harness::state::list" => Ok(Value::Array(
+                self.state
+                    .iter()
+                    .filter(|((s, _), _)| s == scope)
+                    .map(|(_, v)| v.clone())
+                    .collect(),
+            )),
+            "harness::state::compare-and-set" => {
+                let old = self.state(scope, key);
+                let swapped = old == data["expected"];
+                if swapped {
+                    self.put(scope, key, data["value"].clone());
+                }
+                Ok(json!({"swapped":swapped,"current":old}))
+            }
+            "session::get" => Ok(self
+                .sessions
+                .get(sid)
+                .map(|meta| json!({"meta":meta}))
+                .unwrap_or(Value::Null)),
+            "session::list" => {
+                let parent = &data["metadata"]["parent_session_id"];
+                Ok(
+                    json!({"sessions":self.sessions.values().filter(|m| &m["metadata"]["parent_session_id"] == parent).cloned().collect::<Vec<_>>()}),
+                )
+            }
+            "session::messages" => {
+                Ok(json!({"messages":self.messages.get(sid).cloned().unwrap_or_default()}))
+            }
+            "session::append" => {
+                if !self.sessions.contains_key(sid) {
+                    return Err("append must never recreate missing parent".into());
+                }
+                let entry_id = data["entry_id"].clone();
+                let entries = self.messages.entry(sid.into()).or_default();
+                if !entries.iter().any(|entry| entry["entry_id"] == entry_id) {
+                    entries.push(json!({"entry_id":entry_id,"message":data["message"],"custom":data["custom"]}));
+                }
+                Ok(json!({"entry_id":entry_id}))
+            }
+            "session::delete" => {
+                let held = self
+                    .topology_probe
+                    .as_ref()
+                    .map(|topology| topology.try_lock().is_err());
+                if let Some(held) = held {
+                    self.topology_held_on_delete.push(held);
+                }
+                if let Some(reply) = &self.delete_reply {
+                    return Ok(reply.clone());
+                }
+                if self.fail_delete.as_deref() == Some(sid) {
+                    return Err("injected deletion failure".into());
+                }
+                let turn = self.state("harness_turn", sid);
+                assert!(
+                    turn.is_null()
+                        || ["completed", "cancelled", "failed"]
+                            .iter()
+                            .any(|s| turn["status"] == *s),
+                    "deleted before terminal: {sid}"
+                );
+                let existed = self.sessions.remove(sid).is_some();
+                self.messages.remove(sid);
+                Ok(json!({"deleted":existed}))
+            }
+            "session::set-status" | "approval::on-session-deleted" => Ok(json!({"ok":true})),
+            "approval::list-pending" => Ok(json!({"pending":[]})),
+            "approval::get-settings" => Ok(json!({"source":"defaults"})),
+            "router::abort" => Ok(json!({"aborted":true})),
+            "context::assemble" => {
+                Err("intentional boundary stop after observing LLM input".into())
+            }
+            "state::claim-namespace" => Ok(json!({"claimed":true})),
+            "engine::unregister_trigger" => Ok(json!({"removed":true})),
+            _ => Err(format!("unexpected mock RPC {function}: {data}")),
+        }
+    }
+}
+
+struct Stack {
+    deps: Deps,
+    store: Arc<Mutex<Store>>,
+    changed: Arc<Notify>,
+    server: tokio::task::JoinHandle<()>,
+}
+impl Drop for Stack {
+    fn drop(&mut self) {
+        self.deps.iii.shutdown();
+        self.server.abort();
+    }
+}
+impl Stack {
+    async fn new(parent_status: &str) -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let store = Arc::new(Mutex::new(Store::default()));
+        let changed = Arc::new(Notify::new());
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (state, notice) = (store.clone(), changed.clone());
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let _ = ready_tx.send(());
+            while let Some(Ok(frame)) = socket.next().await {
+                let Ok(text) = frame.to_text() else {
+                    continue;
+                };
+                let Ok(message) = serde_json::from_str::<Value>(text) else {
+                    continue;
+                };
+                if message["type"] != "invokefunction" {
+                    continue;
+                }
+                let function = message["function_id"].as_str().unwrap();
+                let (result, code) = {
+                    let mut store = state.lock().unwrap();
+                    let code = store
+                        .codes
+                        .get(function)
+                        .cloned()
+                        .unwrap_or_else(|| "test_error".into());
+                    (
+                        store.respond(function, &message["data"], &message["action"]),
+                        code,
+                    )
+                };
+                notice.notify_waiters();
+                if message["invocation_id"].is_null() {
+                    continue;
+                }
+                let mut reply = json!({"type":"invocationresult","invocation_id":message["invocation_id"],"function_id":function});
+                match result {
+                    Ok(value) => reply["result"] = value,
+                    Err(error) => reply["error"] = json!({"code":code,"message":error}),
+                }
+                if socket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        reply.to_string().into(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let iii = Arc::new(register_worker(&url, InitOptions::default()));
+        ready_rx.await.unwrap();
+        let cfg = WorkerConfig {
+            session_timeout_ms: 2_000,
+            ..WorkerConfig::default()
+        };
+        let deps = Deps::new(
+            iii.clone(),
+            Arc::new(RwLock::new(Arc::new(cfg))),
+            harness::discovery::new_cell(),
+            harness::skills::new_cell(),
+            harness::events::TurnEvents::register(&iii),
+            harness::hooks::HookRegistry::register(&iii),
+        );
+        store.lock().unwrap().topology_probe = Some(deps.topology.clone());
+        let stack = Self {
+            deps,
+            store,
+            changed,
+            server,
+        };
+        for (id, parent, status) in [
+            ("parent", None, parent_status),
+            ("child1", Some("parent"), "running"),
+            ("child2", Some("parent"), "completed"),
+            ("grandchild1", Some("child2"), "completed"),
+        ] {
+            stack.session(id, parent, status);
+        }
+        stack
+    }
+    /// Reset process-local coordination without resetting the durable fixture.
+    /// The transport remains in-process; this is not a real engine restart.
+    fn reset_runtime(&mut self) {
+        let old = &self.deps;
+        let fresh = Deps::new(
+            old.iii.clone(),
+            old.config.clone(),
+            harness::discovery::new_cell(),
+            harness::skills::new_cell(),
+            old.events.clone(),
+            old.hooks.clone(),
+        );
+        assert!(!Arc::ptr_eq(&old.topology, &fresh.topology));
+        assert!(!Arc::ptr_eq(&old.deletion_changed, &fresh.deletion_changed));
+        self.deps = fresh;
+    }
+
+    fn session(&self, id: &str, parent: Option<&str>, status: &str) {
+        let mut store = self.store.lock().unwrap();
+        let metadata = parent
+            .map(|p| json!({"parent_session_id":p}))
+            .unwrap_or(json!({}));
+        store.sessions.insert(
+            id.into(),
+            json!({"session_id":id,"title":id,"metadata":metadata}),
+        );
+        store.put("harness_turn",id,json!({"session_id":id,"turn_id":format!("t_{id}"),"status":status,
+            "step":0,"turn_count":0,"depth":0,"options":{"model":"fake","max_turns":16},"created_at":1,"updated_at":1}));
+    }
+    fn set_status(&self, id: &str, status: &str) {
+        let mut store = self.store.lock().unwrap();
+        let mut turn = store.state("harness_turn", id);
+        turn["status"] = json!(status);
+        store.put("harness_turn", id, turn);
+        self.deps.deletion_changed.notify_waiters();
+    }
+    /// Park `id` on one external pending call (no hook hold, no child): the
+    /// shape nothing but its external resolver can confirm.
+    fn park_on_external_call(&self, id: &str) {
+        let mut store = self.store.lock().unwrap();
+        let mut turn = store.state("harness_turn", id);
+        turn["status"] = json!("awaiting_functions");
+        turn["calls"] = json!({"ext-1": {"state": "pending", "function_id": "slow::external"}});
+        store.put("harness_turn", id, turn);
+    }
+    async fn request(&self, id: &str) -> deletion::Snapshot {
+        deletion::handle(
+            &self.deps,
+            serde_json::from_value(json!({
+                "session_id": id,
+                "_caller_worker_id": "test-console-worker"
+            }))
+            .expect("engine-injected caller metadata must not reject deletion"),
+        )
+        .await
+        .unwrap()
+    }
+    async fn run(&self, operation_id: &str) -> deletion::Snapshot {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            deletion::run(
+                &self.deps,
+                serde_json::from_value(json!({
+                    "operation_id": operation_id,
+                    "_caller_worker_id": "test-queue-worker"
+                }))
+                .expect("queued deletion accepts engine-injected caller metadata"),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+    }
+    async fn wait_for(&self, predicate: impl Fn(&Store) -> bool) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let wake = self.changed.notified();
+                tokio::pin!(wake);
+                wake.as_mut().enable();
+                if predicate(&self.store.lock().unwrap()) {
+                    break;
+                }
+                wake.await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deletion_accepts_engine_caller_metadata_through_command_runner_and_status() {
+    let stack = Stack::new("running").await;
+    let accepted = stack.request("child2").await;
+    let status_request = || {
+        serde_json::from_value::<StatusRequest>(json!({
+            "operation_id": accepted.operation_id,
+            "_caller_worker_id": "test-console-worker"
+        }))
+        .expect("status accepts engine-injected caller metadata")
+    };
+    assert_eq!(
+        deletion::status(&stack.deps, status_request())
+            .await
+            .unwrap(),
+        Some(accepted.clone())
+    );
+    let done = stack.run(&accepted.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed);
+    assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
+    assert_eq!(
+        deletion::status(&stack.deps, status_request())
+            .await
+            .unwrap(),
+        Some(done)
+    );
+    assert!(serde_json::from_value::<DeleteRequest>(json!({
+        "_caller_worker_id": "test-console-worker"
+    }))
+    .is_err());
+    assert!(serde_json::from_value::<StatusRequest>(json!({
+        "_caller_worker_id": "test-console-worker"
+    }))
+    .is_err());
+    let store = stack.store.lock().unwrap();
+    assert!(store.sessions.contains_key("parent"));
+    assert!(store.sessions.contains_key("child1"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn erase_does_not_hold_the_process_topology_lock_across_session_delete() {
+    let stack = Stack::new("running").await;
+    let accepted = stack.request("child2").await;
+    let done = stack.run(&accepted.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed);
+    let store = stack.store.lock().unwrap();
+    // One probe per erased member (grandchild1, child2). Holding the lock
+    // there would stall every send, spawn and binding in the process.
+    assert_eq!(store.topology_held_on_delete.len(), 2);
+    assert!(
+        store.topology_held_on_delete.iter().all(|held| !held),
+        "topology lock held during session::delete: {:?}",
+        store.topology_held_on_delete
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subtree_deletion_preserves_parent_sibling_and_is_idempotent() {
+    let stack = Stack::new("running").await;
+    let before = stack.store.lock().unwrap().state("harness_turn", "parent");
+    let accepted = stack.request("child2").await;
+    assert_eq!(accepted.status, DeletionStatus::Deleting);
+    assert_eq!(accepted.attempt, 1);
+    assert_eq!(
+        stack.request("child2").await.operation_id,
+        accepted.operation_id
+    );
+    let done = stack.run(&accepted.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+    assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
+    assert_eq!(stack.request("child2").await, done);
+    assert_eq!(stack.run(&accepted.operation_id).await, done);
+    let store = stack.store.lock().unwrap();
+    assert_eq!(
+        store.sessions.keys().cloned().collect::<Vec<_>>(),
+        vec!["child1", "parent"]
+    );
+    assert_eq!(store.state("harness_turn", "parent"), before);
+    let queued: Vec<_> = store
+        .state
+        .iter()
+        .filter(|((scope, _), _)| scope == "harness_queue")
+        .collect();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].1["session_id"], "parent");
+    assert!(queued[0].1["message"].to_string().contains("Do not await"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_selected_parent_does_not_skip_live_grandchild_or_delete_before_terminal() {
+    let stack = Stack::new("running").await;
+    stack.set_status("grandchild1", "running");
+    let accepted = stack.request("child2").await;
+    let deps = stack.deps.clone();
+    let id = accepted.operation_id.clone();
+    let running = tokio::spawn(async move {
+        deletion::run(&deps, StatusRequest { operation_id: id })
+            .await
+            .unwrap()
+            .unwrap()
+    });
+    stack
+        .wait_for(|s| s.state("harness_turn", "grandchild1")["abort"] == true)
+        .await;
+    assert!(!running.is_finished());
+    assert!(stack.store.lock().unwrap().sessions.contains_key("child2"));
+    // Models the actual turn completion event, not stopping:true.
+    stack.set_status("grandchild1", "cancelled");
+    let done = tokio::time::timeout(Duration::from_secs(3), running)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_parent_is_seeded_once_and_active_parent_only_queues() {
+    let stack = Stack::new("completed").await;
+    let accepted = stack.request("child2").await;
+    assert_eq!(
+        stack.run(&accepted.operation_id).await.status,
+        DeletionStatus::Completed
+    );
+    let turn = stack.store.lock().unwrap().state("harness_turn", "parent");
+    assert_eq!(turn["status"], "running");
+    assert_ne!(turn["turn_id"], "t_parent");
+    stack.run(&accepted.operation_id).await;
+    assert_eq!(
+        stack.store.lock().unwrap().state("harness_turn", "parent"),
+        turn
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn absent_or_deleting_parent_is_not_recreated_or_notified() {
+    for absent in [false, true] {
+        let stack = Stack::new("completed").await;
+        if absent {
+            stack.store.lock().unwrap().sessions.remove("parent");
+        }
+        let accepted = stack.request("child2").await;
+        if !absent {
+            stack
+                .store
+                .lock()
+                .unwrap()
+                .put(deletion::GUARDS, "parent", json!("other-operation"));
+        }
+        // Mark already planned first for the overlap case: descendant deletion
+        // completes, but does not wake the now-deleting parent.
+        if !absent {
+            let mut store = stack.store.lock().unwrap();
+            let mut op = store.state(deletion::OPERATIONS, &accepted.operation_id);
+            op["planned"] = json!(true);
+            op["members"] = json!(["child2", "grandchild1"]);
+            op["parent"] = json!("parent");
+            store.put(deletion::OPERATIONS, &accepted.operation_id, op);
+        }
+        assert_eq!(
+            stack.run(&accepted.operation_id).await.status,
+            DeletionStatus::Completed
+        );
+        let store = stack.store.lock().unwrap();
+        assert!(!store
+            .state
+            .keys()
+            .any(|(scope, _)| scope == "harness_queue"));
+        assert_eq!(store.sessions.contains_key("parent"), !absent);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_error_is_visible_retains_data_and_retry_keeps_identity() {
+    let stack = Stack::new("running").await;
+    stack.set_status("grandchild1", "running");
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut turn = store.state("harness_turn", "grandchild1");
+        turn["stream_request_id"] = json!("stream");
+        store.put("harness_turn", "grandchild1", turn);
+        store.fail.insert("router::abort".into());
+    }
+    let accepted = stack.request("child2").await;
+    let failed = stack.run(&accepted.operation_id).await;
+    assert_eq!(failed.status, DeletionStatus::Failed);
+    assert!(failed.error.unwrap().contains("router::abort"));
+    assert_eq!(stack.store.lock().unwrap().sessions.len(), 4);
+    stack.store.lock().unwrap().fail.clear();
+    stack.set_status("grandchild1", "cancelled");
+    let retry = stack.request("child2").await;
+    assert_eq!(retry.operation_id, accepted.operation_id);
+    assert_eq!(retry.attempt, 2);
+    assert_eq!(stack.request("child2").await.attempt, 2);
+    assert_eq!(
+        stack.run(&retry.operation_id).await.status,
+        DeletionStatus::Completed
+    );
+    assert_eq!(stack.request("child2").await.attempt, 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expired_deadline_preserves_data_and_guards_send_spawn_and_queue_recovery() {
+    let stack = Stack::new("running").await;
+    let accepted = stack.request("child2").await;
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut op = store.state(deletion::OPERATIONS, &accepted.operation_id);
+        op["deadline"] = json!(0);
+        store.put(deletion::OPERATIONS, &accepted.operation_id, op);
+    }
+    assert_eq!(
+        stack.run(&accepted.operation_id).await.status,
+        DeletionStatus::Failed
+    );
+    let send = serde_json::from_value(json!({"session_id":"grandchild1","message":"no"})).unwrap();
+    assert!(harness::functions::send::handle(&stack.deps, send)
+        .await
+        .is_err());
+    let spawn=serde_json::from_value(json!({"session_id":"new-child","parent_session_id":"grandchild1","task":"no","model":"fake"})).unwrap();
+    assert!(harness::subagent::spawn_child(&stack.deps, &spawn, None)
+        .await
+        .is_err());
+    let store = stack.store.lock().unwrap();
+    assert_eq!(store.sessions.len(), 4);
+    assert!(!store.calls.iter().any(|(id, _)| id == "session::delete"
+        || id == "session::ensure"
+        || id == "session::create"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_commands_share_identity_and_overlap_fails_without_double_delete() {
+    let stack = Stack::new("completed").await;
+    let (a, b) = tokio::join!(stack.request("child2"), stack.request("child2"));
+    assert_eq!(a, b);
+    let overlap = stack.request("grandchild1").await;
+    assert_eq!(overlap.status, DeletionStatus::Failed);
+    assert_eq!(
+        stack.run(&a.operation_id).await.status,
+        DeletionStatus::Completed
+    );
+    let store = stack.store.lock().unwrap();
+    assert_eq!(
+        store
+            .calls
+            .iter()
+            .filter(|(f, _)| f == "session::delete")
+            .count(),
+        2
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_flight_tool_lock_must_exit_before_deletion_and_late_descendants_are_discovered() {
+    let stack = Stack::new("completed").await;
+    // Models spawn metadata committed just before the admission lock is won.
+    let topology = stack.deps.topology.lock().await;
+    let request = deletion::handle(
+        &stack.deps,
+        DeleteRequest {
+            session_id: "child2".into(),
+        },
+    );
+    tokio::pin!(request);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut request)
+            .await
+            .is_err()
+    );
+    stack.session("late-child", Some("child2"), "completed");
+    drop(topology);
+    let accepted = request.await.unwrap();
+    let held = stack.deps.turn_activity.guard("grandchild1").await;
+    let deps = stack.deps.clone();
+    let id = accepted.operation_id.clone();
+    let job = tokio::spawn(async move {
+        deletion::run(&deps, StatusRequest { operation_id: id })
+            .await
+            .unwrap()
+            .unwrap()
+    });
+    stack
+        .wait_for(|s| s.state(deletion::GUARDS, "late-child").is_string())
+        .await;
+    assert!(!job.is_finished());
+    assert!(!stack
+        .store
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .any(|(f, _)| f == "session::delete"));
+    drop(held);
+    let done = tokio::time::timeout(Duration::from_secs(3), job)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+    assert!(done.deleted_session_ids.contains(&"late-child".into()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notification_reaches_history_and_model_context_not_only_ui() {
+    let stack = Stack::new("completed").await;
+    let accepted = stack.request("child2").await;
+    assert_eq!(
+        stack.run(&accepted.operation_id).await.status,
+        DeletionStatus::Completed
+    );
+    let turn = stack.store.lock().unwrap().state("harness_turn", "parent");
+    let payload = serde_json::from_value(
+        json!({"session_id":"parent", "turn_id":turn["turn_id"], "step":0, "depth":0}),
+    )
+    .unwrap();
+    // Stop at the context boundary: no provider call is made. Production
+    // run_step performs the queue drain, history read and model assembly.
+    let _ = harness::turn_loop::run_step(&stack.deps, payload).await;
+    let store = stack.store.lock().unwrap();
+    let entries = store.messages.get("parent").unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|e| e["entry_id"]
+                .as_str()
+                .is_some_and(|id| id.ends_with("_parent")))
+            .count(),
+        1
+    );
+    let context = store
+        .calls
+        .iter()
+        .find(|(f, _)| f == "context::assemble")
+        .expect("notification must reach model context");
+    assert!(context.1["messages"].to_string().contains("Do not await"));
+    assert!(context.1["messages"].to_string().contains("grandchild1"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partial_delete_retry_keeps_plan_and_notifies_only_once() {
+    let stack = Stack::new("running").await;
+    stack.store.lock().unwrap().fail_delete = Some("child2".into());
+    let accepted = stack.request("child2").await;
+    let failed = stack.run(&accepted.operation_id).await;
+    assert_eq!(failed.status, DeletionStatus::Failed);
+    assert_eq!(failed.deleted_session_ids, vec!["grandchild1"]);
+    assert!(stack.store.lock().unwrap().sessions.contains_key("child2"));
+    stack.store.lock().unwrap().fail_delete = None;
+    let retry = stack.request("child2").await;
+    assert_eq!(retry.operation_id, accepted.operation_id);
+    assert_eq!(
+        stack.run(&retry.operation_id).await.status,
+        DeletionStatus::Completed
+    );
+    let store = stack.store.lock().unwrap();
+    assert_eq!(
+        store
+            .state
+            .keys()
+            .filter(|(scope, _)| scope == "harness_queue")
+            .count(),
+        1
+    );
+    assert_eq!(
+        store
+            .calls
+            .iter()
+            .filter(|(f, p)| f == "session::delete" && p["session_id"] == "grandchild1")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_reenqueues_persisted_operation_after_lost_enqueue_ack() {
+    let stack = Stack::new("completed").await;
+    let accepted = stack.request("child2").await;
+    stack.store.lock().unwrap().calls.clear();
+    deletion::recover(&stack.deps).await.unwrap();
+    assert!(stack
+        .store
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .any(|(f, p)| f == deletion::RUN_ID && p["operation_id"] == accepted.operation_id));
+    assert_eq!(
+        stack.run(&accepted.operation_id).await.status,
+        DeletionStatus::Completed
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_parent_notification_ack_reuses_deterministic_queue_identity() {
+    let stack = Stack::new("running").await;
+    let accepted = stack.request("child2").await;
+    assert_eq!(
+        stack.run(&accepted.operation_id).await.status,
+        DeletionStatus::Completed
+    );
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut op = store.state(deletion::OPERATIONS, &accepted.operation_id);
+        op["snapshot"]["status"] = json!("failed");
+        op["notified"] = json!(false);
+        store.put(deletion::OPERATIONS, &accepted.operation_id, op);
+    }
+    let retry = stack.request("child2").await;
+    assert_eq!(
+        stack.run(&retry.operation_id).await.status,
+        DeletionStatus::Completed
+    );
+    assert_eq!(
+        stack
+            .store
+            .lock()
+            .unwrap()
+            .state
+            .keys()
+            .filter(|(scope, _)| scope == "harness_queue")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn durable_unknown_tool_witness_expires_failed_without_erasing_sessions() {
+    let stack = Stack::new("completed").await;
+    let accepted = stack.request("child2").await;
+    {
+        let mut store = stack.store.lock().unwrap();
+        store.put(
+            deletion::DISPATCHES,
+            "unknown-call",
+            json!({"session_id":"grandchild1","function_id":"slow::work"}),
+        );
+        let mut op = store.state(deletion::OPERATIONS, &accepted.operation_id);
+        op["deadline"] = json!(harness::types::message::AgentMessage::now_ms() + 100);
+        store.put(deletion::OPERATIONS, &accepted.operation_id, op);
+    }
+    let failed = stack.run(&accepted.operation_id).await;
+    assert_eq!(failed.status, DeletionStatus::Failed);
+    assert!(failed.error.unwrap().contains("deadline"));
+    assert_eq!(stack.store.lock().unwrap().sessions.len(), 4);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_cascades_durable_children_even_when_selected_turn_is_terminal() {
+    let stack = Stack::new("completed").await;
+    stack.set_status("grandchild1", "running");
+    let response = harness::functions::stop::handle(
+        &stack.deps,
+        harness::functions::stop::StopRequest {
+            session_id: "child2".into(),
+            turn_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(response.stopping);
+    assert_eq!(
+        stack
+            .store
+            .lock()
+            .unwrap()
+            .state("harness_turn", "grandchild1")["abort"],
+        true
+    );
+    assert_ne!(
+        stack.store.lock().unwrap().state("harness_turn", "child1")["abort"],
+        true
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tombstoned_wake_is_dropped_and_queued_turn_cannot_recreate_deleted_session() {
+    let stack = Stack::new("completed").await;
+    let accepted = stack.request("child2").await;
+    let wake = harness::functions::send::inject(
+        &stack.deps,
+        "child2",
+        harness::types::message::AgentMessage::user_text("late wake"),
+        Some("late"),
+        None,
+    )
+    .await;
+    assert!(wake.is_err());
+    assert_eq!(
+        stack.run(&accepted.operation_id).await.status,
+        DeletionStatus::Completed
+    );
+    let payload = serde_json::from_value(
+        json!({"session_id":"child2","turn_id":"t_child2","step":0,"depth":0}),
+    )
+    .unwrap();
+    let response = harness::turn_loop::run_step(&stack.deps, payload)
+        .await
+        .unwrap();
+    assert!(response.skipped);
+    assert!(!stack.store.lock().unwrap().sessions.contains_key("child2"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn child_first_rejects_ancestor_before_tombstone_and_keeps_parent_notifiable() {
+    let stack = Stack::new("running").await;
+    stack.set_status("grandchild1", "running");
+    let child = stack.request("child2").await;
+    assert_eq!(
+        stack
+            .store
+            .lock()
+            .unwrap()
+            .state(deletion::OPERATIONS, &child.operation_id)["planned"],
+        false
+    );
+    let parent = stack.request("parent").await;
+    assert_eq!(parent.status, DeletionStatus::Failed);
+    assert!(parent.error.as_deref().unwrap().contains("overlapping"));
+    for id in ["parent", "child1"] {
+        assert!(stack
+            .store
+            .lock()
+            .unwrap()
+            .state(deletion::GUARDS, id)
+            .is_null());
+        let work = harness::functions::send::inject(
+            &stack.deps,
+            id,
+            harness::types::message::AgentMessage::user_text("surviving work"),
+            Some(&format!("work-{id}")),
+            None,
+        )
+        .await;
+        assert!(
+            work.is_ok(),
+            "{id}: {}",
+            work.err().map(|e| e.to_string()).unwrap_or_default()
+        );
+    }
+    let deps = stack.deps.clone();
+    let operation_id = child.operation_id.clone();
+    let job = tokio::spawn(async move {
+        deletion::run(&deps, StatusRequest { operation_id })
+            .await
+            .unwrap()
+            .unwrap()
+    });
+    stack
+        .wait_for(|s| s.state("harness_turn", "grandchild1")["abort"] == true)
+        .await;
+    // A repeated command remains prompt while the runner owns the operation lock.
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), stack.request("child2"))
+            .await
+            .unwrap()
+            .attempt,
+        1
+    );
+    assert!(!job.is_finished());
+    stack.set_status("grandchild1", "cancelled");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(3), job)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        DeletionStatus::Completed
+    );
+    let store = stack.store.lock().unwrap();
+    let notices: Vec<_> = store
+        .state
+        .iter()
+        .filter(|((scope, _), row)| {
+            scope == "harness_queue" && row["origin"]["deletion_operation_id"] == child.operation_id
+        })
+        .collect();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].1["session_id"], "parent");
+    assert!(store.sessions.contains_key("parent"));
+    assert!(store.sessions.contains_key("child1"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_repairs_legacy_unplanned_ancestor_guard_without_losing_child_notice() {
+    let stack = Stack::new("running").await;
+    let child = stack.request("child2").await;
+    let parent = stack.request("parent").await;
+    // Reproduce the previous version's partial reservation left by rejection.
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .put(deletion::GUARDS, "parent", json!(parent.operation_id));
+    assert_eq!(
+        stack.run(&child.operation_id).await.status,
+        DeletionStatus::Completed
+    );
+    let store = stack.store.lock().unwrap();
+    assert!(store.state(deletion::GUARDS, "parent").is_null());
+    assert!(store
+        .state
+        .iter()
+        .any(|((scope, _), row)| scope == "harness_queue"
+            && row["origin"]["deletion_operation_id"] == child.operation_id));
+    assert_eq!(
+        store.state(deletion::OPERATIONS, &parent.operation_id)["snapshot"]["status"],
+        "failed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partial_guard_recovery_rejects_conflict_without_overwriting_foreign_owner() {
+    let stack = Stack::new("completed").await;
+    let child = stack.request("child2").await;
+    let parent = stack.request("parent").await;
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut old = store.state(deletion::OPERATIONS, &parent.operation_id);
+        old["snapshot"]["status"] = json!("deleting");
+        store.put(deletion::OPERATIONS, &parent.operation_id, old);
+        store.put(deletion::GUARDS, "parent", json!(parent.operation_id));
+    }
+    assert_eq!(
+        stack.run(&parent.operation_id).await.status,
+        DeletionStatus::Failed
+    );
+    assert!(stack
+        .store
+        .lock()
+        .unwrap()
+        .state(deletion::GUARDS, "parent")
+        .is_null());
+    assert_eq!(
+        stack
+            .store
+            .lock()
+            .unwrap()
+            .state(deletion::GUARDS, "child2"),
+        child.operation_id
+    );
+    assert_eq!(
+        stack.run(&child.operation_id).await.status,
+        DeletionStatus::Completed
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_retry_increments_once_and_late_terminal_event_keeps_old_attempt() {
+    use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+    let stack = Stack::new("completed").await;
+    stack
+        .deps
+        .deletion_events
+        .register_trigger(TriggerConfig {
+            id: "review-subscription".into(),
+            function_id: "test::deletion-event".into(),
+            config: json!({"session_id":"child2"}),
+            metadata: None,
+            namespace: None,
+        })
+        .await
+        .unwrap();
+    let accepted = stack.request("child2").await;
+    stack.store.lock().unwrap().fail_delete = Some("grandchild1".into());
+    let old = stack.run(&accepted.operation_id).await;
+    assert_eq!(old.attempt, 1);
+    stack.store.lock().unwrap().fail_delete = None;
+    let (a, b) = tokio::join!(stack.request("child2"), stack.request("child2"));
+    assert_eq!(a, b);
+    assert_eq!(a.attempt, 2);
+    deletion::recover(&stack.deps).await.unwrap();
+    assert_eq!(stack.request("child2").await.attempt, 2);
+    // Deliberately publish the previous terminal snapshot AFTER retry acceptance.
+    stack.deps.deletion_events.emit(&old).await.unwrap();
+    stack
+        .wait_for(|s| {
+            s.calls
+                .iter()
+                .filter(|(f, _)| f == "test::deletion-event")
+                .count()
+                >= 2
+        })
+        .await;
+    let current = deletion::status(
+        &stack.deps,
+        StatusRequest {
+            operation_id: a.operation_id.clone(),
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(current.status, DeletionStatus::Deleting);
+    assert_eq!(current.attempt, 2);
+    let emitted = stack
+        .store
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .filter(|(f, _)| f == "test::deletion-event")
+        .map(|(_, p)| p.clone())
+        .collect::<Vec<_>>();
+    assert!(emitted
+        .iter()
+        .all(|p| p["attempt"] == 1 && p["status"] == "failed"));
+    assert_eq!(stack.run(&a.operation_id).await.attempt, 2);
+    assert_eq!(stack.request("child2").await.attempt, 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retry_waits_for_old_runner_before_writing_new_attempt() {
+    let stack = Stack::new("completed").await;
+    let op = stack.request("child2").await;
+    let held = stack.deps.deletion_commands.guard(&op.operation_id).await;
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut value = store.state(deletion::OPERATIONS, &op.operation_id);
+        value["snapshot"]["status"] = json!("failed");
+        store.put(deletion::OPERATIONS, &op.operation_id, value);
+    }
+    let retry = stack.request("child2");
+    tokio::pin!(retry);
+    assert!(tokio::time::timeout(Duration::from_millis(20), &mut retry)
+        .await
+        .is_err());
+    assert_eq!(
+        stack
+            .store
+            .lock()
+            .unwrap()
+            .state(deletion::OPERATIONS, &op.operation_id)["snapshot"]["attempt"],
+        1
+    );
+    drop(held);
+    assert_eq!(retry.await.attempt, 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn invalid_or_contradictory_delete_ack_does_not_report_deleted() {
+    for reply in [
+        json!({}),
+        json!({"deleted":"true"}),
+        json!({"deleted":false}),
+        json!({"deleted":true}),
+    ] {
+        let stack = Stack::new("completed").await;
+        let op = stack.request("child2").await;
+        stack.store.lock().unwrap().delete_reply = Some(reply);
+        let failed = stack.run(&op.operation_id).await;
+        assert_eq!(failed.status, DeletionStatus::Failed);
+        assert!(failed.deleted_session_ids.is_empty());
+        assert!(stack
+            .store
+            .lock()
+            .unwrap()
+            .sessions
+            .contains_key("grandchild1"));
+        assert!(!stack
+            .store
+            .lock()
+            .unwrap()
+            .state("harness_turn", "grandchild1")
+            .is_null());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_session_after_lost_delete_ack_is_an_idempotent_success() {
+    let stack = Stack::new("completed").await;
+    let op = stack.request("child2").await;
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut value = store.state(deletion::OPERATIONS, &op.operation_id);
+        value["planned"] = json!(true);
+        value["members"] = json!(["child2", "grandchild1"]);
+        value["parent"] = json!("parent");
+        store.put(deletion::OPERATIONS, &op.operation_id, value);
+        store.sessions.remove("grandchild1");
+    }
+    let done = stack.run(&op.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed);
+    assert!(done.deleted_session_ids.contains(&"grandchild1".into()));
+}
+
+#[test]
+fn fixtures_are_real_turn_records() {
+    let value = json!({"session_id":"s","turn_id":"t","status":"completed","step":0,"turn_count":0,"depth":0,
+        "options":{"model":"fake","max_turns":16},"created_at":1,"updated_at":1});
+    assert!(serde_json::from_value::<TurnRecord>(value).is_ok());
+}
+
+#[test]
+fn snapshot_attempt_contract_accepts_one_and_two_but_rejects_zero_and_missing() {
+    for attempt in [1, 2] {
+        let value = json!({
+            "operation_id": "op",
+            "attempt": attempt,
+            "session_id": "s",
+            "status": "deleting",
+            "deleted_session_ids": []
+        });
+        assert!(serde_json::from_value::<deletion::Snapshot>(value).is_ok());
+    }
+    let zero = json!({
+        "operation_id": "op",
+        "attempt": 0,
+        "session_id": "s",
+        "status": "deleting",
+        "deleted_session_ids": []
+    });
+    assert!(serde_json::from_value::<deletion::Snapshot>(zero).is_err());
+    let missing = json!({
+        "operation_id": "op",
+        "session_id": "s",
+        "status": "deleting",
+        "deleted_session_ids": []
+    });
+    assert!(serde_json::from_value::<deletion::Snapshot>(missing).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn corrupted_zero_attempt_status_and_run_fail_closed_without_side_effects() {
+    let stack = Stack::new("completed").await;
+    let accepted = stack.request("child2").await;
+    let mut corrupt = stack
+        .store
+        .lock()
+        .unwrap()
+        .state(deletion::OPERATIONS, &accepted.operation_id);
+    corrupt["snapshot"]["attempt"] = json!(0);
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .put(deletion::OPERATIONS, &accepted.operation_id, corrupt);
+    let before = stack
+        .store
+        .lock()
+        .unwrap()
+        .state(deletion::OPERATIONS, &accepted.operation_id);
+    let status = deletion::status(
+        &stack.deps,
+        StatusRequest {
+            operation_id: accepted.operation_id.clone(),
+        },
+    )
+    .await;
+    assert!(status.is_err());
+    let run = deletion::run(
+        &stack.deps,
+        StatusRequest {
+            operation_id: accepted.operation_id.clone(),
+        },
+    )
+    .await;
+    let error = run
+        .expect_err("corrupt storage must not enter successful run")
+        .to_string();
+    assert!(
+        error.contains("attempt") && error.contains("at least 1"),
+        "{error}"
+    );
+    let store = stack.store.lock().unwrap();
+    assert_eq!(
+        store.state(deletion::OPERATIONS, &accepted.operation_id),
+        before
+    );
+    assert_eq!(store.sessions.len(), 4);
+    assert!(!store
+        .calls
+        .iter()
+        .any(|(function, _)| function == "session::delete"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn zero_attempt_command_does_not_normalize_or_retry_and_max_attempt_overflows() {
+    let stack = Stack::new("completed").await;
+    let accepted = stack.request("child2").await;
+    let mut corrupt = stack
+        .store
+        .lock()
+        .unwrap()
+        .state(deletion::OPERATIONS, &accepted.operation_id);
+    corrupt["snapshot"]["attempt"] = json!(0);
+    corrupt["snapshot"]["status"] = json!("failed");
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .put(deletion::OPERATIONS, &accepted.operation_id, corrupt);
+    assert!(deletion::handle(
+        &stack.deps,
+        DeleteRequest {
+            session_id: "child2".into()
+        }
+    )
+    .await
+    .is_err());
+    assert_eq!(
+        stack
+            .store
+            .lock()
+            .unwrap()
+            .state(deletion::OPERATIONS, &accepted.operation_id)["snapshot"]["attempt"],
+        0
+    );
+
+    let mut exhausted = stack
+        .store
+        .lock()
+        .unwrap()
+        .state(deletion::OPERATIONS, &accepted.operation_id);
+    exhausted["snapshot"]["attempt"] = json!(u32::MAX);
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .put(deletion::OPERATIONS, &accepted.operation_id, exhausted);
+    assert!(deletion::handle(
+        &stack.deps,
+        DeleteRequest {
+            session_id: "child2".into()
+        }
+    )
+    .await
+    .is_err());
+    assert_eq!(
+        stack
+            .store
+            .lock()
+            .unwrap()
+            .state(deletion::OPERATIONS, &accepted.operation_id)["snapshot"]["attempt"],
+        u32::MAX
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_resumes_checkpointed_partial_plan_and_preserves_parent_and_sibling() {
+    let mut stack = Stack::new("running").await;
+    let accepted = stack.request("child2").await;
+    stack.store.lock().unwrap().fail_delete = Some("child2".into());
+    let interrupted = stack.run(&accepted.operation_id).await;
+    assert_eq!(interrupted.status, DeletionStatus::Failed);
+    assert_eq!(interrupted.deleted_session_ids, vec!["grandchild1"]);
+    {
+        let mut store = stack.store.lock().unwrap();
+        // The successful grandchild checkpoint was persisted before the next
+        // delete failed. Model a crash before the failure snapshot was saved.
+        let mut op = store.state(deletion::OPERATIONS, &accepted.operation_id);
+        assert_eq!(op["notified"], true);
+        op["snapshot"]["status"] = json!("deleting");
+        op["snapshot"].as_object_mut().unwrap().remove("error");
+        store.put(deletion::OPERATIONS, &accepted.operation_id, op);
+        store.fail_delete = None;
+        store.calls.clear();
+    }
+    stack.reset_runtime();
+    deletion::recover(&stack.deps).await.unwrap();
+    assert!(stack
+        .store
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .any(|(f, p)| f == deletion::RUN_ID && p["operation_id"] == accepted.operation_id));
+    let done = stack.run(&accepted.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed);
+    assert_eq!(done.attempt, accepted.attempt);
+    assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
+    let store = stack.store.lock().unwrap();
+    assert!(store.sessions.contains_key("parent"));
+    assert!(store.sessions.contains_key("child1"));
+    assert!(!store.sessions.contains_key("child2"));
+    assert!(!store.sessions.contains_key("grandchild1"));
+    assert_eq!(store.state("harness_turn", "parent")["status"], "running");
+    assert_eq!(store.state("harness_turn", "child1")["status"], "running");
+    let deletes: Vec<_> = store
+        .calls
+        .iter()
+        .filter(|(f, _)| f == "session::delete")
+        .map(|(_, p)| p["session_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(deletes, vec!["child2"]);
+    assert_eq!(
+        store
+            .state
+            .iter()
+            .filter(|((scope, _), _)| scope == "harness_queue")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persisted_parent_notification_retries_once_after_ack_loss() {
+    let stack = Stack::new("completed").await;
+    let accepted = stack.request("child2").await;
+    stack.store.lock().unwrap().fail_after_queue_once = true;
+    let failed = stack.run(&accepted.operation_id).await;
+    assert_eq!(failed.status, DeletionStatus::Failed);
+    let queue_id = format!("e_{}_parent", accepted.operation_id);
+    {
+        let store = stack.store.lock().unwrap();
+        let rows: Vec<_> = store
+            .state
+            .iter()
+            .filter(|((scope, _), row)| scope == "harness_queue" && row["entry_id"] == queue_id)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "notification write survived lost acknowledgement"
+        );
+    }
+    let retry = stack.request("child2").await;
+    assert_eq!(retry.attempt, 2);
+    assert_eq!(
+        stack.run(&retry.operation_id).await.status,
+        DeletionStatus::Completed
+    );
+    {
+        let store = stack.store.lock().unwrap();
+        let rows: Vec<_> = store
+            .state
+            .iter()
+            .filter(|((scope, _), row)| scope == "harness_queue" && row["entry_id"] == queue_id)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "retry preserves one durable notification row"
+        );
+    }
+    let turn = stack.store.lock().unwrap().state("harness_turn", "parent");
+    let payload = serde_json::from_value(
+        json!({"session_id":"parent", "turn_id":turn["turn_id"], "step":0, "depth":0}),
+    )
+    .unwrap();
+    // Run the real drain/append/context path, stopping before a provider call.
+    let _ = harness::turn_loop::run_step(&stack.deps, payload).await;
+    let repeated = stack.request("child2").await;
+    assert_eq!(repeated.status, DeletionStatus::Completed);
+    assert_eq!(repeated.attempt, 2);
+    let store = stack.store.lock().unwrap();
+    let entries = store.messages.get("parent").unwrap();
+    assert_eq!(
+        entries.iter().filter(|e| e["entry_id"] == queue_id).count(),
+        1
+    );
+    assert_eq!(
+        store
+            .calls
+            .iter()
+            .filter(|(f, p)| f == "session::append" && p["entry_id"] == queue_id)
+            .count(),
+        1
+    );
+    assert!(!store
+        .state
+        .iter()
+        .any(|((scope, _), row)| scope == "harness_queue" && row["entry_id"] == queue_id));
+    let context = store
+        .calls
+        .iter()
+        .find(|(f, _)| f == "context::assemble")
+        .expect("the persisted notice must reach model context after retry");
+    let notices = context.1["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message.to_string().contains(&accepted.operation_id))
+        .count();
+    assert_eq!(notices, 1);
+    assert!(context.1["messages"].to_string().contains("Do not await"));
+    assert!(store.sessions.contains_key("parent"));
+    assert!(store.sessions.contains_key("child1"));
+}
+
+fn turn(stack: &Stack, id: &str) -> Value {
+    stack.store.lock().unwrap().state("harness_turn", id)
+}
+
+async fn ordinary_stop(stack: &Stack, id: &str) -> harness::functions::stop::StopResponse {
+    harness::functions::stop::handle(
+        &stack.deps,
+        harness::functions::stop::StopRequest {
+            session_id: id.into(),
+            turn_id: None,
+        },
+    )
+    .await
+    .expect("an ordinary stop never fails on an unconfirmed cancellation")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn late_external_result_while_tombstoned_lets_the_retry_delete_the_subtree() {
+    let stack = Stack::new("running").await;
+    stack.park_on_external_call("grandchild1");
+    let accepted = stack.request("child2").await;
+    let failed = stack.run(&accepted.operation_id).await;
+    assert_eq!(failed.status, DeletionStatus::Failed);
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("pending external tool")),
+        "{failed:?}"
+    );
+    assert_eq!(stack.store.lock().unwrap().sessions.len(), 4);
+    assert_eq!(turn(&stack, "grandchild1")["status"], "awaiting_functions");
+
+    // The external result arrives while the subtree is tombstoned.
+    let resolved = harness::functions::function_resolve::handle(
+        &stack.deps,
+        serde_json::from_value(json!({
+            "session_id": "grandchild1",
+            "turn_id": "t_grandchild1",
+            "function_call_id": "ext-1",
+            "content": [{"type": "text", "text": "late result"}]
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(resolved.resolved);
+    assert!(!resolved.turn_resumed);
+    let settled = turn(&stack, "grandchild1");
+    assert_eq!(settled["status"], "cancelled");
+    // Settled, not left pending: the finished record drops a done call
+    // without a child (MOT-5166).
+    assert!(settled["calls"].get("ext-1").is_none(), "{settled}");
+    {
+        let store = stack.store.lock().unwrap();
+        // Consumed without a model-visible result or a resumed step.
+        assert!(!store
+            .messages
+            .get("grandchild1")
+            .is_some_and(|m| m.iter().any(|e| e.to_string().contains("late result"))));
+        assert!(!store
+            .calls
+            .iter()
+            .any(|(f, p)| f == "harness::turn" && p["session_id"] == "grandchild1"));
+    }
+
+    let retry = stack.request("child2").await;
+    assert_eq!(retry.attempt, 2);
+    let done = stack.run(&retry.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+    assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
+    let store = stack.store.lock().unwrap();
+    assert_eq!(
+        store
+            .state
+            .iter()
+            .filter(|((scope, _), row)| scope == "harness_queue" && row["session_id"] == "parent")
+            .count(),
+        1,
+        "the parent is notified exactly once"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_stop_persists_abort_on_router_failure_but_deletion_fails_closed() {
+    for code in ["test_error", "function_not_found"] {
+        let stack = Stack::new("running").await;
+        stack.set_status("grandchild1", "running");
+        {
+            let mut store = stack.store.lock().unwrap();
+            let mut row = store.state("harness_turn", "grandchild1");
+            row["stream_request_id"] = json!("stream");
+            store.put("harness_turn", "grandchild1", row);
+            store.codes.insert("router::abort".into(), code.into());
+        }
+        assert!(
+            ordinary_stop(&stack, "grandchild1").await.stopping,
+            "{code}"
+        );
+        assert_eq!(turn(&stack, "grandchild1")["abort"], true, "{code}");
+
+        let accepted = stack.request("child2").await;
+        let failed = stack.run(&accepted.operation_id).await;
+        assert_eq!(failed.status, DeletionStatus::Failed, "{code}");
+        assert!(
+            failed
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("router::abort")),
+            "{code}: {failed:?}"
+        );
+        assert_eq!(stack.store.lock().unwrap().sessions.len(), 4, "{code}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_stop_of_unconfirmed_external_call_reports_stopping_with_abort() {
+    let stack = Stack::new("running").await;
+    stack.park_on_external_call("grandchild1");
+    assert!(ordinary_stop(&stack, "grandchild1").await.stopping);
+    let parked = turn(&stack, "grandchild1");
+    assert_eq!(parked["abort"], true);
+    // Not finalized: the external call's outcome is still unknown.
+    assert_eq!(parked["status"], "awaiting_functions");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_skips_malformed_rows_and_continues_after_an_enqueue_failure() {
+    let stack = Stack::new("completed").await;
+    let child2 = stack.request("child2").await;
+    let child1 = stack.request("child1").await;
+    // Rows are listed in key order: both malformed rows sort first, then the
+    // operation whose enqueue fails, then the one that must still be enqueued.
+    let (failing, failing_session, other) = if child1.operation_id < child2.operation_id {
+        (&child1, "child1", &child2)
+    } else {
+        (&child2, "child2", &child1)
+    };
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut zero = store.state(deletion::OPERATIONS, &child2.operation_id);
+        zero["snapshot"]["operation_id"] = json!("delete_!zero");
+        zero["snapshot"]["attempt"] = json!(0);
+        store.put(deletion::OPERATIONS, "delete_!zero", zero);
+        store.put(
+            deletion::OPERATIONS,
+            "delete_!garbage",
+            json!({"snapshot": "not an operation"}),
+        );
+        store.fail_enqueue.insert(failing.operation_id.clone());
+        store.calls.clear();
+    }
+    deletion::recover(&stack.deps)
+        .await
+        .expect("bad rows and enqueue failures must not abort boot recovery");
+    let enqueued = |store: &Store| -> Vec<String> {
+        store
+            .calls
+            .iter()
+            .filter(|(f, _)| f == deletion::RUN_ID)
+            .filter_map(|(_, p)| p["operation_id"].as_str().map(str::to_string))
+            .collect()
+    };
+    {
+        let store = stack.store.lock().unwrap();
+        assert_eq!(
+            enqueued(&store),
+            vec![failing.operation_id.clone(), other.operation_id.clone()]
+        );
+        // The malformed row is left untouched: its operation stays fail-closed.
+        assert_eq!(
+            store.state(deletion::OPERATIONS, "delete_!zero")["snapshot"]["attempt"],
+            0
+        );
+    }
+    // A client retry of the pending command re-enqueues the stranded operation.
+    {
+        let mut store = stack.store.lock().unwrap();
+        store.fail_enqueue.clear();
+        store.calls.clear();
+    }
+    let pending = stack.request(failing_session).await;
+    assert_eq!(pending.status, DeletionStatus::Deleting);
+    assert_eq!(pending.attempt, 1);
+    assert_eq!(
+        enqueued(&stack.store.lock().unwrap()),
+        vec![failing.operation_id.clone()]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_dispatch_witness_follows_the_structured_outcome_not_error_text() {
+    let stack = Stack::new("completed").await;
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .codes
+        .insert("ext::stopped".into(), "invocation_stopped".into());
+    let engine = stack.deps.engine().await;
+    let policy = harness::policy::CompiledPolicy::from(None);
+    // The first target's failure text mentions a connection timeout, but the
+    // target answered: its outcome is known and the witness is released.
+    for (function, keeps_witness) in [("ext::connection-timeout", false), ("ext::stopped", true)] {
+        let result = harness::functions::subscribe::invoke(
+            &stack.deps,
+            &engine,
+            &policy,
+            function,
+            &json!({}),
+            "child1",
+            false,
+            None,
+        )
+        .await;
+        assert!(result.is_error, "{function}");
+        let witnesses = stack
+            .store
+            .lock()
+            .unwrap()
+            .state
+            .iter()
+            .filter(|((scope, _), row)| {
+                scope == deletion::DISPATCHES && row["function_id"] == function
+            })
+            .count();
+        assert_eq!(witnesses, usize::from(keeps_witness), "{function}");
+    }
+}
+
+/// Tombstone reads (`state::get` on the guard scope) the fixture has served.
+fn guard_reads(store: &Store) -> usize {
+    store
+        .calls
+        .iter()
+        .filter(|(function, data)| {
+            function.ends_with("state::get") && data["scope"] == deletion::GUARDS
+        })
+        .count()
+}
+
+/// Witness rows still present; a cleared witness is stored as `null`.
+fn dispatch_witnesses(store: &Store) -> Vec<Value> {
+    store
+        .state
+        .iter()
+        .filter(|((scope, _), row)| scope == deletion::DISPATCHES && !row.is_null())
+        .map(|(_, row)| row.clone())
+        .collect()
+}
+
+/// The RPCs the fixture served on the witness scope, in order.
+fn witness_rpcs(store: &Store) -> Vec<String> {
+    store
+        .calls
+        .iter()
+        .filter(|(_, data)| data["scope"] == deletion::DISPATCHES)
+        .map(|(function, _)| function.clone())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_dispatch_takes_no_process_wide_lock_and_reuses_a_live_answer() {
+    let stack = Stack::new("completed").await;
+    let engine = stack.deps.engine().await;
+    let policy = harness::policy::CompiledPolicy::from(None);
+    stack.store.lock().unwrap().calls.clear();
+    // Another session's admission holds topology for the whole exchange: a
+    // dispatch must not queue behind it.
+    let held = stack.deps.topology.clone().lock_owned().await;
+    let mut reads = Vec::new();
+    for _ in 0..2 {
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            harness::functions::subscribe::invoke(
+                &stack.deps,
+                &engine,
+                &policy,
+                "ext::probe",
+                &json!({}),
+                "child1",
+                false,
+                None,
+            ),
+        )
+        .await
+        .expect("dispatch must not wait on the process-wide topology lock");
+        // The fixture answers an unknown target with an error: it was reached.
+        assert!(result.is_error);
+        reads.push(guard_reads(&stack.store.lock().unwrap()));
+    }
+    drop(held);
+    let store = stack.store.lock().unwrap();
+    // The first dispatch walks child1 -> parent; the second reuses that answer.
+    assert_eq!(reads, vec![2, 2]);
+    assert_eq!(
+        store
+            .calls
+            .iter()
+            .filter(|(f, _)| f == "ext::probe")
+            .count(),
+        2
+    );
+    // Each dispatch writes its witness with one CAS and clears it with one.
+    assert_eq!(
+        witness_rpcs(&store),
+        vec!["harness::state::compare-and-set"; 4]
+    );
+    // Both replies confirmed their calls, so no witness outlives them.
+    let witnesses = dispatch_witnesses(&store);
+    assert!(witnesses.is_empty(), "{witnesses:#?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tombstone_after_a_live_answer_refuses_dispatch_and_withdraws_its_witness() {
+    let stack = Stack::new("completed").await;
+    let engine = stack.deps.engine().await;
+    let policy = harness::policy::CompiledPolicy::from(None);
+    let args = json!({});
+    let dispatch = |function: &'static str| {
+        harness::functions::subscribe::invoke(
+            &stack.deps,
+            &engine,
+            &policy,
+            function,
+            &args,
+            "child1",
+            false,
+            None,
+        )
+    };
+    // child1 is remembered live...
+    assert!(dispatch("ext::before").await.is_error);
+    // ...then this process tombstones its parent, well within the memo's TTL.
+    let accepted = stack.request("parent").await;
+    assert_eq!(accepted.status, DeletionStatus::Deleting);
+    stack.store.lock().unwrap().calls.clear();
+
+    let refused = dispatch("ext::after").await;
+    assert!(refused.is_error);
+    let message = refused.details["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(message.contains("tombstoned"), "{message}");
+    let store = stack.store.lock().unwrap();
+    // The guard write invalidated the memo: the lineage was read again...
+    assert!(guard_reads(&store) > 0);
+    // ...the target was never invoked, and its witness was withdrawn.
+    assert_eq!(
+        witness_rpcs(&store),
+        vec!["harness::state::compare-and-set"; 2]
+    );
+    assert!(!store.calls.iter().any(|(f, _)| f == "ext::after"));
+    let witnesses = dispatch_witnesses(&store);
+    assert!(witnesses.is_empty(), "{witnesses:#?}");
+}
+
+/// The orphan redrive's view of the turn scope is process-wide: tests that
+/// read or refresh it run one at a time.
+static TURN_VIEW_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// `harness_turn` keys read with `state::get` since the calls were cleared.
+fn turn_gets(store: &Store) -> Vec<String> {
+    store
+        .calls
+        .iter()
+        .filter(|(f, data)| f == "state::get" && data["scope"] == "harness_turn")
+        .map(|(_, data)| data["key"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// The orphan redrive reads only the turn records that changed since its last
+/// pass, and the pending sweep's full read refreshes that view: a record
+/// rewritten behind this process (a state-store rollback, a console edit) is
+/// redriven by the next sweep, not only after a restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orphan_redrive_reads_only_changed_turns_and_the_sweep_refreshes_its_view() {
+    use harness::functions::sweep_pending::{self, SweepEvent};
+    use harness::inflight::redrive_orphans;
+    let _view = TURN_VIEW_TESTS.lock().await;
+    let stack = Stack::new("completed").await;
+    // Own keys only: the other tests' writes mark the fixture's ids.
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .state
+        .retain(|(scope, _), _| scope != "harness_turn");
+    stack.session("rd_done", None, "completed");
+    stack.session("rd_parked", None, "awaiting_functions");
+    let pass = || async {
+        stack.store.lock().unwrap().calls.clear();
+        let redriven = redrive_orphans(&stack.deps).await.unwrap();
+        (redriven, turn_gets(&stack.store.lock().unwrap()))
+    };
+    assert_eq!(
+        pass().await,
+        (0, vec!["rd_done".into(), "rd_parked".into()])
+    );
+    // Nothing changed: keys only.
+    assert_eq!(pass().await, (0, vec![]));
+    // Rolled back to Running behind this process: the incremental pass cannot
+    // see it...
+    stack.set_status("rd_done", "running");
+    assert_eq!(pass().await, (0, vec![]));
+    // ...the sweep's one full read refreshes the view, and its redrive pass
+    // then reads (and re-checks) only the orphan and re-enqueues it.
+    stack.store.lock().unwrap().calls.clear();
+    let swept = sweep_pending::handle(&stack.deps, SweepEvent::default())
+        .await
+        .unwrap();
+    assert_eq!(swept.redriven, 1);
+    assert_eq!(
+        turn_gets(&stack.store.lock().unwrap()),
+        ["rd_done", "rd_parked", "rd_done", "rd_done"]
+    );
+}
+
+/// A finished turn's record keeps only what a finished turn is read for
+/// (MOT-5166): open calls and calls with a child stay; done calls without
+/// one, the failure counts, the watermark and the stream id go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finalized_turn_records_drop_what_only_a_running_turn_reads() {
+    let stack = Stack::new("awaiting_functions").await;
+    stack.set_status("grandchild1", "running");
+    for id in ["parent", "child1", "grandchild1"] {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", id);
+        row["calls"] = json!({
+            "done": {"state": "done", "function_id": "x::y"},
+            "spawn": {"state": "done", "function_id": "harness::spawn",
+                "child_session_id": "s_c", "child_turn_id": "t_c"}
+        });
+        row["failed_calls"] = json!({"k": {"error_digest": "e", "count": 2}});
+        row["watermark_entry_id"] = json!("e_w");
+        row["stream_request_id"] = json!("req");
+        store.put("harness_turn", id, row);
+    }
+    // finalize_completed: a step that finds its step cap spent completes the
+    // turn without a generation. First: stopping the parent cascades to it.
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", "grandchild1");
+        row["turn_count"] = json!(16);
+        store.put("harness_turn", "grandchild1", row);
+    }
+    let payload = serde_json::from_value(
+        json!({"session_id":"grandchild1","turn_id":"t_grandchild1","step":0,"depth":0}),
+    )
+    .unwrap();
+    harness::turn_loop::run_step(&stack.deps, payload)
+        .await
+        .unwrap();
+    // finalize_cancelled: a stop on a parked turn with no external call.
+    ordinary_stop(&stack, "parent").await;
+    // finalize_failed: an unexpected step error.
+    harness::turn_loop::fail_turn(&stack.deps, "child1", "t_child1", "boom")
+        .await
+        .unwrap();
+    for (id, status) in [
+        ("parent", "cancelled"),
+        ("child1", "failed"),
+        ("grandchild1", "completed"),
+    ] {
+        let row = turn(&stack, id);
+        assert_eq!(row["status"], status, "{id}");
+        let calls: Vec<&String> = row["calls"].as_object().unwrap().keys().collect();
+        assert_eq!(calls, ["spawn"], "{id}");
+        for field in ["failed_calls", "watermark_entry_id", "stream_request_id"] {
+            assert!(row.get(field).is_none(), "{id}: {field} = {}", row[field]);
+        }
+    }
+}
+
+async fn session_deleted(deps: &Deps, event: Value) {
+    harness::functions::on_session_deleted::handle(deps, serde_json::from_value(event).unwrap())
+        .await
+        .unwrap();
+}
+
+/// `session::deleted` purges the session's turn record with its other rows
+/// (MOT-5166); other sessions' records stay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_deleted_removes_the_turn_record() {
+    let stack = Stack::new("completed").await;
+    session_deleted(&stack.deps, json!({"session_id": "child2", "timestamp": 1})).await;
+    let store = stack.store.lock().unwrap();
+    assert!(store.calls.iter().any(|(f, data)| f == "state::delete"
+        && data["scope"] == "harness_turn"
+        && data["key"] == "child2"));
+    assert!(store.state("harness_turn", "child2").is_null());
+    assert!(!store.state("harness_turn", "grandchild1").is_null());
+}
+
+/// A step holds its record in memory and writes it back when it ends. The
+/// purge waits that step out, so it deletes the step's last write instead of
+/// the step re-creating the record it just deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_deleted_waits_out_a_running_step() {
+    let stack = Stack::new("completed").await;
+    let held = turn(&stack, "child1");
+    let step = stack.deps.turn_activity.guard("child1").await;
+    let deps = stack.deps.clone();
+    let purge = tokio::spawn(async move {
+        session_deleted(&deps, json!({"session_id": "child1", "timestamp": 1})).await
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        turn(&stack, "child1")["turn_id"],
+        "t_child1",
+        "deleted under a running step"
+    );
+    // The step's final put_turn, then the step ends.
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .put("harness_turn", "child1", held);
+    drop(step);
+    tokio::time::timeout(Duration::from_secs(5), purge)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(turn(&stack, "child1").is_null());
+}
+
+/// A finished record written before prompt refs: its frozen texts inline,
+/// one done call a finished record no longer keeps.
+fn inline_prompt_turn(stack: &Stack, id: &str, prompt: &str, index: &str) {
+    stack.session(id, None, "completed");
+    let mut store = stack.store.lock().unwrap();
+    let mut row = store.state("harness_turn", id);
+    row["options"]["system_prompt"] = json!(prompt);
+    row["options"]["skill_context"] = json!({"baseline": index});
+    row["calls"] = json!({"done": {"state": "done", "function_id": "x::y"}});
+    store.put("harness_turn", id, row);
+}
+
+/// `harness::turn_compaction::compact` over a fresh listing of the store.
+async fn compact(stack: &Stack, now: i64) -> harness::turn_compaction::CompactReport {
+    let listing = harness::state::list_turns(&stack.deps.iii, 2_000)
+        .await
+        .unwrap();
+    harness::turn_compaction::compact(&stack.deps, &listing, now).await
+}
+
+fn turn_writes(store: &Store) -> usize {
+    store
+        .calls
+        .iter()
+        .filter(|(f, data)| f == "state::set" && data["scope"] == "harness_turn")
+        .count()
+}
+
+const DAY_MS: i64 = 86_400_000;
+
+// Prompt texts are unique per test: the harness remembers which bodies it
+// stored process-wide, and each test has its own store.
+
+/// A finished record that still holds its prompt inline is rewritten once:
+/// bodies to `harness_prompt`, refs in the record, slimmed, `updated_at`
+/// kept. The next pass finds nothing inline and writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_converts_inline_terminal_records_once() {
+    let stack = Stack::new("completed").await;
+    let (prompt, index) = ("compact_converts prompt", "compact_converts index");
+    inline_prompt_turn(&stack, "cc_old", prompt, index);
+    let now = harness::types::message::AgentMessage::now_ms();
+    assert_eq!(compact(&stack, now).await.converted, 1);
+
+    let row = turn(&stack, "cc_old");
+    assert_eq!(row["updated_at"], 1);
+    assert_eq!(row["calls"], json!({}));
+    {
+        let store = stack.store.lock().unwrap();
+        for (field, text) in [
+            (&row["options"]["system_prompt"], prompt),
+            (&row["options"]["skill_context"]["baseline"], index),
+        ] {
+            let digest = field["$ref"].as_str().expect("a ref, not the text");
+            assert!(digest.starts_with("sha256:"), "{digest}");
+            assert_eq!(store.state("harness_prompt", digest)["body"], text);
+        }
+    }
+    let read = harness::state::get_turn(&stack.deps.iii, "cc_old", 2_000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.options.system_prompt.as_deref(), Some(prompt));
+    assert_eq!(
+        read.options.skill_context.unwrap().baseline.as_deref(),
+        Some(index)
+    );
+
+    stack.store.lock().unwrap().calls.clear();
+    let again = compact(&stack, now).await;
+    assert_eq!((again.converted, again.prompts_collected), (0, 0));
+    assert_eq!(turn_writes(&stack.store.lock().unwrap()), 0);
+}
+
+/// Conversion leaves a turn that is still running, one whose step executes
+/// here, and one rewritten since the listing (it re-reads under the session's
+/// guards and requires the listed `turn_id` and `updated_at`). A step holds
+/// `turn_activity` for its whole run: conversion skips its session without
+/// waiting for the step to end (boot compaction runs in the redrive loop).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_skips_running_and_changed_records() {
+    let stack = Stack::new("completed").await;
+    let prompt = "compact_skips prompt";
+    for id in ["cs_running", "cs_inflight", "cs_changed"] {
+        inline_prompt_turn(&stack, id, prompt, "compact_skips index");
+    }
+    stack.set_status("cs_running", "running");
+    let listing = harness::state::list_turns(&stack.deps.iii, 2_000)
+        .await
+        .unwrap();
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", "cs_changed");
+        row["updated_at"] = json!(2);
+        store.put("harness_turn", "cs_changed", row);
+        store.calls.clear();
+    }
+    let _step = stack.deps.inflight.enter("cs_inflight");
+    let _activity = stack.deps.turn_activity.guard("cs_inflight").await;
+    let now = harness::types::message::AgentMessage::now_ms();
+    let report = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        harness::turn_compaction::compact(&stack.deps, &listing, now),
+    )
+    .await
+    .expect("conversion must not wait for a running step");
+    assert_eq!(report.converted, 0);
+    assert_eq!(turn_writes(&stack.store.lock().unwrap()), 0);
+    for id in ["cs_running", "cs_inflight", "cs_changed"] {
+        assert_eq!(turn(&stack, id)["options"]["system_prompt"], prompt, "{id}");
+    }
+}
+
+/// A body goes only when no record references it and it is older than the
+/// grace period, which covers a send that stored a body but has not yet
+/// written the record that references it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_collects_only_old_unreferenced_bodies() {
+    let stack = Stack::new("completed").await;
+    let now = harness::types::message::AgentMessage::now_ms();
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", "child2");
+        row["options"]["system_prompt"] = json!({"$ref": "sha256:cb_a"});
+        store.put("harness_turn", "child2", row);
+        for (digest, created_at) in [
+            ("sha256:cb_a", now - 2 * DAY_MS),
+            ("sha256:cb_b", now - 2 * DAY_MS),
+            ("sha256:cb_c", now - DAY_MS / 24),
+        ] {
+            store.put(
+                "harness_prompt",
+                digest,
+                json!({"body": digest, "created_at": created_at}),
+            );
+        }
+    }
+    let report = compact(&stack, now).await;
+    assert_eq!((report.converted, report.prompts_collected), (0, 1));
+    let store = stack.store.lock().unwrap();
+    assert!(store.state("harness_prompt", "sha256:cb_b").is_null());
+    for kept in ["sha256:cb_a", "sha256:cb_c"] {
+        assert_eq!(store.state("harness_prompt", kept)["body"], kept);
+    }
+}
+
+/// A record this build cannot parse (a build with a newer record shape wrote
+/// it) is left out of the listing, yet its refs are in use: once that build
+/// runs again, a body collected here would make the session's every read a
+/// "missing prompt body". The collector keeps every body it names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_keeps_the_bodies_of_a_record_it_cannot_parse() {
+    let stack = Stack::new("completed").await;
+    let now = harness::types::message::AgentMessage::now_ms();
+    stack.session("cu_newer", None, "completed");
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", "cu_newer");
+        row["status"] = json!("a_status_from_a_newer_build");
+        row["options"]["system_prompt"] = json!({"$ref": "sha256:cu_used"});
+        store.put("harness_turn", "cu_newer", row);
+        for digest in ["sha256:cu_used", "sha256:cu_unused"] {
+            store.put(
+                "harness_prompt",
+                digest,
+                json!({"body": digest, "created_at": now - 2 * DAY_MS}),
+            );
+        }
+    }
+    let report = compact(&stack, now).await;
+    assert_eq!(report.prompts_collected, 1);
+    let store = stack.store.lock().unwrap();
+    assert!(store.state("harness_prompt", "sha256:cu_unused").is_null());
+    assert_eq!(
+        store.state("harness_prompt", "sha256:cu_used")["body"],
+        "sha256:cu_used"
+    );
+}
+
+/// The pending sweep converts and collects from the one full read of the
+/// turn scope it already makes; the conversion re-reads only the record it
+/// rewrites.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_sweep_compacts_from_its_one_full_read() {
+    use harness::functions::sweep_pending::{self, SweepEvent};
+    let _view = TURN_VIEW_TESTS.lock().await;
+    let stack = Stack::new("completed").await;
+    // Own keys only: the other tests' writes mark the fixture's ids.
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .state
+        .retain(|(scope, _), _| scope != "harness_turn");
+    stack.session("sw_done", None, "completed");
+    inline_prompt_turn(&stack, "sw_old", "sweep prompt", "sweep index");
+    {
+        let mut store = stack.store.lock().unwrap();
+        store.put(
+            "harness_prompt",
+            "sha256:sw_unused",
+            json!({"body": "unused", "created_at": 1}),
+        );
+        store.calls.clear();
+    }
+    let swept = sweep_pending::handle(&stack.deps, SweepEvent::default())
+        .await
+        .unwrap();
+    assert_eq!((swept.converted, swept.prompts_collected), (1, 1));
+    assert_eq!(
+        turn_gets(&stack.store.lock().unwrap()),
+        ["sw_done", "sw_old", "sw_old"]
+    );
+    assert!(turn(&stack, "sw_old")["options"]["system_prompt"]["$ref"].is_string());
+}
+
+/// Point `id`'s record at a prompt body the store does not have.
+fn lose_prompt_body(stack: &Stack, id: &str) {
+    let mut store = stack.store.lock().unwrap();
+    let mut row = store.state("harness_turn", id);
+    row["options"]["system_prompt"] = json!({"$ref": format!("sha256:lost_{id}")});
+    store.put("harness_turn", id, row);
+}
+
+/// A record whose prompt body is gone is redriven like any orphan (its step
+/// then fails the turn instead of leaving it Running), and does not end the
+/// pass for the orphans after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_prompt_body_does_not_stop_the_orphan_redrive() {
+    let _view = TURN_VIEW_TESTS.lock().await;
+    let stack = Stack::new("completed").await;
+    // Own keys only: the other tests' writes mark the fixture's ids.
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .state
+        .retain(|(scope, _), _| scope != "harness_turn");
+    stack.session("lb_a_lost", None, "running");
+    stack.session("lb_b_orphan", None, "running");
+    lose_prompt_body(&stack, "lb_a_lost");
+    let redriven = harness::inflight::redrive_orphans(&stack.deps)
+        .await
+        .unwrap();
+    assert_eq!(redriven, 2);
+    let store = stack.store.lock().unwrap();
+    let mut enqueued: Vec<&Value> = store
+        .calls
+        .iter()
+        .filter(|(f, _)| f == "harness::turn")
+        .map(|(_, data)| &data["session_id"])
+        .collect();
+    enqueued.sort_by_key(|id| id.to_string());
+    assert_eq!(enqueued, [&json!("lb_a_lost"), &json!("lb_b_orphan")]);
+}
+
+/// Stop and delete-session-tree read only a record's status, turn and calls,
+/// so a session whose prompt body is gone can still be stopped and deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_and_delete_work_without_the_prompt_body() {
+    let stack = Stack::new("running").await;
+    stack.set_status("grandchild1", "awaiting_functions");
+    for id in ["child2", "grandchild1"] {
+        lose_prompt_body(&stack, id);
+    }
+    let stopped = harness::functions::stop::handle(
+        &stack.deps,
+        harness::functions::stop::StopRequest {
+            session_id: "grandchild1".into(),
+            turn_id: Some("t_grandchild1".into()),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(stopped.stopping);
+    let row = turn(&stack, "grandchild1");
+    assert_eq!(row["status"], "cancelled");
+    assert_eq!(
+        row["options"]["system_prompt"]["$ref"], "sha256:lost_grandchild1",
+        "the write-back keeps the ref"
+    );
+    let accepted = stack.request("child2").await;
+    let done = stack.run(&accepted.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+    assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
+}
+
+fn step(id: &str) -> harness::turn_loop::TurnStepPayload {
+    serde_json::from_value(json!({"session_id":id,"turn_id":format!("t_{id}"),"step":0,"depth":0}))
+        .unwrap()
+}
+
+/// A stopped step and a failed step finalize from the stored record: neither
+/// needs the prompt body, so a session whose body is gone still ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopped_and_failed_steps_finalize_without_the_prompt_body() {
+    let stack = Stack::new("completed").await;
+    stack.set_status("grandchild1", "running");
+    for id in ["child1", "grandchild1"] {
+        lose_prompt_body(&stack, id);
+    }
+    assert!(ordinary_stop(&stack, "child1").await.stopping);
+    let stopped = harness::turn_loop::run_step(&stack.deps, step("child1"))
+        .await
+        .unwrap();
+    assert_eq!(turn(&stack, "child1")["status"], "cancelled", "{stopped:?}");
+
+    // Not stopped: generating needs the body, so the step fails and the
+    // failure finalizes.
+    let error = harness::turn_loop::run_step(&stack.deps, step("grandchild1"))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("missing prompt body"), "{error}");
+    harness::turn_loop::fail_turn(
+        &stack.deps,
+        "grandchild1",
+        "t_grandchild1",
+        &error.to_string(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(turn(&stack, "grandchild1")["status"], "failed");
+    for id in ["child1", "grandchild1"] {
+        assert_eq!(
+            turn(&stack, id)["options"]["system_prompt"]["$ref"],
+            format!("sha256:lost_{id}"),
+            "{id}: the write-back keeps the ref"
+        );
+    }
+}
+
+/// `harness::status` reads no prompt text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_reports_a_session_without_its_prompt_body() {
+    let stack = Stack::new("completed").await;
+    lose_prompt_body(&stack, "parent");
+    let report = harness::functions::status::handle(
+        &stack.deps,
+        harness::functions::status::StatusRequest {
+            session_id: "parent".into(),
+            verbose: true,
+        },
+    )
+    .await
+    .unwrap()
+    .expect("a report");
+    assert_eq!(report.turn_id.as_deref(), Some("t_parent"));
+}

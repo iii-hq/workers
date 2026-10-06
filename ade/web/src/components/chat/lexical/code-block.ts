@@ -8,7 +8,7 @@ import {
 } from 'lexical'
 
 /**
- * Enter inside a code block. A new line keeps the indentation of the line
+ * Shift+Enter inside a code block. A new line keeps the indentation of the line
  * it leaves; on a second blank line at the end of the block the caret steps
  * out into a paragraph after it, and the blank lines go with it. A line
  * holding only the inherited indentation counts as blank. Owning this here

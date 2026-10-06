@@ -15,8 +15,8 @@
  *   `session::set-meta`. The console owns the metadata convention
  *   `{ surface, model, thinking_level, skills, title_manual }`;
  *   metadata replaces WHOLESALE, so the full object is always sent.
- * - delete writes through `session::delete`; the sidebar prunes on the
- *   `session::deleted` event (and optimistically).
+ * - delete delegates the entire subtree to the harness; local cleanup waits
+ *   for completion. Authoritative `session::deleted` events still reconcile.
  * - transcript content reconciles `message-added` / `message-updated`
  *   snapshots by entry, keeping the highest revision per entry
  *   (at-least-once, unordered delivery).
@@ -50,7 +50,6 @@ import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { newSessionId } from '@/lib/session-id'
 import {
   deleteAttachment,
-  deleteSession,
   ensureSession as ensureSessionApi,
   fetchTranscript,
   fetchTranscriptRange,
@@ -64,6 +63,10 @@ import {
   TRANSCRIPT_OLDER_PAGE_LIMIT,
   TRANSCRIPT_TAIL_PAGE_LIMIT,
 } from '@/lib/sessions/api'
+import {
+  type DeleteSessionTreeOptions,
+  deleteSessionTree,
+} from '@/lib/sessions/delete-tree'
 import {
   applyEntryUpsert,
   belongsToEntry,
@@ -88,9 +91,11 @@ import {
   loadActiveId,
   loadLastModel,
   loadLastThinkingLevel,
+  loadNewChatDraft,
   saveActiveId,
   saveLastModel,
   saveLastThinkingLevel,
+  saveNewChatDraft,
 } from '@/lib/storage'
 import { releaseConsoleClaimIfAny } from '@/lib/worktree-claims'
 import {
@@ -243,14 +248,18 @@ export function emptyConversation(
   }
 }
 
-/** A chat nobody has written in yet: still local, no transcript, no draft
-    text. Two of these are the same chat as far as anyone can tell. */
-export function isUntouchedDraft(conversation: Conversation): boolean {
+/** The chat "new chat" should land on: an unsent local draft, preferring the
+    one in front of you. Drafts never show in the list, so reusing one is the
+    only way back to it. */
+export function unsentDraft(
+  conversations: Conversation[],
+  activeId: string | null,
+): Conversation | undefined {
+  const unsent = (c: Conversation) =>
+    c.draft === true && c.messages.length === 0
   return (
-    conversation.draft === true &&
-    conversation.messages.length === 0 &&
-    (conversation.draftText ?? '') === '' &&
-    (conversation.draftAttachments?.length ?? 0) === 0
+    conversations.find((c) => c.id === activeId && unsent(c)) ??
+    conversations.find(unsent)
   )
 }
 
@@ -536,6 +545,19 @@ function reconcileLegacySkillMigration(
   }
 }
 
+/** Merge `patch` into session metadata; an `undefined` value removes the key. */
+export function patchSessionMetadata(
+  metadata: Readonly<Record<string, unknown>> | undefined,
+  patch: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...(metadata ?? {}) }
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete next[key]
+    else next[key] = value
+  }
+  return next
+}
+
 /** The console's session metadata convention (replaces wholesale on writes). */
 export function metadataFor(
   c: Pick<
@@ -627,6 +649,8 @@ export function applyConversationMetadataPatch(
   patch: ConversationMetadataEdits,
   now = Date.now(),
 ): Conversation {
+  if (c.sessionMetadata?.read_only === true && !Object.hasOwn(patch, 'title'))
+    return c
   const normalized: ConversationMetadataEdits = Object.hasOwn(patch, 'skills')
     ? { ...patch, skills: patch.skills?.length ? patch.skills : undefined }
     : patch
@@ -1106,12 +1130,19 @@ export interface ConversationsApi {
   /** Keep one session hydrated and subscribed while a chat panel is mounted. */
   watchConversation: (id: string) => () => void
   rename: (id: string, title: string) => void
-  remove: (id: string) => void
+  remove: (id: string, options?: DeleteSessionTreeOptions) => Promise<void>
   setModel: (id: string, model: ModelId) => void
   /** Persist this session's reasoning effort and remember it for new chats. */
   setThinkingLevel: (id: string, level: ThinkingLevel) => void
   /** Point this chat at a named memory bank (null = worker default). */
   setMemoryBank: (id: string, memoryBank: string | null) => void
+  /**
+   * Merge keys another surface owns (a worker's composer control) into the
+   * session metadata; an `undefined` value removes the key. Console-owned
+   * keys are rebuilt from the conversation on every write, so a patch cannot
+   * touch them.
+   */
+  setSessionMetadata: (id: string, patch: Record<string, unknown>) => void
   /** This chat's system prompt, chosen on the new-session screen. */
   setSystemPrompt: (id: string, systemPrompt: SystemPromptState) => void
   /** Select or clear the Directory agent profile frozen onto this session. */
@@ -1516,17 +1547,29 @@ export function useConversations(
       ? [...catalogKeysForValidation].sort().join('\u0001')
       : ''
 
-  const [conversations, setConversations] = useState<Conversation[]>(() => [
+  const [conversations, setConversations] = useState<Conversation[]>(() => {
     /* Always boot with one local draft so the chat surface has something to
        render. Done in the initializer so StrictMode's double-invoke can't
-       create two. */
-    emptyConversation(
+       create two. What was typed in it before the browser closed comes back. */
+    const typed = loadNewChatDraft()
+    const draft = emptyConversation(
       loadLastModel(),
       loadLastThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
-    ),
-  ])
+    )
+    return [typed ? { ...draft, draftText: typed } : draft]
+  })
   const conversationsRef = useRef(conversations)
   conversationsRef.current = conversations
+  /** The local draft the saved new-chat text belongs to (on boot, the one
+      it was restored into): only that one's removal or send clears it. */
+  const newChatDraftOwnerRef = useRef<string | null>(
+    conversations[0]?.draftText ? conversations[0].id : null,
+  )
+  const forgetNewChatDraft = useCallback((id: string) => {
+    if (newChatDraftOwnerRef.current !== id) return
+    newChatDraftOwnerRef.current = null
+    saveNewChatDraft('')
+  }, [])
   const [activeId, setActiveId] = useState<string | null>(() => loadActiveId())
   const [connectionState, setConnectionState] = useState<IIIConnectionState>(
     serverEnabled ? 'connecting' : 'connected',
@@ -2518,16 +2561,14 @@ export function useConversations(
 
   const createNew = useCallback(
     (draft?: { text: string; title?: string }) => {
-      // Asking for a new chat while an untouched one is already open reads as
-      // "nothing happened": the second empty draft is indistinguishable from
-      // the first, and they pile up in the list. Hand back the one in front of
-      // you instead, and put the caret in it.
-      const current = conversations.find(
-        (conversation) => conversation.id === activeId,
-      )
-      if (!draft && current && isUntouchedDraft(current)) {
+      // A chat stays off the list until its first send, so an unsent draft is
+      // the new chat already: hand it back (with whatever was typed in it)
+      // instead of piling up invisible drafts, and put the caret in it.
+      const pending = draft ? undefined : unsentDraft(conversations, activeId)
+      if (pending) {
+        setActiveId(pending.id)
         requestComposerFocus()
-        return current.id
+        return pending.id
       }
       const next = emptyConversation(
         loadLastModel(),
@@ -2618,137 +2659,167 @@ export function useConversations(
     ],
   )
 
-  const rename = useCallback(
-    (id: string, title: string) => {
-      const trimmed = title.trim()
-      patchConversation(id, (c) =>
-        applyConversationMetadataPatch(c, {
-          title: trimmed || c.title,
-          titleManual: true,
-        }),
-      )
-      if (!serverEnabled || !trimmed) return
-      const conv = conversations.find((c) => c.id === id)
-      if (!conv || conv.draft) return
-      const updated = applyConversationMetadataPatch(conv, {
-        title: trimmed,
-        titleManual: true,
-      })
-      void setSessionMeta({
-        session_id: id,
-        title: trimmed,
-        metadata: metadataForWrite(updated),
-      }).catch((err) => {
-        if (import.meta.env.DEV)
-          console.warn('[conversations] rename failed', err)
-      })
-    },
-    [patchConversation, serverEnabled, conversations],
-  )
+  /** Sessions with a write queued for this tick, and the title it carries. */
+  const metaWriteQueueRef = useRef(new Map<string, string | undefined>())
 
-  const remove = useCallback(
-    (id: string) => {
-      const conv = conversations.find((c) => c.id === id)
-      setConversations((list) => list.filter((c) => c.id !== id))
-      markConversationMissing(id)
-      invalidateSessionMetaLookup(id)
-      missingSessionLookupGenerationRef.current.set(id, {
-        lookupGeneration: sessionMetaLookupGenerationRef.current.get(id) ?? 0,
-        directoryRefreshGeneration: directoryRefreshGenerationRef.current,
-      })
-      cancelHydrationRunsForSessions(
-        [id],
-        hydrationRunsRef.current,
-        hydrationBuffersRef.current,
-      )
-      transcriptSubscriptionsRef.current.get(id)?.()
-      transcriptSubscriptionsRef.current.delete(id)
-      transcriptSubscriptionEpochsRef.current.delete(id)
-      const retryTimer = hydrationRetryTimersRef.current.get(id)
-      if (retryTimer) clearTimeout(retryTimer)
-      hydrationRetryTimersRef.current.delete(id)
-      revisionsRef.current.delete(id)
-      draftTextsRef.current.delete(id)
-      draftAttachmentsRef.current.delete(id)
-      draftUploadChainRef.current.delete(id)
-      lastSavedDraftRef.current.delete(id)
-      if (pendingDraftRef.current?.id === id) pendingDraftRef.current = null
-      setActiveId((current) => (current === id ? null : current))
-      // Closing the conversation orphans any worktree claim this console
-      // flow made for it; release best-effort (no-op for other claims).
-      void releaseConsoleClaimIfAny(id)
-      if (!serverEnabled || !conv || conv.draft) return
-      void deleteSession(id).catch((err) => {
-        if (import.meta.env.DEV)
-          console.warn('[conversations] delete failed', err)
-      })
-    },
-    [
-      serverEnabled,
-      conversations,
-      invalidateSessionMetaLookup,
-      markConversationMissing,
-    ],
-  )
-
+  /* Every edit of one tick lands as ONE write, built after the last of them:
+     a model pick also sets that model's effort (two setters, one handler),
+     and a write built between the two would carry only half of the pick.
+     ponytail: writes from different ticks are not ordered, and the backend
+     may apply two in flight either way; a revision check on set-meta is the
+     upgrade path if that ever shows up. */
   const writeMeta = useCallback(
-    (conv: Conversation) => {
-      if (!serverEnabled || conv.draft) return
-      void setSessionMeta({
-        session_id: conv.id,
-        metadata: metadataForWrite(conv),
-      }).catch((err) => {
-        if (import.meta.env.DEV)
-          console.warn('[conversations] set_meta failed', err)
+    (id: string, title?: string) => {
+      const queue = metaWriteQueueRef.current
+      const scheduled = queue.has(id)
+      queue.set(id, title ?? queue.get(id))
+      if (scheduled) return
+      queueMicrotask(() => {
+        const queuedTitle = queue.get(id)
+        queue.delete(id)
+        const conv = conversationsRef.current.find((c) => c.id === id)
+        if (!serverEnabled || !conv || conv.draft) return
+        // A read-only session keeps its metadata; only a rename is written.
+        if (conv.sessionMetadata?.read_only === true && !queuedTitle) return
+        void setSessionMeta({
+          session_id: id,
+          ...(queuedTitle ? { title: queuedTitle } : {}),
+          metadata: metadataForWrite(conv),
+        }).catch((err) => {
+          if (import.meta.env.DEV)
+            console.warn('[conversations] set_meta failed', err)
+        })
       })
     },
     [serverEnabled],
   )
 
+  /* Metadata setters edit through here. The live mirror moves now instead of
+     at the next render, so a second edit in the same tick builds on this one
+     and the write sees both: a write built from the render's `conversations`
+     re-sent the pre-pick model right after the pick. */
+  const editMeta = useCallback(
+    (id: string, edit: (c: Conversation) => Conversation, title?: string) => {
+      conversationsRef.current = conversationsRef.current.map((c) =>
+        c.id === id ? edit(c) : c,
+      )
+      patchConversation(id, edit)
+      writeMeta(id, title)
+    },
+    [patchConversation, writeMeta],
+  )
+
+  const rename = useCallback(
+    (id: string, title: string) => {
+      const trimmed = title.trim()
+      const edit = (c: Conversation) =>
+        applyConversationMetadataPatch(c, {
+          title: trimmed || c.title,
+          titleManual: true,
+        })
+      if (trimmed) editMeta(id, edit, trimmed)
+      else patchConversation(id, edit)
+    },
+    [patchConversation, editMeta],
+  )
+
+  const remove = useCallback(
+    async (id: string, options?: DeleteSessionTreeOptions): Promise<void> => {
+      const conv = conversationsRef.current.find((c) => c.id === id)
+      // A removed new chat takes its saved text with it, never another's.
+      if (conv?.draft) forgetNewChatDraft(id)
+      // Unknown ids must still reach the idempotent backend: session::deleted
+      // can arrive while the dialog is open or before a failed wait is retried.
+      const deletedIds = new Set(
+        !serverEnabled || conv?.draft
+          ? [id]
+          : (await deleteSessionTree(id, options)).deleted_session_ids,
+      )
+      // Never infer descendants from the bounded sidebar directory. Only the
+      // completed backend snapshot authorizes this operation's local cleanup.
+      setConversations((list) => list.filter((c) => !deletedIds.has(c.id)))
+      for (const deletedId of deletedIds) {
+        markConversationMissing(deletedId)
+        invalidateSessionMetaLookup(deletedId)
+        pendingCompletionBellRef.current.delete(deletedId)
+        missingSessionLookupGenerationRef.current.set(deletedId, {
+          lookupGeneration:
+            sessionMetaLookupGenerationRef.current.get(deletedId) ?? 0,
+          directoryRefreshGeneration: directoryRefreshGenerationRef.current,
+        })
+        cancelHydrationRunsForSessions(
+          [deletedId],
+          hydrationRunsRef.current,
+          hydrationBuffersRef.current,
+        )
+        transcriptSubscriptionsRef.current.get(deletedId)?.()
+        transcriptSubscriptionsRef.current.delete(deletedId)
+        transcriptSubscriptionEpochsRef.current.delete(deletedId)
+        const retryTimer = hydrationRetryTimersRef.current.get(deletedId)
+        if (retryTimer) clearTimeout(retryTimer)
+        hydrationRetryTimersRef.current.delete(deletedId)
+        revisionsRef.current.delete(deletedId)
+        draftTextsRef.current.delete(deletedId)
+        draftAttachmentsRef.current.delete(deletedId)
+        draftUploadChainRef.current.delete(deletedId)
+        lastSavedDraftRef.current.delete(deletedId)
+        if (pendingDraftRef.current?.id === deletedId)
+          pendingDraftRef.current = null
+        if (pendingSelectIdRef.current === deletedId)
+          pendingSelectIdRef.current = null
+        // Deletion is confirmed; release only claims for the reported subtree.
+        void releaseConsoleClaimIfAny(deletedId)
+      }
+      setActiveId((current) =>
+        current && deletedIds.has(current) ? null : current,
+      )
+    },
+    [
+      serverEnabled,
+      invalidateSessionMetaLookup,
+      markConversationMissing,
+      forgetNewChatDraft,
+    ],
+  )
+
   const setModel = useCallback(
     (id: string, model: ModelId) => {
-      patchConversation(id, (c) => applyConversationMetadataPatch(c, { model }))
+      editMeta(id, (c) => applyConversationMetadataPatch(c, { model }))
       saveLastModel(model)
-      const conv = conversations.find((c) => c.id === id)
-      if (conv) writeMeta(applyConversationMetadataPatch(conv, { model }))
     },
-    [patchConversation, conversations, writeMeta],
+    [editMeta],
   )
 
   const setThinkingLevel = useCallback(
     (id: string, thinkingLevel: ThinkingLevel) => {
-      patchConversation(id, (c) =>
-        applyConversationMetadataPatch(c, { thinkingLevel }),
-      )
+      editMeta(id, (c) => applyConversationMetadataPatch(c, { thinkingLevel }))
       saveLastThinkingLevel(thinkingLevel)
-      const conv = conversations.find((c) => c.id === id)
-      if (conv)
-        writeMeta(applyConversationMetadataPatch(conv, { thinkingLevel }))
     },
-    [patchConversation, conversations, writeMeta],
+    [editMeta],
   )
 
   const setMemoryBank = useCallback(
-    (id: string, memoryBank: string | null) => {
-      patchConversation(id, (c) =>
-        applyConversationMetadataPatch(c, { memoryBank }),
-      )
-      const conv = conversations.find((c) => c.id === id)
-      if (conv) writeMeta(applyConversationMetadataPatch(conv, { memoryBank }))
-    },
-    [patchConversation, conversations, writeMeta],
+    (id: string, memoryBank: string | null) =>
+      editMeta(id, (c) => applyConversationMetadataPatch(c, { memoryBank })),
+    [editMeta],
+  )
+
+  // Same writer as model/thinking, so a worker control and the console never
+  // race on the wholesale metadata replace.
+  const setSessionMetadata = useCallback(
+    (id: string, patch: Record<string, unknown>) =>
+      editMeta(id, (c) => ({
+        ...c,
+        sessionMetadata: patchSessionMetadata(c.sessionMetadata, patch),
+        updatedAt: Date.now(),
+      })),
+    [editMeta],
   )
 
   const setSystemPrompt = useCallback(
-    (id: string, systemPrompt: SystemPromptState) => {
-      patchConversation(id, (c) =>
-        applyConversationMetadataPatch(c, { systemPrompt }),
-      )
-      const conv = conversations.find((c) => c.id === id)
-      if (conv)
-        writeMeta(applyConversationMetadataPatch(conv, { systemPrompt }))
-    },
-    [patchConversation, conversations, writeMeta],
+    (id: string, systemPrompt: SystemPromptState) =>
+      editMeta(id, (c) => applyConversationMetadataPatch(c, { systemPrompt })),
+    [editMeta],
   )
 
   const setAgentProfile = useCallback(
@@ -2772,40 +2843,37 @@ export function useConversations(
             }
           : {}),
       }
-      patchConversation(id, (conversation) =>
+      editMeta(id, (conversation) =>
         applyConversationMetadataPatch(conversation, patch),
       )
-      const conversation = conversations.find((item) => item.id === id)
-      if (conversation) {
-        const updated = applyConversationMetadataPatch(conversation, patch)
-        writeMeta(updated)
-        if (agentProfile?.model) saveLastModel(agentProfile.model)
-        if (adoptThinkingLevel && agentProfile) {
-          saveLastThinkingLevel(
-            agentProfile.reasoningEffort ?? DEFAULT_THINKING_LEVEL,
-          )
-        }
+      if (agentProfile?.model) saveLastModel(agentProfile.model)
+      if (adoptThinkingLevel && agentProfile) {
+        saveLastThinkingLevel(
+          agentProfile.reasoningEffort ?? DEFAULT_THINKING_LEVEL,
+        )
       }
     },
-    [patchConversation, conversations, writeMeta],
+    [editMeta],
   )
 
   const setSkills = useCallback(
     (id: string, skills: string[] | undefined) => {
       const normalized = skills?.length ? skills : undefined
-      patchConversation(id, (c) =>
+      editMeta(id, (c) =>
         applyConversationMetadataPatch(c, { skills: normalized }),
       )
-      const conv = conversations.find((c) => c.id === id)
-      if (conv)
-        writeMeta(applyConversationMetadataPatch(conv, { skills: normalized }))
     },
-    [patchConversation, conversations, writeMeta],
+    [editMeta],
   )
 
   const setWorkingDir = useCallback(
     (id: string, dir: string | null) => {
-      patchConversation(id, (c) =>
+      if (
+        conversationsRef.current.find((c) => c.id === id)?.sessionMetadata
+          ?.read_only === true
+      )
+        return
+      editMeta(id, (c) =>
         applyConversationMetadataPatch(c, { workingDir: dir }),
       )
       // DirectoryPicker persists before selection; this also covers working
@@ -2816,11 +2884,8 @@ export function useConversations(
       // releases the claim (keepPath guards the pick-this-worktree flow,
       // which records the claim before updating the dir).
       void releaseConsoleClaimIfAny(id, { keepPath: dir })
-      const conv = conversations.find((c) => c.id === id)
-      if (conv)
-        writeMeta(applyConversationMetadataPatch(conv, { workingDir: dir }))
     },
-    [patchConversation, conversations, serverEnabled, writeMeta],
+    [editMeta, serverEnabled],
   )
 
   const prefillWorkingDir = useCallback(
@@ -2834,7 +2899,11 @@ export function useConversations(
 
   const appendMessage = useCallback(
     (id: string, message: Message) =>
-      patchConversation(id, (c) => appendMessageToConversation(c, message)),
+      patchConversation(id, (c) =>
+        c.sessionMetadata?.read_only === true
+          ? c
+          : appendMessageToConversation(c, message),
+      ),
     [patchConversation],
   )
 
@@ -2852,11 +2921,15 @@ export function useConversations(
 
   const compactConversation = useCallback(
     (id: string, marker: Message) =>
-      patchConversation(id, (c) => ({
-        ...c,
-        messages: [marker],
-        updatedAt: Date.now(),
-      })),
+      patchConversation(id, (c) =>
+        c.sessionMetadata?.read_only === true
+          ? c
+          : {
+              ...c,
+              messages: [marker],
+              updatedAt: Date.now(),
+            },
+      ),
     [patchConversation],
   )
 
@@ -3032,6 +3105,8 @@ export function useConversations(
           // the e2e suite name their own kind when they create theirs.
           kind: 'user',
         })
+        // Sent: the session holds its draft now, not the new chat's slot.
+        forgetNewChatDraft(id)
         patchConversation(id, (c) => ({
           ...mergeConversationMeta(
             { ...c, draft: false, hydrated: false },
@@ -3053,7 +3128,12 @@ export function useConversations(
         throw err
       }
     },
-    [serverEnabled, conversations, patchConversation],
+    [
+      serverEnabled,
+      conversations,
+      patchConversation, // Sent: the session holds its draft now, not the new chat's slot.
+      forgetNewChatDraft,
+    ],
   )
 
   /* Live mirror for the draft callbacks: they fire from debounce timers and
@@ -3132,10 +3212,14 @@ export function useConversations(
   const setDraftText = useCallback(
     (id: string, text: string) => {
       draftTextsRef.current.set(id, text)
-      if (!serverEnabled) return
       const conv = conversationsRef.current.find((c) => c.id === id)
-      // Local drafts have no session yet; their text still lives in the ref
-      // map so in-tab switches keep it.
+      // Local drafts have no session yet; their text lives in the ref map so
+      // in-tab switches keep it, and in localStorage to outlive the browser.
+      if (conv?.draft) {
+        saveNewChatDraft(text)
+        newChatDraftOwnerRef.current = id
+      }
+      if (!serverEnabled) return
       if (!conv || conv.draft) return
       queueDraftSave(id, { text })
     },
@@ -3292,6 +3376,7 @@ export function useConversations(
     setModel,
     setThinkingLevel,
     setMemoryBank,
+    setSessionMetadata,
     setSystemPrompt,
     setAgentProfile,
     setSkills,

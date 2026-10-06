@@ -145,6 +145,16 @@ impl RouterSummarizer {
     }
 }
 
+// The bounded compaction pipeline can cancel an in-flight call. Dropping a
+// JoinHandle alone detaches its reader; abort it when the owning call exits.
+struct AbortReaderOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortReaderOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 #[async_trait]
 impl Summarizer for RouterSummarizer {
     async fn summarize(&self, req: SummarizeRequest) -> Result<String, SummarizeError> {
@@ -166,6 +176,7 @@ impl Summarizer for RouterSummarizer {
             })
             .await;
         let read_task = tokio::spawn(async move { reader.read_all().await });
+        let _reader_guard = AbortReaderOnDrop(read_task.abort_handle());
 
         let mut payload = json!({
             "writer_ref": channel.writer_ref,

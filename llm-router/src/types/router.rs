@@ -121,6 +121,7 @@ pub struct AbortResponse {
     pub aborted: bool,
 }
 
+/// One `router::provider::list` entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderInfo {
     pub id: String,
@@ -135,6 +136,9 @@ pub struct ProviderInfo {
     /// when the provider declared none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_svg: Option<String>,
+    /// Where the credential comes from and why it is unusable, if it is.
+    #[serde(flatten)]
+    pub credential: CredentialStatus,
 }
 /// Input of `router::provider::list` — takes no arguments. A struct (rather
 /// than `Value`) keeps the request schema concrete; unknown fields (e.g. the
@@ -209,6 +213,10 @@ pub struct ProviderRegisterResponse {
     pub registration_token: String,
 }
 
+/// Where the resolved credential came from, as providers read it. A resolved
+/// `secret://` reference reports `config` (the reference lives in the
+/// configuration entry); `credential_source` tells the two apart.
+// Kept to three values: provider builds deserialize this enum strictly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum CredentialSource {
@@ -217,7 +225,37 @@ pub enum CredentialSource {
     None,
 }
 
-/// Output of the `router::provider::resolve` iii function.
+/// `credential_source`: where the precedence found the provider's credential.
+/// `secret` is a `secret://NAME` reference in the slice, resolved through the
+/// `secrets` worker; `configured` says whether it actually yielded one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CredentialOrigin {
+    Config,
+    Env,
+    Secret,
+    None,
+}
+
+/// Credential diagnostics carried by `router::provider::list` entries and the
+/// `router::provider::resolve` response. Every field is optional on the wire,
+/// so older consumers and older routers interoperate. Never carries a value.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CredentialStatus {
+    /// Where the credential comes from: `config`, `env`, `secret` or `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_source: Option<CredentialOrigin>,
+    /// The slice's `secret://NAME` reference, when it uses one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<String>,
+    /// Why the configured credential cannot be used, in words an operator
+    /// can act on (e.g. the secret is missing or this worker may not read it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_error: Option<String>,
+}
+
+/// The provider-facing part of `router::provider::resolve`'s output
+/// ([`ProviderResolveOutput`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderResolveResponse {
     pub configured: bool,
@@ -227,6 +265,19 @@ pub struct ProviderResolveResponse {
     pub api_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u64>,
+}
+
+/// Output of the `router::provider::resolve` iii function: the effective
+/// credential and settings plus the credential diagnostics.
+// A flattening wrapper rather than new `ProviderResolveResponse` fields: the
+// provider crates build that struct as literals and deserialize it, ignoring
+// the extra keys.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderResolveOutput {
+    #[serde(flatten)]
+    pub resolved: ProviderResolveResponse,
+    #[serde(flatten)]
+    pub status: CredentialStatus,
 }
 
 /// Output of the `router::models::reconcile` iii function.
@@ -516,6 +567,23 @@ pub struct FunctionsChangedEvent {
     /// Worker whose registered functions changed (advisory).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<String>,
+}
+
+/// Advisory `secrets::changed` event delivered to `router::on_secret_changed`.
+/// It never carries a value; the handler re-reads the reference through
+/// `secrets::resolve`. Other payload fields (`fingerprint`, `updated_at`) are
+/// ignored.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SecretChangedEvent {
+    /// Secret name (advisory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The same secret as a `secret://NAME` reference (advisory).
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    /// `created`, `rotated`, `deleted` or `access_changed` (advisory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 /// Generic acknowledgement returned by trigger-bound handlers whose result is

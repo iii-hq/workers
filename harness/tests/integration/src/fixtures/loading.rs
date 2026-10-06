@@ -71,6 +71,9 @@ pub enum ScenarioIntervention {
         remove_message: String,
         after_message: String,
     },
+    /// Stop the turn while its controlled function holds its response, then
+    /// release the target only after the turn is durably cancelled.
+    StopHeldCall,
 }
 
 /// A function the PROBE (test infra, not a model turn) invokes at a completion
@@ -213,6 +216,19 @@ impl ScenarioFixture {
                     anyhow::ensure!(
                         self.expected_turn_statuses == ["completed"],
                         "queued-edit scenario must end with one completed turn"
+                    );
+                }
+                ScenarioIntervention::StopHeldCall => {
+                    anyhow::ensure!(
+                        self.scenario
+                            .target
+                            .as_ref()
+                            .is_some_and(|target| target.hold_response),
+                        "stop-held-call needs a controlled function that holds its response"
+                    );
+                    anyhow::ensure!(
+                        self.expected_turn_statuses == ["cancelled"],
+                        "stop-held-call must end with one cancelled turn"
                     );
                 }
             }

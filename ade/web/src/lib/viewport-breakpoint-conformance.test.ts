@@ -33,7 +33,7 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   },
   'components/chat/ActiveSubagentChips.tsx': { max: 1, reason: TOUCH },
   'components/chat/AddProviderPanel.tsx': { max: 8, reason: SHEET },
-  'components/chat/ChatPanel.tsx': { max: 3, reason: TOUCH },
+  'components/chat/ChatPanel.tsx': { max: 4, reason: TOUCH },
   'components/chat/ChatView.tsx': {
     max: 6,
     reason: 'phone chrome: phone header hides the status dot; touch sizes',
@@ -86,6 +86,11 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'components/ui/BottomSheet.tsx': {
     max: 2,
     reason: 'phone chrome: the phone bottom sheet itself',
+  },
+  'components/ui/ConfirmDialog.tsx': {
+    max: 4,
+    reason:
+      'phone chrome: stacked confirmation actions with 48px touch targets',
   },
   'components/ui/Dialog.tsx': { max: 3, reason: TOUCH },
   'components/ui/ImageViewer.tsx': { max: 5, reason: TOUCH },

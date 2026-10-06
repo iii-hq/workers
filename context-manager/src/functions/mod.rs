@@ -10,6 +10,7 @@ pub mod assemble;
 pub mod compact;
 pub mod count_tokens;
 pub mod prune;
+mod summarize;
 
 use std::future::Future;
 use std::sync::Arc;

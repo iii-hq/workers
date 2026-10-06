@@ -1,6 +1,10 @@
 import type { WorkerSummary } from '@/components/chat/engine/parsers'
 import type { WorkerEntry } from '@/components/chat/worker/parsers'
-import type { ComposeContainer, RawWorkersSnapshot } from '../api/workers'
+import {
+  type ComposeContainer,
+  isEngineLive,
+  type RawWorkersSnapshot,
+} from '../api/workers'
 import {
   isComposeRunning,
   type WorkerConnectionStatus,
@@ -14,19 +18,6 @@ const STOP_REASON = {
     'standalone workers must be stopped from the process that started them',
   notRunning: 'worker is not running',
 } as const
-
-export interface ComposeSummary {
-  namespace: string | null
-  file: string | null
-  daemonPid: number | null
-  ready: number
-  total: number
-}
-
-export interface WorkersView {
-  rows: WorkerRow[]
-  compose: ComposeSummary | null
-}
 
 function supervisorMap(entries: WorkerEntry[]): Map<string, WorkerEntry> {
   const map = new Map<string, WorkerEntry>()
@@ -62,7 +53,7 @@ function deriveConnectionStatus(
   supervisor: WorkerEntry | undefined,
   compose: ComposeContainer | undefined,
 ): WorkerConnectionStatus {
-  if (engineStatus?.toLowerCase() === 'connected') return 'connected'
+  if (isEngineLive(engineStatus)) return 'connected'
   if (compose) {
     if (compose.state === 'ready') return 'connected'
     if (compose.state === 'starting') return 'starting'
@@ -181,20 +172,6 @@ function syntheticComposeRow(container: ComposeContainer): WorkerRow {
   }
 }
 
-export function summarizeCompose(
-  compose: RawWorkersSnapshot['compose'],
-): ComposeSummary | null {
-  if (!compose) return null
-  const containers = compose.containers
-  return {
-    namespace: compose.namespace ?? null,
-    file: compose.file ?? null,
-    daemonPid: compose.daemon_pid ?? null,
-    ready: containers.filter((c) => c.state === 'ready').length,
-    total: containers.length,
-  }
-}
-
 /** Merge engine catalogue, supervisor list, and compose status into table rows. */
 export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
   const supervisors = supervisorMap(snapshot.supervisorWorkers)
@@ -229,20 +206,4 @@ export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
 
   rows.sort((a, b) => a.name.localeCompare(b.name))
   return rows
-}
-
-export function mergeWorkersView(snapshot: RawWorkersSnapshot): WorkersView {
-  return {
-    rows: mergeWorkers(snapshot),
-    compose: summarizeCompose(snapshot.compose),
-  }
-}
-
-export async function fetchWorkersView(): Promise<WorkersView> {
-  const { fetchRawWorkersSnapshot } = await import('../api/workers')
-  return mergeWorkersView(await fetchRawWorkersSnapshot())
-}
-
-export async function fetchMergedWorkers(): Promise<WorkerRow[]> {
-  return (await fetchWorkersView()).rows
 }

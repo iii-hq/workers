@@ -23,34 +23,3 @@ export function ViewHeader({
     </div>
   )
 }
-
-/** A collapsible section inside a view (Staged Changes, a folder). */
-export function ViewSection({
-  title,
-  count,
-  open,
-  onToggle,
-  actions,
-  children,
-}: {
-  title: string
-  count?: number
-  open: boolean
-  onToggle: () => void
-  actions?: ReactNode
-  children?: ReactNode
-}) {
-  return (
-    <section className={`shui-view-section${open ? ' open' : ''}`}>
-      <div className="shui-view-section-head">
-        <button type="button" className="shui-view-section-toggle" aria-expanded={open} onClick={onToggle}>
-          <span className={`chevron${open ? ' open' : ''}`} aria-hidden />
-          <span className="shui-view-section-title">{title}</span>
-          {count !== undefined ? <span className="shui-view-section-count">{count}</span> : null}
-        </button>
-        {actions ? <span className="shui-view-actions">{actions}</span> : null}
-      </div>
-      {open ? <div className="shui-view-section-body">{children}</div> : null}
-    </section>
-  )
-}

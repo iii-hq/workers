@@ -13,6 +13,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import { createPortal } from 'react-dom'
@@ -57,8 +58,8 @@ export function hashTriggerFn(text: string, _editor: LexicalEditor) {
 }
 
 interface FileMentionsPluginProps {
-  /** When set, this ref is flipped to true while the typeahead is visible
-      so a sibling SubmitOnEnter plugin can skip its Enter handler. */
+  /** When set, true while the menu shows options, so the composer's Enter
+      and arrow handlers yield those keys to the typeahead. */
   menuOpenRef?: React.MutableRefObject<boolean>
   /** Files under the conversation's working directory. */
   searchFiles: FileSearchFn
@@ -97,6 +98,19 @@ export function FileMentionsPlugin({
     return rows
   }, [files, query, page])
 
+  /* The trigger fires on any `#query`, so the typeahead counts as open on
+     text that matches nothing ("issue #123"). Only a menu that shows
+     options may claim Enter, or the message could not be sent; a list that
+     fills in after the file search lands claims it without a keystroke.
+     Written only while this menu is open, so it never clears another
+     menu's claim. */
+  const openRef = useRef(false)
+  useEffect(() => {
+    if (menuOpenRef && openRef.current) {
+      menuOpenRef.current = options.length > 0
+    }
+  }, [options, menuOpenRef])
+
   const onSelectOption = useCallback(
     (
       option: FileMentionOption,
@@ -125,14 +139,17 @@ export function FileMentionsPlugin({
       onQueryChange={setQuery}
       onSelectOption={onSelectOption}
       onOpen={() => {
-        if (menuOpenRef) menuOpenRef.current = true
+        openRef.current = true
+        if (menuOpenRef) menuOpenRef.current = options.length > 0
       }}
       onClose={() => {
+        openRef.current = false
         if (menuOpenRef) menuOpenRef.current = false
       }}
       triggerFn={hashTriggerFn}
       /* Run the typeahead's KEY_ENTER_COMMAND (and arrows/tab/escape) at NORMAL
-         so it consumes Enter before our SubmitOnEnter handler at LOW. */
+         so it consumes Enter before the composer's send, which listens at
+         the front of LOW. */
       commandPriority={COMMAND_PRIORITY_NORMAL}
       menuRenderFn={(anchorElementRef, props) => {
         if (!anchorElementRef.current || options.length === 0) return null

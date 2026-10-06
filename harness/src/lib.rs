@@ -8,6 +8,7 @@
 //! so a crash resumes mid-turn.
 
 pub mod agents;
+pub mod ask;
 pub mod bindings;
 pub mod budget;
 pub mod clients;
@@ -17,6 +18,7 @@ pub mod configuration;
 pub mod context_snapshot;
 pub mod contract;
 pub mod deferred;
+pub mod deletion_events;
 pub mod deps;
 pub mod discovery;
 pub mod error;
@@ -27,6 +29,8 @@ pub mod functions;
 pub mod hooks;
 pub mod ids;
 pub mod inflight;
+pub mod judge;
+pub mod liveness;
 pub mod locks;
 pub mod manifest;
 pub mod policy;
@@ -43,6 +47,7 @@ pub mod surface;
 pub mod timer;
 pub(crate) mod trace_tags;
 pub mod trigger;
+pub mod turn_compaction;
 pub mod turn_loop;
 pub mod types;
 pub mod usage_report;

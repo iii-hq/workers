@@ -43,7 +43,26 @@ async fn start(enabled: bool) -> (FakeEngine, BootHandle) {
         boot.apply_lock.clone(),
     )
     .unwrap();
+    configuration::register_listener_status(
+        &engine.iii,
+        boot.config.clone(),
+        boot.hot_router.clone(),
+        boot.apply_lock.clone(),
+    );
     (engine, boot)
+}
+
+async fn listener_status(engine: &FakeEngine) -> Value {
+    engine
+        .iii
+        .trigger(TriggerRequest {
+            function_id: "http::webhook-listener::status".into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        })
+        .await
+        .unwrap()
 }
 
 async fn bind(
@@ -244,6 +263,11 @@ async fn reload_enables_rebinds_disables_and_rolls_back_both_listeners() {
     reload(&engine, &next).await;
     let first = boot.current_webhook_addr().await.unwrap();
     assert_ne!(first, original_normal);
+    // The fixture asks for port 0: status reports the port actually bound.
+    assert_eq!(
+        listener_status(&engine).await["applied"]["port"],
+        json!(first.port())
+    );
     assert_eq!(boot.current_addr().await, Some(original_normal));
 
     // Same-address updates rebuild the shared layers, without moving either listener.
@@ -280,6 +304,14 @@ async fn reload_enables_rebinds_disables_and_rolls_back_both_listeners() {
     assert_eq!(boot.current_addr().await, Some(original_normal));
     assert_eq!(boot.current_webhook_addr().await, Some(first));
     assert_eq!(boot.config.read().await.to_json(), next.to_json());
+    // The status reports the listener still bound, not the rejected request,
+    // plus why the reload failed.
+    let status = listener_status(&engine).await;
+    assert_eq!(status["applied"]["port"], json!(first.port()));
+    assert!(
+        status["last_reload_error"].as_str().is_some(),
+        "a failed bind is reported: {status}"
+    );
     let _released_candidate = TcpListener::bind(candidate_addr).await.unwrap();
 
     let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -288,6 +320,12 @@ async fn reload_enables_rebinds_disables_and_rolls_back_both_listeners() {
     reload(&engine, &next).await;
     let second = boot.current_webhook_addr().await.unwrap();
     assert_ne!(first, second);
+    let status = listener_status(&engine).await;
+    assert_eq!(status["applied"]["port"], json!(second.port()));
+    assert!(
+        status["last_reload_error"].is_null(),
+        "cleared by success: {status}"
+    );
     assert_closed(first).await;
     assert_eq!(
         client()
@@ -388,5 +426,48 @@ async fn failed_webhook_boot_releases_prepared_normal_listener() {
     cfg.webhook_listener.as_mut().unwrap().port = occupied.local_addr().unwrap().port();
     assert!(boot::start(Arc::clone(&engine.iii), cfg).await.is_err());
     assert_closed(normal).await;
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn brace_parameter_route_serves_and_extracts_path_params() {
+    let (engine, boot) = start(false).await;
+    let id = "test::get:users_tasks".to_string();
+    engine.iii.register_function(
+        id.clone(),
+        RegisterFunction::new_async(|req: HttpRequest| async move {
+            Ok::<Value, Error>(json!({
+                "body": {
+                    "path_params": req.path_params,
+                    "path": req.path,
+                }
+            }))
+        })
+        .description("Test backend")
+        .response_format(json!({"type": "object"})),
+    );
+    let trigger_config = json!({
+        "api_path": "/users/{userId}/tasks/{tid}",
+        "http_method": "GET",
+    });
+    let _trigger = engine
+        .iii
+        .register_trigger(RegisterTriggerInput::new("http", id, trigger_config))
+        .unwrap();
+    common::wait_for_route(&boot.routes, "GET", "/users/:userId/tasks/:tid").await;
+
+    let normal = boot.local_addr;
+    let http = client();
+    let resp = http
+        .get(format!("http://{normal}/users/alice/tasks/42"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["path_params"]["userId"], "alice");
+    assert_eq!(body["path_params"]["tid"], "42");
+
+    boot.shutdown().await;
     engine.shutdown().await;
 }

@@ -10,6 +10,8 @@ export interface CoderInfo {
   /** Canonical absolute allowed roots; index 0 is the primary root. */
   base_paths: string[]
   primary_root: string
+  /** Protected paths: listed, never read or written (`.env`, keys). */
+  non_accessible_globs?: string[]
 }
 
 export interface WorkspaceValidateResponse {
@@ -412,6 +414,9 @@ export function flattenTree(root: TreeNode): FlatTree {
   const walk = (node: TreeNode, prefix: string) => {
     if (node.truncated) truncations.push(node.truncated)
     for (const child of node.children ?? []) {
+      // Git's own folder is never browsed here (its contents are excluded
+      // anyway), so it does not sit among the dot entries as an empty folder.
+      if (child.kind === 'dir' && child.name === '.git') continue
       const childPath = prefix === '' ? child.name : `${prefix}/${child.name}`
       paths.push(child.kind === 'dir' ? `${childPath}/` : childPath)
       kinds.set(childPath, child.kind)

@@ -25,6 +25,7 @@ import {
   FileDiff,
   FilePlus,
   FolderPlus,
+  PackagePlus,
   Pencil,
   RefreshCw,
   Search,
@@ -34,7 +35,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FlatTree } from './coder'
 import { anchorFromEvent, type ContextMenuItem, useContextMenu } from './ContextMenu'
 import type { GitFileStatus } from './git'
@@ -68,6 +69,8 @@ export interface ExplorerActions {
   compare: (rel: string) => void
   /** Search the folder's contents in the Search view. */
   findInFolder: (dir: string) => void
+  /** Open the New worker dialog with `dir` as the parent folder. */
+  newWorker: (dir: string) => void
   discard: (rel: string) => void
   refresh: () => void
 }
@@ -105,7 +108,7 @@ interface PendingDelete {
   isDir: boolean
 }
 
-export function FilesTab({
+function FilesTabView({
   tree,
   gitStatus,
   theme,
@@ -240,6 +243,7 @@ export function FilesTab({
     let timer: number | null = null
     const snapshot = () => {
       timer = null
+      if (model.isSearchOpen()) return
       const open = expandedDirectoryPaths(model, dirPaths)
       liveExpandedRef.current = open
       const key = open.join('\n')
@@ -248,6 +252,12 @@ export function FilesTab({
       onExpandedChange(open)
     }
     const unsubscribe = model.subscribe(() => {
+      // A filter expands every folder that holds a match, never-listed
+      // stubs included. Reporting those would list each stub, whose
+      // children can match in turn (a crawl of the workspace), and would
+      // persist the filter's expansion as the user's. The model puts the
+      // user's expansion back when the filter clears; reports resume then.
+      if (model.isSearchOpen()) return
       const open = expandedDirectoryPaths(model, dirPaths)
       liveExpandedRef.current = open
       const known = openDirsRef.current
@@ -499,6 +509,7 @@ export function FilesTab({
     (dir: string): ContextMenuItem[] => [
       { id: 'new-file', label: 'New file…', icon: <FilePlus />, onSelect: () => beginCreate('file', dir) },
       { id: 'new-folder', label: 'New folder…', icon: <FolderPlus />, onSelect: () => beginCreate('folder', dir) },
+      { id: 'new-worker', label: 'New worker…', icon: <PackagePlus />, onSelect: () => actionsRef.current.newWorker(dir) },
       { type: 'separator', id: 's1' },
       { id: 'terminal', label: 'Open in terminal', icon: <SquareTerminal />, onSelect: () => actionsRef.current.openTerminal(dir) },
       { id: 'find', label: 'Find in folder…', icon: <Search />, onSelect: () => actionsRef.current.findInFolder(dir) },
@@ -523,6 +534,13 @@ export function FilesTab({
     (): ContextMenuItem[] => [
       { id: 'new-file', label: 'New file…', icon: <FilePlus />, onSelect: () => beginCreate('file', '') },
       { id: 'new-folder', label: 'New folder…', icon: <FolderPlus />, onSelect: () => beginCreate('folder', '') },
+      // The empty space means the project: workers go where the templates put them.
+      {
+        id: 'new-worker',
+        label: 'New worker…',
+        icon: <PackagePlus />,
+        onSelect: () => actionsRef.current.newWorker('workers'),
+      },
       { type: 'separator', id: 's1' },
       { id: 'terminal', label: 'Open in terminal', icon: <SquareTerminal />, onSelect: () => actionsRef.current.openTerminal('') },
       { id: 'refresh', label: 'Refresh', icon: <RefreshCw />, onSelect: () => actionsRef.current.refresh() },
@@ -581,6 +599,9 @@ export function FilesTab({
             </IconButton>
             <IconButton label="New folder" onClick={() => beginCreate('folder', dirOfFocus(model))}>
               <FolderPlus aria-hidden />
+            </IconButton>
+            <IconButton label="New worker" onClick={() => actionsRef.current.newWorker(dirOfFocus(model) || 'workers')}>
+              <PackagePlus aria-hidden />
             </IconButton>
             <IconButton label="Refresh explorer" onClick={() => actions.refresh()}>
               <RefreshCw aria-hidden />
@@ -678,6 +699,9 @@ export function FilesTab({
     </div>
   )
 }
+
+/** Memoized: the page re-renders often, and this only when its props change. */
+export const FilesTab = memo(FilesTabView)
 
 /** The folder a header-bar "new file" lands in: the focused folder, the
     focused file's folder, or the root. */

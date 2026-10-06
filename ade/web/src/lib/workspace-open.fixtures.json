@@ -214,6 +214,59 @@
           }
         ]
       }
+    },
+    {
+      "name": "a named anchor in another tab wins over the active tab",
+      "tabs": [
+        { "id": "a", "columns": 2, "screens": ["chat", "workers"] },
+        {
+          "id": "b",
+          "columns": 2,
+          "screens": ["chat", "ext:onboarding"],
+          "paneIds": ["b:pane:0", "b:pane:1"],
+          "sizes": [0.5, 0.5]
+        }
+      ],
+      "activeTabId": "a",
+      "screen": "traces",
+      "relativeTo": "ext:onboarding",
+      "expect": {
+        "activeTabId": "b",
+        "tabs": [
+          { "id": "a", "columns": 2, "screens": ["chat", "workers"] },
+          {
+            "id": "b",
+            "columns": 3,
+            "screens": ["chat", "ext:onboarding", "traces"],
+            "paneIds": ["b:pane:0", "b:pane:1", "pane-new"],
+            "sizes": [
+              0.33333333333333337, 0.33333333333333337, 0.3333333333333333
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "the generic chat anchor stays on the active tab",
+      "tabs": [
+        { "id": "a", "columns": 1, "screens": ["traces"] },
+        { "id": "b", "columns": 2, "screens": ["chat", "workers"] }
+      ],
+      "activeTabId": "a",
+      "screen": "ext:ide",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [
+          {
+            "id": "a",
+            "columns": 2,
+            "screens": ["traces", "ext:ide"],
+            "paneIds": ["a:pane:0", "pane-new"],
+            "sizes": [0.5, 0.5]
+          },
+          { "id": "b", "columns": 2, "screens": ["chat", "workers"] }
+        ]
+      }
     }
   ],
   "close": [

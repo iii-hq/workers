@@ -1,10 +1,12 @@
 import { Toolbar, Tooltip, useConfirm } from '@iii-dev/console-ui'
 import { Columns2, Pencil, Plus, Rows2, X } from 'lucide-react'
 import {
+  type CSSProperties,
   type Dispatch,
   forwardRef,
   type ReactNode,
   type KeyboardEvent,
+  memo,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -14,10 +16,15 @@ import {
 } from 'react'
 import { TerminalPane } from './TerminalPane'
 import {
+  clampSplitRatio,
   countTerminalPanes,
   MAX_TERMINAL_PANES_PER_TAB,
   MAX_TERMINAL_SESSIONS,
+  type TerminalLayoutItem,
   type TerminalLayoutNode,
+  type TerminalPaneState,
+  type TerminalTabState,
+  terminalLayoutItems,
   type TerminalWorkspaceAction,
   type TerminalWorkspaceState,
 } from './terminal-layout'
@@ -47,6 +54,13 @@ export interface TerminalWorkspaceProps {
   dispatch: Dispatch<TerminalWorkspaceAction>
   root: string
   visible: boolean
+  /**
+   * Out of sight but still mounted: every session stays attached and every
+   * xterm keeps its scrollback, so showing it again costs nothing.
+   */
+  hidden?: boolean
+  /** The page is narrow: side-by-side splits stack top to bottom. */
+  narrow?: boolean
   router: TerminalOutputRouter | null
   leaseStore: Storage | null
   storageKey: string
@@ -58,20 +72,26 @@ export interface TerminalWorkspaceHandle {
   closeDisconnected(): Promise<void>
 }
 
-interface LayoutContext {
-  state: TerminalWorkspaceState
+/**
+ * What every pane shares. Nothing in it changes with a tab, a focus or a
+ * drag, so a memoized pane re-renders only when its own props do.
+ */
+interface PaneContext {
   dispatch: Dispatch<TerminalWorkspaceAction>
-  root: string
   visible: boolean
   router: TerminalOutputRouter | null
   leaseStore: Storage | null
   storageKey: string
-  tabPaneCount: number
   registerSession: (paneId: string, session: TerminalSession | null) => void
   closePane: (paneId: string) => Promise<void>
   removePane: (paneId: string) => void
   connectionCoordinator: (paneId: string) => TerminalConnectionCoordinator
 }
+
+type SplitDrag = { splitId: string; ratio: number }
+
+/** Half the split handle's 5px: an inner pane edge leaves it to the handle. */
+const HALF_HANDLE_PX = 2.5
 
 let generatedId = 0
 
@@ -89,22 +109,49 @@ function activeTab(state: TerminalWorkspaceState) {
   return state.tabs.find((tab) => tab.id === state.activeTabId) ?? null
 }
 
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 export async function reconcileTerminalWorkspaceLeases(
   leases: readonly LocalTerminalLease[],
   paneIds: ReadonlySet<string>,
   reclaim: (lease: LocalTerminalLease) => Promise<string | null>,
 ): Promise<string[]> {
-  const warnings: string[] = []
-  for (const lease of leases) {
-    if (paneIds.has(lease.paneId)) continue
-    try {
-      const warning = await reclaim(lease)
-      if (warning) warnings.push(warning)
-    } catch (error) {
-      warnings.push(error instanceof Error ? error.message : String(error))
+  const orphans = leases.filter((lease) => !paneIds.has(lease.paneId))
+  const results = await Promise.allSettled(
+    orphans.map(async (lease) => reclaim(lease)),
+  )
+  return results.flatMap((result) => {
+    if (result.status === 'rejected') return [errorText(result.reason)]
+    return result.value ? [result.value] : []
+  })
+}
+
+/**
+ * Closes the panes' shells all at once, since each close waits for its shell
+ * to die, and settles before anything is removed: removing panes one by one
+ * re-laid the tab out around the ones still closing. `closed` is what the
+ * caller removes; what failed stays. `messages` holds every warning and error.
+ */
+export async function closeTerminalPanes(
+  paneIds: readonly string[],
+  closePty: (paneId: string) => Promise<string | null>,
+): Promise<{ closed: string[]; messages: string[] }> {
+  const results = await Promise.allSettled(
+    paneIds.map(async (paneId) => closePty(paneId)),
+  )
+  const closed: string[] = []
+  const messages: string[] = []
+  results.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      messages.push(errorText(result.reason))
+      return
     }
-  }
-  return warnings
+    closed.push(paneIds[index])
+    if (result.value) messages.push(result.value)
+  })
+  return { closed, messages }
 }
 
 export function pruneTerminalConnectionCoordinators(
@@ -116,21 +163,53 @@ export function pruneTerminalConnectionCoordinators(
   }
 }
 
-function TerminalPaneSlot({
+/** Where a pane sits in its tab, clear of the handles along its inner edges. */
+function paneStyle(
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+): CSSProperties {
+  const gaps = (start: number, size: number) => ({
+    before: start > 0 ? HALF_HANDLE_PX : 0,
+    after: start + size < 1 - 1e-6 ? HALF_HANDLE_PX : 0,
+  })
+  const x = gaps(left, width)
+  const y = gaps(top, height)
+  return {
+    left: `calc(${left * 100}% + ${x.before}px)`,
+    top: `calc(${top * 100}% + ${y.before}px)`,
+    width: `calc(${width * 100}% - ${x.before + x.after}px)`,
+    height: `calc(${height * 100}% - ${y.before + y.after}px)`,
+  }
+}
+
+const TerminalPaneSlot = memo(function TerminalPaneSlot({
   paneId,
+  cwd,
+  focused,
+  docked,
+  splitDisabled,
+  left,
+  top,
+  width,
+  height,
   context,
 }: {
   paneId: string
-  context: LayoutContext
+  cwd: string
+  focused: boolean
+  docked: boolean
+  splitDisabled: boolean
+  left: number
+  top: number
+  width: number
+  height: number
+  context: PaneContext
 }) {
-  const pane = context.state.panes[paneId]
-  const focused = context.state.focusedPaneId === paneId
-  const splitDisabled =
-    context.tabPaneCount >= MAX_TERMINAL_PANES_PER_TAB ||
-    Object.keys(context.state.panes).length >= MAX_TERMINAL_SESSIONS
   const session = useTerminalSession({
     paneId,
-    root: pane?.cwd ?? context.root,
+    root: cwd,
     visible: context.visible,
     router: context.router,
     leaseStore: context.leaseStore,
@@ -157,11 +236,12 @@ function TerminalPaneSlot({
     <div
       className={`shui-terminal-pane-slot${focused ? ' focused' : ''}`}
       data-terminal-pane-id={paneId}
+      style={paneStyle(left, top, width, height)}
       onPointerDown={() => context.dispatch({ type: 'pane-focused', paneId })}
     >
       <TerminalPane
         session={session}
-        docked={context.tabPaneCount > 1}
+        docked={docked}
         actions={
           <>
             <Tooltip label="Split right">
@@ -218,82 +298,159 @@ function TerminalPaneSlot({
       />
     </div>
   )
+})
+
+function percent(fraction: number): string {
+  return `${fraction * 100}%`
 }
 
-function TerminalSplit({
-  node,
-  context,
+function TerminalSplitHandle({
+  item,
+  dispatch,
+  onDrag,
 }: {
-  node: Extract<TerminalLayoutNode, { type: 'split' }>
-  context: LayoutContext
+  item: Extract<TerminalLayoutItem, { type: 'separator' }>
+  dispatch: Dispatch<TerminalWorkspaceAction>
+  onDrag: (drag: SplitDrag | null) => void
 }) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const horizontal = node.direction === 'horizontal'
+  const { split, direction, ratio, rect } = item
+  const horizontal = direction === 'horizontal'
 
-  const resize = (ratio: number) => {
-    context.dispatch({ type: 'split-resized', splitId: node.id, ratio })
+  const resize = (next: number) => {
+    dispatch({ type: 'split-resized', splitId: split.id, ratio: next })
+  }
+  // A drag moves the split in its tab and tells the page once, on release.
+  const dragRatioRef = useRef<number | null>(null)
+  const commitDrag = () => {
+    const next = dragRatioRef.current
+    if (next === null) return
+    dragRatioRef.current = null
+    resize(next)
+    onDrag(null)
   }
 
   const resizer = useSplitDrag<{ ratio: number; size: number }>({
     horizontal,
-    begin: () => {
-      const rect = containerRef.current?.getBoundingClientRect()
-      const size = horizontal ? rect?.width : rect?.height
-      return size ? { ratio: node.ratio, size } : null
+    begin: (event) => {
+      // The split's share of the tab's area, in pixels along the drag.
+      const area = event.currentTarget.parentElement?.getBoundingClientRect()
+      const size = horizontal
+        ? (area?.width ?? 0) * rect.width
+        : (area?.height ?? 0) * rect.height
+      return size ? { ratio: split.ratio, size } : null
     },
-    move: (origin, delta) => resize(origin.ratio + delta / origin.size),
-    step: (direction) => resize(node.ratio + direction * 0.05),
+    move: (origin, delta) => {
+      const next = clampSplitRatio(origin.ratio + delta / origin.size)
+      dragRatioRef.current = next
+      onDrag({ splitId: split.id, ratio: next })
+    },
+    step: (towards) => resize(split.ratio + towards * 0.05),
   })
 
+  const at = horizontal
+    ? rect.left + rect.width * ratio
+    : rect.top + rect.height * ratio
+  const style: CSSProperties = horizontal
+    ? {
+        left: percent(at),
+        top: percent(rect.top),
+        height: percent(rect.height),
+      }
+    : {
+        top: percent(at),
+        left: percent(rect.left),
+        width: percent(rect.width),
+      }
+
   return (
+    // biome-ignore lint/a11y/useSemanticElements: this is an interactive range separator, not a static thematic break.
     <div
-      ref={containerRef}
-      className={`shui-terminal-split ${node.direction}`}
-      data-terminal-split-id={node.id}
-    >
-      <div
-        className="shui-terminal-split-child"
-        style={{ flexBasis: `${node.ratio * 100}%` }}
-      >
-        <TerminalLayoutView node={node.first} context={context} />
-      </div>
-      {/* biome-ignore lint/a11y/useSemanticElements: this is an interactive range separator, not a static thematic break. */}
-      <div
-        role="separator"
-        tabIndex={0}
-        className="shui-terminal-split-separator"
-        aria-label={`Resize ${node.direction} terminal split`}
-        aria-orientation={horizontal ? 'vertical' : 'horizontal'}
-        aria-valuemin={20}
-        aria-valuemax={80}
-        aria-valuenow={Math.round(node.ratio * 100)}
-        {...resizer}
-      />
-      <div className="shui-terminal-split-child">
-        <TerminalLayoutView node={node.second} context={context} />
-      </div>
-    </div>
+      role="separator"
+      tabIndex={0}
+      className={`shui-terminal-split-separator ${direction}`}
+      style={style}
+      aria-label={`Resize ${direction} terminal split`}
+      aria-orientation={horizontal ? 'vertical' : 'horizontal'}
+      aria-valuemin={20}
+      aria-valuemax={80}
+      aria-valuenow={Math.round(ratio * 100)}
+      {...resizer}
+      onPointerUp={(event) => {
+        resizer.onPointerUp(event)
+        commitDrag()
+      }}
+      onPointerCancel={(event) => {
+        resizer.onPointerCancel(event)
+        commitDrag()
+      }}
+      onLostPointerCapture={(event) => {
+        resizer.onLostPointerCapture(event)
+        commitDrag()
+      }}
+    />
   )
 }
 
-function TerminalLayoutView({
-  node,
+/**
+ * One tab's panes and split handles, flat and keyed by id (see
+ * `terminalLayoutItems`). Every tab stays mounted, the inactive ones hidden,
+ * so switching tabs detaches nothing and replays nothing.
+ */
+const TerminalTabLayout = memo(function TerminalTabLayout({
+  layout,
+  hidden,
+  focusedPaneId,
+  panes,
+  root,
+  sessionsFull,
+  stacked,
   context,
 }: {
-  node: TerminalLayoutNode
-  context: LayoutContext
+  layout: TerminalLayoutNode
+  hidden: boolean
+  focusedPaneId: string | null
+  panes: Record<string, TerminalPaneState>
+  root: string
+  sessionsFull: boolean
+  stacked: boolean
+  context: PaneContext
 }) {
-  switch (node.type) {
-    case 'pane':
-      return <TerminalPaneSlot paneId={node.paneId} context={context} />
-    case 'split':
-      return <TerminalSplit node={node} context={context} />
-    default: {
-      const exhaustive: never = node
-      return exhaustive
-    }
-  }
-}
+  // Held here, not on the page: a pointer move redraws this tab alone, and
+  // of its panes only the ones the move resizes.
+  const [drag, setDrag] = useState<SplitDrag | null>(null)
+  const paneCount = countTerminalPanes(layout)
+  const splitDisabled =
+    sessionsFull || paneCount >= MAX_TERMINAL_PANES_PER_TAB
+
+  return (
+    <div className="shui-terminal-tab-layout" hidden={hidden}>
+      {terminalLayoutItems(layout, { stacked, drag }).map((item) =>
+        item.type === 'pane' ? (
+          <TerminalPaneSlot
+            key={`pane:${item.paneId}`}
+            paneId={item.paneId}
+            cwd={panes[item.paneId]?.cwd ?? root}
+            focused={item.paneId === focusedPaneId}
+            docked={paneCount > 1}
+            splitDisabled={splitDisabled}
+            left={item.rect.left}
+            top={item.rect.top}
+            width={item.rect.width}
+            height={item.rect.height}
+            context={context}
+          />
+        ) : (
+          <TerminalSplitHandle
+            key={`split:${item.split.id}`}
+            item={item}
+            dispatch={context.dispatch}
+            onDrag={setDrag}
+          />
+        ),
+      )}
+    </div>
+  )
+})
 
 export const TerminalWorkspace = forwardRef<
   TerminalWorkspaceHandle,
@@ -304,6 +461,8 @@ export const TerminalWorkspace = forwardRef<
     dispatch,
     root,
     visible,
+    hidden = false,
+    narrow = false,
     router,
     leaseStore,
     storageKey,
@@ -406,20 +565,20 @@ export const TerminalWorkspace = forwardRef<
     storageKey,
   ])
 
-  const closePane = useCallback(
-    async (paneId: string) => {
+  // The closed panes leave in one render: React batches these dispatches.
+  const closePanes = useCallback(
+    async (paneIds: readonly string[]) => {
       setError(null)
-      try {
-        const warning = await closePty(paneId)
-        dispatch({ type: 'pane-closed', paneId })
-        if (warning) setError(warning)
-      } catch (closeError) {
-        setError(
-          closeError instanceof Error ? closeError.message : String(closeError),
-        )
-      }
+      const { closed, messages } = await closeTerminalPanes(paneIds, closePty)
+      for (const paneId of closed) dispatch({ type: 'pane-closed', paneId })
+      if (messages.length > 0) setError(messages.join('; '))
     },
     [closePty, dispatch],
+  )
+
+  const closePane = useCallback(
+    (paneId: string) => closePanes([paneId]),
+    [closePanes],
   )
 
   const removePane = useCallback(
@@ -440,77 +599,77 @@ export const TerminalWorkspace = forwardRef<
       ) {
         return
       }
-      setError(null)
-      const warnings: string[] = []
-      for (const paneId of paneIds) {
-        try {
-          const warning = await closePty(paneId)
-          dispatch({ type: 'pane-closed', paneId })
-          if (warning) warnings.push(warning)
-        } catch (closeError) {
-          setError(
-            closeError instanceof Error
-              ? closeError.message
-              : String(closeError),
-          )
-          return
-        }
-      }
-      if (warnings.length > 0) setError(warnings.join('; '))
+      await closePanes(paneIds)
     },
-    [closePty, dispatch, state.tabs, confirm],
+    [closePanes, state.tabs, confirm],
   )
 
+  // Every tab's panes are mounted and attached, so a pane in a background
+  // tab is not disconnected: only a pane whose session says so is (or one
+  // with no session, which never attached).
   const closeDisconnected = useCallback(async () => {
-    const activePaneIds = new Set(
-      selectedTab ? paneIdsInLayout(selectedTab.layout) : [],
-    )
     const disconnected = Object.keys(state.panes).filter((paneId) => {
-      const session = sessionsRef.current.get(paneId)
+      const status = sessionsRef.current.get(paneId)?.status
       return (
-        !activePaneIds.has(paneId) ||
-        session?.status === 'disconnected' ||
-        session?.status === 'error' ||
-        session?.status === 'exited'
+        status === undefined ||
+        status === 'disconnected' ||
+        status === 'error' ||
+        status === 'exited'
       )
     })
-    for (const paneId of disconnected) {
-      await closePane(paneId)
-    }
-  }, [closePane, selectedTab, state.panes])
+    await closePanes(disconnected)
+  }, [closePanes, state.panes])
 
   useImperativeHandle(ref, () => ({ closeDisconnected }), [closeDisconnected])
 
-  const context = useMemo<LayoutContext | null>(() => {
-    if (!selectedTab) return null
-    return {
-      state,
+  const context = useMemo<PaneContext>(
+    () => ({
       dispatch,
-      root,
       visible,
       router,
       leaseStore,
       storageKey,
-      tabPaneCount: countTerminalPanes(selectedTab.layout),
       registerSession,
       closePane,
       removePane,
       connectionCoordinator,
-    }
-  }, [
-    closePane,
-    connectionCoordinator,
-    dispatch,
-    leaseStore,
-    registerSession,
-    removePane,
-    root,
-    router,
-    selectedTab,
-    state,
-    storageKey,
-    visible,
-  ])
+    }),
+    [
+      closePane,
+      connectionCoordinator,
+      dispatch,
+      leaseStore,
+      registerSession,
+      removePane,
+      router,
+      storageKey,
+      visible,
+    ],
+  )
+
+  // Mounting a terminal used to focus it. Panes now stay mounted while the
+  // panel is hidden, so showing it hands the keyboard to the focused pane.
+  const focusedPaneIdRef = useRef(state.focusedPaneId)
+  focusedPaneIdRef.current = state.focusedPaneId
+  useEffect(() => {
+    if (hidden) return
+    const frame = window.requestAnimationFrame(() => {
+      const paneId = focusedPaneIdRef.current
+      if (paneId) sessionsRef.current.get(paneId)?.focus()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [hidden])
+
+  // The same for a tab: its panes were there all along, hidden, so a click
+  // that brings one forward focuses the pane the tab opens on.
+  const selectTab = (tab: TerminalTabState) => {
+    const switching = tab.id !== state.activeTabId
+    dispatch({ type: 'tab-selected', tabId: tab.id })
+    // Not on the tab already in front: its double click is a rename.
+    if (!switching) return
+    const paneId = paneIdsInLayout(tab.layout)[0]
+    window.requestAnimationFrame(() => sessionsRef.current.get(paneId)?.focus())
+  }
 
   const createTab = () => {
     dispatch({
@@ -604,9 +763,7 @@ export const TerminalWorkspace = forwardRef<
                   role="tab"
                   aria-selected={selected}
                   className="shui-terminal-tab-select"
-                  onClick={() =>
-                    dispatch({ type: 'tab-selected', tabId: tab.id })
-                  }
+                  onClick={() => selectTab(tab)}
                   onDoubleClick={() => beginRename(tab.id, tab.title)}
                   onKeyDown={(event) => selectTabByKey(event, index)}
                 >
@@ -649,9 +806,23 @@ export const TerminalWorkspace = forwardRef<
         <div className="shui-terminal-workspace-error">{error}</div>
       ) : null}
       <div className="shui-terminal-layout">
-        {selectedTab && context ? (
-          <TerminalLayoutView node={selectedTab.layout} context={context} />
-        ) : (
+        {state.tabs.map((tab) => {
+          const active = tab.id === state.activeTabId
+          return (
+            <TerminalTabLayout
+              key={tab.id}
+              layout={tab.layout}
+              hidden={!active}
+              focusedPaneId={active ? state.focusedPaneId : null}
+              panes={state.panes}
+              root={root}
+              sessionsFull={totalPaneCount >= MAX_TERMINAL_SESSIONS}
+              stacked={narrow}
+              context={context}
+            />
+          )
+        })}
+        {selectedTab ? null : (
           <div className="shui-terminal-empty">No terminal sessions</div>
         )}
       </div>

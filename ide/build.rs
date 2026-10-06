@@ -2,10 +2,11 @@
 //!
 //! 1. Forwards the build-time target triple to the binary as `env!("TARGET")`.
 //! 2. Ensures the injected console UI assets exist: `src/ui.rs` embeds
-//!    `ui/dist/page.js` and `ui/dist/styles.css` via `include_str!`, so if
-//!    either is missing or stale we run `pnpm install && pnpm build` inside
-//!    `ui/` first (the state/iii-directory workers' precedent). Set
-//!    `SKIP_UI_BUILD=1` to use the existing `ui/dist/` outputs as-is.
+//!    `ui/dist/page.js`, `ui/dist/styles.css` and `ui/dist/xterm.js` via
+//!    `include_str!`, so if any is missing or stale we run
+//!    `pnpm install && pnpm build` inside `ui/` first (the state/iii-directory
+//!    workers' precedent). Set `SKIP_UI_BUILD=1` to use the existing
+//!    `ui/dist/` outputs as-is.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,6 +22,7 @@ fn main() {
     // listing it would rebuild-loop on our own output.
     println!("cargo:rerun-if-changed=ui/page.tsx");
     println!("cargo:rerun-if-changed=ui/styles.css");
+    println!("cargo:rerun-if-changed=ui/xterm.ts");
     println!("cargo:rerun-if-changed=ui/src");
     println!("cargo:rerun-if-changed=ui/build.mjs");
     println!("cargo:rerun-if-changed=ui/package.json");
@@ -34,6 +36,7 @@ fn main() {
     let dist_assets = [
         ui_dir.join("dist").join("page.js"),
         ui_dir.join("dist").join("styles.css"),
+        ui_dir.join("dist").join("xterm.js"),
     ];
 
     if dist_assets
@@ -102,6 +105,7 @@ fn dist_is_fresh(dist_asset: &Path, ui_dir: &Path) -> bool {
     let watched_files = [
         ui_dir.join("page.tsx"),
         ui_dir.join("styles.css"),
+        ui_dir.join("xterm.ts"),
         ui_dir.join("build.mjs"),
         ui_dir.join("package.json"),
         ui_dir.join("../../pnpm-lock.yaml"),

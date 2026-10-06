@@ -109,6 +109,32 @@ async function loadConfigurationValues() {
   return import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
 }
 
+async function loadSpecHelpers() {
+  const result = await esbuild.build({
+    entryPoints: ['src/configuration-forms/spec-helpers.ts'],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    write: false,
+    logLevel: 'silent',
+  })
+  const source = result.outputFiles[0].text
+  return import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+}
+
+async function loadModelCatalog() {
+  const result = await esbuild.build({
+    entryPoints: ['src/configuration-forms/model-catalog.ts'],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    write: false,
+    logLevel: 'silent',
+  })
+  const source = result.outputFiles[0].text
+  return import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+}
+
 test('manifest covers the 38 worker-owned configuration entries', async () => {
   const manifest = await loadManifest()
   assert.doesNotThrow(() => manifest.validateWorkerConfigurationManifest())
@@ -130,6 +156,111 @@ test('entry registers every manifest id explicitly', async () => {
       `missing explicit registration for ${id}`,
     )
   }
+})
+
+test('the ide configuration entry (ui_form "ide") renders the shell spec', async () => {
+  const entry = await readFile('config-form.tsx', 'utf8')
+  assert.match(entry, /host\.configForms\.register\('ide', configurationForm\('shell'\)\)/)
+  assert.match(entry, /host\.configForms\.register\('shell', configurationForm\('shell'\)\)/)
+})
+
+test('ide declares commit-message controls: a model with its thinking level, and multiline instructions', async () => {
+  const manifest = await loadManifest()
+  const ide = manifest.workerConfigurationSpecs.get('shell')
+  const section = ide.sections.find((candidate) => candidate.title === 'Commit messages')
+  const [commitMessages] = section.fields
+  assert.equal(commitMessages.kind, 'object')
+  assert.equal(commitMessages.path.join('.'), 'commit_messages')
+
+  const [model, instructions] = commitMessages.fields
+  assert.equal(model.kind, 'model')
+  assert.equal(model.thinkingKey, 'thinking')
+  assert.equal(model.thinkingDefault, 'low')
+  assert.equal(model.optional, true)
+  assert.equal(instructions.kind, 'text')
+  assert.equal(instructions.multiline, true)
+  assert.equal(instructions.optional, true)
+
+  const declared = manifest.declaredFields(ide)
+  for (const leaf of ['commit_messages.model', 'commit_messages.thinking', 'commit_messages.instructions']) {
+    assert.ok(declared.includes(leaf), `${leaf} is declared`)
+    assert.ok(ide.expectedFields.includes(leaf), `${leaf} is expected`)
+  }
+})
+
+test('a model field declares its thinking sibling as a second leaf, and only when it has one', async () => {
+  const manifest = await loadManifest()
+  const helpers = await loadSpecHelpers()
+  const specOf = (...fields) => ({ sections: [{ title: 't', fields }] })
+  assert.deepEqual(
+    manifest.declaredFields(specOf(helpers.model('a.b.model', 'Model', undefined, { thinkingKey: 'effort' }))),
+    ['a.b.effort', 'a.b.model'],
+  )
+  assert.deepEqual(manifest.declaredFields(specOf(helpers.model('model', 'Model'))), ['model'])
+})
+
+test('router catalog rows become picker options the way the agent editor maps them', async () => {
+  const catalog = await loadModelCatalog()
+  const options = catalog.modelOptionsFromCatalog({
+    models: [
+      {
+        id: ' sonnet ',
+        provider: 'anthropic',
+        display_name: ' Claude Sonnet ',
+        context_window: 200000,
+        supports_thinking: true,
+        supports_vision: false,
+        reasoning_efforts: [{ effort: ' low ', description: ' Fast ' }, { effort: '' }, null, { effort: 'high' }],
+      },
+      { id: 'openai::gpt', provider: 'openai' },
+      { id: 'bare' },
+      { id: '   ', provider: 'x' },
+      null,
+    ],
+  })
+  assert.deepEqual(options, [
+    {
+      id: 'anthropic::sonnet',
+      label: 'Claude Sonnet',
+      contextWindow: 200000,
+      supportsThinking: true,
+      supportsVision: false,
+      reasoningEfforts: [{ effort: 'low', description: 'Fast' }, { effort: 'high', description: undefined }],
+    },
+    {
+      id: 'openai::gpt',
+      label: 'openai::gpt',
+      contextWindow: undefined,
+      supportsThinking: undefined,
+      supportsVision: undefined,
+      reasoningEfforts: undefined,
+    },
+    {
+      id: 'bare',
+      label: 'bare',
+      contextWindow: undefined,
+      supportsThinking: undefined,
+      supportsVision: undefined,
+      reasoningEfforts: undefined,
+    },
+  ])
+  for (const unreadable of [undefined, null, {}, { models: 'nope' }, 'nope']) {
+    assert.deepEqual(catalog.modelOptionsFromCatalog(unreadable), [])
+  }
+})
+
+test('the stored model stays selectable when the catalog does not list it', async () => {
+  const catalog = await loadModelCatalog()
+  const listed = [{ id: 'anthropic::sonnet', label: 'Sonnet' }]
+  assert.equal(catalog.withStoredModel(listed, null), listed)
+  assert.equal(catalog.withStoredModel(listed, 'anthropic::sonnet'), listed)
+  assert.deepEqual(catalog.withStoredModel(listed, 'openai::gone'), [
+    ...listed,
+    { id: 'openai::gone', label: 'openai::gone', supportsThinking: true },
+  ])
+  assert.deepEqual(catalog.withStoredModel([], 'openai::gone'), [
+    { id: 'openai::gone', label: 'openai::gone', supportsThinking: true },
+  ])
 })
 
 test('queue declares explicit controls for every known adapter', async () => {
@@ -336,6 +467,18 @@ test('typed controls preserve environment values and derive deliberate literal r
     ),
     'manual',
   )
+})
+
+test('the setup switch reads on by default and keeps worker_sources when set', async () => {
+  const preferences = await loadTracePreferences()
+  assert.equal(preferences.onboardingAutoOpen({}), true)
+  assert.equal(preferences.onboardingAutoOpen({ onboarding: { auto_open: true } }), true)
+  assert.equal(preferences.onboardingAutoOpen({ onboarding: { auto_open: false } }), false)
+
+  const sources = { judge: '/src/judge' }
+  const off = preferences.withOnboardingAutoOpen({ http_port: 3113, onboarding: { worker_sources: sources } }, false)
+  assert.deepEqual(off, { http_port: 3113, onboarding: { worker_sources: sources, auto_open: false } })
+  assert.equal(preferences.onboardingAutoOpen(off), false)
 })
 
 test('trace preference edits preserve opaque view and sibling fields', async () => {

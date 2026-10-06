@@ -491,15 +491,15 @@ function NoProviderBody({
 }) {
   return (
     <>
-      <h1 className={HEADING_CLASS}>Configure a provider.</h1>
+      <h1 className={HEADING_CLASS}>Connect a model.</h1>
       <p className={BODY_CLASS}>
-        the harness worker is running, but no model providers are set up yet.
-        add an api key — or point at a local server — then pick a model and
-        send.
+        the harness is running, but no model is connected yet. setup finds
+        claude code, codex or an api key already on this machine and connects it
+        in a couple of clicks.
       </p>
       <div>
         <Button variant="primary" onClick={onConfigureProvider}>
-          configure a provider
+          set up a model
         </Button>
       </div>
     </>

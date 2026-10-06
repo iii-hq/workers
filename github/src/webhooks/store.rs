@@ -91,11 +91,24 @@ impl Store {
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;
-            // SAFETY: flock receives a live file descriptor; the File outlives Store.
-            if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-                return Err(Failure::Invalid(
-                    "another process owns this webhook installation".into(),
-                ));
+            // flock belongs to the open file description: a child spawned
+            // anywhere in this process shares it until its exec, and a previous
+            // instance may still be exiting. Retry briefly on contention only;
+            // a live owner still wins after the bounded window.
+            let mut attempts = 0;
+            loop {
+                // SAFETY: flock receives a live file descriptor; the File outlives Store.
+                if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                    break;
+                }
+                let busy = std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock;
+                if !busy || attempts >= 20 {
+                    return Err(Failure::Invalid(
+                        "another process owns this webhook installation".into(),
+                    ));
+                }
+                attempts += 1;
+                std::thread::sleep(Duration::from_millis(25));
             }
         }
         let mut conn = Connection::open(path)?;

@@ -4,3 +4,551 @@
   gap: 24px;
   min-width: 0;
 }
+
+[data-iii-ui='judge'] .judge-ui-session-trigger {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 12rem;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: color var(--motion-duration-fast), background-color var(--motion-duration-fast);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-trigger:hover,
+[data-iii-ui='judge'] .judge-ui-session-trigger[data-state='open'] {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-trigger:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+
+/* The session picker, built like the composer's model picker: pages that
+   slide (judges, add a judge, a judge's settings) in one fixed panel. */
+[data-iii-ui='judge'] .judge-ui-session-menu {
+  display: flex;
+  flex-direction: column;
+  width: min(400px, calc(100vw - 24px));
+  height: min(60vh, 540px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-pages {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  --picker-page-offset: var(--distance-base);
+}
+
+/* The root page leaves to the left; the detail pages leave to the right. */
+[data-iii-ui='judge'] .judge-ui-session-page[data-page='judges'] {
+  padding-top: 16px;
+  --picker-page-offset: calc(var(--distance-base) * -1);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-filter {
+  flex: 0 0 auto;
+  padding: 0 12px 12px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-filter input {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  outline: none;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-filter input::placeholder {
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-filter input:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--color-rule-focus);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-browse {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* One glyph per group, in list order, then the add button. */
+[data-iii-ui='judge'] .judge-ui-session-rail {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 48px;
+  padding: 0 4px 12px 8px;
+  overflow-y: auto;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-rail-button {
+  width: 36px;
+  height: 36px;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-rail-button[aria-current='true'] {
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-list {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 12px 12px 4px;
+  overflow-y: auto;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px 8px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-group-label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-group-label > svg {
+  flex: 0 0 auto;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-group-label > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-configure {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-accent);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-configure:hover {
+  color: var(--color-accent-hover);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-configure:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+
+/* A group's rows: one card split by rules, as the model picker shows a
+   provider's models. */
+[data-iii-ui='judge'] .judge-ui-session-card {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+  list-style: none;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-card > * + * {
+  border-top: 1px solid var(--color-edge);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-option {
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Hover and the keyboard share the lighter wash; the session's choice keeps
+   the stronger one, so it stays legible while the pointer roams. */
+[data-iii-ui='judge'] .judge-ui-session-option:hover,
+[data-iii-ui='judge'] .judge-ui-session-option[data-highlighted] {
+  background: var(--color-surface-hover);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-option[data-selected] {
+  background: var(--color-surface-selected);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-option:active {
+  background: var(--color-surface-active);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-option:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--color-rule-focus);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-option > svg {
+  flex: 0 0 auto;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-option-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-option-label,
+[data-iii-ui='judge'] .judge-ui-session-option-description {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-option-label {
+  font-weight: 500;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-option-description {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-empty,
+[data-iii-ui='judge'] .judge-ui-session-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0;
+  padding: 16px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-notice p {
+  margin: 0;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-footer {
+  flex: 0 0 auto;
+  padding: 0 16px;
+  border-top: 1px solid var(--color-edge);
+  background: var(--color-surface);
+}
+
+/* A detail page: back, then its title and what it holds. */
+[data-iii-ui='judge'] .judge-ui-session-subheader {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 16px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-subheader-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding-top: 2px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-subtitle {
+  margin: 0;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-subdescription {
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 20px;
+  text-wrap: pretty;
+}
+
+/* Leaving a judge's settings with edits not saved. */
+[data-iii-ui='judge'] .judge-ui-session-discard {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 16px 12px;
+  padding: 8px 8px 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-discard-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-settings {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Add a judge: registry rows, the compose::add note. */
+[data-iii-ui='judge'] .judge-ui-session-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 12px 12px;
+  overflow-y: auto;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-add-row {
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-add-row[data-failed] {
+  align-items: flex-start;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-add-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-add-title {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-add-description {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 16px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  background: var(--color-surface-hover);
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-worker {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-error {
+  color: var(--color-alert);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-skeleton-mark {
+  width: 20px;
+  height: 20px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-skeleton-title {
+  width: 8rem;
+  height: 16px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-skeleton-line {
+  width: 66%;
+  height: 14px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-skeleton-action {
+  width: 4rem;
+  height: 32px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-hint {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0 16px 12px;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-hint code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* The composer control: the picker, then a quiet help button for what the
+   judge is and where this session uses it. */
+[data-iii-ui='judge'] .judge-ui-session-control {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-help-button {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  color: var(--color-ink-ghost);
+}
+
+/* A tooltip needs hover: on touch screens the icon would only take width
+   from the judge label. */
+@media (hover: none) {
+  [data-iii-ui='judge'] .judge-ui-session-help-button {
+    display: none;
+  }
+}
+
+[data-iii-ui='judge'] .judge-ui-session-help-button:hover {
+  color: var(--color-ink);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-help {
+  display: flex;
+  max-width: 18rem;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 2px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 17px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-help-title {
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-help-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-left: 10px;
+  border-left: 1px solid var(--color-edge);
+  color: var(--color-ink);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-help code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-help-foot {
+  color: var(--color-ink-ghost);
+}

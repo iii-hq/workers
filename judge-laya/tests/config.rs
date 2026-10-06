@@ -11,16 +11,13 @@ fn config_validates_model_revision_and_limits() {
     assert_eq!(defaults["preload"], json!([]));
     assert_eq!(defaults["auto_route"], false);
     assert_eq!(defaults["auto_task_detection"], false);
-    assert!(defaults.get("shortlist_k").is_none());
     let routed = LayaConfig::from_json(&json!({
         "preload": ["laya-multilingual", "laya-typed-decisions"],
         "auto_route": true,
-        "auto_task_detection": true,
-        "shortlist_k": 20
+        "auto_task_detection": true
     }))
     .unwrap();
     assert!(routed.routing().auto_route && routed.routing().auto_task_detection);
-    assert_eq!(routed.routing().shortlist_k, Some(20));
     let ok = LayaConfig::from_json(
         &json!({"model": "laya-multilingual", "revision": "abc123", "batch_questions": 4}),
     )
@@ -39,8 +36,7 @@ fn config_validates_model_revision_and_limits() {
         json!({"preload": ["laya"]}),
         json!({"preload": ["laya-multilingual", "laya-multilingual"]}),
         json!({"preload": ["jev"]}),
-        json!({"shortlist_k": 0}),
-        json!({"shortlist_k": 257}),
+        json!({"shortlist_k": 20}),
     ] {
         assert!(LayaConfig::from_json(&bad).is_err(), "{bad}");
     }

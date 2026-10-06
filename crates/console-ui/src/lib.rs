@@ -7,9 +7,9 @@
 //!
 //! - the *content function* (`<worker>::ui-content` by default) the console
 //!   invokes with `{path}` to fetch an asset's source,
-//! - one `console:script` / `console:style` trigger per asset, registered
-//!   over the SDK Message path (disconnect GC + reconnect replay — never
-//!   `engine::register_trigger`),
+//! - one `console:script` / `console:style` / `console:module` trigger per
+//!   asset, registered over the SDK Message path (disconnect GC + reconnect
+//!   replay — never `engine::register_trigger`),
 //! - the dev-loop hot-reload watcher (`III_<WORKER>_UI_WATCH` by default):
 //!   poll the build output, swap the served bytes, register a FRESH trigger
 //!   for the same path, THEN unregister the previous handle — register-first
@@ -94,11 +94,12 @@ pub struct UiContentResult {
     pub content_type: String,
 }
 
-/// The two asset kinds the console accepts, with everything they imply.
+/// The asset kinds the console accepts, with everything they imply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AssetKind {
     Script,
     Style,
+    Module,
 }
 
 impl AssetKind {
@@ -106,19 +107,20 @@ impl AssetKind {
         match self {
             AssetKind::Script => "console:script",
             AssetKind::Style => "console:style",
+            AssetKind::Module => "console:module",
         }
     }
 
     fn content_type(self) -> &'static str {
         match self {
-            AssetKind::Script => "text/javascript; charset=utf-8",
+            AssetKind::Script | AssetKind::Module => "text/javascript; charset=utf-8",
             AssetKind::Style => "text/css; charset=utf-8",
         }
     }
 
     fn extension(self) -> &'static str {
         match self {
-            AssetKind::Script => ".js",
+            AssetKind::Script | AssetKind::Module => ".js",
             AssetKind::Style => ".css",
         }
     }
@@ -187,6 +189,17 @@ impl ConsoleUi {
     /// Panics on a path the console would reject (see crate docs).
     pub fn style(self, path: impl Into<String>, content: impl Into<String>) -> Self {
         self.asset(AssetKind::Style, path.into(), content.into())
+    }
+
+    /// Add a `console:module` asset: an ES module the console serves but
+    /// never imports at mount. A script loads it on demand with
+    /// `host.importModule(path)`, so heavy code that only one view needs
+    /// (a terminal emulator, a diagram renderer) stays out of every tab's
+    /// first load.
+    ///
+    /// Panics on a path the console would reject (see crate docs).
+    pub fn module(self, path: impl Into<String>, content: impl Into<String>) -> Self {
+        self.asset(AssetKind::Module, path.into(), content.into())
     }
 
     /// Override the content function id (default `<worker>::ui-content`).
@@ -268,7 +281,7 @@ impl ConsoleUi {
                 })
                 .description(format!(
                     "Serve the {} worker's injected console UI assets (content function \
-                     for its console:script / console:style triggers).",
+                     for its console:script / console:style / console:module triggers).",
                     self.worker
                 ))
                 // Console plumbing, not an API for agents/workers to discover.
@@ -277,7 +290,12 @@ impl ConsoleUi {
         }
 
         let mut watched = Vec::new();
-        for spec in &self.assets {
+        // Modules first: the console commits assets in registration order,
+        // so a script never reaches a tab before the modules it imports are
+        // served.
+        let mut ordered: Vec<_> = self.assets.iter().collect();
+        ordered.sort_by_key(|spec| spec.kind != AssetKind::Module);
+        for spec in ordered {
             match register_asset_trigger(iii, &self.content_function_id, spec.kind, &spec.path) {
                 Ok(handle) => {
                     tracing::info!(path = spec.path, "registered console ui asset");
@@ -604,6 +622,22 @@ mod tests {
     #[should_panic(expected = "must end with '.js'")]
     fn script_with_css_extension_panics() {
         let _ = ConsoleUi::new("demo").script("demo/styles.css", "");
+    }
+
+    #[test]
+    #[should_panic(expected = "must end with '.js'")]
+    fn module_with_css_extension_panics() {
+        let _ = ConsoleUi::new("demo").module("demo/styles.css", "");
+    }
+
+    #[tokio::test]
+    async fn modules_register_their_own_trigger_type_and_serve_as_javascript() {
+        let ui = two_assets().module("demo/heavy.js", "export const x = 1");
+        assert_eq!(ui.assets[2].kind.trigger_type(), "console:module");
+        assert_eq!(ui.assets[2].file, "heavy.js");
+        let served = Served::new(&ui.assets);
+        let heavy = served.content_for("demo/heavy.js").await.unwrap();
+        assert!(heavy.content_type.starts_with("text/javascript"));
     }
 
     #[test]

@@ -432,6 +432,7 @@ export function useSpanFilteredTraceRows(
           trace_id: traceId,
           search_all_spans: true,
           include_internal: true,
+          include_events: false,
           sort_by: 'start_time',
           sort_order: 'asc',
           limit: FETCH_SPAN_LIMIT,

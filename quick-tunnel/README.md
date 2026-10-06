@@ -4,7 +4,7 @@ Worker binário Rust do iii que gerencia **processos filhos cloudflared Quick Tu
 
 ## Pré-requisito e segurança
 
-O operador deve fornecer um executável cloudflared confiável, com suporte a `tunnel --output json` (contrato de logs conferido no upstream 2025.11.1 e no `master` consultado em 2026-09-19). Configure `cloudflared` com um caminho absoluto, ou o nome em `/usr/local/bin:/usr/bin:/bin`. A interface registra mesmo sem o executável: somente a primeira lease inicia um filho; executável ausente produz `failed` após as tentativas limitadas.
+O operador deve fornecer um executável cloudflared confiável, com suporte a `tunnel --output json` (contrato de logs conferido no upstream 2025.11.1 e no `master` consultado em 2026-09-19). Configure `cloudflared` com um caminho absoluto, ou o nome: um nome solto é procurado **somente** em `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` e `/bin` (inclui o Homebrew em Apple silicon), e o filho é iniciado pelo caminho absoluto encontrado. O `PATH` herdado do worker não é consultado: uma entrada gravável pelo usuário (`~/.local/bin`, shims) poderia substituir o binário que publica um serviço local na Internet. Para qualquer outro local, configure o caminho absoluto. A interface registra mesmo sem o executável: somente a primeira lease inicia um filho; executável ausente produz `failed` com `cloudflared not found (...); install it from <página de downloads da Cloudflare>`. `quick-tunnel::status` informa `prerequisites.cloudflared` antes de qualquer lease, para que o operador instale o binário antes de habilitar webhooks.
 
 **Acquire publica o serviço HTTP autorizado na Internet.** Configure o destino HTTP de webhooks com validação HMAC e sem rotas administrativas. O worker não autentica HTTP público, não cria webhooks GitHub e não fornece SLA: Quick Tunnels são efêmeros e destinados a desenvolvimento. Não exponha o engine iii como target.
 
@@ -57,7 +57,7 @@ Entrada `{"lease_id":"uuid"}`; saída `{"released":true}`. Repetição/ID descon
 
 ### `quick-tunnel::status`
 
-Entrada `{}` ou `{"tunnel_id":"webhooks"}`. Retorna snapshot acima **sem `lease_id` singular**, mais `leases:[{lease_id,consumer_id,tunnel_id,expires_at}]`. Nunca inclui secrets do cloudflared.
+Entrada `{}` ou `{"tunnel_id":"webhooks"}`. Retorna snapshot acima **sem `lease_id` singular**, mais `leases:[{lease_id,consumer_id,tunnel_id,expires_at}]` e `prerequisites:{cloudflared:{found,path,version,error,install_url}}` (sondado com `cloudflared --version`, limitado a 5 s, fora da task dona das leases; o resultado de um binário inalterado — mesmo caminho e mtime — é reutilizado por 60 s, e um binário ausente é reavaliado a cada leitura sem executar processo). Nunca inclui secrets do cloudflared. O worker nunca baixa nem instala o cloudflared: `install_url` aponta a página oficial da Cloudflare.
 
 ### `quick-tunnel::changed`
 

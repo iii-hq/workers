@@ -24,6 +24,7 @@ import uiClasses, { uiClassNames } from '@iii-dev/console-ui/ui-classes'
 import { describe, expect, it } from 'vitest'
 import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
 import { ModelPicker } from '@/components/chat/ModelPicker'
+import { SecretKeyField } from '@/components/secrets/SecretKeyField'
 import { ActionLine, MetaRow } from '@/components/ui/ActivityMetadata'
 import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
@@ -140,6 +141,7 @@ import { components } from '@/lib/console-api'
 import { Markdown } from '@/lib/markdown'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
 import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConfigurationDialog'
+import { WorkerConfigurationPanel } from '@/pages/Workers/components/WorkerConfigurationPanel'
 
 /**
  * The type-level check: assigning each real component to the package's
@@ -166,6 +168,7 @@ const conformance: {
   LiveRegion: typeof ConsoleUi.LiveRegion
   MetaRow: typeof ConsoleUi.MetaRow
   SearchField: typeof ConsoleUi.SearchField
+  SecretKeyField: typeof ConsoleUi.SecretKeyField
   StatusBar: typeof ConsoleUi.StatusBar
   Toolbar: typeof ConsoleUi.Toolbar
   Card: typeof ConsoleUi.Card
@@ -255,6 +258,7 @@ const conformance: {
   TooltipContent: typeof ConsoleUi.TooltipContent
   TooltipTrigger: typeof ConsoleUi.TooltipTrigger
   WorkerConfigurationDialog: typeof ConsoleUi.WorkerConfigurationDialog
+  WorkerConfigurationPanel: typeof ConsoleUi.WorkerConfigurationPanel
   DirectoryPicker: typeof ConsoleUi.DirectoryPicker
   Wordmark: typeof ConsoleUi.Wordmark
 } = {
@@ -277,6 +281,7 @@ const conformance: {
   LiveRegion,
   MetaRow,
   SearchField,
+  SecretKeyField,
   StatusBar,
   Toolbar,
   Card,
@@ -366,6 +371,7 @@ const conformance: {
   TooltipContent,
   TooltipTrigger,
   WorkerConfigurationDialog,
+  WorkerConfigurationPanel,
   DirectoryPicker,
   Wordmark,
 }

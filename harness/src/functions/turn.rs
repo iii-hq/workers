@@ -37,7 +37,8 @@ pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepRes
         .message_preview
         .clone()
         .filter(|p| !p.trim().is_empty());
-    let session_name = deps.session().await.title(&session_id).await;
+    let hints = deps.session().await.turn_hints(&session_id).await;
+    let session_name = hints.title;
     let is_subagent = payload.depth > 0;
     let kind = if is_subagent {
         "harness.subagent"
@@ -61,6 +62,12 @@ pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepRes
     }
     if let Some(display_name) = subagent_display_name.as_deref() {
         baggage.push(("iii.tag.display_name", display_name));
+    }
+    // The session's judge provider rides the turn's context: every judge call
+    // this turn causes (call reconciliation here, function search in the
+    // directory, browser::run) routes to it, and other sessions never see it.
+    if let Some(provider) = hints.judge_provider.as_deref() {
+        baggage.push((judge_contract::PROVIDER_BAGGAGE_KEY, provider));
     }
     // The explicit step span matters: the baggage only materializes as span
     // attributes when a span STARTS inside this scope, and downstream workers
@@ -114,6 +121,10 @@ async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, Ha
     let (session_id, turn_id) = (payload.session_id.clone(), payload.turn_id.clone());
     // Orphan recovery must not re-enqueue a step that is executing here.
     let _inflight = deps.inflight.enter(&session_id);
+    // FIFO redelivery can overlap an old generation after an engine restart.
+    // Keep the entire generation + finalization lifetime visible to deletion,
+    // not only the shorter record locks released around the router RPC.
+    let _activity = deps.turn_activity.guard(&session_id).await;
     let mut transient_attempts = 0u32;
     let result = loop {
         match turn_loop::run_step(deps, payload.clone()).await {
@@ -147,6 +158,7 @@ async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, Ha
             }
         }
     };
+    deps.deletion_changed.notify_waiters();
     record_step_status(&result);
     Ok(result)
 }

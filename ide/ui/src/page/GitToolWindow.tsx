@@ -1,0 +1,191 @@
+/* The Git tool window, laid out like WebStorm's. It docks at the bottom of
+   the IDE and has two tabs: Log (the branches, the commit graph and the
+   selected commit) and Worktrees. One set of worktree operations serves
+   both tabs, so an outcome lands once, in the window's header, and is
+   announced once. */
+
+import type { Host, LiveAnnouncement } from '@iii-dev/console-ui'
+import { LiveRegion, Tabs, TabsContent, TabsList, TabsTrigger, Toolbar, Tooltip } from '@iii-dev/console-ui'
+import { Minus } from 'lucide-react'
+import { memo, useEffect, useRef, useState } from 'react'
+import { GitLogTab } from './GitLogTab'
+import { GitWorktreesTab } from './GitWorktreesTab'
+import type { CommitDetails, CommitFile } from './git-log-window'
+import { useWorktreeOps, type WorktreesPage } from './use-worktree-ops'
+import { DeleteBranchDialog, RemoveManyDialog, RemoveWorktreeDialog, WARNING } from './WorktreeForms'
+
+export type GitTab = 'log' | 'worktrees'
+
+function GitToolWindowView({
+  host,
+  root,
+  page,
+  open = true,
+  tab,
+  onTabChange,
+  onHide,
+  narrow,
+  paneKey,
+  onOpenCommitFile,
+  onOpenCompareFile,
+  onOpenWorkingFile,
+  onOpenRevision,
+}: {
+  host: Host
+  root: string
+  page: WorktreesPage
+  /** Hidden, the window stays mounted with its place kept, and reads
+      nothing until it shows again. */
+  open?: boolean
+  tab: GitTab
+  onTabChange(tab: GitTab): void
+  onHide(): void
+  narrow?: boolean
+  /** Keys the window's own layout (pane widths, open groups) to this pane. */
+  paneKey: string
+  /** Opens a file a commit changed as a diff tab; `pin: false` makes it the preview tab. */
+  onOpenCommitFile(file: CommitFile, details: CommitDetails, pin?: boolean): void
+  /** Opens a file as it is at `ref`, beside its working copy. */
+  onOpenCompareFile(file: CommitFile, ref: string, from?: string): void
+  /** The file in the working tree, by its path below the IDE's folder. */
+  onOpenWorkingFile(rel: string): void
+  /** The file as commit `sha` left it (`git show <sha>:<file.path>`), in a
+      read-only editor tab. */
+  onOpenRevision(file: CommitFile, sha: string): void
+}) {
+  // The dirty marks cost a `git status` per worktree and only the
+  // Worktrees tab shows them: read from the first time it does.
+  const [marks, setMarks] = useState(tab === 'worktrees')
+  if (tab === 'worktrees' && !marks) setMarks(true)
+  const ops = useWorktreeOps(host, root, page, open, 'view', marks)
+  const target = ops.list?.defaultBranch ?? null
+  const windowRef = useRef<HTMLDivElement>(null)
+  const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
+  const noteSeq = useRef(ops.noteSeq)
+  // "Show in Log" from the Worktrees tab: the branch the Log should select.
+  const [focusBranch, setFocusBranch] = useState<{ name: string; seq: number } | null>(null)
+
+  // The outcome of what was asked here is announced here; the header chip
+  // speaks only for its own.
+  useEffect(() => {
+    if (ops.noteSeq === noteSeq.current) return
+    noteSeq.current = ops.noteSeq
+    const text = ops.note
+    if (text === null || !ops.noteIsMine) return
+    setAnnouncement((previous) => ({
+      seq: (previous?.seq ?? 0) + 1,
+      text,
+      urgency: WARNING.test(text) ? 'assertive' : 'polite',
+    }))
+  }, [ops.noteSeq, ops.note, ops.noteIsMine])
+
+  // A dialog closes onto the list it was asked from.
+  const refocus = () =>
+    requestAnimationFrame(() =>
+      windowRef.current?.querySelector<HTMLElement>('.shui-git-panel[data-state="active"] [data-git-focus]')?.focus(),
+    )
+
+  return (
+    <div ref={windowRef} className="shui-git-window" data-narrow={narrow || undefined}>
+      <Tabs
+        value={tab}
+        onValueChange={(value) => onTabChange(value === 'worktrees' ? 'worktrees' : 'log')}
+        className="shui-git-tabs-root"
+      >
+        <Toolbar
+          aria-label="Git"
+          className="shui-git-bar"
+          end={
+            <Tooltip label="Hide Git (Shift+Alt+G)">
+              <button type="button" className="shui-terminal-action" onClick={onHide} aria-label="Hide Git">
+                <Minus aria-hidden />
+              </button>
+            </Tooltip>
+          }
+        >
+          <span className="shui-git-title">Git</span>
+          <span className="shui-git-title-rule" aria-hidden />
+          <TabsList className="shui-git-tabs">
+            <TabsTrigger value="log" icon={false}>
+              Log
+            </TabsTrigger>
+            <TabsTrigger value="worktrees" icon={false}>
+              Worktrees
+            </TabsTrigger>
+          </TabsList>
+          {ops.note !== null ? (
+            <span className={`shui-git-note${WARNING.test(ops.note) ? ' warn' : ''}`} title={ops.note}>
+              {ops.note}
+            </span>
+          ) : null}
+        </Toolbar>
+        <TabsContent value="log" forceMount className="shui-git-panel">
+          <GitLogTab
+            host={host}
+            root={root}
+            ops={ops}
+            active={open && tab === 'log'}
+            paneKey={paneKey}
+            focusBranch={focusBranch}
+            narrow={narrow}
+            onOpenCommitFile={onOpenCommitFile}
+            onOpenCompareFile={onOpenCompareFile}
+            onOpenWorkingFile={onOpenWorkingFile}
+            onOpenRevision={onOpenRevision}
+          />
+        </TabsContent>
+        <TabsContent value="worktrees" forceMount className="shui-git-panel">
+          <GitWorktreesTab
+            root={root}
+            ops={ops}
+            narrow={narrow}
+            onShowInLog={(name) => {
+              setFocusBranch((previous) => ({ name, seq: (previous?.seq ?? 0) + 1 }))
+              onTabChange('log')
+            }}
+          />
+        </TabsContent>
+        <RemoveWorktreeDialog
+          removing={ops.removing}
+          target={target}
+          onConfirm={() => {
+            ops.confirmRemove()
+            refocus()
+          }}
+          onCancel={() => {
+            ops.cancelRemove()
+            refocus()
+          }}
+        />
+        <RemoveManyDialog
+          removing={ops.removingMany}
+          target={target}
+          onConfirm={() => {
+            ops.confirmRemoveMany()
+            refocus()
+          }}
+          onCancel={() => {
+            ops.cancelRemoveMany()
+            refocus()
+          }}
+        />
+        <DeleteBranchDialog
+          deleting={ops.deletingBranch}
+          target={target}
+          onConfirm={() => {
+            ops.confirmDeleteBranch()
+            refocus()
+          }}
+          onCancel={() => {
+            ops.cancelDeleteBranch()
+            refocus()
+          }}
+        />
+        <LiveRegion announcement={announcement} />
+      </Tabs>
+    </div>
+  )
+}
+
+/** Memoized: the page re-renders often, and this only when its props change. */
+export const GitToolWindow = memo(GitToolWindowView)

@@ -1,0 +1,7 @@
+# Fixture root manifest: worker-mini is scaffoldable, plain has no worker
+# block, broken names a missing compose container, absent has no folder.
+templates:
+  - worker-mini
+  - plain
+  - broken
+  - absent

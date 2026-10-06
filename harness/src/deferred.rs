@@ -35,6 +35,12 @@ pub async fn resolve(
     let _guard = deps.locks.guard(&req.session_id).await;
     let cfg = deps.cfg().await;
     let session = deps.session().await;
+    if crate::functions::delete_session_tree::guard_owner(deps, &req.session_id)
+        .await?
+        .is_some()
+    {
+        return settle_tombstoned(deps, &req).await;
+    }
 
     let Some(mut record) =
         crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
@@ -616,10 +622,13 @@ fn pending_call_expired(
     now.saturating_sub(pending_at) as u64 >= timeout
 }
 
-/// Resolve every pending call past its `pending_timeout_ms` with an error.
-pub async fn sweep_expired(deps: &Deps) -> Result<u64, HarnessError> {
+/// Resolve every pending call past its `pending_timeout_ms` with an error,
+/// from `records` (the sweep's full read, [`crate::inflight::read_all_turns`]).
+pub async fn sweep_expired(
+    deps: &Deps,
+    records: &[crate::types::turn::TurnRecord],
+) -> Result<u64, HarnessError> {
     let cfg = deps.cfg().await;
-    let records = crate::state::list_turns(&deps.iii, cfg.session_timeout_ms).await?;
     let now = AgentMessage::now_ms();
 
     // Collect expired (session, turn, call) tuples first; resolve re-reads.
@@ -666,6 +675,63 @@ fn not_resolved() -> FunctionResolveResponse {
         resolved: false,
         turn_resumed: false,
     }
+}
+
+/// A tombstoned session never resumes, but deletion treats an unresolved
+/// external pending call as unconfirmed: dropping its late result would leave
+/// a subtree that can neither run nor be deleted. Consume the result WITHOUT
+/// a transcript entry or a step, and once no unconfirmed external call is
+/// left, finalize the parked turn as cancelled and wake the deletion waiter.
+/// Every other tombstoned resolve stays a no-op. Caller holds the session lock.
+async fn settle_tombstoned(
+    deps: &Deps,
+    req: &FunctionResolveRequest,
+) -> Result<FunctionResolveResponse, HarnessError> {
+    if req
+        .action
+        .as_deref()
+        .is_some_and(|action| action != "deliver")
+    {
+        return Ok(not_resolved());
+    }
+    let cfg = deps.cfg().await;
+    let Some(mut record) =
+        crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
+    else {
+        return Ok(not_resolved());
+    };
+    if record.turn_id != req.turn_id || record.status.is_terminal() {
+        return Ok(not_resolved());
+    }
+    let Some(checkpoint) = record.calls.get_mut(&req.function_call_id) else {
+        return Ok(not_resolved());
+    };
+    if checkpoint.state != CallState::Pending
+        || checkpoint.held_by.is_some()
+        || checkpoint.child_session_id.is_some()
+    {
+        return Ok(not_resolved());
+    }
+    checkpoint.state = CallState::Done;
+    if crate::functions::stop::has_unconfirmed_external_pending(&record) {
+        record.updated_at = AgentMessage::now_ms();
+        crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+    } else {
+        // Boxed: finalizing may resolve a legacy parked parent, re-entering
+        // `resolve` through `resolve_parent`.
+        Box::pin(crate::turn_loop::finalize_cancelled(
+            deps,
+            &deps.session().await,
+            &mut record,
+            "cancelled by deletion",
+        ))
+        .await?;
+    }
+    deps.deletion_changed.notify_waiters();
+    Ok(FunctionResolveResponse {
+        resolved: true,
+        turn_resumed: false,
+    })
 }
 
 fn render_text(value: &Value) -> String {
@@ -736,7 +802,10 @@ mod tests {
                 .to_string()
             )]
         );
-        assert!(updates.is_empty());
+        // The marker only counts the repeat; its source stays.
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].1.source_function_call_id, "held-2");
+        assert_eq!(updates[0].1.repeats, 1);
         assert_eq!(
             first.content,
             crate::trigger::prepare_info_result(
@@ -759,12 +828,14 @@ mod tests {
             source_function_call_id: "held-call".into(),
             source_content_digest: "content".into(),
             eligible: true,
+            repeats: 0,
         };
         let unrelated_source = FunctionContractLedgerEntry {
             contract_digest: "other".into(),
             source_function_call_id: "other-call".into(),
             source_content_digest: "other-content".into(),
             eligible: true,
+            repeats: 0,
         };
         let mut ledger = std::collections::BTreeMap::from([
             ("worker::one".into(), reused_source.clone()),

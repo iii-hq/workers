@@ -2,6 +2,8 @@ import * as React from 'react'
 import { Button } from './Button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from './Dialog'
 
+// viewport: phone chrome — shared modal margins, stacked actions and touch targets.
+
 export interface ConfirmDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -45,7 +47,7 @@ export function ConfirmDialog({
     >
       <DialogContent
         role="alertdialog"
-        className="max-w-md"
+        className="w-[calc(100%-24px)] max-w-md"
         onOpenAutoFocus={(event) => {
           event.preventDefault()
           cancelRef.current?.focus()
@@ -70,12 +72,13 @@ export function ConfirmDialog({
             ))}
           </ul>
         ) : null}
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-5 flex flex-col-reverse justify-end gap-2 sm:flex-row">
           <Button
             ref={cancelRef}
             type="button"
             variant="pill"
             size="sm"
+            className="h-12 sm:h-8"
             onClick={() => settle(false)}
           >
             {cancelLabel}
@@ -86,8 +89,8 @@ export function ConfirmDialog({
             size="sm"
             className={
               tone === 'danger'
-                ? 'bg-alert text-white hover:bg-alert/90'
-                : undefined
+                ? 'h-12 bg-alert text-white hover:bg-alert/90 sm:h-8'
+                : 'h-12 sm:h-8'
             }
             onClick={() => settle(true)}
           >

@@ -782,6 +782,95 @@
   }
 }
 
+/* The wordmark's `assemble` appearance: the stems rise from the baseline,
+   then the dots land on them. Plays once; reduced motion shows the mark. */
+@keyframes wordmark-assemble-stem {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes wordmark-assemble-dot {
+  0% {
+    opacity: 0;
+    transform: translateY(-70%);
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@utility wordmark-assemble-stem {
+  transform-box: fill-box;
+  transform-origin: bottom;
+  animation: wordmark-assemble-stem 420ms var(--motion-ease-enter) both;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+@utility wordmark-assemble-dot {
+  transform-box: fill-box;
+  animation: wordmark-assemble-dot 360ms var(--motion-ease-enter) both;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+/* Setup wizard rows: arrive with a short rise, staggered by an inline
+   animation-delay; the success checks pop in after their row. */
+@keyframes onboarding-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes onboarding-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  70% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@utility onboarding-rise {
+  animation: onboarding-rise var(--motion-duration-panel)
+    var(--motion-ease-enter) both;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+@utility onboarding-pop {
+  animation: onboarding-pop 320ms var(--motion-ease-enter) both;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
 @utility thinking-shimmer {
   background-image: linear-gradient(
     90deg,

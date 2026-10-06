@@ -8,8 +8,9 @@
 //!   `/`, `/assets/*`, and `/ws`. Defaults to `3113`; after registration the
 //!   central `console.http_port` value is authoritative and hot-reloads.
 //! - `injectable_ui` — kill switch for runtime-injected worker UI
-//!   (`console:script` / `console:style` / `console:assets` trigger types,
-//!   the `/ui` + `/vendor` routes, and the SPA loader). Defaults to `true`.
+//!   (`console:script` / `console:style` / `console:module` /
+//!   `console:assets` trigger types, the `/ui` + `/vendor` routes, and the
+//!   SPA loader). Defaults to `true`.
 //! - `data_dir` — first-registration seed/fallback for the directory holding
 //!   ephemeral per-instance state (the workspace tabs/panes layout). Defaults
 //!   to `data/ade`, resolved against `III_COMPOSE_DIR` like every other

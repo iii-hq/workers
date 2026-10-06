@@ -1,11 +1,13 @@
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
+import { Button } from '@/components/ui/Button'
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { PageHeader } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
+import { StatusPanel } from '@/components/ui/StatusPanel'
 import {
   Tooltip,
   TooltipContent,
@@ -39,6 +41,7 @@ import {
 import type { ChatBackend } from '@/lib/backend'
 import { approvalBelongsToConversationTree } from '@/lib/backend/approval-events-live'
 import {
+  getTurnStatus,
   type HarnessImageBlock,
   predictedUserEntryId,
 } from '@/lib/backend/harness-send'
@@ -59,11 +62,17 @@ import type {
 import { requestComposerFocus } from '@/lib/composer-insert'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
+import { errText } from '@/lib/errors'
 import type { FileMentionRef } from '@/lib/file-mention-token'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { ChatFileNavigation, openChatFile } from '@/lib/file-navigation'
 import { createWorkspaceFileSearch } from '@/lib/file-search'
 import { formatStopReason } from '@/lib/format-stop-reason'
+import { getIiiClient } from '@/lib/iii-client'
+import {
+  onboardingWizardAvailable,
+  requestOnboardingWizard,
+} from '@/lib/onboarding/open'
 import { withScreenWakeLock } from '@/lib/screen-wake-lock'
 import { newMessageId } from '@/lib/session-id'
 import { isCallSettled } from '@/lib/sessions/entry-mapper'
@@ -84,6 +93,7 @@ import { turnAnchorMessageId, turnFirstEntryId } from '@/lib/turn-anchor'
 import { SEND_FAILED_CODE } from '@/lib/turn-failure'
 import {
   useExtComposerActions,
+  useExtComposerControls,
   useExtSessionChips,
   useExtSessionTurnSummaries,
 } from '@/lib/ui-slots'
@@ -127,7 +137,11 @@ import {
 import type { PageCommandsApi } from '@/types/injectable-ui'
 import { ActiveSubagentChips } from './ActiveSubagentChips'
 import { idleComposerPlaceholder } from './agent-defaults'
-import { Composer, type ComposerSubmitPayload } from './Composer'
+import {
+  Composer,
+  type ComposerSubmitPayload,
+  composerControlNodes,
+} from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
@@ -139,8 +153,10 @@ import {
   DEFAULT_SYSTEM_PROMPT_STATE,
   selectionForSend,
   skillSelectionForSend,
+  turnEstablishedFrom,
 } from './system-prompt-selection'
 import { deriveTurnVisualState } from './turn-visual-state'
+import { useModelSwitch } from './use-model-switch'
 
 /**
  * Order the header's injected chips deterministically. The registry appends
@@ -246,6 +262,20 @@ export function ChatView({
   onPatchMessage,
   onCompactConversation,
 }: ChatViewProps) {
+  const readOnly = conversation.sessionMetadata?.read_only === true
+  const imported =
+    typeof conversation.sessionMetadata?.external_source === 'string'
+  const [importedTurnEstablished, setImportedTurnEstablished] = useState<
+    boolean | null
+  >(backend.id === 'real' ? null : false)
+  const [importTurnError, setImportTurnError] = useState<string | null>(null)
+  const [importCheck, setImportCheck] = useState(0)
+  const checkingImportedTurn =
+    imported && !readOnly && importedTurnEstablished === null
+  const importNeedsSetup =
+    imported &&
+    importedTurnEstablished === false &&
+    (!conversation.model || !conversation.workingDir)
   const [isStreaming, setIsStreaming] = useState(false)
   // Pre-content phase of this tab's in-flight send, for the thinking
   // waiting indicator detail: submit → harness::send ack → turn-started.
@@ -258,8 +288,16 @@ export function ChatView({
     number | undefined
   >(undefined)
   const handleOpenModelPicker = useCallback(() => {
+    if (readOnly) return
     setModelPickerOpenRequest((current) => (current ?? 0) + 1)
-  }, [])
+  }, [readOnly])
+  /* With no model yet, setup does the whole job — find a signed-in CLI or a
+     key on this machine, add the worker, store the key — where the picker
+     can only list providers. The picker stays the fallback. */
+  const handleConfigureProvider = useCallback(() => {
+    if (onboardingWizardAvailable()) requestOnboardingWizard('models')
+    else handleOpenModelPicker()
+  }, [handleOpenModelPicker])
   /* An agent profile that pins the model locks the model-and-reasoning panel
      (ChatSettingsSheet passes `modelDisabled` to the panel that carries the
      effort control, not only to the model list). */
@@ -276,7 +314,9 @@ export function ChatView({
   const abortRef = useRef<AbortController | null>(null)
   const { functionEntries } = useFunctionsCatalog(backend.id)
   const conversationsCtx = useConversationsCtxOptional()
+  const connectionState = conversationsCtx?.connectionState
   const workingDirEnabled =
+    !readOnly &&
     backend.id === 'real' &&
     (conversationsCtx ? conversationsCtx.shellAvailable : false)
   const workingDirRef = useRef(conversation.workingDir ?? null)
@@ -304,7 +344,9 @@ export function ChatView({
       try {
         openChatFile(ref, workingDirRef.current)
       } catch (error) {
-        setFileOpenError(error instanceof Error ? error.message : 'Could not open this file.')
+        setFileOpenError(
+          error instanceof Error ? error.message : 'Could not open this file.',
+        )
       }
     },
     [workingDirEnabled],
@@ -326,10 +368,46 @@ export function ChatView({
     draft: conversation.draft,
     hydrated: conversation.hydrated,
   })
+  const executionBlocked =
+    readOnly || harnessBlocked || sessionHydrating || workingDirResolving
   const submitBlocked =
-    harnessBlocked || sessionHydrating || workingDirResolving
-  const submitBlockedRef = useRef(submitBlocked)
-  submitBlockedRef.current = submitBlocked
+    executionBlocked || checkingImportedTurn || importNeedsSetup
+  const submitBlockedRef = useRef(executionBlocked)
+  submitBlockedRef.current = executionBlocked
+  // biome-ignore lint/correctness/useExhaustiveDependencies: session status changes announce newly established turns; importCheck re-runs the check on Retry.
+  useEffect(() => {
+    if (
+      !imported ||
+      readOnly ||
+      backend.id !== 'real' ||
+      harnessBlocked ||
+      (connectionState !== undefined && connectionState !== 'connected')
+    )
+      return
+    let current = true
+    void getIiiClient()
+      .then((client) => getTurnStatus(client, conversation.id))
+      .then((status) => {
+        if (!current) return
+        setImportedTurnEstablished(Boolean(status?.turn_id))
+        setImportTurnError(null)
+      })
+      .catch((error) => {
+        if (current) setImportTurnError(errText(error))
+      })
+    return () => {
+      current = false
+    }
+  }, [
+    imported,
+    readOnly,
+    backend.id,
+    harnessBlocked,
+    conversation.id,
+    conversation.status,
+    connectionState,
+    importCheck,
+  ])
   // This view is keyed by conversation, so mounting IS opening a session:
   // the caret belongs in the composer, on the devices where that is free.
   const focusComposerOnOpen = useMediaQuery(DESKTOP_POINTER_QUERY)
@@ -674,6 +752,7 @@ export function ChatView({
       id: string,
       payload: { text: string; attachments: Attachment[] } | null,
     ) => {
+      if (submitBlockedRef.current) return
       const conversationId = conversation.id
       if (payload === null) {
         setQueuedDrafts((current) => current.filter((d) => d.id !== id))
@@ -818,6 +897,7 @@ export function ChatView({
   // against the catalog's composite ids so the picker preselects when it can.
   const effectiveModel = useMemo(() => {
     if (conversation.model) return conversation.model
+    if (imported) return null
     const last = [...conversation.messages]
       .reverse()
       .find(
@@ -829,7 +909,30 @@ export function ChatView({
       (o) => o.id === last.model || o.id.endsWith(`::${last.model}`),
     )
     return catalog?.id ?? last.model
-  }, [conversation.model, conversation.messages, modelOptions])
+  }, [conversation.model, conversation.messages, modelOptions, imported])
+
+  const modelSwitch = useModelSwitch({
+    backend,
+    sessionId: conversation.id,
+    currentModel: effectiveModel,
+    models: modelOptions,
+    draft: conversation.draft === true,
+    disabled: submitBlocked || streamingIndicator || modelLocked,
+    transcript: conversation.messages,
+    revision: conversation.updatedAt,
+    onSwitch: (model) => onUpdateModel(conversation.id, model),
+    onCompacted: (switchApplied) => {
+      announcer.announce(
+        switchApplied
+          ? 'Conversation compacted. Switching models.'
+          : 'Conversation compacted. The model switch was not applied.',
+      )
+    },
+  })
+  // Synchronous send guard covers the check, confirmation and compaction.
+  // `submit` re-checks an imported session itself, so the ref keeps the execution blocks
+  // only (see `executionBlocked`), plus a model switch in flight.
+  submitBlockedRef.current = executionBlocked || modelSwitch.pending
 
   const contextWindow = useMemo(() => {
     const match = modelOptions.find((o) => o.id === effectiveModel)
@@ -927,6 +1030,35 @@ export function ChatView({
       )
     })
   }, [extSessionTurnSummaries, conversation.id, streamingIndicator])
+
+  // Worker settings for this session, beside the model picker (or, placed in
+  // the project strip, after the folder). Writes go through the console's own
+  // metadata writer (never the worker's), so they cannot race the
+  // model/thinking writes and apply from the next turn on.
+  const extComposerControls = useExtComposerControls()
+  const setSessionMetadata = conversationsCtx?.setSessionMetadata
+  const composerControls = useMemo(() => {
+    if (extComposerControls.length === 0 || !setSessionMetadata) return null
+    const metadata = conversation.sessionMetadata ?? {}
+    const setMetadata = (patch: Record<string, unknown>) =>
+      setSessionMetadata(conversation.id, patch)
+    return composerControlNodes([...extComposerControls].sort(compareChips), {
+      sessionId: conversation.id,
+      isStreaming: streamingIndicator,
+      metadata,
+      setMetadata,
+      workingDir: conversationWorkingDir,
+      locked: streamingIndicator || harnessBlocked,
+    })
+  }, [
+    extComposerControls,
+    setSessionMetadata,
+    conversation.id,
+    conversation.sessionMetadata,
+    conversationWorkingDir,
+    streamingIndicator,
+    harnessBlocked,
+  ])
 
   const extComposerActions = useExtComposerActions()
   const composerActions = useMemo(() => {
@@ -1328,10 +1460,66 @@ export function ChatView({
     }
   }, [backend.id, conversation.id, getDraftAttachments, setDraftAttachments])
 
+  const importStatusPendingRef = useRef(false)
+  // The Composer clears itself as soon as it hands a payload over, but an imported session is
+  // only checked after that: a send it turns away goes back into the draft, and the Composer
+  // remounts to pick the text and chips up again.
+  const [composerGeneration, setComposerGeneration] = useState(0)
+  const restoreDraft = useCallback(
+    (payload: ComposerSubmitPayload) => {
+      if (!conversationsCtx) return
+      conversationsCtx.setDraftText(conversation.id, payload.text)
+      conversationsCtx.setDraftAttachments(conversation.id, payload.attachments)
+      setComposerGeneration((generation) => generation + 1)
+    },
+    [conversationsCtx, conversation.id],
+  )
   const submit = useCallback(
     async (payload: ComposerSubmitPayload) => {
       if (submitBlockedRef.current) return
       const conversationId = conversation.id
+      // Only the session's first send carries the prompt selection and the
+      // agent; the harness inherits them afterwards and refuses a repeated
+      // options.agent (see selectionForSend / agentIdForSend). Gate on a row
+      // a turn produced rather than a user row: if an earlier send failed
+      // before a turn ran, there is nothing to inherit yet and the retry
+      // must carry the prompt again. Function-trigger rows count as well as
+      // assistant text: a turn ran, and a first turn that ends on
+      // harness::ask produces only calls (see turnEstablishedFrom).
+      let turnEstablished = turnEstablishedFrom(messagesRef.current)
+      if (imported) {
+        const preparing = !isStreaming && !serverWorking
+        if (preparing && importStatusPendingRef.current) {
+          restoreDraft(payload)
+          return
+        }
+        if (preparing) {
+          importStatusPendingRef.current = true
+          setImportedTurnEstablished(null)
+        }
+        try {
+          turnEstablished = Boolean(
+            (await getTurnStatus(await getIiiClient(), conversationId))
+              ?.turn_id,
+          )
+          setImportedTurnEstablished(turnEstablished)
+          setImportTurnError(null)
+        } catch (error) {
+          setImportTurnError(errText(error))
+          restoreDraft(payload)
+          return
+        } finally {
+          if (preparing) importStatusPendingRef.current = false
+        }
+        if (
+          !turnEstablished &&
+          (!conversation.model || !conversation.workingDir)
+        ) {
+          restoreDraft(payload)
+          return
+        }
+      }
+
       // Steering a discovered/sub-agent session: inherit the model the
       // transcript shows when the conversation carries none of its own.
       const model = conversation.model ?? effectiveModel
@@ -1349,6 +1537,9 @@ export function ChatView({
         try {
           await ensureSession(conversationId, payload.text)
         } catch (err) {
+          // Nothing was sent: the text goes back into the composer (and into
+          // the new chat's saved draft) rather than being lost with the error.
+          restoreDraft(payload)
           onAppendMessage(
             conversationId,
             makeSystemNotice(
@@ -1395,14 +1586,6 @@ export function ChatView({
         (isStreaming || serverWorking) &&
         Boolean(backend.queueMessage)
 
-      // Only the session's first send carries the prompt selection; the
-      // harness inherits it afterwards (see selectionForSend). Gate on an
-      // assistant row rather than a user row: if an earlier send failed
-      // before a turn ran, there is nothing to inherit yet and the retry
-      // must carry the prompt again.
-      const turnEstablished = messagesRef.current.some(
-        (m) => m.role === 'assistant',
-      )
       // An agent selection resolves server-side (options.agent) and supplies
       // prompt + skills itself; suppressing the client-side selection also
       // covers pre-upgrade drafts whose persisted namedBody would otherwise
@@ -2028,6 +2211,8 @@ export function ChatView({
       }
     },
     [
+      imported,
+      restoreDraft,
       conversation.id,
       conversation.agentProfile,
       conversation.model,
@@ -2058,7 +2243,7 @@ export function ChatView({
   const handleSubmit = useMemo(() => withScreenWakeLock(submit), [submit])
 
   const handleStop = useCallback(() => {
-    if (stopRequestedRef.current) return
+    if (readOnly || stopRequestedRef.current) return
     stopRequestedRef.current = true
     stopSeenRef.current = true
     setStopping(true)
@@ -2070,7 +2255,7 @@ export function ChatView({
       stopRequestedRef.current = false
       setStopping(false)
     })
-  }, [backend, sessionId])
+  }, [backend, sessionId, readOnly])
 
   // Rescue a parked stream loop: the session hit a terminal error server-side
   // (status-changed arrives on the session-directory subscription) but the
@@ -2288,6 +2473,7 @@ export function ChatView({
   // directory the agent operates in is never silently swapped.
   const handleWorkingDirChange = useCallback(
     (next: string) => {
+      if (readOnly) return
       const id = conversation.id
       const prev = conversation.workingDir ?? null
       workingDirRef.current = next
@@ -2307,6 +2493,7 @@ export function ChatView({
       }
     },
     [
+      readOnly,
       conversation.id,
       conversation.workingDir,
       conversation.draft,
@@ -2437,6 +2624,7 @@ export function ChatView({
       {
         id: 'focus-composer',
         title: 'Focus the composer',
+        enabled: () => !readOnly,
         detail: 'Put the caret in the message box',
         keywords: ['type', 'write', 'input', 'message'],
         run: () => requestComposerFocus(),
@@ -2509,6 +2697,7 @@ export function ChatView({
       {
         id: 'model',
         title: 'Switch model',
+        enabled: () => !readOnly,
         detail: 'Open the model picker',
         keywords: ['provider', 'picker', 'llm'],
         run: handleOpenModelPicker,
@@ -2524,7 +2713,14 @@ export function ChatView({
         run: handleStop,
       },
     ])
-  }, [commands, handleOpenModelPicker, handleStop, working, streamingIndicator])
+  }, [
+    commands,
+    handleOpenModelPicker,
+    handleStop,
+    working,
+    streamingIndicator,
+    readOnly,
+  ])
 
   return (
     <section
@@ -2537,8 +2733,9 @@ export function ChatView({
         className={headerPad}
         onClose={onRequestClose}
         actions={
-          <div className="flex items-center gap-1.5 font-sans text-sm">
-            {/* Header read-outs share ONE surface. This system draws no
+          readOnly ? undefined : (
+            <div className="flex items-center gap-1.5 font-sans text-sm">
+              {/* Header read-outs share ONE surface. This system draws no
                 lines (index.css:44-52 — rule/rule-2 are transparent in both
                 themes), so a group is a fill, not a run of dividers. It also
                 keeps the related session metadata visually together.
@@ -2547,54 +2744,55 @@ export function ChatView({
                 system's narrow-container threshold): the context meter —
                 built-in or the harness chip — drops to its `used/usable`
                 counts, the sandbox chip is already `⬚ N`. */}
-            <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5">
-              {sessionChips}
-              {hasInjectedContextChip ? null : (
-                <ContextUsage
-                  messages={conversation.messages}
-                  contextWindow={contextWindow}
-                  reported={reportedContext}
-                />
-              )}
-            </div>
-            {/* Status sits OUTSIDE the group — it is state, not a control.
+              <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5">
+                {sessionChips}
+                {hasInjectedContextChip ? null : (
+                  <ContextUsage
+                    messages={conversation.messages}
+                    contextWindow={contextWindow}
+                    reported={reportedContext}
+                  />
+                )}
+              </div>
+              {/* Status sits OUTSIDE the group — it is state, not a control.
                 The dot alone carries it (green ready, pulsing accent
                 working, red error); the word lives in the tooltip and in an
                 sr-only role="status" span so transitions still announce.
                 `self-stretch px-1` turns a 6px dot into a full-height hover
                 target without letting an error widen the header. */}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                {/* viewport: phone chrome — hidden from the phone header, touch size */}
-                <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 @5xl:self-stretch @5xl:size-auto @5xl:px-1">
-                  <StatusDot
-                    tone={
-                      conversation.status === 'error'
-                        ? 'alert'
-                        : streamingIndicator
-                          ? 'accent'
-                          : 'ok'
-                    }
-                    pulse={streamingIndicator}
-                  />
-                  <span role="status" className="sr-only">
-                    {streamingIndicator
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  {/* viewport: phone chrome — hidden from the phone header, touch size */}
+                  <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 @5xl:self-stretch @5xl:size-auto @5xl:px-1">
+                    <StatusDot
+                      tone={
+                        conversation.status === 'error'
+                          ? 'alert'
+                          : streamingIndicator
+                            ? 'accent'
+                            : 'ok'
+                      }
+                      pulse={streamingIndicator}
+                    />
+                    <span role="status" className="sr-only">
+                      {streamingIndicator
+                        ? 'working'
+                        : conversation.status === 'error'
+                          ? 'error'
+                          : 'ready'}
+                    </span>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {conversation.status === 'error'
+                    ? `error${conversation.statusReason ? ` — ${conversation.statusReason}` : ''}`
+                    : streamingIndicator
                       ? 'working'
-                      : conversation.status === 'error'
-                        ? 'error'
-                        : 'ready'}
-                  </span>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent>
-                {conversation.status === 'error'
-                  ? `error${conversation.statusReason ? ` — ${conversation.statusReason}` : ''}`
-                  : streamingIndicator
-                    ? 'working'
-                    : 'ready'}
-              </TooltipContent>
-            </Tooltip>
-          </div>
+                      : 'ready'}
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          )
         }
       >
         <div className="flex min-w-0 flex-1 items-center gap-2 font-sans text-sm text-ink-faint">
@@ -2618,20 +2816,23 @@ export function ChatView({
           </span>
           <span className="shrink-0 text-ink-ghost">·</span>
           <span className="min-w-0 truncate">
-            {conversation.agentProfile?.name ?? effectiveModel}
+            {readOnly
+              ? 'Read-only'
+              : (conversation.agentProfile?.name ?? effectiveModel)}
           </span>
         </div>
       </PageHeader>
-
-      {approvalSettings.settings.mode === 'full' ? (
+      {!readOnly && approvalSettings.settings.mode === 'full' ? (
         <FullPermissionsBanner
           onDisable={() => void approvalSettings.setMode('manual')}
         />
       ) : null}
-
       <ChatFileNavigation
         messages={conversation.messages}
-        historyComplete={conversation.hydrated !== false && conversation.history?.hasMore !== true}
+        historyComplete={
+          conversation.hydrated !== false &&
+          conversation.history?.hasMore !== true
+        }
         workingDir={conversation.workingDir ?? null}
         enabled={workingDirEnabled}
       >
@@ -2662,7 +2863,7 @@ export function ChatView({
             onAlwaysAllow={handleAlwaysAllow}
             onResolveFilesystemAccess={handleFilesystemResolve}
             onManageFilesystemAccess={handleManageFilesystemAccess}
-            onConfigureProvider={handleOpenModelPicker}
+            onConfigureProvider={handleConfigureProvider}
             workingDir={conversation.workingDir ?? null}
             onWorkingDirChange={
               workingDirEnabled ? handleWorkingDirChange : undefined
@@ -2683,137 +2884,208 @@ export function ChatView({
         </RegisteredTriggerStatusProvider>
       </ChatFileNavigation>
       <LiveRegion announcement={announcer.announcement} />
-
-      <footer className={footerPad}>
-        {fileOpenError ? <p role="alert" className="mx-auto max-w-[760px] break-words text-[12px] text-alert">{fileOpenError}</p> : null}
-        <div className="mx-auto max-w-[760px]">
-          {conversationsCtx ? (
-            <ActiveSubagentChips
-              className="mb-1 px-1"
-              conversations={conversationsCtx.conversations}
-              rootSessionId={conversation.id}
-              connectionState={conversationsCtx.connectionState}
-              onOpen={conversationsCtx.openConversationInPanel}
-            />
-          ) : null}
-          <SessionTriggers
-            triggers={mergedTriggers}
-            onUnregister={handleUnregisterTrigger}
-            onClearAll={
-              backend.unregisterTrigger ? handleClearAllTriggers : undefined
-            }
-            checkStateKey={backend.stateKeyExists}
-          />
-          {queuedStrip.length > 0 ? (
-            <section
-              className="mb-1 rounded-md bg-surface"
-              aria-label="queued messages"
+      {modelSwitch.dialog}
+      {modelSwitch.error || modelSwitch.notice ? (
+        <StatusPanel
+          role={modelSwitch.error ? 'alert' : 'status'}
+          variant={modelSwitch.error ? 'alert' : 'info'}
+          headline={
+            modelSwitch.error
+              ? 'Model switch not completed'
+              : 'Switching models'
+          }
+          detail={modelSwitch.error ?? modelSwitch.notice}
+        />
+      ) : null}
+      {readOnly ? (
+        <footer className={footerPad}>
+          <div className="mx-auto max-w-[760px]">
+            <p className="text-sm text-ink-faint">
+              This conversation is read-only.
+            </p>
+          </div>
+        </footer>
+      ) : (
+        <footer className={footerPad}>
+          {fileOpenError ? (
+            <p
+              role="alert"
+              className="mx-auto max-w-[760px] break-words text-[12px] text-alert"
             >
-              {/* The message being edited is pulled out of the queue and lives
+              {fileOpenError}
+            </p>
+          ) : null}
+          <div className="mx-auto max-w-[760px]">
+            {conversationsCtx ? (
+              <ActiveSubagentChips
+                className="mb-1 px-1"
+                conversations={conversationsCtx.conversations}
+                rootSessionId={conversation.id}
+                connectionState={conversationsCtx.connectionState}
+                onOpen={conversationsCtx.openConversationInPanel}
+              />
+            ) : null}
+            <SessionTriggers
+              triggers={mergedTriggers}
+              onUnregister={handleUnregisterTrigger}
+              onClearAll={
+                backend.unregisterTrigger ? handleClearAllTriggers : undefined
+              }
+              checkStateKey={backend.stateKeyExists}
+            />
+            {queuedStrip.length > 0 ? (
+              <section
+                className="mb-1 rounded-md bg-surface"
+                aria-label="queued messages"
+              >
+                {/* The message being edited is pulled out of the queue and lives
                   only in the composer — hidden here until it's saved back (in
                   place, so it reappears at its spot) or removed. */}
-              {queuedStrip
-                .filter((row) => row.id !== browsedQueuedId)
-                .map((row) => (
-                  <div
-                    key={row.id}
-                    className="flex items-center gap-2 border-b border-rule-2 px-3 py-2.5 text-base last:border-b-0 sm:py-1.5 sm:text-[12px]"
-                  >
-                    <span className="min-w-0 flex-1 truncate">{row.text}</span>
-                    <span className="shrink-0 text-ink-ghost">
-                      {drainingQueue ? 'Triggering…' : 'Queued'}
-                    </span>
-                  </div>
-                ))}
-              {/* No edit hint while draining — the rows are being delivered,
+                {queuedStrip
+                  .filter((row) => row.id !== browsedQueuedId)
+                  .map((row) => (
+                    <div
+                      key={row.id}
+                      className="flex items-center gap-2 border-b border-rule-2 px-3 py-2.5 text-base last:border-b-0 sm:py-1.5 sm:text-[12px]"
+                    >
+                      <span className="min-w-0 flex-1 truncate">
+                        {row.text}
+                      </span>
+                      <span className="shrink-0 text-ink-ghost">
+                        {drainingQueue ? 'Triggering…' : 'Queued'}
+                      </span>
+                    </div>
+                  ))}
+                {/* No edit hint while draining — the rows are being delivered,
                   so inviting an edit would be a race the user loses. */}
-              {backend.editQueued &&
-              queuedDrafts.length > 0 &&
-              !drainingQueue ? (
-                <div className="px-3 py-0.5 text-right text-[11px] text-ink-ghost max-sm:hidden">
-                  {browsedQueuedId
-                    ? '↑ / ↓ cycle · Enter saves in place · Empty + Enter removes'
-                    : 'Press ↑ in the composer to edit queued messages'}
-                </div>
-              ) : null}
-            </section>
-          ) : null}
-          {sessionTurnSummaries ? (
-            <div
-              className="flex flex-wrap items-center justify-end gap-1.5 px-1"
-              data-chat-turn-summary-slot
-            >
-              {sessionTurnSummaries}
-            </div>
-          ) : null}
-          <Composer
-            model={effectiveModel}
-            modelOptions={modelOptions}
-            catalogLoading={catalogLoading}
-            modelPickerOpenRequest={modelPickerOpenRequest}
-            modelLocked={modelLocked}
-            functionEntries={functionEntries}
-            searchFiles={searchFiles}
-            onOpenFileMention={
-              workingDirEnabled ? handleOpenFileMention : undefined
-            }
-            permissionMode={approvalSettings.settings.mode}
-            permissionModeLoading={!approvalSettings.loaded}
-            showPermissionMode={approvalEnabled}
-            thinkingLevel={thinkingLevel}
-            onThinkingLevelChange={handleThinkingLevelChange}
-            onModelChange={(next) => onUpdateModel(conversation.id, next)}
-            showWorkingDir={workingDirEnabled}
-            workingDir={conversation.workingDir ?? null}
-            showMemoryBank={
-              backend.id === 'real' &&
-              (conversationsCtx?.memoryAvailable ?? false)
-            }
-            memoryBank={conversation.memoryBank ?? null}
-            onMemoryBankChange={(next) =>
-              conversationsCtx?.setMemoryBank(conversation.id, next)
-            }
-            workingDirLocked={false}
-            defaultWorkingDir={defaultWorkingDir}
-            onWorkingDirChange={handleWorkingDirChange}
-            worktreePicker={
-              worktreeEnabled
-                ? { enabled: true, onPick: handlePickWorktree }
-                : undefined
-            }
-            onPermissionModeChange={(next) =>
-              void approvalSettings.setMode(next)
-            }
-            initialText={composerInitialText}
-            onTextChange={handleComposerTextChange}
-            initialAttachments={composerInitialAttachments}
-            onAttachmentsChange={handleComposerAttachmentsChange}
-            syncedAttachments={conversation.draftAttachments}
-            composerActions={composerActions}
-            onSubmit={handleSubmit}
-            onStop={handleStop}
-            stopping={stopping}
-            queuedForEdit={backend.editQueued ? queuedForEdit : undefined}
-            onEditQueued={backend.editQueued ? handleEditQueued : undefined}
-            onBrowseChange={setBrowsedQueuedId}
-            isStreaming={streamingIndicator}
-            queueWhileStreaming={!!backend.queueMessage}
-            blocked={harnessBlocked}
-            submitBlocked={submitBlocked}
-            autoFocus={focusComposerOnOpen && !harnessBlocked}
-            idlePlaceholder={idleComposerPlaceholder(
-              conversation.agentProfile,
-              conversation.messages.length > 0,
+                {backend.editQueued &&
+                queuedDrafts.length > 0 &&
+                !drainingQueue ? (
+                  <div className="px-3 py-0.5 text-right text-[11px] text-ink-ghost max-sm:hidden">
+                    {browsedQueuedId
+                      ? '↑ / ↓ cycle · Enter saves in place · Empty + Enter removes'
+                      : 'Press ↑ in the composer to edit queued messages'}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
+            {sessionTurnSummaries ? (
+              <div
+                className="flex flex-wrap items-center justify-end gap-1.5 px-1"
+                data-chat-turn-summary-slot
+              >
+                {sessionTurnSummaries}
+              </div>
+            ) : null}
+            {checkingImportedTurn && !importTurnError && (
+              <p role="status" className="mb-2 px-1 text-sm text-ink-faint">
+                Checking conversation state…
+              </p>
             )}
-            blockedPlaceholder={
-              conversationsCtx
-                ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)
-                : undefined
-            }
-          />
-        </div>
-      </footer>
-
+            {importTurnError && (
+              <StatusPanel
+                role="alert"
+                variant="alert"
+                className="mb-2"
+                icon={<TriangleAlert className="h-full w-full" />}
+                headline="Could not check conversation state"
+                detail={importTurnError}
+                action={
+                  <Button
+                    variant="pill"
+                    size="sm"
+                    onClick={() => {
+                      setImportTurnError(null)
+                      setImportedTurnEstablished(null)
+                      setImportCheck((attempt) => attempt + 1)
+                    }}
+                  >
+                    Retry
+                  </Button>
+                }
+              />
+            )}
+            {importNeedsSetup && (
+              <p role="status" className="mb-2 px-1 text-sm text-ink-faint">
+                Choose an ADE model and working directory to continue this
+                conversation.
+                {!workingDirEnabled &&
+                  ' The working-directory picker requires the shell worker.'}
+              </p>
+            )}
+            <Composer
+              key={composerGeneration}
+              model={effectiveModel}
+              modelOptions={modelOptions}
+              catalogLoading={catalogLoading}
+              modelPickerOpenRequest={modelPickerOpenRequest}
+              modelLocked={
+                modelLocked || modelSwitch.pending || sessionHydrating
+              }
+              functionEntries={functionEntries}
+              searchFiles={searchFiles}
+              onOpenFileMention={
+                workingDirEnabled ? handleOpenFileMention : undefined
+              }
+              permissionMode={approvalSettings.settings.mode}
+              permissionModeLoading={!approvalSettings.loaded}
+              showPermissionMode={approvalEnabled}
+              thinkingLevel={thinkingLevel}
+              onThinkingLevelChange={handleThinkingLevelChange}
+              onModelChange={modelSwitch.request}
+              showWorkingDir={workingDirEnabled}
+              workingDir={conversation.workingDir ?? null}
+              showMemoryBank={
+                backend.id === 'real' &&
+                (conversationsCtx?.memoryAvailable ?? false)
+              }
+              memoryBank={conversation.memoryBank ?? null}
+              onMemoryBankChange={(next) =>
+                conversationsCtx?.setMemoryBank(conversation.id, next)
+              }
+              workingDirLocked={false}
+              defaultWorkingDir={defaultWorkingDir}
+              onWorkingDirChange={handleWorkingDirChange}
+              worktreePicker={
+                worktreeEnabled
+                  ? { enabled: true, onPick: handlePickWorktree }
+                  : undefined
+              }
+              onPermissionModeChange={(next) =>
+                void approvalSettings.setMode(next)
+              }
+              initialText={composerInitialText}
+              onTextChange={handleComposerTextChange}
+              initialAttachments={composerInitialAttachments}
+              onAttachmentsChange={handleComposerAttachmentsChange}
+              syncedAttachments={conversation.draftAttachments}
+              composerActions={composerActions}
+              composerControls={composerControls?.footer}
+              projectControls={composerControls?.project}
+              onSubmit={handleSubmit}
+              onStop={handleStop}
+              stopping={stopping}
+              queuedForEdit={backend.editQueued ? queuedForEdit : undefined}
+              onEditQueued={backend.editQueued ? handleEditQueued : undefined}
+              onBrowseChange={setBrowsedQueuedId}
+              isStreaming={streamingIndicator}
+              queueWhileStreaming={!!backend.queueMessage}
+              blocked={harnessBlocked}
+              submitBlocked={submitBlocked || modelSwitch.pending}
+              autoFocus={focusComposerOnOpen && !harnessBlocked}
+              idlePlaceholder={idleComposerPlaceholder(
+                conversation.agentProfile,
+                conversation.messages.length > 0,
+              )}
+              blockedPlaceholder={
+                conversationsCtx
+                  ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)
+                  : undefined
+              }
+            />
+          </div>
+        </footer>
+      )}
       {workingDirEnabled ? (
         <FilesystemAccessDialog
           open={filesystemDialogOpen}

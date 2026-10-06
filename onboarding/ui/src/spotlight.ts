@@ -102,10 +102,11 @@ function isShowing(element: Element): boolean {
  * `timeoutMs`. Reports whether the element actually landed.
  *
  * This is what tells `the engine stored the layout` apart from `the panel is
- * on screen`. `console::workspace::open` returns in a few milliseconds, but
- * the console re-reads that layout on a five-second poll, so a panel another
- * worker opens can take up to five seconds to mount. Watching for the element
- * is the only signal that covers the whole trip.
+ * on screen`. `console::workspace::open` returns once the layout is stored;
+ * the console re-reads it when `console::workspace::changed` rings (or, on an
+ * older console without that trigger, on its five-second poll), so the panel
+ * mounts a round trip or more after the call returns. Watching for the
+ * element is the only signal that covers the whole trip.
  *
  * ponytail: one `querySelector` per animation frame — the budget the
  * spotlight already spends — rather than a MutationObserver over the

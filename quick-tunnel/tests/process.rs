@@ -181,10 +181,23 @@ async fn missing_executable_is_observable_but_does_not_prevent_registration() {
     let (_dir, mut config) = fixture("ready");
     config.cloudflared = "/nonexistent/quick-tunnel-cloudflared".into();
     let manager = Manager::open(config).unwrap();
-    assert_eq!(snapshot(&manager).await.snapshot.status, Status::Stopped);
+    let before = snapshot(&manager).await;
+    assert_eq!(before.snapshot.status, Status::Stopped);
+    // Reported before any tunnel is requested, with the install pointer.
+    let cloudflared = before.prerequisites.unwrap().cloudflared;
+    assert!(!cloudflared.found);
+    assert_eq!(
+        cloudflared.install_url,
+        quick_tunnel::prerequisites::INSTALL_URL
+    );
     let reply = manager.acquire(request("github", 5000)).await.unwrap();
     assert_eq!(reply.snapshot.status, Status::Failed);
-    assert!(reply.snapshot.error.unwrap().contains("prerequisite"));
+    let error = reply.snapshot.error.unwrap();
+    assert!(error.contains("cloudflared not found"), "{error}");
+    assert!(
+        error.contains(quick_tunnel::prerequisites::INSTALL_URL),
+        "{error}"
+    );
     manager.shutdown().await;
 }
 
@@ -254,6 +267,26 @@ async fn corrupt_persistence_fails_closed_and_expired_leases_do_not_restart() {
     let manager = Manager::open(config).unwrap();
     assert!(snapshot(&manager).await.leases.is_empty());
     assert!(pids(dir.path()).is_empty());
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn state_lock_waits_out_brief_contention_but_refuses_a_real_second_instance() {
+    use fs2::FileExt;
+    let (_dir, config) = fixture("ready");
+    let lock_path = config.state_path.with_extension("lock");
+    std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+    // Held briefly (like a child between fork and exec): open still succeeds.
+    let holder = std::fs::File::create(&lock_path).unwrap();
+    holder.lock_exclusive().unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        drop(holder);
+    });
+    let manager = Manager::open(config.clone()).unwrap();
+    release.join().unwrap();
+    // A live instance keeps it: a second open fails after the bounded retry.
+    assert!(Manager::open(config).is_err());
     manager.shutdown().await;
 }
 

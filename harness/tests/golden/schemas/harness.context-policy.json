@@ -1,0 +1,30 @@
+{
+  "function_id": "harness::context-policy",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "model": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "model"
+    ],
+    "title": "ContextPolicyRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "allow_prune": {
+        "description": "Whether aged function results may be pruned for this model.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "allow_prune"
+    ],
+    "title": "ContextPolicyResponse",
+    "type": "object"
+  }
+}

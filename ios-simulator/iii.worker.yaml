@@ -1,0 +1,14 @@
+iii: v1
+name: ios-simulator
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: ios-simulator
+tags: [ios, simulator, xcode, mobile, iphone, screenshot, recording, automation]
+description: iOS Simulators on the iii bus - create, boot and watch simulators live, drive them with multi-touch (tap, swipe, pinch), hardware buttons and typing, and save screenshots and recordings. One Mac serves many tenants, each with its own isolated device set and media.
+dependencies:
+  configuration: "latest"
+# Registry interface capture boots an x86_64 Linux build; this worker drives
+# Xcode's simulators and ships for macOS only, so there is nothing to capture.
+registry_interface: false

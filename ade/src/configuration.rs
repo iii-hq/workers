@@ -142,9 +142,26 @@ fn schema() -> Value {
                 },
                 "additionalProperties": true
             },
+            "onboarding": {
+                "type": "object",
+                "description": "The first-run setup wizard.",
+                "properties": {
+                    "auto_open": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Open the setup wizard by itself on a machine where it was never finished nor dismissed and no model is connected yet. Set false for a deployed ADE: a fresh data_dir reads as a first run. The command palette still opens it. III_CONSOLE_ONBOARDING_AUTO_OPEN=false in the worker's environment does the same for one environment."
+                    },
+                    "worker_sources": {
+                        "type": "object",
+                        "description": "Development: where the wizard adds a worker from, by registry name — a local directory, or a whole compose container object.",
+                        "additionalProperties": true
+                    }
+                },
+                "additionalProperties": true
+            },
             "injectableUi": {
                 "type": "object",
-                "description": "Injectable worker UI controls (console:script / console:style assets).",
+                "description": "Injectable worker UI controls (console:script / console:style / console:module assets).",
                 "properties": {
                     "disabledWorkers": {
                         "type": "array",
@@ -640,6 +657,14 @@ mod tests {
         let section = &s["properties"]["injectableUi"]["properties"]["disabledWorkers"];
         assert_eq!(section["type"], "array");
         assert_eq!(section["items"]["type"], "string");
+    }
+
+    #[test]
+    fn schema_exposes_the_onboarding_switch() {
+        let section = &schema()["properties"]["onboarding"]["properties"];
+        assert_eq!(section["auto_open"]["type"], "boolean");
+        assert_eq!(section["auto_open"]["default"], true);
+        assert_eq!(section["worker_sources"]["type"], "object");
     }
 
     #[test]

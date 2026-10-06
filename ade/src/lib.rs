@@ -2,10 +2,13 @@
 //! sibling crates that want to embed parts of the worker.
 
 pub mod assets;
+pub mod compose;
 pub mod config;
 pub mod configuration;
+pub mod conversations;
 pub mod functions;
 pub mod manifest;
+pub mod onboarding;
 pub mod probe;
 pub mod proxy;
 pub mod server;

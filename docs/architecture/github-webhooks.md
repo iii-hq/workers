@@ -23,6 +23,38 @@ only accepts explicitly configured loopback origins. Merely starting
 or collecting the interfaces of these workers must not open a tunnel or create
 repository hooks. Existing one-shot GitHub functions remain available.
 
+## Guided setup and readiness
+
+`quick-tunnel` is an optional, on-demand prerequisite of GitHub webhook
+monitoring, not a fixed dependency of the `github` worker. The Console asks for
+operator confirmation before installing it. The `cloudflared` executable is
+owned by the operator: setup checks whether it is available and links to
+Cloudflare's official installation instructions, but never downloads it.
+
+`github::setup::webhooks-status` is the shared checklist for the Console's
+**GitHub → Webhooks** page and for agents. It reports `quick_tunnel`,
+`cloudflared`, and `http_listener` as `ok`, `missing`, `blocked`, or `unknown`,
+with a remediation when one is known. A transient failure, an older worker, or
+an unavailable Compose status is `unknown`, never proof that a dependency is
+absent. `github::pr::watch` therefore rejects only definite `missing` and
+`blocked` checks. Enabling webhooks is stricter: every prerequisite must be
+verified as `ok`.
+
+Listener readiness is based on resolved configuration and the listener the
+`http` process actually bound, not merely on a saved configuration value. The
+internal `http::webhook-listener::status` returns the applied host and actual
+port plus the last reload error, allowing bind failures and stale listeners to
+remain visible. `github::setup::enable-http-listener` preserves an existing
+operator-configured listener unless a port is explicitly supplied, refuses the
+ephemeral port `0`, writes the configuration while preserving raw placeholders,
+and waits briefly for `http` to apply it.
+
+After every check is `ok`, `github::setup::enable-webhooks` can change
+`webhooks.enabled`. Webhook storage opens only at worker startup, so the
+returned `restart_required` flag remains set until the `github` worker is
+restarted with the requested setting active. Disabling follows the same
+restart model.
+
 ## Subscription lifecycle
 
 A consumer chooses a unique watch ID, binds `github::pr::event` for that ID, and

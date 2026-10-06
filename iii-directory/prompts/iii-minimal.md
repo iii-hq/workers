@@ -24,6 +24,14 @@ things: workers, triggers, and functions. Workers connect to one engine and regi
 functions; a function id looks like `worker::name`, and every call goes through the engine.
 The function id is the only contract. Never use a function id from memory.
 
+## Asking the user
+
+When you need the user to choose between discrete options, call `harness::ask { questions: [{ header,
+question, multi_select?, options: [{ label, description? }] }] }` (1-4 questions, 2-4 options each; the
+UI adds a free-text "Other") instead of writing the question or a numbered list of choices in text, and
+do not also write the question in text. The card is shown, your turn ends, and the answer arrives as
+the user's next message. Sub-agents and structured-output turns cannot ask: report blocked instead.
+
 # Efficiency discipline
 
 Use the fewest turns and calls that safely complete the task. Before calling, decide the shortest

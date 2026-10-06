@@ -625,3 +625,377 @@ async fn rewatching_the_same_spec_resumes_a_stopped_watch() {
     );
     s.iii.shutdown_async().await;
 }
+
+fn not_found(function: &str) -> Failure {
+    Failure::Engine(iii_sdk::Error::Remote {
+        code: "function_not_found".into(),
+        message: format!("Function {function} not found in namespace default."),
+        stacktrace: None,
+    })
+}
+fn listener_on() -> Value {
+    json!({"value": {"port": 3111, "webhook_listener": {"host": "127.0.0.1", "port": 3112}}})
+}
+/// Queue the three reads of a fully ready setup-status.
+fn reply_ready(bus: &MockBus) {
+    bus.reply("quick-tunnel::status", Ok(ready_tunnel()));
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply("configuration::get", Ok(listener_on()));
+    bus.reply(
+        "http::webhook-listener::status",
+        Ok(applied("127.0.0.1", 3112)),
+    );
+}
+fn applied(host: &str, port: u16) -> Value {
+    json!({"applied": {"host": host, "port": port}, "last_reload_error": null})
+}
+fn ready_tunnel() -> Value {
+    json!({"status": "stopped", "leases": [], "prerequisites": {"cloudflared": {"found": true, "path": "/usr/local/bin/cloudflared", "version": "cloudflared version 2026.9.1"}}})
+}
+
+#[tokio::test]
+async fn enabling_the_http_listener_writes_it_and_keeps_other_http_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply(
+        "configuration::get",
+        Ok(json!({"id": "default-http", "value": {"port": 3111, "webhook_listener": null}})),
+    );
+    bus.reply("configuration::set", Ok(json!({})));
+    bus.reply(
+        "http::webhook-listener::status",
+        Ok(applied("127.0.0.1", 3112)),
+    );
+    bus.reply("quick-tunnel::status", Ok(ready_tunnel()));
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply(
+        "configuration::get",
+        Ok(json!({"value": {"port": 3111, "webhook_listener": {"host": "127.0.0.1", "port": 3112}}})),
+    );
+    bus.reply(
+        "http::webhook-listener::status",
+        Ok(applied("127.0.0.1", 3112)),
+    );
+    let status = s
+        .enable_http_listener(setup::EnableListenerRequest::default())
+        .await
+        .unwrap();
+    assert!(status.ready, "{status:?}");
+    let set = bus
+        .calls()
+        .into_iter()
+        .find(|c| c.function == "configuration::set")
+        .unwrap();
+    assert_eq!(set.payload["id"], "default-http");
+    assert_eq!(set.payload["value"]["port"], 3111);
+    assert_eq!(
+        set.payload["value"]["webhook_listener"],
+        json!({"host": "127.0.0.1", "port": 3112})
+    );
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn enabling_webhooks_without_prerequisites_is_refused_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    bus.reply(
+        "quick-tunnel::status",
+        Err(not_found("quick-tunnel::status")),
+    );
+    bus.reply(
+        "compose::status",
+        Ok(json!({"containers": [{"container": "http"}]})),
+    );
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply(
+        "configuration::get",
+        Ok(json!({"value": {"webhook_listener": null}})),
+    );
+    let error = s
+        .enable_webhooks(setup::EnableWebhooksRequest { enabled: true })
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("quick-tunnel worker"), "{error}");
+    assert!(error.contains("http webhook listener"), "{error}");
+    assert!(bus
+        .calls()
+        .iter()
+        .all(|c| c.function != "configuration::set"));
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn watch_gate_refuses_a_missing_quick_tunnel_with_the_fix() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    bus.reply(
+        "quick-tunnel::status",
+        Err(not_found("quick-tunnel::status")),
+    );
+    bus.reply("compose::status", Ok(json!({"containers": []})));
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply("configuration::get", Ok(listener_on()));
+    bus.reply(
+        "http::webhook-listener::status",
+        Ok(applied("127.0.0.1", 3112)),
+    );
+    let error = s.require_setup().await.unwrap_err().to_string();
+    assert!(error.contains("quick-tunnel worker"), "{error}");
+    assert!(error.contains("github::setup::webhooks-status"), "{error}");
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn watch_gate_passes_while_quick_tunnel_restarts_or_http_is_old() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    // Declared in compose but its functions are briefly gone: restarting.
+    bus.reply(
+        "quick-tunnel::status",
+        Err(not_found("quick-tunnel::status")),
+    );
+    bus.reply(
+        "compose::status",
+        Ok(json!({"containers": [{"container": "quick-tunnel", "state": "starting"}]})),
+    );
+    // An http older than the webhook listener cannot be verified. Compose
+    // confirms it is declared, so the checklist offers Update rather than Install.
+    bus.reply(
+        "http::configuration-id",
+        Err(not_found("http::configuration-id")),
+    );
+    bus.reply(
+        "compose::status",
+        Ok(json!({"containers": [{"container": "http", "state": "running"}]})),
+    );
+    s.require_setup().await.unwrap();
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn missing_http_is_classified_from_compose_and_offers_install() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    bus.reply("quick-tunnel::status", Ok(ready_tunnel()));
+    bus.reply(
+        "http::configuration-id",
+        Err(not_found("http::configuration-id")),
+    );
+    bus.reply("compose::status", Ok(json!({"containers": []})));
+
+    let status = s.setup_status(setup::SetupStatusRequest {}).await.unwrap();
+    let http = status
+        .checks
+        .iter()
+        .find(|check| check.id == "http_listener")
+        .unwrap();
+    assert_eq!(http.state, setup::CheckState::Missing);
+    assert!(matches!(
+        &http.fix,
+        Some(setup::SetupFix::InstallWorker { worker, .. }) if worker == "http"
+    ));
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn enabling_webhooks_keeps_placeholders_and_other_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    reply_ready(bus);
+    bus.reply(
+        "configuration::get",
+        Ok(json!({"value": {"token": "${GH_TOKEN}", "max_output_bytes": 7, "webhooks": {"enabled": false, "queue": "custom"}}})),
+    );
+    bus.reply("configuration::set", Ok(json!({})));
+    reply_ready(bus);
+    let status = s
+        .enable_webhooks(setup::EnableWebhooksRequest { enabled: true })
+        .await
+        .unwrap();
+    assert!(status.enabled);
+    // The test service already has storage open (active), so no restart is due.
+    assert!(!status.restart_required);
+    let set = bus
+        .calls()
+        .into_iter()
+        .find(|c| c.function == "configuration::set")
+        .unwrap();
+    let value = &set.payload["value"];
+    assert_eq!(
+        value["token"], "${GH_TOKEN}",
+        "env placeholder written back raw"
+    );
+    assert_eq!(value["max_output_bytes"], 7);
+    assert_eq!(value["webhooks"]["queue"], "custom");
+    assert_eq!(value["webhooks"]["enabled"], true);
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn disabling_while_active_requires_a_restart_without_prechecks() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    // Disabling never checks prerequisites first.
+    bus.reply(
+        "configuration::get",
+        Ok(json!({"value": {"webhooks": {"enabled": true}}})),
+    );
+    bus.reply("configuration::set", Ok(json!({})));
+    reply_ready(bus);
+    let status = s
+        .enable_webhooks(setup::EnableWebhooksRequest { enabled: false })
+        .await
+        .unwrap();
+    assert!(!status.enabled);
+    assert!(status.active);
+    assert!(status.restart_required, "storage stays open until restart");
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn turning_on_the_listener_keeps_an_existing_one_unless_a_port_is_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    let custom = json!({"value": {"webhook_listener": {"host": "10.0.0.5", "port": 4000}}});
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply("configuration::get", Ok(custom.clone()));
+    reply_ready(bus);
+    s.enable_http_listener(setup::EnableListenerRequest::default())
+        .await
+        .unwrap();
+    assert!(bus
+        .calls()
+        .iter()
+        .all(|c| c.function != "configuration::set"));
+    // An explicit port changes only the port and keeps the host.
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply("configuration::get", Ok(custom));
+    bus.reply("configuration::set", Ok(json!({})));
+    bus.reply(
+        "http::webhook-listener::status",
+        Ok(applied("10.0.0.5", 3113)),
+    );
+    reply_ready(bus);
+    s.enable_http_listener(setup::EnableListenerRequest { port: Some(3113) })
+        .await
+        .unwrap();
+    let set = bus
+        .calls()
+        .into_iter()
+        .find(|c| c.function == "configuration::set")
+        .unwrap();
+    assert_eq!(
+        set.payload["value"]["webhook_listener"],
+        json!({"host": "10.0.0.5", "port": 3113})
+    );
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn watch_gate_passes_when_compose_cannot_be_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    bus.reply(
+        "quick-tunnel::status",
+        Err(not_found("quick-tunnel::status")),
+    );
+    // An unreachable compose is never proof that quick-tunnel is absent.
+    bus.reply("compose::status", Err(not_found("compose::status")));
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply("configuration::get", Ok(listener_on()));
+    bus.reply(
+        "http::webhook-listener::status",
+        Ok(applied("127.0.0.1", 3112)),
+    );
+    s.require_setup().await.unwrap();
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn readiness_compares_resolved_config_while_writes_keep_raw_placeholders() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    reply_ready(bus);
+    s.require_setup().await.unwrap();
+    let gets: Vec<_> = bus
+        .calls()
+        .into_iter()
+        .filter(|c| c.function == "configuration::get")
+        .collect();
+    assert_eq!(gets.len(), 1);
+    assert_eq!(
+        gets[0].payload["raw"], false,
+        "readiness uses resolved values"
+    );
+    assert_eq!(
+        gets[0].namespace.as_deref(),
+        Some("default"),
+        "configuration is shared in the default namespace"
+    );
+    // Writing the listener reads raw so env placeholders survive.
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply(
+        "configuration::get",
+        Ok(json!({"value": {"port": "${HTTP_PORT}", "webhook_listener": null}})),
+    );
+    bus.reply("configuration::set", Ok(json!({})));
+    bus.reply(
+        "http::webhook-listener::status",
+        Ok(applied("127.0.0.1", 3112)),
+    );
+    reply_ready(bus);
+    s.enable_http_listener(setup::EnableListenerRequest::default())
+        .await
+        .unwrap();
+    let calls = bus.calls();
+    let raw_get = calls
+        .iter()
+        .filter(|c| c.function == "configuration::get")
+        .nth(1)
+        .unwrap();
+    assert_eq!(raw_get.payload["raw"], true);
+    assert_eq!(raw_get.namespace.as_deref(), Some("default"));
+    let set = calls
+        .iter()
+        .find(|c| c.function == "configuration::set")
+        .unwrap();
+    assert_eq!(set.payload["value"]["port"], "${HTTP_PORT}");
+    assert_eq!(set.namespace.as_deref(), Some("default"));
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn an_explicit_port_zero_is_refused_before_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply(
+        "configuration::get",
+        Ok(json!({"value": {"port": 3111, "webhook_listener": null}})),
+    );
+    let error = s
+        .enable_http_listener(setup::EnableListenerRequest { port: Some(0) })
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("must be fixed"), "{error}");
+    assert!(bus
+        .calls()
+        .iter()
+        .all(|c| c.function != "configuration::set"));
+    s.iii.shutdown_async().await;
+}

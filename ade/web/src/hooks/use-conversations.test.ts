@@ -28,7 +28,6 @@ import {
   emptyConversation,
   type HydrationRun,
   type HydrationUpsert,
-  isUntouchedDraft,
   markBackgroundedStale,
   markDurableStarted,
   markUnwatchedStale,
@@ -46,6 +45,7 @@ import {
   shouldAcceptReconnectDirectoryRow,
   shouldQueueCompletionBell,
   shouldReplayQueuedCompletion,
+  unsentDraft,
 } from './use-conversations'
 
 function conversation(overrides: Partial<Conversation>): Conversation {
@@ -93,7 +93,6 @@ describe('prefilled chat draft', () => {
       draft: true,
       messages: [],
     })
-    expect(isUntouchedDraft(next)).toBe(false)
   })
 })
 
@@ -2076,39 +2075,33 @@ describe('resolveActiveConversationId', () => {
   })
 })
 
-describe('isUntouchedDraft', () => {
-  it('recognises the chat nobody has written in yet', () => {
-    expect(isUntouchedDraft(conversation({ draft: true, messages: [] }))).toBe(
-      true,
-    )
+describe('unsentDraft', () => {
+  const sent = conversation({
+    id: 'sent',
+    draft: true,
+    messages: [
+      { id: 'm1', role: 'user', content: 'sent', createdAt: 1 },
+    ] as Conversation['messages'],
+  })
+  const real = conversation({ id: 'real', draft: false, messages: [] })
+  const older = conversation({ id: 'older', draft: true, messages: [] })
+  const typed = conversation({
+    id: 'typed',
+    draft: true,
+    messages: [],
+    draftText: 'half a thought',
   })
 
-  it('refuses a draft that already carries work', () => {
-    expect(
-      isUntouchedDraft(
-        conversation({
-          draft: true,
-          messages: [],
-          draftText: 'half a thought',
-        }),
-      ),
-    ).toBe(false)
-    expect(
-      isUntouchedDraft(
-        conversation({
-          draft: true,
-          messages: [
-            { id: 'm1', role: 'user', content: 'sent', createdAt: 1 },
-          ] as Conversation['messages'],
-        }),
-      ),
-    ).toBe(false)
+  it('reuses a hidden draft, typed text and all, over making another', () => {
+    expect(unsentDraft([real, typed, older], 'real')?.id).toBe('typed')
   })
 
-  it('refuses a real session, which is never interchangeable', () => {
-    expect(isUntouchedDraft(conversation({ draft: false, messages: [] }))).toBe(
-      false,
-    )
+  it('prefers the draft in front of you', () => {
+    expect(unsentDraft([typed, older], 'older')?.id).toBe('older')
+  })
+
+  it('never hands back a real session or a draft mid-send', () => {
+    expect(unsentDraft([sent, real], 'real')).toBeUndefined()
   })
 })
 
@@ -2253,4 +2246,64 @@ it('drops a queued completion when authoritative metadata has restarted', () => 
       sessionMeta({ status: 'working', updated_at: 4_000 }),
     ),
   ).toBe(false)
+})
+
+describe('generic read-only conversation', () => {
+  it('preserves source metadata on rename and refuses workspace/model edits', () => {
+    const imported = mergeConversationMeta(undefined, {
+      session_id: 'imported',
+      title: 'Source title',
+      description: '',
+      status: 'idle',
+      created_at: 1,
+      updated_at: 2,
+      message_count: 1,
+      metadata: {
+        read_only: true,
+        external_source: 'codex',
+        external_session_id: 'source-id',
+        source_cwd: '/original',
+      },
+    })
+    expect(imported.workingDir).toBeNull()
+    expect(
+      applyConversationMetadataPatch(imported, { workingDir: '/different' }),
+    ).toBe(imported)
+    expect(
+      applyConversationMetadataPatch(imported, { model: 'provider::model' }),
+    ).toBe(imported)
+    const renamed = applyConversationMetadataPatch(imported, {
+      title: 'Local title',
+      titleManual: true,
+    })
+    expect(renamed.title).toBe('Local title')
+    expect(metadataFor(renamed)).toMatchObject(imported.sessionMetadata ?? {})
+  })
+})
+
+it('keeps imported provenance separate while allowing normal session edits', () => {
+  const imported = mergeConversationMeta(
+    undefined,
+    sessionMeta({
+      metadata: {
+        external_source: 'claude-code',
+        external_session_id: 'source',
+        source_cwd: '/source',
+      },
+      message_count: 3,
+    }),
+  )
+  expect(imported.model).toBeNull()
+  expect(imported.workingDir).toBeNull()
+  const configured = applyConversationMetadataPatch(imported, {
+    model: 'ade::chosen',
+    workingDir: '/ade',
+  })
+  expect(configured.model).toBe('ade::chosen')
+  expect(configured.workingDir).toBe('/ade')
+  expect(metadataFor(configured)).toMatchObject({
+    external_source: 'claude-code',
+    source_cwd: '/source',
+    fs_scope: { root: '/ade' },
+  })
 })

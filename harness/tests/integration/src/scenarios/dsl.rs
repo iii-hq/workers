@@ -198,6 +198,14 @@ impl Scenario {
         self
     }
 
+    /// Stop the turn while the controlled function (`hold_response`) is still
+    /// running; the runner releases it only after the turn is cancelled.
+    pub(super) fn stop_held_call(mut self) -> Self {
+        self.intervention = Some(ScenarioIntervention::StopHeldCall);
+        self.expected_turn_statuses = vec!["cancelled".to_string()];
+        self
+    }
+
     /// Hold the first generation while the runner queues four messages, edits
     /// one in place, removes another by its client-visible entry id, and then
     /// releases the turn to drain the remaining three in their original order.
@@ -502,6 +510,14 @@ impl ControlledFunction {
             "content": [{ "type": "text", "text": text }],
             "is_error": true
         });
+        self
+    }
+
+    /// Answer every invocation with this exact value instead of a
+    /// function-result envelope — e.g. a hook decision `{ "decision": "hold" }`
+    /// when the function is bound as a harness hook.
+    pub(super) fn returns_json(mut self, response: Value) -> Self {
+        self.target.response = response;
         self
     }
 

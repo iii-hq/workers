@@ -148,6 +148,56 @@
   width: min(100%, 280px);
   min-width: 180px;
 }
+/* Multi-line text: the Input recipe (surface fill, hover, focus border) on a textarea. */
+[data-iii-ui="console"] .console-worker-config-textarea {
+  box-sizing: border-box;
+  display: block;
+  width: min(100%, 560px);
+  min-width: 0;
+  min-height: 96px;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: 400 13px/1.45 var(--font-sans);
+  resize: vertical;
+  transition:
+    border-color var(--motion-duration-control) var(--motion-ease-standard),
+    background-color var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="console"] .console-worker-config-textarea::placeholder {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="console"] .console-worker-config-textarea:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="console"] .console-worker-config-textarea:focus {
+  outline: none;
+  border-color: var(--color-rule-focus);
+}
+/* Model field: the shared ModelPicker beside its "Use chat default" action.
+ * The picker's own trigger is transparent; it gets the select-control fill. */
+[data-iii-ui="console"] .console-worker-config-model {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+[data-iii-ui="console"] .console-worker-config-model-picker {
+  width: min(100%, 280px);
+  min-width: 180px;
+}
+[data-iii-ui="console"] .console-worker-config-model-picker > button {
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+[data-iii-ui="console"] .console-worker-config-model-picker > button:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+}
 [data-iii-ui="console"] .console-worker-config-template-control {
   display: grid;
   grid-template-columns: auto minmax(160px, 1fr) auto;
@@ -402,12 +452,24 @@
   }
 }
 
+/* Phone widths: 16px text keeps iOS from zooming the field on focus. */
+@container (max-width: 30rem) {
+  [data-iii-ui="console"] .console-worker-config-textarea {
+    font-size: 16px;
+  }
+}
+
 @container (max-width: 679px) {
   [data-iii-ui="console"] .console-worker-config-control,
   [data-iii-ui="console"] .console-worker-config-number,
-  [data-iii-ui="console"] .console-worker-config-select {
+  [data-iii-ui="console"] .console-worker-config-select,
+  [data-iii-ui="console"] .console-worker-config-model,
+  [data-iii-ui="console"] .console-worker-config-model-picker {
     width: 100%;
     min-width: 0;
+  }
+  [data-iii-ui="console"] .console-worker-config-model {
+    justify-content: flex-start;
   }
   [data-iii-ui="console"] .console-worker-config-template-control {
     grid-template-columns: 1fr auto;
@@ -508,7 +570,7 @@
  * (list OR document) driven by `data-selected` on the body. */
 
 [data-iii-ui="console"] .console-catalog {
-  container-type: inline-size;
+  container: catalog-shell / inline-size;
   font-family: var(--font-sans);
   color: var(--color-ink);
   background: var(--color-bg);
@@ -1628,8 +1690,9 @@
   font-size: 0.8125rem;
   line-height: 1.25rem;
 }
+/* Narrow panes reflow the rows (below) instead of scrolling the table. */
 [data-iii-ui="console"] .console-catalog-schema-table .iii-ui-table {
-  min-width: 36rem;
+  width: 100%;
 }
 [data-iii-ui="console"] .console-catalog-schema .field-column {
   width: 30%;
@@ -1654,7 +1717,7 @@
 [data-iii-ui="console"] .console-catalog-schema .field {
   display: inline-block;
   color: var(--color-ink);
-  font-family: var(--font-code);
+  font-family: var(--font-mono);
   font-weight: 500;
   overflow-wrap: anywhere;
   padding-left: var(--schema-indent);
@@ -1669,11 +1732,8 @@
   font-weight: 600;
 }
 [data-iii-ui="console"] .console-catalog-schema .type {
-  min-height: 1.5rem;
-  border-color: var(--color-edge);
-  background: var(--color-surface);
   color: var(--color-ink-faint);
-  font-family: var(--font-code);
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   white-space: nowrap;
 }
@@ -2011,5 +2071,601 @@
   [data-iii-ui="console"] .console-catalog-key {
     width: 100%;
     min-width: 0;
+  }
+}
+
+/* --- functions page: switch, document, contract, run, calls, overview ---
+ * The function document is its own container (`fn-doc`) so the contract's
+ * "call it" column and the run tab's request | response split follow the
+ * document's width, not the pane's. The drill-in back button still follows
+ * the whole page (`catalog-shell`). */
+
+[data-iii-ui="console"] .console-catalog-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 2px 0 4px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="console"] .console-catalog-switch-row label {
+  flex: 1;
+  cursor: pointer;
+}
+
+/* Screen-reader-only text (a status dot's meaning, an icon column's name). */
+[data-iii-ui="console"] .console-catalog-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+[data-iii-ui="console"] .console-fn-doc {
+  container: fn-doc / inline-size;
+}
+[data-iii-ui="console"] .console-fn-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  flex: none;
+}
+[data-iii-ui="console"] .console-fn-toolbar .console-catalog-back {
+  display: none;
+  width: auto;
+  height: auto;
+  background: transparent;
+}
+@container catalog-shell (max-width: 700px) {
+  [data-iii-ui="console"] .console-fn-toolbar .console-catalog-back {
+    display: inline-flex;
+  }
+}
+
+[data-iii-ui="console"] .console-fn-head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 22px 32px 0;
+}
+[data-iii-ui="console"] .console-fn-head .title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+}
+[data-iii-ui="console"] .console-fn-head .title-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui="console"] .console-fn-head .title {
+  margin: 0;
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 26px;
+  letter-spacing: -0.01em;
+}
+[data-iii-ui="console"] .console-fn-head .description {
+  margin: 0;
+  max-width: 72ch;
+  color: var(--color-ink-faint);
+  font-size: 13px;
+  line-height: 20px;
+}
+[data-iii-ui="console"] .console-fn-head .run {
+  flex: none;
+}
+
+[data-iii-ui="console"] .console-fn-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 28px;
+  margin: 0;
+  font-size: 12px;
+}
+[data-iii-ui="console"] .console-fn-facts > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui="console"] .console-fn-facts dt {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="console"] .console-fn-facts dd {
+  margin: 0;
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="console"] .console-fn-facts .mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="console"] .console-fn-facts .last-call {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+[data-iii-ui="console"] .console-fn-tabs {
+  padding: 14px 32px 32px;
+}
+
+/* --- contract: schema sections + "call it" ------------------------------ */
+
+[data-iii-ui="console"] .console-fn-contract {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding-top: 8px;
+}
+[data-iii-ui="console"] .console-fn-contract .contract-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+@container fn-doc (min-width: 960px) {
+  [data-iii-ui="console"] .console-fn-contract {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 32px;
+    align-items: start;
+  }
+  [data-iii-ui="console"] .console-fn-callit {
+    position: sticky;
+    top: 52px;
+  }
+}
+[data-iii-ui="console"] .console-catalog-schema-section {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-height: 30px;
+}
+[data-iii-ui="console"] .console-catalog-schema-section .label {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+[data-iii-ui="console"] .console-catalog-schema-section .type-name {
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+[data-iii-ui="console"] .console-catalog-schema-section .summary {
+  margin-left: auto;
+  color: var(--color-ink-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="console"] .console-catalog-schema-desc {
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 13px;
+  line-height: 20px;
+}
+[data-iii-ui="console"] .console-fn-contract .console-catalog-schema {
+  padding-top: 0;
+  gap: 4px;
+}
+
+/* Narrow: each field becomes a block (name, type, required on one line;
+ * the description under it) — no sideways scroll, nothing clipped. */
+@container (max-width: 34rem) {
+  [data-iii-ui="console"] .console-catalog-schema-table .iii-ui-table__header {
+    display: none;
+  }
+  [data-iii-ui="console"]
+    .console-catalog-schema-table
+    .iii-ui-table__body
+    .iii-ui-table__row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: baseline;
+    gap: 2px 10px;
+    padding-block: 10px;
+  }
+  [data-iii-ui="console"]
+    .console-catalog-schema-table
+    .iii-ui-table__body
+    .iii-ui-table__cell {
+    display: block;
+    padding: 0;
+  }
+  [data-iii-ui="console"]
+    .console-catalog-schema-table
+    .iii-ui-table__body
+    .iii-ui-table__cell:nth-child(3) {
+    grid-column: 1 / -1;
+  }
+}
+
+[data-iii-ui="console"] .console-fn-callit {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 6px;
+  background: var(--color-panel-raised);
+  box-shadow: 0 0 0 1px var(--color-edge);
+}
+[data-iii-ui="console"] .console-fn-callit .snippet {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+[data-iii-ui="console"] .console-fn-callit .caption {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+[data-iii-ui="console"] .console-fn-callit .cli {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="console"] .console-fn-callit .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* --- run: request | response ------------------------------------------- */
+
+[data-iii-ui="console"] .console-catalog-invoke[data-layout="split"] {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  margin-top: 4px;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+@container fn-doc (min-width: 880px) {
+  [data-iii-ui="console"] .console-catalog-invoke[data-layout="split"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+  }
+}
+[data-iii-ui="console"] .console-catalog-invoke .invoke-column {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+[data-iii-ui="console"]
+  .console-catalog-invoke[data-layout="split"]
+  .console-catalog-editor {
+  min-height: 200px;
+  max-height: 420px;
+  background: var(--color-panel-raised);
+}
+[data-iii-ui="console"]
+  .console-catalog-invoke[data-layout="split"]
+  .console-catalog-result-shell {
+  background: var(--color-panel-raised);
+}
+[data-iii-ui="console"]
+  .console-catalog-invoke[data-layout="split"]
+  .console-catalog-result {
+  max-height: 560px;
+}
+[data-iii-ui="console"] .console-catalog-response-empty {
+  padding: 16px;
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+  font-size: 13px;
+  line-height: 20px;
+}
+[data-iii-ui="console"] .console-catalog-attempt .time {
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="console"] .console-catalog-attempt[data-latest="true"] {
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
+}
+
+/* --- calls: filter bar, table, expanded row ----------------------------- */
+
+[data-iii-ui="console"] .console-catalog-activity-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+[data-iii-ui="console"] .console-catalog-activity-bar .console-catalog-activity-summary {
+  margin-left: auto;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="console"] .console-catalog-calls .iii-ui-table {
+  width: 100%;
+  table-layout: fixed;
+}
+[data-iii-ui="console"] .console-catalog-calls .status-column {
+  width: 28px;
+}
+[data-iii-ui="console"] .console-catalog-calls .iii-ui-table__head:nth-child(2) {
+  width: 92px;
+}
+[data-iii-ui="console"] .console-catalog-calls .iii-ui-table__head:nth-child(3) {
+  width: 104px;
+  padding-right: 24px;
+}
+[data-iii-ui="console"] .console-catalog-calls .iii-ui-table__cell.num {
+  padding-right: 24px;
+}
+[data-iii-ui="console"] .console-catalog-calls .mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="console"] .console-catalog-calls .faint {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="console"] .console-catalog-calls .num {
+  text-align: right;
+}
+[data-iii-ui="console"] .console-catalog-calls .iii-ui-table__cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="console"] .console-catalog-call-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui="console"] .console-catalog-call-input .text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="console"] .console-catalog-call-input .caret {
+  flex: none;
+  transition: transform var(--motion-duration-control)
+    var(--motion-ease-standard);
+}
+[data-iii-ui="console"] .console-catalog-call-input .caret[data-open="true"] {
+  transform: rotate(90deg);
+}
+[data-iii-ui="console"]
+  .console-catalog-calls
+  .console-catalog-call-detail
+  .iii-ui-table__cell {
+  white-space: normal;
+  overflow: visible;
+  padding: 4px 12px 14px 28px;
+}
+[data-iii-ui="console"] .console-catalog-call-body {
+  gap: 10px;
+  padding: 0;
+}
+[data-iii-ui="console"] .console-catalog-call-body .call-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+[data-iii-ui="console"] .console-catalog-call-body .call-payloads {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+@container (min-width: 44rem) {
+  [data-iii-ui="console"] .console-catalog-call-body .call-payloads {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+[data-iii-ui="console"] .console-catalog-call-body .payload {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui="console"] .console-catalog-call-body .console-catalog-json {
+  background: var(--color-panel);
+}
+[data-iii-ui="console"] .console-catalog-calls-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+}
+[data-iii-ui="console"] .console-catalog-calls-loading .row {
+  display: block;
+  height: 28px;
+}
+
+/* A binding card ends in its copy action. */
+[data-iii-ui="console"] .console-catalog-trigcard > :last-child:not(.copy) {
+  flex: none;
+  margin: -4px -6px 0 0;
+}
+
+/* --- overview (nothing selected) --------------------------------------- */
+
+[data-iii-ui="console"] .console-fn-overview {
+  padding: 24px 32px 32px;
+  gap: 20px;
+  container: fn-doc / inline-size;
+}
+[data-iii-ui="console"] .console-fn-overview-head h2 {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 26px;
+  letter-spacing: -0.01em;
+}
+[data-iii-ui="console"] .console-fn-overview-head p {
+  margin: 6px 0 0;
+  max-width: 72ch;
+  color: var(--color-ink-faint);
+  font-size: 13px;
+  line-height: 20px;
+}
+[data-iii-ui="console"] .console-fn-overview-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+@container fn-doc (min-width: 900px) {
+  [data-iii-ui="console"] .console-fn-overview-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 400px);
+    gap: 32px;
+    align-items: start;
+  }
+}
+[data-iii-ui="console"] .console-fn-section {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="console"] .console-fn-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+}
+[data-iii-ui="console"] .console-fn-section-head h3 {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+[data-iii-ui="console"] .console-fn-section-head .meta {
+  margin-left: auto;
+  color: var(--color-ink-faint);
+  font-size: 11px;
+}
+[data-iii-ui="console"] .console-fn-section .mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="console"] .console-fn-section .faint {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="console"] .console-fn-section .num {
+  text-align: right;
+}
+[data-iii-ui="console"] .console-fn-feed {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui="console"] .console-fn-feed-row {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) minmax(0, 150px) 72px 56px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 0;
+  border-bottom: 1px solid var(--color-edge);
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="console"] .console-fn-feed-row:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="console"] .console-fn-feed-row:disabled {
+  cursor: default;
+}
+[data-iii-ui="console"] .console-fn-feed-row .fn {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+[data-iii-ui="console"] .console-fn-feed-row .worker,
+[data-iii-ui="console"] .console-fn-feed-row .duration,
+[data-iii-ui="console"] .console-fn-feed-row .ago {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="console"] .console-fn-feed-row .duration,
+[data-iii-ui="console"] .console-fn-feed-row .ago {
+  text-align: right;
+}
+@container fn-doc (max-width: 520px) {
+  [data-iii-ui="console"] .console-fn-feed-row {
+    grid-template-columns: 12px minmax(0, 1fr) 56px;
+  }
+  [data-iii-ui="console"] .console-fn-feed-row .worker,
+  [data-iii-ui="console"] .console-fn-feed-row .duration {
+    display: none;
+  }
+}
+
+/* --- function document on narrow panes --------------------------------- */
+
+@container fn-doc (max-width: 560px) {
+  [data-iii-ui="console"] .console-fn-head {
+    padding: 16px 16px 0;
+  }
+  [data-iii-ui="console"] .console-fn-head .title {
+    font-size: 16px;
+    line-height: 24px;
+  }
+  [data-iii-ui="console"] .console-fn-head .title-row {
+    flex-direction: column;
+    gap: 12px;
+  }
+  [data-iii-ui="console"] .console-fn-head .run {
+    width: 100%;
+  }
+  [data-iii-ui="console"] .console-fn-tabs {
+    padding: 12px 16px 24px;
+  }
+}
+/* Four labelled tabs fit a phone once the icons step aside. */
+@container fn-doc (max-width: 440px) {
+  [data-iii-ui="console"] .console-fn-tabs [role="tab"] svg {
+    display: none;
+  }
+}
+/* The overview is its own container, so its gutters follow the page. */
+@container catalog-shell (max-width: 700px) {
+  [data-iii-ui="console"] .console-fn-overview {
+    padding: 18px 16px 24px;
   }
 }

@@ -87,6 +87,39 @@ pub enum CoderError {
     #[error("C221: {0}")]
     #[serde(rename = "C221")]
     Conflict(String),
+
+    /// Worker templates cannot be read: `code.templates.dir` holds no
+    /// template manifest, or the repo cannot be cloned and no cache exists.
+    #[error("C230: {0}")]
+    #[serde(rename = "C230")]
+    TemplatesUnavailable(String),
+
+    /// Unknown template id, or a template without a `worker:` block.
+    #[error("C231: {0}")]
+    #[serde(rename = "C231")]
+    UnknownTemplate(String),
+
+    /// Worker name breaks `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` (1–63 chars), or
+    /// the scaffold directory's last segment is not the worker name.
+    #[error("C232: {0}")]
+    #[serde(rename = "C232")]
+    InvalidWorkerName(String),
+
+    /// The scaffold target exists and is not empty.
+    #[error("C233: {0}")]
+    #[serde(rename = "C233")]
+    TargetNotEmpty(String),
+
+    /// A template's manifest, `files:` list or compose entry is invalid, or
+    /// one of its worker files is not UTF-8 text.
+    #[error("C234: {0}")]
+    #[serde(rename = "C234")]
+    InvalidTemplate(String),
+
+    /// `start: true` and the stack already has a container with this name.
+    #[error("C235: {0}")]
+    #[serde(rename = "C235")]
+    ContainerExists(String),
 }
 
 impl CoderError {
@@ -108,6 +141,12 @@ impl CoderError {
             CoderError::AlreadyExists(_) => "C213",
             CoderError::OutsideSession(_) => "C220",
             CoderError::Conflict(_) => "C221",
+            CoderError::TemplatesUnavailable(_) => "C230",
+            CoderError::UnknownTemplate(_) => "C231",
+            CoderError::InvalidWorkerName(_) => "C232",
+            CoderError::TargetNotEmpty(_) => "C233",
+            CoderError::InvalidTemplate(_) => "C234",
+            CoderError::ContainerExists(_) => "C235",
         }
     }
 
@@ -123,7 +162,13 @@ impl CoderError {
             | CoderError::Io(m)
             | CoderError::AlreadyExists(m)
             | CoderError::OutsideSession(m)
-            | CoderError::Conflict(m) => m,
+            | CoderError::Conflict(m)
+            | CoderError::TemplatesUnavailable(m)
+            | CoderError::UnknownTemplate(m)
+            | CoderError::InvalidWorkerName(m)
+            | CoderError::TargetNotEmpty(m)
+            | CoderError::InvalidTemplate(m)
+            | CoderError::ContainerExists(m) => m,
         }
     }
 
@@ -296,10 +341,31 @@ mod tests {
             CoderError::AlreadyExists("a".into()).code(),
             CoderError::OutsideSession("a".into()).code(),
             CoderError::Conflict("a".into()).code(),
+            CoderError::TemplatesUnavailable("a".into()).code(),
+            CoderError::UnknownTemplate("a".into()).code(),
+            CoderError::InvalidWorkerName("a".into()).code(),
+            CoderError::TargetNotEmpty("a".into()).code(),
+            CoderError::InvalidTemplate("a".into()).code(),
         ]
         .into_iter()
         .collect();
-        assert_eq!(codes.len(), 8);
+        assert_eq!(codes.len(), 13);
+    }
+
+    #[test]
+    fn template_errors_use_c230_to_c234() {
+        let codes: Vec<&str> = [
+            CoderError::TemplatesUnavailable("a".into()),
+            CoderError::UnknownTemplate("a".into()),
+            CoderError::InvalidWorkerName("a".into()),
+            CoderError::TargetNotEmpty("a".into()),
+            CoderError::InvalidTemplate("a".into()),
+            CoderError::ContainerExists("a".into()),
+        ]
+        .iter()
+        .map(CoderError::code)
+        .collect();
+        assert_eq!(codes, ["C230", "C231", "C232", "C233", "C234", "C235"]);
     }
 
     /// DRIFT PREVENTION: `to_wire_error()` (structured per-entry form)
@@ -317,6 +383,11 @@ mod tests {
             CoderError::AlreadyExists("already exists msg".into()),
             CoderError::OutsideSession("outside session msg".into()),
             CoderError::Conflict("conflict msg".into()),
+            CoderError::TemplatesUnavailable("templates unavailable msg".into()),
+            CoderError::UnknownTemplate("unknown template msg".into()),
+            CoderError::InvalidWorkerName("invalid worker name msg".into()),
+            CoderError::TargetNotEmpty("target not empty msg".into()),
+            CoderError::InvalidTemplate("invalid template msg".into()),
         ];
         for v in &variants {
             let wire = v.to_wire_error();

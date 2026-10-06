@@ -136,7 +136,11 @@ the next step checks, and when a stream is in flight it also calls
 record. The generate step then finalises the partial assistant message (`stop_reason: "aborted"`),
 records `TurnStatus` `cancelled`, and sets `session::set-status done`. When the turn has live
 spawned children, the stop cascades to them before the turn finalises (see
-[Sub-agents](#sub-agents-harnessspawn)).
+[Sub-agents](#sub-agents-harnessspawn)). An engine dispatch in flight is raced
+against the stop too: the step stops awaiting it, closes the call with a `cancelled` error result
+(the target may still be running; its effects are unknown, not undone) and finalises the turn
+`cancelled`. The dispatch is detached, not dropped, so it still settles its deletion witness when
+the target replies.
 
 The harness maps the turn lifecycle onto the session's coarse status: `working` while a turn is
 running or awaiting functions, `done` when it ends `completed` or `cancelled`, and `error` (with a
@@ -990,7 +994,8 @@ type FunctionResolveResponse = {
 
 Request cancellation. Sets an abort flag the next `harness::turn` step observes, and aborts an
 in-flight stream via [`router::abort`](llm-router.md#routerabort) using the `stream_request_id` on
-the turn record. Non-terminal spawned children recorded in `calls` are stopped first, recursively —
+the turn record. A function call in flight does not delay it: the step closes that call as a
+`cancelled` error and finalises without waiting for the target. Non-terminal spawned children recorded in `calls` are stopped first, recursively —
 each resolves its parent call with `is_error: true` (see [Sub-agents](#sub-agents-harnessspawn)).
 The turn record transitions to `cancelled` before `session::set-status done`, and
 [`harness::turn_completed`](#trigger-types-emitted) fires with `status: "cancelled"`.

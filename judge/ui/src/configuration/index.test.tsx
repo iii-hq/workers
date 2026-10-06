@@ -99,9 +99,9 @@ afterEach(async () => {
 describe('listProviders', () => {
   it('keeps one row per judge-<provider> worker answering evaluate', async () => {
     await expect(listProviders(engine())).resolves.toEqual([
-      { provider: 'laya', worker: 'judge-laya', namespace: 'my-project', loaded: false },
-      { provider: 'local-llm', worker: 'judge-local-llm', namespace: 'my-project', loaded: true },
-      { provider: 'typesafe', worker: 'judge-typesafe', namespace: 'my-project', loaded: true },
+      { provider: 'laya', worker: 'judge-laya', namespace: 'my-project' },
+      { provider: 'local-llm', worker: 'judge-local-llm', namespace: 'my-project' },
+      { provider: 'typesafe', worker: 'judge-typesafe', namespace: 'my-project' },
     ])
   })
 })
@@ -118,8 +118,7 @@ describe('JudgeRoutingForm', () => {
     expect([...select.options].map((option) => option.value)).toEqual(['', 'laya', 'local-llm', 'typesafe'])
     expect(select.options[0].textContent).toBe('Built-in default (typesafe)')
     expect(select.options[3].dataset.description).toBe('judge-typesafe · my-project')
-    // A local provider on standby is still selectable; it loads once chosen.
-    expect(select.options[1].dataset.description).toBe('judge-laya · my-project · loads its model when selected')
+    expect(select.options[1].dataset.description).toBe('judge-laya · my-project')
     expect(select.value).toBe('typesafe')
     expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('judge-typesafe · my-project')
     expect(container.querySelector('[role="alert"]')).toBeNull()
@@ -186,10 +185,10 @@ describe('JudgeRoutingForm', () => {
     expect(iii.trigger).toHaveBeenCalledTimes(1)
   })
 
-  it('marks a standby provider as loading and toggles preload_all', async () => {
+  it('shows a provider known only by its configuration id as registered and toggles preload_all', async () => {
     const value = Object.freeze({ provider: 'laya', future: { keep: true } })
     const { container, onChange } = await mount(value)
-    expect(container.querySelector('[data-chip="neutral"]')?.textContent).toBe('judge-laya · loading its model')
+    expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('judge-laya · my-project')
     expect(container.querySelector('[role="alert"]')).toBeNull()
     const preload = container.querySelector<HTMLInputElement>('#judge-cfg-preload_all')!
     expect(preload.checked).toBe(false)

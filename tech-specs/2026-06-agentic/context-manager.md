@@ -61,8 +61,8 @@ usable = max(0, (input_limit ?? (context_window - max_output_tokens)) - reserved
 `thinking_budget` is `thinking_budgets[thinking_level]` when the caller passes
 `options.thinking_level` and the model declares budgets, else 0 — this is how assemble leaves room
 for the reasoning tokens a thinking tier consumes. A 200k model with defaults yields ~180k usable; a
-32k model yields ~12k. Compaction triggers when running tokens cross `usable`; capping and pruning
-now run on every call, before that check.
+32k model yields ~12k. Capping runs on every call; pruning runs only once running tokens cross
+`usable`, and compaction only if they are still over after it.
 
 ## Structural invariants
 
@@ -96,7 +96,8 @@ Whatever capping, pruning, or compaction does, the returned context must still b
 - `context::compact` — Summarise older history into a single compaction summary and return the
   preserved tail. Transient: the caller uses the result; the session keeps its full transcript.
 - `context::prune` — Replace eligible old function outputs without summarising. The cheap policy
-  pass, run on every call (not just when over budget).
+  pass `context::assemble` runs first once a request is over budget; under budget it never runs, since
+  rewriting results the provider already cached costs more than the tokens it frees.
 - `context::count-tokens` — Estimate token usage for a set of messages (+ optional invocation schema /
   system) vs a model.
 
@@ -146,7 +147,7 @@ in [README.md § Cross-cutting contracts](README.md#cross-cutting-contracts).
 ### `context::assemble`
 
 Build a model-ready context. Applies, in this order: media-normalize -> cap oversized single
-results (always) -> prune aged function outputs (always) -> (if over budget) compact the head ->
+results (always) -> (if over budget) prune aged function outputs -> (if still over) compact the head ->
 (if still over) emergency-reduce -> return the budgeted list, or a structured overflow if nothing fits. A
 successful response has the hard postcondition `token_count <= usable`.
 

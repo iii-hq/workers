@@ -1,23 +1,19 @@
 /**
  * Live feed of ALL spans across all traces for the masthead strip. The seed
- * first reads compact recent trace summaries, then fetches complete spans only
+ * first reads compact recent trace summaries, then fetches the spans only
  * for enough trace IDs to fill the strip. This avoids the expensive global
  * full-span scan while preserving parented internal spans from real traces.
- * Live appends then come from the engine's `iii:devtools:all-spans` stream,
- * keyed by `span_id` so a pending snapshot is replaced in place by its final
- * close frame (never the other way around).
+ * The strip draws spans and never opens one, so the seed leaves out their
+ * events and links: the invocation payloads, nearly all of the bytes.
  *
- * Retention is bounded twice: entries older than the strip's usable history
- * are pruned as frames arrive, and a hard cap keeps a busy engine from
- * growing the map without limit (oldest effective-end evicted first).
- * Paused / hidden-tab frames are dropped, matching the rows stream; a
- * reconnect, unpause, or tab-visible re-seeds once, REPLACING the map —
- * the engine store is the source of truth, and merging would immortalize
- * a stale pending span whose close frame was lost across an engine
- * restart.
- *
- * Engines without the all-spans stream simply never deliver a frame: the
- * strip then shows the seed's spans and refreshes on reconnects only.
+ * The seed runs on mount, on every activity tick (`lib/traces-activity`,
+ * coalesced), and on reconnect, unpause and tab-visible; paused and hidden
+ * tabs ignore ticks. Each seed REPLACES the map, keyed by `span_id`: the
+ * engine store is the source of truth, and merging would immortalize a stale
+ * pending span whose close was lost across an engine restart. Retention is
+ * bounded twice: spans older than the strip's usable history are pruned,
+ * and a hard cap keeps a busy engine from growing the map without limit
+ * (oldest effective-end evicted first).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -140,6 +136,7 @@ export async function fetchLiveSpanSeed(
     const legacyResult = await fetchTraceSpans({
       search_all_spans: true,
       include_internal: true,
+      include_events: false,
       sort_by: 'start_time',
       sort_order: 'desc',
       limit: SEED_LIMIT,
@@ -154,6 +151,7 @@ export async function fetchLiveSpanSeed(
     trace_ids: traceIds,
     search_all_spans: true,
     include_internal: true,
+    include_events: false,
     start_time: now - RETENTION_MS,
     sort_by: 'start_time',
     sort_order: 'desc',
@@ -171,8 +169,8 @@ export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
     isPausedRef.current = isPaused
   }, [isPaused])
 
-  // Seed read — run on mount, and re-run on reconnect and on unpause (the
-  // stream dropped frames while away). REPLACES the map; see the module
+  // Seed read — run on mount, and re-run on reconnect and on unpause (ticks
+  // were ignored while away). REPLACES the map; see the module
   // docstring.
   const seed = useCallback((): Promise<void> => {
     if (seedInFlightRef.current) return seedInFlightRef.current
@@ -238,7 +236,7 @@ export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
           void seedRef.current()
         }
       })
-      // Hidden-tab frames are dropped above, so the map has a hole after a
+      // Hidden-tab ticks are ignored above, so the map is stale after a
       // tab switch — re-seed on return, mirroring the list's recovery in
       // `useTraceData`. (REPLACE semantics, see the module docstring.)
       let offVisibility: (() => void) | undefined

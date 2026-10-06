@@ -40,6 +40,8 @@ rules:
   - '!router::abort'
   - '!router::route'
   - '!router::on_config_changed'
+  # Internal: re-reads a rotated or revoked secret:// key and nudges its providers.
+  - '!router::on_secret_changed'
   # Direct provider calls (provider::anthropic::*, provider::openai::*, …)
   # bypass the router's accounting, budgets, and retry policy. The router
   # invokes these worker-to-worker; agents never call them.
@@ -53,6 +55,19 @@ rules:
   # mutation power under a new name); deny it too so an agent cannot bypass the
   # register deny above.
   - '!configuration::ensure'
+  # secrets: credential values live in the secrets worker, referenced from
+  # configuration as secret://NAME. Agents never resolve a value, store,
+  # import or delete one, or change which workers may resolve it; the console
+  # makes those calls on the person's behalf. list/get/status/detect return
+  # metadata only (masked hints, fingerprints) and stay at the default.
+  - '!secrets::resolve'
+  - '!secrets::set'
+  - '!secrets::delete'
+  - '!secrets::access'
+  - '!secrets::import'
+  - '!secrets::on-config-change'
+  # judge-typesafe's own secrets::changed handler (drops a rotated key).
+  - '!judge-typesafe::on-secret-change'
   - '!directory::pre-generate'
   - '!directory::on-functions-change'
   - '!directory::hint-preview'
@@ -86,9 +101,15 @@ rules:
   # The explorer page's per-pane state (open tabs, folder, terminal layout):
   # developer-local files the console reads and writes on the person's behalf.
   - '!shell::ui-state::*'
+  # The Commit panel's Generate button: `commit-message` spends an LLM call
+  # through router::complete, outside the harness loop's accounting (the same
+  # reason router::complete itself is denied above), and both functions are
+  # console plumbing the page calls on the person's behalf.
+  - '!shell::scm::*'
   - '!oauth::anthropic::login'
   - '!oauth::openai-codex::login'
   - '!run::start'
+  - '!console::conversations::*'
   # session-manager: deny-by-default for in-run agents (integration.md §2).
   # An agent that can write here can rewrite its own transcript; the raw
   # store protocol (session::store::*) bypasses every invariant. Reads stay
@@ -134,6 +155,8 @@ rules:
   - '!judge-decider::on-judge-config-change'
   - '!judge-laya::on-config-change'
   - '!judge-laya::on-judge-config-change'
+  - '!judge-clef::on-config-change'
+  - '!judge-clef::on-judge-config-change'
   - '!directory::on-judge-config-change'
   - '!judge-typesafe::on-config-change'
   - '!session::on-config-change'
@@ -146,8 +169,8 @@ rules:
   # model-reachable way to start new turns and is left at the needs_approval
   # default (the harness self-enforces depth/fan-out and walls spawned
   # children out of the control plane unless the spawn passes
-  # options.orchestrator). The internal config/cron hooks must never be
-  # agent-callable.
+  # options.orchestrator). The internal config/cron/session-deleted hooks
+  # must never be agent-callable.
   - '!harness::send'
   - '!harness::run'
   - '!harness::turn'
@@ -156,6 +179,7 @@ rules:
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
+  - '!harness::on-session-deleted'
   # kanban: console asset delivery and the configuration reload sink are
   # engine plumbing. Deleting/restoring a ticket is the human's call from the
   # ticket screen; the ticket working loop is allowlisted below.
@@ -224,6 +248,14 @@ rules:
   - '!computer::screencast::stop'
   - '!computer::frame'
   - '!computer::on-config-change'
+  # ios-simulator: touch/watch/frame feed the console's live iPhone; agents
+  # use gesture/screenshot. tenants::list is operator-only (it names every
+  # consumer on a shared Mac). The device surface stays at needs_approval.
+  - '!ios-simulator::touch'
+  - '!ios-simulator::watch'
+  - '!ios-simulator::frame'
+  - '!ios-simulator::tenants::list'
+  - '!ios-simulator::on-config-change'
   # rbac-proxy: internal reload + catalog-cache hooks — invoked only by the
   # engine's trigger dispatch, never agent-callable. The handlers already
   # re-fetch/ignore the event payload; these denies are defense-in-depth.
@@ -421,12 +453,16 @@ rules:
   - tailscale::accounts::list
   - tailscale::metrics
   # Read-only code surface (coder::*, now served by the shell worker).
-  # Mutating ops (create/update/move/delete-file) stay approval-gated.
+  # Mutating ops (create/update/move/delete-file) stay approval-gated, and so
+  # does coder::scaffold-worker: it writes a whole worker package, so it has
+  # no rule here and falls through to needs_approval.
   - coder::info
   - coder::read-file
   - coder::search
   - coder::list-folder
   - coder::tree
+  # Lists scaffoldable templates; a refresh only updates the IDE's own cache.
+  - coder::list-templates
   # fp: the twenty-three pure value transforms are side-effect-free reshapes (no
   # I/O, no authority). fp::pipe stays at the needs_approval default ON
   # PURPOSE: its steps run with the fp worker's authority, so the pipe
@@ -467,6 +503,9 @@ rules:
   - github::pr::diff
   - github::pr::checks
   - github::pr::watch-status
+  # Read-only webhook prerequisite checklist; enable-http-listener and
+  # enable-webhooks change configuration and keep needs_approval.
+  - github::setup::webhooks-status
   - quick-tunnel::status
   - github::issue::list
   - github::issue::view

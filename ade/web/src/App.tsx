@@ -15,6 +15,7 @@ import { ConnectionNotice } from '@/components/ConnectionNotice'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 import { EmailPrompt } from '@/components/EmailPrompt'
 import { ExtOverlays } from '@/components/ExtOverlays'
+import { OnboardingWizardHost } from '@/components/onboarding/OnboardingWizard'
 import { PaletteHost, type PaletteWorkspace } from '@/components/PaletteHost'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
@@ -77,7 +78,7 @@ import {
   requestPaneFocus,
   takePaneFocusRequest,
 } from '@/lib/pane-focus'
-import { subscribePanelOpen } from '@/lib/panel-context'
+import { subscribePanelOpen, subscribeScreenOpen } from '@/lib/panel-context'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import {
@@ -100,6 +101,7 @@ import {
   isChatScreen,
   MAX_COLUMNS,
   MIN_COLUMN_FRACTION,
+  type ScreenPlacement,
   sessionIdForChatScreen,
   type TabScreen,
   tabColumns,
@@ -187,7 +189,7 @@ function paneIdsByTab(tabs: WorkspaceTab[]): Map<string, Set<string>> {
 }
 
 interface WorkspacePanelCommands {
-  openScreen: (screen: TabScreen) => void
+  openScreen: (screen: TabScreen, placement?: ScreenPlacement) => void
   split: (side: 'left' | 'right') => void
 }
 
@@ -310,17 +312,20 @@ export function App({
   )
 
   const panelCommandsRef = useRef<WorkspacePanelCommands | null>(null)
-  const openWorkspaceScreen = useCallback((screen: TabScreen) => {
-    // The keyboard asked for this screen, so the keyboard lands in it: the
-    // panes consume the request once the screen has a pane.
-    requestPaneFocus(screen)
-    const commands = panelCommandsRef.current
-    if (commands) commands.openScreen(screen)
-    else workspaceRef.current.openScreen(screen)
-    window.requestAnimationFrame(() =>
-      focusRequestedPane(workspaceRef.current.activeTab),
-    )
-  }, [])
+  const openWorkspaceScreen = useCallback(
+    (screen: TabScreen, placement?: ScreenPlacement) => {
+      // The keyboard asked for this screen, so the keyboard lands in it: the
+      // panes consume the request once the screen has a pane.
+      requestPaneFocus(screen)
+      const commands = panelCommandsRef.current
+      if (commands) commands.openScreen(screen, placement)
+      else workspaceRef.current.openScreen(screen, placement)
+      window.requestAnimationFrame(() =>
+        focusRequestedPane(workspaceRef.current.activeTab),
+      )
+    },
+    [],
+  )
   const stepPaneFocus = useCallback((delta: 1 | -1) => {
     const roots = tabPaneIds(workspaceRef.current.activeTab)
       .map(paneRoot)
@@ -349,6 +354,15 @@ export function App({
       }),
     [openWorkspaceScreen],
   )
+  // A worker page placing any screen from this browser (`host.panels.
+  // openScreen`): the same placement as the palette's, in the tab on screen.
+  useEffect(
+    () =>
+      subscribeScreenOpen(({ screen, relativeTo, direction, sizes }) => {
+        openWorkspaceScreen(screen, { relativeTo, direction, sizes })
+      }),
+    [openWorkspaceScreen],
+  )
   // Closing settings only drops the `#/configuration` hash: the hash never
   // named the active tab, so the workspace stays exactly where it was.
   const closeSettings = useCallback(() => {
@@ -366,14 +380,15 @@ export function App({
     else openSettings()
   }, [view, openSettings, requestCloseSettings])
   // ── Deep links ──
-  // `#/traces` / `#/workers` are one-shot commands, never state: open the
-  // screen with the same placement as an agent's console::workspace::open
-  // and a worker's panel-open (reuse the tab showing it, else beside chat,
-  // else a fresh tab), then drop the hash so a reload trusts the workspace
-  // store — the active tab — instead of replaying the link. Waits for the
-  // layout to hydrate so the link lands on the real tabs, not the local
-  // copy. Worker pages have no deep link here: `#/worker/<scope>` boots the
-  // isolated shell instead (main.tsx).
+  // `#/workers` (and `#/chat` / `#/traces-v2`, legacy aliases of traces) are
+  // one-shot commands, never state: open the screen with the same placement
+  // as an agent's console::workspace::open and a worker's panel-open (reuse
+  // the tab showing it, else beside chat, else a fresh tab), then drop the
+  // hash so a reload trusts the workspace store — the active tab — instead
+  // of replaying the link. Waits for the layout to hydrate so the link lands
+  // on the real tabs, not the local copy. `#/traces` and worker pages have
+  // no deep link here: `#/traces` and `#/worker/<scope>` boot the standalone
+  // shell instead (main.tsx).
   const layoutSource = workspace.layoutSource
   useEffect(() => {
     if (layoutSource === 'pending') return
@@ -491,6 +506,7 @@ export function App({
         ) : null}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
         <EmailPrompt />
+        <OnboardingWizardHost />
         <PaletteHost
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
@@ -1133,13 +1149,13 @@ function WorkspacePanes({
             return false
           }
           pendingMobileScreenRef.current = command.screen
-          current.openScreen(command.screen)
+          current.openScreen(command.screen, command.placement)
           return true
         }
         if (current.tabs.some((tab) => tab.screens.includes(command.screen))) {
           return false
         }
-        current.openScreenInTab(origin.id, command.screen)
+        current.openScreenInTab(origin.id, command.screen, command.placement)
         return true
       }
 
@@ -1233,8 +1249,13 @@ function WorkspacePanes({
 
   useLayoutEffect(() => {
     const commands: WorkspacePanelCommands = {
-      openScreen: (screen) =>
-        dispatchPanelCommand({ type: 'open', screen, tabId: activeTab.id }),
+      openScreen: (screen, placement) =>
+        dispatchPanelCommand({
+          type: 'open',
+          screen,
+          tabId: activeTab.id,
+          placement,
+        }),
       split: (side) =>
         dispatchPanelCommand({ type: 'add', tabId: activeTab.id, side }),
     }
@@ -1600,7 +1621,16 @@ function ScreenBody({
     )
   }
   if (screen === 'workers')
-    return <Workers onRequestClose={onClose} commands={commands} />
+    return (
+      <Workers
+        onRequestClose={onClose}
+        commands={commands}
+        panelSide={panelSide}
+        tabId={tabId}
+        paneId={paneId}
+        setDirty={setDirty}
+      />
+    )
   return <TracesV2 onRequestClose={onClose} commands={commands} />
 }
 

@@ -78,6 +78,7 @@ default_timeout_ms: 30000    # applied when the caller omits timeout_ms (code de
 max_output_bytes: 1048576    # 1 MiB; stdout/stderr past this set *_truncated
 env:
   inherit: true              # forward the worker's env to children; per-call dangerous keys still blocked
+  # with inherit: false, git over SSH needs SSH_AUTH_SOCK in allow, which gives every child command the agent's keys: add it only if that is intended
   allow: [PATH, HOME, LANG, LC_ALL, TERM]  # forwarded when inherit is false; has no effect on per-call `env` (deny-only — dangerous keys never settable)
 
 # Command policy is deny-only: allow/ask policy lives in the approval-gate.
@@ -105,6 +106,19 @@ fs:
 
 sandbox:
   enabled: true              # false -> every target: sandbox call returns S210
+
+commit_messages:             # the Commit panel's Generate button (read live on every call)
+  model: null                # router model id ("provider::model" or bare); null = the chat's default model, passed by the panel
+  thinking: low              # default|minimal|low|medium|high|xhigh; "default" sends no reasoning override
+  instructions: ""           # free text appended to the prompt, e.g. "Use Conventional Commits"
+
+code:
+  templates:                 # worker templates for coder::list-templates / coder::scaffold-worker
+    dir: null                # local templates checkout (repo root or its iii/ dir), read on every call; III_TEMPLATE_DIR overrides
+    url: https://github.com/iii-hq/templates.git  # shallow-cloned when dir is unset; III_TEMPLATE_URL overrides
+    ref: main                # branch or tag to clone
+    cache_dir: data/shell/templates  # clone cache; relative paths resolve against III_COMPOSE_DIR
+    refresh_secs: 600        # fetch the clone again after this long (or on coder::list-templates refresh: true)
 ```
 
 ### Zero-config default
@@ -164,6 +178,8 @@ The example runs on the host. The same payload retargets at a microVM with `targ
 | `shell::fs::sed` | Regex find-and-replace across one file or many. |
 | `shell::fs::write` | Write a file. Simplest form passes inline string `content` (host target only): `{ path, content: "file text" }`, with `mode` (octal, default `"0644"`) and `parents: true` to create parents. A `ContentRef` object in `content` instead streams large/staged payloads through an SDK channel (temp file + atomic rename) and is **required** for sandbox targets — an inline string on a sandbox target returns `S210`. Batch form: pass `files: [{ path, content, mode?, parents? }, ...]` (host, inline per file) to write several files in one call; the response then carries per-file `files: [{ path, bytes_written }]`. A single-file write leaves `files` empty and returns `{ bytes_written, path }`. Supplying both single `path`/`content` and `files` returns `S210`. |
 | `shell::fs::read` | Stream a file's bytes out through an SDK channel. For an inline read on the web surface, use the `harness::fs::read_inline` wrapper instead. |
+| `shell::scm::commit-message-config` | *(console only)* The live `commit_messages` settings: `{}` → `{ model: string \| null, thinking, instructions }`. See [Commit messages](#commit-messages-shellscm). |
+| `shell::scm::commit-message` | *(console only)* Write a git commit message for a diff with an LLM through `router::complete`: `{ changes, recent_subjects?, fallback_model? }` → `{ message, model }`. See [Commit messages](#commit-messages-shellscm). |
 
 Every `shell::fs::*` call accepts the same optional `target` as `exec`, so host and sandbox share one wire shape.
 
@@ -182,10 +198,12 @@ fully unjailed, regardless of `fs.allow_unjailed`.
 |---|---|
 | `coder::info` | Discover the jail: roots, caps, response budgets, exclude/non-accessible globs. Call first. |
 | `coder::read-file` | Windowed reads (`line_from`/`line_to`), `stat` probe, byte-budgeted full reads, and multi-file batch reads. |
-| `coder::search` | Literal/regex content + path search with context lines, bounded by match/byte budgets. `respect_gitignore: true` skips what `.gitignore` hides; `fuzzy_paths: true` ranks path matches quick-open style, best first. |
+| `coder::search` | Literal/regex content + path search over a folder or one file, with context lines, bounded by match/byte budgets. `respect_gitignore: true` skips what `.gitignore` hides; `fuzzy_paths: true` ranks path matches quick-open style, best first. |
 | `coder::list-folder` | Paginated single-folder listing. |
 | `coder::tree` | Recursive depth- and per-folder-bounded directory snapshot. |
 | `coder::create-file` / `coder::update-file` / `coder::delete-file` / `coder::move` | Batched create, line/regex edits, delete, and atomic rename/move. |
+| `coder::list-templates` | The worker templates `coder::scaffold-worker` creates from, with their language and the compose containers they need. Read from `code.templates`: a local `dir`, or a cached shallow clone of `url` at `ref` (`refresh: true` re-fetches it). |
+| `coder::scaffold-worker` | Create a worker from a template in a missing or empty folder whose last segment is the worker name (default `workers/<name>`), all or nothing, with the template's name token replaced in paths and text, and return `compose_add`, the `compose::add` payload to send whole, adding `start_after` to its entry and missing `requires` as more entries (`{ workers: [compose] }`; the bare `worker` string form drops the scripts). Writes go through the `coder::create-file` path and show in the turn summary. |
 
 Roots come from `fs.host_roots` (with the cwd+`/tmp` fallback noted above);
 protection globs come from `code.non_accessible_globs` in the shipped
@@ -204,6 +222,12 @@ out explicitly below:
 | `C218` | File exceeds `max_read_bytes`/`max_write_bytes`. | `S218` |
 | `C220` | Path resolves inside a configured root but outside the per-call `scope_root` the session is scoped to. | `S220` |
 | `C221` | Optimistic whole-file save conflict: the file no longer matches `expected_revision`; no bytes were written. | n/a |
+| `C230` | Worker templates unavailable: `code.templates.dir` holds no template manifest, or the templates repo cannot be cloned and no cached copy exists. | n/a |
+| `C231` | `coder::scaffold-worker` named a template that does not exist or has no `worker:` block. | n/a |
+| `C232` | Worker name breaks `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` (1–63 characters), or the scaffold `directory` does not end with the worker name. | n/a |
+| `C233` | Scaffold target directory exists and is not empty; nothing was written. | n/a |
+| `C234` | Invalid template: a bad `template.yaml` or `worker:` block, a `files:` entry that is absolute, contains `..`, is missing or leaves `worker.dir` through a symlink, a worker file that is not UTF-8 text (binary files are not supported), or no `containers.<worker.compose>` in its `worker-compose.yaml`. Nothing was written. | n/a |
+| `C235` | `coder::scaffold-worker` with `start` (the default) found a container named after the worker already in the stack: adding it would repoint that container at the new folder. Checked before any write, so nothing was written; pick another name, or pass `start: false`. | n/a |
 
 No separate install: `iii trigger compose::add worker=ide` brings the whole surface.
 
@@ -275,6 +299,44 @@ anyone is attached.
 last sequence number, replayable frames and bytes, and current output target.
 No credentials: it exists to separate a terminal that shows nothing because
 no output arrived from one whose frames the browser dropped.
+
+## Commit messages (`shell::scm::*`)
+
+The Commit panel's **Generate** button writes a commit message with an LLM.
+The page runs git and prepares the diff text; this worker reads its live
+`commit_messages` config (model, reasoning effort, extra instructions), builds
+the prompt and calls `router::complete` on the `llm-router` worker (120 s
+timeout, at most 1024 output tokens). Both functions are console-only
+(`internal: true`, denied to agents in `iii-permissions.yaml`: a call spends
+model budget outside the harness loop's accounting). Install and configure a
+provider on `llm-router` first.
+
+| Function | Request | Response |
+|---|---|---|
+| `shell::scm::commit-message-config` | `{}` | `{ "model": string \| null, "thinking": string, "instructions": string }` from the live config (`model` trimmed, blank → `null`). |
+| `shell::scm::commit-message` | `{ "changes": string, "recent_subjects"?: string[], "fallback_model"?: string \| null }` | `{ "message": string, "model": string }`, `model` being the id actually used. |
+
+- **Model**: `commit_messages.model` when set, else `fallback_model` (the
+  panel passes the chat's default model), else `NO_MODEL`. `provider::model`
+  is split on the first `::` into the router's `provider` and `model`; a bare
+  id sends only `model`.
+- **Thinking**: sent to the router as `thinking_level`; `default` omits it.
+- **Prompt**: a fixed system prompt (imperative summary of at most 72
+  characters, optional 72-column body, no preamble or fences) followed by
+  `commit_messages.instructions` under "The repository's own instructions win
+  over the rules above:". The user turn lists `recent_subjects` for style,
+  then `changes`, cut at 60000 characters with a trailing `[diff truncated]`.
+- **Result**: the text blocks of the answer, trimmed, with a whole-text
+  Markdown fence and one pair of wrapping quotes removed.
+
+Errors carry `{ code, message }`:
+
+| Code | Meaning |
+|---|---|
+| `NO_MODEL` | `commit_messages.model` is unset and no `fallback_model` was passed. |
+| `EMPTY_CHANGES` | `changes` is empty or whitespace. |
+| `ROUTER_FAILED` | `router::complete` failed (provider not configured, `llm-router` not installed, timeout) or the model's turn ended in an error; the message names `router::complete` and the router's reason. |
+| `EMPTY_MESSAGE` | The model answered with no text. |
 
 ## Two surfaces, one contract
 
@@ -457,8 +519,16 @@ Every fire carries the binding's registered `metadata` and `namespace`
 back to the bound function, the same way the engine's own trigger types
 do — the harness relies on it to match a wake to its `__binding`.
 
-Each registration starts one recursive watcher; unregistering (or the
-console GC'ing a closed tab's binding) tears it down. `config.path` goes
+Bindings on one directory (and `include_ignored` setting) share one
+watch: the first starts it, the last to unregister (or the console GC'ing
+a closed tab's binding) tears it down. The watch puts one OS watch on each
+directory, `.git` and symlinks left out, and gitignored trees too unless
+the binding sets `include_ignored: true`. It takes at most 32768
+directories (a sixteenth of the host's `fs.inotify.max_user_watches` when
+that is less), breadth-first from the root: on a bigger tree, changes
+deeper down go unreported and the worker logs a warning once; the binding
+is never refused. On macOS one recursive FSEvents watch covers the whole
+tree instead. `config.path` goes
 through the same path policy as every `coder::*` call — jail containment
 (`fs.host_roots`), the operator denylist, canonicalization — and must be
 a directory: watching a tree is a read of every filename under it, so a

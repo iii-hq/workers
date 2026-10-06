@@ -113,43 +113,77 @@ function parentListed(
   return true
 }
 
+/** Whether `path` lies beneath one of `dirs` (slash-less folder paths). */
+function underAny(path: string, dirs: ReadonlySet<string>): boolean {
+  for (let slash = path.indexOf('/'); slash !== -1; slash = path.indexOf('/', slash + 1)) {
+    if (dirs.has(path.slice(0, slash))) return true
+  }
+  return false
+}
+
+/** A change that leaves the tree as it is: a modify of a path already there
+    with the same kind. */
+function settledIn(tree: FlatTree, change: TreeChange): boolean {
+  if (change.kind === 'deleted') return false
+  const rel = stripDirSlash(change.rel)
+  if (rel === '') return true
+  const kind = tree.kinds.get(rel)
+  if (kind === 'file') return change.dir !== true
+  if (kind === 'dir') return change.dir === true
+  // Unknown kinds are left alone below too; an unseen path may be a create.
+  return kind !== undefined
+}
+
 /** Apply a burst of watcher events. Creations add the path (and any
     missing ancestors); deletions drop it and, for a folder, everything
     beneath it. Modifications are metadata-only and leave the shape alone.
     Returns the same tree when nothing changed, so React state stays put. */
 export function applyTreeChanges(tree: FlatTree, changes: readonly TreeChange[]): FlatTree {
   if (changes.length === 0) return tree
+  // The common burst (a save, an agent's edits) only modifies files the tree
+  // knows already: nothing to copy.
+  if (changes.every((change) => settledIn(tree, change))) return tree
   const paths = [...tree.paths]
   const kinds = new Map(tree.kinds)
   const loaded = new Set(tree.loaded)
   const seen = new Set(paths)
   let changed = false
   let removedAny = false
+  // Folders whose contents go, swept together: a burst that removes many
+  // folders scans the known paths once, not once per folder. A creation
+  // may land beneath one of them, so the sweep runs before each creation.
+  const swept = new Set<string>()
+  const sweep = () => {
+    if (swept.size === 0) return
+    for (const key of kinds.keys()) {
+      if (!underAny(key, swept)) continue
+      kinds.delete(key)
+      loaded.delete(key)
+      seen.delete(key)
+      seen.delete(`${key}/`)
+    }
+    swept.clear()
+  }
   for (const change of changes) {
     const rel = stripDirSlash(change.rel)
     if (rel === '') continue
     if (change.kind === 'deleted') {
       const fileMarker = rel
       const dirMarker = `${rel}/`
-      const prefix = `${rel}/`
       const wasKnown = seen.has(fileMarker) || seen.has(dirMarker)
       if (!wasKnown) continue
+      // Only a folder has anything beneath it to sweep.
+      const wasDir = kinds.get(rel) === 'dir' || seen.has(dirMarker)
       seen.delete(fileMarker)
       seen.delete(dirMarker)
       kinds.delete(rel)
       loaded.delete(rel)
-      for (const key of [...kinds.keys()]) {
-        if (key.startsWith(prefix)) {
-          kinds.delete(key)
-          loaded.delete(key)
-          seen.delete(key)
-          seen.delete(`${key}/`)
-        }
-      }
+      if (wasDir) swept.add(rel)
       removedAny = true
       changed = true
       continue
     }
+    sweep()
     // created / modified / unknown kinds: make sure the path exists with
     // the right kind (a modify of an unseen path is a create we missed).
     // A path under a folder whose listing is unknown stays out: that
@@ -160,16 +194,8 @@ export function applyTreeChanges(tree: FlatTree, changes: readonly TreeChange[])
     if (existingKind !== undefined && existingKind !== 'dir' && existingKind !== 'file') continue
     if (existingKind === 'dir' && !change.dir) {
       // A file replaced a directory: drop the old subtree first.
-      const prefix = `${rel}/`
-      seen.delete(prefix)
-      for (const key of [...kinds.keys()]) {
-        if (key.startsWith(prefix)) {
-          kinds.delete(key)
-          loaded.delete(key)
-          seen.delete(key)
-          seen.delete(`${key}/`)
-        }
-      }
+      seen.delete(`${rel}/`)
+      swept.add(rel)
       removedAny = true
       changed = true
     } else if (existingKind === 'file' && change.dir) {
@@ -180,8 +206,11 @@ export function applyTreeChanges(tree: FlatTree, changes: readonly TreeChange[])
     if (addPath(paths, kinds, seen, rel, change.dir)) changed = true
     if (change.dir && existingKind !== 'dir') loaded.add(rel)
   }
+  sweep()
   if (!changed) return tree
-  const nextPaths = removedAny ? paths.filter((p) => seen.has(p)) : paths
+  // A marker removed and added back in the same burst sits in `paths`
+  // twice; deleting it from `seen` on the way keeps the first only.
+  const nextPaths = removedAny ? paths.filter((p) => seen.delete(p)) : paths
   return { paths: nextPaths, kinds, truncations: tree.truncations, loaded }
 }
 

@@ -9,7 +9,8 @@ export interface SegmentedControlOption<T extends string> {
   value: T
   label: React.ReactNode
   title?: string
-  /** Defaults to a semantic 16px icon inferred from `value`; `false` hides it. */
+  /** Tabs default to a semantic 16px icon inferred from `value`; radios show
+   *  only an icon passed here. `false` hides it. */
   icon?: React.ReactNode | false
 }
 
@@ -122,7 +123,7 @@ export function SegmentedControl<T extends string>({
               active && activeItemClassName,
             )}
           >
-            {variant === 'tabs' ? (
+            {variant === 'tabs' || opt.icon ? (
               <TabIconSlot icon={opt.icon} value={opt.value} />
             ) : null}
             {renderIconOnly ? null : <span>{opt.label}</span>}

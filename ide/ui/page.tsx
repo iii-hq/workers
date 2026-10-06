@@ -21,10 +21,12 @@ import type { Host, PageRenderProps } from '@iii-dev/console-ui'
 import { createShellTriggerRenderer } from './src/function-trigger'
 import { createAgentRunRenderer } from './src/function-trigger/AgentRunView'
 import { createFileChangesRenderer } from './src/function-trigger/FileChangesView'
+import { createScaffoldRenderer } from './src/function-trigger/ScaffoldView'
 import { ShellExplorerPage } from './src/page'
 import { registerShellPalette } from './src/page/palette'
 import { ShellTurnSummary } from './src/page/ShellTurnSummary'
 import { createTerminalOutputRouter } from './src/page/terminal-output-router'
+import { createWorktreeSwitcher } from './src/page/WorktreeSwitcher'
 
 export default function setup(host: Host) {
   // The output subscription belongs to the loaded UI asset, not to a React
@@ -38,13 +40,7 @@ export default function setup(host: Host) {
     id: 'ide',
     title: 'IDE',
     configurationId: 'ide',
-    render: (props: PageRenderProps) => (
-      <ShellExplorerPage
-        host={host}
-        terminalRouter={terminalRouter}
-        {...props}
-      />
-    ),
+    render: (props: PageRenderProps) => <ShellExplorerPage host={host} terminalRouter={terminalRouter} {...props} />,
   })
 
   // File mutations own a prominent chat artifact; register them before the
@@ -53,11 +49,20 @@ export default function setup(host: Host) {
   // one control here instead of the same button in every agent worker.
   host.functionTriggers.register(createAgentRunRenderer(host))
   host.functionTriggers.register(createFileChangesRenderer(host))
+  host.functionTriggers.register(createScaffoldRenderer(host))
   host.functionTriggers.register(createShellTriggerRenderer())
 
   host.chat?.registerTurnSummary?.({
     id: 'shell-last-turn',
     render: ShellTurnSummary,
+  })
+
+  // The branch of the chat's folder, in the composer's project strip beside
+  // the folder, with the worktree switcher behind it.
+  host.chat?.registerComposerControl?.({
+    id: 'ide-worktree-switcher',
+    placement: 'project',
+    render: createWorktreeSwitcher(host),
   })
 
   // The palette reaches the shell before the page is open: files by name

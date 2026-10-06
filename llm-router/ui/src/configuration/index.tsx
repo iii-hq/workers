@@ -5,6 +5,7 @@ import {
   type ConfigFormProps,
   Input,
   type JsonValue,
+  type SecretKeyFieldProps,
   Select,
   type SelectOption,
   SettingsList,
@@ -12,7 +13,7 @@ import {
   SettingsSection,
   Switch,
 } from '@iii-dev/console-ui'
-import { type ReactNode, useEffect, useRef } from 'react'
+import { type ComponentType, type ReactNode, useEffect, useRef } from 'react'
 import { type ProviderFieldDefinition, providerCardIds, providerFieldDefinitions } from './provider-cards'
 
 type JsonObject = { [key: string]: JsonValue }
@@ -99,7 +100,27 @@ const SETTINGS_FIELDS: readonly SettingsField[] = [
   },
 ]
 
-export function LlmRouterConfigForm(props: ConfigFormProps) {
+/** What the router reports about one provider's credential. */
+export interface ProviderCredential {
+  /** The environment variable the provider declares for its key. */
+  envVar?: string
+  connected?: boolean
+  source?: string
+  error?: string
+}
+
+export interface LlmRouterConfigFormProps extends ConfigFormProps {
+  /**
+   * The Console's shared key field (`host.components.SecretKeyField`). When
+   * present, keys go to the secrets store and the slice holds `secret://NAME`;
+   * Consoles without it keep the plain input below.
+   */
+  secretField?: ComponentType<SecretKeyFieldProps>
+  /** `router::provider::list`, by provider id. */
+  credentials?: ReadonlyMap<string, ProviderCredential>
+}
+
+export function LlmRouterConfigForm(props: LlmRouterConfigFormProps) {
   const value = asObject(props.value)
   const providers = asObject(value.providers)
   const providerIds = providerCardIds(props.schema, props.value)
@@ -175,6 +196,8 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
                 rootValue={props.value}
                 slice={asObject(providers[id])}
                 onChange={(next) => commit({ providers: { ...providers, [id]: next } })}
+                secretField={props.secretField}
+                credential={props.credentials?.get(id)}
               />
             ))}
           </div>
@@ -206,7 +229,9 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
                     step={field.key === 'retry_max' ? 1 : 'any'}
                     min={field.key === 'retry_max' ? 0 : undefined}
                     value={configured ? String(settings[field.key]) : ''}
-                    placeholder={field.defaultValue === undefined ? (field.unsetLabel ?? '') : String(field.defaultValue)}
+                    placeholder={
+                      field.defaultValue === undefined ? (field.unsetLabel ?? '') : String(field.defaultValue)
+                    }
                     aria-label={field.label}
                     onChange={(nextValue) => {
                       const next = { ...settings }
@@ -325,12 +350,16 @@ function ProviderCard({
   rootValue,
   slice,
   onChange,
+  secretField,
+  credential,
 }: {
   id: string
   schema: Record<string, unknown> | null
   rootValue: JsonValue
   slice: JsonObject
   onChange(next: JsonObject): void
+  secretField?: ComponentType<SecretKeyFieldProps>
+  credential?: ProviderCredential
 }) {
   const fields = providerFieldDefinitions(schema, rootValue, id)
   const set = (key: string, nextValue: JsonValue | undefined) => {
@@ -354,6 +383,8 @@ function ProviderCard({
               value={slice[field.key]}
               configured={field.key in slice}
               onChange={(nextValue) => set(field.key, nextValue)}
+              secretField={secretField}
+              credential={credential}
             />
           ))
         )}
@@ -368,12 +399,16 @@ function ProviderFieldRow({
   value,
   configured,
   onChange,
+  secretField: SecretField,
+  credential,
 }: {
   providerId: string
   field: ProviderFieldDefinition
   value: JsonValue | undefined
   configured: boolean
   onChange(value: JsonValue | undefined): void
+  secretField?: ComponentType<SecretKeyFieldProps>
+  credential?: ProviderCredential
 }) {
   const fieldId = `llmr-${providerId}-${field.key}`
   const description =
@@ -383,6 +418,41 @@ function ProviderFieldRow({
       : field.defaultValue !== undefined
         ? `Provider default: ${String(field.defaultValue)}`
         : undefined)
+
+  // The provider's key goes through the Console's secrets store, the same
+  // field the model picker and the setup wizard use; the slice keeps only
+  // `secret://NAME`. The save is still this form's.
+  // A provider that declares no key variable signs in on its own (Claude
+  // Code, Codex): its slice still lists `api_key`, but there is nothing to set.
+  if (field.key === 'api_key' && credential && !credential.envVar && !value) {
+    return (
+      <SettingsRow
+        data-field={`providers-${providerId}-${field.key}`}
+        label="API key"
+        description="This provider signs in on its own; there is no key to set here."
+      />
+    )
+  }
+
+  if (SecretField && field.writeOnly && field.kind === 'string') {
+    const name = (field.key === 'api_key' && credential?.envVar) || suggestedEnvVar(providerId, field.key)
+    return (
+      <div className="llmr-cfg-secret-row" data-field={`providers-${providerId}-${field.key}`}>
+        <SecretField
+          name={name}
+          label={field.key === 'api_key' ? 'API key' : field.label}
+          value={typeof value === 'string' ? value : undefined}
+          onChange={(next) => onChange(next)}
+          consumers={['llm-router']}
+          status={
+            field.key === 'api_key' && credential
+              ? { connected: credential.connected, source: credential.source, error: credential.error }
+              : undefined
+          }
+        />
+      </div>
+    )
+  }
 
   if (field.kind === 'structured') {
     return (

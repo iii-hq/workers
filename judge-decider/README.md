@@ -6,10 +6,9 @@ no llama-server. decider-4b v2 is a Qwen3.5-4B-Base fine-tune trained for
 exactly this readout (JevBench v1.4.2 rank 1, 64.1): one forward pass per
 decision, a softmax over the next-token logits of the option labels at the
 model's fitted temperature, no decoding. This worker reads it in decider's own
-prompt layout through llama.cpp (the
-[`llama-cpp-2`](https://crates.io/crates/llama-cpp-2) crate) on the CPU, on
-Metal (macOS) or on Vulkan (Linux x86_64: AMD, NVIDIA and Intel GPUs), picked
-automatically at start.
+prompt layout through llama.cpp (`crates/llama-native`, the engine every local
+judge provider shares) on the CPU, on Metal (macOS) or on Vulkan (Linux
+x86_64: AMD, NVIDIA and Intel GPUs), picked automatically at start.
 
 On an RX 6900 XT (Vulkan), against the other judge providers on the same
 machine:
@@ -29,7 +28,7 @@ machine:
   skipped and the CPU runs the model, so the same package works on GPU
   desktops, servers and containers. The CPU module is picked for the host
   (AVX2, AVX-512, AMX variants). The package ships `libllama`, `libggml`,
-  `libggml-base`, the CPU variants and the Vulkan module (≈77 MB) beside the
+  `libggml-base`, the CPU variants and the Vulkan module (≈71 MB) beside the
   binary, which finds them through its `$ORIGIN` runpath.
 - **Linux aarch64**: CPU, statically linked.
 
@@ -42,20 +41,19 @@ chosen device is logged at start as `selected inference device`.
 iii trigger compose::add worker=judge-decider
 ```
 
-The model loads only while decider is the judge hub's **default provider**
-(`provider: decider` under **Settings → Workers → judge**): the worker follows
-the hub's configuration and, when another provider becomes the default,
-unregisters its functions and releases the model (VRAM included, about 6 GB);
-it loads again when decider is selected. The first load downloads the pinned
-GGUF (`mindchain/decider-4b-v2-GGUF` Q4_K_M, 2.7 GB, quantized by llama.cpp
-from `Mapika/decider-4b` at tag `v2`) into the hf-hub cache (`$HF_HOME`,
-default `~/.cache/huggingface`). The functions register only once the model
-answers; until then, and while another provider is the default, the hub
-reports `provider_unavailable`, also for calls that name
-`"provider": "decider"`. To keep it loaded while another provider is the
+The functions register at start; the model loads on demand. While decider is
+the judge hub's **default provider** (`provider: decider` under **Settings →
+Workers → judge**) it loads at once and stays loaded. Otherwise the first call
+that names `"provider": "decider"` (or comes from a session that picked it)
+loads it, and it is released (VRAM included, about 6 GB) after 10 minutes
+without calls. A call that cannot wait for the load answers `deadline` while
+the load goes on for the next one. The first load downloads the pinned GGUF
+(`mindchain/decider-4b-v2-GGUF` Q4_K_M, 2.7 GB, quantized by llama.cpp from
+`Mapika/decider-4b` at tag `v2`) into the hf-hub cache (`$HF_HOME`, default
+`~/.cache/huggingface`). To keep it loaded while another provider is the
 default, turn on **Keep every local provider loaded** (`preload_all`) in the
 judge settings. A hub build that does not expose `judge::configuration-id`
-leaves the model loaded from the start. Air-gapped installs set
+keeps the model loaded from the start. Air-gapped installs set
 `III_DECIDER_GGUF` to a local GGUF file.
 
 The repository's `main` is v2.1, which trades some of v2's accuracy on hard
@@ -123,14 +121,19 @@ the levels from the middle of the scale. A question without instructions asks
 Every prompt of one evaluation starts with the same `Context:` tokens. The
 worker prefills them once, snapshots the sequence, restores it into up to
 `parallel_questions` sequences and decodes the question blocks together in
-one batch (`iii_llama_runtime::scorer`, shared with judge-semif).
+one batch (`iii_llama_runtime::scorer`, shared with judge-semif). The
+snapshot stays in the model's device memory (VRAM on a GPU), so restoring it
+never goes through the host; the latest one is held until the next evaluation
+replaces it, about 300 MB for a 7.6k-token context.
 `usage.input_tokens` counts the decoded tokens (the shared prefix once).
 
 `tests/decider.rs` checks the prompts and token ids against decider's own
 rows and the answers (probabilities and confidence) against the bf16 weights
 computed in float32 (`tests/fixtures/make_decider_prompts.py`): an f16
 conversion agrees to 0.0025, Q8_0 to 0.0074, and the shipped Q4_K_M to 0.12
-on a near-flat 12-option question (0.02 elsewhere). For the closer Q8_0
+(0.14 on the CPU; 0.03 elsewhere) on a near-flat 12-option question. There
+llama.cpp b11379 puts `area0` (0.17) just above the reference's answer `auth`
+(0.16 against 0.28), so that question's choice check fails. For the closer Q8_0
 (4.5 GB), convert `Mapika/decider-4b` at `v2` with llama.cpp's
 `convert_hf_to_gguf.py --outtype q8_0 --no-mtp` and point `III_DECIDER_GGUF`
 at it.
@@ -151,15 +154,16 @@ at it.
 
 ## Building
 
-llama.cpp is compiled from source through `crates/llama-runtime`: `cmake`, a C++ compiler and `libclang`
-(for bindgen) are required; if libclang lives outside the default search path
-set `LIBCLANG_PATH` (and `BINDGEN_EXTRA_CLANG_ARGS=-I<clang>/include` when its
-builtin headers are not found). Linux x86_64 builds also need the Vulkan
-loader headers, the SPIR-V headers and `glslc` (Ubuntu: `libvulkan-dev
-spirv-headers glslc`) to compile the Vulkan module (only the module links
-`libvulkan`, the binary does not). The build copies the modules and libraries
-beside the binary, so `target/release` has the published layout; the release
-catalog ships them as the artifact's `companions`. Windows is not published
-yet.
+llama.cpp b11379 is compiled from source through `crates/llama-native`: its
+`build.rs` downloads GitHub's source archive (checked against a pinned
+sha256), builds it with cmake and compiles a small C shim against it, with no
+bindgen. It needs `curl`, `tar`, `patch`, `cmake` and a C++17 compiler; an
+offline build points `III_LLAMA_CPP_TARBALL` at a copy of the archive, checked
+the same way. Linux x86_64 builds also need the Vulkan loader headers, the
+SPIR-V headers and `glslc` (Ubuntu: `libvulkan-dev spirv-headers glslc`) to
+compile the Vulkan module (only the module links `libvulkan`, the binary does
+not). The build copies the modules and libraries beside the binary, so
+`target/release` has the published layout; the release catalog ships them as
+the artifact's `companions`. Windows is not published yet.
 
 For the full API, read the hub's [reference](../judge/reference.md).

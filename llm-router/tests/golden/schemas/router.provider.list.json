@@ -1,5 +1,5 @@
 {
-  "description": "List registered providers with their configured/available status.",
+  "description": "List registered providers with their configured/available status and where each credential comes from (credential_source, credential_ref, credential_error; never a value).",
   "function_id": "router::provider::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -10,7 +10,18 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "CredentialOrigin": {
+        "description": "`credential_source`: where the precedence found the provider's credential. `secret` is a `secret://NAME` reference in the slice, resolved through the `secrets` worker; `configured` says whether it actually yielded one.",
+        "enum": [
+          "config",
+          "env",
+          "secret",
+          "none"
+        ],
+        "type": "string"
+      },
       "ProviderInfo": {
+        "description": "One `router::provider::list` entry.",
         "properties": {
           "available": {
             "type": "boolean"
@@ -24,6 +35,31 @@
               "string",
               "null"
             ]
+          },
+          "credential_error": {
+            "description": "Why the configured credential cannot be used, in words an operator can act on (e.g. the secret is missing or this worker may not read it).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "credential_ref": {
+            "description": "The slice's `secret://NAME` reference, when it uses one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "credential_source": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CredentialOrigin"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the credential comes from: `config`, `env`, `secret` or `none`."
           },
           "display_name": {
             "type": "string"

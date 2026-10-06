@@ -67,6 +67,8 @@ export interface HarnessStack {
   ready: ReadyManifest
   consoleUrl: string
   trigger(): Promise<unknown>
+  /** Call any engine function, the way an agent or another worker would. */
+  invoke(functionId: string, payload: Record<string, unknown>): Promise<unknown>
   waitForTurnCompleted(): Promise<TurnCompletedEvent>
   finish(): Promise<PlaygroundResult>
 }
@@ -273,6 +275,8 @@ export const test = base.extend<FixtureValues>({
             function_id: 'harness::send',
             payload: manifest.send,
           }),
+        invoke: (functionId, payload) =>
+          connectedSdk.trigger({ function_id: functionId, payload }),
         waitForTurnCompleted: () => armCompletion(connectedSdk, manifest),
         finish,
       }
@@ -300,10 +304,9 @@ export async function openSession(
 ): Promise<void> {
   await page.goto(stack.consoleUrl)
   // Let the Console settle its initial local-draft selection before changing
-  // sessions; otherwise that bootstrap effect can overwrite this click.
-  await expect(
-    page.locator('[role="button"][aria-current="page"]'),
-  ).toHaveCount(1)
+  // sessions; otherwise that bootstrap effect can overwrite this click. The
+  // draft has no sidebar row, but its chat view mounts once it is selected.
+  await expect(page.locator('[data-chat-session-id]')).toHaveCount(1)
   const session = page.getByRole('button', {
     name: `open ${stack.ready.session.title}`,
     exact: true,

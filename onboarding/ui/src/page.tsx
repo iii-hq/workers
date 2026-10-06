@@ -12,7 +12,6 @@ import {
   StatusPanel,
   uiClasses,
 } from '@iii-dev/console-ui'
-import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { ChevronRight } from 'lucide-react'
@@ -44,11 +43,15 @@ const TOUR_THINKING_LEVEL = 'minimal'
 
 /**
  * How long `Opening…` may stand before the button gives up and offers
- * `Continue` anyway. The console re-reads its layout on a five-second poll,
- * so a panel opened through the engine lands within that; this leaves room
- * for a slow one without ever stranding the operator.
+ * `Continue` anyway. The console re-reads its layout when
+ * `console::workspace::changed` rings, or, on an older console without that
+ * trigger, within its five-second poll; this leaves room for a slow one
+ * without ever stranding the operator.
  */
 const OPEN_TIMEOUT_MS = 8_000
+
+/** Chat, the tour, then the panel a step opens beside it. */
+const TOUR_PANEL_SIZES = [0.3, 0.4, 0.3]
 
 /** How long the box stays on what a step's `on_closed` note points at. */
 const HINT_SPOTLIGHT_MS = 5_000
@@ -91,7 +94,7 @@ type StepState = 'complete' | 'active' | 'pending'
 
 const DOT_TONE: Record<StepState, 'ok' | 'accent' | 'ink'> = { complete: 'ok', active: 'accent', pending: 'ink' }
 
-/** Guide initial setup and reconcile layout changes from the addressed Console configuration. */
+/** Guide initial setup and react to the console's workspace layout changes. */
 export function OnboardingPage({ host, onRequestClose, conversationId }: { host: Host } & PageRenderProps) {
   const [tour, setTour] = useState<Tour | null>(null)
   const [records, setRecords] = useState<StepRecords>({})
@@ -105,9 +108,10 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
   // step used to close on the first one, before the panel had been looked at.
   const [opened, setOpened] = useState<string | null>(null)
   // The step whose panel has been asked for but is not on screen yet. The
-  // engine stores the layout in milliseconds; the console re-reads it on a
-  // five-second poll, so the button says `Opening…` for that whole gap
-  // instead of looking like the click was missed.
+  // engine stores the layout in milliseconds and the console re-reads it on
+  // the next `console::workspace::changed` ring (up to five seconds on a
+  // console without it), so the button says `Opening…` for that gap instead
+  // of looking like the click was missed.
   const [opening, setOpening] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -176,37 +180,52 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
    * of chat) — a panel the tour is pointing at belongs on the far side of the
    * tour, not wedged between the tour and the conversation.
    *
-   * The widths ride along in the same call, so placement and sizing are one
-   * write: chat, the tour, then the panel. `sizes` is rejected outright when
-   * it does not match the column count, which is why it is sent only for the
-   * three-column layout this page knows it is making.
+   * `host.panels.openScreen` places it in this browser, in the tab showing
+   * this page: optimistic, with no bus round trip, and never in whichever tab
+   * another browser clicked last. The widths ride along, so placement and
+   * sizing are one step: chat, the tour, then the panel. A tab the screen is
+   * only reused in keeps its own widths.
    *
-   * The button moves on whether or not the call lands: an older console
-   * rejects `relative_to`, and the step is about reading the panel, not about
-   * us. The step itself closes on the `Continue` this turns into.
+   * An older console has no `openScreen`, so the page falls back to
+   * `console::workspace::open`, where a `sizes` that does not match the
+   * column count is rejected outright and the call retries without it. The
+   * button moves on whether or not that call lands: the step is about reading
+   * the panel, not about us. The step itself closes on the `Continue` this
+   * turns into.
    *
    * `Continue` waits for the panel to be ON SCREEN, not for the call to
-   * return. Returning only means the engine stored the layout — the console
-   * polls that entry, so the panel follows up to five seconds later, and a
-   * button that flipped on the response would be pointing at nothing.
+   * return: over the bus, returning only means the engine stored the layout,
+   * and the console re-reads it when the layout-change ring reaches it (or,
+   * on an older console, on its five-second poll).
    */
   const openScreen = useCallback(
     (step: Step) => {
+      const screen = step.screen
       const open = (sizes?: number[]) =>
         host.iii.trigger('console::workspace::open', {
-          screen: step.screen,
+          screen,
           relative_to: 'ext:onboarding',
           direction: 'right',
           ...(sizes ? { sizes } : {}),
         })
-      const placed = step.screen
-        ? // A reused tab keeps its own column count, and a `sizes` that does
-          // not match it is rejected outright. The widths are the nicety; the
-          // screen is the step, so a rejection retries without them.
-          open([0.3, 0.4, 0.3])
-            .catch(() => open())
-            .catch(() => {})
-        : Promise.resolve()
+      const place = (): Promise<unknown> => {
+        if (!screen) return Promise.resolve()
+        if (host.panels?.openScreen) {
+          host.panels.openScreen({
+            screen,
+            relativeTo: 'ext:onboarding',
+            direction: 'right',
+            sizes: TOUR_PANEL_SIZES,
+          })
+          return Promise.resolve()
+        }
+        // The widths are the nicety; the screen is the step, so a rejection
+        // retries without them.
+        return open(TOUR_PANEL_SIZES)
+          .catch(() => open())
+          .catch(() => {})
+      }
+      const placed = place()
       setOpening(step.id)
       void placed
         .then(() => waitForAnchor(step.anchors, OPEN_TIMEOUT_MS))
@@ -268,11 +287,11 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
   /**
    * A step's `on_closed` screen, once the operator has closed it.
    *
-   * The console keeps its workspace layout in its own `console`
-   * configuration entry, so closing a pane or a tab IS a write to that
-   * entry — which the `configuration` trigger reports. That makes this
-   * reactive rather than polled: one read of the layout per layout change,
-   * and none while nothing moves.
+   * The console rings `console::workspace::changed` after every layout
+   * write, closing a pane or a tab included. That makes this reactive rather
+   * than polled: one read of the layout per layout change, and none while
+   * nothing moves. A console without the trigger leaves the binding pending,
+   * and only the check below runs.
    *
    * Checked once when the step opens too: the operator may have closed the
    * screen before reading down this far.
@@ -298,22 +317,21 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
     const localId = `onboarding::layout::${watching}`
     let offHandler: () => void = () => {}
     let offTrigger: () => void = () => {}
-    void resolveConfigurationId(host.iii, 'console')
-      .then((id) => {
-        if (!live) return
-        offHandler = host.iii.on(localId, check)
-        offTrigger = host.iii.registerTrigger({
-          type: 'configuration',
-          function_id: `${localId}::${host.iii.browserId}`,
-          config: { configuration_id: id, event_types: ['configuration:updated'] },
-        })
-        // Bind first, then recover changes that happened during identity lookup.
-        check()
+    try {
+      offHandler = host.iii.on(localId, check)
+      offTrigger = host.iii.registerTrigger({
+        type: 'console::workspace::changed',
+        function_id: `${localId}::${host.iii.browserId}`,
+        config: {},
       })
-      .catch(() => {
-        offHandler()
-        if (live) check()
-      })
+    } catch {
+      // Same rule as `bindCondition`: no handler without its trigger. The
+      // check below still runs once.
+      offHandler()
+      offHandler = () => {}
+    }
+    // Bind first, then read: a close that landed before the binding still counts.
+    check()
     return () => {
       live = false
       offTrigger()

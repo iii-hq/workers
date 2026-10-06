@@ -2,9 +2,10 @@
 //! the bus, plus the `get`/`set` pair the SPA persists the strip through.
 //!
 //! The workspace layout (tabs, columns, screens, active pointer) is
-//! server-persisted in `<data_dir>/workspace.json` ([`WorkspaceStore`]) and
-//! polled by every connected browser, so a caller that writes it is showing
-//! the human something next to the conversation. It is ephemeral per-instance
+//! server-persisted in `<data_dir>/workspace.json` ([`WorkspaceStore`]). Every
+//! write rings `console::workspace::changed`, which each connected browser
+//! binds to re-read at once, so a caller that writes it is showing the human
+//! something next to the conversation. It is ephemeral per-instance
 //! state — deliberately NOT part of the `console` configuration entry, whose
 //! YAML is meant to be committed. These functions wrap the read-modify-write
 //! with the same placement rules the SPA uses (`web/src/lib/workspace-tabs.ts`);
@@ -15,19 +16,28 @@
 //!
 //! ```json
 //! { "tabs": [ { "id", "name"?, "columns", "screens", "paneIds"?, "sizes"? } ],
-//!   "activeTabId": "tab-…", "activatedAt": 1710000000000, "activatedBy": "browser" }
+//!   "activeTabId": "tab-…", "activatedAt": 1710000000000, "activatedBy": "browser",
+//!   "revision": 7 }
 //! ```
+//!
+//! `revision` belongs to the store: every write stamps it, and `set` refuses
+//! a copy computed from an older one (`WORKSPACE_CONFLICT`).
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
+use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::protocol::{TriggerRequest, TriggerRequestWithMetadata};
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{IIIClient, RegisterFunction, RegisterTriggerType, TriggerAction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use tokio::sync::mpsc;
 
-use crate::workspace_store::WorkspaceStore;
+use crate::workspace_store::{self, WorkspaceStore};
 
 pub const CHAT_SCREEN: &str = "chat";
 pub const CHAT_SESSION_SCREEN_PREFIX: &str = "chat:";
@@ -39,6 +49,11 @@ const CODE_INVALID_SCREEN: &str = "WORKSPACE_INVALID_SCREEN";
 const CODE_INVALID_SIZES: &str = "WORKSPACE_INVALID_SIZES";
 const CODE_INVALID_LAYOUT: &str = "WORKSPACE_INVALID_LAYOUT";
 const CODE_UNAVAILABLE: &str = "WORKSPACE_UNAVAILABLE";
+const CODE_CONFLICT: &str = "WORKSPACE_CONFLICT";
+
+/// Rung after every layout write; the event is empty, re-read with `list`.
+pub const CHANGED_TRIGGER: &str = "console::workspace::changed";
+const RING_GAP: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Tab {
@@ -308,7 +323,8 @@ pub enum Direction {
 #[serde(rename_all = "kebab-case")]
 pub enum PlacementRequest {
     /// Reuse a tab already showing the screen, else place it beside
-    /// `relative_to` in the active tab, else open a fresh tab.
+    /// `relative_to` (in the tab showing it when it is a named screen, the
+    /// active tab otherwise), else open a fresh tab.
     #[default]
     Auto,
     /// Always open a fresh tab, even when the screen is mounted elsewhere and
@@ -410,9 +426,13 @@ fn place_beside(
 }
 
 /// Stay on the active tab when it already shows the screen, else reuse the
-/// tab that does; otherwise place it beside `relative_to` in the active tab,
-/// on the `direction` side; otherwise open a fresh tab. Existing screens are
-/// never replaced.
+/// tab that does; otherwise place it beside `relative_to`, on the `direction`
+/// side; otherwise open a fresh tab. Existing screens are never replaced.
+///
+/// A named anchor (anything but the generic `chat`) is looked for in every
+/// tab, the active one first: the caller asked for a spot beside a screen it
+/// can see, and the active pointer is whichever browser clicked last. The
+/// generic `chat` anchor, which most tabs show, stays on the active tab.
 pub fn open_screen(
     tabs: &[Tab],
     active_tab_id: &str,
@@ -438,8 +458,19 @@ pub fn open_screen(
             screens: existing.normalized_screens(existing.column_count()),
         };
     }
+    let holds_anchor = |tab: &Tab| {
+        anchor_column(&tab.normalized_screens(tab.column_count()), relative_to).is_some()
+    };
+    let target = if relative_to == CHAT_SCREEN {
+        active
+    } else {
+        active
+            .filter(|tab| holds_anchor(tab))
+            .or_else(|| tabs.iter().find(|tab| holds_anchor(tab)))
+            .or(active)
+    };
     if let Some((placed, column, placement)) =
-        active.and_then(|tab| place_beside(tab, screen, relative_to, direction, new_pane_id))
+        target.and_then(|tab| place_beside(tab, screen, relative_to, direction, new_pane_id))
     {
         let placed_id = placed.id.clone();
         let mut next = tabs.to_vec();
@@ -645,14 +676,17 @@ struct Layout {
 }
 
 impl Layout {
+    /// `activate` stamps a function activation even when the pointer stays:
+    /// every browser follows it, not only those whose pointer it moves.
     async fn store(
         self,
         store: &WorkspaceStore,
         tabs: &[Tab],
         active_tab_id: &str,
+        activate: bool,
     ) -> Result<(), Error> {
         let merged = merge_tabs(&self.raw, tabs);
-        let moved = active_tab_id != self.active_tab_id;
+        let moved = activate || active_tab_id != self.active_tab_id;
         store
             .save(&with_layout(self.value, &merged, active_tab_id, moved))
             .await
@@ -715,8 +749,11 @@ pub struct OpenInput {
     #[serde(default)]
     pub session_id: Option<String>,
     /// The screen the new column lands next to, in the same vocabulary as
-    /// `screen`. Defaults to `chat`, which matches whichever chat panel is
-    /// mounted. A screen that is not mounted puts the column at the end.
+    /// `screen`. Defaults to `chat`, which matches whichever chat panel the
+    /// active tab shows. A named screen is looked for in every tab, the
+    /// active one first, and the column lands in the tab showing it. A screen
+    /// that is not mounted anywhere puts the column at the end of the active
+    /// tab.
     #[serde(default)]
     pub relative_to: Option<String>,
     /// Which side of `relative_to` to land on: `right` (default) or `left`.
@@ -728,7 +765,8 @@ pub struct OpenInput {
     /// to let the console share the widths out.
     #[serde(default)]
     pub sizes: Option<Vec<f64>>,
-    /// Make the tab holding the screen the active one (default true).
+    /// Make the tab holding the screen the active one in every connected
+    /// browser (default true), even when it already was the active tab.
     #[serde(default)]
     pub activate: Option<bool>,
     /// `auto` (default) reuses a tab already showing the screen; `new-tab`
@@ -780,6 +818,12 @@ pub struct GetOutput {
 pub struct SetInput {
     /// The whole layout document; replaces what is stored.
     pub value: Value,
+    /// The `revision` of the document `value` was computed from. When the
+    /// stored layout has moved past it, nothing is written and the call fails
+    /// `WORKSPACE_CONFLICT`: re-read and apply the change again. Omitted, the
+    /// write is unconditional.
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -787,7 +831,230 @@ pub struct SetOutput {
     pub ok: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChangedSpec {}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ChangedEvent {}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Binding {
+    function_id: String,
+    namespace: Option<String>,
+}
+
+type Bindings = Arc<RwLock<HashMap<String, Binding>>>;
+
+/// The map mirrors the engine's register/unregister callbacks. They reach this
+/// handler in arrival order (the SDK's connection runtime is single-threaded
+/// and FIFO) and are applied without an `.await`; one before the map write
+/// would let a reattach's unregister/register pair land out of order.
+///
+/// ponytail: a binding whose unregister never arrives (engine restart) stays
+/// until the console restarts, and every ring to it logs "function not found"
+/// engine-side. Ring with a short awaited timeout and prune on that error if
+/// the log ever matters.
+struct ChangedHandler {
+    bindings: Bindings,
+    /// Every binding is rung once as soon as it is live: a browser's first read
+    /// raced its registration, and a re-registration after a reconnect missed
+    /// whatever was written while the socket was down.
+    joined: mpsc::UnboundedSender<Binding>,
+}
+
+#[async_trait]
+impl TriggerHandler for ChangedHandler {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        serde_json::from_value::<ChangedSpec>(config.config.clone()).map_err(|error| {
+            Error::Handler(format!(
+                "{CHANGED_TRIGGER} config must be an empty object: {error}"
+            ))
+        })?;
+        let binding = Binding {
+            function_id: config.function_id,
+            namespace: config.namespace,
+        };
+        self.bindings
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(config.id, binding.clone());
+        let _ = self.joined.send(binding);
+        Ok(())
+    }
+
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        self.bindings
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&config.id);
+        Ok(())
+    }
+}
+
+/// Ring every `console::workspace::changed` binding after each store write:
+/// browsers do not poll the layout, they re-read it on the ring. The writer's
+/// own tab is rung too: an injected page (onboarding) calling `open` over the
+/// bus is the tab that has to show the result.
+fn register_changed(iii: &Arc<IIIClient>, store: &WorkspaceStore) {
+    let bindings = Bindings::default();
+    let (joined, mut joined_rx) = mpsc::unbounded_channel();
+    let _ = iii.register_trigger_type(
+        RegisterTriggerType::new(
+            CHANGED_TRIGGER,
+            "Fires after every change to the console workspace layout: open, close, or a \
+             browser's own edit, and once when a binding registers. Bind with an empty \
+             config. The event is empty; re-read the layout with console::workspace::list.",
+            ChangedHandler {
+                bindings: bindings.clone(),
+                joined,
+            },
+        )
+        .trigger_request_format::<ChangedSpec>()
+        .call_request_format::<ChangedEvent>(),
+    );
+    let joined_iii = iii.clone();
+    tokio::spawn(async move {
+        while let Some(target) = joined_rx.recv().await {
+            ring(&joined_iii, target).await;
+        }
+    });
+    // Subscribed before the task starts, so no save slips between the two.
+    let mut changed = store.subscribe();
+    let iii = iii.clone();
+    tokio::spawn(async move {
+        while changed.changed().await.is_ok() {
+            let targets: Vec<Binding> = bindings
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .values()
+                .cloned()
+                .collect();
+            for target in targets {
+                ring(&iii, target).await;
+            }
+            // ponytail: a fixed gap bounds a burst (the divider writes on every
+            // keydown) to ~10 rings/s per browser; the watch channel still rings
+            // once more after the burst ends.
+            tokio::time::sleep(RING_GAP).await;
+        }
+    });
+}
+
+async fn ring(iii: &IIIClient, target: Binding) {
+    let request = TriggerRequest {
+        function_id: target.function_id.clone(),
+        payload: json!({}),
+        action: Some(TriggerAction::Void),
+        timeout_ms: None,
+    };
+    let request: TriggerRequestWithMetadata = match target.namespace {
+        Some(namespace) => request.namespace(namespace),
+        None => request.into(),
+    };
+    if let Err(error) = iii.trigger(request).await {
+        tracing::debug!(function_id = %target.function_id, %error, "workspace ring failed");
+    }
+}
+
+async fn open(store: &WorkspaceStore, input: OpenInput) -> Result<OpenOutput, Error> {
+    let screen = validated_screen_target(&input.screen, input.session_id.as_deref())?;
+    let relative_to = match input.relative_to.as_deref() {
+        Some(raw) => validated_screen(raw.trim())?,
+        None => CHAT_SCREEN.to_string(),
+    };
+    let direction = input.direction.unwrap_or_default();
+    let activate = input.activate.unwrap_or(true);
+    let _guard = store.lock().await;
+    let layout = load_layout(store).await?;
+    let opened = match input.placement.unwrap_or_default() {
+        PlacementRequest::NewTab => open_in_new_tab(&layout.tabs, &screen, new_tab_id),
+        PlacementRequest::Auto => open_screen(
+            &layout.tabs,
+            &layout.active_tab_id,
+            &screen,
+            &relative_to,
+            direction,
+            new_tab_id,
+            new_pane_id,
+        ),
+    };
+    let active_tab_id = if activate {
+        opened.tab_id.clone()
+    } else {
+        layout.active_tab_id.clone()
+    };
+    // Placement and widths land in ONE store. A caller that opened
+    // first and resized second would leave a gap, and the browser
+    // writes this same entry on every divider drag.
+    let mut tabs = opened.tabs.clone().unwrap_or_else(|| layout.tabs.clone());
+    let resized = match input.sizes.as_deref() {
+        Some(requested) => {
+            let tab = tabs
+                .iter_mut()
+                .find(|t| t.id == opened.tab_id)
+                .ok_or_else(|| remote(CODE_INVALID_SIZES, "the opened tab is gone"))?;
+            let columns = tab.column_count();
+            let sizes = validated_sizes(requested, columns)?;
+            *tab = tab.with_layout(tab.normalized_screens(columns), Some(sizes), None);
+            true
+        }
+        None => false,
+    };
+    // An activating open always writes: the stamp is what makes a browser
+    // showing another tab switch to this one, pointer moved or not.
+    if opened.tabs.is_some() || resized || activate {
+        layout.store(store, &tabs, &active_tab_id, activate).await?;
+    }
+    let sizes = tabs
+        .iter()
+        .find(|t| t.id == opened.tab_id)
+        .map(|t| t.normalized_sizes(t.column_count()))
+        .unwrap_or_default();
+    Ok(OpenOutput {
+        tab_id: opened.tab_id,
+        column: opened.column,
+        placement: opened.placement,
+        screens: opened.screens,
+        sizes,
+        activated: activate,
+    })
+}
+
+async fn set(store: &WorkspaceStore, input: SetInput) -> Result<SetOutput, Error> {
+    if !input.value.is_object() {
+        return Err(remote(
+            CODE_INVALID_LAYOUT,
+            "`value` must be the layout document (a JSON object)",
+        ));
+    }
+    let _guard = store.lock().await;
+    if let Some(expected) = input.expected_revision {
+        let stored = store
+            .load()
+            .await
+            .map_err(|e| remote(CODE_UNAVAILABLE, e))?
+            .as_ref()
+            .map_or(0, workspace_store::revision);
+        if stored != expected {
+            return Err(remote(
+                CODE_CONFLICT,
+                format!(
+                    "the layout moved to revision {stored} after revision {expected} was read; \
+                     re-read it and apply the change again"
+                ),
+            ));
+        }
+    }
+    store
+        .save(&input.value)
+        .await
+        .map_err(|e| remote(CODE_UNAVAILABLE, e))?;
+    Ok(SetOutput { ok: true })
+}
+
 pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
+    register_changed(iii, &store);
     let workspace = store.clone();
     iii.register_function(
         "console::workspace::get",
@@ -817,24 +1084,12 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
         "console::workspace::set",
         RegisterFunction::new_async(move |input: SetInput| {
             let store = workspace.clone();
-            async move {
-                if !input.value.is_object() {
-                    return Err(remote(
-                        CODE_INVALID_LAYOUT,
-                        "`value` must be the layout document (a JSON object)",
-                    ));
-                }
-                let _guard = store.lock().await;
-                store
-                    .save(&input.value)
-                    .await
-                    .map_err(|e| remote(CODE_UNAVAILABLE, e))?;
-                Ok::<_, Error>(SetOutput { ok: true })
-            }
+            async move { set(&store, input).await }
         })
         .description(
             "Internal: replace the raw console workspace layout document wholesale \
-             (the SPA's read-modify-write path). Agents use `console::workspace::open` \
+             (the SPA's read-modify-write path; `expected_revision` refuses a stale \
+             copy with WORKSPACE_CONFLICT). Agents use `console::workspace::open` \
              and `close`.",
         )
         .metadata(json!({ "internal": true })),
@@ -879,76 +1134,15 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
         "console::workspace::open",
         RegisterFunction::new_async(move |input: OpenInput| {
             let store = workspace.clone();
-            async move {
-                let screen = validated_screen_target(&input.screen, input.session_id.as_deref())?;
-                let relative_to = match input.relative_to.as_deref() {
-                    Some(raw) => validated_screen(raw.trim())?,
-                    None => CHAT_SCREEN.to_string(),
-                };
-                let direction = input.direction.unwrap_or_default();
-                let activate = input.activate.unwrap_or(true);
-                let _guard = store.lock().await;
-                let layout = load_layout(&store).await?;
-                let opened = match input.placement.unwrap_or_default() {
-                    PlacementRequest::NewTab => open_in_new_tab(&layout.tabs, &screen, new_tab_id),
-                    PlacementRequest::Auto => open_screen(
-                        &layout.tabs,
-                        &layout.active_tab_id,
-                        &screen,
-                        &relative_to,
-                        direction,
-                        new_tab_id,
-                        new_pane_id,
-                    ),
-                };
-                let active_tab_id = if activate {
-                    opened.tab_id.clone()
-                } else {
-                    layout.active_tab_id.clone()
-                };
-                let pointer_moved = active_tab_id != layout.active_tab_id;
-                // Placement and widths land in ONE store. A caller that opened
-                // first and resized second would leave a gap, and the browser
-                // writes this same entry on every divider drag.
-                let mut tabs = opened.tabs.clone().unwrap_or_else(|| layout.tabs.clone());
-                let resized = match input.sizes.as_deref() {
-                    Some(requested) => {
-                        let tab = tabs
-                            .iter_mut()
-                            .find(|t| t.id == opened.tab_id)
-                            .ok_or_else(|| remote(CODE_INVALID_SIZES, "the opened tab is gone"))?;
-                        let columns = tab.column_count();
-                        let sizes = validated_sizes(requested, columns)?;
-                        *tab = tab.with_layout(tab.normalized_screens(columns), Some(sizes), None);
-                        true
-                    }
-                    None => false,
-                };
-                if opened.tabs.is_some() || resized || pointer_moved {
-                    layout.store(&store, &tabs, &active_tab_id).await?;
-                }
-                let sizes = tabs
-                    .iter()
-                    .find(|t| t.id == opened.tab_id)
-                    .map(|t| t.normalized_sizes(t.column_count()))
-                    .unwrap_or_default();
-                Ok::<_, Error>(OpenOutput {
-                    tab_id: opened.tab_id,
-                    column: opened.column,
-                    placement: opened.placement,
-                    screens: opened.screens,
-                    sizes,
-                    activated: activate,
-                })
-            }
+            async move { open(&store, input).await }
         })
         .description(
             "Show a screen in the console workspace next to the conversation (reusing the tab \
-             that already shows it). Screens: `ext:ide` (files), `ext:browser`, \
-             `ext:editor`, `workers`, or `{\"screen\":\"chat\",\"session_id\":\"<id>\"}` \
-             for a pinned chat. It lands right of the chat panel unless \
-             `relative_to` names another mounted screen, and `direction` picks the side \
-             (`right` or `left`).",
+             that already shows it) and switch every open console to that tab. Screens: \
+             `ext:ide` (files), `ext:browser`, `ext:editor`, `workers`, or \
+             `{\"screen\":\"chat\",\"session_id\":\"<id>\"}` for a pinned chat. It lands \
+             right of the chat panel unless `relative_to` names another screen, which is \
+             found in whichever tab shows it; `direction` picks the side (`right` or `left`).",
         ),
     );
 
@@ -964,7 +1158,7 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
                 let (tabs, tab_ids) = close_screen(&layout.tabs, &screen);
                 if !tab_ids.is_empty() {
                     let active_tab_id = layout.active_tab_id.clone();
-                    layout.store(&store, &tabs, &active_tab_id).await?;
+                    layout.store(&store, &tabs, &active_tab_id, false).await?;
                 }
                 Ok::<_, Error>(CloseOutput { tab_ids })
             }
@@ -1432,7 +1626,10 @@ mod tests {
             fixed_pane_id,
         );
         let tabs = opened.tabs.unwrap();
-        layout.store(&store, &tabs, "tab-home").await.unwrap();
+        layout
+            .store(&store, &tabs, "tab-home", false)
+            .await
+            .unwrap();
 
         let reloaded = load_layout(&store).await.unwrap();
         assert_eq!(reloaded.tabs, tabs);
@@ -1444,6 +1641,170 @@ mod tests {
             json!(["chat", "ext:ide", "traces"])
         );
         assert!(doc.get("workspace").is_none());
+        let _ = std::fs::remove_dir_all(store.dir().await);
+    }
+
+    fn changed_binding(id: &str, config: Value) -> TriggerConfig {
+        TriggerConfig {
+            id: id.to_string(),
+            function_id: format!("iii::console::workspace_changed::{id}"),
+            config,
+            metadata: None,
+            namespace: Some("my-project".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_new_binding_is_rung_once_and_a_bad_config_is_refused() {
+        let (joined, mut joined_rx) = mpsc::unbounded_channel();
+        let handler = ChangedHandler {
+            bindings: Bindings::default(),
+            joined,
+        };
+
+        handler
+            .register_trigger(changed_binding("tab", json!({})))
+            .await
+            .unwrap();
+        assert_eq!(
+            joined_rx.try_recv().unwrap(),
+            Binding {
+                function_id: "iii::console::workspace_changed::tab".to_string(),
+                namespace: Some("my-project".to_string()),
+            }
+        );
+        assert!(handler.bindings.read().unwrap().contains_key("tab"));
+
+        assert!(handler
+            .register_trigger(changed_binding("bad", json!({ "screen": "traces" })))
+            .await
+            .is_err());
+        // The engine's unregister carries only the id.
+        handler
+            .unregister_trigger(changed_binding("tab", Value::Null))
+            .await
+            .unwrap();
+        assert!(handler.bindings.read().unwrap().is_empty());
+        assert!(joined_rx.try_recv().is_err());
+    }
+    #[tokio::test]
+    async fn an_activating_open_always_stamps_so_every_browser_follows() {
+        let store = scratch_store("stamp");
+        // Another browser clicked tab b last; this one shows tab a.
+        store
+            .save(&json!({
+                "tabs": [
+                    { "id": "a", "columns": 2, "screens": ["chat", "ext:onboarding"] },
+                    { "id": "b", "columns": 2, "screens": ["chat", "traces"] }
+                ],
+                "activeTabId": "b",
+                "activatedAt": 1,
+                "activatedBy": "browser"
+            }))
+            .await
+            .unwrap();
+        let input = |value: Value| serde_json::from_value::<OpenInput>(value).unwrap();
+
+        // Already mounted in the active tab: nothing moves, yet the stamp lands.
+        let out = open(&store, input(json!({ "screen": "traces" })))
+            .await
+            .unwrap();
+        assert_eq!(out.tab_id, "b");
+        let doc = store.load().await.unwrap().unwrap();
+        assert_eq!(doc["activeTabId"], "b");
+        assert_eq!(doc["activatedBy"], "function");
+        assert!(doc["activatedAt"].as_i64().unwrap() > 1);
+
+        // A named anchor wins over the active pointer: the tab showing it.
+        let out = open(
+            &store,
+            input(json!({ "screen": "workers", "relative_to": "ext:onboarding" })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.tab_id, "a");
+        let doc = store.load().await.unwrap().unwrap();
+        assert_eq!(doc["activeTabId"], "a");
+        assert_eq!(
+            doc["tabs"][0]["screens"],
+            json!(["chat", "ext:onboarding", "workers"])
+        );
+
+        // `activate: false` on a mounted screen writes nothing.
+        let before = store.load().await.unwrap();
+        open(
+            &store,
+            input(json!({ "screen": "traces", "activate": false })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(store.load().await.unwrap(), before);
+        let _ = std::fs::remove_dir_all(store.dir().await);
+    }
+
+    #[tokio::test]
+    async fn a_set_computed_before_an_open_is_refused_so_the_open_survives() {
+        let store = scratch_store("cas");
+        let set_input = |value: Value| serde_json::from_value::<SetInput>(value).unwrap();
+        let open_input = |value: Value| serde_json::from_value::<OpenInput>(value).unwrap();
+        let tab_a = |screens: Value| json!({ "tabs": [{ "id": "a", "columns": 2, "screens": screens }], "activeTabId": "a" });
+
+        // A browser writes the first layout from an empty store.
+        set(
+            &store,
+            set_input(json!({ "value": tab_a(json!(["chat"])), "expected_revision": 0 })),
+        )
+        .await
+        .unwrap();
+        let read = store.load().await.unwrap().unwrap();
+        assert_eq!(workspace_store::revision(&read), 1);
+
+        // It reads revision 1 and starts a rename; an agent's open lands first.
+        open(&store, open_input(json!({ "screen": "traces" })))
+            .await
+            .unwrap();
+        let after_open = store.load().await.unwrap();
+        let changed = store.subscribe();
+        let mut renamed = read.clone();
+        renamed["tabs"][0]["name"] = json!("renamed");
+        let refused = set(
+            &store,
+            set_input(json!({ "value": renamed, "expected_revision": 1 })),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&refused, Error::Remote { code, .. } if code == CODE_CONFLICT),
+            "{refused:?}"
+        );
+        assert_eq!(store.load().await.unwrap(), after_open, "nothing written");
+        assert!(!changed.has_changed().unwrap(), "nothing rung");
+
+        // Re-read and re-applied, the rename lands beside the open's traces.
+        let mut rebased = after_open.clone().unwrap();
+        rebased["tabs"][0]["name"] = json!("renamed");
+        set(
+            &store,
+            set_input(json!({ "value": rebased, "expected_revision": 2 })),
+        )
+        .await
+        .unwrap();
+        let doc = store.load().await.unwrap().unwrap();
+        assert_eq!(doc["tabs"][0]["name"], "renamed");
+        assert_eq!(doc["tabs"][0]["screens"], json!(["chat", "traces"]));
+        assert_eq!(workspace_store::revision(&doc), 3);
+
+        // Without `expected_revision` (an older bundle) the write is
+        // unconditional, and the store still stamps the next revision.
+        set(
+            &store,
+            set_input(json!({ "value": tab_a(json!(["chat"])) })),
+        )
+        .await
+        .unwrap();
+        let doc = store.load().await.unwrap().unwrap();
+        assert_eq!(doc["tabs"][0]["screens"], json!(["chat"]));
+        assert_eq!(workspace_store::revision(&doc), 4);
         let _ = std::fs::remove_dir_all(store.dir().await);
     }
 }

@@ -8,7 +8,15 @@ import {
   Plus,
   RefreshCw,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type KeyboardEvent,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import {
   Tooltip,
@@ -17,6 +25,7 @@ import {
 } from '@/components/ui/Tooltip'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
+import { getIiiClient } from '@/lib/iii-client'
 import type { ProviderListEntry } from '@/lib/models-catalog'
 import { cn } from '@/lib/utils'
 import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
@@ -57,7 +66,7 @@ export interface ModelPickerProps {
   /** Incremented by a parent CTA to open this picker when its trigger is visible. */
   openRequest?: number
   thinkingLevel: ThinkingLevel
-  onChange: (next: ModelId) => void
+  onChange: (next: ModelId, thinkingLevel?: ThinkingLevel) => unknown
   onThinkingLevelChange: (next: ThinkingLevel) => void
   disabled?: boolean
   loading?: boolean
@@ -82,17 +91,20 @@ interface PickerSubpageHeaderProps {
   title: string
   description: string
   onBack?: () => void
+  backButtonRef?: RefObject<HTMLButtonElement | null>
 }
 
 function PickerSubpageHeader({
   title,
   description,
   onBack,
+  backButtonRef,
 }: PickerSubpageHeaderProps) {
   return (
     <div className="flex shrink-0 items-start gap-2 px-4 py-3 pr-12">
       {onBack ? (
         <button
+          ref={backButtonRef}
           type="button"
           aria-label="back to models"
           onClick={onBack}
@@ -113,6 +125,10 @@ function PickerSubpageHeader({
       </div>
     </div>
   )
+}
+
+function stopMenuTabPropagation(event: KeyboardEvent<HTMLElement>) {
+  if (event.key === 'Tab') event.stopPropagation()
 }
 
 interface ModelGroup {
@@ -192,6 +208,11 @@ export function ModelPicker({
     useState<string | null>(null)
   const [addProviderOpen, setAddProviderOpen] = useState(false)
   const configurationGuard = useUnsavedGuard()
+  const providerBackRef = useRef<HTMLButtonElement | null>(null)
+  const addProviderBackRef = useRef<HTMLButtonElement | null>(null)
+  const configurationOriginRef = useRef<HTMLElement | null>(null)
+  const addProviderOriginRef = useRef<HTMLElement | null>(null)
+  const returnFocusRef = useRef<HTMLElement | null>(null)
 
   const optionsById = useMemo(
     () => new Map(options.map((option) => [option.id, option])),
@@ -253,6 +274,46 @@ export function ModelPicker({
       ? 'add-provider'
       : 'models'
 
+  useEffect(() => {
+    if (activePage === 'provider') {
+      const focusBackButton = () => {
+        providerBackRef.current?.focus()
+      }
+      providerBackRef.current?.focus()
+      const frame = window.requestAnimationFrame(focusBackButton)
+      return () => window.cancelAnimationFrame(frame)
+    }
+    if (activePage === 'add-provider') {
+      const focusBackButton = () => {
+        addProviderBackRef.current?.focus()
+      }
+      addProviderBackRef.current?.focus()
+      const frame = window.requestAnimationFrame(focusBackButton)
+      return () => window.cancelAnimationFrame(frame)
+    }
+    const returnFocus = returnFocusRef.current
+    if (activePage === 'models' && returnFocus) {
+      returnFocusRef.current = null
+      returnFocus.focus()
+    }
+  }, [activePage])
+
+  function rememberActiveElement(): HTMLElement | null {
+    return document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+  }
+
+  function openAddProvider() {
+    addProviderOriginRef.current = rememberActiveElement()
+    setAddProviderOpen(true)
+  }
+
+  function closeAddProvider() {
+    returnFocusRef.current = addProviderOriginRef.current
+    setAddProviderOpen(false)
+  }
+
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) {
       setOpen(true)
@@ -266,6 +327,7 @@ export function ModelPicker({
   }
 
   function openProviderConfiguration(providerId: string) {
+    configurationOriginRef.current = rememberActiveElement()
     setAddProviderOpen(false)
     setRenderedConfigurationProvider(providerId)
     setConfigurationProvider(providerId)
@@ -351,15 +413,17 @@ export function ModelPicker({
           value={value}
           options={options}
           thinkingLevel={thinkingLevel}
-          onChange={onChange}
+          onChange={(next, effort) => {
+            const result = onChange(next, effort)
+            if (result instanceof Promise) setOpen(false)
+            return result
+          }}
           onThinkingLevelChange={onThinkingLevelChange}
           onConfigureProvider={
             showProviderConfiguration ? openProviderConfiguration : undefined
           }
           onAddProvider={
-            showProviderConfiguration
-              ? () => setAddProviderOpen(true)
-              : undefined
+            showProviderConfiguration ? openAddProvider : undefined
           }
           showReasoningEffort={showReasoningEffort}
           disabled={disabled}
@@ -372,12 +436,14 @@ export function ModelPicker({
         data-active={activePage === 'add-provider'}
         aria-hidden={activePage !== 'add-provider'}
         inert={activePage !== 'add-provider'}
+        onKeyDown={stopMenuTabPropagation}
         className="iii-ui-motion-picker-page absolute inset-0 flex min-h-0 flex-col [--picker-page-offset:var(--distance-base)]"
       >
         <PickerSubpageHeader
           title="Add a provider"
           description="Provider workers from the workers registry."
-          onBack={() => setAddProviderOpen(false)}
+          backButtonRef={addProviderBackRef}
+          onBack={closeAddProvider}
         />
         {addProviderOpen ? (
           <AddProviderPanel
@@ -393,6 +459,7 @@ export function ModelPicker({
         data-active={activePage === 'provider'}
         aria-hidden={activePage !== 'provider'}
         inert={activePage !== 'provider'}
+        onKeyDown={stopMenuTabPropagation}
         className="iii-ui-motion-picker-page absolute inset-0 flex min-h-0 flex-col [--picker-page-offset:var(--distance-base)]"
       >
         {renderedConfigurationProvider ? (
@@ -403,10 +470,12 @@ export function ModelPicker({
                 renderedConfigurationProvider
               }
               description="Credentials and provider-specific settings."
+              backButtonRef={providerBackRef}
               onBack={() =>
-                configurationGuard.tryNavigate(() =>
-                  setConfigurationProvider(null),
-                )
+                configurationGuard.tryNavigate(() => {
+                  returnFocusRef.current = configurationOriginRef.current
+                  setConfigurationProvider(null)
+                })
               }
             />
             <ProviderConfigurationPanel
@@ -562,11 +631,57 @@ function ProviderRail({
   )
 }
 
+/**
+ * Of `candidates` — configured providers with no chat models — the ones that
+ * list no models of any modality. A speech or embedding provider lists its
+ * own; one that lists nothing has a credential the upstream refused.
+ */
+function useModellessProviders(candidates: string[]): ReadonlySet<string> {
+  const [modelless, setModelless] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  )
+  const key = candidates.slice().sort().join(' ')
+  useEffect(() => {
+    const ids = key ? key.split(' ') : []
+    if (ids.length === 0) {
+      setModelless(new Set())
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const client = await getIiiClient()
+        const result = await client.trigger<{ models?: unknown }>(
+          'router::models::list',
+          { modality: 'any' },
+        )
+        const listed = new Set(
+          (Array.isArray(result?.models) ? result.models : []).flatMap(
+            (row) => {
+              const provider = (row as { provider?: unknown } | null)?.provider
+              return typeof provider === 'string' ? [provider] : []
+            },
+          ),
+        )
+        if (!cancelled) {
+          setModelless(new Set(ids.filter((id) => !listed.has(id))))
+        }
+      } catch {
+        if (!cancelled) setModelless(new Set())
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [key])
+  return modelless
+}
+
 interface ModelPickerPanelProps {
   value: ModelId | null
   options: ModelOption[]
   thinkingLevel: ThinkingLevel
-  onChange: (next: ModelId) => void
+  onChange: (next: ModelId, thinkingLevel?: ThinkingLevel) => unknown
   onThinkingLevelChange: (next: ThinkingLevel) => void
   onConfigureProvider?: (providerId: string) => void
   /** Opens the registry page; absent hides the add affordance. */
@@ -633,6 +748,12 @@ export function ModelPickerPanel({
   )
   const modelGroups = groupByProvider(options)
   const grouped = new Set(modelGroups.map((group) => group.label))
+  const modelless = useModellessProviders(
+    presentProviders
+      .filter((provider) => provider.configured === true)
+      .map((provider) => provider.id)
+      .filter((id) => !grouped.has(id)),
+  )
   const filterWords = filter.toLowerCase().split(/\s+/).filter(Boolean)
   const matchesFilter = (option: ModelOption, provider: string) => {
     if (filterWords.length === 0) return true
@@ -648,11 +769,18 @@ export function ModelPickerPanel({
       ),
     })),
     // A provider with no chat models is listed only while it still needs
-    // setup: a configured one without chat models serves another modality
-    // (speech, embeddings) and has nothing to offer this picker.
+    // setup: a configured one without chat models usually serves another
+    // modality (speech, embeddings) and has nothing to offer this picker.
+    // One that lists no models at all, or whose credential failed, is broken
+    // rather than elsewhere — it stays, so its key can be fixed from here.
     ...presentIds
       .filter((id) => !grouped.has(id))
-      .filter((id) => providerById.get(id)?.configured !== true)
+      .filter(
+        (id) =>
+          providerById.get(id)?.configured !== true ||
+          providerById.get(id)?.credential_error !== undefined ||
+          modelless.has(id),
+      )
       .map((id) => ({ label: id, options: [] })),
   ]
     .filter((group) => filterWords.length === 0 || group.options.length > 0)
@@ -796,8 +924,20 @@ export function ModelPickerPanel({
     const nextEffort = effortSupported(nextEfforts, remembered)
       ? remembered
       : 'default'
-    onChange(next)
-    if (nextEffort !== thinkingLevel) onThinkingLevelChange(nextEffort)
+    const result = onChange(next, nextEffort)
+    const applyEffort = () => {
+      if (nextEffort !== thinkingLevel) onThinkingLevelChange(nextEffort)
+    }
+    if (result instanceof Promise) {
+      void result.then(
+        (accepted) => {
+          if (accepted === true) applyEffort()
+        },
+        () => undefined,
+      )
+    } else {
+      applyEffort()
+    }
   }
 
   const showRail = onAddProvider !== undefined || groups.length > 0
@@ -966,7 +1106,10 @@ export function ModelPickerPanel({
                       <div className="px-3 py-4 font-sans text-base text-ink-faint sm:text-sm">
                         {unavailable
                           ? 'Provider not loaded.'
-                          : 'No models available.'}
+                          : (provider?.credential_error ??
+                            (configured
+                              ? 'No models with this key. Configure to check it.'
+                              : 'No models available.'))}
                       </div>
                     )}
                   </div>

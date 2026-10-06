@@ -31,7 +31,7 @@ import {
 import { useOpenMessageFile } from '@/lib/file-navigation'
 import { markdownFileLinkError, parseMarkdownFileLink } from '@/lib/markdown-file-link'
 import { SKILL_PREFIX, SKILL_TOKEN_SOURCE } from '@/lib/slash-commands'
-import { JsonHighlight } from '@/lib/syntax'
+import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 
 interface MarkdownProps {
@@ -87,15 +87,23 @@ function walk(node: Root | Element): void {
 }
 
 /* hast's `className` lands as either `string[]` or a space-joined `string`,
-   depending on how it was parsed. Normalize both shapes to a single check.
+   depending on how it was parsed. Extract the fence language from either shape.
    (Typed `unknown` on purpose: current @types/hast declares only the array
    shape, but the string shape still occurs at runtime.) */
-function hasLanguage(node: Element, language: string): boolean {
+function codeLanguage(node: Element): string | undefined {
   const cls: unknown = node.properties?.className
-  const expected = `language-${language}`
-  if (Array.isArray(cls)) return cls.includes(expected)
-  if (typeof cls === 'string') return cls.split(/\s+/).includes(expected)
-  return false
+  const classes = Array.isArray(cls)
+    ? cls
+    : typeof cls === 'string'
+      ? cls.split(/\s+/)
+      : []
+  return classes
+    .find(
+      (name): name is string =>
+        typeof name === 'string' && name.startsWith('language-'),
+    )
+    ?.slice('language-'.length)
+    .toLowerCase()
 }
 
 function splitMention(value: string): Array<Text | Element> {
@@ -348,14 +356,24 @@ const components: Components = {
         .map((child) => child.value)
         .join('')
         .replace(/\n$/, '')
-      if (hasLanguage(codeChild, 'mermaid')) {
+      const language = codeLanguage(codeChild)
+      if (language === 'mermaid') {
         return <MermaidDiagram source={source} />
       }
-      if (hasLanguage(codeChild, 'json')) {
+      if (language === 'json') {
         return (
           <JsonHighlight
             code={source}
             className="rounded-md border border-rule-2 my-4"
+          />
+        )
+      }
+      if (language) {
+        return (
+          <CodeHighlight
+            code={source}
+            language={language}
+            className="rounded-md my-4 px-5 py-4"
           />
         )
       }

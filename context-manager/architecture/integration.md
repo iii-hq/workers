@@ -120,9 +120,9 @@ All four are registered with JSON Schemas (`iii worker info context-manager` /
 
 ### `context::assemble` — build the model-ready context
 
-The main entry point. Pipeline: cap oversized single results (always) → prune
-aged function outputs (always) → (if over budget) compact the head → (if
-still over) emergency-reduce → return the budgeted list, or a structured
+The main entry point. Pipeline: cap oversized single results (always) → (if
+over budget) prune aged function outputs → (if still over) compact the head →
+(if still over) emergency-reduce → return the budgeted list, or a structured
 overflow if nothing fits.
 
 ```typescript

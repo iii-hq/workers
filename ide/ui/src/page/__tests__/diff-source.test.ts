@@ -25,10 +25,59 @@ describe('diff-source', () => {
     expect(diffSourceFollowsDisk({ type: 'unstaged' })).toBe(true)
   })
 
+  it('commit diffs: parent to commit, fixed, persisted, with hex shas only', () => {
+    const source = { type: 'commit', sha: 'abcdef1234', parent: '1234567abc' } as const
+    expect(diffSourceKey(source)).toBe('commit=1234567abc..abcdef1234')
+    expect(diffSourceLabel(source)).toBe('abcdef1')
+    expect(diffSourceSides(source)).toEqual({ old: '1234567', new: 'abcdef1' })
+    expect(diffSourceSides({ type: 'commit', sha: 'abcdef1234', parent: null }).old).toBe('empty')
+    expect(diffSourceFollowsDisk(source)).toBe(false)
+    expect(diffSourcePersists(source)).toBe(true)
+    expect(parseDiffSource({ ...source, from: 'old/a.ts' })).toEqual({ ...source, from: 'old/a.ts' })
+    expect(parseDiffSource({ type: 'commit', sha: 'abcdef1', parent: null })).toEqual({
+      type: 'commit',
+      sha: 'abcdef1',
+      parent: null,
+    })
+    expect(parseDiffSource({ type: 'commit', sha: 'main', parent: null })).toBeNull()
+    expect(parseDiffSource({ type: 'commit', sha: 'abcdef1' })).toBeNull()
+  })
+
   it('parses persisted sources and rejects junk', () => {
     expect(parseDiffSource({ type: 'turn', turnId: 't1' })).toEqual({ type: 'turn', turnId: 't1' })
     expect(parseDiffSource({ type: 'turn' })).toBeNull()
     expect(parseDiffSource({ type: 'nope' })).toBeNull()
     expect(parseDiffSource('staged')).toBeNull()
+  })
+
+  it('commit-panel sources: HEAD to working copy, and a pair of revisions', () => {
+    expect(diffSourceKey({ type: 'uncommitted' })).toBe('uncommitted')
+    expect(diffSourceLabel({ type: 'uncommitted' })).toBe('Changes')
+    expect(diffSourceSides({ type: 'uncommitted' })).toEqual({ old: 'HEAD', new: 'working copy' })
+    const revision = { type: 'revision', from: 'p', to: 'c', label: '0d5b60e' } as const
+    expect(diffSourceKey(revision)).toBe('revision=p..c')
+    expect(diffSourceLabel(revision)).toBe('0d5b60e')
+    expect(diffSourceFollowsDisk(revision)).toBe(false)
+    expect(diffSourceFollowsDisk({ type: 'uncommitted' })).toBe(true)
+    expect(diffSourcePersists(revision)).toBe(true)
+    expect(parseDiffSource(revision)).toEqual(revision)
+    expect(parseDiffSource({ type: 'revision', from: 'p', to: '', label: 'x' })).toBeNull()
+    expect(parseDiffSource({ type: 'uncommitted' })).toEqual({ type: 'uncommitted' })
+  })
+})
+
+describe('a comparison swapped', () => {
+  const forward = { type: 'compare' as const, ref: 'refs/heads/main' }
+  const swapped = { type: 'compare' as const, ref: 'refs/heads/main', reverse: true as const }
+
+  it('is a tab of its own, with the working copy on the old side', () => {
+    expect(sameDiffSource(forward, swapped)).toBe(false)
+    expect(diffSourceSides(swapped)).toEqual({ old: 'working copy', new: 'main' })
+    expect(diffSourceSides(forward)).toEqual({ old: 'main', new: 'working copy' })
+  })
+
+  it('survives a reload', () => {
+    expect(parseDiffSource(JSON.parse(JSON.stringify(swapped)))).toEqual(swapped)
+    expect(diffSourceKey(forward)).toBe('compare=refs/heads/main')
   })
 })

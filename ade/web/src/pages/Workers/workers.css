@@ -1,0 +1,632 @@
+/* Workers page. Chrome, lists, tabs, cards and settings rows are the shared
+   components; these rules only lay them out and name machine values. The
+   add dialog portals out of the page, so rules key on the wk- prefix alone. */
+
+.wk-shell {
+  min-width: 0;
+  min-height: 0;
+}
+
+.wk-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.wk-body > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.wk-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.wk-faint,
+.wk-note {
+  color: var(--color-ink-faint);
+}
+
+.wk-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.wk-alert-text {
+  color: var(--color-alert-strong);
+}
+
+.wk-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+}
+
+/* ── sidebar ─────────────────────────────────────────────────────────── */
+
+.wk-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+  padding: 8px;
+}
+
+/* The filter stays put; the list scrolls under it. */
+.wk-side > .iii-ui-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+/* Two-line rows as dense as the design: name over detail in about 46px. */
+.wk-side .iii-ui-list-group {
+  gap: 2px;
+}
+
+.wk-side .iii-ui-list-item {
+  padding-block: 6px;
+}
+
+.wk-side .iii-ui-list-item__title {
+  line-height: 18px;
+}
+
+.wk-side .iii-ui-list-item__description {
+  line-height: 16px;
+}
+
+/* ── main column ─────────────────────────────────────────────────────── */
+
+.wk-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  padding: 18px 24px;
+  overflow-y: auto;
+}
+
+.wk-back {
+  align-self: flex-start;
+}
+
+.wk-view {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Cards keep their height; only the container tabs take what is left. */
+.wk-view > * {
+  flex: 0 0 auto;
+}
+
+.wk-masthead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px 16px;
+}
+
+.wk-identity {
+  display: flex;
+  flex: 1 1 16rem;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.wk-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.wk-title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+
+.wk-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+.wk-actions,
+.wk-buttons,
+.wk-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.wk-buttons {
+  justify-content: flex-end;
+}
+
+.wk-relations,
+.wk-facts {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0;
+}
+
+.wk-relations dd,
+.wk-facts dd {
+  min-width: 0;
+  margin: 0;
+}
+
+/* Nothing on either side: one line, as the design reads it. */
+.wk-relations-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.wk-relations-inline dt:not(:first-child) {
+  margin-left: 12px;
+}
+
+.wk-aside {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.wk-facts {
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: baseline;
+}
+
+.wk-facts dd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wk-fact-row {
+  display: contents;
+}
+
+.wk-danger:hover {
+  color: var(--color-alert-strong);
+}
+
+/* ── cards ───────────────────────────────────────────────────────────── */
+
+.wk-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
+}
+
+.wk-card-foot {
+  margin-top: 12px;
+}
+
+.wk-card-note {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-ink-faint);
+}
+
+.wk-waves {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wk-wave {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.wk-wave-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  color: var(--color-ink-faint);
+}
+
+.wk-columns,
+.wk-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 420px);
+  align-items: start;
+  gap: 16px 32px;
+}
+
+.wk-columns {
+  gap: 16px;
+}
+
+.wk-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.wk-cell-action {
+  text-align: right;
+}
+
+.wk-danger-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.wk-danger-row .wk-note {
+  flex: 1 1 auto;
+}
+
+/* ── container tabs ──────────────────────────────────────────────────── */
+
+.wk-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.wk-tabs > * {
+  flex: 0 0 auto;
+}
+
+.wk-tabs > .wk-tab {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.wk-log-tab {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+
+.wk-log-filter {
+  width: min(16rem, 100%);
+}
+
+.wk-log {
+  flex: 1 1 auto;
+  min-height: 18rem;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  font-family: var(--font-code);
+  font-size: 12px;
+  line-height: 1.7;
+  font-variant-ligatures: none;
+  white-space: pre;
+}
+
+.wk-log-time {
+  color: var(--color-ink-ghost);
+}
+
+.wk-log-level {
+  color: var(--color-ink-ghost);
+}
+
+.wk-log-level[data-level="INFO"] {
+  color: var(--color-ok);
+}
+
+.wk-log-level[data-level="WARN"] {
+  color: var(--color-warn);
+}
+
+.wk-log-level[data-level="ERROR"] {
+  color: var(--color-alert);
+}
+
+.wk-log-target {
+  color: var(--color-ink-faint);
+}
+
+.wk-follow[aria-pressed="true"] {
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
+}
+
+.wk-log [data-stream="stderr"] {
+  color: var(--color-warn-strong);
+}
+
+.wk-form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+  max-width: 760px;
+}
+
+.wk-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wk-preview {
+  position: sticky;
+  top: 0;
+  min-width: 0;
+}
+
+.wk-preview-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wk-version {
+  max-width: 20rem;
+}
+
+.wk-suggestion {
+  align-self: flex-start;
+}
+
+.wk-value {
+  width: min(26rem, 55cqw);
+}
+
+.wk-secret {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wk-env[data-removed] .wk-env-key {
+  color: var(--color-ink-ghost);
+  text-decoration: line-through;
+}
+
+.wk-code {
+  min-height: 5rem;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+}
+
+/* ── add dialog ──────────────────────────────────────────────────────── */
+
+.wk-dialog {
+  width: min(600px, calc(100% - 32px));
+}
+
+.wk-dialog-body {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  max-height: min(34rem, 60dvh);
+  overflow-y: auto;
+}
+
+.wk-dialog-footer {
+  margin-top: 20px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wk-dialog-footer .wk-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wk-results {
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+.wk-inline-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wk-deps {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 6px 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+}
+
+/* ── loading ─────────────────────────────────────────────────────────── */
+
+.wk-skeletons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wk-skeleton-row {
+  height: 44px;
+}
+
+.wk-skeleton-title {
+  width: 40%;
+  height: 24px;
+}
+
+.wk-skeleton-field {
+  height: 36px;
+  max-width: 20rem;
+}
+
+.wk-skeleton-block {
+  height: 12rem;
+}
+
+/* ── narrow panes ────────────────────────────────────────────────────── */
+
+@container (max-width: 960px) {
+  .wk-columns,
+  .wk-settings {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .wk-preview,
+  .wk-aside {
+    position: static;
+  }
+}
+
+@container (max-width: 560px) {
+  .wk-main {
+    padding: 12px;
+  }
+
+  .wk-wave,
+  .wk-relations {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  /* Phone: tabs share the width, Restart/Stop sit side by side, Follow is an icon. */
+  .wk-tabs [role="tablist"] {
+    width: 100%;
+  }
+
+  .wk-tabs [role="tab"] {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+
+  .wk-actions {
+    width: 100%;
+  }
+
+  .wk-actions > button:not([aria-haspopup]) {
+    flex: 1 1 0;
+    background: var(--color-surface);
+    color: var(--color-ink);
+  }
+
+  .wk-follow-label,
+  .wk-log-target {
+    display: none;
+  }
+
+  .wk-log {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .wk-log > div + div {
+    margin-top: 4px;
+  }
+}
+
+/* Segmented choices hug their options, as in the design. */
+.wk-seg {
+  align-self: flex-start;
+}
+
+/* ── checkout picker ─────────────────────────────────────────────────── */
+
+.wk-picker {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.wk-picker > :first-child {
+  margin: 6px;
+}
+
+/* A long worktree list scrolls in place; the search stays on top. */
+.wk-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 296px;
+  padding: 0 4px 4px;
+  overflow-y: auto;
+}
+
+.wk-picker-list .iii-ui-list-item {
+  padding-block: 6px;
+}
+
+.wk-picker-group {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.wk-picker-note {
+  margin: 0;
+  padding: 6px 10px;
+}
+
+.wk-checkout-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wk-dirty {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-warn);
+}
+
+.wk-mark {
+  border-radius: 2px;
+  background: var(--color-accent-muted);
+  color: inherit;
+}

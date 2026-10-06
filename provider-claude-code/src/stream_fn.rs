@@ -53,7 +53,9 @@ pub fn make_stream(
     }
 }
 
-fn default_resolve() -> ProviderResolveResponse {
+/// Resolve defaults for an unreachable router (api_url/max_tokens fall back
+/// to the built-in defaults); shared with `count_tokens`.
+pub(crate) fn default_resolve() -> ProviderResolveResponse {
     ProviderResolveResponse {
         configured: false,
         source: CredentialSource::None,

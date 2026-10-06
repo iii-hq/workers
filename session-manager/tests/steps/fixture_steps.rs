@@ -5,6 +5,8 @@
 use cucumber::gherkin::Step;
 use cucumber::{given, when};
 use serde_json::json;
+use session_manager::store::SessionStore;
+use session_manager::types::{AgentMessage, ContentBlock, SessionEntry};
 
 use super::common_steps::docstring_payload;
 use crate::common::world::SessionWorld;
@@ -54,6 +56,34 @@ async fn append_user_message(world: &mut SessionWorld, text: String, session_id:
             }),
         )
         .await;
+}
+
+#[given(regex = r#"^an incomplete user entry "([^"]*)" with id "([^"]+)" persisted to "([^"]+)"$"#)]
+async fn incomplete_user_entry(
+    world: &mut SessionWorld,
+    text: String,
+    entry_id: String,
+    session_id: String,
+) {
+    let session_id = world.substitute(&session_id);
+    world
+        .store
+        .put_entry(
+            &session_id,
+            &SessionEntry::Message {
+                id: entry_id,
+                parent_id: None,
+                timestamp: 1_000_000,
+                revision: 0,
+                origin: None,
+                message: Box::new(AgentMessage::User {
+                    content: vec![ContentBlock::Text { text }],
+                    timestamp: 0,
+                }),
+            },
+        )
+        .await
+        .expect("persist incomplete entry");
 }
 
 #[given(regex = r#"^an empty assistant message appended to "([^"]+)"$"#)]

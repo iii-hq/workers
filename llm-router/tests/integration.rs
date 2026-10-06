@@ -244,6 +244,8 @@ struct LiveProvider {
     iii: IIIClient,
     token: String,
     stream_calls: Arc<AtomicU64>,
+    /// `provider::real::on_router_ready` invocations (restart / credential nudges).
+    ready_calls: Arc<AtomicU64>,
     write_failed: Arc<AtomicBool>,
     fail_at_ms: Arc<AtomicU64>,
 }
@@ -374,12 +376,15 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
     let iii_ready = iii.clone();
     let token_for_ready = token_cell.clone();
     let opts_for_ready = opts.clone();
+    let ready_calls = Arc::new(AtomicU64::new(0));
+    let ready_count = ready_calls.clone();
     iii.register_function(
         "provider::real::on_router_ready",
         RegisterFunction::new_async(move |_input: Value| {
             let iii = iii_ready.clone();
             let token = token_for_ready.lock().unwrap().clone();
             let opts = opts_for_ready.clone();
+            ready_count.fetch_add(1, Ordering::SeqCst);
             async move {
                 let token = token.ok_or_else(|| {
                     Error::Handler("provider ready handler has no registration token".into())
@@ -423,6 +428,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
         iii,
         token,
         stream_calls,
+        ready_calls,
         write_failed,
         fail_at_ms,
     }
@@ -2527,5 +2533,360 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
     assert_eq!(remote_code(&refused), "router/invalid_request");
 
     provider.shutdown();
+    router_iii.shutdown();
+}
+
+// ── secret references (`secret://NAME`) ─────────────────────────────────────
+
+/// Stand-in for the `secrets` worker: `secrets::resolve` answers from a
+/// name → value / error-code table, and the `secrets::changed` trigger type
+/// fans out to whoever bound it.
+#[derive(Clone)]
+struct FakeSecretsWorker {
+    iii: IIIClient,
+    table: Arc<std::sync::Mutex<HashMap<String, Result<String, String>>>>,
+    bindings: Arc<std::sync::Mutex<HashMap<String, String>>>,
+    callers: Arc<std::sync::Mutex<Vec<Value>>>,
+}
+
+struct FakeSecretsChanged {
+    bindings: Arc<std::sync::Mutex<HashMap<String, String>>>,
+}
+
+#[async_trait::async_trait]
+impl iii_sdk::trigger::TriggerHandler for FakeSecretsChanged {
+    async fn register_trigger(&self, config: iii_sdk::trigger::TriggerConfig) -> Result<(), Error> {
+        self.bindings
+            .lock()
+            .unwrap()
+            .insert(config.id, config.function_id);
+        Ok(())
+    }
+
+    async fn unregister_trigger(
+        &self,
+        config: iii_sdk::trigger::TriggerConfig,
+    ) -> Result<(), Error> {
+        self.bindings.lock().unwrap().remove(&config.id);
+        Ok(())
+    }
+}
+
+async fn start_fake_secrets(url: &str) -> FakeSecretsWorker {
+    let iii = register_worker(url, test_init_options());
+    let fake = FakeSecretsWorker {
+        iii: iii.clone(),
+        table: Arc::default(),
+        bindings: Arc::default(),
+        callers: Arc::default(),
+    };
+    let (table, callers) = (fake.table.clone(), fake.callers.clone());
+    iii.register_function(
+        "secrets::resolve",
+        RegisterFunction::new_async(move |input: Value| {
+            callers.lock().unwrap().push(
+                input
+                    .get("_caller_worker_id")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+            let reference = input["ref"].as_str().unwrap_or_default();
+            let name = reference
+                .strip_prefix("secret://")
+                .unwrap_or(reference)
+                .to_string();
+            let answer = table.lock().unwrap().get(&name).cloned();
+            async move {
+                match answer {
+                    Some(Ok(value)) => Ok(json!({ "name": name, "value": value })),
+                    Some(Err(code)) => Err(Error::Remote {
+                        code,
+                        message: format!("secret {name}"),
+                        stacktrace: None,
+                    }),
+                    None => Err(Error::Remote {
+                        code: "SECRET_NOT_FOUND".into(),
+                        message: format!("secret {name}"),
+                        stacktrace: None,
+                    }),
+                }
+            }
+        }),
+    );
+    iii.register_trigger_type(iii_sdk::RegisterTriggerType::new(
+        "secrets::changed",
+        "fake secrets worker: a secret changed",
+        FakeSecretsChanged {
+            bindings: fake.bindings.clone(),
+        },
+    ));
+    fake
+}
+
+impl FakeSecretsWorker {
+    fn set(&self, name: &str, outcome: Result<&str, &str>) {
+        self.table
+            .lock()
+            .unwrap()
+            .insert(name.into(), outcome.map(String::from).map_err(String::from));
+    }
+
+    /// Fire `secrets::changed` to every binding, synchronously, once the
+    /// engine has handed this (late) type its parked bindings.
+    async fn announce(&self, name: &str, action: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let targets = loop {
+            let targets: Vec<String> = self.bindings.lock().unwrap().values().cloned().collect();
+            if !targets.is_empty() {
+                break targets;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the router's secrets::changed binding never reached the late trigger type"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        for function_id in targets {
+            call(
+                &self.iii,
+                &function_id,
+                json!({ "name": name, "ref": format!("secret://{name}"), "action": action, "updated_at": "2026-10-02T00:00:00Z" }),
+            )
+            .await
+            .expect("secrets::changed subscriber answers");
+        }
+    }
+}
+
+async fn wait_for_count(counter: &AtomicU64, above: u64, what: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while counter.load(Ordering::SeqCst) <= above {
+        assert!(Instant::now() < deadline, "{what} never happened");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn secret_reference_resolves_late_and_follows_secret_changes() {
+    let engine = engine_or_skip!();
+    let env_var = "LLM_ROUTER_IT_SECRET_REF_ENV_KEY";
+    std::env::set_var(env_var, "sk-env-must-not-win");
+
+    // The router boots BEFORE the secrets worker exists.
+    let router_iii = register_worker(&engine.url, test_init_options());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots without a secrets worker");
+    let provider = start_live_provider(
+        &engine.url,
+        ProviderOptions {
+            credential_env_var: Some(env_var.into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    let resolve = json!({ "id": "real", "token": provider.token });
+    call(
+        &router_iii,
+        "configuration::set",
+        json!({ "id": "llm-router", "value": { "providers": { "real": { "api_key": "secret://REAL_KEY" } } } }),
+    )
+    .await
+    .unwrap();
+
+    // Secrets worker absent: reported, never forwarded, and the env key does
+    // not take over from the explicit reference.
+    let res = call_until(
+        &provider.iii,
+        "router::provider::resolve",
+        resolve.clone(),
+        |v| v["credential_source"] == json!("secret"),
+    )
+    .await;
+    assert_eq!(res["configured"], false);
+    assert_eq!(res["source"], "none");
+    assert_eq!(res["credential"], Value::Null);
+    assert_eq!(res["credential_ref"], "secret://REAL_KEY");
+    assert!(
+        res["credential_error"]
+            .as_str()
+            .is_some_and(|e| e.starts_with("secrets worker is not running")),
+        "{res}"
+    );
+
+    // The secrets worker arrives: the reference resolves without a restart.
+    let secrets = start_fake_secrets(&engine.url).await;
+    secrets.set("REAL_KEY", Ok("sk-from-secrets"));
+    let res = call_until(
+        &provider.iii,
+        "router::provider::resolve",
+        resolve.clone(),
+        |v| v["configured"] == json!(true),
+    )
+    .await;
+    assert_eq!(res["credential"]["key"], "sk-from-secrets");
+    assert_eq!(
+        res["source"], "config",
+        "providers keep their source values"
+    );
+    assert_eq!(res["credential_source"], "secret");
+    assert!(res.get("credential_error").is_none(), "{res}");
+    assert!(
+        secrets.callers.lock().unwrap().iter().all(Value::is_string),
+        "the engine stamps the caller the secrets worker authorizes"
+    );
+
+    let list = call(&router_iii, "router::provider::list", json!({}))
+        .await
+        .unwrap();
+    let real = list["providers"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["id"] == "real"))
+        .cloned()
+        .expect("provider listed");
+    assert_eq!(real["configured"], true);
+    assert_eq!(real["credential_source"], "secret");
+    assert_eq!(real["credential_ref"], "secret://REAL_KEY");
+    assert!(real.get("credential_error").is_none(), "{real}");
+    assert!(
+        !list.to_string().contains("sk-from-secrets"),
+        "provider::list never carries a value"
+    );
+
+    // Rotation announced on secrets::changed: the router serves the new value
+    // and nudges the provider to drop its cached resolve.
+    let ready_before = provider.ready_calls.load(Ordering::SeqCst);
+    secrets.set("REAL_KEY", Ok("sk-rotated"));
+    secrets.announce("REAL_KEY", "rotated").await;
+    let res = call(&provider.iii, "router::provider::resolve", resolve.clone())
+        .await
+        .unwrap();
+    assert_eq!(res["credential"]["key"], "sk-rotated");
+    wait_for_count(
+        &provider.ready_calls,
+        ready_before,
+        "credential refresh nudge after rotation",
+    )
+    .await;
+
+    // Access revoked, then deleted: actionable errors, never the old value.
+    secrets.set("REAL_KEY", Err("SECRET_FORBIDDEN"));
+    secrets.announce("REAL_KEY", "access_changed").await;
+    let res = call(&provider.iii, "router::provider::resolve", resolve.clone())
+        .await
+        .unwrap();
+    assert_eq!(res["configured"], false);
+    assert_eq!(res["credential"], Value::Null);
+    assert_eq!(
+        res["credential_error"],
+        "llm-router is not allowed to read secret REAL_KEY; add llm-router to the secret's consumers"
+    );
+
+    secrets.set("REAL_KEY", Err("SECRET_NOT_FOUND"));
+    secrets.announce("REAL_KEY", "deleted").await;
+    let res = call(&provider.iii, "router::provider::resolve", resolve.clone())
+        .await
+        .unwrap();
+    assert!(
+        res["credential_error"]
+            .as_str()
+            .is_some_and(|e| e.starts_with("secret REAL_KEY not found in the secrets worker")),
+        "{res}"
+    );
+
+    // Chat refuses with that reason instead of dispatching to the provider.
+    let streams_before = provider.stream_calls.load(Ordering::SeqCst);
+    let consumer = register_worker(&engine.url, test_init_options());
+    let err = call(
+        &consumer,
+        "router::complete",
+        json!({
+            "provider": "real",
+            "model": "live-1",
+            "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 1 }],
+        }),
+    )
+    .await
+    .expect_err("an unresolvable reference fails before dispatch");
+    assert_eq!(remote_code(&err), "router/not_configured", "{err:?}");
+    assert!(
+        err.to_string().contains("secret REAL_KEY not found"),
+        "{err}"
+    );
+    assert_eq!(provider.stream_calls.load(Ordering::SeqCst), streams_before);
+
+    std::env::remove_var(env_var);
+    consumer.shutdown();
+    secrets.iii.shutdown();
+    router_iii.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pasting_a_secret_reference_is_resolvable_when_discovery_runs() {
+    let engine = engine_or_skip!();
+    let secrets = start_fake_secrets(&engine.url).await;
+    secrets.set("PASTED_KEY", Ok("sk-pasted-through-secrets"));
+
+    let router_iii = register_worker(&engine.url, test_init_options());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+
+    // A provider whose discovery records what router::provider::resolve
+    // handed it at that moment.
+    let provider_iii = register_worker(&engine.url, test_init_options());
+    let token_cell: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
+    let seen: Arc<std::sync::Mutex<Vec<Value>>> = Arc::default();
+    {
+        let (iii, token_cell, seen) = (provider_iii.clone(), token_cell.clone(), seen.clone());
+        provider_iii.register_function(
+            "provider::sec::refresh_models",
+            RegisterFunction::new_async(move |_input: Value| {
+                let (iii, seen) = (iii.clone(), seen.clone());
+                let token = token_cell.lock().unwrap().clone();
+                async move {
+                    let resolved = call(
+                        &iii,
+                        "router::provider::resolve",
+                        json!({ "id": "sec", "token": token }),
+                    )
+                    .await?;
+                    seen.lock().unwrap().push(resolved);
+                    Ok::<Value, Error>(json!({ "ok": true, "count": 0 }))
+                }
+            }),
+        );
+    }
+    let declared = call(
+        &provider_iii,
+        "router::provider::register",
+        json!({ "id": "sec", "supports_model_listing": true }),
+    )
+    .await
+    .expect("provider declared");
+    *token_cell.lock().unwrap() = declared["registration_token"].as_str().map(String::from);
+
+    call(
+        &router_iii,
+        "configuration::set",
+        json!({ "id": "llm-router", "value": { "providers": { "sec": { "api_key": "secret://PASTED_KEY" } } } }),
+    )
+    .await
+    .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let first = loop {
+        if let Some(first) = seen.lock().unwrap().first().cloned() {
+            break first;
+        }
+        assert!(Instant::now() < deadline, "debounced discovery never ran");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(first["configured"], true, "{first}");
+    assert_eq!(first["credential"]["key"], "sk-pasted-through-secrets");
+    assert_eq!(first["credential_ref"], "secret://PASTED_KEY");
+
+    provider_iii.shutdown();
+    secrets.iii.shutdown();
     router_iii.shutdown();
 }

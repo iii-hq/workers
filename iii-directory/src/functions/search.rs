@@ -1346,14 +1346,18 @@ pub async fn search_functions(
                 fingerprint.clone(),
             );
             let batch = batch.to_vec();
-            batches.spawn(
+            // The handler's OTel context (baggage: the session's judge
+            // provider, its id) must reach the spawned batch, or its judge
+            // calls route to the hub default.
+            batches.spawn(opentelemetry::context::FutureExt::with_context(
                 async move {
                     let outcome =
                         search_batch(&deps, &cfg, &tools, &fingerprint, &batch, judge).await;
                     (position, outcome)
                 }
                 .in_current_span(),
-            );
+                opentelemetry::Context::current(),
+            ));
         }
         let mut outcomes = batches.join_all().await;
         outcomes.sort_by_key(|(position, _)| *position);

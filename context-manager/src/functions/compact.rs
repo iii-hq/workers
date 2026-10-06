@@ -12,14 +12,14 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::summarize::{summarize_head, PromptSteering};
 use crate::core::budget::{default_reserved, preserve_recent_budget, usable};
 use crate::core::estimate::{estimator_for_model, Estimator};
 use crate::core::lease;
 use crate::core::selection::select;
-use crate::core::summary::{build_system_prompt, render_user_prompt, strip_media};
 use crate::error::ContextError;
 use crate::functions::resolve_model;
-use crate::ports::{Deps, SummarizeError, SummarizeRequest};
+use crate::ports::{Deps, SummarizeError};
 use crate::types::{AgentMessage, ModelInput};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -95,10 +95,8 @@ pub async fn handle(deps: &Deps, req: CompactRequest) -> Result<CompactResponse,
     let estimator = estimator_for_model(&req.model.id);
 
     let reserved = default_reserved(&config, resolved.limits.context_window);
-    let budget = preserve_recent_budget(
-        usable(&resolved.limits, reserved, 0),
-        options.preserve_recent_tokens,
-    );
+    let input_budget = usable(&resolved.limits, reserved, 0);
+    let budget = preserve_recent_budget(input_budget, options.preserve_recent_tokens);
     let tail_turns = options.tail_turns.unwrap_or(config.tail_turns);
 
     let lease_key = options
@@ -118,6 +116,7 @@ pub async fn handle(deps: &Deps, req: CompactRequest) -> Result<CompactResponse,
         &req.model,
         &messages,
         budget,
+        input_budget,
         tail_turns,
         PromptSteering {
             previous_summary: options.previous_summary.as_deref(),
@@ -131,20 +130,14 @@ pub async fn handle(deps: &Deps, req: CompactRequest) -> Result<CompactResponse,
     Ok(outcome)
 }
 
-/// Caller-controlled steering for the summariser prompt: the anchor a
-/// prior compaction left behind and one-shot guidance for this one.
-#[derive(Debug, Clone, Copy, Default)]
-struct PromptSteering<'a> {
-    previous_summary: Option<&'a str>,
-    instructions: Option<&'a str>,
-}
-
 /// The summarisation pipeline between lease acquire and release.
+#[allow(clippy::too_many_arguments)]
 async fn summarise(
     deps: &Deps,
     model: &ModelInput,
     messages: &[AgentMessage],
     budget: u64,
+    input_budget: u64,
     tail_turns: usize,
     steering: PromptSteering<'_>,
     estimator: &dyn Estimator,
@@ -159,16 +152,7 @@ async fn summarise(
     }
 
     let tokens_before: u64 = sizes[..selection.head_len].iter().sum();
-    let stripped = strip_media(head, deps.config().await.max_output_chars);
-
-    let request = SummarizeRequest {
-        system_prompt: build_system_prompt(steering.previous_summary, steering.instructions),
-        user_prompt: render_user_prompt(&stripped),
-        model: model.id.clone(),
-        provider: model.provider.clone(),
-    };
-
-    let summary = match deps.summarizer.summarize(request).await {
+    let summary = match summarize_head(deps, model, head, input_budget, steering).await {
         Ok(summary) => summary,
         Err(SummarizeError::Empty) => {
             tracing::warn!("summariser produced an empty summary; nothing to compact");

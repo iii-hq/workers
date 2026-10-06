@@ -6,13 +6,14 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  EmptyState,
   List,
   ListItem,
-  Panel,
   SearchField,
   SegmentedControl,
   Select,
   Skeleton,
+  StatusBar,
   Table,
   TableBody,
   TableCell,
@@ -127,12 +128,16 @@ export function GroupsListView({
     />
   )
 
-  const within = WINDOW_WORDS[filters.window]
-  const shown = `${groups.length} ${groups.length === 1 ? 'group' : 'groups'}${within ? ` ${within}` : ''}`
-  const hidden =
-    scope === 'open' && counts && counts.resolved + counts.ignored > 0
-      ? `${counts.resolved} resolved · ${counts.ignored} ignored hidden by this filter`
-      : null
+  // One way out of an empty list: undo the most specific filter. If the list
+  // is still empty, the next empty state offers the next one.
+  const widen =
+    filters.search || filters.service
+      ? { label: 'Clear search and worker', onClick: () => onFilters({ ...filters, search: '', service: '' }) }
+      : filters.window !== 'all'
+        ? { label: 'Show all time', onClick: () => setWindow('all') }
+        : scope !== 'open'
+          ? { label: 'Show open groups', onClick: () => setScope('open') }
+          : undefined
 
   return (
     <div className="sentinel-ui-list">
@@ -184,12 +189,6 @@ export function GroupsListView({
               {counts.regressed} {counts.regressed === 1 ? 'regression' : 'regressions'}
             </Chip>
           ) : null}
-          {counts ? <Chip>{spaced(counts.open)} open groups</Chip> : null}
-          {status && status.engine.trace_store !== 'unknown' ? (
-            <Chip tone={status.engine.trace_store === 'disabled' ? 'warning' : 'neutral'}>
-              trace store: {status.engine.trace_store === 'disabled' ? 'off' : status.engine.trace_store}
-            </Chip>
-          ) : null}
         </div>
       </div>
 
@@ -236,14 +235,12 @@ export function GroupsListView({
       ) : null}
 
       {!loading && groups.length === 0 ? (
-        <Panel className="sentinel-ui-empty">
-          <Inbox size={16} aria-hidden="true" />
-          <strong>Nothing here</strong>
-          <p>
-            No group matches this filter. Sentinel keeps counting every occurrence either way — resolved
-            and ignored groups are one click away.
-          </p>
-        </Panel>
+        <EmptyState
+          icon={Inbox}
+          title="No group matches this filter"
+          description="Sentinel keeps counting every occurrence either way; resolved and ignored groups have their own filter."
+          action={widen}
+        />
       ) : narrow ? (
         <List aria-label="Error groups">
           {loading && groups.length === 0
@@ -309,24 +306,69 @@ export function GroupsListView({
         </TableViewport>
       )}
 
-      {groups.length > 0 ? (
-        <div className="sentinel-ui-foot">
-          <span>
-            {total > groups.length
-              ? `${groups.length} of ${spaced(total)} groups${within ? ` ${within}` : ''}`
-              : shown}{' '}
-            · sorted by priority (regressions first, then last seen)
-          </span>
-          {total > groups.length ? (
-            // Without this every group past the first page was unreachable.
-            <Button size="sm" variant="pill" disabled={loading} onClick={onMore}>
-              Show {Math.min(PAGE_SIZE, total - groups.length)} more
-            </Button>
-          ) : null}
-          {hidden ? <span className="sentinel-ui-quiet">{hidden}</span> : null}
+      {total > groups.length ? (
+        // Without this every group past the first page was unreachable.
+        <div className="sentinel-ui-more">
+          <Button size="sm" variant="pill" disabled={loading} onClick={onMore}>
+            Show {Math.min(PAGE_SIZE, total - groups.length)} more
+          </Button>
         </div>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * What the list is showing, under it rather than in the header: counts and
+ * engine facts belong to the quiet strip, and it stays put while the list
+ * scrolls.
+ */
+export function ListStatus({
+  answered,
+  narrow,
+  now,
+  shown,
+  status,
+  total,
+}: {
+  /** The filters the counts answer — not the ones being fetched right now. */
+  answered: Pick<Filters, 'statuses' | 'window'>
+  narrow: boolean
+  now: number
+  shown: number
+  status: StatusResponse | null
+  total: number
+}) {
+  const counts = status?.groups
+  const within = WINDOW_WORDS[answered.window]
+  const store = status?.engine.trace_store
+  // Only the parts that are not zero: "2 ignored", not "0 resolved · 2 ignored".
+  const hidden = counts
+    ? [counts.resolved && `${spaced(counts.resolved)} resolved`, counts.ignored && `${spaced(counts.ignored)} ignored`]
+        .filter(Boolean)
+        .join(' · ')
+    : ''
+  return (
+    <StatusBar
+      className="sentinel-ui-statusbar"
+      end={
+        narrow ? null : (
+          <>
+            {/* Off is a banner above the list; here it is only a fact. */}
+            {store === 'memory' ? <span>trace store: memory</span> : null}
+            {counts?.last_seen_ms ? <span>ingested {ago(counts.last_seen_ms, now)}</span> : null}
+          </>
+        )
+      }
+    >
+      <span>
+        {total > shown ? `${spaced(shown)} of ${spaced(total)} groups` : `${spaced(shown)} ${shown === 1 ? 'group' : 'groups'}`}
+        {within ? ` ${within}` : ''}
+      </span>
+      {narrow ? null : <span>regressions first, then last seen</span>}
+      {/* All-time counts, not the window's: said so, rather than "hidden" beside "in the last 24 h". */}
+      {hidden && scopeOf(answered.statuses) === 'open' ? <span>all time: {hidden}, not in Open</span> : null}
+    </StatusBar>
   )
 }
 

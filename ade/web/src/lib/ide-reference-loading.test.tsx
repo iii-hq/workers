@@ -53,7 +53,7 @@ afterEach(async () => {
 async function show(path: string, reveal?: { line: number; seq: number }) {
   await act(async () => {
     root.render(<EditorPane key={path} host={host} root="/repo" rootLabel="repo" relPath={path}
-      cache={cache} createObjectUrl={() => ''} onSaved={noop} onDirtyChange={noop}
+      cache={cache} createObjectUrl={() => ''} onDirtyChange={noop}
       onRevealDir={noop} onCompare={noop} reveal={reveal} />)
   })
 }
@@ -68,7 +68,7 @@ function RevealPage({ path, request, bump = 0 }: { path: string; request: Reveal
     setPending((current) => current?.path === path && current.seq === seq ? null : current)
   }, [])
   return <EditorPane key={`${path}:${bump}`} host={host} root="/repo" rootLabel="repo" relPath={path}
-    cache={cache} createObjectUrl={noImage} onSaved={noop} onDirtyChange={noop}
+    cache={cache} createObjectUrl={noImage} onDirtyChange={noop}
     onRevealDir={noop} onCompare={noop} richPreview
     reveal={pending?.path === path ? pending : null} onRevealHandled={handled} />
 }

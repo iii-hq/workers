@@ -26,8 +26,10 @@ use crate::catalog::queries::{effective_model_ref, model_supports, models_get};
 use crate::catalog::store::CatalogStore;
 use crate::channels::create_router_channel;
 use crate::config::state::{snapshot, ConfigCell};
+use crate::registry::resolve::unresolved_reference;
 use crate::registry::store::RegistryStore;
 use crate::routing::{decide, DecideInput};
+use crate::secrets::SecretCache;
 use crate::settings::RouterSettings;
 use crate::triggers::{self, RouterEvents};
 
@@ -94,6 +96,7 @@ pub struct ChatPipeline {
     pub catalog: Arc<CatalogStore>,
     pub inflight: Arc<InflightMap>,
     pub config: ConfigCell,
+    pub secrets: Arc<SecretCache>,
     pub events: Arc<RouterEvents>,
 }
 
@@ -487,6 +490,19 @@ impl ChatPipeline {
                 ))
             }
         };
+
+        // A `secret://` credential reference that does not resolve fails here
+        // with the actionable reason (missing secret, not a consumer, secrets
+        // worker down) rather than as the provider's generic "not
+        // configured" — and never falls back to an env key on either side.
+        // Resolving it now also warms the cache the provider resolves from.
+        if let Some(reason) = unresolved_reference(&config, &provider, &self.secrets).await {
+            return Err(fail_pre_stream(
+                &provider,
+                RouterCode::NotConfigured,
+                format!("Provider \"{provider}\" is not configured: {reason}."),
+            ));
+        }
 
         // Structured-output gate: known model without the flag throws; unknown
         // model fails open — the provider is the final arbiter.
@@ -1395,6 +1411,7 @@ mod tests {
             catalog: Arc::new(CatalogStore::new(iii.clone())),
             inflight: Arc::new(InflightMap::default()),
             config: new_config_cell(Value::Null),
+            secrets: Arc::new(SecretCache::new(crate::secrets::bus_fetch(iii.clone()))),
             events,
         };
 

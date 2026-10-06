@@ -12,7 +12,7 @@ pub struct LayaConfig {
     /// (mmBERT-base, 100+ languages) or `laya-typed-decisions` (fine-tuned, 1024
     /// tokens). Changing it takes effect at the next worker start.
     pub model: String,
-    /// Extra checkpoints loaded at the next start (about 1.7 GB of RAM each),
+    /// Extra checkpoints loaded at the next start (about 1 GB of RAM each),
     /// selectable per request by `model` and used by routing.
     pub preload: Vec<String>,
     /// Route each evaluation without an explicit `model` by its state's script
@@ -22,25 +22,21 @@ pub struct LayaConfig {
     /// Send an evaluation whose question ids form one of laya's four
     /// typed-decisions workflows to `laya-typed-decisions` when it is loaded.
     pub auto_task_detection: bool,
-    /// Opt-in embedding shortlist: a choice question with more options than
-    /// this keeps the k options closest to the state (mean-pooled encoder
-    /// states, cosine); the others answer with probability 0.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = 256))]
-    pub shortlist_k: Option<usize>,
     /// Hugging Face revision of `convaiinnovations/laya`; null follows `main`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
-    /// CPU threads for the forward pass (`RAYON_NUM_THREADS`), applied at the next
-    /// worker start. Hybrid CPUs run faster below their logical core count.
+    /// CPU threads for the forward pass, applied at the next worker start.
+    /// Hybrid CPUs run faster below their logical core count.
     #[schemars(range(min = 1, max = 256))]
     pub threads: usize,
-    /// Encoder layers offloaded to the GPU (Vulkan or Metal builds), applied at
-    /// the next start. Null offloads every layer when a GPU is present; 0 keeps
-    /// the encoder on the CPU.
+    /// Layers offloaded to the GPU (Vulkan or Metal builds), applied at the next
+    /// start. Null offloads every layer when a GPU is present; 0 keeps the
+    /// model on the CPU.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_layers: Option<u32>,
-    /// Questions per forward pass; cancellation and deadlines are checked between batches.
+    /// Questions per forward pass, at most 8192 tokens' worth (16 at a
+    /// 512-token window, 8 at 1024); cancellation and deadlines are checked
+    /// between batches.
     #[schemars(range(min = 1, max = 256))]
     pub batch_questions: usize,
     /// Maximum encoded request bytes.
@@ -67,7 +63,6 @@ impl Default for LayaConfig {
             preload: Vec::new(),
             auto_route: false,
             auto_task_detection: false,
-            shortlist_k: None,
             revision: None,
             threads: default_threads(),
             gpu_layers: None,
@@ -91,9 +86,6 @@ impl LayaConfig {
                     "laya preload entries must be distinct from model and each other".into(),
                 );
             }
-        }
-        if self.shortlist_k.is_some_and(|k| !(1..=256).contains(&k)) {
-            return Err("laya shortlist_k must be between 1 and 256".into());
         }
         if self.revision.as_deref().is_some_and(|r| {
             r.trim().is_empty()
@@ -126,7 +118,6 @@ impl LayaConfig {
         Routing {
             auto_route: self.auto_route,
             auto_task_detection: self.auto_task_detection,
-            shortlist_k: self.shortlist_k,
         }
     }
     pub fn from_json(value: &Value) -> Result<Self, String> {

@@ -120,6 +120,15 @@ webhook_listener:
   port: 3112
 ```
 
+The internal `http::webhook-listener::status` function distinguishes saved
+configuration from a listener that this process actually opened. Its `applied`
+field contains the host from the applied configuration and the actual port from
+the bound socket (including an OS-assigned port when configured with `0`), or
+`null` when the listener is off. The
+`last_reload_error` field reports the most recent failed reload and is cleared
+by the next successful one. The function waits for an in-progress reload
+before responding and exposes no other HTTP configuration.
+
 Register an explicit opt-in using the **same** `http` trigger provider:
 
 ```json

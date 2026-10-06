@@ -53,7 +53,7 @@ interface ChatSettingsSheetProps {
   disabled?: boolean
   /** Disable only model/reasoning while leaving other chat settings usable. */
   modelDisabled?: boolean
-  onModelChange: (next: ModelId) => void
+  onModelChange: (next: ModelId, thinkingLevel?: ThinkingLevel) => unknown
   onMemoryBankChange?: (next: string | null) => void
   onWorkingDirChange?: (next: string) => void
   onThinkingLevelChange: (next: ThinkingLevel) => void
@@ -228,7 +228,11 @@ export function ChatSettingsSheet({
               value={model}
               options={modelOptions}
               thinkingLevel={thinkingLevel}
-              onChange={onModelChange}
+              onChange={(next, effort) => {
+                const result = onModelChange(next, effort)
+                if (result instanceof Promise) onOpenChange(false)
+                return result
+              }}
               onThinkingLevelChange={onThinkingLevelChange}
               onConfigureProvider={openProviderConfiguration}
               onAddProvider={() => navigation.push('add-provider')}

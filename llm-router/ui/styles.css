@@ -105,3 +105,8 @@
     padding: 10px;
   }
 }
+
+/* A provider key: the Console's SecretKeyField, framed like a settings row. */
+[data-iii-ui="llm-router"] .llmr-cfg-secret-row {
+  padding: 12px;
+}

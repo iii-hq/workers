@@ -222,7 +222,20 @@ export interface ProviderListEntry {
    * that ship no mark and on older routers — the rail shows an initial then.
    */
   icon_svg?: string
+  /**
+   * Where the router's credential came from: `config` (a literal in the
+   * router configuration), `env` (its environment), `secret` (a
+   * `secret://` reference resolved through the secrets worker) or `none`.
+   * Absent on routers older than secret references.
+   */
+  credential_source?: 'config' | 'env' | 'secret' | 'none'
+  /** The `secret://NAME` the provider's slice points at, when it does. */
+  credential_ref?: string
+  /** Why the credential did not resolve, in the router's words. */
+  credential_error?: string
 }
+
+const CREDENTIAL_SOURCES = new Set(['config', 'env', 'secret', 'none'])
 
 /**
  * List providers present as worker processes (regardless of whether they have
@@ -258,6 +271,19 @@ export async function fetchProviderList(): Promise<ProviderListEntry[]> {
       icon_svg:
         typeof o.icon_svg === 'string' && o.icon_svg.trim()
           ? o.icon_svg
+          : undefined,
+      credential_source:
+        typeof o.credential_source === 'string' &&
+        CREDENTIAL_SOURCES.has(o.credential_source)
+          ? (o.credential_source as ProviderListEntry['credential_source'])
+          : undefined,
+      credential_ref:
+        typeof o.credential_ref === 'string' && o.credential_ref
+          ? o.credential_ref
+          : undefined,
+      credential_error:
+        typeof o.credential_error === 'string' && o.credential_error
+          ? o.credential_error
           : undefined,
     })
   }

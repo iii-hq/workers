@@ -23,9 +23,10 @@ this repository's CI. Wait for JEV's functions to register before making a call.
 
 In the Console, open **Settings → Workers → Judge TypeSafe** and set **API key**
 (the form checks the saved key against `judge-typesafe::models::list` and offers
-the answered catalog in the **Default model** select), or supply
-`TYPESAFE_API_KEY` in the JEV service's environment before starting it. See
-[Configuration](#configuration) for precedence and reload behavior.
+the answered catalog in the **Default model** select), preferably as a
+`secret://TYPESAFE_API_KEY` reference to the [`secrets`](../secrets/) worker, or
+supply `TYPESAFE_API_KEY` in the JEV service's environment before starting it.
+See [Configuration](#configuration) for precedence and reload behavior.
 
 Ask whether a support ticket needs urgent attention:
 
@@ -80,7 +81,7 @@ The Console entry defaults to `judge-typesafe`; set `III_CONFIG_NAME=judge-types
 environment to use `judge-typesafe-prod`. The form masks the API key and exposes these defaults:
 
 ```yaml
-api_key: null                  # Fall back to the worker's TYPESAFE_API_KEY.
+api_key: null                  # Fall back to the worker's TYPESAFE_API_KEY; or secret://NAME.
 model: jev-latest               # Default unless a call supplies its own model.
 max_request_bytes: 8388608      # Maximum JSON bytes per upstream evaluation.
 max_response_bytes: 8388608     # Maximum bytes per upstream response.
@@ -94,7 +95,19 @@ value. Changing the process environment requires a restart.
 
 The `configuration` service persists values at `./config/<configuration-id>.yaml`
 with its default filesystem adapter. Keep literal API keys out of committed
-project configuration.
+project configuration: store the key in the `secrets` worker, list
+`judge-typesafe` in its `consumers`, and set `api_key: secret://TYPESAFE_API_KEY`
+(`NAME` matches `^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`). The reference is resolved
+through `secrets::resolve` at call time, never sent upstream as a key, and kept
+only in memory. It is re-read when `secrets::changed` names it (bound at boot; the
+engine holds the binding until a secrets worker registers the type), after
+5 minutes, and 10 seconds after a failure. While the secrets worker is
+unreachable, a key already resolved keeps being used. A reference that does not
+resolve returns `missing_key` with `provider_error.message` naming the fix
+(`secret NAME not found in the secrets worker`, `judge-typesafe is not allowed to
+read secret NAME; add judge-typesafe to the secret's consumers`, `secrets worker is
+not running`) and never falls back to `TYPESAFE_API_KEY`. The reference itself is
+not secret; never paste a key after `secret://`.
 The form retains unknown values when editing other fields and shows errors
 returned by the configuration service; a `${TYPESAFE_API_KEY}` value expands in
 the configuration service's environment instead of this process.

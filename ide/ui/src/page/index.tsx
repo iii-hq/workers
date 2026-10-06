@@ -3,7 +3,8 @@
  * the worker's own functions. One tab strip holds everything the main
  * pane can show: a file (its real content, editable), a diff (one file
  * against one source: the index, a Harness turn, a revision, a recorded
- * change) and, when docked there, the terminal.
+ * change), a file as a commit left it (read-only) and, when docked there,
+ * the terminal.
  *
  * What a click opens is decided by the sidebar view it comes from:
  * Explorer opens files, Source control opens index diffs (a file can be
@@ -41,6 +42,7 @@ import {
   Eye,
   EyeOff,
   FolderX,
+  GitGraph,
   PanelLeft,
   PanelRight,
   RefreshCw,
@@ -49,7 +51,9 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { ActivityBar, type SideView } from './ActivityBar'
+import { ActivityBar, SIDE_VIEWS, type SideView } from './ActivityBar'
+import { BranchChangesView } from './BranchChangesView'
+import { isProtectedPath } from './protected-paths'
 import {
   type MissingPaths,
   missingAfterChanges,
@@ -60,17 +64,20 @@ import {
   withMissingPaths,
 } from './missing-files'
 import { type CoderInfo, coderInfo, coderReadFile, coderStatFiles, joinPath, workspaceValidate } from './coder'
-import { createTurnCache, loadDiffContents } from './diff-load'
+import { createTurnCache, loadDiffContents, sameDiffContents } from './diff-load'
 import { type DiffSource, diffSourceFollowsDisk } from './diff-source'
 import { DEFAULT_DIFF_OPTIONS, DiffTab, type DiffOptions, type DiffTabActions, type DiffTabState } from './DiffTab'
 import { EditorTabs } from './EditorTabs'
-import { type EditorCache, EditorPane } from './EditorPane'
+import { type EditorCache, EditorPane, RevisionPane } from './EditorPane'
 import { refreshCleanEditorCacheEntry } from './editor-cache'
 import { copyText } from '@iii-dev/console-ui/format'
 import { createEntry, deleteEntry, duplicateFile, duplicateName, renameEntry } from './file-actions'
 import { createObjectUrlRegistry } from './file-bytes'
 import { type ExplorerActions, FilesTab } from './FilesTab'
+import { NewWorkerDialog } from './NewWorkerDialog'
+import { entryFile, type ScaffoldResult } from './new-worker'
 import { type GitChange, type GitState, gitChanges } from './git'
+import type { CommitDetails, CommitFile } from './git-log-window'
 import { gitDiscard } from './git-actions'
 import { EDITOR_FULL_READ_BUDGET } from './large-file'
 import { useWorkspaceChanges } from './live'
@@ -92,7 +99,6 @@ import { QuickOpen } from './QuickOpen'
 import { formatFileReference, type LineRange, mentionPathFor } from './reference'
 import { dirname, isUnder } from './paths'
 import { createTabUiStateSaver, loadTabUiState, type TabUiState, type TerminalDock } from './persist'
-import { useShellReviewSummaryBridge } from './review-summary-store'
 import {
   EMPTY_ROOT_MEMORY,
   parseRootMemory,
@@ -104,10 +110,17 @@ import {
 import { SearchTab, type SearchRequest } from './SearchTab'
 import { ShellLauncher } from './ShellLauncher'
 import { SourceControlTab } from './SourceControlTab'
+import { registerWorktreesPage, type SwitchOutcome, type WorktreesPage } from './use-worktree-ops'
+import { WorktreeMenu } from './WorktreeSwitcher'
+import { DockPanel } from './DockPanel'
+import type { GitWindowRequest } from './branch-menu'
+import { GitCompareTab } from './GitCompareTab'
+import { type GitTab, GitToolWindow } from './GitToolWindow'
 import {
   activateTab,
   activeTab as activeTabOf,
   closeTab,
+  compareTarget,
   cycleTab,
   diffTarget,
   EMPTY_TABS,
@@ -120,6 +133,7 @@ import {
   persistedTabs,
   pinTab,
   restoreTabs,
+  revisionTarget,
   tabFilePaths,
   type TabTarget,
   type TabsState,
@@ -130,13 +144,13 @@ import type { TerminalOutputRouter } from './terminal-output-router'
 import type { TerminalConnectionCoordinator } from './terminal-session-state'
 import { TerminalPanel } from './TerminalPanel'
 import { TimelineTab } from './TimelineTab'
+import { TurnReviewBridge } from './TurnReviewBridge'
 import type { TreeChange } from './tree-model'
 import { describeRevert, revertTurn } from './turn-revert'
 import { useHarnessTurn } from './turn'
 import { fetchSessionTurns, relativeToRoot, type SessionTurnSummary, turnTitle } from './turns'
 import { useCompareRefs } from './use-compare-refs'
 import { useSourceControl } from './use-source-control'
-import { useTurnSummary } from './use-turn-summary'
 import { useWorkspaceTree } from './use-workspace-tree'
 import { WorkspaceBrowser } from './WorkspaceBrowser'
 
@@ -170,6 +184,8 @@ const SIDEBAR_MAX_WIDTH = 560
 const TERMINAL_BOTTOM_DEFAULT_SIZE = 280
 const TERMINAL_RIGHT_DEFAULT_SIZE = 420
 const LIVE_COALESCE_MS = 400
+const NO_RECENT: readonly string[] = []
+const NO_GLOBS: readonly string[] = []
 
 function clampTerminalSize(size: number | undefined, fallback: number): number {
   if (size === undefined || !Number.isFinite(size)) return fallback
@@ -221,6 +237,17 @@ export function ShellExplorerPage({
   rootRef.current = root
   const workingDirRef = useRef(workingDir ?? null)
   workingDirRef.current = workingDir ?? null
+  const conversationIdRef = useRef(conversationId)
+  conversationIdRef.current = conversationId
+  // Work that outlives this page (a worktree merge finishing after its
+  // workspace tab closed) checks this before it asks or moves anything.
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
   const acknowledgedWorkingDirRef = useRef<string | null>(null)
   const workingDirFollowRequestSeqRef = useRef(0)
   const workingDirFollowPendingRef = useRef<{ path: string; request: number } | null>(null)
@@ -237,6 +264,15 @@ export function ShellExplorerPage({
 
   // ── views and panes ──
   const [sideTab, setSideTab] = useState<SideView>('files')
+  // Show Diff with Working Tree: the full ref the Changes view compares.
+  const [branchChanges, setBranchChanges] = useState<string | null>(null)
+  // Another folder is another repository: the comparison was the last one's.
+  const [comparedRoot, setComparedRoot] = useState(root)
+  if (comparedRoot !== root) {
+    setComparedRoot(root)
+    setBranchChanges(null)
+    if (sideTab === 'changes') setSideTab('scm')
+  }
   const [browsePath, setBrowsePath] = useState<string | null>(null)
   const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(null)
   const [goToLineSeq, setGoToLineSeq] = useState(0)
@@ -250,7 +286,24 @@ export function ShellExplorerPage({
 
   // ── terminal ──
   const [terminalOpen, setTerminalOpen] = useState(false)
+  // Mounted from its first opening on and only hidden after: unmounting
+  // detached every shell. Not before, since mounting spawns a shell per pane.
+  const [terminalMounted, setTerminalMounted] = useState(false)
+  if (terminalOpen && !terminalMounted) setTerminalMounted(true)
+  // The Git tool window shares the docked panel with the terminal.
+  const [gitOpen, setGitOpen] = useState(false)
+  // Mounted from its first opening, then hidden rather than unmounted: the
+  // terminal and the Git window trade the dock, and a remount re-read the
+  // refs, a page of the log and every worktree, and lost the selection.
+  const [gitMounted, setGitMounted] = useState(false)
+  if (gitOpen && !gitMounted) setGitMounted(true)
+  const [gitTab, setGitTab] = useState<GitTab>('log')
+  const gitToggleRef = useRef<HTMLButtonElement>(null)
   const [terminalDock, setTerminalDock] = useState<TerminalDock>('bottom')
+  // One tool window in the docked panel at a time: a terminal opening there
+  // takes it from Git (a terminal in an editor tab leaves Git be). Settled
+  // during render, so opening one costs no second pass.
+  if (gitOpen && terminalOpen && terminalDock !== 'editor') setGitOpen(false)
   const [terminalActive, setTerminalActive] = useState(false)
   const [terminalBottomSize, setTerminalBottomSize] = useState(TERMINAL_BOTTOM_DEFAULT_SIZE)
   const [terminalRightSize, setTerminalRightSize] = useState(TERMINAL_RIGHT_DEFAULT_SIZE)
@@ -268,21 +321,32 @@ export function ShellExplorerPage({
   // ── workspace data ──
   // Dot entries are filtered by default (Finder/VS Code convention) —
   // in home-shaped folders they otherwise crowd out every visible name.
-  const [showHidden, setShowHidden] = useState(false)
+  // Dot entries show, as in other IDEs; the eye in the header hides them.
+  const [showHidden, setShowHidden] = useState(true)
   const [git, setGit] = useState<GitState | null>(null)
+  // Bumps after a git refresh while Source Control shows: its Commit, Stash
+  // and History tabs re-read on it (opening the view reads anyway).
+  const [gitEpoch, setGitEpoch] = useState(0)
+  const scmActiveRef = useRef(false)
   const gitRef = useRef(git)
   gitRef.current = git
-  const [gitEpoch, setGitEpoch] = useState(0)
   // Bumps whenever the disk (or the index) moved: diff tabs re-read.
   const [diskEpoch, setDiskEpoch] = useState(0)
   const workspaceTree = useWorkspaceTree(host, root, showHidden, rootGenerationRef)
   const tree = workspaceTree.tree
+  // The hook's verbs one by one: its object changes with every folder load,
+  // and the page's callbacks must not change with it.
+  const { refresh: refreshTree, ensurePath, reloadDir, loadingDirs } = workspaceTree
+  const treeRef = useRef(tree)
+  treeRef.current = tree
   const applyTreeChanges = workspaceTree.applyChanges
   const ensureDir = workspaceTree.ensureDir
   const [expanded, setExpanded] = useState<string[]>([])
   const expandedRef = useRef(expanded)
   expandedRef.current = expanded
   const [reveal, setReveal] = useState<string | null>(null)
+  // The New worker dialog's root-relative parent folder; null keeps it closed.
+  const [newWorkerBase, setNewWorkerBase] = useState<string | null>(null)
 
   // ── tabs ──
   const [tabs, setTabs] = useState<TabsState>(EMPTY_TABS)
@@ -294,6 +358,18 @@ export function ShellExplorerPage({
   // Open file tabs whose file is gone from disk (`missing-files.ts`), and
   // the persisted folder that was gone when the pane came back.
   const [missingPaths, setMissingPaths] = useState<MissingPaths>(NO_MISSING)
+  // A protected file (`.env`, keys) reads like a missing one, but it is
+  // there: its tab is not struck through, and its pane says why it is shut.
+  const protectedGlobs = info?.non_accessible_globs ?? NO_GLOBS
+  const basePaths = info?.base_paths ?? NO_GLOBS
+  const isProtected = useCallback(
+    (path: string | null) => isProtectedPath(path, protectedGlobs, root, basePaths),
+    [protectedGlobs, root, basePaths],
+  )
+  const shownMissing = useMemo(() => {
+    const kept = [...missingPaths].filter((path) => !isProtected(path))
+    return kept.length === missingPaths.size ? missingPaths : new Set(kept)
+  }, [missingPaths, isProtected])
   const [missingRoot, setMissingRoot] = useState<string | null>(null)
   const missingRootRef = useRef<string | null>(null)
   const cacheRef = useRef<EditorCache>(new Map())
@@ -303,6 +379,8 @@ export function ShellExplorerPage({
     return () => registry.releaseAll()
   }, [])
   const diffCacheRef = useRef(new Map<string, DiffCacheEntry>())
+  // What revision tabs read, by tab id (`RevisionPane`).
+  const revisionCacheRef = useRef(new Map<string, string>())
   const [diffVersion, setDiffVersion] = useState(0)
   const [revealLineRequest, setRevealLineRequest] = useState<{
     path: string
@@ -314,21 +392,23 @@ export function ShellExplorerPage({
   const revealSeqRef = useRef(0)
   /** Clear only the acknowledged request; a newer navigation must remain pending. */
   const onRevealHandled = useCallback((path: string, seq: number) => {
-    setRevealLineRequest((pending) =>
-      pending?.path === path && pending.seq === seq ? null : pending,
-    )
+    setRevealLineRequest((pending) => (pending?.path === path && pending.seq === seq ? null : pending))
   }, [])
   const historyRef = useRef<NavHistory>(EMPTY_HISTORY)
   const [historyState, setHistoryState] = useState({ back: false, forward: false })
   const navigatingRef = useRef(false)
-  const syncHistoryState = useCallback(
-    () => setHistoryState({ back: canGoBack(historyRef.current), forward: canGoForward(historyRef.current) }),
-    [],
-  )
+  const syncHistoryState = useCallback(() => {
+    const back = canGoBack(historyRef.current)
+    const forward = canGoForward(historyRef.current)
+    // Most visits leave both buttons as they were: no render for those.
+    setHistoryState((previous) => (previous.back === back && previous.forward === forward ? previous : { back, forward }))
+  }, [])
 
   // ── turns ──
   const [sessionTurns, setSessionTurns] = useState<readonly SessionTurnSummary[]>([])
   const sessionTurnsSeqRef = useRef(0)
+  const sessionTurnsKeyRef = useRef('')
+  const sessionTurnsShapeRef = useRef('')
   const turnCache = useMemo(() => createTurnCache(host, conversationId), [host, conversationId])
   const [timelineNote, setTimelineNote] = useState<string | null>(null)
   const [reverting, setReverting] = useState<string | null>(null)
@@ -339,6 +419,8 @@ export function ShellExplorerPage({
   const tabVisible = !terminalActive
   const activeFilePath = tabVisible && activeTab?.target.kind === 'file' ? activeTab.target.path : null
   const activeDiff = tabVisible && activeTab?.target.kind === 'diff' ? activeTab.target : null
+  const activeRevision = tabVisible && activeTab?.target.kind === 'revision' ? activeTab.target : null
+  const activeCompare = tabVisible && activeTab?.target.kind === 'compare' ? activeTab.target : null
 
   // ── unsaved work ──
   useEffect(() => {
@@ -351,14 +433,21 @@ export function ShellExplorerPage({
     return () => window.removeEventListener('beforeunload', warn)
   }, [dirtyPaths])
 
+  // Read at call time: a root change requested by an async action (a
+  // worktree merge) must see the edits made while it ran.
+  const dirtyPathsRef = useRef(dirtyPaths)
+  dirtyPathsRef.current = dirtyPaths
   const confirmDiscardAllEdits = useCallback(async () => {
-    if (dirtyPaths.size === 0) return true
+    const dirty = dirtyPathsRef.current
+    if (dirty.size === 0) return true
+    // A page that is gone cannot ask, and its dialog would never answer.
+    if (!mountedRef.current) return false
     return confirm({
-      title: `discard unsaved changes in ${dirtyPaths.size} ${dirtyPaths.size === 1 ? 'file' : 'files'}?`,
+      title: `discard unsaved changes in ${dirty.size} ${dirty.size === 1 ? 'file' : 'files'}?`,
       confirmLabel: 'Discard',
       tone: 'danger',
     })
-  }, [dirtyPaths, confirm])
+  }, [confirm])
 
   // ── boot: worker info + this workspace tab's persisted state ──
   useEffect(() => {
@@ -437,10 +526,12 @@ export function ShellExplorerPage({
           setTabs(restoreTabs(slice.open, slice.active))
           setExpanded(slice.expanded)
         }
-        setShowHidden(restored.showHidden ?? false)
+        setShowHidden(!(restored.hideDotfiles ?? false))
         if (isSideView(restored.sideView)) setSideTab(restored.sideView)
         if (restored.diffOptions) setDiffOptions({ ...DEFAULT_DIFF_OPTIONS, ...restored.diffOptions })
         if (restored.terminalOpen) setTerminalOpen(true)
+        if (restored.gitOpen) setGitOpen(true)
+        if (restored.gitTab) setGitTab(restored.gitTab)
         if (restored.terminalDock) setTerminalDock(restored.terminalDock)
         if (restored.terminalActive) setTerminalActive(true)
         setTerminalBottomSize(clampTerminalSize(restored.terminalBottomSize, TERMINAL_BOTTOM_DEFAULT_SIZE))
@@ -472,19 +563,30 @@ export function ShellExplorerPage({
 
   // ── git status (gated on the resolved root) ──
   const gitSeqRef = useRef(0)
-  const refreshGit = useCallback((): Promise<GitState | null> => {
-    if (!root) return Promise.resolve(null)
+  // `quiet` leaves the epoch alone: opening Source Control reads the status
+  // again, and the tabs mounting with it have just loaded on their own.
+  const refreshGit = useCallback(({ quiet = false }: { quiet?: boolean } = {}): Promise<GitState | null> => {
+    // A callback that outlived a root switch (an async action finishing
+    // after the pane moved, e.g. a worktree merge) must not read the old
+    // root, nor supersede the refresh of the root now in front.
+    if (!root || root !== rootRef.current) return Promise.resolve(null)
     const seq = ++gitSeqRef.current
-    return gitChanges(host, root)
+    // An unchanged status comes back as the object already held, so the
+    // tree, the tabs and the launcher skip their redraw.
+    return gitChanges(host, root, gitRef.current)
       .then((state) => {
         if (gitSeqRef.current === seq) {
           setGit(state)
-          setGitEpoch((value) => value + 1)
+          if (scmActiveRef.current && !quiet) setGitEpoch((value) => value + 1)
         }
         return state
       })
       .catch((err: unknown) => {
-        if (gitSeqRef.current === seq) setGit({ kind: 'error', message: errorMessage(err) })
+        if (gitSeqRef.current === seq) {
+          const message = errorMessage(err)
+          setGit((previous) => (previous?.kind === 'error' && previous.message === message ? previous : { kind: 'error', message }))
+          if (scmActiveRef.current && !quiet) setGitEpoch((value) => value + 1)
+        }
         return null
       })
   }, [host, root])
@@ -515,22 +617,55 @@ export function ShellExplorerPage({
   // ── session turns ──
   const refreshSessionTurns = useCallback(() => {
     if (!conversationId) {
-      setSessionTurns([])
+      sessionTurnsKeyRef.current = '[]'
+      sessionTurnsShapeRef.current = ''
+      setSessionTurns((previous) => (previous.length === 0 ? previous : []))
       return
     }
     const seq = ++sessionTurnsSeqRef.current
     void fetchSessionTurns(host, conversationId)
       .then((turns) => {
-        if (sessionTurnsSeqRef.current === seq) setSessionTurns(turns)
+        if (sessionTurnsSeqRef.current !== seq) return
+        // A poll that finds the same list keeps the old one: a new array
+        // would re-render the whole page every tick of a running turn.
+        const key = JSON.stringify(turns)
+        if (key === sessionTurnsKeyRef.current) return
+        sessionTurnsKeyRef.current = key
+        // A turn that did not change keeps its object, so the Timeline's
+        // memoized sections skip it.
+        setSessionTurns((previous) => {
+          const byId = new Map(previous.map((turn) => [turn.turn_id, turn]))
+          return turns.map((turn) => {
+            const old = byId.get(turn.turn_id)
+            return old !== undefined && JSON.stringify(old) === JSON.stringify(turn) ? old : turn
+          })
+        })
+        // A running turn keeps gaining files. The record a diff tab cached
+        // before a file landed says the turn never touched it, and a disk
+        // burst alone re-reads that same stale record; the polled list is
+        // what knows better. In the same batch as the list: one render.
+        const shape = turnsShape(turns)
+        if (shape === sessionTurnsShapeRef.current) return
+        sessionTurnsShapeRef.current = shape
+        turnCache.clear()
+        setDiskEpoch((value) => value + 1)
       })
       .catch(() => {})
-  }, [conversationId, host])
+  }, [conversationId, host, turnCache])
   // biome-ignore lint/correctness/useExhaustiveDependencies: turn boundaries are the refresh triggers
   useEffect(() => {
     refreshSessionTurns()
     if (!harnessTurn.active) return
-    const timer = window.setInterval(refreshSessionTurns, 1_500)
-    return () => window.clearInterval(timer)
+    // A hidden tab skips the poll, and catches up when it shows again.
+    const tick = () => {
+      if (document.visibilityState !== 'hidden') refreshSessionTurns()
+    }
+    const timer = window.setInterval(tick, 1_500)
+    document.addEventListener('visibilitychange', tick)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', tick)
+    }
   }, [harnessTurn.active, harnessTurn.completedAtMs, harnessTurn.turnId, refreshSessionTurns])
   // A turn that completed may have become an older turn's "after" side.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the completion stamp is the trigger
@@ -538,21 +673,6 @@ export function ShellExplorerPage({
     turnCache.clear()
     setDiskEpoch((value) => value + 1)
   }, [harnessTurn.completedAtMs, turnCache])
-  // A running turn keeps gaining files. The record a diff tab cached before
-  // a file landed says the turn never touched it, and a disk burst alone
-  // re-reads that same stale record; the polled list is what knows better.
-  const turnsShape = useMemo(
-    () =>
-      sessionTurns
-        .map((turn) => `${turn.turn_id}:${turn.ended_at ?? ''}:${turn.files.map((file) => `${file.path}${file.kind}`).join(',')}`)
-        .join('\n'),
-    [sessionTurns],
-  )
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the list's shape is the trigger
-  useEffect(() => {
-    turnCache.clear()
-    setDiskEpoch((value) => value + 1)
-  }, [turnsShape, turnCache])
   const turnTitles = useMemo(
     () => new Map(sessionTurns.map((turn, index) => [turn.turn_id, turnTitle(turn, sessionTurns.length - index)] as const)),
     [sessionTurns],
@@ -623,7 +743,7 @@ export function ShellExplorerPage({
       const filePaths = current.tabs
         .filter((tab) => closing.has(tab.id) && tab.target.kind === 'file')
         .map((tab) => tab.target.path)
-      const dirty = filePaths.filter((path) => dirtyPaths.has(path))
+      const dirty = filePaths.filter((path) => dirtyPathsRef.current.has(path))
       if (
         dirty.length > 0 &&
         !(await confirm({
@@ -656,7 +776,7 @@ export function ShellExplorerPage({
       })
       syncHistoryState()
     },
-    [dirtyPaths, dropFileCache, syncHistoryState, confirm],
+    [dropFileCache, syncHistoryState, confirm],
   )
   const closeTabId = useCallback((id: string) => closeTabIds([id]), [closeTabIds])
 
@@ -694,11 +814,25 @@ export function ShellExplorerPage({
     (relPath: string) => {
       setSideTab('files')
       setCollapsed(false)
-      void workspaceTree.ensurePath(relPath).finally(() => setReveal(relPath))
+      void ensurePath(relPath).finally(() => setReveal(relPath))
     },
-    [workspaceTree],
+    [ensurePath],
   )
   const onRevealed = useCallback(() => setReveal(null), [])
+  // A scaffolded worker: show its folder and open its entry file, when they
+  // live under the browsed root.
+  const onWorkerCreated = useCallback(
+    (result: ScaffoldResult) => {
+      const currentRoot = rootRef.current
+      if (!currentRoot) return
+      const dir = relativeToRoot(result.directory, currentRoot)
+      if (dir !== null) revealFolder(dir)
+      const entry = entryFile(result.files.map((file) => file.path))
+      const rel = entry === null ? null : relativeToRoot(entry, currentRoot)
+      if (rel !== null) openFileTab(rel, { pin: true })
+    },
+    [revealFolder, openFileTab],
+  )
 
   const onDirtyChange = useCallback((relPath: string, dirty: boolean) => {
     setDirtyPaths((prev) => {
@@ -765,12 +899,18 @@ export function ShellExplorerPage({
         const generation = rootGenerationRef.current
         await renameEntry(host, currentRoot, from, to)
         if (rootGenerationRef.current !== generation || rootRef.current !== currentRoot) return
-        // Open tabs and their drafts follow the file to its new name.
-        const affected = tabsRef.current.tabs.filter((tab) => isUnder(tab.target.path, from))
+        // Open tabs and their drafts follow the file to its new name; a
+        // revision tab, or a diff of fixed sides (a commit, two revisions, a
+        // recorded change), stays: what it reads still has the old one.
+        const affected = tabsRef.current.tabs.filter(
+          (tab) =>
+            (tab.target.kind === 'file' || (tab.target.kind === 'diff' && diffSourceFollowsDisk(tab.target.source))) &&
+            isUnder(tab.target.path, from),
+        )
         for (const tab of affected) {
           const renamed = isDir ? to + tab.target.path.slice(from.length) : to
           const target: TabTarget =
-            tab.target.kind === 'file' ? fileTarget(renamed) : diffTarget(renamed, tab.target.source)
+            tab.target.kind === 'diff' ? diffTarget(renamed, tab.target.source) : fileTarget(renamed)
           if (tab.target.kind === 'file') {
             const oldPath = tab.target.path
             const cached = cacheRef.current.get(oldPath)
@@ -797,7 +937,7 @@ export function ShellExplorerPage({
         }
         syncHistoryState()
         applyTreeChanges([{ rel: from, kind: 'deleted', dir: isDir }])
-        if (isDir) await workspaceTree.reloadDir(dirname(to))
+        if (isDir) await reloadDir(dirname(to))
         else applyTreeChanges([{ rel: to, kind: 'created', dir: false }])
         afterDiskChange()
       },
@@ -815,7 +955,7 @@ export function ShellExplorerPage({
       duplicate: async (rel) => {
         const currentRoot = rootRef.current
         if (!currentRoot) return
-        const kinds = tree?.kinds
+        const kinds = treeRef.current?.kinds
         const to = duplicateName(rel, (candidate) => kinds?.has(candidate) ?? false)
         await duplicateFile(host, currentRoot, rel, to)
         applyTreeChanges([{ rel: to, kind: 'created', dir: false }])
@@ -829,25 +969,26 @@ export function ShellExplorerPage({
       },
       compare: (rel) => compareFile(rel),
       findInFolder,
+      newWorker: setNewWorkerBase,
       discard: (rel) => {
         const change = gitRef.current?.kind === 'ready' ? gitRef.current.changes.find((c) => c.path === rel) : undefined
         if (change) setPendingDiscard(change)
       },
       refresh: () => {
-        workspaceTree.refresh()
+        refreshTree()
         afterDiskChange()
       },
     }),
     [
       host,
-      tree,
       applyTreeChanges,
       afterDiskChange,
       openFileTab,
       openTerminalAt,
       compareFile,
       findInFolder,
-      workspaceTree,
+      refreshTree,
+      reloadDir,
       closeTabIds,
       syncHistoryState,
     ],
@@ -869,18 +1010,21 @@ export function ShellExplorerPage({
 
   // ── source control ──
   const scmActive = sideTab === 'scm'
-  const scm = useSourceControl(host, root, gitEpoch, scmActive, afterDiskChange)
+  scmActiveRef.current = scmActive
+  // The Commit tab derives from the page's own git status rather than
+  // reading git again; its actions refresh it through afterDiskChange.
+  const scm = useSourceControl(host, root, gitEpoch, scmActive, afterDiskChange, { git, refresh: refreshGit })
   const compareOpen = tabs.tabs.some((tab) => tab.target.kind === 'diff' && tab.target.source.type === 'compare')
   const compareRefs = useCompareRefs(host, root, compareOpen)
 
   // ── timeline ──
   const afterRevert = useCallback(() => {
-    workspaceTree.refresh()
+    refreshTree()
     refreshSessionTurns()
     turnCache.clear()
     setFileBump((value) => value + 1)
     afterDiskChange()
-  }, [workspaceTree, refreshSessionTurns, turnCache, afterDiskChange])
+  }, [refreshTree, refreshSessionTurns, turnCache, afterDiskChange])
 
   const revertTurnFiles = useCallback(
     async (turnId: string, paths?: readonly string[]) => {
@@ -906,7 +1050,7 @@ export function ShellExplorerPage({
             if (rel !== null) dropFileCache(rel)
           }
         }
-        setDirtyPaths(new Set())
+        setDirtyPaths((previous) => (previous.size === 0 ? previous : new Set()))
         afterRevert()
       }
     },
@@ -925,7 +1069,9 @@ export function ShellExplorerPage({
       epoch: diskEpoch,
       state: previous?.phase === 'ready' ? previous : { phase: 'loading' },
     })
-    setDiffVersion((value) => value + 1)
+    // A diff on screen stays there while it re-reads: only a first load, or
+    // a retry after an error, has something new to show meanwhile.
+    if (previous?.phase !== 'ready') setDiffVersion((value) => value + 1)
     const generation = rootGenerationRef.current
     const target = activeDiff
     void loadDiffContents(host, root, target.path, target.source, turnCache)
@@ -935,6 +1081,10 @@ export function ShellExplorerPage({
         if (rootGenerationRef.current !== generation || rootRef.current !== root) return
         const current = diffCacheRef.current.get(activeDiffId)
         if (current === undefined || current.epoch !== diskEpoch) return
+        // The same two sides read back (a burst elsewhere): nothing to redraw.
+        if (current.state.phase === 'ready' && state.phase === 'ready' && sameDiffContents(current.state.contents, state.contents)) {
+          return
+        }
         diffCacheRef.current.set(activeDiffId, { epoch: diskEpoch, state })
         setDiffVersion((value) => value + 1)
       })
@@ -956,16 +1106,16 @@ export function ShellExplorerPage({
     const source = activeDiff.source
     const openFile = (rel: string, line?: number) => openFileTab(rel, { pin: true, line })
     switch (source.type) {
-      case 'staged':
-        return { openFile, unstage: () => void scm.unstage([path]) }
+      case 'uncommitted':
       case 'unstaged': {
+        // Rolling back one file from its diff goes through the page's own
+        // confirmation, the same as the explorer's discard.
         const change = gitRef.current?.kind === 'ready' ? gitRef.current.changes.find((c) => c.path === path) : undefined
-        return {
-          openFile,
-          stage: () => void scm.stage([path]),
-          discard: change ? () => setPendingDiscard(change) : undefined,
-        }
+        return { openFile, discard: change ? () => setPendingDiscard(change) : undefined }
       }
+      case 'staged':
+      case 'revision':
+        return { openFile }
       case 'turn':
         return {
           openFile,
@@ -976,7 +1126,8 @@ export function ShellExplorerPage({
         }
       case 'compare':
         return {
-          openFile,
+          // A file outside the IDE's folder (`../…`) has no tab of its own here.
+          ...(path.startsWith('../') ? {} : { openFile }),
           changeRef: (ref) => {
             const trimmed = ref.trim()
             if (trimmed === '' || trimmed === source.ref) return
@@ -991,8 +1142,11 @@ export function ShellExplorerPage({
         }
       case 'change':
         return { openFile }
+      case 'commit':
+        // A file outside the IDE's folder has a diff but no editor tab.
+        return path.startsWith('../') ? {} : { openFile }
     }
-  }, [activeDiff, openFileTab, scm, revertTurnFiles])
+  }, [activeDiff, openFileTab, revertTurnFiles])
 
   // ── live updates: the watched root streams every change here ──
   // The worker runs a system-level watch on the browsed root for this
@@ -1004,6 +1158,12 @@ export function ShellExplorerPage({
   const liveTimerRef = useRef<number | null>(null)
   const changedAbsRef = useRef<Map<string, string>>(new Map())
   const changedDirsRef = useRef<Set<string>>(new Set())
+  // Whether the burst touched a path git tracks: build output alone (target/,
+  // dist/) cannot change `git status`.
+  const changedTrackedRef = useRef(false)
+  // Absolute paths the bursts wrote since the turn summary last looked: it
+  // reads those files again, and keeps every other row's totals.
+  const summaryWritesRef = useRef(new Set<string>())
 
   const reloadActiveFile = useCallback(() => {
     const currentRoot = rootRef.current
@@ -1036,6 +1196,7 @@ export function ShellExplorerPage({
     const eventAbs = joinPath(event.root, event.path)
     changedAbsRef.current.set(eventAbs, event.kind)
     if (event.dir === true) changedDirsRef.current.add(eventAbs)
+    if (event.ignored !== true) changedTrackedRef.current = true
     if (liveTimerRef.current !== null) return
     const generation = rootGenerationRef.current
     liveTimerRef.current = window.setTimeout(() => {
@@ -1057,7 +1218,30 @@ export function ShellExplorerPage({
       applyTreeChanges(treeChanges)
       const openFiles = new Set(tabsRef.current.tabs.filter((tab) => tab.target.kind === 'file').map((tab) => tab.target.path))
       setMissingPaths((prev) => missingAfterChanges(prev, treeChanges, openFiles))
-      afterDiskChange()
+      // A file tab in the background shows the disk when it comes forward:
+      // its clean buffer goes. A dirty one keeps the user's edits, and a
+      // deleted file's keeps the body a save would put back.
+      const active = activeTabOf(tabsRef.current)
+      for (const change of treeChanges) {
+        const entry = cacheRef.current.get(change.rel)
+        if (entry === undefined || change.kind === 'deleted' || entry.draft !== entry.savedContent) continue
+        if (active?.target.kind === 'file' && active.target.path === change.rel) continue
+        objectUrlsRef.current.release(entry.image)
+        cacheRef.current.delete(change.rel)
+      }
+      // Recorded ahead of the early return below: a turn file under an
+      // ignored path is read again on the next pass, not held stale.
+      for (const abs of changed.keys()) summaryWritesRef.current.add(abs)
+      const tracked = changedTrackedRef.current
+      changedTrackedRef.current = false
+      if (!tracked) {
+        // Ignored files only: no git refresh, but an open tab on one of
+        // them still follows the disk.
+        const open = new Set(tabsRef.current.tabs.map((tab) => tab.target.path))
+        if (!treeChanges.some((change) => open.has(change.rel))) return
+      }
+      if (tracked) afterDiskChange()
+      else setDiskEpoch((value) => value + 1)
     }, LIVE_COALESCE_MS)
   }, paneScope)
 
@@ -1090,6 +1274,20 @@ export function ShellExplorerPage({
   useEffect(() => {
     const openFiles = new Set(tabs.tabs.filter((tab) => tab.target.kind === 'file').map((tab) => tab.target.path))
     setMissingPaths((prev) => pruneMissing(prev, openFiles))
+    // A preview replaced in place, or a compare tab moved to another ref,
+    // never went through closeTabIds: what they held goes here.
+    for (const [path, entry] of cacheRef.current) {
+      if (openFiles.has(path)) continue
+      objectUrlsRef.current.release(entry.image)
+      cacheRef.current.delete(path)
+    }
+    const openIds = new Set(tabs.tabs.map((tab) => tab.id))
+    for (const id of diffCacheRef.current.keys()) {
+      if (!openIds.has(id)) diffCacheRef.current.delete(id)
+    }
+    for (const id of revisionCacheRef.current.keys()) {
+      if (!openIds.has(id)) revisionCacheRef.current.delete(id)
+    }
   }, [tabs])
   const onFileMissing = useCallback((relPath: string, gone: boolean) => {
     setMissingPaths((prev) => withMissing(prev, relPath, gone))
@@ -1122,7 +1320,7 @@ export function ShellExplorerPage({
       open: slice.open,
       active: slice.active,
       expanded,
-      showHidden,
+      hideDotfiles: showHidden ? undefined : true,
       sideView: sideTab,
       diffOptions,
       terminalOpen,
@@ -1131,6 +1329,8 @@ export function ShellExplorerPage({
       terminalBottomSize,
       terminalRightSize,
       terminalWorkspace,
+      gitOpen: gitOpen || undefined,
+      gitTab,
     })
   }, [
     saver,
@@ -1147,6 +1347,8 @@ export function ShellExplorerPage({
     terminalBottomSize,
     terminalRightSize,
     terminalWorkspace,
+    gitOpen,
+    gitTab,
   ])
 
   // ── root changes ──
@@ -1163,7 +1365,7 @@ export function ShellExplorerPage({
           return
         }
         if (result.path === rootRef.current) {
-          workspaceTree.refresh()
+          refreshTree()
           void refreshGit()
           onResolved?.('validated', result.path)
           setRootChangeSettledEpoch((epoch) => epoch + 1)
@@ -1188,9 +1390,11 @@ export function ShellExplorerPage({
         liveTimerRef.current = null
         changedAbsRef.current = new Map()
         changedDirsRef.current = new Set()
+        changedTrackedRef.current = false
         objectUrlsRef.current.releaseAll()
         cacheRef.current.clear()
         diffCacheRef.current.clear()
+        revisionCacheRef.current.clear()
         setRevealLineRequest(null)
         historyRef.current = EMPTY_HISTORY
         setHistoryState({ back: false, forward: false })
@@ -1205,7 +1409,7 @@ export function ShellExplorerPage({
           })
         }
         const recalled = recallRoot(rootMemoryRef.current, path)
-        setDirtyPaths(new Set())
+        setDirtyPaths((previous) => (previous.size === 0 ? previous : new Set()))
         setMissingPaths(NO_MISSING)
         setTabs(recalled !== null ? restoreTabs(recalled.open, recalled.active) : EMPTY_TABS)
         setExpanded(recalled?.expanded ?? [])
@@ -1220,7 +1424,7 @@ export function ShellExplorerPage({
       })
       return true
     },
-    [confirmDiscardAllEdits, host, refreshGit, workspaceTree],
+    [confirmDiscardAllEdits, host, refreshGit, refreshTree],
   )
 
   // ── follow the chat's working directory ──
@@ -1253,6 +1457,8 @@ export function ShellExplorerPage({
     }
     if (
       root === null ||
+      // A render older than a move already under way: the next one decides.
+      root !== rootRef.current ||
       manualRootActiveRequestRef.current !== null ||
       !workingDirectoryNeedsFollow(next, acknowledgedWorkingDirRef.current) ||
       workingDirFollowPendingRef.current?.path === next
@@ -1302,6 +1508,11 @@ export function ShellExplorerPage({
       setPendingRoot(null)
     }
   }, [workingDir, root, changeRoot, workingDirRetryEpoch])
+  // The discard confirm reads the edits through a ref, so saving them does
+  // not re-run the follow by itself: a follow paused over them resumes here.
+  useEffect(() => {
+    if (dirtyPaths.size === 0) setWorkingDirRetryEpoch((epoch) => epoch + 1)
+  }, [dirtyPaths])
   useEffect(
     () => () => {
       if (workingDirRetryTimerRef.current !== null) window.clearTimeout(workingDirRetryTimerRef.current)
@@ -1310,7 +1521,7 @@ export function ShellExplorerPage({
   )
 
   const changeManualRoot = useCallback(
-    (nextRoot: string) => {
+    (nextRoot: string, onDone?: (outcome: SwitchOutcome) => void, handToChat = true) => {
       const chatDir = workingDirRef.current
       // Suppress both a scheduled retry and an in-flight chat result before the
       // manual validation starts. changeRoot's new sequence supersedes the latter.
@@ -1324,44 +1535,106 @@ export function ShellExplorerPage({
       }
       setPendingRoot(nextRoot)
       const accepted = changeRoot(nextRoot, (outcome, validatedPath) => {
-        if (!ownsRequestToken(manualRootActiveRequestRef.current, request)) return
+        const moved = outcome === 'validated'
+        if (!ownsRequestToken(manualRootActiveRequestRef.current, request)) {
+          onDone?.({ moved, chatDir: workingDirRef.current })
+          return
+        }
         manualRootActiveRequestRef.current = null
         setPendingRoot(null)
         if (outcome === 'validated') setRootPinned(true)
-        if (outcome === 'validated' && workingDirRef.current === chatDir) {
+        if (outcome === 'validated' && !handToChat) {
+          // A move that leaves the chat where it is (the Worktrees view
+          // taking the IDE alone out of a folder).
+          onDone?.({ moved, chatDir: workingDirRef.current })
+        } else if (outcome === 'validated' && workingDirRef.current === chatDir) {
           // The chat follows the pick: hand it the validated folder, and
           // acknowledge it up front so the chat echoing the same folder
           // back does not re-root the pane a second time. A chat that
           // cannot take it (none beside, or not mounted) leaves the pick
           // pinned here, as before.
+          const sessionId = conversationIdRef.current
           const handedToChat =
             validatedPath !== undefined &&
             validatedPath !== chatDir &&
-            conversationId !== null &&
-            conversationId !== undefined &&
+            sessionId !== null &&
+            sessionId !== undefined &&
             ((host as WorkingDirectoryHost).chat?.requestWorkingDirectoryChange?.({
-              sessionId: conversationId,
+              sessionId,
               path: validatedPath,
             }) ??
               false)
           const settled = handedToChat && validatedPath !== undefined ? validatedPath : chatDir
           acknowledgedWorkingDirRef.current = settled
           workingDirRetryRef.current = { path: settled, failures: 0 }
+          onDone?.({ moved, chatDir: settled })
         } else {
           // Validation failure or a declined discard releases the unchanged chat
           // directory to follow again.
           setWorkingDirRetryEpoch((epoch) => epoch + 1)
+          onDone?.({ moved, chatDir: workingDirRef.current })
         }
       })
       if (accepted) return
+      onDone?.({ moved: false, chatDir: workingDirRef.current })
       setPendingRoot(null)
       if (ownsRequestToken(manualRootActiveRequestRef.current, request)) {
         manualRootActiveRequestRef.current = null
         setWorkingDirRetryEpoch((epoch) => epoch + 1)
       }
     },
-    [changeRoot, conversationId, host],
+    [changeRoot, host],
   )
+  // The Worktrees view's handle on this page. Its operations outlive the
+  // render, and the view, that started them, so it reads everything at call
+  // time; once the page is gone it moves nothing.
+  const changeManualRootRef = useRef(changeManualRoot)
+  changeManualRootRef.current = changeManualRoot
+  const afterDiskChangeRef = useRef(afterDiskChange)
+  afterDiskChangeRef.current = afterDiskChange
+  const turnActiveRef = useRef(harnessTurn.active)
+  turnActiveRef.current = harnessTurn.active
+  const worktreesPage = useMemo<WorktreesPage>(
+    () => ({
+      mounted: () => mountedRef.current,
+      root: () => rootRef.current,
+      chatDir: () => workingDirRef.current,
+      sessionId: () => conversationIdRef.current ?? null,
+      unsaved: () => {
+        const current = rootRef.current
+        return current === null ? [] : [...dirtyPathsRef.current].map((rel) => joinPath(current, rel))
+      },
+      turnActive: () => turnActiveRef.current,
+      changed: () => afterDiskChangeRef.current(),
+      moveIde: (path, handToChat) =>
+        mountedRef.current
+          ? new Promise<SwitchOutcome>((resolve) => changeManualRootRef.current(path, resolve, handToChat))
+          : Promise.resolve({ moved: false, chatDir: workingDirRef.current }),
+      moveChat: (path) => {
+        const sessionId = conversationIdRef.current
+        if (!mountedRef.current || sessionId === null || sessionId === undefined) return false
+        const left = workingDirRef.current
+        const taken = (host as WorkingDirectoryHost).chat?.requestWorkingDirectoryChange?.({ sessionId, path }) ?? false
+        if (!taken) return false
+        // A follow still heading into the folder the chat leaves is dropped.
+        if (workingDirFollowPendingRef.current !== null) {
+          workingDirFollowPendingRef.current = null
+          rootResolveSeqRef.current += 1
+          setPendingRoot(null)
+        }
+        setWorkingDirError(null)
+        // An IDE pinned elsewhere stays put rather than follow the chat; one
+        // whose follow was paused picks up the chat's new folder instead.
+        if (acknowledgedWorkingDirRef.current === left) {
+          acknowledgedWorkingDirRef.current = path
+          workingDirRetryRef.current = { path, failures: 0 }
+        }
+        return true
+      },
+    }),
+    [host],
+  )
+  useEffect(() => registerWorktreesPage(worktreesPage), [worktreesPage])
 
   // ── open request ──
   // The chat's "open in shell" arrives as panel context (parseShellPanelContext
@@ -1527,6 +1800,11 @@ export function ShellExplorerPage({
       setTerminalActive(true)
       return
     }
+    if (context.type === 'new-worker') {
+      appliedContextRef.current = panelContext.id
+      setNewWorkerBase('workers')
+      return
+    }
     if (root === null) return
     appliedContextRef.current = panelContext.id
     const rel = context.path.startsWith('/') ? (relativeToRoot(context.path, root) ?? context.path) : context.path
@@ -1535,18 +1813,42 @@ export function ShellExplorerPage({
 
   // ── chat footer summary: the newest turn ──
   const newestTurn = sessionTurns[0] ?? null
-  const summaryFiles = useTurnSummary(host, root, newestTurn, turnCache, diskEpoch)
-  useShellReviewSummaryBridge({
-    sessionId: conversationId,
-    sourceId: paneKey,
-    turnId: newestTurn?.turn_id ?? null,
-    files: summaryFiles,
-    onSelectFile: (path) => {
-      if (newestTurn) openDiffTab(path, { type: 'turn', turnId: newestTurn.turn_id }, true)
-    },
-  })
 
   // ── terminal verbs ──
+  const openGit = useCallback(
+    (tab?: GitTab) => {
+      setGitOpen(true)
+      if (tab) setGitTab(tab)
+      if (terminalDock !== 'editor') setTerminalOpen(false)
+      window.requestAnimationFrame(() => {
+        frameEl?.querySelector<HTMLElement>('.shui-git-panel[data-state="active"] [data-git-focus]')?.focus()
+      })
+    },
+    [terminalDock, frameEl],
+  )
+  // The branch menu's "Compare with" (an editor tab of the two logs) and
+  // "Show Diff with Working Tree" (the Changes view). Stable, so the
+  // memoized menu does not re-render with every render of the page.
+  const showInGit = useCallback(
+    (request: GitWindowRequest) => {
+      if (request.kind === 'diff') {
+        // The Changes view: the files that differ, in the sidebar.
+        setBranchChanges(request.ref)
+        setSideTab('changes')
+        setCollapsed(false)
+        return
+      }
+      showTab((state) => openPinned(state, compareTarget(request.ref, request.against)))
+    },
+    [showTab],
+  )
+  const closeGit = useCallback(() => {
+    // Focus inside the window would fall to the page body with it, where
+    // the pane's keys stop working; its toggle keeps them.
+    if (frameEl?.querySelector('.shui-git-window')?.contains(document.activeElement)) gitToggleRef.current?.focus()
+    setGitOpen(false)
+  }, [frameEl])
+  const toggleGit = useCallback(() => (gitOpen ? closeGit() : openGit()), [gitOpen, closeGit, openGit])
   const changeTerminalDock = useCallback((next: TerminalDock) => {
     setTerminalOpen(true)
     setTerminalDock(next)
@@ -1575,10 +1877,10 @@ export function ShellExplorerPage({
     (delta: 1 | -1) => {
       const entries: { path: string; source: DiffSource }[] =
         sideTab === 'scm'
-          ? [
-              ...scm.unstaged.map((entry) => ({ path: entry.path, source: { type: 'unstaged' } as DiffSource })),
-              ...scm.staged.map((entry) => ({ path: entry.path, source: { type: 'staged' } as DiffSource })),
-            ]
+          ? [...scm.changes, ...scm.unversioned].map((entry) => ({
+              path: entry.path,
+              source: { type: 'uncommitted' } as DiffSource,
+            }))
           : newestTurn
             ? newestTurn.files
                 .map((file) => relativeToRoot(file.path, rootRef.current ?? ''))
@@ -1595,11 +1897,43 @@ export function ShellExplorerPage({
       const next = entries[index === -1 ? start : (index + delta + entries.length) % entries.length]
       openDiffTab(next.path, next.source)
     },
-    [sideTab, scm.unstaged, scm.staged, newestTurn, openDiffTab],
+    [sideTab, scm.changes, scm.unversioned, newestTurn, openDiffTab],
   )
 
   // The page's verbs, for the palette and for the keyboard while this pane
   // has the focus. The keys stay clear of the console's own.
+  // The commands read the page's latest verbs and state through a ref: they
+  // register once, instead of again on every poll, burst and toggle.
+  const verbsRef = useRef({
+    frameEl,
+    toggleTerminal,
+    toggleGit,
+    openGit,
+    showTab,
+    closeTabId,
+    revealFolder,
+    navigate,
+    stepChange,
+    compareFile,
+    conversationId,
+    sessionTurns,
+    revertTurnFiles,
+  })
+  verbsRef.current = {
+    frameEl,
+    toggleTerminal,
+    toggleGit,
+    openGit,
+    showTab,
+    closeTabId,
+    revealFolder,
+    navigate,
+    stepChange,
+    compareFile,
+    conversationId,
+    sessionTurns,
+    revertTurnFiles,
+  }
   useEffect(
     () =>
       commands?.register([
@@ -1621,7 +1955,7 @@ export function ShellExplorerPage({
             setSideTab('search')
             setCollapsed(false)
             window.requestAnimationFrame(() => {
-              frameEl?.querySelector<HTMLElement>('[data-shell-search-input]')?.focus()
+              verbsRef.current.frameEl?.querySelector<HTMLElement>('[data-shell-search-input]')?.focus()
             })
           },
         },
@@ -1638,12 +1972,28 @@ export function ShellExplorerPage({
         {
           id: 'source-control',
           title: 'Show source control',
-          detail: 'Staged and unstaged changes',
-          keywords: ['git', 'scm', 'staged', 'commit', 'changes'],
+          detail: 'Commit changes, stashes and history',
+          keywords: ['git', 'scm', 'commit', 'changes', 'stash', 'history', 'log'],
           run: () => {
             setSideTab('scm')
             setCollapsed(false)
           },
+        },
+        {
+          id: 'toggle-git',
+          title: 'Toggle Git',
+          detail: 'The Git window: the log, branches and worktrees',
+          keywords: ['git', 'log', 'history', 'graph', 'branch', 'commit'],
+          shortcut: 'Shift+Alt+G',
+          firesWhileTyping: true,
+          run: () => verbsRef.current.toggleGit(),
+        },
+        {
+          id: 'worktrees',
+          title: 'Show worktrees',
+          detail: 'Switch, create, merge and remove git worktrees',
+          keywords: ['git', 'worktree', 'branch', 'merge', 'worktrunk'],
+          run: () => verbsRef.current.openGit('worktrees'),
         },
         {
           id: 'timeline',
@@ -1671,7 +2021,7 @@ export function ShellExplorerPage({
           // Fires from the editor and from the terminal itself, so one key
           // opens it and hides it again. xterm leaves Ctrl+` uncancelled.
           firesWhileTyping: true,
-          run: toggleTerminal,
+          run: () => verbsRef.current.toggleTerminal(),
         },
         {
           id: 'next-tab',
@@ -1679,7 +2029,7 @@ export function ShellExplorerPage({
           keywords: ['tab', 'file', 'cycle'],
           shortcut: 'Alt+ArrowRight',
           enabled: () => tabsRef.current.tabs.length > 1,
-          run: () => showTab((state) => cycleTab(state, 1)),
+          run: () => verbsRef.current.showTab((state) => cycleTab(state, 1)),
         },
         {
           id: 'previous-tab',
@@ -1687,7 +2037,7 @@ export function ShellExplorerPage({
           keywords: ['tab', 'file', 'cycle'],
           shortcut: 'Alt+ArrowLeft',
           enabled: () => tabsRef.current.tabs.length > 1,
-          run: () => showTab((state) => cycleTab(state, -1)),
+          run: () => verbsRef.current.showTab((state) => cycleTab(state, -1)),
         },
         {
           id: 'close-tab',
@@ -1696,7 +2046,7 @@ export function ShellExplorerPage({
           enabled: () => tabsRef.current.active !== null,
           run: () => {
             const active = tabsRef.current.active
-            if (active !== null) closeTabId(active)
+            if (active !== null) verbsRef.current.closeTabId(active)
           },
         },
         {
@@ -1706,7 +2056,7 @@ export function ShellExplorerPage({
           enabled: () => tabsRef.current.active !== null,
           run: () => {
             const active = activeTabOf(tabsRef.current)
-            if (active) revealFolder(active.target.path)
+            if (active && active.target.kind !== 'compare') verbsRef.current.revealFolder(active.target.path)
           },
         },
         {
@@ -1723,7 +2073,7 @@ export function ShellExplorerPage({
           keywords: ['history', 'navigate', 'previous'],
           shortcut: 'Shift+Alt+ArrowLeft',
           enabled: () => canGoBack(historyRef.current),
-          run: () => navigate(-1),
+          run: () => verbsRef.current.navigate(-1),
         },
         {
           id: 'nav-forward',
@@ -1731,21 +2081,21 @@ export function ShellExplorerPage({
           keywords: ['history', 'navigate', 'next'],
           shortcut: 'Shift+Alt+ArrowRight',
           enabled: () => canGoForward(historyRef.current),
-          run: () => navigate(1),
+          run: () => verbsRef.current.navigate(1),
         },
         {
           id: 'next-change',
           title: 'Next change',
           detail: 'Open the next changed file as a diff',
           keywords: ['diff', 'change', 'git', 'turn'],
-          run: () => stepChange(1),
+          run: () => verbsRef.current.stepChange(1),
         },
         {
           id: 'previous-change',
           title: 'Previous change',
           detail: 'Open the previous changed file as a diff',
           keywords: ['diff', 'change', 'git', 'turn'],
-          run: () => stepChange(-1),
+          run: () => verbsRef.current.stepChange(-1),
         },
         {
           id: 'compare-active',
@@ -1755,7 +2105,7 @@ export function ShellExplorerPage({
           enabled: () => tabsRef.current.active !== null,
           run: () => {
             const active = activeTabOf(tabsRef.current)
-            if (active) compareFile(active.target.path)
+            if (active && active.target.kind !== 'compare') verbsRef.current.compareFile(active.target.path)
           },
         },
         {
@@ -1766,7 +2116,7 @@ export function ShellExplorerPage({
             setSideTab('files')
             setCollapsed(false)
             window.requestAnimationFrame(() => {
-              frameEl?.querySelector<HTMLElement>('[aria-label="New file"]')?.click()
+              verbsRef.current.frameEl?.querySelector<HTMLElement>('[aria-label="New file"]')?.click()
             })
           },
         },
@@ -1788,49 +2138,25 @@ export function ShellExplorerPage({
           title: 'Revert the last turn',
           detail: 'Put every file the last turn changed back',
           keywords: ['rollback', 'undo', 'turn', 'timeline'],
-          enabled: () => !!conversationId && sessionTurns.length > 0,
+          enabled: () => !!verbsRef.current.conversationId && verbsRef.current.sessionTurns.length > 0,
           run: () => {
-            const last = sessionTurns[0]
-            if (last) void revertTurnFiles(last.turn_id)
+            const last = verbsRef.current.sessionTurns[0]
+            if (last) void verbsRef.current.revertTurnFiles(last.turn_id)
           },
         },
       ]),
-    [
-      commands,
-      host,
-      frameEl,
-      toggleTerminal,
-      showTab,
-      closeTabId,
-      revealFolder,
-      navigate,
-      stepChange,
-      compareFile,
-      conversationId,
-      sessionTurns,
-      revertTurnFiles,
-    ],
+    [commands, host],
   )
 
   // ── header ──
   // The folder picker is the chat composer's: remembered projects first,
-  // a browse to add one, every pick validated by the worker.
+  // a browse to add one, every pick validated by the worker. The branch
+  // beside it is the composer's worktree menu, for the IDE's folder.
   const header = (
     <PageHeader
       className="shui-page-header"
       icon={<SquareTerminal />}
       title="IDE"
-      description={
-        root ? (
-          <DirectoryPicker
-            value={pendingRoot ?? root}
-            onChange={changeManualRoot}
-            defaultDir={info?.primary_root ?? null}
-            externalError={workingDirError}
-            className="shui-header-root"
-          />
-        ) : undefined
-      }
       actions={
         info && root ? (
           <div className="shui-page-actions">
@@ -1880,6 +2206,19 @@ export function ShellExplorerPage({
                 <Terminal aria-hidden className="shui-side-tab-icon" />
               </button>
             </Tooltip>
+            <Tooltip label={gitOpen ? 'Hide Git (Shift+Alt+G)' : 'Open Git (Shift+Alt+G)'}>
+              <button
+                ref={gitToggleRef}
+                type="button"
+                className={`shui-side-tab${gitOpen ? ' active' : ''}`}
+                onClick={toggleGit}
+                aria-pressed={gitOpen}
+                aria-label={gitOpen ? 'Hide Git' : 'Open Git'}
+                data-git-toggle=""
+              >
+                <GitGraph aria-hidden className="shui-side-tab-icon" />
+              </button>
+            </Tooltip>
             {narrow ? (
               <Tooltip label={collapsed ? 'Show the sidebar' : 'Hide the sidebar'}>
                 <button
@@ -1908,7 +2247,131 @@ export function ShellExplorerPage({
               })
             }
       }
-    />
+    >
+      {/* In the header's middle, not its description: that one clips focus
+          rings and the chip's larger touch target. */}
+      {root ? (
+        <span className="shui-header-project">
+          <DirectoryPicker
+            value={pendingRoot ?? root}
+            onChange={changeManualRoot}
+            defaultDir={info?.primary_root ?? null}
+            externalError={workingDirError}
+            className="shui-header-root"
+          />
+          <WorktreeMenu
+            host={host}
+            dir={root}
+            page={worktreesPage}
+            rereadKey={String(harnessTurn.active)}
+            side="bottom"
+            actions
+            onShowInGit={showInGit}
+          />
+        </span>
+      ) : null}
+    </PageHeader>
+  )
+
+  // The heavy children are memoized; their callbacks keep their identity.
+  const openPinnedFile = useCallback((rel: string) => openFileTab(rel, { pin: true }), [openFileTab])
+  const refreshTimeline = useCallback(() => {
+    turnCache.clear()
+    refreshSessionTurns()
+    setDiskEpoch((value) => value + 1)
+  }, [turnCache, refreshSessionTurns])
+  const openTurnFile = useCallback(
+    (turnId: string, rel: string, pin: boolean) => openDiffTab(rel, { type: 'turn', turnId }, pin),
+    [openDiffTab],
+  )
+  const revertWholeTurn = useCallback((turnId: string) => void revertTurnFiles(turnId), [revertTurnFiles])
+  const revertTurnFile = useCallback(
+    (turnId: string, absPath: string) => void revertTurnFiles(turnId, [absPath]),
+    [revertTurnFiles],
+  )
+  const openCommitFile = useCallback(
+    (file: CommitFile, details: CommitDetails, pin = true) => {
+      openDiffTab(
+        file.view,
+        { type: 'commit', sha: details.sha, parent: details.parents[0] ?? null, from: file.from },
+        pin,
+      )
+      // A narrow page's Git window covers the editor: step aside for the diff.
+      if (narrow) closeGit()
+    },
+    [openDiffTab, narrow, closeGit],
+  )
+  const openCompareFile = useCallback(
+    (file: CommitFile, ref: string, from?: string) => {
+      openDiffTab(file.view, from ? { type: 'compare', ref, from } : { type: 'compare', ref }, true)
+      if (narrow) closeGit()
+    },
+    [openDiffTab, narrow, closeGit],
+  )
+  const openWorkingFile = useCallback(
+    (rel: string) => {
+      openFileTab(rel, { pin: true })
+      if (narrow) closeGit()
+    },
+    [openFileTab, narrow, closeGit],
+  )
+  const openRevision = useCallback(
+    (file: CommitFile, sha: string) => {
+      showTab((s) => openPinned(s, revisionTarget(file.view, sha)))
+      if (narrow) closeGit()
+    },
+    [showTab, narrow, closeGit],
+  )
+  const openPreviewFile = useCallback((rel: string) => openFileTab(rel), [openFileTab])
+  const openMatch = useCallback(
+    (rel: string, line: number, column: number, pin: boolean) => openFileTab(rel, { pin, line, column }),
+    [openFileTab],
+  )
+  const openQuickOpen = useCallback(() => setQuickOpen(true), [])
+  // The Close of the editor and of a revision tab: either is on screen only
+  // while its tab is the active one.
+  const closeActiveTab = useCallback(() => {
+    const active = tabsRef.current.active
+    if (active !== null) void closeTabId(active)
+  }, [closeTabId])
+  // The strip's close verbs read the tabs when they run.
+  const closeOtherTabs = useCallback(
+    (id: string) => closeTabIds(tabsRef.current.tabs.filter((tab) => tab.id !== id).map((tab) => tab.id)),
+    [closeTabIds],
+  )
+  const closeTabsRight = useCallback(
+    (id: string) => {
+      const open = tabsRef.current.tabs
+      const index = open.findIndex((tab) => tab.id === id)
+      closeTabIds(open.slice(index + 1).map((tab) => tab.id))
+    },
+    [closeTabIds],
+  )
+  const closeSavedTabs = useCallback(
+    () =>
+      closeTabIds(
+        tabsRef.current.tabs
+          .filter((tab) => tab.target.kind !== 'file' || !dirtyPathsRef.current.has(tab.target.path))
+          .map((tab) => tab.id),
+      ),
+    [closeTabIds],
+  )
+  const closeAllTabs = useCallback(() => closeTabIds(tabsRef.current.tabs.map((tab) => tab.id)), [closeTabIds])
+  const activateTerminal = useCallback(() => setTerminalActive(true), [])
+  const terminalTitle = terminalWorkspace.tabs.find((tab) => tab.id === terminalWorkspace.activeTabId)?.title ?? 'zsh'
+  const editorTerminal = useMemo(
+    () =>
+      terminalOpen && terminalDock === 'editor'
+        ? { title: terminalTitle, active: terminalActive, onActivate: activateTerminal, onClose: closeTerminal }
+        : null,
+    [terminalOpen, terminalDock, terminalTitle, terminalActive, activateTerminal, closeTerminal],
+  )
+  // Read when the overlay opens: the history moves in an effect after the
+  // render that changed the tabs. Closed, it keeps one list, so a tab
+  // change does not redraw it.
+  const recentFiles = useMemo(
+    () => (quickOpen ? tabFilePaths(tabs, recentPaths(historyRef.current, 60), 8) : NO_RECENT),
+    [quickOpen, tabs],
   )
 
   if (infoError) {
@@ -1939,14 +2402,33 @@ export function ShellExplorerPage({
 
   return (
     <PageShell>
+      <TurnReviewBridge
+        host={host}
+        root={root}
+        turn={newestTurn}
+        turnCache={turnCache}
+        epoch={diskEpoch}
+        written={summaryWritesRef.current}
+        sessionId={conversationId}
+        sourceId={paneKey}
+        onSelectFile={(path) => {
+          if (newestTurn) openDiffTab(path, { type: 'turn', turnId: newestTurn.turn_id }, true)
+        }}
+      />
       {header}
-      <div ref={setFrameEl} className={`shui-workspace-frame terminal-${terminalDock}`}>
+      {/* A narrow page stacks a right dock under the editor, as a bottom one:
+          decided here, since the frame is the container the stylesheet's
+          narrow rules query, and a container query cannot style its own. */}
+      <div
+        ref={setFrameEl}
+        className={`shui-workspace-frame terminal-${gitOpen || (narrow && terminalDock === 'right') ? 'bottom' : terminalDock}`}
+      >
         {narrow && !collapsed ? (
           <button type="button" className="shui-sidebar-scrim" aria-label="Hide sidebar" onClick={() => setCollapsed(true)} />
         ) : null}
         <PageBody side={panelSide}>
           <PageSidebar
-            label={sideTab === 'files' ? 'Explorer' : sideTab === 'search' ? 'Search' : sideTab === 'scm' ? 'Source control' : 'Timeline'}
+            label={SIDE_VIEWS.find((view) => view.id === sideTab)?.label ?? 'Explorer'}
             side={panelSide}
             storageKey={`shell:${tabId || 'page'}:sidebar`}
             defaultWidth={SIDEBAR_DEFAULT_WIDTH}
@@ -1964,6 +2446,7 @@ export function ShellExplorerPage({
                 active={sideTab}
                 side={panelSide}
                 badges={activityBadges}
+                changes={branchChanges !== null}
                 onSelect={(view) => {
                   setSideTab(view)
                   setCollapsed(false)
@@ -1976,6 +2459,7 @@ export function ShellExplorerPage({
                 active={sideTab}
                 side={panelSide}
                 badges={activityBadges}
+                changes={branchChanges !== null}
                 onSelect={(view) => {
                   if (view === sideTab && !narrow) {
                     setCollapsed(true)
@@ -1998,12 +2482,12 @@ export function ShellExplorerPage({
                     expanded={expanded}
                     onExpandedChange={setExpanded}
                     onExpandDir={ensureDir}
-                    loadingDirs={workspaceTree.loadingDirs}
+                    loadingDirs={loadingDirs}
                     reveal={reveal}
                     onRevealed={onRevealed}
                     activePath={tabVisible ? (activeTab?.target.path ?? null) : null}
-                    onActivateFile={(rel) => openFileTab(rel)}
-                    onPinFile={(rel) => openFileTab(rel, { pin: true })}
+                    onActivateFile={openPreviewFile}
+                    onPinFile={openPinnedFile}
                     actions={explorerActions}
                   />
                 ) : sideTab === 'search' ? (
@@ -2011,24 +2495,37 @@ export function ShellExplorerPage({
                     host={host}
                     root={root}
                     request={searchRequest}
-                    onOpenMatch={(rel, line, column, pin) => openFileTab(rel, { pin, line, column })}
-                    onPreviewFile={(rel) => openFileTab(rel)}
-                    onPinFile={(rel) => openFileTab(rel, { pin: true })}
+                    onOpenMatch={openMatch}
+                    onPreviewFile={openPreviewFile}
+                    onPinFile={openPinnedFile}
                     onRevealFolder={revealFolder}
+                  />
+                ) : sideTab === 'changes' && branchChanges !== null && root !== null ? (
+                  <BranchChangesView
+                    key={branchChanges}
+                    host={host}
+                    root={root}
+                    refName={branchChanges}
+                    // Every disk or index change, whichever view is open.
+                    refreshKey={diskEpoch}
+                    activeView={activeDiff?.source.type === 'compare' ? activeDiff.path : null}
+                    onOpenDiff={openDiffTab}
+                    onClose={() => {
+                      setBranchChanges(null)
+                      setSideTab('scm')
+                    }}
                   />
                 ) : sideTab === 'scm' ? (
                   <SourceControlTab
+                    host={host}
+                    root={root}
+                    conversationId={conversationId}
                     scm={scm}
-                    activePath={
-                      activeDiff && (activeDiff.source.type === 'staged' || activeDiff.source.type === 'unstaged')
-                        ? activeDiff.path
-                        : null
-                    }
-                    activeSide={
-                      activeDiff?.source.type === 'staged' ? 'staged' : activeDiff?.source.type === 'unstaged' ? 'unstaged' : null
-                    }
-                    onOpenChange={(scope, path, pin) => openDiffTab(path, { type: scope }, pin)}
-                    onOpenFile={(rel) => openFileTab(rel, { pin: true })}
+                    refreshEpoch={gitEpoch}
+                    activeDiff={activeDiff ? { path: activeDiff.path, source: activeDiff.source } : null}
+                    onOpenDiff={openDiffTab}
+                    onOpenFile={openPinnedFile}
+                    onChanged={afterDiskChange}
                   />
                 ) : (
                   <TimelineTab
@@ -2040,15 +2537,11 @@ export function ShellExplorerPage({
                     activePath={activeDiff?.source.type === 'turn' ? activeDiff.path : null}
                     reverting={reverting}
                     note={timelineNote}
-                    onRefresh={() => {
-                      turnCache.clear()
-                      refreshSessionTurns()
-                      setDiskEpoch((value) => value + 1)
-                    }}
-                    onOpenFile={(turnId, rel, pin) => openDiffTab(rel, { type: 'turn', turnId }, pin)}
-                    onOpenWorkingFile={(rel) => openFileTab(rel, { pin: true })}
-                    onRevertTurn={(turnId) => void revertTurnFiles(turnId)}
-                    onRevertFile={(turnId, absPath) => void revertTurnFiles(turnId, [absPath])}
+                    onRefresh={refreshTimeline}
+                    onOpenFile={openTurnFile}
+                    onOpenWorkingFile={openPinnedFile}
+                    onRevertTurn={revertWholeTurn}
+                    onRevertFile={revertTurnFile}
                   />
                 )}
               </div>
@@ -2138,42 +2631,26 @@ export function ShellExplorerPage({
               <EditorTabs
                 tabs={tabs}
                 dirtyPaths={dirtyPaths}
-                missingPaths={missingPaths}
+                missingPaths={shownMissing}
                 tabVisible={tabVisible}
                 gitStatus={tabGitStatus}
                 turnTitles={turnTitles}
-                terminal={
-                  terminalInEditor
-                    ? {
-                        title: terminalWorkspace.tabs.find((tab) => tab.id === terminalWorkspace.activeTabId)?.title ?? 'zsh',
-                        active: terminalActive,
-                        onActivate: () => setTerminalActive(true),
-                        onClose: closeTerminal,
-                      }
-                    : null
-                }
+                terminal={editorTerminal}
                 onActivate={activateTabId}
                 onClose={closeTabId}
                 onPin={pinTabId}
-                onCloseOthers={(id) => closeTabIds(tabs.tabs.filter((tab) => tab.id !== id).map((tab) => tab.id))}
-                onCloseRight={(id) => {
-                  const index = tabs.tabs.findIndex((tab) => tab.id === id)
-                  closeTabIds(tabs.tabs.slice(index + 1).map((tab) => tab.id))
-                }}
-                onCloseSaved={() =>
-                  closeTabIds(
-                    tabs.tabs.filter((tab) => tab.target.kind !== 'file' || !dirtyPaths.has(tab.target.path)).map((tab) => tab.id),
-                  )
-                }
-                onCloseAll={() => closeTabIds(tabs.tabs.map((tab) => tab.id))}
+                onCloseOthers={closeOtherTabs}
+                onCloseRight={closeTabsRight}
+                onCloseSaved={closeSavedTabs}
+                onCloseAll={closeAllTabs}
                 onReveal={revealFolder}
                 onCopyPath={explorerActions.copyPath}
-                onCompare={(path) => compareFile(path)}
-                onOpenFile={(path) => openFileTab(path, { pin: true })}
+                onCompare={compareFile}
+                onOpenFile={openPinnedFile}
               />
             ) : null}
 
-            {terminalInEditor && terminalActive ? (
+            {terminalMounted && terminalDock === 'editor' ? (
               <TerminalPanel
                 state={terminalWorkspace}
                 dispatch={dispatchTerminalWorkspace}
@@ -2189,31 +2666,34 @@ export function ShellExplorerPage({
                 narrow={narrow}
                 onSizeChange={setTerminalBottomSize}
                 onClose={closeTerminal}
+                hidden={!(terminalInEditor && terminalActive)}
               />
-            ) : activeFilePath !== null ? (
+            ) : null}
+            {terminalInEditor && terminalActive ? null : activeFilePath !== null ? (
               <EditorPane
-                // fileBump remounts after an agent-side write to the active
-                // file: the pane rehydrates from the refreshed cache entry.
-                key={`${activeFilePath}:${fileBump}`}
+                // One pane per file: an agent-side write to it (fileBump)
+                // refills this one from the refreshed cache entry in place.
+                key={activeFilePath}
                 host={host}
                 root={root}
                 rootLabel={rootLabel}
                 relPath={activeFilePath}
                 cache={cacheRef.current}
+                cacheEpoch={fileBump}
                 createObjectUrl={objectUrlsRef.current.create}
                 wordWrap={diffOptions.wordWrap}
                 reveal={revealLineRequest?.path === activeFilePath ? revealLineRequest : null}
                 onRevealHandled={onRevealHandled}
                 goToLineSeq={goToLineSeq}
-                onSaved={afterDiskChange}
                 onDirtyChange={onDirtyChange}
                 onRevealDir={revealFolder}
-                onCompare={(path) => compareFile(path)}
-                missing={missingPaths.has(activeFilePath)}
+                onCompare={compareFile}
+                missing={shownMissing.has(activeFilePath)}
+                protectedPath={isProtected(activeFilePath)}
                 onMissing={onFileMissing}
-                onClose={() => closeTabId(fileTabId(activeFilePath))}
+                onClose={closeActiveTab}
                 onReferenceInChat={referenceInChat}
-                onQuickOpen={() => setQuickOpen(true)}
+                onQuickOpen={openQuickOpen}
               />
             ) : activeDiff !== null ? (
               <DiffTab
@@ -2230,6 +2710,34 @@ export function ShellExplorerPage({
                 actions={diffActions}
                 compareRefs={activeDiff.source.type === 'compare' ? compareRefs : undefined}
                 busy={scm.busy || reverting !== null}
+              />
+            ) : activeCompare !== null && root !== null ? (
+              <GitCompareTab
+                key={activeTab?.id}
+                host={host}
+                root={root}
+                page={worktreesPage}
+                refName={activeCompare.ref}
+                against={activeCompare.against}
+                onOpenCommitFile={openCommitFile}
+                onOpenCompareFile={openCompareFile}
+                onOpenWorkingFile={openWorkingFile}
+                onOpenRevision={openRevision}
+              />
+            ) : activeRevision !== null && activeTab !== null ? (
+              <RevisionPane
+                key={activeTab.id}
+                host={host}
+                root={root}
+                rootLabel={rootLabel}
+                relPath={activeRevision.path}
+                sha={activeRevision.sha}
+                id={activeTab.id}
+                cache={revisionCacheRef.current}
+                wordWrap={diffOptions.wordWrap}
+                onRevealDir={revealFolder}
+                onClose={closeActiveTab}
+                onQuickOpen={openQuickOpen}
               />
             ) : browsePath !== null ? (
               <WorkspaceBrowser
@@ -2267,6 +2775,7 @@ export function ShellExplorerPage({
                   setSideTab('scm')
                   setCollapsed(false)
                 }}
+                onOpenGit={() => openGit()}
                 onOpenTimeline={() => {
                   setSideTab('timeline')
                   setCollapsed(false)
@@ -2291,9 +2800,18 @@ export function ShellExplorerPage({
           root={root}
           open={quickOpen}
           onOpenChange={setQuickOpen}
-          recent={tabFilePaths(tabs, recentPaths(historyRef.current, 60), 8)}
-          onOpenFile={(rel) => openFileTab(rel, { pin: true })}
+          recent={recentFiles}
+          onOpenFile={openPinnedFile}
         />
+        {newWorkerBase !== null && root !== null ? (
+          <NewWorkerDialog
+            host={host}
+            root={root}
+            baseDir={newWorkerBase}
+            onCreated={onWorkerCreated}
+            onClose={() => setNewWorkerBase(null)}
+          />
+        ) : null}
         {confirmDialog}
         <ConfirmDialog
           open={pendingDiscard !== null}
@@ -2311,7 +2829,37 @@ export function ShellExplorerPage({
           }}
           onCancel={() => setPendingDiscard(null)}
         />
-        {terminalOpen && terminalDock !== 'editor' ? (
+        {gitMounted && root !== null ? (
+          <DockPanel
+            hidden={!gitOpen}
+            dock="bottom"
+            size={terminalBottomSize}
+            narrow={narrow}
+            maximized={narrow}
+            label="Git"
+            noun="Git window"
+            onSizeChange={setTerminalBottomSize}
+          >
+            <GitToolWindow
+              host={host}
+              root={root}
+              page={worktreesPage}
+              open={gitOpen}
+              tab={gitTab}
+              onTabChange={setGitTab}
+              onHide={closeGit}
+              narrow={narrow}
+              paneKey={paneKey}
+              onOpenCommitFile={openCommitFile}
+              onOpenCompareFile={openCompareFile}
+              onOpenWorkingFile={openWorkingFile}
+              onOpenRevision={openRevision}
+            />
+          </DockPanel>
+        ) : null}
+        {/* The Git window taking the docked slot hides the terminal, which
+            stays mounted with its shells attached. */}
+        {terminalMounted && terminalDock !== 'editor' ? (
           <TerminalPanel
             state={terminalWorkspace}
             dispatch={dispatchTerminalWorkspace}
@@ -2327,9 +2875,18 @@ export function ShellExplorerPage({
             narrow={narrow}
             onSizeChange={terminalDock === 'bottom' ? setTerminalBottomSize : setTerminalRightSize}
             onClose={closeTerminal}
+            hidden={!terminalOpen || gitOpen}
           />
         ) : null}
       </div>
     </PageShell>
   )
+}
+
+/** What a turn list says about the records behind it: which turns, which
+    of them ended, and the files each touched. */
+function turnsShape(turns: readonly SessionTurnSummary[]): string {
+  return turns
+    .map((turn) => `${turn.turn_id}:${turn.ended_at ?? ''}:${turn.files.map((file) => `${file.path}${file.kind}`).join(',')}`)
+    .join('\n')
 }

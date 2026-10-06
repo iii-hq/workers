@@ -69,7 +69,7 @@ describe('Timeline file views', () => {
     expect(html).toContain(mode === 'list' ? 'View as Tree' : 'View as List')
     if (mode === 'tree') {
       expect(html.match(/class="shui-scm-folder"/g)).toHaveLength(6)
-      expect(html).toContain('padding-left:34px')
+      expect(html).toContain('padding-left:46px')
       expect(html).toContain('Outside workspace')
       expect(html).toContain('<span>../elsewhere/src</span>')
       expect(html).toContain('title="/elsewhere/src"')

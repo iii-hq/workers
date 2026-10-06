@@ -60,9 +60,14 @@ stack; traces need the engine's OpenTelemetry export.
   `engine::register_trigger`.
 - `workspace::open` reuses a tab that already shows the screen; it never
   duplicates panels. Selection of the active tab is per browser tab and only
-  follows a function-driven activation. A page that asks for a panel of its
-  own passes `relative_to` with its own screen id, so the panel lands beside
-  the page instead of beside the chat.
+  follows a function-driven activation, which every activating `open` stamps.
+  A page that asks for a panel of its own passes `relative_to` with its own
+  screen id, so the panel lands beside the page, in whichever tab shows it,
+  instead of beside the chat.
+- An injected page placing a screen for the operator in front of it calls
+  `host.panels.openScreen({ screen, relativeTo?, direction?, sizes? })`
+  (built-in screens like `traces` included): local and optimistic, no bus
+  round trip. Feature-detect it and fall back to `console::workspace::open`.
 - Native console UI (`ade/web`) and worker UI change in separate pull
   requests; the shared component surface is `@iii-dev/console-ui`
   (`packages/console-ui`) and its `index.d.ts` is the only API contract.
@@ -80,8 +85,9 @@ stack; traces need the engine's OpenTelemetry export.
 
 ## Reactive triggers
 
-The console owns three trigger types. Two are the injectable-UI contract a
-worker binds to ship UI; the third is tab-internal.
+The console owns four trigger types. Two are the injectable-UI contract a
+worker binds to ship UI; the third is tab-internal; the fourth reports layout
+changes.
 
 - `console:script` — an ESM JavaScript asset. `config: { path }` is the
   identity (`<worker>/page.js`); the trigger's `function_id` is the worker's
@@ -89,6 +95,10 @@ worker binds to ship UI; the third is tab-internal.
 - `console:style` — a CSS asset with the same contract and a `.css` path.
 - `console:assets` — a tab's live-update subscription; the console registers
   it itself.
+- `console::workspace::changed` — fires after every workspace layout write
+  (`open`, `close`, a browser's own edit), and once when a binding registers.
+  Empty config, empty event: a page that watches the layout binds it and
+  re-reads `console::workspace::list`.
 
 Bind the first two once per asset at worker startup, after the content
 function is registered. Re-registering the same path with different bytes

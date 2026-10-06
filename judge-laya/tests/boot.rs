@@ -75,7 +75,7 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                 }
             }
             if value["type"] == "registerfunction" && value["id"] == "judge-laya::evaluate" {
-                socket.send(Message::Text(json!({"type":"invokefunction","invocation_id":"00000000-0000-0000-0000-000000000009","function_id":"judge-laya::evaluate","data":{"timeout_ms":1000,"evaluations":[{"id":"ticket","state":{},"questions":{"urgent":{"type":"noul","instructions":"Is this urgent?"}}}]}}).to_string().into())).await.unwrap();
+                socket.send(Message::Text(json!({"type":"invokefunction","invocation_id":"00000000-0000-0000-0000-000000000009","function_id":"judge-laya::evaluate","data":{"timeout_ms":8000,"evaluations":[{"id":"ticket","state":{},"questions":{"urgent":{"type":"noul","instructions":"Is this urgent?"}}}]}}).to_string().into())).await.unwrap();
             }
             if value["type"] == "registerfunction" && value["id"] == "judge-laya::configuration-id"
             {

@@ -329,6 +329,8 @@ export function useLiveSignals(
   }, [host, handlerId, key, debounceMs])
 }
 
+const CALLS_TIMEOUT_MS = 15_000
+
 /** One recorded invocation of a function, read back from its span. */
 export interface CallRecord {
   spanId: string
@@ -375,12 +377,15 @@ export async function listCalls(
     limit,
     include_internal: true,
   }
+  // A trace store past its disk limit can leave this query unanswered for
+  // good; bounded, the page reports it instead of reading forever.
+  const options = { timeoutMs: CALLS_TIMEOUT_MS }
   let out: unknown
   try {
-    out = await host.iii.trigger('engine::traces::spans', payload)
+    out = await host.iii.trigger('engine::traces::spans', payload, options)
   } catch (err) {
     if (!isFunctionUnavailable(err)) throw err
-    out = await host.iii.trigger('engine::traces::list', payload)
+    out = await host.iii.trigger('engine::traces::list', payload, options)
   }
   return rows(out, 'spans')
     .map((span): CallRecord | null => {

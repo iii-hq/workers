@@ -81,6 +81,56 @@ describe('terminal font size', () => {
     expect(writeFontSize(22)).toBe(22)
   })
 
+  it('reads storage once, then follows this tab and the others', () => {
+    const key = 'iii::terminal::font-size'
+    const store = fakeStorage()
+    const getItem = vi.spyOn(store, 'getItem')
+    const listeners = new Map<string, (event: unknown) => void>()
+    vi.stubGlobal('window', {
+      localStorage: store,
+      addEventListener: (name: string, listener: (event: unknown) => void) =>
+        listeners.set(name, listener),
+      removeEventListener: () => {},
+      dispatchEvent: () => true,
+    })
+    store.setItem(key, '18')
+
+    const stop = subscribeFontSize(() => {})
+    expect(readFontSize()).toBe(18)
+    expect(readFontSize()).toBe(18)
+    expect(getItem).toHaveBeenCalledTimes(1)
+    // Another tab stored a new size.
+    store.setItem(key, '22')
+    listeners.get('storage')?.({ key })
+    expect(readFontSize()).toBe(22)
+    // Another page's copy of this module changed it in this tab.
+    listeners.get('iii:terminal-font-size')?.({ detail: 30 })
+    expect(readFontSize()).toBe(30)
+    stop()
+  })
+
+  it('reads storage again while nothing here listens', () => {
+    const key = 'iii::terminal::font-size'
+    const store = fakeStorage()
+    vi.stubGlobal('window', {
+      localStorage: store,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => true,
+    })
+    store.setItem(key, '18')
+    expect(readFontSize()).toBe(18)
+    // Another page's copy of this module stored a size while no terminal
+    // here was mounted to hear it, then one mounts and subscribes.
+    store.setItem(key, '24')
+    const stop = subscribeFontSize(() => {})
+    expect(readFontSize()).toBe(24)
+    stop()
+    // And again after the last one unmounted.
+    store.setItem(key, '30')
+    expect(readFontSize()).toBe(30)
+  })
+
   it('unsubscribes cleanly', () => {
     const listeners: string[] = []
     vi.stubGlobal('window', {

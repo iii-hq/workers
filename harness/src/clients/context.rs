@@ -60,6 +60,9 @@ pub struct ByRoleTokens {
 pub struct Applied {
     #[serde(default)]
     pub initial_token_count: u64,
+    /// Function results were pruned or reduced to fit the budget.
+    #[serde(default)]
+    pub pruned: bool,
     #[serde(default)]
     pub compacted: bool,
     #[serde(default)]

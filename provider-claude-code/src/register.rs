@@ -2,7 +2,7 @@
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
 use crate::discovery::{make_refresh_models, refresh_models, refresh_models_periodically};
-use crate::errors::invalid_request_from_serde;
+use crate::errors::{invalid_request, invalid_request_from_serde};
 use crate::stream_fn::make_stream;
 use crate::surface;
 use crate::{auth, router_client, state, PROVIDER_ID};
@@ -188,6 +188,25 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
                 }
             })
             .description(surface::ON_ROUTER_READY_DESC)
+            .metadata(json!({ "internal": true })),
+        );
+    }
+
+    // Exact prompt token count behind router::count_tokens, authenticated
+    // with the same OAuth credential path as stream.
+    {
+        let (iii_count, http_count, cache_count) = (iii.clone(), http.clone(), cache.clone());
+        iii.register_function(
+            surface::COUNT_TOKENS_ID,
+            typed_async_with_bad_request(
+                move |req: crate::count_tokens::CountTokensRequest| {
+                    let (iii, http, cache) =
+                        (iii_count.clone(), http_count.clone(), cache_count.clone());
+                    async move { crate::count_tokens::handle(&iii, &http, &cache, req).await }
+                },
+                |e: serde_json::Error| invalid_request(format!("bad CountTokensRequest: {e}")),
+            )
+            .description(surface::COUNT_TOKENS_DESC)
             .metadata(json!({ "internal": true })),
         );
     }

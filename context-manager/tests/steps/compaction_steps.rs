@@ -210,3 +210,23 @@ async fn default_lease_still_foreign(world: &mut ContextWorld) {
         .unwrap_or_else(|| panic!("no lease claim on the default key"));
     assert_eq!(record.nonce, "foreign-holder");
 }
+
+#[then(regex = r#"^the first summariser system prompt contains "([^"]+)"$"#)]
+async fn first_summariser_system_contains(world: &mut ContextWorld, needle: String) {
+    let calls = world.summarizer.calls();
+    let first = calls.first().expect("the summariser was never invoked");
+    assert!(
+        first.system_prompt.contains(&needle),
+        "first summary prompt missing {needle}"
+    );
+}
+
+#[then(regex = r#"^the first summariser system prompt does not contain "([^"]+)"$"#)]
+async fn first_summariser_system_not_contains(world: &mut ContextWorld, needle: String) {
+    let calls = world.summarizer.calls();
+    let first = calls.first().expect("the summariser was never invoked");
+    assert!(
+        !first.system_prompt.contains(&needle),
+        "first summary prompt unexpectedly contains {needle}"
+    );
+}

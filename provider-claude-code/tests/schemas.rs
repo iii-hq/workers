@@ -43,6 +43,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "provider::claude-code::abort",
             "provider::claude-code::refresh_models",
             "provider::claude-code::on_router_ready",
+            "provider::claude-code::count_tokens",
         ]
     );
 }

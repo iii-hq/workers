@@ -114,6 +114,19 @@ async fn replay_delivery_triggers(
     let mut rearmed = 0usize;
     let mut caught_up = 0usize;
     for mut binding in bindings {
+        // Deletion owns cleanup. Do not resurrect its engine bindings during
+        // concurrent startup recovery, or deliver a stale catch-up wake.
+        let _topology = deps.topology.lock().await;
+        match crate::functions::delete_session_tree::guard_owner(deps, &binding.owner.session_id)
+            .await
+        {
+            Ok(None) => {}
+            Ok(Some(_)) => continue,
+            Err(error) => {
+                tracing::warn!(%error, "binding rearm blocked by unreadable deletion guard");
+                continue;
+            }
+        }
         if binding.is_exhausted(now_ms) {
             // The expiry sweep owns retirement and its owner notice.
             continue;
@@ -159,6 +172,7 @@ async fn replay_delivery_triggers(
             }
         }
         super::compose::schedule(deps, &binding);
+        drop(_topology);
         caught_up += usize::from(catch_up_state_wake(deps, &binding).await);
     }
     (rearmed, caught_up)

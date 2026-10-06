@@ -1,7 +1,7 @@
 //! `context::assemble` — build the model-ready context from a history
 //! (context-manager.md § context::assemble). The pipeline, in order:
-//! media-normalize -> cap results (always) -> age-prune (always) ->
-//! (if over) compact -> (if still over) emergency-reduce function
+//! media-normalize -> cap results (always) -> (if over) age-prune ->
+//! (if still over) compact -> (if still over) emergency-reduce function
 //! results -> assemble the final list or return a structured overflow.
 //!
 //! Structural guarantees: `role: "custom"` messages never reach the
@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::summarize::{summarize_head, PromptSteering};
 use crate::core::budget::{default_reserved, preserve_recent_budget, usable};
 use crate::core::estimate::{by_role_from_sizes, estimator_for_model, Estimator};
 use crate::core::lease;
@@ -22,12 +23,10 @@ use crate::core::prune::{
     cap_results_with_sizes, emergency_reduce_with_sizes, prune_with_sizes, PruneParams,
 };
 use crate::core::selection::select;
-use crate::core::summary::{
-    build_system_prompt, render_system_prompt, render_user_prompt, strip_media,
-};
+use crate::core::summary::render_system_prompt;
 use crate::error::ContextError;
 use crate::functions::resolve_model;
-use crate::ports::{Deps, SummarizeRequest};
+use crate::ports::Deps;
 use crate::types::{
     AgentFunction, AgentMessage, ByRoleTokens, ContentBlock, EstimatorName, ModelInput, Role,
     ThinkingLevel,
@@ -100,6 +99,11 @@ fn normalize_media(messages: &mut [AgentMessage], supports_vision: Option<bool>)
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AssembleOptions {
+    /// Read-only model-switch preview: apply normal media/cap/prune rules and
+    /// return the pre-compaction estimate, even when over budget. Never invokes
+    /// the summarizer, acquires a lease, or performs emergency reduction.
+    #[serde(default)]
+    pub preview_only: bool,
     /// Override the default reserve (`min(20000, 10% of context_window)`).
     #[serde(default)]
     pub reserved_tokens: Option<u64>,
@@ -358,11 +362,15 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         token_count = total(&sizes, prompt_tokens);
     }
 
-    // Step 1: prune aged function outputs — always, not only over budget
-    // (context-manager.md § context::assemble). min_free_tokens batches
-    // the history rewrites so provider prefix caches are not invalidated
-    // for peanuts.
-    if options.allow_prune.unwrap_or(true) {
+    // Step 1: prune aged function outputs — only over budget
+    // (context-manager.md § context::assemble). A prune rewrites results an
+    // earlier request already sent, and provider prompt caches (DeepSeek,
+    // Anthropic, OpenAI) reuse only the unchanged prefix: every pruned batch
+    // made the provider re-read everything after it uncached. On the Linkly
+    // tutorial that was 92% of the uncached input and 63% of the cost, with
+    // the window never past a third full. Over budget it still runs first,
+    // the cheapest relief before compaction.
+    if options.allow_prune.unwrap_or(true) && token_count > usable_budget {
         let params = PruneParams {
             protect_recent_tokens: config.protect_recent_tokens,
             decay_user_turns: config.decay_user_turns,
@@ -378,7 +386,10 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     }
 
     // Step 2: compact the head.
-    if token_count > usable_budget && options.allow_compaction.unwrap_or(true) {
+    if !options.preview_only
+        && token_count > usable_budget
+        && options.allow_compaction.unwrap_or(true)
+    {
         // The default lease key hashes the *request* message set —
         // the same derivation context::compact uses — so callers
         // hitting both functions with the same history contend on the
@@ -415,7 +426,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     // Step 3: enforce the budget by reducing complete function-result
     // messages, including latest/protected results and their details.
     // This pass is intentionally independent of all normal-prune knobs.
-    if token_count > usable_budget {
+    if !options.preview_only && token_count > usable_budget {
         let emergency = emergency_reduce_with_sizes(
             &mut working,
             &mut sizes,
@@ -441,7 +452,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         "size memo drifted from a from-scratch recount"
     );
 
-    if token_count > usable_budget {
+    if !options.preview_only && token_count > usable_budget {
         return Err(ContextError::Overflow {
             token_count,
             usable: usable_budget,
@@ -524,15 +535,18 @@ async fn try_compact(
         }
 
         let tokens_before: u64 = sizes[..selection.head_len].iter().sum();
-        let stripped = strip_media(head, config.max_output_chars);
-        let request = SummarizeRequest {
-            system_prompt: build_system_prompt(previous_summary, None),
-            user_prompt: render_user_prompt(&stripped),
-            model: model.id.clone(),
-            provider: model.provider.clone(),
-        };
-
-        match deps.summarizer.summarize(request).await {
+        match summarize_head(
+            deps,
+            model,
+            head,
+            usable_budget,
+            PromptSteering {
+                previous_summary,
+                instructions: None,
+            },
+        )
+        .await
+        {
             Ok(summary) => Some(CompactionOutcome {
                 summary,
                 head_len: selection.head_len,

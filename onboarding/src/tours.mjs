@@ -12,10 +12,10 @@
  *     and sends, so the operator talks to the agent instead of copying text
  *     out of the tour.
  *   - `on_closed` (optional): a console screen the step suggests closing, and
- *     the body and anchor to show once it is gone. The page watches the
- *     console's own configuration entry — the workspace layout lives there,
- *     so a closed pane IS a configuration write and the `configuration`
- *     trigger reports it. Never required to finish the step.
+ *     the body and anchor to show once it is gone. The page binds the
+ *     console's `console::workspace::changed` trigger, which rings after
+ *     every layout write, so a closed pane is reported as it happens. Never
+ *     required to finish the step.
  *   - `condition` (optional): a real engine trigger the step waits for. The
  *     page binds it, shows what it is waiting for, and when it fires shows
  *     the trigger and its payload. A step with no condition is closed by the

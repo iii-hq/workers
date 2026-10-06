@@ -23,6 +23,8 @@ env:
   # When `inherit` is false, ONLY these keys are forwarded to children. Has
   # no effect on per-call `env` (deny-only, see line 16 above) — this list
   # governs forwarding only, never what a caller may override per call.
+  # git fetch/push over SSH needs the agent socket (SSH_AUTH_SOCK), but every
+  # child command then gets the agent's keys: add it only if that is intended.
   allow:
     - PATH
     - HOME
@@ -111,6 +113,17 @@ turns:
   data_dir: data/shell/turns
   max_blob_bytes: 268435456
 
+# The Commit panel's "Generate" button (shell::scm::commit-message). Read live
+# on every call, so edits apply without a restart.
+commit_messages:
+  # llm-router model id ("provider::model" or a bare model id). null = use the
+  # model the Commit panel passes (the chat's default model).
+  model: null
+  # Reasoning effort: default (send no override) | minimal | low | medium | high | xhigh.
+  thinking: low
+  # Free text appended to the prompt, e.g. "Use Conventional Commits".
+  instructions: ""
+
 # The folded `coder::*` code surface. Its ROOTS are NOT set here — the code
 # resolver uses fs.host_roots above, so the operator sets the project root
 # ONCE. `non_accessible_globs` is the unified protected-paths list: BOTH the
@@ -131,3 +144,15 @@ code:
     - "**/dist/**"
     - "**/.venv/**"
     - "**/__pycache__/**"
+  # Worker templates behind coder::list-templates / coder::scaffold-worker.
+  # dir: a local templates checkout (repo root or its iii/ dir), read on
+  # every call; III_TEMPLATE_DIR overrides it. With dir unset, a shallow
+  # clone of url@ref is cached under cache_dir (relative paths resolve
+  # against III_COMPOSE_DIR) and fetched again after refresh_secs;
+  # III_TEMPLATE_URL overrides url.
+  templates:
+    dir: null
+    url: https://github.com/iii-hq/templates.git
+    ref: main
+    cache_dir: data/shell/templates
+    refresh_secs: 600

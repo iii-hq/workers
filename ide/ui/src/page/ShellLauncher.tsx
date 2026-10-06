@@ -8,7 +8,7 @@
  */
 
 import { DirectoryPicker, Kbd, Wordmark } from '@iii-dev/console-ui'
-import { FileSearch, FolderOpen, GitCompareArrows, History, Search, SquareTerminal } from 'lucide-react'
+import { FileSearch, FolderOpen, GitCompareArrows, GitGraph, History, Search, SquareTerminal } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { FileTypeIcon } from './file-type-icon'
 import type { GitState } from './git'
@@ -41,6 +41,7 @@ interface ShellLauncherProps {
   onQuickOpen: () => void
   onSearch: () => void
   onOpenChanges: () => void
+  onOpenGit: () => void
   onOpenTimeline: () => void
   onOpenTerminal: () => void
   onOpenFiles: () => void
@@ -83,6 +84,7 @@ export function ShellLauncher({
   onQuickOpen,
   onSearch,
   onOpenChanges,
+  onOpenGit,
   onOpenTimeline,
   onOpenTerminal,
   onOpenFiles,
@@ -117,6 +119,13 @@ export function ShellLauncher({
       detail: sourceControlDetail(git),
       Icon: GitCompareArrows,
       onSelect: onOpenChanges,
+    },
+    {
+      id: 'git',
+      title: 'Git',
+      detail: 'The log, branches and worktrees',
+      Icon: GitGraph,
+      onSelect: onOpenGit,
     },
     {
       id: 'timeline',

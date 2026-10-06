@@ -62,6 +62,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<sp::ListMetasRequest, sp::ListMetasResponse>(sp::LIST_METAS),
         spec::<sp::EntryIdRequest, Option<SessionEntry>>(sp::GET_ENTRY),
         spec::<sp::PutEntryRequest, sp::OkResponse>(sp::PUT_ENTRY),
+        spec::<sp::CommitAppendRequest, sp::CommitAppendResponse>(sp::COMMIT_APPEND),
         spec::<sp::SessionIdRequest, sp::ListEntriesResponse>(sp::LIST_ENTRIES),
         spec::<sp::SessionIdRequest, sp::OkResponse>(sp::DELETE_ENTRIES),
         spec::<sp::SessionIdRequest, sp::ActiveLeafResponse>(sp::GET_ACTIVE_LEAF),

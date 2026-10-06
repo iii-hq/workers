@@ -174,7 +174,10 @@ pub(crate) fn prepare_info_result(
         }
     }
 
+    // `(function_id, digest, repeats)` sent in full this time, and the rows
+    // whose repeat was answered from the ledger.
     let mut full = Vec::new();
+    let mut counted = Vec::new();
     let mut changed = false;
     for (index, function_id) in candidates {
         let contract = match index {
@@ -190,19 +193,56 @@ pub(crate) fn prepare_info_result(
                     && source.contract_digest == contract_digest
                     && source.source_function_call_id != call_id =>
             {
-                let marker = json!({
-                    "function_id": function_id,
-                    "contract_status": "unchanged_in_context",
-                    "source_function_call_id": source.source_function_call_id,
-                });
-                match index {
-                    Some(index) => display["functions"][index] = marker,
-                    None => display = marker,
+                let source_id = &source.source_function_call_id;
+                let item = match index {
+                    Some(index) => &mut display["functions"][index],
+                    None => &mut display,
+                };
+                if source.repeats == 1 {
+                    // Asked again after one marker: send it in full once
+                    // more, in case the model (or its provider) cannot see
+                    // the source. This call becomes the source.
+                    item["note"] = json!(format!(
+                        "This contract was already in your context (call {source_id}) and is \
+                         sent again in full because it was requested again. Call \
+                         {function_id} now instead of fetching its contract."
+                    ));
+                    full.push((function_id, contract_digest, 2));
+                } else {
+                    let mut marker = json!({
+                        "function_id": function_id,
+                        "contract_status": "unchanged_in_context",
+                        "source_function_call_id": source_id,
+                    });
+                    // Past the re-send, the bare status did not stop the
+                    // loop (MOT-4928): say what to do instead.
+                    if source.repeats >= 2 {
+                        marker["note"] = json!(format!(
+                            "This contract was already sent in full (call {source_id}). Do \
+                             not fetch it again: call {function_id} now."
+                        ));
+                    }
+                    *item = marker;
+                    counted.push((
+                        function_id,
+                        FunctionContractLedgerEntry {
+                            repeats: source.repeats + 1,
+                            ..source.clone()
+                        },
+                    ));
                 }
                 changed = true;
             }
             Some(source) if source.source_function_call_id == call_id => {}
-            _ => full.push((function_id, contract_digest)),
+            // A same-step duplicate of a source sent moments ago (not yet
+            // confirmed visible) is still a repeat: keep its count.
+            _ => {
+                let repeats = ledger
+                    .get(&function_id)
+                    .filter(|source| source.contract_digest == contract_digest)
+                    .map_or(0, |source| source.repeats);
+                full.push((function_id, contract_digest, repeats));
+            }
         }
     }
 
@@ -227,7 +267,7 @@ pub(crate) fn prepare_info_result(
     };
     let updates = full
         .into_iter()
-        .map(|(function_id, contract_digest)| {
+        .map(|(function_id, contract_digest, repeats)| {
             (
                 function_id,
                 FunctionContractLedgerEntry {
@@ -235,9 +275,11 @@ pub(crate) fn prepare_info_result(
                     source_function_call_id: call_id.to_string(),
                     source_content_digest: source_content_digest.clone(),
                     eligible: false,
+                    repeats,
                 },
             )
         })
+        .chain(counted)
         .collect();
     (prepared, updates)
 }
@@ -658,19 +700,47 @@ pub async fn invoke_target(
     function_id: &str,
     arguments: &Value,
 ) -> ResultData {
-    if let Some(denied) = project_wide_compose_denial(function_id, arguments) {
-        return denied;
+    invoke_target_classified(engine, policy, function_id, arguments)
+        .await
+        .0
+}
+
+/// [`invoke_target`] plus whether a failed dispatch has an unknown outcome
+/// (the target may still have run; see
+/// [`crate::clients::engine::invocation_outcome_unknown`]). The flag is set by
+/// the harness from the structured SDK error, never from result text a target
+/// controls, so it can gate the deletion dispatch witness.
+pub(crate) async fn invoke_target_classified(
+    engine: &EngineClient,
+    policy: &CompiledPolicy,
+    function_id: &str,
+    arguments: &Value,
+) -> (ResultData, bool) {
+    let (arguments, start_note) = match scaffold_start_gate(function_id, arguments, policy) {
+        StartGate::Pass => (arguments.clone(), None),
+        StartGate::Deny(denied) => return (denied, false),
+        StartGate::FilesOnly(arguments, note) => (arguments, Some(note)),
+    };
+    if let Some(denied) = project_wide_compose_denial(function_id, &arguments) {
+        return (denied, false);
     }
-    match engine.dispatch(function_id, arguments.clone()).await {
+    match engine.dispatch(function_id, arguments).await {
         Ok(mut value) => {
             if function_id == "engine::functions::list" {
                 post_filter_discovery(&mut value, policy);
             } else if function_id == "engine::functions::info" {
                 post_filter_info(&mut value, policy);
             }
-            normalized_result(value)
+            let mut result = normalized_result(value);
+            if let Some(note) = start_note {
+                result.content.push(ContentBlock::text(note));
+            }
+            (result, false)
         }
-        Err(e) => invocation_error_result(e.code, e.message),
+        Err(e) => {
+            let outcome_unknown = e.outcome_unknown;
+            (invocation_error_result(e.code, e.message), outcome_unknown)
+        }
     }
 }
 
@@ -768,6 +838,71 @@ pub(crate) fn project_wide_compose_denial(
     ))
 }
 
+/// What the turn does with a `coder::scaffold-worker` call, whose `start`
+/// (default true) has the ide run compose::add under its own permissions,
+/// in its own stack.
+pub(crate) enum StartGate {
+    Pass,
+    /// An explicit `start: true` this session cannot have.
+    Deny(ResultData),
+    /// No `start` given and this session cannot start: the call goes with
+    /// `start: false`, and the note joins its result.
+    FilesOnly(Value, String),
+}
+
+/// A session may start a scaffold only if it may call compose::add itself:
+/// the flag must not widen its policy. (The ide adds to its own stack, which
+/// compose gives every container it supervises, the harness included, as
+/// the same III_COMPOSE_FILE / III_COMPOSE_NAMESPACE.)
+pub(crate) fn scaffold_start_gate(
+    function_id: &str,
+    arguments: &Value,
+    policy: &CompiledPolicy,
+) -> StartGate {
+    if function_id != crate::clients::engine::SCAFFOLD_WORKER || policy.allows("compose::add") {
+        return StartGate::Pass;
+    }
+    start_refused(
+        arguments,
+        "it runs compose::add, which this session may not call",
+        "Adding it to the stack needs compose::add: ask for it, or for someone who has it to send the compose_add.",
+    )
+}
+
+/// Whether a `coder::scaffold-worker` call would start the worker: `start`
+/// defaults to true.
+pub(crate) fn scaffold_starts(function_id: &str, arguments: &Value) -> bool {
+    function_id == crate::clients::engine::SCAFFOLD_WORKER
+        && arguments.get("start") != Some(&Value::Bool(false))
+}
+
+/// A start this session cannot have: a defaulted one goes files-only, an
+/// explicit one is refused.
+/// `next` is the step that does add the worker, for the agent to take.
+pub(crate) fn start_refused(arguments: &Value, why: &str, next: &str) -> StartGate {
+    match arguments.get("start") {
+        Some(Value::Bool(false)) => StartGate::Pass,
+        None => {
+            let mut files_only = arguments.clone();
+            if let Some(object) = files_only.as_object_mut() {
+                object.insert("start".to_string(), Value::Bool(false));
+            }
+            StartGate::FilesOnly(
+                files_only,
+                format!("[harness] Not started ({why}): only the files were written. {next}"),
+            )
+        }
+        // true, or a value the ide would refuse anyway: never dispatched.
+        Some(_) => StartGate::Deny(invocation_error_result(
+            Some("scaffold_start_denied".to_string()),
+            format!(
+                "coder::scaffold-worker with start: true is refused here: {why}. Call it with \
+                 start: false to write the files only. {next}"
+            ),
+        )),
+    }
+}
+
 pub(crate) fn invocation_error_result(code: Option<String>, message: String) -> ResultData {
     ResultData {
         content: vec![ContentBlock::text(message.clone())],
@@ -851,15 +986,75 @@ fn overlay_control_contract(item: &mut Value, id: &str) {
 
 /// The `is_error` result for a policy denial (no allow match or a deny match).
 pub fn denied_result(function_id: &str) -> ResultData {
+    denied_result_with_hint(function_id, None)
+}
+
+/// [`denied_result`] naming the permitted id the model most likely meant
+/// (see [`closest_permitted`]): a mistyped id is denied like a forbidden one,
+/// and without the hint the model reads it as a policy problem.
+pub fn denied_result_with_hint(function_id: &str, did_you_mean: Option<&str>) -> ResultData {
+    let hint = did_you_mean
+        .map(|id| format!(" No registered function has this id; did you mean {id}?"))
+        .unwrap_or_default();
     let msg = format!(
         "function {function_id} is not permitted by this agent's dispatch policy (no allow-glob \
-         match or a deny-glob match)"
+         match or a deny-glob match).{hint} Calling it again will be denied again: use a \
+         permitted function or report the blocker."
     );
     ResultData {
         content: vec![ContentBlock::text(msg.clone())],
         is_error: true,
         details: json!({ "error": "policy_denied", "function_id": function_id, "message": msg }),
     }
+}
+
+/// The permitted, registered id closest to `function_id` when `function_id`
+/// itself is not registered at all — a model retyping a long id (a hashed
+/// worker name) corrupts it. `None` for a real function the policy denies, or
+/// when nothing permitted is within an eighth of the id's length (at least 2)
+/// edits.
+pub fn closest_permitted(
+    function_id: &str,
+    policy: &CompiledPolicy,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+) -> Option<String> {
+    let registered = snapshot.internal_ids.contains(function_id)
+        || snapshot
+            .functions
+            .iter()
+            .any(|f| f.function_id == function_id);
+    if registered {
+        return None;
+    }
+    let limit = (function_id.chars().count() / 8).max(2);
+    snapshot
+        .functions
+        .iter()
+        .map(|f| f.function_id.as_str())
+        .filter(|id| policy.allows(id))
+        .map(|id| (edit_distance(function_id, id), id))
+        .filter(|(distance, _)| *distance <= limit)
+        .min()
+        .map(|(_, id)| id.to_string())
+}
+
+/// Levenshtein distance over chars; ids are short and this runs only on a
+/// denial.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (above + 1)
+                .min(row[j] + 1)
+                .min(diagonal + usize::from(ca != *cb));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
 }
 
 /// The `is_error` result for an `agent_trigger` call with no resolvable
@@ -1058,6 +1253,41 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         }))
+    }
+
+    /// Prevents: `start: true` laundering a compose::add the session's policy
+    /// does not grant through the ide's own permissions.
+    #[test]
+    fn a_starting_scaffold_needs_compose_add() {
+        let id = "coder::scaffold-worker";
+        let explicit = json!({ "template": "worker-node-ade", "name": "orders", "start": true });
+        let default = json!({ "template": "worker-node-ade", "name": "orders" });
+        let opt_out = json!({ "template": "worker-node-ade", "name": "orders", "start": false });
+        let coder_only = pol(&["coder::*"]);
+        let allowed = pol(&["coder::*", "compose::add"]);
+
+        let StartGate::Deny(denied) = scaffold_start_gate(id, &explicit, &coder_only) else {
+            panic!("an explicit start without compose::add must be refused");
+        };
+        assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
+        // The default start degrades to the files only, with a note.
+        let StartGate::FilesOnly(sent, note) = scaffold_start_gate(id, &default, &coder_only)
+        else {
+            panic!("a defaulted start without compose::add must go files-only");
+        };
+        assert_eq!(sent, opt_out);
+        assert!(note.contains("Not started"), "{note}");
+        for args in [&opt_out, &explicit, &default] {
+            let policy = if args == &opt_out {
+                &coder_only
+            } else {
+                &allowed
+            };
+            assert!(
+                matches!(scaffold_start_gate(id, args, policy), StartGate::Pass),
+                "{args}"
+            );
+        }
     }
 
     /// Prevents: the self-inflicted restart — a project-wide `compose::restart`
@@ -1307,6 +1537,122 @@ mod tests {
     }
 
     #[test]
+    fn repeated_requests_for_an_unchanged_contract_escalate() {
+        let details = json!({
+            "function_id": "worker::function",
+            "description": "Does work",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: false,
+            details: details.clone(),
+        };
+        let digest = digest_value(&details).unwrap();
+        let entry = |source: &str, repeats| FunctionContractLedgerEntry {
+            contract_digest: digest.clone(),
+            source_function_call_id: source.to_string(),
+            source_content_digest: "source".to_string(),
+            eligible: true,
+            repeats,
+        };
+        let ledger = |source: &str, repeats| {
+            BTreeMap::from([("worker::function".to_string(), entry(source, repeats))])
+        };
+        let arguments = json!({ "function_id": "worker::function" });
+        let shown = |prepared: &ResultData| -> Value {
+            serde_json::from_str(&ContentBlock::join_text(&prepared.content)).unwrap()
+        };
+
+        // The first repeat keeps the bare marker, and is counted.
+        let (first, updates) =
+            prepare_info_result("call_1", &arguments, &data, &ledger("call_0", 0), true);
+        assert_eq!(shown(&first)["contract_status"], "unchanged_in_context");
+        assert!(shown(&first).get("note").is_none());
+        assert_eq!(
+            updates,
+            vec![("worker::function".to_string(), entry("call_0", 1))]
+        );
+
+        // The next one sends the contract in full again, with a note, and
+        // becomes the source.
+        let (second, updates) =
+            prepare_info_result("call_2", &arguments, &data, &ledger("call_0", 1), true);
+        let second = shown(&second);
+        assert_eq!(second["request_schema"], json!({ "type": "object" }));
+        assert!(second["note"].as_str().unwrap().contains("(call call_0)"));
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].1.source_function_call_id, "call_2");
+        assert_eq!(updates[0].1.repeats, 2);
+
+        // After that, the marker says what to do instead.
+        let (third, updates) =
+            prepare_info_result("call_3", &arguments, &data, &ledger("call_2", 2), true);
+        let third = shown(&third);
+        assert_eq!(third["contract_status"], "unchanged_in_context");
+        assert!(third["note"]
+            .as_str()
+            .unwrap()
+            .contains("call worker::function now"));
+        assert_eq!(
+            updates,
+            vec![("worker::function".to_string(), entry("call_2", 3))]
+        );
+    }
+
+    #[test]
+    fn same_step_duplicates_keep_counting_until_the_instruction_note() {
+        let details = json!({
+            "function_id": "worker::function",
+            "description": "Does work",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: false,
+            details: details.clone(),
+        };
+        let arguments = json!({ "function_id": "worker::function" });
+        let visible = |call: &str, prepared: &ResultData| {
+            json!({
+                "role": "function_result",
+                "function_call_id": call,
+                "function_id": "engine::functions::info",
+                "content": serde_json::to_value(&prepared.content).unwrap()
+            })
+        };
+        let mut ledger = BTreeMap::new();
+        let mut transcript = Vec::new();
+        let (full, updates) = prepare_info_result("call_0", &arguments, &data, &ledger, true);
+        apply_contract_updates_after_append(&mut ledger, "call_0", updates);
+        transcript.push(visible("call_0", &full));
+        retain_visible_contract_sources(&mut ledger, &transcript);
+
+        // Three identical calls in one step, applied one after another with
+        // no visibility check in between.
+        for call in ["call_1", "call_2", "call_3"] {
+            let (prepared, updates) = prepare_info_result(call, &arguments, &data, &ledger, true);
+            apply_contract_updates_after_append(&mut ledger, call, updates);
+            transcript.push(visible(call, &prepared));
+        }
+        assert_eq!(
+            ledger["worker::function"].repeats, 2,
+            "the duplicate kept the count"
+        );
+        retain_visible_contract_sources(&mut ledger, &transcript);
+
+        let (next, _) = prepare_info_result("call_4", &arguments, &data, &ledger, true);
+        let next: Value = serde_json::from_str(&ContentBlock::join_text(&next.content)).unwrap();
+        assert_eq!(next["contract_status"], "unchanged_in_context");
+        assert!(next["note"]
+            .as_str()
+            .unwrap()
+            .contains("call worker::function now"));
+    }
+
+    #[test]
     fn unchanged_info_contract_reuses_an_exact_model_visible_source() {
         let details = json!({
             "function_id": "worker::function",
@@ -1365,7 +1711,10 @@ mod tests {
             )]
         );
         assert_eq!(second.details, data.details, "details stay exact");
-        assert!(updates.is_empty(), "markers never replace the full source");
+        assert!(
+            updates.iter().all(|(_, entry)| entry.source_function_call_id == "call_123" && entry.repeats == 1),
+            "markers never replace the full source; they only count the repeat"
+        );
     }
 
     #[test]
@@ -1409,7 +1758,16 @@ mod tests {
         assert_eq!(functions[1], details["functions"][1]);
         assert_eq!(functions[2]["contract_status"], "unchanged_in_context");
         assert_eq!(prepared.details, details);
-        assert!(updates.is_empty());
+        // The markers only count the repeat; the full source stays.
+        let counted: BTreeMap<_, _> = updates.into_iter().collect();
+        assert_eq!(counted.keys().collect::<Vec<_>>(), ["a::one", "b::two"]);
+        for (id, entry) in &counted {
+            assert_eq!(
+                entry.source_function_call_id,
+                ledger[id].source_function_call_id
+            );
+            assert_eq!(entry.repeats, 1);
+        }
     }
 
     #[test]
@@ -1512,6 +1870,7 @@ mod tests {
                 source_function_call_id: "source".into(),
                 source_content_digest: "source-content".into(),
                 eligible: true,
+                repeats: 0,
             },
         )]);
 
@@ -1555,6 +1914,7 @@ mod tests {
                     source_function_call_id: "bad-source".into(),
                     source_content_digest: "bad-content".into(),
                     eligible: true,
+                    repeats: 0,
                 },
             ),
             (
@@ -1564,6 +1924,7 @@ mod tests {
                     source_function_call_id: "good-source".into(),
                     source_content_digest: "good-content".into(),
                     eligible: true,
+                    repeats: 0,
                 },
             ),
         ]);
@@ -1595,7 +1956,11 @@ mod tests {
             })
         );
         assert_eq!(prepared.details, details);
-        assert!(updates.is_empty());
+        // Only the reused contract is counted; its source stays.
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].0, "worker::good");
+        assert_eq!(updates[0].1.source_function_call_id, "good-source");
+        assert_eq!(updates[0].1.repeats, 1);
     }
 
     #[test]
@@ -1624,6 +1989,7 @@ mod tests {
                 source_function_call_id: "source".into(),
                 source_content_digest: "source-content".into(),
                 eligible: true,
+                repeats: 0,
             },
         )]);
 
@@ -2369,5 +2735,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_mistyped_id_is_denied_with_the_permitted_id_it_resembles() {
+        let exec =
+            "kanban_eval_598997058842fdedec266aaf02880d80b532995d651db57f24d800b6a42eac97::exec";
+        let typo = "kanban_eval_598997058842fdedec266aaf02880d02880d80b532995d651db57f24d800b6a42eac97::exec";
+        let policy = CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec![exec.into()],
+            ..Default::default()
+        }));
+        let descriptor = |id: &str| crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            description: None,
+            parameters: None,
+        };
+        let snapshot =
+            crate::discovery::snapshot_of(vec![descriptor(exec), descriptor("auth::browser")]);
+
+        let hint = closest_permitted(typo, &policy, &snapshot);
+        assert_eq!(hint.as_deref(), Some(exec));
+        let denied = denied_result_with_hint(typo, hint.as_deref());
+        let text = denied.details["message"].as_str().unwrap();
+        assert!(
+            text.contains("not permitted by this agent's dispatch policy"),
+            "{text}"
+        );
+        assert!(text.contains(&format!("did you mean {exec}?")), "{text}");
+        assert!(
+            text.contains("Calling it again will be denied again"),
+            "{text}"
+        );
+
+        // A real function the policy denies gets no suggestion, nor does an
+        // id nothing permitted resembles.
+        assert_eq!(closest_permitted("auth::browser", &policy, &snapshot), None);
+        assert_eq!(closest_permitted("web::fetch", &policy, &snapshot), None);
+        assert!(!denied_result("web::fetch").details["message"]
+            .as_str()
+            .unwrap()
+            .contains("did you mean"));
     }
 }

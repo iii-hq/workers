@@ -22,7 +22,7 @@ use serde_json::json;
 use crate::configuration::AppState;
 use crate::events::{Emitter, EventEnvelope};
 use crate::runtime::AdapterMode;
-use crate::store::SessionStore;
+use crate::store::{CommitAppendResult, SessionStore};
 use crate::types::{AttachmentMeta, SessionEntry, SessionMeta};
 
 pub const GET_META: &str = "session::store::get-meta";
@@ -31,6 +31,7 @@ pub const DELETE_META: &str = "session::store::delete-meta";
 pub const LIST_METAS: &str = "session::store::list-metas";
 pub const GET_ENTRY: &str = "session::store::get-entry";
 pub const PUT_ENTRY: &str = "session::store::put-entry";
+pub const COMMIT_APPEND: &str = "session::store::commit-append";
 pub const LIST_ENTRIES: &str = "session::store::list-entries";
 pub const DELETE_ENTRIES: &str = "session::store::delete-entries";
 pub const GET_ACTIVE_LEAF: &str = "session::store::get-active-leaf";
@@ -71,6 +72,30 @@ pub struct EntryIdRequest {
 pub struct PutEntryRequest {
     pub session_id: String,
     pub entry: SessionEntry,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct CommitAppendRequest {
+    pub session_id: String,
+    pub entry: SessionEntry,
+    pub parent_explicit: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitAppendResponse {
+    pub entry: SessionEntry,
+    pub meta: SessionMeta,
+    pub committed: bool,
+}
+
+impl From<CommitAppendResult> for CommitAppendResponse {
+    fn from(result: CommitAppendResult) -> Self {
+        Self {
+            entry: result.entry,
+            meta: result.meta,
+            committed: result.committed,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -274,6 +299,24 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
             }
         })
         .description("Internal store protocol: write one SessionEntry.")
+        .metadata(json!({ "internal": true, "trace_hidden": true })),
+    );
+
+    let st = state.clone();
+    iii.register_function(
+        COMMIT_APPEND,
+        RegisterFunction::new_async(move |req: CommitAppendRequest| {
+            let st = st.clone();
+            async move {
+                let store = fs_store(&st).await?;
+                store
+                    .commit_append(&req.session_id, &req.entry, req.parent_explicit)
+                    .await
+                    .map(CommitAppendResponse::from)
+                    .map_err(storage_err)
+            }
+        })
+        .description("Internal store protocol: atomically commit one session append.")
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 

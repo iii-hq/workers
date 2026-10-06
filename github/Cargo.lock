@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "github"
-version = "0.4.0"
+version = "0.4.2-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "iii-http"
-version = "0.22.0"
+version = "0.22.2"
 dependencies = [
  "anyhow",
  "async-trait",

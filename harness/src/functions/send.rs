@@ -19,7 +19,8 @@ use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
 use crate::types::model::ThinkingLevel;
 use crate::types::output::OutputContract;
 use crate::types::turn::{
-    FunctionPolicy, IdemRecord, ParentLink, SkillContext, TurnOptions, TurnRecord, TurnStatus,
+    FunctionContractLedgerEntry, FunctionPolicy, IdemRecord, ParentLink, SkillContext, TurnOptions,
+    TurnRecord, TurnStatus,
 };
 
 /// `message` is either a plain string (sugar for a user text message) or a
@@ -221,8 +222,26 @@ async fn start_with_delivery_lock(
     req: SendRequest,
     caller_holds_target_session_lock: bool,
 ) -> Result<StartOutcome, HarnessError> {
+    if let Some(id) = req.session_id.as_deref() {
+        super::delete_session_tree::ensure_live(deps, id).await?;
+    }
     let cfg = deps.cfg().await;
     let session = deps.session().await;
+    if req
+        .session
+        .as_ref()
+        .and_then(|init| init.metadata.as_ref())
+        .and_then(Value::as_object)
+        .is_some_and(is_read_only)
+    {
+        return Err(read_only_error(
+            req.session_id.as_deref().unwrap_or("new session"),
+        ));
+    }
+    let existing_metadata = match req.session_id.as_deref() {
+        Some(session_id) => writable_session_metadata(&session, session_id).await?,
+        None => None,
+    };
     let idempotent = match &req.idempotency_key {
         Some(key) => crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?,
         None => None,
@@ -245,6 +264,13 @@ async fn start_with_delivery_lock(
             .is_some_and(|options| options.skills.is_some()),
     )? {
         return Ok(outcome);
+    }
+    if prev.is_none()
+        && existing_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.contains_key("external_source"))
+    {
+        validate_existing_session_start(&req)?;
     }
     // Resolve the agent profile (if named) BEFORE the model gate and session
     // creation: the profile's model is a fallback for a session-creating send,
@@ -337,6 +363,17 @@ async fn start_with_delivery_lock(
         .map(|s| (s.title.clone(), s.metadata.clone(), s.kind.clone()))
         .unwrap_or((None, None, None));
     let metadata = session_metadata_with_agent(metadata, agent.as_ref());
+    let topology = deps.topology.lock().await;
+    if let Some(parent) = metadata
+        .as_ref()
+        .and_then(|m| m.get("parent_session_id"))
+        .and_then(Value::as_str)
+    {
+        super::delete_session_tree::ensure_live(deps, parent).await?;
+    }
+    if let Some(id) = req.session_id.as_deref() {
+        super::delete_session_tree::ensure_live(deps, id).await?;
+    }
     let session_id = match &req.session_id {
         Some(id) => {
             let ensured = session
@@ -366,6 +403,7 @@ async fn start_with_delivery_lock(
         crate::budget::prepare_root(deps, &session_id, &mut options, prev.as_ref()).await,
     )?;
 
+    drop(topology);
     // Entry id: idempotent when a dedupe key is set.
     let entry_id = req
         .idempotency_key
@@ -467,6 +505,8 @@ pub async fn inject(
     entry_id: Option<&str>,
     origin: Option<&Value>,
 ) -> Result<StartOutcome, HarnessError> {
+    let session = deps.session().await;
+    writable_session_metadata(&session, session_id).await?;
     let cfg = deps.cfg().await;
 
     let options = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
@@ -495,6 +535,67 @@ pub async fn inject(
     )
     .await
     .map(|(outcome, _)| outcome)
+}
+
+fn is_read_only(metadata: &serde_json::Map<String, Value>) -> bool {
+    metadata.get("read_only").and_then(Value::as_bool) == Some(true)
+}
+
+/// Rejects a session whose metadata carries `read_only: true`, for callers that already hold it.
+pub(crate) fn ensure_writable(
+    metadata: &serde_json::Map<String, Value>,
+    session_id: &str,
+) -> Result<(), HarnessError> {
+    if is_read_only(metadata) {
+        return Err(read_only_error(session_id));
+    }
+    Ok(())
+}
+
+fn read_only_error(session_id: &str) -> HarnessError {
+    HarnessError::InvalidRequest(format!(
+        "session `{session_id}` is read-only and cannot accept messages"
+    ))
+}
+
+async fn writable_session_metadata(
+    session: &crate::clients::SessionClient,
+    session_id: &str,
+) -> Result<Option<serde_json::Map<String, Value>>, HarnessError> {
+    let metadata = session.metadata_of(session_id).await?;
+    if metadata.as_ref().is_some_and(is_read_only) {
+        return Err(read_only_error(session_id));
+    }
+    Ok(metadata)
+}
+
+fn validate_existing_session_start(req: &SendRequest) -> Result<(), HarnessError> {
+    if !req
+        .model
+        .as_deref()
+        .is_some_and(|model| !model.trim().is_empty())
+    {
+        return Err(HarnessError::InvalidRequest(
+            "harness::send starting an existing session with no prior turn requires an explicit `model`"
+                .into(),
+        ));
+    }
+    let root = req
+        .options
+        .as_ref()
+        .and_then(|options| options.metadata.as_ref())
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get(crate::types::turn::FS_SCOPE_KEY))
+        .and_then(Value::as_object)
+        .and_then(|scope| scope.get(crate::types::turn::FS_SCOPE_ROOT_KEY))
+        .and_then(Value::as_str);
+    if !root.is_some_and(|root| !root.trim().is_empty()) {
+        return Err(HarnessError::InvalidRequest(
+            "harness::send starting an existing session with no prior turn requires an explicit `options.metadata.fs_scope.root`"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -597,7 +698,10 @@ async fn try_enqueue(
     }
     validate_active_skill_request(true, d.skills_explicit)?;
 
-    let id = ids::new_queued_id();
+    let id = d
+        .entry_id
+        .map(str::to_string)
+        .unwrap_or_else(ids::new_queued_id);
     let entry_id = d
         .entry_id
         .map(str::to_string)
@@ -610,7 +714,10 @@ async fn try_enqueue(
         origin: d.origin.cloned(),
         queued_at: AgentMessage::now_ms(),
     };
+    let topology = deps.topology.lock().await;
+    super::delete_session_tree::ensure_live(deps, session_id).await?;
     crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms).await?;
+    drop(topology);
     // Fire-and-forget: lets clients (e.g. the console's queued strip) refresh
     // `harness::status` → `queued` without polling.
     deps.events
@@ -772,6 +879,7 @@ pub(crate) async fn deliver(
     options: TurnOptions,
     d: Delivery<'_>,
 ) -> Result<(StartOutcome, String), HarnessError> {
+    super::delete_session_tree::ensure_live(deps, session_id).await?;
     if d.skills_explicit {
         let active = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
             .await?
@@ -788,6 +896,8 @@ pub(crate) async fn deliver(
             session_id,
             d.caller_holds_session_lock,
             || async move {
+                let _topology = deps.topology.lock().await;
+                super::delete_session_tree::ensure_live(deps, session_id).await?;
                 let mut options = options;
                 let previous =
                     crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
@@ -804,11 +914,14 @@ pub(crate) async fn deliver(
         )
         .await;
     }
+    let topology = deps.topology.lock().await;
+    super::delete_session_tree::ensure_live(deps, session_id).await?;
     let appended = deps
         .session()
         .await
         .append(session_id, d.message, d.entry_id, None, d.origin)
         .await?;
+    drop(topology);
     // Every whole-record seed/merge writer uses the turn loop's session lock.
     // An in-turn spawn targeting its own session already holds that
     // non-reentrant lock; every other target acquires it here.
@@ -891,6 +1004,7 @@ fn build_options(
                 identity,
             ),
         },
+        system_prompt_ref: None,
         skills_prompt: None,
         skill_context: None,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
@@ -1181,6 +1295,7 @@ async fn seed_or_merge(
     lineage: &TurnLineage,
     skills_explicit: bool,
 ) -> Result<StartOutcome, HarnessError> {
+    super::delete_session_tree::ensure_live(deps, session_id).await?;
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     apply_default_filesystem_root(
         &mut options,
@@ -1303,6 +1418,34 @@ where
 /// loop's finalize-drain reseed path (`turn_loop::reseed_after_finalize_drain`)
 /// so a notification that parked during a turn's final step gets a turn to
 /// react to it, instead of being drained to the transcript and stranded.
+/// The contract ledger a new turn starts from: the prior turn's sources
+/// carry over, but their re-fetch counts are per turn.
+fn carried_contract_ledger(
+    prior: Option<&TurnRecord>,
+) -> BTreeMap<String, FunctionContractLedgerEntry> {
+    let mut ledger = prior
+        .map(|record| record.function_contract_ledger.clone())
+        .unwrap_or_default();
+    for entry in ledger.values_mut() {
+        entry.repeats = 0;
+    }
+    ledger
+}
+
+/// The function digests a new turn starts from. They are only comparable
+/// under the policy they were taken with: a send that changes
+/// `options.functions` starts unstamped (the next step stamps silently)
+/// instead of reading the functions the new policy denies as gone. The policy
+/// change itself reaches the model as the runtime-context notice.
+fn carried_functions_acknowledged(
+    prior: Option<&TurnRecord>,
+    options: &TurnOptions,
+) -> Option<Vec<u32>> {
+    prior
+        .filter(|record| record.options.functions == options.functions)
+        .and_then(|record| record.functions_acknowledged.clone())
+}
+
 pub(crate) async fn seed_new(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -1312,16 +1455,15 @@ pub(crate) async fn seed_new(
     message_preview: Option<String>,
     lineage: &TurnLineage,
 ) -> Result<StartOutcome, HarnessError> {
+    super::delete_session_tree::ensure_live(deps, session_id).await?;
     if let Some(prior) = prior {
         inherit_prior_filesystem_root(&mut options, &prior.options);
     }
     let lineage = lineage.for_seed(prior);
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
-    let functions_generation = prior.and_then(|record| record.functions_generation);
-    let function_contract_ledger = prior
-        .map(|record| record.function_contract_ledger.clone())
-        .unwrap_or_default();
+    let functions_acknowledged = carried_functions_acknowledged(prior, &options);
+    let function_contract_ledger = carried_contract_ledger(prior);
     let skill_ack = prior.and_then(|record| record.skill_ack.clone());
     let skills_started = prior.is_some_and(|record| record.skills_started);
     let record = TurnRecord {
@@ -1339,7 +1481,7 @@ pub(crate) async fn seed_new(
         calls: Default::default(),
         parent: lineage.parent.clone(),
         display_parent_session_id: lineage.display_parent_session_id.clone(),
-        functions_generation,
+        functions_acknowledged,
         function_contract_ledger,
         // Per turn: a new message may have changed what failed before.
         failed_calls: Default::default(),
@@ -1352,6 +1494,8 @@ pub(crate) async fn seed_new(
         dispatch_only_functions: lineage.dispatch_only_functions.clone(),
         validation_retries: 0,
         transient_resumes: 0,
+        ask_step: None,
+        ask_seen_step: None,
         created_at: now,
         updated_at: now,
     };
@@ -1392,6 +1536,16 @@ mod tests {
     use iii_helpers::observability::opentelemetry::Context;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
     use std::sync::Arc;
+
+    #[test]
+    fn a_reused_session_must_be_writable() {
+        let metadata = |value: Value| value.as_object().unwrap().clone();
+        assert!(ensure_writable(&metadata(serde_json::json!({})), "s").is_ok());
+        assert!(ensure_writable(&metadata(serde_json::json!({"read_only": false})), "s").is_ok());
+        let error =
+            ensure_writable(&metadata(serde_json::json!({"read_only": true})), "s").unwrap_err();
+        assert!(error.to_string().contains("read-only"), "{error}");
+    }
 
     fn failed_send_session_attribute(result: Result<(), HarnessError>) -> Option<String> {
         let exporter = InMemorySpanExporter::default();
@@ -1548,6 +1702,7 @@ mod tests {
         stale_recheck.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("frozen".into()),
+            baseline_ref: None,
         });
         stale_recheck.set_filesystem_root("/old");
         let mut incoming = stale_recheck.clone();
@@ -1870,6 +2025,7 @@ mod tests {
             max_transient_resumes: 1,
             preloaded_contracts: None,
             seeded_contracts: None,
+            system_prompt_ref: None,
         }
     }
 
@@ -1889,7 +2045,7 @@ mod tests {
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
-            functions_generation: Some(generation),
+            functions_acknowledged: Some(vec![generation as u32]),
             function_contract_ledger: Default::default(),
             failed_calls: Default::default(),
             skill_ack: Some(crate::types::turn::SkillAck {
@@ -1904,6 +2060,8 @@ mod tests {
             dispatch_only_functions: Vec::new(),
             validation_retries: 0,
             transient_resumes: 0,
+            ask_step: None,
+            ask_seen_step: None,
             created_at: 1,
             updated_at: 1,
         }
@@ -1932,6 +2090,31 @@ mod tests {
             lineage.dispatch_only_functions, record.dispatch_only_functions,
             "a reseeded child must not expose its injected grants as native tools"
         );
+    }
+
+    #[test]
+    fn a_new_turn_keeps_contract_sources_but_resets_their_repeat_counts() {
+        let mut prior = terminal_record_with_skill_state(1, true);
+        let source = FunctionContractLedgerEntry {
+            contract_digest: "digest".into(),
+            source_function_call_id: "call_1".into(),
+            source_content_digest: "content".into(),
+            eligible: true,
+            repeats: 3,
+        };
+        prior
+            .function_contract_ledger
+            .insert("worker::function".into(), source.clone());
+
+        let carried = carried_contract_ledger(Some(&prior));
+        assert_eq!(
+            carried["worker::function"],
+            FunctionContractLedgerEntry {
+                repeats: 0,
+                ..source
+            }
+        );
+        assert!(carried_contract_ledger(None).is_empty());
     }
 
     #[test]
@@ -1999,13 +2182,33 @@ mod tests {
     }
 
     #[test]
+    fn function_acknowledgements_carry_only_under_the_same_policy() {
+        let prior = terminal_record_with_skill_state(2, true);
+        let same = prior.options.clone();
+        assert_eq!(
+            super::carried_functions_acknowledged(Some(&prior), &same),
+            Some(vec![2])
+        );
+        let narrowed = options_with(Some(FunctionPolicy {
+            allow: vec!["state::get".into()],
+            ..Default::default()
+        }));
+        assert_ne!(narrowed.functions, prior.options.functions);
+        assert_eq!(
+            super::carried_functions_acknowledged(Some(&prior), &narrowed),
+            None
+        );
+        assert_eq!(super::carried_functions_acknowledged(None, &same), None);
+    }
+
+    #[test]
     fn terminal_recheck_is_the_seed_source_after_an_active_turn_finishes() {
         let stale = terminal_record_with_skill_state(1, false);
         let final_record = terminal_record_with_skill_state(2, true);
 
         let selected = latest_seed_record(&stale, Some(&final_record));
 
-        assert_eq!(selected.functions_generation, Some(2));
+        assert_eq!(selected.functions_acknowledged, Some(vec![2]));
         assert_eq!(selected.skill_ack.as_ref().unwrap().generation, 2);
         assert!(selected.skills_started);
         assert!(std::ptr::eq(selected, &final_record));
@@ -2018,11 +2221,13 @@ mod tests {
         initial.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("old baseline".into()),
+            baseline_ref: None,
         });
         let mut terminal = terminal_record_with_skill_state(2, true);
         terminal.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["new".into()]),
             baseline: Some("new baseline".into()),
+            baseline_ref: None,
         });
         let mut prepared = initial.options.clone();
 
@@ -2042,6 +2247,7 @@ mod tests {
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["stale".into()]),
             baseline: Some("stale baseline".into()),
+            baseline_ref: None,
         });
         prepared.skills_prompt = Some("stale legacy body".into());
 
@@ -2061,11 +2267,13 @@ mod tests {
         initial.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["prior".into()]),
             baseline: None,
+            baseline_ref: None,
         });
         let mut terminal = terminal_record_with_skill_state(2, true);
         terminal.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["prior".into()]),
             baseline: Some("baseline frozen by the completed turn".into()),
+            baseline_ref: None,
         });
         let mut prepared = initial.options.clone();
         prepared.skill_context.as_mut().unwrap().filter = None;
@@ -2078,6 +2286,7 @@ mod tests {
             Some(crate::types::turn::SkillContext {
                 filter: None,
                 baseline: Some("baseline frozen by the completed turn".into()),
+                baseline_ref: None,
             })
         );
         assert_eq!(prepared.skills_prompt, terminal.options.skills_prompt);
@@ -2091,6 +2300,7 @@ mod tests {
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["fresh".into()]),
             baseline: Some("fresh baseline".into()),
+            baseline_ref: None,
         });
         let expected = prepared.clone();
 
@@ -2108,6 +2318,7 @@ mod tests {
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: None,
             baseline: None,
+            baseline_ref: None,
         });
 
         let error = rebase_terminal_skill_options(&mut prepared, Some(&terminal), true)
@@ -2126,6 +2337,7 @@ mod tests {
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: None,
             baseline: None,
+            baseline_ref: None,
         });
         let appended = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let append_observer = appended.clone();
@@ -2297,6 +2509,7 @@ mod tests {
         previous.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["one".into()]),
             baseline: Some("frozen".into()),
+            baseline_ref: None,
         });
         assert_eq!(
             select_skill_context(Some(&previous), None, &view).unwrap(),
@@ -2368,11 +2581,13 @@ mod tests {
         active.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("active frozen baseline".into()),
+            baseline_ref: None,
         });
         let mut requested = options_with(None);
         requested.skill_context = Some(crate::types::turn::SkillContext {
             filter: None,
             baseline: Some("stale request baseline".into()),
+            baseline_ref: None,
         });
 
         assert!(merge_explicit_skill_filter(&mut active, &requested, true).unwrap());
@@ -2380,7 +2595,8 @@ mod tests {
             active.skill_context,
             Some(crate::types::turn::SkillContext {
                 filter: None,
-                baseline: Some("active frozen baseline".into())
+                baseline: Some("active frozen baseline".into()),
+                baseline_ref: None,
             })
         );
     }

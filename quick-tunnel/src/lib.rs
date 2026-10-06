@@ -3,4 +3,5 @@ pub mod api;
 pub mod config;
 pub mod manager;
 pub mod parser;
+pub mod prerequisites;
 pub mod service;

@@ -165,7 +165,7 @@ async fn main() -> Result<()> {
     queue::ensure_turn_queue(&iii)
         .await
         .map_err(anyhow::Error::msg)
-        .context("ensuring the harness-turn queue")?;
+        .context("ensuring harness turn and deletion queues before recovery")?;
 
     // Bind lifecycle triggers and retain their handles for the worker lifetime.
     // The sweep binding is hot-reloaded when sweep_expression changes.
@@ -178,6 +178,9 @@ async fn main() -> Result<()> {
     configuration::register_config_trigger(&iii, cell, handles)
         .context("registering the configuration change trigger")?;
 
+    harness::functions::delete_session_tree::recover(&deps)
+        .await
+        .context("recovering durable session deletions")?;
     deps.events.emit_ready().await;
     tracing::info!(
         "harness ready: harness::* functions + subscriptions + turn events + hook points + reactive function-registry cache"

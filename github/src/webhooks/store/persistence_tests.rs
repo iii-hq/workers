@@ -337,6 +337,21 @@ fn seen_and_terminal_counts_are_bounded() {
     assert_eq!(data.watches.len(), sql::TERMINAL_LIMIT + 1);
 }
 #[test]
+fn reopening_waits_out_brief_lock_contention_but_a_live_owner_still_wins() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.sqlite3");
+    // A live owner keeps the installation: a second open is refused.
+    let owner = Store::open(&path).unwrap();
+    assert!(Store::open(&path).is_err());
+    // Released shortly after (like a child between fork and exec): open succeeds.
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        drop(owner);
+    });
+    Store::open(&path).unwrap();
+    release.join().unwrap();
+}
+#[test]
 fn mutable_iteration_tracks_writes_and_failed_mutation_keeps_old_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("store.sqlite3")).unwrap();

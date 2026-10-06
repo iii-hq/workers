@@ -1,6 +1,10 @@
+// @vitest-environment jsdom
+
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { act } from 'react'
+import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { FileDiff, resolveFileDiffEditState } from './FileDiff'
@@ -71,6 +75,53 @@ describe('FileDiff', () => {
         themeType: 'dark',
       },
     })
+  })
+
+  it('keys a read-only diff on its text so changed contents render again', () => {
+    renderToStaticMarkup(<FileDiff oldFile={oldFile} newFile={newFile} />)
+    renderToStaticMarkup(
+      <FileDiff
+        oldFile={oldFile}
+        newFile={{ ...newFile, contents: 'const value = 3\n' }}
+      />,
+    )
+
+    const keys = renderedProps.map(
+      (props) => (props.newFile as { cacheKey?: string }).cacheKey,
+    )
+    expect(keys[0]).toBeDefined()
+    expect(keys[0]).not.toBe(keys[1])
+  })
+
+  it('hands the renderer the same inputs when a parent re-renders with equal values', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    const root = createRoot(document.createElement('div'))
+    const render = (ignoreWhitespace: boolean) =>
+      act(async () =>
+        root.render(
+          <FileDiff
+            oldFile={{ ...oldFile }}
+            newFile={{ ...newFile }}
+            ignoreWhitespace={ignoreWhitespace}
+          />,
+        ),
+      )
+
+    await render(false)
+    await render(false)
+    const [first, second] = renderedProps
+    // Pierre memoizes the parse on these identities: equal values reuse it.
+    expect(second.oldFile).toBe(first.oldFile)
+    expect(second.newFile).toBe(first.newFile)
+    expect(second.options).toBe(first.options)
+
+    await render(true)
+    const third = renderedProps[2] as { options: Record<string, unknown> }
+    expect(third.options).not.toBe(first.options)
+    expect(third.options.parseDiffOptions).toEqual({ ignoreWhitespace: true })
+
+    await act(async () => root.unmount())
+    vi.unstubAllGlobals()
   })
 
   it('keeps the diff read-only while an explicitly requested editor loads', () => {

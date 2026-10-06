@@ -130,7 +130,13 @@ Two adapters, selected by an `adapter` block (a `name` plus a nested
 - **`fs`** (default) — one append-only JSONL file per session under
   `data_dir` (`<encoded_session_id>.jsonl`): typed `meta` / `entry` /
   `leaf` records, replayed last-wins on startup, file removed on
-  session delete. This is the durable, single-instance setup.
+  session delete. This is the durable, single-instance setup. An append
+  is one `append` record (entry, leaf and metadata together) with a
+  `commit` marker per committed entry; a build from before these record
+  types skips them as malformed lines, so **do not roll back to an older
+  session-manager once this version has written to a `data_dir`**: the
+  entries appended since would not replay, and older metadata would
+  return without an error.
 - **`bridge`** — this instance keeps all domain logic (idempotency,
   revisions, branching, locks) but stores through a **main** instance
   running its own session-manager (`adapter name: fs`) on another iii

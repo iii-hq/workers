@@ -1,6 +1,6 @@
-//! The worker loads its checkpoints only while the judge hub's default
-//! provider is laya or the hub preloads every provider, and releases them
-//! when neither holds.
+//! The worker's functions are registered whatever the judge hub selects: a
+//! request naming laya loads its checkpoints on demand, and the hub's
+//! selection only pins them loaded, never unregisters anything.
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::{
@@ -23,7 +23,7 @@ const HUB_ID: &str = "hub-selection-test";
 const CHANGED: &str = "judge-laya::on-judge-config-change";
 
 #[tokio::test]
-async fn checkpoints_load_only_while_the_hub_selects_laya() {
+async fn a_request_loads_the_checkpoints_while_another_provider_is_the_default() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("ws://{}", listener.local_addr().unwrap());
     let hub = Arc::new(Mutex::new(json!({"provider": "typesafe"})));
@@ -112,65 +112,59 @@ async fn checkpoints_load_only_while_the_hub_selects_laya() {
             && f["function_id"] == CHANGED
             && f["config"]["configuration_id"] == HUB_ID
     };
-    // 1. The hub names typesafe: the worker follows the hub but loads nothing.
-    assert!(
-        expect(
-            &mut frames,
-            Duration::from_secs(10),
-            bound,
-            registered("judge-laya::evaluate")
-        )
-        .await,
-        "the worker binds the hub's configuration"
-    );
-    assert!(
-        !expect(
-            &mut frames,
-            Duration::from_secs(2),
-            registered("judge-laya::evaluate"),
-            |_| false
-        )
-        .await,
-        "no judge functions while laya is not the default"
-    );
-    // 2. The hub switches to laya: the checkpoints load and the functions register.
-    *hub.lock().unwrap() = json!({"provider": "laya"});
+    // 1. The hub names typesafe: the functions register anyway, and the worker
+    //    follows the hub.
+    let (mut evaluate, mut following) = (false, false);
+    timeout(Duration::from_secs(10), async {
+        while !(evaluate && following) {
+            let frame = frames.recv().await.expect("worker stays connected");
+            evaluate |= registered("judge-laya::evaluate")(&frame);
+            following |= bound(&frame);
+        }
+    })
+    .await
+    .expect("judge-laya::evaluate registers and the hub is followed while laya is not the default");
+    // 2. A request naming laya loads the checkpoints and answers.
+    send_tx
+        .send(json!({"type":"invokefunction","invocation_id":"00000000-0000-0000-0000-000000000201","function_id":"judge-laya::models::list","data":{"timeout_ms":20000,"_caller_worker_id":"selection-test"}}))
+        .unwrap();
+    let answered = |f: &Value| {
+        f["type"] == "invocationresult"
+            && f["invocation_id"] == "00000000-0000-0000-0000-000000000201"
+    };
+    let mut reply = Value::Null;
+    timeout(Duration::from_secs(20), async {
+        while let Some(frame) = frames.recv().await {
+            if answered(&frame) {
+                reply = frame;
+                break;
+            }
+        }
+    })
+    .await
+    .expect("models::list answers once the checkpoints load");
+    assert_eq!(reply["result"]["status"], "ok", "{reply}");
+    // 3. The hub's selection moves (laya, preload_all, away): nothing unregisters.
     let changed = |n: u32| json!({"type":"invokefunction","invocation_id":format!("00000000-0000-0000-0000-00000000010{n}"),"function_id":CHANGED,"data":{}});
-    send_tx.send(changed(1)).unwrap();
-    assert!(
-        expect(
-            &mut frames,
-            Duration::from_secs(20),
-            registered("judge-laya::evaluate"),
-            |_| false
-        )
-        .await,
-        "judge-laya::evaluate registers once laya is the default"
-    );
-    // 3. The hub moves away but preloads every provider: laya stays loaded.
-    *hub.lock().unwrap() = json!({"provider": "semif", "preload_all": true});
-    send_tx.send(changed(2)).unwrap();
-    assert!(
-        !expect(
-            &mut frames,
-            Duration::from_secs(2),
-            |f| f["type"] == "unregisterfunction",
-            |_| false
-        )
-        .await,
-        "preload_all keeps laya loaded while another provider is the default"
-    );
-    // 4. Preloading off: the functions unregister (and the model is released).
-    *hub.lock().unwrap() = json!({"provider": "semif"});
-    send_tx.send(changed(3)).unwrap();
-    assert!(
-        expect(
-            &mut frames,
-            Duration::from_secs(10),
-            |f| f["type"] == "unregisterfunction" && f["id"] == "judge-laya::evaluate",
-            |_| false
-        )
-        .await,
-        "judge-laya::evaluate unregisters when the hub moves away"
-    );
+    for (n, selection) in [
+        json!({"provider": "laya"}),
+        json!({"provider": "semif", "preload_all": true}),
+        json!({"provider": "semif"}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        *hub.lock().unwrap() = selection;
+        send_tx.send(changed(n as u32 + 1)).unwrap();
+        assert!(
+            !expect(
+                &mut frames,
+                Duration::from_secs(2),
+                |f| f["type"] == "unregisterfunction",
+                |_| false
+            )
+            .await,
+            "a hub selection change never unregisters the judge functions"
+        );
+    }
 }

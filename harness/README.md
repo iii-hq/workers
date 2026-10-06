@@ -78,7 +78,9 @@ with the optional [`approval-gate`](https://github.com/iii-hq/workers/tree/main/
 Before dispatch, arguments that fail the target's schema are reconciled: stringified JSON the
 schema rejects is parsed. When the optional
 [`judge`](https://github.com/iii-hq/workers/tree/main/judge) worker is deployed, it also settles
-misnamed keys, off-enum values and unknown arguments. Every repair is noted in the call's result.
+misnamed keys, off-enum values and unknown arguments; it sees the arguments with secret-keyed
+values (`password`, `token`, `api_key`, `authorization`, …) masked and long strings cut. Every
+repair is noted in the call's result.
 
 The full function reference (every `harness::*` id and its request/response
 schema) lives in the code and `iii worker info harness`.
@@ -426,20 +428,129 @@ Harness default without consulting session or runtime state. Static
 `inject_prompt`; request-dependent hook functions and compaction are not run
 by the read-only preview and may change content when the prompt is sent.
 
+The read-only `harness::context-policy` surface returns whether the destination model permits aged function-result pruning. Console context previews must use this response rather than maintaining a model list locally; failures or malformed responses are not a permission to infer a policy.
+
+## Delete a session subtree
+
+Console/operator callers use `harness::delete-session-tree { session_id }`, not
+raw session deletion. The selected session is the root; parents and siblings
+remain. The command returns `{ operation_id, attempt, session_id, status,
+deleted_session_ids, error? }` quickly. Subscribe to
+`harness::session-tree-deletion { session_id?, operation_id? }` first, read
+`harness::delete-session-tree-status { operation_id }` once for race recovery,
+then wait for `completed` or `failed`. Pending/completed requests are idempotent;
+failed requests retry under the same operation id with an incremented required
+`attempt` (starting at 1). Correlate terminal events by `operation_id` **and**
+`attempt`, ignoring terminal events from older attempts. Pending/completed
+repeats and recovery retain the attempt.
+
+The durable queue operation closes admission, cancels every durable descendant,
+waits for terminal turns/in-flight tools, delivers one consolidated message to
+the surviving direct parent, and deletes child-first. Unconfirmed work fails
+closed with data retained. See [recovery, safety boundaries and tests](architecture/session-tree-deletion.md).
+
+## Asking the user (`harness::ask`)
+
+`harness::ask` lets the model put a decision with discrete options to the user
+as a clickable card instead of a question written in markdown. It is
+registered in the catalog like `harness::spawn`, but it is a harness control
+like `submit_result`: the turn loop answers it in-process, never dispatches it
+to a target, and never parks the turn. A direct call outside a turn fails with
+`harness/invalid_request: harness::ask only works inside an agent turn: call it
+from a model turn, not directly`.
+
+```json
+{ "questions": [ {
+    "header": "Approach",
+    "question": "When the agent asks, does the turn pause or end?",
+    "multi_select": false,
+    "options": [
+      { "label": "Pause the turn", "description": "Like AskUserQuestion" },
+      { "label": "End the turn", "description": "The answer becomes the next message" }
+    ] } ] }
+```
+
+- 1–4 questions per call and 2–4 options per question.
+- `header` is 1–16 characters and `question` must not be empty.
+- `label` is 1–80 characters and unique within its question.
+- `header` and `label` must not contain line breaks (the answer is one line
+  per question).
+- Limits count characters, not bytes. A value that is only whitespace counts
+  as empty, and labels are compared after trimming.
+- `multi_select` defaults to `false`; `description` is optional.
+- The UI adds a free-text "Other" choice, so the model must not include one.
+
+An accepted ask is answered at once with a function result whose `details` is
+the card:
+
+```json
+{ "status": "awaiting_answer", "question_id": "<function call id>",
+  "session_id": "…", "turn_id": "…", "questions": [ … ] }
+```
+
+In `questions`, `multi_select` is always present and `description` is omitted
+when absent. The model reads one text block telling it the questions are shown,
+the answer arrives as the user's next message, and it must not repeat them in
+text.
+
+**The turn ends on the question.** A step that accepted an ask finalizes the
+turn without another model call, through the same path as a text-only step:
+`completed`, with the step's assistant text as the result. Three things change
+that:
+
+- A `submit_result` in the same step is handled first.
+- A user message that arrived during the step (steering or a queued message)
+  advances the turn as usual.
+- A step whose other calls parked waits for them; the resumed step calls the
+  model again.
+
+The accepted step is recorded on the turn record (`ask_step`), so a
+redelivered step still ends on the question and still refuses a second ask.
+
+Refusals come back as an `is_error` result, and the turn continues so the model
+can react:
+
+| Case | Result text |
+|---|---|
+| A sub-agent (depth > 0) or a turn with a JSON output contract | `harness::ask needs a human to answer and none is attached to this turn (sub-agent or structured-output turn); report blocked with your question instead` |
+| A second ask in the same step | `only one harness::ask per step; put all your questions (up to 4) in one call` |
+| Arguments that do not parse | `invalid harness::ask arguments: <serde error>` |
+| A broken limit | the field path and the limit, e.g. `questions[1].header must be at most 16 characters (got 17)` |
+
+**Policy and hooks.** The session's allow/deny policy still applies: a denied
+ask gets the usual `policy_denied` result. The repeated-failure breaker and
+argument reconciliation still apply too. `pre_trigger` and `post_trigger` hooks
+are **not** consulted. An approval gate could only hold the ask, and a held
+call's release goes to the registered handler, which cannot show the card.
+
+**Answering.** The answer is simply the user's next message, so any client
+that can send one can answer. The console renders the call as a card: radio
+buttons or checkboxes, each option's description, an "Other" field and Send.
+Send submits the answer through the composer, one line per question:
+
+- a single choice sends `Approach: End the turn`;
+- a multi-select sends `Channels: Console, Slack`;
+- "Other" sends the typed text.
+
+The card stays open while `harness::status` reports the same `turn_id`. Once
+the session has moved to a later turn, it becomes read-only and is marked
+answered. Typing a reply in the composer instead works the same way.
+
 ## Custom trigger types
 
-The harness emits two async orchestration trigger types siblings and consumers
+The harness emits async orchestration trigger types siblings and consumers
 bind to, and registers five synchronous hook points operator-trusted siblings
 plug into in-path. Bind with the standard two-step pattern.
 
 | Trigger type | Kind | Fires / runs |
 |---|---|---|
+| `harness::session-tree-deletion` | async event | A subtree deletion snapshot; config `{ session_id?, operation_id? }`. Terminal statuses are `completed` and `failed`. |
 | `harness::turn-started` | async event | A turn began executing (first loop step). Payload: `session_id`, `turn_id`, `timestamp`, `depth` (0 = top level), `message_preview` (first characters of the message that started the turn, when there is one), and `parent` / `parent_session_id` for sub-agents. Worker-bindable via direct engine registration only — the agent path (`engine::register_trigger`) refuses harness-internal types in every shape. |
 | `harness::turn-completed` | async event | A turn reached a terminal status (`completed` / `cancelled` / `failed`), carrying the result and `terminal: bool` — `false` while the session still owns an armed wake (a one-shot notify), meaning a later turn carries the run's real outcome; consumers finalize a logical exchange only on `terminal: true`. Worker-bindable only, same as above. |
 | `harness::hook::pre-turn` | sync hook | First step of a turn, before any model spend. May veto. |
 | `harness::hook::pre-generate` | sync hook | After context assembly, before generation. May extend the system prompt, append messages, or veto. A static-only hook may publish its exact contribution as trigger metadata `inject_prompt`; the harness appends it directly and skips the compatibility handler. |
 | `harness::hook::post-generate` | sync hook | After the final assistant message. Observe only. |
-| `harness::hook::pre-trigger` | sync hook | After the allow/deny policy passes, before the target runs. May deny, hold, or rewrite arguments. |
+| `harness::hook::pre-trigger` | sync hook | After the allow/deny policy passes, before the target runs. May deny, hold, or rewrite arguments. Never consulted for `harness::ask`, which the turn loop answers itself. |
 | `harness::hook::post-trigger` | sync hook | After the target returns, before the result is persisted. May rewrite the result. |
 
 Event configs accept `{ session_id?, parent_session_id? }`; hook configs accept

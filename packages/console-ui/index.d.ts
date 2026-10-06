@@ -66,6 +66,20 @@ export interface PanelOpenRequest<T extends JsonValue = JsonValue> {
   context?: T
 }
 
+/** A workspace screen placed from this browser, in the tab on screen. */
+export interface ScreenOpenRequest {
+  /** `traces`, `workers`, `chat`, `chat:<session-id>`, or `ext:<page-id>`. */
+  screen: string
+  /** Screen the new column goes beside; a named one is looked for in every
+   *  tab, the one on screen first. Defaults to chat. */
+  relativeTo?: string
+  /** Side of `relativeTo`: `right` (default) or `left`. */
+  direction?: 'left' | 'right'
+  /** Widths of the tab the screen is placed in, one positive number per
+   *  column; ignored when the screen is reused or the count does not match. */
+  sizes?: number[]
+}
+
 /** Props the host passes to every registered page render component. */
 export interface PageRenderProps {
   panelSide: PanelSide
@@ -414,6 +428,55 @@ export interface ComposerActionRegistration {
   render: React.ComponentType<ComposerActionProps>
 }
 
+/**
+ * Props a composer control receives: the active session, its live turn
+ * state, and that session's metadata with a writer. The console persists
+ * `setMetadata` through its own session-metadata writer (drafts included:
+ * the keys land when the session is created), so the control never calls
+ * `session::set-meta` itself.
+ */
+export interface ComposerControlProps {
+  /** Active conversation id (a draft's id until its first send). */
+  sessionId: string
+  isStreaming: boolean
+  /** The session's stored metadata. */
+  metadata: Readonly<Record<string, unknown>>
+  /** Merge keys into the metadata; an `undefined` value removes the key. */
+  setMetadata(patch: Record<string, unknown>): void
+  /**
+   * The session's working directory; `null` when it has none. A control
+   * moves it with `host.chat.requestWorkingDirectoryChange`. Absent on
+   * consoles that predate it.
+   */
+  workingDir?: string | null
+  /**
+   * The composer's options are locked, as the folder beside them is: a turn
+   * is running or the harness is unavailable. Absent on consoles that
+   * predate it; `isStreaming` is the fallback.
+   */
+  locked?: boolean
+}
+
+/**
+ * A compact per-session control rendered in the composer: beside the model
+ * picker (a value that applies to the session from its next turn on, the way
+ * the model does), or with `placement: 'project'` in the working-directory
+ * strip after the folder. Duplicate `id`: last registration wins.
+ */
+export interface ComposerControlRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType<ComposerControlProps>
+  /**
+   * `footer` (the default) sits beside the model picker. `project` sits in
+   * the working-directory strip above the composer, right after the folder,
+   * for what belongs to that folder (its git branch); it shows only where
+   * the console shows that strip. Consoles that predate it render every
+   * control in the footer.
+   */
+  placement?: 'footer' | 'project'
+}
+
 /** Props for a worker-owned annotation detail rendered in the transcript. */
 export interface TranscriptAnnotationProps {
   version: number
@@ -455,6 +518,15 @@ export interface Host {
   uiClasses: UiClasses
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
+  /**
+   * Import a `console:module` asset on demand, e.g.
+   * `host.importModule<typeof import('./xterm')>('ide/xterm.js')`. The
+   * console serves modules but never imports them at mount, so code only
+   * one view needs stays out of every tab's first load. Resolves to the
+   * module namespace; rejects when nothing is served at `/ui/<path>`.
+   * Absent on older consoles; feature-detect.
+   */
+  importModule?<T = unknown>(path: string): Promise<T>
   pages: { register(page: PageRegistration): () => void }
   /**
    * The console's remembered working directories, most recent first — the
@@ -498,6 +570,14 @@ export interface Host {
   panels?: {
     /** Place/reuse a registered page and deliver its worker-defined context. */
     open(request: PanelOpenRequest): void
+    /**
+     * Place/reuse any workspace screen (a built-in one like `traces`
+     * included) from this browser, in the tab on screen: optimistic, with no
+     * bus round trip, unlike `console::workspace::open`. Throws on an unknown
+     * screen. Optional on consoles that predate it: feature-detect with
+     * `host.panels?.openScreen`.
+     */
+    openScreen?(request: ScreenOpenRequest): void
   }
   /**
    * Optional on consoles that predate floating overlays. Feature-detect with
@@ -547,6 +627,8 @@ export interface Host {
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
     /** Optional on consoles that predate the composer toolbar slot. */
     registerComposerAction?(action: ComposerActionRegistration): () => void
+    /** Optional on consoles that predate the composer footer control slot. */
+    registerComposerControl?(control: ComposerControlRegistration): () => void
     registerTranscriptRenderer?(renderer: TranscriptRendererRegistration): () => void
     /** Optional on consoles that predate worker-driven conversation switching. */
     selectConversation?(sessionId: string): void
@@ -612,6 +694,7 @@ export interface UiClasses {
   readonly treeItemTrailing: 'iii-ui-tree-item__trailing'
   readonly treeItemMeta: 'iii-ui-tree-item__meta'
   readonly treeItemAction: 'iii-ui-tree-item__action'
+  readonly treeItemActions: 'iii-ui-tree-item__actions'
   readonly card: 'iii-ui-card'
   readonly cardHeader: 'iii-ui-card__header'
   readonly cardBody: 'iii-ui-card__body'
@@ -669,6 +752,8 @@ export interface UiClasses {
   readonly motionControl: 'iii-ui-motion-control'
   readonly motionPanel: 'iii-ui-motion-panel'
   readonly motionOverlay: 'iii-ui-motion-overlay'
+  /** A page of a picker that slides between pages: `data-active`, `--picker-page-offset`. */
+  readonly motionPickerPage: 'iii-ui-motion-picker-page'
   readonly eyebrow: 'iii-ui-eyebrow'
   readonly toolbar: 'iii-ui-toolbar'
   readonly toolbarEnd: 'iii-ui-toolbar__end'
@@ -949,6 +1034,9 @@ export interface DropdownMenuContentProps extends React.HTMLAttributes<HTMLDivEl
   side?: 'top' | 'right' | 'bottom' | 'left'
   align?: 'start' | 'center' | 'end'
   sideOffset?: number
+  /** As the menu opens and moves focus into itself; `preventDefault()`
+      keeps that focus from its first item, to focus another control. */
+  onOpenAutoFocus?(event: Event): void
 }
 export declare const DropdownMenuContent: React.ComponentType<DropdownMenuContentProps>
 export interface DropdownMenuItemProps extends React.HTMLAttributes<HTMLDivElement> {
@@ -1447,6 +1535,9 @@ export interface TabsTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonE
 export declare const TabsTrigger: React.ComponentType<TabsTriggerProps>
 export interface TabsContentProps extends React.HTMLAttributes<HTMLDivElement> {
   value: string
+  /** Keep the panel mounted while another tab shows (its state, scroll and
+      selection survive); `[data-state="inactive"]` then marks it for hiding. */
+  forceMount?: true
 }
 export declare const TabsContent: React.ComponentType<TabsContentProps>
 
@@ -1651,6 +1742,32 @@ export interface ModelPickerProps {
 /** The Console's responsive searchable model catalog picker. */
 export declare const ModelPicker: React.ComponentType<ModelPickerProps>
 
+export interface SecretKeyFieldProps {
+  /** Secret name — also the environment variable the key is looked up under. */
+  name: string
+  /** The field's configuration value: `secret://NAME`, `${VAR}`, a literal, or empty. */
+  value: string | undefined
+  /** Write the field: a `secret://` reference, or `undefined` to clear it. */
+  onChange: (next: string | undefined) => unknown
+  /** Workers allowed to read the key. */
+  consumers: readonly string[]
+  label?: string
+  /** What the consumer reports about the credential (llm-router's provider status). */
+  status?: { connected?: boolean; source?: string; error?: string; checking?: boolean; detail?: string }
+  keysUrl?: string
+  disabled?: boolean
+  className?: string
+}
+/**
+ * One credential, kept the way the Console keeps credentials: encrypted in
+ * the `secrets` worker, with only `secret://NAME` in configuration. Reuses a
+ * key found on the machine, keeps a stored one or takes a pasted one; moves a
+ * plain-text or `${VAR}` value into the store; adds the secrets worker when
+ * it is missing. Read it from `host.components.SecretKeyField` and fall back
+ * to a plain input when absent: Consoles before it do not have it.
+ */
+export declare const SecretKeyField: React.ComponentType<SecretKeyFieldProps>
+
 export interface WorkerConfigurationDialogProps {
   /** Which worker to open in global Settings; `null` does nothing. */
   configurationId: string | null
@@ -1662,6 +1779,25 @@ export interface WorkerConfigurationDialogProps {
  * `configurationId` in `host.pages.register` instead.
  */
 export declare const WorkerConfigurationDialog: React.ComponentType<WorkerConfigurationDialogProps>
+
+export interface WorkerConfigurationPanelProps {
+  /** The configuration entry to edit (a worker's `<worker>::configuration-id`); `null` renders nothing. */
+  configurationId: string | null
+  /** Unsaved edits appeared or went away: guard leaving the panel. */
+  onDirtyChange?: (dirty: boolean) => void
+  /** A save landed; receives the stored value. */
+  onSaved?: (value: JsonValue) => void
+  className?: string
+}
+/**
+ * One worker's settings inline, where the choice is made (a picker page):
+ * the Settings editor — the worker's registered form, validation and the
+ * save bar — without the Settings chrome; the surface gives the title and
+ * the way back. It fills a flex column and scrolls inside. Read it from
+ * `host.components.WorkerConfigurationPanel` and fall back to
+ * `WorkerConfigurationDialog` when absent: Consoles before it lack it.
+ */
+export declare const WorkerConfigurationPanel: React.ComponentType<WorkerConfigurationPanelProps>
 
 export interface DirectoryPickerProps {
   /** The chosen directory (absolute, as the shell worker echoed it). */

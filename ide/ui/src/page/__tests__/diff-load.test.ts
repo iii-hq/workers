@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { createTurnCache, loadDiffContents, loadTurnDiff, preImageBody, turnFileFor } from '../diff-load'
+import {
+  createTurnCache,
+  loadDiffContents,
+  loadRevisionFile,
+  loadTurnDiff,
+  preImageBody,
+  sameDiffContents,
+  turnFileFor,
+} from '../diff-load'
 import type { SessionTurn } from '../turns'
 
 function exec(overrides: Partial<{ exit_code: number; stdout: string; stderr: string }> = {}) {
@@ -109,6 +117,29 @@ describe('loadDiffContents', () => {
     )
   })
 
+  it('reads a commit against its parent, a rename from its source, and nothing before a root commit', async () => {
+    const specs: string[] = []
+    const { host } = hostWith({
+      'shell::exec': ({ args }) => {
+        const spec = (args as string[])[1]
+        specs.push(spec)
+        if (spec === 'p1:old/a.ts') return exec({ stdout: 'before\n' })
+        if (spec === 'c1:./a.ts') return exec({ stdout: 'after\n' })
+        return exec({ exit_code: 128, stderr: `fatal: path 'a.ts' does not exist in '${spec.split(':')[0]}'` })
+      },
+    })
+    const renamed = { type: 'commit', sha: 'c1', parent: 'p1', from: 'old/a.ts' } as const
+    expect(await loadDiffContents(host, '/r', 'a.ts', renamed, noTurns)).toEqual({
+      oldContents: 'before\n',
+      newContents: 'after\n',
+    })
+    expect(await loadDiffContents(host, '/r', 'a.ts', { type: 'commit', sha: 'c1', parent: null }, noTurns)).toEqual({
+      oldContents: '',
+      newContents: 'after\n',
+    })
+    expect(specs).toEqual(['p1:old/a.ts', 'c1:./a.ts', 'c1:./a.ts'])
+  })
+
   it('reads recorded changes through coder::change-diff', async () => {
     const { host } = hostWith({
       'coder::change-diff': () => ({ path: '/r/a.ts', old_contents: 'a', new_contents: 'b', is_binary: false }),
@@ -117,6 +148,23 @@ describe('loadDiffContents', () => {
       oldContents: 'a',
       newContents: 'b',
     })
+  })
+})
+
+describe('loadRevisionFile', () => {
+  it('reads the file at the commit from the root, and says when the commit lacks it', async () => {
+    const { host, trigger } = hostWith({
+      'shell::exec': ({ args }) =>
+        (args as string[])[1] === 'abc1234:./../lib/x.ts'
+          ? exec({ stdout: 'then\n' })
+          : exec({ exit_code: 128, stderr: "fatal: path 'gone.ts' does not exist in 'abc1234'" }),
+    })
+    expect(await loadRevisionFile(host, '/r/app', '../lib/x.ts', 'abc1234')).toBe('then\n')
+    expect(trigger).toHaveBeenCalledWith(
+      'shell::exec',
+      expect.objectContaining({ args: ['show', 'abc1234:./../lib/x.ts'], cwd: '/r/app' }),
+    )
+    await expect(loadRevisionFile(host, '/r/app', 'gone.ts', 'abc1234')).rejects.toThrow('not in abc1234')
   })
 })
 
@@ -188,5 +236,45 @@ describe('createTurnCache', () => {
     expect(await cache.get('t1')).toBe(turn)
     expect(await cache.get('t1')).toBe(turn)
     expect(trigger).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('commit-panel diff sources', () => {
+  it('uncommitted reads HEAD against the working copy', async () => {
+    const specs: string[] = []
+    const { host } = hostWith({
+      'shell::exec': (payload) => {
+        specs.push((payload.args as string[])[1])
+        return exec({ stdout: 'old\n' })
+      },
+      'coder::read-file': () => ({ content: 'new\n', is_utf8: true, more_lines: false }),
+    })
+    const out = await loadDiffContents(host, '/r', 'a.ts', { type: 'uncommitted' }, noTurns)
+    expect(specs).toEqual(['HEAD:./a.ts'])
+    expect(out).toMatchObject({ oldContents: 'old\n', newContents: 'new\n' })
+  })
+
+  it('revision reads both sides from git, an absent side as empty', async () => {
+    const { host } = hostWith({
+      'shell::exec': (payload) => {
+        const spec = (payload.args as string[])[1]
+        return spec.startsWith('p:')
+          ? exec({ exit_code: 128, stderr: "fatal: path 'a.ts' does not exist in 'p'" })
+          : exec({ stdout: 'added\n' })
+      },
+    })
+    const out = await loadDiffContents(host, '/r', 'a.ts', { type: 'revision', from: 'p', to: 'c', label: 'c' }, noTurns)
+    expect(out).toMatchObject({ oldContents: '', newContents: 'added\n' })
+  })
+})
+
+describe('sameDiffContents', () => {
+  it('holds for equal sides and caveat, not for any difference', () => {
+    const base = { oldContents: 'a\n', newContents: 'b\n', note: { headline: 'h', tone: 'warn' as const } }
+    expect(sameDiffContents(base, { ...base, note: { ...base.note } })).toBe(true)
+    expect(sameDiffContents(base, { ...base, newContents: 'c\n' })).toBe(false)
+    expect(sameDiffContents(base, { ...base, note: { headline: 'h' } })).toBe(false)
+    expect(sameDiffContents(base, { ...base, note: undefined })).toBe(false)
+    expect(sameDiffContents(base, { ...base, binary: true })).toBe(false)
   })
 })

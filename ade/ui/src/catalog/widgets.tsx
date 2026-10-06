@@ -20,6 +20,7 @@ import {
   Button,
   Chip as UiChip,
   Eyebrow,
+  IconButton,
   PageBody,
   PageMain,
   PageShell,
@@ -33,8 +34,10 @@ import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import {
   ArrowLeft,
   ArrowRight,
+  Check,
   ChevronRight,
   Clock,
+  Copy,
   Database,
   FileText,
   Globe,
@@ -219,9 +222,29 @@ export function LiveDot() {
       role="status"
       aria-label="catalog updates live"
     >
-      <StatusDot tone="ok" />
-      live
+      <StatusDot tone="accent" />
+      Live
     </span>
+  )
+}
+
+/** The icon-only copy action: a check for two seconds once it lands. */
+export function CopyIconButton({
+  value,
+  label,
+}: {
+  value: string
+  label: string
+}) {
+  const { state, copy } = useCopyFlash(value, 2000)
+  return (
+    <IconButton
+      type="button"
+      label={state === 'copied' ? 'Copied' : label}
+      onClick={copy}
+    >
+      {state === 'copied' ? <Check /> : <Copy />}
+    </IconButton>
   )
 }
 

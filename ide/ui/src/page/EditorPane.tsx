@@ -5,13 +5,17 @@
    File content + unsaved drafts live in a page-owned cache keyed by
    path, so switching editor tabs never discards edits: the pane is
    remounted per file (key=path) and rehydrates from the cache instead
-   of re-reading.
+   of re-reading. A write to the open file refills it in place
+   (`cacheEpoch`), the editor kept.
 
    Sizes: text reads carry an editor-sized budget (8 MiB) and the editor
    owns its viewport (`fill`), so a file of tens of thousands of lines
    renders only what is on screen; a file over the budget opens as a
    read-only window of its first lines. Raster images stream in bounded
-   chunks into a Blob and never cross the socket as one frame. */
+   chunks into a Blob and never cross the socket as one frame.
+
+   `RevisionPane` shows a file as a commit left it, read-only: nothing in
+   it edits, saves or marks its tab dirty. */
 
 import {
   Button,
@@ -21,8 +25,8 @@ import {
   type Host,
   IconButton,
 } from '@iii-dev/console-ui'
-import { CircleAlert, Code, Eye, FileDiff, FileX, FolderOpen, Hash, MessageSquareQuote, RefreshCw, X } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CircleAlert, Code, Eye, FileDiff, FileX, FolderOpen, Hash, Lock, MessageSquareQuote, RefreshCw, X } from 'lucide-react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage, formatBytes } from '@iii-dev/console-ui/format'
 import { Breadcrumbs } from './Breadcrumbs'
 import {
@@ -31,6 +35,7 @@ import {
   coderWriteFile,
   joinPath,
 } from './coder'
+import { loadRevisionFile } from './diff-load'
 import { readFileBytes } from './file-bytes'
 import { referenceWarning } from './reference-warning'
 import { ImagePreview } from './image-preview'
@@ -79,9 +84,14 @@ export type EditorCache = Map<string, EditorCacheEntry>
 
 type PaneState =
   | { phase: 'loading'; progress?: { received: number; total: number } }
-  /** `missing`: the worker cannot see the file (deleted or moved). */
-  | { phase: 'error'; message: string; missing: boolean }
+  /** `missing`: the worker cannot see the file (deleted or moved);
+      `locked`: it is one of the protected paths, which it never reads. */
+  | { phase: 'error'; message: string; missing: boolean; locked?: boolean }
   | { phase: 'ready' }
+
+// Shared, so setting the phase it already has renders nothing.
+const PANE_LOADING: PaneState = { phase: 'loading' }
+const PANE_READY: PaneState = { phase: 'ready' }
 
 interface EditorPaneProps {
   host: Host
@@ -89,10 +99,12 @@ interface EditorPaneProps {
   rootLabel: string
   relPath: string
   cache: EditorCache
+  /** Bumps when the page refreshed or dropped this file's cache entry (the
+      watcher saw it written, a discard or revert put it back): the pane
+      refills in place. A save needs no word: the watcher reports it. */
+  cacheEpoch?: number
   /** Hands out object URLs for streamed images; the page revokes them. */
   createObjectUrl: (blob: Blob) => string
-  /** Fired after a successful save (the git tab refreshes on it). */
-  onSaved: () => void
   /** Dirty-flag transitions — the page pins the tab on first edit. */
   onDirtyChange: (relPath: string, dirty: boolean) => void
   /** Global review-pane preference; the header toggle overrides it per file. */
@@ -113,6 +125,9 @@ interface EditorPaneProps {
   missing?: boolean
   /** What this pane's own read found out about the file. */
   onMissing?: (relPath: string, missing: boolean) => void
+  /** One of the worker's protected paths (`.env`, keys): its read fails
+      like a missing file's, and the pane says why instead. */
+  protectedPath?: boolean
   /** Close this tab (the way out of a file that is gone). */
   onClose?: () => void
   /** Offer "Reference in chat" on a selection: the chosen lines go to the
@@ -125,25 +140,26 @@ interface EditorPaneProps {
 }
 
 /** Load and edit a cached file, consuming each explicit line reveal once. */
-export function EditorPane({
+function EditorPaneView({
   host,
   root,
   rootLabel,
   relPath,
   cache,
+  cacheEpoch = 0,
   createObjectUrl,
   richPreview = false,
   wordWrap = true,
   reveal = null,
   goToLineSeq = 0,
   onRevealHandled,
-  onSaved,
   onDirtyChange,
   onRevealDir,
   onCompare,
   onQuickOpen,
   missing = false,
   onMissing,
+  protectedPath = false,
   onClose,
   onReferenceInChat,
 }: EditorPaneProps) {
@@ -170,9 +186,11 @@ export function EditorPane({
   const showPreview = previewable && (previewChoice ?? richPreview)
   const [citationWarning, setCitationWarning] = useState<string | null>(null)
   const handledRevealSeq = useRef<number | null>(null)
-  const [pane, setPane] = useState<PaneState>({ phase: 'loading' })
-  const [draft, setDraftState] = useState('')
-  const [savedContent, setSavedContent] = useState('')
+  // A cached file starts ready: switching back to its tab paints no
+  // "loading…" first.
+  const [pane, setPane] = useState<PaneState>(() => (cache.has(relPath) ? PANE_READY : PANE_LOADING))
+  const [draft, setDraftState] = useState(() => cache.get(relPath)?.draft ?? '')
+  const [savedContent, setSavedContent] = useState(() => cache.get(relPath)?.savedContent ?? '')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [gotoOpen, setGotoOpen] = useState(false)
@@ -183,6 +201,8 @@ export function EditorPane({
   const [loadAttempt, setLoadAttempt] = useState(0)
   const onMissingRef = useRef(onMissing)
   onMissingRef.current = onMissing
+  const protectedRef = useRef(protectedPath)
+  protectedRef.current = protectedPath
 
   const entry = cache.get(relPath)
 
@@ -190,14 +210,17 @@ export function EditorPane({
     (seq: number, err: unknown) => {
       if (seqRef.current !== seq) return
       const raw = errorMessage(err)
-      const gone = isMissingFileError(raw)
-      setPane({ phase: 'error', message: loadErrorMessage(raw), missing: gone })
+      const unreadable = isMissingFileError(raw)
+      // A protected file is there; the worker just never reads it.
+      const locked = unreadable && protectedRef.current
+      const gone = unreadable && !locked
+      setPane({ phase: 'error', message: loadErrorMessage(raw), missing: gone, locked })
       onMissingRef.current?.(relPath, gone)
     },
     [relPath],
   )
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: loadAttempt re-runs the load on demand
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loadAttempt and cacheEpoch re-run the load on demand
   useEffect(() => {
     const seq = ++seqRef.current
     const cancel = () => { seqRef.current += 1 }
@@ -206,10 +229,10 @@ export function EditorPane({
     if (cached) {
       setDraftState(cached.draft)
       setSavedContent(cached.savedContent)
-      setPane({ phase: 'ready' })
+      setPane(PANE_READY)
       return cancel
     }
-    setPane({ phase: 'loading' })
+    setPane(PANE_LOADING)
     const mime = imageMimeFromPath(relPath)
     if (mime) {
       readFileBytes(host, absPath, mime, {
@@ -231,7 +254,7 @@ export function EditorPane({
           cache.set(relPath, fresh)
           setDraftState('')
           setSavedContent('')
-          setPane({ phase: 'ready' })
+          setPane(PANE_READY)
           onMissingRef.current?.(relPath, false)
         })
         .catch((err: unknown) => failLoad(seq, err))
@@ -242,7 +265,7 @@ export function EditorPane({
       cache.set(relPath, fresh)
       setDraftState(fresh.draft)
       setSavedContent(fresh.savedContent)
-      setPane({ phase: 'ready' })
+      setPane(PANE_READY)
       onMissingRef.current?.(relPath, false)
     }
     coderReadFile(host, absPath, { maxOutputBytes: EDITOR_FULL_READ_BUDGET })
@@ -281,7 +304,7 @@ export function EditorPane({
         }
       })
     return cancel
-  }, [host, absPath, relPath, cache, createObjectUrl, failLoad, loadAttempt])
+  }, [host, absPath, relPath, cache, createObjectUrl, failLoad, loadAttempt, cacheEpoch])
 
   const retryLoad = useCallback(() => setLoadAttempt((attempt) => attempt + 1), [])
   // The file came back (the live feed saw it created) while this pane was
@@ -328,8 +351,12 @@ export function EditorPane({
         : undefined,
     [onReferenceInChat, relPath],
   )
+  // The page's counter outlives this pane: a request made before it
+  // mounted (in another file) is not this pane's to answer.
+  const goToLineSeen = useRef(goToLineSeq)
   useEffect(() => {
-    if (goToLineSeq === 0) return
+    if (goToLineSeq === goToLineSeen.current) return
+    goToLineSeen.current = goToLineSeq
     setGotoOpen(true)
     window.requestAnimationFrame(() => gotoInputRef.current?.select())
   }, [goToLineSeq])
@@ -375,13 +402,12 @@ export function EditorPane({
         current.revision = result.revision ?? current.revision
         setSavedContent(body)
         onDirtyChange(relPath, current.draft !== body)
-        onSaved()
       })
       .catch((err: unknown) => {
         setSaveError(errorMessage(err))
       })
       .finally(() => setSaving(false))
-  }, [host, absPath, relPath, cache, saving, missing, onSaved, onDirtyChange])
+  }, [host, absPath, relPath, cache, saving, missing, onDirtyChange])
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -400,7 +426,10 @@ export function EditorPane({
     setGotoValue('')
   }
 
-  const lineCount = ready ? draft.split('\n').length : 0
+  // Counted, not split: a split allocates a string per line on every keystroke.
+  const lineCount = useMemo(() => (ready ? countLines(draft) : 0), [ready, draft])
+  // Rendered again only when the body or the file changes.
+  const preview = useMemo(() => (showPreview ? richPreviewNode(relPath, draft) : null), [showPreview, relPath, draft])
   const loadingLabel =
     pane.phase === 'loading' && pane.progress
       ? `loading image ${formatBytes(pane.progress.received)} of ${formatBytes(pane.progress.total)}…`
@@ -497,28 +526,27 @@ export function EditorPane({
       </div>
 
       {citationWarning ? <div className="shui-side-note" role="status">{citationWarning}</div> : null}
-      <div
-        className="shui-editor-body"
-        data-keybindings-standdown=""
-        onKeyDownCapture={(event) => {
-          if (!onQuickOpen || !isQuickOpenKey(event, PLATFORM)) return
-          event.preventDefault()
-          event.stopPropagation()
-          onQuickOpen()
-        }}
-      >
+      <div className="shui-editor-body" data-keybindings-standdown="" onKeyDownCapture={quickOpenCapture(onQuickOpen)}>
         {pane.phase === 'loading' ? (
           <div className="shui-side-note">{loadingLabel}</div>
         ) : pane.phase === 'error' ? (
           <PaneNotice
-            Icon={pane.missing ? FileX : CircleAlert}
-            tone={pane.missing ? 'neutral' : 'warn'}
-            title={pane.missing ? 'This file is no longer here' : 'This file could not be opened'}
+            Icon={pane.locked ? Lock : pane.missing ? FileX : CircleAlert}
+            tone={pane.locked || pane.missing ? 'neutral' : 'warn'}
+            title={
+              pane.locked
+                ? 'Protected file'
+                : pane.missing
+                  ? 'This file is no longer here'
+                  : 'This file could not be opened'
+            }
             path={relPath}
             detail={
-              pane.missing
-                ? 'It was deleted or moved outside the editor. The tab stays until you close it, in case the file comes back.'
-                : pane.message
+              pane.locked
+                ? "It matches the IDE's protected paths (Settings › IDE), which keep secrets such as .env files and keys out of reach, agents' included, so it is not opened here. The terminal can still read it."
+                : pane.missing
+                  ? 'It was deleted or moved outside the editor. The tab stays until you close it, in case the file comes back.'
+                  : pane.message
             }
             actions={
               <>
@@ -544,7 +572,7 @@ export function EditorPane({
         ) : entry?.image ? (
           <ImagePreview src={entry.image} name={relPath} description={entry.size != null ? formatBytes(entry.size) : undefined} />
         ) : showPreview ? (
-          <div className="shui-editor-preview">{richPreviewNode(relPath, draft)}</div>
+          <div className="shui-editor-preview">{preview}</div>
         ) : (
           <CodeEditor
             ref={editorRef}
@@ -564,4 +592,141 @@ export function EditorPane({
       </div>
     </div>
   )
+}
+
+/** Memoized: the page re-renders often, and this only when its props change. */
+export const EditorPane = memo(EditorPaneView)
+
+/** The editor body reclaims the go-to-file chord in the capture phase
+    (see `onQuickOpen`). */
+function quickOpenCapture(onQuickOpen: (() => void) | undefined) {
+  return (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!onQuickOpen || !isQuickOpenKey(event, PLATFORM)) return
+    event.preventDefault()
+    event.stopPropagation()
+    onQuickOpen()
+  }
+}
+
+interface RevisionPaneProps {
+  host: Host
+  root: string
+  rootLabel: string
+  relPath: string
+  sha: string
+  /** The tab's id, which keys `cache`. */
+  id: string
+  /** Bodies already read, by tab id: a commit's file never changes, so a
+      tab that comes forward again shows it at once. Page-owned. */
+  cache: Map<string, string>
+  wordWrap?: boolean
+  onRevealDir: (dir: string) => void
+  onClose: () => void
+  onQuickOpen?: () => void
+}
+
+const ignoreEdit = () => {}
+
+function RevisionPaneView({
+  host,
+  root,
+  rootLabel,
+  relPath,
+  sha,
+  id,
+  cache,
+  wordWrap = true,
+  onRevealDir,
+  onClose,
+  onQuickOpen,
+}: RevisionPaneProps) {
+  const [read, setRead] = useState<{ body: string } | { error: string } | null>(() => {
+    const body = cache.get(id)
+    return body === undefined ? null : { body }
+  })
+  // Bumped by "Try again": re-runs the read.
+  const [attempt, setAttempt] = useState(0)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt re-runs the read on demand
+  useEffect(() => {
+    if (cache.has(id)) return
+    let cancelled = false
+    setRead(null)
+    loadRevisionFile(host, root, relPath, sha)
+      .then((body) => {
+        if (cancelled) return
+        cache.set(id, body)
+        setRead({ body })
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setRead({ error: errorMessage(err) })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [host, root, relPath, sha, id, cache, attempt])
+
+  const short = sha.slice(0, 7)
+  return (
+    <div className="shui-main-pane">
+      <div className="shui-editor-head">
+        <Breadcrumbs path={relPath} rootLabel={rootLabel} onSelectDir={onRevealDir} />
+        <span className="shui-ro-note" title={sha}>
+          as of {short}, read-only
+        </span>
+        <span className="spacer" />
+      </div>
+      <div className="shui-editor-body" data-keybindings-standdown="" onKeyDownCapture={quickOpenCapture(onQuickOpen)}>
+        {read === null ? (
+          <div className="shui-side-note">
+            loading {relPath} as of {short}…
+          </div>
+        ) : 'error' in read && read.error === 'binary file' ? (
+          // What `loadRevisionFile` says of bytes that are not text: no retry
+          // reads them any other way.
+          <PaneNotice Icon={FileX} title="Binary file: no text to show" path={relPath} />
+        ) : 'error' in read ? (
+          <PaneNotice
+            Icon={CircleAlert}
+            tone="warn"
+            title="This version could not be opened"
+            path={relPath}
+            detail={read.error}
+            actions={
+              <>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setAttempt((value) => value + 1)}>
+                  <RefreshCw aria-hidden="true" />
+                  Try again
+                </Button>
+                <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+                  <X aria-hidden="true" />
+                  Close tab
+                </Button>
+              </>
+            }
+          />
+        ) : (
+          <CodeEditor
+            value={read.body}
+            onChange={ignoreEdit}
+            language={monacoLangFromPath(relPath)}
+            readOnly
+            aria-label={`${relPath} as of ${short}`}
+            className="shui-editor"
+            fill
+            lineNumbers
+            wordWrap={wordWrap}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Memoized like the editor: the page re-renders often. */
+export const RevisionPane = memo(RevisionPaneView)
+
+function countLines(text: string): number {
+  let lines = 1
+  for (let at = text.indexOf('\n'); at !== -1; at = text.indexOf('\n', at + 1)) lines += 1
+  return lines
 }

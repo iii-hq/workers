@@ -71,6 +71,8 @@ pub async fn handle(
     deps: &Deps,
     req: FunctionTriggerRequest,
 ) -> Result<FunctionTriggerResponse, HarnessError> {
+    let _guard = deps.locks.guard(&req.session_id).await;
+    super::delete_session_tree::ensure_live(deps, &req.session_id).await?;
     let cfg = deps.cfg().await;
     // Honour the calling turn's dispatch policy when one exists; absent a turn
     // record this is a direct trusted call, which still fails closed.
@@ -179,7 +181,7 @@ pub async fn handle(
         &req.call.function_id,
         &arguments,
         &req.session_id,
-        false, // external trigger path owns no session lock
+        true, // direct pipeline now shares the session lifecycle lock
         record
             .as_ref()
             .map(|rec| crate::functions::subscribe::CallerModel::from_options(&rec.options)),

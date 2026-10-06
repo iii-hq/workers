@@ -26,8 +26,9 @@ use status::{StatusInput, StatusOutput};
 
 /// Register every `console::*` function. Called once from `main` after
 /// `register_worker` (and after `ui_assets::start`, which owns the
-/// trigger-type registrations — types register before functions). Each
-/// handler captures the live runtime state without re-parsing the YAML.
+/// injectable-UI trigger types — types register before functions;
+/// `workspace::register` does the same for `console::workspace::changed`).
+/// Each handler captures the live runtime state without re-parsing the YAML.
 pub fn register_all(
     iii: &Arc<IIIClient>,
     port: PortCell,
@@ -41,10 +42,13 @@ pub fn register_all(
     if let Err(error) = working_directory::bind(iii) {
         tracing::warn!(%error, "failed to bind Harness working-directory proposal context");
     }
+    crate::onboarding::register(iii, workspace.clone());
     workspace::register(iii, workspace);
     subscribe::register(iii);
+    crate::conversations::register(iii);
+    crate::compose::register(iii);
     tracing::info!(
-        "registered console::status, console::ui-manifest, console::subscribe, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{get,set,list,open,close}}"
+        "registered console::status, console::ui-manifest, console::subscribe, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{get,set,list,open,close}}, console::conversations::*, console::onboarding::{{scan,get,set}}, console::compose::*, and the console::workspace::changed and console::compose::changed trigger types"
     );
 }
 

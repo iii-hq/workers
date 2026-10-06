@@ -4,6 +4,7 @@ import {
   type ConfigFormProps,
   type ExtensionIii,
   Input,
+  type SecretKeyFieldProps,
   Select,
   type SelectOption,
   SettingsField,
@@ -11,7 +12,7 @@ import {
   SettingsSection,
   StatusPanel,
 } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { type ComponentType, useCallback, useEffect, useRef, useState } from 'react'
 
 /** What the worker uses when the entry stores no model. */
 export const BUILT_IN_MODEL = 'jev-latest'
@@ -48,20 +49,34 @@ type Engine = Pick<ExtensionIii, 'trigger'>
 
 /** The catalog as the running worker answers it with its saved credentials. */
 export async function listModels(iii: Engine): Promise<ModelCard[]> {
-  const reply = await iii.trigger<ModelsReply>('judge-typesafe::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
+  const reply = await iii.trigger<ModelsReply>(
+    'judge-typesafe::models::list',
+    { timeout_ms: 15_000 },
+    { timeoutMs: 20_000 },
+  )
   if (reply?.status === 'ok' && Array.isArray(reply.models)) return reply.models
   // Typed provider refusals (`missing_key`, `http`, …) surface by code; bus failures by message.
   throw new Error(reply?.status === 'error' && reply.code ? reply.code : 'invalid_response')
 }
 
 /** Bind the form to the console's engine client once, at registration. */
-export function createJevConfigForm(iii: Engine) {
+/**
+ * `secretField` is the Console's shared `SecretKeyField` when it has one:
+ * the key then lives in the secrets worker and `api_key` holds
+ * `secret://TYPESAFE_API_KEY`, the way the setup wizard stores it. Older
+ * Consoles keep the masked input below.
+ */
+export function createJevConfigForm(iii: Engine, secretField?: ComponentType<SecretKeyFieldProps>) {
   return function BoundJevConfigForm(props: ConfigFormProps) {
-    return <JevConfigForm {...props} iii={iii} />
+    return <JevConfigForm {...props} iii={iii} secretField={secretField} />
   }
 }
 
-export function JevConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engine }) {
+export function JevConfigForm({
+  iii,
+  secretField: SecretField,
+  ...props
+}: ConfigFormProps & { iii: Engine; secretField?: ComponentType<SecretKeyFieldProps> }) {
   const rootRef = useRef<HTMLDivElement>(null)
   // null = the first listing has not answered yet.
   const [catalog, setCatalog] = useState<ModelCard[] | null>(null)
@@ -159,42 +174,68 @@ export function JevConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engine
 
   return (
     <div className="jev-ui-form" ref={rootRef}>
-      <SettingsSection
-        title="Credentials"
-        description="The key judge-typesafe sends to TypeSafe for evaluations and model listing. Saved changes apply to new calls without restarting."
-      >
-        <SettingsList>
-          <SettingsField
-            id="jev-cfg-api_key"
-            field="api_key"
-            label="API key"
-            description="Overrides TYPESAFE_API_KEY in the worker's environment. The stored key is never shown; type a new one to replace it, or clear it to fall back to the variable (restart judge-typesafe after changing the environment)."
-            error={props.errors?.get('/api_key')}
-            meta={
-              <>
-                {keyStatus}
-                {storedKey ? (
-                  <Button type="button" variant="ghost" size="sm" onClick={clearKey}>
-                    Clear key
-                  </Button>
-                ) : null}
-              </>
-            }
-            renderControl={(controlProps) => (
-              <Input
-                {...controlProps}
-                type="password"
-                autoComplete="new-password"
-                spellCheck={false}
-                aria-label="API key"
-                placeholder={original.current ? 'Configured · type a new key to replace it' : 'Use TYPESAFE_API_KEY'}
-                value={keyDraft}
-                onChange={replaceKey}
-              />
-            )}
-          />
-        </SettingsList>
-      </SettingsSection>
+      {SecretField ? (
+        <SettingsSection title="Credentials" description="The key judge-typesafe sends to TypeSafe. Save to apply it.">
+          <div className="jev-ui-secret" id="jev-cfg-api_key" data-field="api_key">
+            <SecretField
+              name="TYPESAFE_API_KEY"
+              label="API key"
+              value={storedKey}
+              onChange={(next) => setString('api_key', next)}
+              consumers={['judge-typesafe']}
+              keysUrl="https://typesafe.ai"
+              status={{
+                checking: catalog === null,
+                connected: catalog !== null && !catalogError,
+                error:
+                  catalogError === 'missing_key'
+                    ? 'No key reaches the worker.'
+                    : catalogError
+                      ? `Listing failed · ${catalogError}`
+                      : undefined,
+                detail: catalog && !catalogError ? `${catalog.length} models` : undefined,
+              }}
+            />
+          </div>
+        </SettingsSection>
+      ) : (
+        <SettingsSection
+          title="Credentials"
+          description="The key judge-typesafe sends to TypeSafe for evaluations and model listing. Saved changes apply to new calls without restarting."
+        >
+          <SettingsList>
+            <SettingsField
+              id="jev-cfg-api_key"
+              field="api_key"
+              label="API key"
+              description="Overrides TYPESAFE_API_KEY in the worker's environment. The stored key is never shown; type a new one to replace it, or clear it to fall back to the variable (restart judge-typesafe after changing the environment)."
+              error={props.errors?.get('/api_key')}
+              meta={
+                <>
+                  {keyStatus}
+                  {storedKey ? (
+                    <Button type="button" variant="ghost" size="sm" onClick={clearKey}>
+                      Clear key
+                    </Button>
+                  ) : null}
+                </>
+              }
+              renderControl={(controlProps) => (
+                <Input
+                  {...controlProps}
+                  type="password"
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  aria-label="API key"
+                  placeholder={original.current ? 'Configured · type a new key to replace it' : 'Use TYPESAFE_API_KEY'}
+                  value={keyDraft}
+                  onChange={replaceKey}
+                />
+              )}
+            />
+          </SettingsList>
+        </SettingsSection>
+      )}
       <SettingsSection
         title="Model"
         description="Catalog as answered by judge-typesafe::models::list with the saved credentials. Callers may still name a model per call."

@@ -240,6 +240,8 @@ export type CompactResult =
       tokensBefore: number
       autoContinued: boolean
       summaryText: string
+      /** Exact session-manager entry id of the persisted compaction marker. */
+      compactionEntryId: string
     }
   | { status: 'busy' }
   | { status: 'overflow'; message: string }
@@ -392,6 +394,12 @@ export interface ChatBackend {
    * harness keeps running the turn to completion.
    */
   abortRun?(sessionId: string): Promise<void>
+  /** Read-only, server-budgeted preview; never calls a summarizer or writes history. */
+  previewModelSwitch?(
+    sessionId: string,
+    model: ModelId,
+    thinkingLevel?: string,
+  ): Promise<{ needsCompaction: boolean; tokens: number; usable: number }>
   /**
    * Powers `/compact`. Compacts the session-manager transcript (the single
    * source of truth) directly. `contextWindow` skips the server's

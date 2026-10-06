@@ -27,12 +27,37 @@ const CANCEL_TIMEOUT_MS: u64 = 10_000;
 
 /// `judge-<provider>` suffixes are worker names: lowercase, digits and hyphens.
 pub fn validate_provider(provider: &str) -> Result<(), ErrorCode> {
-    let valid = !provider.is_empty()
-        && provider.len() <= 64
-        && provider
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
-    valid.then_some(()).ok_or(ErrorCode::InvalidRequest)
+    judge_contract::is_valid_provider(provider)
+        .then_some(())
+        .ok_or(ErrorCode::InvalidRequest)
+}
+
+/// The provider a call goes to: the request's own `provider`, else the
+/// calling session's (`PROVIDER_BAGGAGE_KEY`, stamped per turn by the
+/// harness), else the hub's configured default. An unusable baggage value is
+/// ignored rather than failing the call: it is an unauthenticated preference.
+fn resolve_provider(
+    explicit: Option<Value>,
+    session: Option<&str>,
+    default_provider: &str,
+) -> Result<String, ErrorCode> {
+    match explicit {
+        Some(Value::String(provider)) => Ok(provider),
+        None | Some(Value::Null) => Ok(session
+            .filter(|p| judge_contract::is_valid_provider(p))
+            .unwrap_or(default_provider)
+            .to_owned()),
+        Some(_) => Err(ErrorCode::InvalidRequest),
+    }
+}
+
+/// The calling session's provider from the handler's OTel baggage.
+fn session_provider() -> Option<String> {
+    use opentelemetry::baggage::BaggageExt;
+    opentelemetry::Context::current()
+        .baggage()
+        .get(judge_contract::PROVIDER_BAGGAGE_KEY)
+        .map(|value| value.to_string())
 }
 
 /// Register `judge::evaluate`, `judge::models::list` and `judge::cancel`.
@@ -124,7 +149,7 @@ fn request_schema<T: schemars::JsonSchema>() -> Value {
     schema["properties"]["provider"] = json!({
         "type": "string",
         "pattern": "^[a-z0-9-]{1,64}$",
-        "description": "Provider worker suffix (judge-<provider>). Defaults to the hub's JUDGE_PROVIDER."
+        "description": "Provider worker suffix (judge-<provider>). Defaults to the calling session's provider (OTel baggage iii.judge.provider), then the hub's JUDGE_PROVIDER."
     });
     schema
 }
@@ -146,10 +171,13 @@ async fn forward(
         Some(Value::String(caller)) if !caller.trim().is_empty() => Some(caller),
         _ => None,
     };
-    let provider = match fields.remove("provider") {
-        None | Some(Value::Null) => default_provider.to_owned(),
-        Some(Value::String(provider)) => provider,
-        Some(_) => return Ok(Err(ErrorCode::InvalidRequest)),
+    let provider = match resolve_provider(
+        fields.remove("provider"),
+        session_provider().as_deref(),
+        default_provider,
+    ) {
+        Ok(provider) => provider,
+        Err(code) => return Ok(Err(code)),
     };
     if let Err(code) = validate_provider(&provider) {
         return Ok(Err(code));
@@ -191,5 +219,50 @@ async fn forward(
             Ok(Err(ErrorCode::ProviderUnavailable))
         }
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opentelemetry::baggage::BaggageExt;
+    use opentelemetry::KeyValue;
+
+    #[test]
+    fn request_then_session_then_hub_default() {
+        let explicit = Some(Value::String("semif".into()));
+        assert_eq!(
+            resolve_provider(explicit, Some("laya"), "typesafe").unwrap(),
+            "semif"
+        );
+        assert_eq!(
+            resolve_provider(None, Some("laya"), "typesafe").unwrap(),
+            "laya"
+        );
+        assert_eq!(
+            resolve_provider(Some(Value::Null), Some("laya"), "typesafe").unwrap(),
+            "laya"
+        );
+        assert_eq!(
+            resolve_provider(None, None, "typesafe").unwrap(),
+            "typesafe"
+        );
+        // an unusable session value never fails the call
+        assert_eq!(
+            resolve_provider(None, Some("Bad Provider"), "typesafe").unwrap(),
+            "typesafe"
+        );
+        assert!(resolve_provider(Some(json!(1)), None, "typesafe").is_err());
+    }
+
+    #[test]
+    fn session_provider_reads_the_callers_baggage() {
+        assert_eq!(session_provider(), None);
+        let cx = opentelemetry::Context::current_with_baggage(vec![KeyValue::new(
+            judge_contract::PROVIDER_BAGGAGE_KEY,
+            "semif",
+        )]);
+        let _guard = cx.attach();
+        assert_eq!(session_provider().as_deref(), Some("semif"));
     }
 }
