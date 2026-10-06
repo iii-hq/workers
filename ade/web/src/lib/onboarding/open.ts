@@ -27,22 +27,22 @@ export function onboardingWizardAvailable(): boolean {
 }
 
 /**
- * Whether the wizard may open by itself on load, before asking the router
- * anything. Only for a person on first run: never where the ADE turned it
- * off (`auto_open: false` — a deployed ADE, whose fresh data directory reads
- * as a first run), and never in a browser under automation
+ * Whether the wizard opens by itself on load: on first run (`new`), or after
+ * setup was finished or skipped when no model is connected (`connectedModels`
+ * is 0; `null` when the router was not asked or could not answer). Never where
+ * the ADE turned it off (`auto_open: false` — a deployed ADE, whose fresh data
+ * directory reads as a first run), and never in a browser under automation
  * (`navigator.webdriver` — an e2e suite, an agent's browser session, a
  * stories render), which gets the page it asked for, not a modal over it.
- *
- * The host then opens it only when no model is connected yet: a project
- * whose providers already serve models is set up. Explicit requests open it
- * either way.
+ * Explicit requests open it either way.
  */
 export function shouldAutoOpenOnboarding(
   state: { status: string | null | undefined; auto_open?: boolean },
   automated: boolean,
+  connectedModels: number | null,
 ): boolean {
-  return state.status === 'new' && state.auto_open !== false && !automated
+  if (state.auto_open === false || automated) return false
+  return state.status === 'new' || connectedModels === 0
 }
 
 /** The browser reports it is driven by automation. */

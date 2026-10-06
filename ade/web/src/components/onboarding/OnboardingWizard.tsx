@@ -42,14 +42,13 @@ const STEPS: { id: WizardStepId; title: string; optional?: boolean }[] = [
  * The first-run setup wizard. Mounted once in `App`: it opens by itself the
  * first time a person loads this machine's ADE (`console::onboarding::get`
  * reports `new` and does not turn auto-open off; never in a browser under
- * automation; never once a model is connected — see
- * `shouldAutoOpenOnboarding`), and whenever something calls
+ * automation — see `shouldAutoOpenOnboarding`), and whenever something calls
  * `requestOnboardingWizard` — the chat's "configure a provider" call to
  * action, or the command palette.
  *
  * Finishing records `completed` and skipping records `dismissed`, beside the
- * workspace layout in the ADE's data directory, so it never reopens on its
- * own after either.
+ * workspace layout in the ADE's data directory. After either, it reopens on
+ * its own only while no model is connected.
  *
  * Once a model is connected, Ready offers the guided tour. Accepting adds
  * the `onboarding` worker that carries it — quietly: it is how the tour is
@@ -85,12 +84,18 @@ export function OnboardingWizardHost() {
         if (state.status === 'completed') {
           setVisited(new Set(STEPS.map((entry) => entry.id)))
         }
-        if (!shouldAutoOpenOnboarding(state, browserIsAutomated())) return
-        // Models already connected — a deploy with keys in its environment —
-        // mean a project that is set up. A router that cannot answer opens
-        // nothing either: the wizard could not connect a model through it.
-        const models = await connectedModelCount().catch(() => null)
-        if (!cancelled && models === 0) setOpen(true)
+        // First run opens whatever the router serves; after setup, only a
+        // project with no model connected opens it again.
+        const models =
+          state.status === 'new'
+            ? null
+            : await connectedModelCount().catch(() => null)
+        if (
+          !cancelled &&
+          shouldAutoOpenOnboarding(state, browserIsAutomated(), models)
+        ) {
+          setOpen(true)
+        }
       })
       .catch(() => undefined)
     return () => {
