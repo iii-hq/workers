@@ -111,11 +111,12 @@ fn models_url(api_url: &str) -> Result<reqwest::Url, Error> {
     Ok(url)
 }
 
-/// Efforts the Responses API accepts in `reasoning.effort`, as its own
-/// rejection lists them. The models catalog also advertises `ultra`
-/// ("automatic task delegation"), which is a Codex app mode: sending it gets
-/// `Invalid value: 'ultra'`, so it never reaches the ladder we offer.
-const API_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+/// Efforts offered for a Codex model: the ones the Codex app shows that the
+/// Responses API also accepts. The catalog advertises two more. `max` the
+/// API accepts but the app does not offer, so neither do we. `ultra`
+/// ("automatic task delegation") is an app mode: the API rejects it with
+/// `Invalid value: 'ultra'`.
+const API_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
 
 fn map_models(mut remote: Vec<CodexModel>) -> Vec<Model> {
     remote.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.slug.cmp(&b.slug)));
@@ -364,8 +365,8 @@ mod tests {
     fn dynamic_mapping_filters_hidden_sorts_and_namespaces() {
         let mut first = model("new-first", "list", 1);
         first.supported_reasoning_levels.push(ReasoningLevel {
-            effort: "max".into(),
-            description: Some("Maximum reasoning depth".into()),
+            effort: "high".into(),
+            description: Some("Greater reasoning depth".into()),
         });
         let models = map_models(vec![
             model("old-hidden", "hide", 0),
@@ -391,8 +392,8 @@ mod tests {
                         description: Some("Extra high reasoning depth".into()),
                     },
                     ReasoningEffort {
-                        effort: "max".into(),
-                        description: Some("Maximum reasoning depth".into()),
+                        effort: "high".into(),
+                        description: Some("Greater reasoning depth".into()),
                     },
                 ]
                 .as_slice(),
@@ -400,14 +401,13 @@ mod tests {
         );
     }
 
-    /// gpt-5.6-terra's catalog row lists `ultra`, which the Responses API
-    /// rejects (`Invalid value: 'ultra'. Supported values are: 'none',
-    /// 'minimal', 'low', 'medium', 'high', 'xhigh', and 'max'.`); it must
-    /// not become a slider stop that fails on send.
+    /// gpt-5.6-terra's catalog row lists `max` and `ultra`. The Codex app
+    /// offers neither, and the Responses API rejects `ultra` (`Invalid value:
+    /// 'ultra'`), so neither becomes a slider stop.
     #[test]
-    fn efforts_the_api_rejects_are_dropped_from_the_ladder() {
+    fn efforts_the_app_does_not_offer_are_dropped_from_the_ladder() {
         let mut terra = model("gpt-5.6-terra", "list", 1);
-        terra.supported_reasoning_levels = ["low", "max", "ultra"]
+        terra.supported_reasoning_levels = ["low", "xhigh", "max", "ultra"]
             .into_iter()
             .map(|effort| ReasoningLevel {
                 effort: effort.into(),
@@ -422,8 +422,8 @@ mod tests {
             .iter()
             .map(|effort| effort.effort.as_str())
             .collect();
-        assert_eq!(efforts, vec!["low", "max"]);
-        assert_eq!(models[0].supports_xhigh, Some(false));
+        assert_eq!(efforts, vec!["low", "xhigh"]);
+        assert_eq!(models[0].supports_xhigh, Some(true));
     }
 
     #[test]
