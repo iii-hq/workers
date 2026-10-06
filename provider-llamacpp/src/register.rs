@@ -1,6 +1,6 @@
 //! Boot wiring: function surface, the router::ready rebind, and the
 //! declare-with-backoff loop (spec § Registration lifecycle).
-use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
+use crate::config::DEFAULT_MAX_TOKENS;
 use crate::discovery::{make_refresh_models, refresh_models};
 use crate::errors::invalid_request_from_serde;
 use crate::stream_fn::make_stream;
@@ -38,7 +38,10 @@ fn declaration_with(default_models: Option<Vec<String>>) -> ProviderDeclaration 
         display_name: Some("llama.cpp".into()),
         credential_env_var: Some(CREDENTIAL_ENV_VAR.into()),
         defaults: Some(ProviderDefaults {
-            api_url: Some(DEFAULT_API_URL.into()),
+            // Unset on purpose: the router returns `defaults.api_url` as the
+            // resolved url, which would stop discovery from probing both
+            // local ports (config::DEFAULT_API_URL_CANDIDATES).
+            api_url: None,
             max_tokens: Some(DEFAULT_MAX_TOKENS),
             extra: BTreeMap::new(),
         }),
@@ -265,6 +268,13 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::{declaration, declaration_with_defaults};
+
+    #[test]
+    fn declaration_leaves_api_url_unset_so_discovery_probes() {
+        // The router hands `defaults.api_url` back as the resolved url, and
+        // discovery only probes both local ports when it is unset.
+        assert_eq!(declaration().defaults.and_then(|d| d.api_url), None);
+    }
 
     #[test]
     fn discovered_defaults_ride_the_redeclaration() {
