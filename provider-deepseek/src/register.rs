@@ -43,6 +43,7 @@ pub fn declaration() -> ProviderDeclaration {
         // first one the live catalog holds).
         default_models: Some(vec!["deepseek-flash".into(), "deepseek-v4-flash".into()]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
+        context_overflow_hint: None,
         // No static slice: refresh_models discovers the catalog right after
         // registration (see declare_and_refresh), gated on a configured
         // credential — no key → empty slice, so the picker never shows

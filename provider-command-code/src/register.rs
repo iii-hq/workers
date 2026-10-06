@@ -35,6 +35,7 @@ pub fn declaration() -> ProviderDeclaration {
         // Local, user-supplied models: nothing to recommend.
         default_models: None,
         default_thinking_level: None,
+        context_overflow_hint: None,
         models: None,
         worker_id: Some("provider-command-code".into()),
         // The mark the console paints beside this provider's models; the

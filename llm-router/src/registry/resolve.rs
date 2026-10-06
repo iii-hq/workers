@@ -317,6 +317,7 @@ mod tests {
             icon_svg: None,
             default_models: None,
             default_thinking_level: None,
+            context_overflow_hint: None,
         }
     }
 

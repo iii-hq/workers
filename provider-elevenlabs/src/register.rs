@@ -36,6 +36,7 @@ pub fn declaration() -> ProviderDeclaration {
         // Speech only: no chat model to start with.
         default_models: None,
         default_thinking_level: None,
+        context_overflow_hint: None,
         // A static slice so a fresh install has speech models to pick before
         // the first refresh; refresh_models replaces it with the live list.
         models: Some(static_models()),

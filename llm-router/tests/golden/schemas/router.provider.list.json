@@ -29,6 +29,13 @@
           "configured": {
             "type": "boolean"
           },
+          "context_overflow_hint": {
+            "description": "Provider-specific guidance a console appends to a context-overflow failure on one of this provider's models; copied from the declaration. Absent when the provider declared none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "credential_env_var": {
             "description": "Environment variable declared by API-key providers. `None` means the provider owns authentication (OAuth, local app login, device flow).",
             "type": [

@@ -60,10 +60,12 @@ chose. Counting is local and never runs the model.
   /props`; a router-mode server (`llama serve`, the Llama desktop app)
   reports `n_ctx: 0` there, which is ignored, and each `/v1/models` row
   carries the instance's launch args, from which `--ctx-size` is read. The
-  server rejects any prompt over that window, so the console cannot work
-  around a small one; the ADE's context-overflow card tells llama.cpp users
-  to raise it on the server and links the llama.cpp server docs. No pricing
-  (self-hosted).
+  server rejects any prompt over that window, so a console cannot work
+  around a small one by compacting; the declaration carries a
+  `context_overflow_hint` (`register.rs`) that the router reports on
+  `router::provider::list` and the ADE shows under its context-overflow
+  card, pointing at the server's `--ctx-size`, the desktop app's per-model
+  options and the llama.cpp server docs. No pricing (self-hosted).
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
   channel write (caller gone / `router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request.

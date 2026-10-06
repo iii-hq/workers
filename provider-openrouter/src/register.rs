@@ -42,6 +42,7 @@ pub fn declaration() -> ProviderDeclaration {
             "openrouter/anthropic/claude-sonnet-5".into(),
         ]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
+        context_overflow_hint: None,
         // No static slice: GET /api/v1/models is the source of truth, and a
         // refresh fires right after registration (see declare_and_refresh),
         // so the catalog fills from the API within seconds of boot.

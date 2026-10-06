@@ -65,6 +65,7 @@ pub fn make_provider_list(
                     icon_svg: rec.declaration.icon_svg.clone(),
                     default_model,
                     default_thinking_level: rec.declaration.default_thinking_level,
+                    context_overflow_hint: rec.declaration.context_overflow_hint.clone(),
                     credential: resolved.status,
                 });
             }
@@ -190,12 +191,18 @@ mod tests {
         let mut entry = info(CredentialStatus::default());
         entry.default_model = Some("claude-sonnet-5-5".into());
         entry.default_thinking_level = Some(crate::types::model::ThinkingLevel::Minimal);
+        entry.context_overflow_hint = Some("Raise --ctx-size on the server.".into());
         let wire = serde_json::to_value(&entry).unwrap();
         assert_eq!(wire["default_model"], "claude-sonnet-5-5");
         assert_eq!(wire["default_thinking_level"], "minimal");
+        assert_eq!(
+            wire["context_overflow_hint"],
+            "Raise --ctx-size on the server."
+        );
         let bare = serde_json::to_value(info(CredentialStatus::default())).unwrap();
         assert!(bare.get("default_model").is_none());
         assert!(bare.get("default_thinking_level").is_none());
+        assert!(bare.get("context_overflow_hint").is_none());
     }
 
     fn info(credential: CredentialStatus) -> ProviderInfo {
@@ -209,6 +216,7 @@ mod tests {
             icon_svg: None,
             default_model: None,
             default_thinking_level: None,
+            context_overflow_hint: None,
             credential,
         }
     }

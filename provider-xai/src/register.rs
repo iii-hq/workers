@@ -40,6 +40,7 @@ pub fn declaration() -> ProviderDeclaration {
         // first one the live catalog holds).
         default_models: Some(vec!["grok-4.3".into()]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
+        context_overflow_hint: None,
         // No static slice: GET /v1/models is the source of truth, and a
         // refresh fires right after registration (see declare_and_refresh),
         // so the catalog fills from the API within seconds of boot.

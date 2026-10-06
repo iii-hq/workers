@@ -40,6 +40,7 @@ pub fn declaration() -> ProviderDeclaration {
         // first one the live catalog holds).
         default_models: Some(vec!["kimi-k3".into()]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
+        context_overflow_hint: None,
         models: None,
         worker_id: Some("provider-opencode-go".into()),
         // The mark the console paints beside this provider's models; the

@@ -22,6 +22,9 @@ use std::time::Duration;
 /// Env var the router (and, as a fallback, this provider) reads for the key.
 pub const CREDENTIAL_ENV_VAR: &str = "LLAMACPP_API_KEY";
 
+/// Shown by consoles under a context-overflow failure on a llama.cpp model.
+pub const CONTEXT_OVERFLOW_HINT: &str = "llama.cpp serves each model with the context size it was started with (--ctx-size) and rejects anything larger, so compacting cannot fix this. Raise it on the server or in the per-model configuration options in the desktop app; see the llama.cpp server docs: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md";
+
 pub fn declaration() -> ProviderDeclaration {
     declaration_with(None)
 }
@@ -56,6 +59,9 @@ fn declaration_with(default_models: Option<Vec<String>>) -> ProviderDeclaration 
         // ranked, loaded first then largest (redeclare_with_defaults).
         default_models,
         default_thinking_level: None,
+        // The server rejects any prompt over its --ctx-size, so compacting
+        // in a console cannot fix an overflow against a small window.
+        context_overflow_hint: Some(CONTEXT_OVERFLOW_HINT.into()),
         // No static slice: refresh_models discovers the catalog live from
         // the resolved server's `/v1/models` + `/props` right after
         // registration (see declare_and_refresh) — no credential required.
