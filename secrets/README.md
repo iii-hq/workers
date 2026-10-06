@@ -218,7 +218,9 @@ env_file: .env           # the env file env:// references read and the console w
 
 Every Compose namespace has its own `secrets` entry (`<namespace>-secrets`),
 so each environment or namespace can keep its keys in its own env file. Set it
-in **Settings → Workers → secrets**, or per container in `worker-compose.yaml`:
+in that entry's file, `./config/<namespace>-secrets.yaml` (an edit applies
+without a restart), with `iii trigger configuration::set`, or per container in
+`worker-compose.yaml` (the ADE has no settings form for this worker yet):
 
 ```yaml
 containers:
