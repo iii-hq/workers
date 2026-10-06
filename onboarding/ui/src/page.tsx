@@ -37,9 +37,14 @@ import { disposeSpotlight, hideSpotlight, showSpotlight, waitForAnchor } from '.
  * deliberating over instructions that are already explicit, which is time the
  * operator spends watching a spinner. The console owns the setting — the page
  * asks, and a console too old to be asked simply is not.
+ *
+ * `lowest`, not a named level: models start their effort ladders in
+ * different places (Codex has no `minimal`), so the harness picks the
+ * model's lowest effort and the console shows what it chose. A console that
+ * predates `lowest` refuses the request and the tour runs at the usual level.
  */
 const FIRST_STEP_ID = 'message'
-const TOUR_THINKING_LEVEL = 'minimal'
+const TOUR_THINKING_LEVEL = 'lowest'
 
 /**
  * How long `Opening…` may stand before the button gives up and offers
