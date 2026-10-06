@@ -8,9 +8,11 @@ Implements the provider protocol from
 `provider::llamacpp::refresh_models` (live `GET /v1/models` + `GET /props` →
 `router::models::reconcile`).
 
-Default upstream: `http://127.0.0.1:8080/v1/chat/completions` — `llama-server`'s
-own default bind address and port. Point `api_url` at any running
-`llama-server` instance (local, LAN, or a remote box) to use it.
+Default upstream: `http://127.0.0.1:8080/v1/chat/completions`, `llama-server`'s
+own default bind address and port. With no `api_url` configured, discovery
+also tries `http://127.0.0.1:9931`, the Llama desktop app's default port, and
+every later request follows whichever of the two answered. Point `api_url` at
+any running `llama-server` instance (local, LAN, or a remote box) to use it.
 
 ## Embeddings
 

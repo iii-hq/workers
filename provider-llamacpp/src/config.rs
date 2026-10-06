@@ -9,7 +9,31 @@ use llm_router::types::router::ProviderResolveResponse;
 // provider, a self-hosted llama.cpp server commonly runs with no
 // `--api-key` at all — see `credential_value` below, which is optional.
 pub const DEFAULT_API_URL: &str = "http://127.0.0.1:8080/v1/chat/completions";
+/// The Llama desktop app serves on 9931 by default, not 8080.
+pub const DESKTOP_APP_API_URL: &str = "http://127.0.0.1:9931/v1/chat/completions";
+/// Where discovery looks when no `api_url` is configured, in order.
+pub const DEFAULT_API_URL_CANDIDATES: [&str; 2] = [DEFAULT_API_URL, DESKTOP_APP_API_URL];
 pub const DEFAULT_MAX_TOKENS: u64 = 8192;
+
+/// The candidate that last answered discovery while `api_url` was unset, so
+/// streaming, embeddings and token counts follow the same server. Process
+/// local; a configured `api_url` never consults it.
+static PROBED_API_URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn remember_probed_api_url(url: &str) {
+    if let Ok(mut slot) = PROBED_API_URL.lock() {
+        *slot = Some(url.to_string());
+    }
+}
+
+fn probed_api_url() -> Option<String> {
+    PROBED_API_URL.lock().ok().and_then(|slot| slot.clone())
+}
+
+/// Unset `api_url` → the server discovery found, else llama-server's default.
+pub fn fallback_api_url(probed: Option<&str>) -> &str {
+    probed.unwrap_or(DEFAULT_API_URL)
+}
 
 #[derive(Debug, Clone)]
 pub struct LlamacppConfig {
@@ -71,7 +95,7 @@ pub fn config_from_resolve(
         .filter(|s| !s.is_empty());
     let api_url = match resolved.api_url.as_deref().map(str::trim) {
         Some(u) if !u.is_empty() => u.to_string(),
-        _ => DEFAULT_API_URL.to_string(),
+        _ => fallback_api_url(probed_api_url().as_deref()).to_string(),
     };
     // Reject anything reqwest can't build a request from, with a clear message.
     match reqwest::Url::parse(&api_url) {
@@ -127,6 +151,24 @@ mod tests {
         let cfg = config_from_resolve("m", None, &resolved(None, None)).unwrap();
         assert_eq!(cfg.credential_value, None);
         assert_eq!(cfg.api_url, DEFAULT_API_URL);
+    }
+
+    #[test]
+    fn unset_api_url_uses_the_probed_server_else_llama_servers_default() {
+        // Discovery remembers which local port answered; with nothing probed
+        // yet the bare llama-server default stands.
+        assert_eq!(fallback_api_url(None), DEFAULT_API_URL);
+        assert_eq!(
+            fallback_api_url(Some(DESKTOP_APP_API_URL)),
+            DESKTOP_APP_API_URL
+        );
+        assert_eq!(
+            DEFAULT_API_URL_CANDIDATES,
+            [
+                "http://127.0.0.1:8080/v1/chat/completions",
+                "http://127.0.0.1:9931/v1/chat/completions"
+            ]
+        );
     }
 
     #[test]
