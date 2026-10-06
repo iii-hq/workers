@@ -294,15 +294,17 @@ function subscriptionReason(
   ready: boolean,
 ): string {
   if (ready) return `Connected — models from ${provider.plan}.`
+  // The provider reads only the sign-in; the CLI program may be absent (a
+  // desktop app signs in to the same file).
+  if (tool?.signed_in) {
+    return `${provider.title} is signed in on this machine — uses ${provider.plan}, no API key.`
+  }
   if (!tool?.installed) {
-    return `${provider.title} was not found on this machine.`
+    return `${provider.title} is not signed in on this machine.`
   }
-  if (!tool.signed_in) {
-    return tool.sign_in_note
-      ? `${provider.title} is installed, but ${tool.sign_in_note}.`
-      : `${provider.title} is installed but not signed in. Sign in with the ${provider.title} CLI, then scan again.`
-  }
-  return `${provider.title} is signed in on this machine — uses ${provider.plan}, no API key.`
+  return tool.sign_in_note
+    ? `${provider.title} is installed, but ${tool.sign_in_note}.`
+    : `${provider.title} is installed but not signed in. Sign in with the ${provider.title} CLI, then scan again.`
 }
 
 function keyReason(

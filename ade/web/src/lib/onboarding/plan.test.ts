@@ -69,6 +69,20 @@ describe('providerChoices', () => {
     )
   })
 
+  it('needs only the sign-in, not the CLI program (the desktop apps)', () => {
+    const choices = providerChoices({
+      tools: [
+        { ...signedIn('codex', 'provider-openai-codex'), installed: false },
+      ],
+      providers: [],
+      detections: [],
+    })
+    const codex = byId(choices, 'openai-codex')
+    expect(codex.recommended).toBe(true)
+    expect(codex.reason).toMatch(/signed in on this machine/)
+    expect(codex.reason).not.toMatch(/not found/)
+  })
+
   it('puts providers that already serve models first and marks them ready', () => {
     const choices = providerChoices({
       tools: [],
