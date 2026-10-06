@@ -54,12 +54,16 @@ chose. Counting is local and never runs the model.
 - **Catalog:** `src/discovery.rs` discovers the catalog live — `GET
   /v1/models` lists every id the server serves (no "gpt-"-style family gate:
   llama.cpp serves arbitrary GGUF aliases, so every id is kept), enriched
-  with `GET /props` for the runtime context size (`n_ctx`, the operator's
-  `--ctx-size` — more accurate than `/v1/models`' `meta.n_ctx_train`, the
-  model's *trained* max) and vision-modality support. No pricing
-  (self-hosted). Multi-model router-mode (`--models-dir`, `GET /models`,
-  `/models/load`) is out of scope for v1 — this targets the common
-  single-loaded-model server.
+  with the runtime context size and vision-modality support. The window is
+  the operator's `--ctx-size`, never `meta.n_ctx_train` (the model's
+  *trained* max): a single-model server reports it as `n_ctx` on `GET
+  /props`; a router-mode server (`llama serve`, the Llama desktop app)
+  reports `n_ctx: 0` there, which is ignored, and each `/v1/models` row
+  carries the instance's launch args, from which `--ctx-size` is read. The
+  server rejects any prompt over that window, so the console cannot work
+  around a small one; the ADE's context-overflow card tells llama.cpp users
+  to raise it on the server and links the llama.cpp server docs. No pricing
+  (self-hosted).
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
   channel write (caller gone / `router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request.
