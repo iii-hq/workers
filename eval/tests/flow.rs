@@ -44,8 +44,9 @@ enum JudgeMode {
 
 struct World {
     state: BTreeMap<(String, String), Value>,
-    /// session-manager kinds by session id; absent means `user`.
-    kinds: HashMap<String, &'static str>,
+    /// session-manager `(kind, metadata)` by session id; absent means a
+    /// console chat.
+    sessions: HashMap<String, (&'static str, Value)>,
     steps: VecDeque<Value>,
     calls: Vec<(String, Value)>,
     status: HashMap<String, Value>,
@@ -120,7 +121,7 @@ impl World {
             unanswered_start: None,
             starts: 0,
             executions_down: false,
-            kinds: HashMap::new(),
+            sessions: HashMap::new(),
         };
         world
             .status
@@ -211,10 +212,15 @@ impl World {
                 })
                 .unwrap()
             }
-            "session::get" => json!({"meta": {"session_id": data["session_id"],
-                "title": "Schedule the follow-up", "metadata": {},
-                "kind": self.kinds.get(data["session_id"].as_str().unwrap_or_default())
-                    .copied().unwrap_or("user")}}),
+            "session::get" => {
+                let (kind, metadata) = self
+                    .sessions
+                    .get(data["session_id"].as_str().unwrap_or_default())
+                    .cloned()
+                    .unwrap_or(("user", json!({"surface": "console"})));
+                json!({"meta": {"session_id": data["session_id"],
+                    "title": "Schedule the follow-up", "metadata": metadata, "kind": kind}})
+            }
             "judge::models::list" => json!({"status": "ok",
                 "models": [{"name": "jev-test-1", "description": "", "release_date": ""}],
                 "stats": {"attempts": 1, "requests": 1, "questions": 0, "input_tokens": 0,
@@ -3847,16 +3853,42 @@ async fn a_replay_reproduces_the_signal_and_the_proposed_change_removes_it() {
 }
 
 #[tokio::test]
-async fn only_user_chats_are_analyzed_automatically_and_the_rest_by_hand() {
-    for kind in ["e2e", "automation"] {
+async fn only_console_chats_are_analyzed_automatically_and_the_rest_by_hand() {
+    // What session-manager holds for each session the monitor must not observe
+    // on its own, as measured: an E2E run, a sentinel investigation and the
+    // monitor's own session (both stamped `console` by the console), an E2E
+    // from before the kind existed, and a scripted session with no surface.
+    let cases = [
+        ("e2e", json!({"e2e_run_id": "r1", "e2e_scenario": "kanban"})),
+        (
+            "automation",
+            json!({"sentinel": true, "sentinel_group_id": "grp_1", "surface": "console"}),
+        ),
+        (
+            "automation",
+            json!({"origin": "eval_monitor", "source_session_id": "s", "surface": "console"}),
+        ),
+        (
+            "user",
+            json!({"e2e_run_id": "r1", "e2e_execution_kind": "harness_turn", "surface": "console"}),
+        ),
+        ("user", json!({"parent_session_id": "p", "depth": 1})),
+        ("user", json!({})),
+        ("user", json!({"surface": "slack"})),
+    ];
+    for (kind, metadata) in cases {
         let mut world = World::new();
-        world.kinds.insert(ROOT.into(), kind);
+        world.sessions.insert(ROOT.into(), (kind, metadata.clone()));
         let h = Harness::start(world).await;
         h.configure(true).await;
         let skipped = h.end_turn(ROOT, TURN).await;
-        assert_eq!(skipped.outcome, WakeOutcomeV1::NotUserChat, "{kind}");
+        assert_eq!(
+            skipped.outcome,
+            WakeOutcomeV1::NotUserChat,
+            "{kind} {metadata}"
+        );
         assert!(skipped.evaluation_id.is_none());
-        assert_eq!(h.records(), 0, "{kind}: nothing admitted");
+        assert_eq!(h.records(), 0, "{kind} {metadata}: nothing admitted");
         // A manual analysis still covers it.
         let manual = runtime::analyze_session(
             &h.deps,
@@ -3864,10 +3896,20 @@ async fn only_user_chats_are_analyzed_automatically_and_the_rest_by_hand() {
         )
         .await
         .unwrap();
-        assert!(!manual.reused, "{kind}");
-        assert_eq!(h.records(), 1, "{kind}");
+        assert!(!manual.reused, "{kind} {metadata}");
+        assert_eq!(h.records(), 1, "{kind} {metadata}");
     }
-    let h = Harness::start(World::new()).await;
+    // A plain console chat, with the keys the console writes.
+    let mut world = World::new();
+    world.sessions.insert(
+        ROOT.into(),
+        (
+            "user",
+            json!({"surface": "console", "model": "anthropic::m", "fs_scope": {"root": "/w"},
+                "agent_profile": {"id": "default"}}),
+        ),
+    );
+    let h = Harness::start(world).await;
     h.configure(true).await;
     assert_eq!(
         h.end_turn(ROOT, TURN).await.outcome,

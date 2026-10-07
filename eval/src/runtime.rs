@@ -707,10 +707,14 @@ pub async fn wake(deps: &Deps, event: WakeEventV1) -> Result<WakeResponseV1, Eva
     )
 }
 
-/// Automatic observation analyzes only the user's chats: session-manager's
-/// kind `user` (its default, so a record without a kind counts). E2E runs,
-/// automations (the monitor's own sessions included) and sessions whose kind
-/// cannot be read are left for a manual analysis.
+/// Automatic observation analyzes only the user's console chats: session-manager's
+/// kind `user` (its default, so a record without a kind counts), stamped
+/// `surface: console` by the console, and not an E2E run. The kind alone is not
+/// enough: E2E sessions from before the kind existed read back as `user`,
+/// scripted sessions are `user` without a surface, and the console stamps its
+/// surface on any session it rewrites, an automation's included. Everything
+/// else, and a session whose record cannot be read, is left for a manual
+/// analysis.
 async fn is_user_chat(deps: &Deps, session_id: &str) -> bool {
     match call::<_, Value>(
         deps,
@@ -721,21 +725,26 @@ async fn is_user_chat(deps: &Deps, session_id: &str) -> bool {
     .await
     {
         Ok(meta) => {
-            let kind = meta["meta"]["kind"].as_str().unwrap_or("user");
-            if kind != "user" {
-                tracing::debug!(
-                    session_id,
-                    kind,
-                    "not a user chat; left for manual analysis"
-                );
+            let chat = is_console_chat(&meta["meta"]);
+            if !chat {
+                tracing::debug!(session_id, "not a console chat; left for manual analysis");
             }
-            kind == "user"
+            chat
         }
         Err(error) => {
-            tracing::warn!(session_id, %error, "session kind unreadable; not analyzed automatically");
+            tracing::warn!(session_id, %error, "session record unreadable; not analyzed automatically");
             false
         }
     }
+}
+
+fn is_console_chat(meta: &Value) -> bool {
+    let metadata = &meta["metadata"];
+    meta["kind"].as_str().unwrap_or("user") == "user"
+        && metadata["surface"] == "console"
+        && !metadata
+            .as_object()
+            .is_some_and(|keys| keys.keys().any(|key| key.starts_with("e2e_")))
 }
 
 // ---------------------------------------------------------------------------
