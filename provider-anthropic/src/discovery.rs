@@ -44,9 +44,9 @@ fn cap_supported(row: &Value, path: &[&str]) -> Option<bool> {
 /// model the API marks as thinking-capable but NOT adaptive-capable (the
 /// pre-4.6 generation: Sonnet 4.5, Opus 4.5 and older) would 400 the moment
 /// a thinking_level arrives — those rows are excluded from the slice
-/// entirely. Exception: the haiku family is the cheap tier and has no
-/// adaptive-generation release yet, so it stays with thinking gated off
-/// (a thinking_level on it degrades with a warning instead of erroring).
+/// entirely. Exception: Haiku 4.5, the legacy-only cheap tier, stays with
+/// thinking gated off (a thinking_level on it degrades with a warning
+/// instead of erroring); Haiku 5.5 reports adaptive, so it thinks.
 /// Rows with no capability data stay (permissive for future shapes); rows
 /// that cannot think at all stay with thinking gated off.
 fn model_from_live(row: &Value) -> Option<Model> {

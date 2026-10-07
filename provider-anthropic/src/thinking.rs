@@ -45,7 +45,7 @@ fn off_config(id: &str) -> Option<ThinkingConfig> {
         Some(BETWEEN_TOOLS)
     } else if id.contains("opus-5-5") || id.contains("fable") || id.contains("mythos") {
         None
-    } else if id.contains("sonnet-5") || id.contains("opus-5") {
+    } else if id.contains("sonnet-5") || id.contains("opus-5") || id.contains("haiku-5-5") {
         Some(DISABLED)
     } else {
         None
@@ -54,7 +54,7 @@ fn off_config(id: &str) -> Option<ThinkingConfig> {
 
 /// Whether `thinking_level: off` can be honoured on `model` (base id, no
 /// provider prefix): `Some(true)` where `off_config` names a switch (Sonnet
-/// 5.5 `between_tools`, Sonnet 5 and Opus 5 `disabled`), `Some(false)` for
+/// 5.5 `between_tools`, Sonnet 5, Opus 5 and Haiku 5.5 `disabled`), `Some(false)` for
 /// the always-on models (Opus 5.5, Fable, Mythos), `None` where the docs
 /// read today do not say.
 pub fn supports_off(model: &str) -> Option<bool> {
@@ -213,10 +213,16 @@ mod tests {
     }
 
     #[test]
-    fn off_is_disabled_on_sonnet_5_and_opus_5() {
-        // thinking-troubleshooting#supported-models: Sonnet 5 and Opus 5 accept
-        // `{type: "disabled"}` (Opus 5 at effort high or below, the default).
-        for id in ["claude-sonnet-5", "claude-opus-5", "claude-opus-5-20260301"] {
+    fn off_is_disabled_on_sonnet_5_opus_5_and_haiku_5_5() {
+        // thinking-troubleshooting#supported-models: Sonnet 5, Opus 5 and Haiku
+        // 5.5 accept `{type: "disabled"}` (Opus 5 and Haiku 5.5 at effort high
+        // or below; off sends no effort, so the server default applies).
+        for id in [
+            "claude-sonnet-5",
+            "claude-opus-5",
+            "claude-opus-5-20260301",
+            "claude-haiku-5-5",
+        ] {
             let mut m = model(Some(true), Some(true));
             m.id = id.into();
             let built = build_thinking_config(Some(ThinkingLevel::Off), Some(&m));
@@ -230,6 +236,7 @@ mod tests {
         );
         assert_eq!(supports_off("claude-opus-5"), Some(true));
         assert_eq!(supports_off("claude-sonnet-5"), Some(true));
+        assert_eq!(supports_off("claude-haiku-5-5"), Some(true));
         assert_eq!(supports_off("claude-opus-5-5-20260901"), Some(false));
         assert_eq!(supports_off("claude-opus-4-8"), None);
     }

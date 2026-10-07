@@ -32,6 +32,8 @@ pub fn pricing_for(model_id: &str) -> Option<Pricing> {
         "claude-sonnet-5" | "claude-sonnet-5-5" => Some(price(2.0, 10.0, 0.20)),
         "claude-sonnet-4-6" | "claude-sonnet-4-5" => Some(price(3.0, 15.0, 0.30)),
         "claude-haiku-4-5" => Some(price(1.0, 5.0, 0.10)),
+        // The short-prompt card; a longer prompt bills on long_prompt_card.
+        "claude-haiku-5-5" => Some(price(0.10, 0.50, 0.01)),
         // The Mythos 5.1 cache-read rate was unannounced at launch; it is
         // assumed to match Fable 5.1.
         "claude-fable-5-1" | "claude-mythos-5-1" => Some(price(10.0, 50.0, 0.25)),
@@ -40,20 +42,35 @@ pub fn pricing_for(model_id: &str) -> Option<Pricing> {
     }
 }
 
-/// `cost_usd` for usage whose cache writes include `cache_write_1h` tokens
-/// written with the 1-hour TTL (the shared prefix, see wire/cache.rs). Those
-/// bill at 2x input, which the catalog's single 5-minute `cache_write` rate
-/// cannot express. `None` when there were no 1-hour writes or the model has
-/// no price, leaving the router to price the usage from the catalog.
-pub fn cost_with_1h_cache_writes(
-    model_id: &str,
-    usage: &Usage,
-    cache_write_1h: u64,
-) -> Option<f64> {
-    if cache_write_1h == 0 {
+/// Models billed on a second card once the prompt (input + cache reads +
+/// cache writes) passes a size: `(threshold tokens, long-prompt card)`.
+fn long_prompt_card(model_id: &str) -> Option<(u64, Pricing)> {
+    match base_id(model_id) {
+        "claude-haiku-5-5" => Some((100_000, price(0.50, 2.50, 0.05))),
+        _ => None,
+    }
+}
+
+/// `cost_usd` the catalog's single flat card cannot express: cache writes
+/// that include `cache_write_1h` tokens written with the 1-hour TTL (the
+/// shared prefix, see wire/cache.rs), which bill at 2x input, or a prompt
+/// past its model's long-prompt threshold. `None` otherwise (or when the
+/// model has no price), leaving the router to price the usage from the
+/// catalog.
+pub fn provider_cost_usd(model_id: &str, usage: &Usage, cache_write_1h: u64) -> Option<f64> {
+    let prompt = [usage.input, usage.cache_read, usage.cache_write]
+        .iter()
+        .map(|t| t.unwrap_or(0))
+        .sum::<u64>();
+    let long = long_prompt_card(model_id)
+        .and_then(|(threshold, card)| (prompt > threshold).then_some(card));
+    if cache_write_1h == 0 && long.is_none() {
         return None;
     }
-    let pricing = pricing_for(model_id)?;
+    let pricing = match long {
+        Some(card) => card,
+        None => pricing_for(model_id)?,
+    };
     let input = pricing.input?;
     let five_minute = Usage {
         cache_write: usage.cache_write.map(|w| w.saturating_sub(cache_write_1h)),
@@ -109,6 +126,8 @@ mod tests {
             ("claude-sonnet-4-6", expect(3.0, 15.0, 0.30, 3.75)),
             ("claude-sonnet-5", expect(2.0, 10.0, 0.20, 2.5)),
             ("claude-sonnet-5-5", expect(2.0, 10.0, 0.20, 2.5)),
+            // the catalog carries the short-prompt card (prompt <= 100K)
+            ("claude-haiku-5-5", expect(0.10, 0.50, 0.01, 0.125)),
             ("claude-fable-5-1", expect(10.0, 50.0, 0.25, 12.5)),
             ("claude-fable-5", expect(10.0, 50.0, 1.0, 12.5)),
             ("claude-mythos-5-1", expect(10.0, 50.0, 0.25, 12.5)),
@@ -131,18 +150,36 @@ mod tests {
     #[test]
     fn one_hour_cache_writes_bill_at_twice_input() {
         // 10*4 + 20*20 + 1000*0.20 + 100*5 (5m) + 1000*8 (1h), per MTok.
-        let cost = cost_with_1h_cache_writes("claude-opus-5-5", &opus_usage(), 1_000).unwrap();
+        let cost = provider_cost_usd("claude-opus-5-5", &opus_usage(), 1_000).unwrap();
         assert!((cost - 9_140.0 / 1_000_000.0).abs() < 1e-12, "{cost}");
     }
 
     #[test]
     fn without_one_hour_writes_or_a_price_the_router_prices_it() {
+        assert_eq!(provider_cost_usd("claude-opus-5-5", &opus_usage(), 0), None);
         assert_eq!(
-            cost_with_1h_cache_writes("claude-opus-5-5", &opus_usage(), 0),
+            provider_cost_usd("claude-unknown", &opus_usage(), 1_000),
             None
         );
+    }
+
+    #[test]
+    fn haiku_5_5_prompts_past_100k_bill_on_the_long_prompt_card() {
+        let usage = |input, cache_read, output| Usage {
+            input: Some(input),
+            cache_read: Some(cache_read),
+            output: Some(output),
+            ..Usage::default()
+        };
+        // 150000*0.50 + 1000*2.50 per MTok.
+        let cost = provider_cost_usd("claude-haiku-5-5", &usage(150_000, 0, 1_000), 0).unwrap();
+        assert!((cost - 77_500.0 / 1_000_000.0).abs() < 1e-12, "{cost}");
+        // Cache reads count toward the prompt size: 1000*0.50 + 120000*0.05 + 100*2.50.
+        let cost = provider_cost_usd("claude-haiku-5-5", &usage(1_000, 120_000, 100), 0).unwrap();
+        assert!((cost - 6_750.0 / 1_000_000.0).abs() < 1e-12, "{cost}");
+        // Up to 100K the catalog's short-prompt card applies (the router prices it).
         assert_eq!(
-            cost_with_1h_cache_writes("claude-unknown", &opus_usage(), 1_000),
+            provider_cost_usd("claude-haiku-5-5", &usage(100_000, 0, 1_000), 0),
             None
         );
     }

@@ -2,7 +2,7 @@
 //! every step replays exactly the prefix earlier steps sent.
 //!
 //! Claude models that bind thinking to the conversation prefix (Opus 5.5,
-//! Sonnet 5.5, Fable 5.1) invalidate every later thinking block when an earlier message
+//! Sonnet 5.5, Haiku 5.5, Fable 5.1) invalidate every later thinking block when an earlier message
 //! changes, moves, or disappears between requests; every provider's prompt
 //! cache loses the same prefix. So nothing the harness shows the model is
 //! ephemeral:
@@ -47,14 +47,19 @@ pub fn frozen_runtime_context(entries: &[LoadedEntry]) -> Option<String> {
 }
 
 /// Models that bind each thinking block to the exact prefix it was produced
-/// under (Claude Opus 5.5, Sonnet 5.5, Fable 5.1; Mythos 5.1 does not run the
-/// check): rewriting earlier history — pruning aged function results
-/// included — drops their reasoning.
+/// under (Claude Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1; Mythos 5.1 does
+/// not run the check): rewriting earlier history — pruning aged function
+/// results included — drops their reasoning.
 // ponytail: hardcoded ids; catalog capability flag when the next binding model ships
 pub fn binds_thinking(model: &str) -> bool {
-    ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]
-        .iter()
-        .any(|m| model.contains(m))
+    [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+        "claude-fable-5-1",
+    ]
+    .iter()
+    .any(|m| model.contains(m))
 }
 
 /// A compaction puts the summary in the system prompt and drops the head, so
@@ -709,6 +714,8 @@ mod tests {
         assert!(binds_thinking("claude-code/claude-opus-5-5"));
         assert!(binds_thinking("claude-sonnet-5-5"));
         assert!(binds_thinking("anthropic.claude-sonnet-5-5"));
+        assert!(binds_thinking("claude-haiku-5-5"));
+        assert!(!binds_thinking("claude-haiku-4-5"));
         assert!(!binds_thinking("claude-mythos-5-1"));
         assert!(!binds_thinking("claude-opus-5"));
         assert!(!binds_thinking("claude-sonnet-5"));
