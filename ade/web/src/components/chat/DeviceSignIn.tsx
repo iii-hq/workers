@@ -26,8 +26,8 @@ type Phase = 'idle' | 'fetching' | 'code' | 'waiting' | 'connected' | 'stopped'
 const MESSAGES: Partial<Record<DevicePollStatus, string>> = {
   pending: 'Waiting for you to enter the code on GitHub.',
   slow_down: 'Waiting for you to enter the code on GitHub.',
-  expired: 'The code expired. Retry for a new one.',
-  denied: 'GitHub sign-in was denied. Retry to start again.',
+  expired: 'The code expired. Restart Authentication for a new one.',
+  denied: 'GitHub sign-in was denied. Restart Authentication to try again.',
 }
 
 /** A code GitHub has not used yet is replaced this long before it expires. */
@@ -52,11 +52,11 @@ function liveCode(providerId: string): DeviceCode | null {
  * it does not — so the person has it before GitHub's page opens. The code is
  * kept until it expires, and an unused one is replaced before that.
  * Authenticate copies it, opens the page, and the ADE checks for the
- * sign-in 8 s later and then every 5 s, five tries; a return to this tab or
- * Retry starts a new round of five, 5 s apart. A spinner turns while checks
- * are due, and the status counts the tries that failed. Only an expired or
- * denied code gets a new one from Retry. The reload icon beside the code
- * gets a new code at any time.
+ * sign-in 8 s later and then every 5 s, five tries; a return to this tab
+ * starts a new round of five, 5 s apart. A spinner turns while checks are
+ * due, and the status counts the tries that failed. Restart Authentication
+ * starts over: a new code, copied, and GitHub's page opened again. The
+ * reload icon beside the code gets a new code at any time.
  */
 export function DeviceSignIn({
   provider,
@@ -195,14 +195,26 @@ export function DeviceSignIn({
     watch(current)
   }
 
-  /**
-   * Check again at once with the same code. A code GitHub expired or
-   * refused cannot be checked again: that one is replaced, and Authenticate
-   * opens the page with the new one.
-   */
-  const retry = () => {
-    if (phase === 'waiting') checkNow()
-    else void fetchCode()
+  /** Start over: a new code, copied, with GitHub's page opened for it. */
+  const restart = async () => {
+    // Opened in the click, before the await: a window opened after it is a
+    // popup the browser blocks.
+    const page = window.open('', '_blank')
+    const next = await fetchCode()
+    if (!next) {
+      page?.close()
+      return
+    }
+    if (page) {
+      page.opener = null
+      page.location.href = next.verification_uri
+    }
+    watch(next)
+    // After the await the click no longer counts as a user gesture, so the
+    // browser may refuse the write. The code is on screen; point at Copy.
+    if (!(await copyTextToClipboard(next.user_code))) {
+      setMessage('Could not copy the code. Use Copy, then enter it on GitHub.')
+    }
   }
 
   const started = phase === 'waiting' || phase === 'stopped'
@@ -231,14 +243,6 @@ export function DeviceSignIn({
             {code.user_code}
           </span>
           <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void copyTextToClipboard(code.user_code)}
-          >
-            <Copy aria-hidden />
-            Copy
-          </Button>
-          <Button
             variant="icon"
             size="icon"
             aria-label="New code"
@@ -246,6 +250,14 @@ export function DeviceSignIn({
             onClick={() => void fetchCode()}
           >
             <RefreshCw aria-hidden />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void copyTextToClipboard(code.user_code)}
+          >
+            <Copy aria-hidden />
+            Copy
           </Button>
           {started ? (
             <Button variant="ghost" size="sm" asChild>
@@ -279,7 +291,7 @@ export function DeviceSignIn({
               ? ` ${failed}/${POLL_TRIES} retries failed.`
               : null}
             {phase === 'waiting' && !checking
-              ? ' Come back to this tab or click Retry to check again.'
+              ? ' Come back to this tab to check again.'
               : null}
           </span>
         </p>
@@ -297,9 +309,9 @@ export function DeviceSignIn({
             </Button>
           ) : null}
           {started ? (
-            <Button variant="pill" size="sm" onClick={retry}>
+            <Button variant="pill" size="sm" onClick={() => void restart()}>
               <RotateCw aria-hidden />
-              Retry
+              Restart Authentication
             </Button>
           ) : null}
         </span>

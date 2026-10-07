@@ -182,6 +182,27 @@ describe('device sign-in choices', () => {
     )
     expect(signedIn).toMatchObject({ kind: 'device', ready: true })
   })
+
+  it('counts a signed-in Copilot that declares a credential env var', () => {
+    const signedIn = byId(
+      providerChoices({
+        tools: [],
+        providers: [
+          {
+            id: 'github-copilot',
+            title: 'GitHub Copilot',
+            configured: false,
+            ownsAuthentication: false,
+            available: true,
+            modelCount: 10,
+          },
+        ],
+        detections: [],
+      }),
+      'github-copilot',
+    )
+    expect(signedIn).toMatchObject({ kind: 'device', ready: true })
+  })
 })
 
 describe('servesUsableModels', () => {

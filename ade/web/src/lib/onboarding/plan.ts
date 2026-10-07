@@ -240,7 +240,11 @@ export function providerChoices({
 
   const devices: DeviceChoice[] = DEVICE_PROVIDERS.map((provider) => {
     const state = byProvider.get(provider.providerId)
-    const ready = state !== undefined && servesUsableModels(state)
+    // Its catalog stays empty until a sign-in lands, so models are the
+    // sign-in. Not `servesUsableModels`: a Copilot worker from before it
+    // owned its authentication declares a credential env var, and the router
+    // then reports it unconfigured however long it has been signed in.
+    const ready = state?.available === true && state.modelCount > 0
     return {
       kind: 'device',
       provider,

@@ -11,7 +11,7 @@ describe('DeviceSignIn', () => {
     const html = renderToStaticMarkup(<DeviceSignIn provider={copilot} />)
     expect(html).toContain('Getting a code')
     expect(html).not.toMatch(/>Authenticate<\/button>/)
-    expect(html).not.toMatch(/Retry<\/button>/)
+    expect(html).not.toMatch(/Restart Authentication<\/button>/)
   })
 
   it('asks before adding a worker that is not running', () => {
