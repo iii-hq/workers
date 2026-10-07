@@ -633,6 +633,45 @@ Do not replace this script with only `tsc --watch`. It must:
 
 This enables injectable UI hot development: an edit changes `dist/ui`, Node restarts the worker, the worker reconnects and re-registers the same asset paths with new content, and the Console hot-swaps the asset. The Console itself is not rebuilt.
 
+## Chat mentions (optional)
+
+When users should point the agent at one of the worker's records — a ticket, an event, an email — make the worker a **mention provider**: users type `@<name>` in the ADE composer, Tab into the worker's search and insert `@<name>(id="<id>")`; it renders as a pill that previews on hover and opens on click, and the agent receives the record's one-line summary plus a pre-verified call for the full record. No console or harness change is involved: register two functions and declare the provider in the get function's metadata. The full contract (ranking rules, view fields, icon and color vocabulary, open targets) is the console's `chat-mentions` skill (`directory::skills::get { "id": "ade/mentions" }`); the shape:
+
+```ts
+const MENTION = {
+  v: 1,
+  name: '<name>',                       // what users type after @: lowercase, digits, '-'
+  label: '<Plural noun>',               // menu group header, e.g. 'Events'
+  description: '<what an id refers to>',
+  icon: 'event',                        // ticket, session, event, email, user, doc, …
+  color: 'purple',                      // neutral, blue, purple, teal, green, amber, rose
+  search: '<worker-name>::mention::search',
+  details: { function_id: '<worker-name>::<resource>::get', id_field: 'id' },
+}
+
+// { query, limit?, context? } -> { items: [{ id, label, hint?, description?, icon?, color? }] }
+iii.registerFunction('<worker-name>::mention::search', searchForMention, {
+  description: 'Search <records> for the chat @<name> mention menu; best match first.',
+  request_format: mentionSearchRequest,
+  response_format: mentionSearchResponse,
+  metadata: { internal: true, trace_hidden: true },
+})
+
+// { id } -> { id, label, hint?, description?, icon?, color?, fields?, open?, summary?, data? } | null
+iii.registerFunction('<worker-name>::mention::get', mentionView, {
+  description: 'Resolve a @<name>(id=…) chat mention to its view; null for an unknown id.',
+  request_format: mentionGetRequest,
+  response_format: mentionViewOrNull,
+  metadata: { internal: true, trace_hidden: true, mention: MENTION },
+})
+```
+
+- Search: an empty `query` returns recent records; rank exact handles, then title prefix, then title words, then body text; answer within 2.5 s.
+- Get: answer with the canonical id (a handle may be accepted as input), `null` for an unknown id, a self-contained one-line `summary` for the agent, and `open: { page: '<page-id>', context: { id } }` to open the record's page.
+- Keep both functions internal and deny them in `iii-permissions.yaml`; `details` must name an agent-allowed function.
+- Optional: draw the hover card with `host.mentions?.registerRenderer({ provider: '<name>', Preview })` in `ui/page.tsx` (designer's `console-injectable-ui`).
+- Verify: `engine::functions::list { include_internal: true }` shows `metadata.mention`; `judge::mentions::resolve { "text": "@<name>(id=\"<id>\")" }` answers `resolved`; `@<name>` appears in the composer.
+
 ## Worker manifest
 
 Create `iii.worker.yaml` at the worker root:

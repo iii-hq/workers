@@ -182,9 +182,10 @@ ticket, Edit description, Write a comment, Back to the board.
 
 Tickets can be mentioned in a chat as `@kanban(id="<uuid>")`. In the
 console composer, type `@kanban`, press Tab and search by key (`KAN-12`,
-`12`) or title words; the ticket shows as a pill, and hovering it shows its
-ticket card. Agents get the ticket's one-line summary with the message and
-read the whole ticket through `kanban::ticket::get`.
+`12`) or title words; the ticket shows as a pill that previews on hover
+(status, priority, assignee, labels) and opens the ticket screen on click.
+Agents get the ticket's one-line summary with the message and read the whole
+ticket through `kanban::ticket::get`.
 
 Two internal functions provide this (see
 [`crates/mention-contract`](../crates/mention-contract/README.md)):

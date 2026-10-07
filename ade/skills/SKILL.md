@@ -37,6 +37,10 @@ stack; traces need the engine's OpenTelemetry export.
   `ade/injectable-ui` (the delivery contract) first, then
   `ade/design-console-ui` (responsive UX and forms), with
   `ade/design-system` open for every visual rule and number.
+- A worker's records should be mentionable in chat (`@calendar(id="…")`:
+  composer autocomplete, pills with a hover preview, agents receiving the
+  record resolved): read `ade/mentions` — two functions and a metadata
+  descriptor, no console change.
 - You changed a worker's UI and must prove it is loadable: read
   `console::ui-manifest` and require an empty `warnings` array.
 - The user should watch something in the console: `console::workspace::open`
@@ -82,6 +86,7 @@ stack; traces need the engine's OpenTelemetry export.
 - `console::working-directory::propose` — ask the operator to move the session (chat and paired shell) to a directory created or cloned elsewhere.
 - `console::ui-content` — the console's own content function for its injected catalog pages; internal.
 - `console::on-config-change`, `console::working-directory::inject-guidance`, `console::working-directory::stamp-session` — internal wiring; never call directly.
+- `console::mentions::trace::search`, `console::mentions::trace::get` — the `@trace(id="<trace_id>")` chat mention provider over `engine::traces::list`; internal. Agents read a mentioned trace through `engine::traces::tree` (see `ade/mentions`).
 
 ## Reactive triggers
 
