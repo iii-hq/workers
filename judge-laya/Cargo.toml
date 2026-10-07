@@ -28,6 +28,10 @@ safetensors = "0.8"
 iii-llama-runtime = { path = "../crates/llama-runtime" }
 iii-llama-native = { path = "../crates/llama-native" }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+# lang.rs: Python's character classes (general categories) and
+# `unicodedata.combining`; tokenizers and hf-hub's idna lock them already.
+regex = "1"
+icu_properties = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 anyhow = "1"

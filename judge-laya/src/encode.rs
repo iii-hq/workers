@@ -138,10 +138,20 @@ pub fn serialize_state(state: &Value) -> String {
     }
 }
 
+/// A state serialized and tokenized once per evaluation: every question's
+/// sequence slices the same ids to its own room (laya #109).
+pub struct State {
+    ids: Vec<u32>,
+    /// A JSON array is a chronological conversation, newest last: laya keeps
+    /// its end so the latest turn survives; any other state keeps its start.
+    keep_end: bool,
+}
+
 pub struct Sequence {
     pub ids: Vec<u32>,
     pub markers: Vec<usize>,
-    /// State tokens the window could not hold (right-truncated, like laya).
+    /// State tokens the window could not hold (from the start of an array
+    /// state, from the end of any other, like laya).
     pub state_dropped: usize,
 }
 
@@ -189,8 +199,17 @@ impl Encoder {
             .to_vec())
     }
 
-    /// `build_sequence` (default option order, right truncation of the state).
-    pub fn build(&self, state: &Value, q: &Question) -> Result<Sequence> {
+    /// `serialize_state` + mask sanitising + tokenization, shared by every
+    /// question about `state`.
+    pub fn state(&self, state: &Value) -> Result<State> {
+        Ok(State {
+            ids: self.encode(&serialize_state(state).replace(&self.mask_text, " "))?,
+            keep_end: state.is_array(),
+        })
+    }
+
+    /// `build_sequence` (default option order) over an already tokenized state.
+    pub fn build(&self, state: &State, q: &Question) -> Result<Sequence> {
         let ins = q.instructions.replace(&self.mask_text, " ");
         let mut head = self.encode(&format!("{} question: {ins}", q.qtype.name()))?;
         let mut opts: Vec<Vec<u32>> = Vec::with_capacity(q.options.len());
@@ -221,10 +240,13 @@ impl Encoder {
         }
         ids.push(self.sep);
         let room = self.max_len.saturating_sub(ids.len() + 1);
-        let mut st = self.encode(&serialize_state(state).replace(&self.mask_text, " "))?;
+        let st = &state.ids;
         let state_dropped = st.len().saturating_sub(room);
-        st.truncate(room);
-        ids.extend(st);
+        ids.extend_from_slice(if state.keep_end {
+            &st[state_dropped..]
+        } else {
+            &st[..st.len() - state_dropped]
+        });
         ids.push(self.sep);
         ids.truncate(self.max_len);
         markers.retain(|&m| m < self.max_len);

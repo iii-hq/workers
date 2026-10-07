@@ -17,11 +17,17 @@ pub struct LayaConfig {
     pub preload: Vec<String>,
     /// Route each evaluation without an explicit `model` by its state's script
     /// and language, like laya's Router: non-English states go to
-    /// `laya-multilingual`, English ones to `laya`, when those are loaded.
+    /// `laya-multilingual`, English ones to `laya`, when those are loaded;
+    /// Latin text no word list identifies stays on the default `model`.
     pub auto_route: bool,
     /// Send an evaluation whose question ids form one of laya's four
     /// typed-decisions workflows to `laya-typed-decisions` when it is loaded.
     pub auto_task_detection: bool,
+    /// Answer a choice of more than 16 options as laya's tournament (groups of
+    /// 16, then a final over their winners) instead of one row whose labels
+    /// get cut: more accurate on wide label sets, at one more forward pass,
+    /// and `confidence` covers the finalists only.
+    pub choice_tournament: bool,
     /// Hugging Face revision of `convaiinnovations/laya`; null follows `main`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
@@ -63,6 +69,7 @@ impl Default for LayaConfig {
             preload: Vec::new(),
             auto_route: false,
             auto_task_detection: false,
+            choice_tournament: false,
             revision: None,
             threads: default_threads(),
             gpu_layers: None,
@@ -118,6 +125,7 @@ impl LayaConfig {
         Routing {
             auto_route: self.auto_route,
             auto_task_detection: self.auto_task_detection,
+            choice_tournament: self.choice_tournament,
         }
     }
     pub fn from_json(value: &Value) -> Result<Self, String> {

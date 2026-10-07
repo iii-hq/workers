@@ -105,6 +105,7 @@ describe('LayaConfigForm', () => {
       'preload:laya-typed-decisions',
       'auto_route',
       'auto_task_detection',
+      'choice_tournament',
     ])
     expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('Running laya · 1c5edc1')
     expect(container.textContent).toContain('no API key')

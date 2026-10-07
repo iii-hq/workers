@@ -20,6 +20,7 @@ const MODELS = [
 const routingFlags = [
   { field: 'auto_route', label: 'Route by state language', description: 'Evaluations without an explicit model go to laya-multilingual when the state is not English (script and stopword detection, like laya’s Router). Needs that checkpoint preloaded.' },
   { field: 'auto_task_detection', label: 'Detect typed-decisions workflows', description: 'Evaluations whose question ids form one of laya’s four workflows go to laya-typed-decisions. Needs that checkpoint preloaded.' },
+  { field: 'choice_tournament', label: 'Wide choices as a tournament', description: 'A choice of more than 16 options is asked in groups of 16, then once more over the group winners, instead of in one row whose labels get cut. More accurate on wide label sets; costs one more pass, and confidence covers the finalists only.' },
 ]
 const limitFields = [
   { field: 'batch_questions', label: 'Questions per batch', fallback: 16, description: 'Questions scored in one forward pass (at most 8 for the 1024-token checkpoints); cancellation and deadlines are checked between batches. Clear to use 16.' },

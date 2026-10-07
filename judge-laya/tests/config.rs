@@ -11,13 +11,16 @@ fn config_validates_model_revision_and_limits() {
     assert_eq!(defaults["preload"], json!([]));
     assert_eq!(defaults["auto_route"], false);
     assert_eq!(defaults["auto_task_detection"], false);
+    assert_eq!(defaults["choice_tournament"], false);
     let routed = LayaConfig::from_json(&json!({
         "preload": ["laya-multilingual", "laya-typed-decisions"],
         "auto_route": true,
-        "auto_task_detection": true
+        "auto_task_detection": true,
+        "choice_tournament": true
     }))
     .unwrap();
-    assert!(routed.routing().auto_route && routed.routing().auto_task_detection);
+    let routing = routed.routing();
+    assert!(routing.auto_route && routing.auto_task_detection && routing.choice_tournament);
     let ok = LayaConfig::from_json(
         &json!({"model": "laya-multilingual", "revision": "abc123", "batch_questions": 4}),
     )

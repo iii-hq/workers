@@ -2,7 +2,7 @@
 mod support;
 
 use judge_contract::{Answer, EvaluateRequest, EvaluateResponse, ModelsRequest, ModelsResponse};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use support::{tiny_client, tiny_client_named};
 
 fn request(extra: Value) -> EvaluateRequest {
@@ -142,32 +142,162 @@ async fn batches_split_by_the_configured_size_and_respect_deadlines_and_model_na
     ok(tiny_client().evaluate(same).await);
 }
 
-#[tokio::test]
-async fn options_that_overflow_the_head_window_are_payload_too_large() {
-    // laya shrinks options to fit `head_max_len` (48 here), but 40 four-token
-    // options overflow the 128-token window, so later markers fall outside it.
-    let criteria: serde_json::Map<String, Value> = (0..40)
+/// `n` options whose long descriptions do not fit one row's head budget,
+/// keyed so the contract's sorted order is their numeric order.
+fn wide(n: usize) -> Map<String, Value> {
+    (0..n)
         .map(|i| {
             (
-                format!("option-{i}"),
+                format!("option-{i:03}"),
                 json!("a fairly long description of this option ".repeat(3)),
             )
         })
-        .collect();
-    let request = request(
-        json!({"evaluations": [{"id": "wide", "state": "x", "questions": {"pick": {"type": "choice", "criteria": criteria}}}]}),
-    );
-    let response = tiny_client().evaluate(request).await;
-    assert!(
-        matches!(
-            response,
-            EvaluateResponse::Error {
-                code: judge_contract::ErrorCode::PayloadTooLarge,
-                ..
-            }
-        ),
-        "{response:?}"
-    );
+        .collect()
+}
+
+fn choice(criteria: &Map<String, Value>) -> Value {
+    json!({"type": "choice", "instructions": "Which option fits?", "criteria": criteria})
+}
+
+/// One evaluation over the state "x".
+fn single(questions: Value) -> EvaluateRequest {
+    request(json!({"evaluations": [{"id": "e", "state": "x", "questions": questions}]}))
+}
+
+fn choice_of(answer: &Answer) -> &str {
+    match answer {
+        Answer::Choice { choice, .. } => choice,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// `client` with `choice_tournament` on.
+fn tournament(client: judge_laya::LayaClient) -> judge_laya::LayaClient {
+    client.with_routing(judge_laya::Routing {
+        choice_tournament: true,
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+async fn a_choice_is_one_row_unless_the_tournament_is_on_and_it_is_wide() {
+    // 16 options never play; 17 only when the operator turned it on.
+    for (client, n) in [(tournament(tiny_client()), 16), (tiny_client(), 17)] {
+        let criteria = wide(n);
+        let EvaluateResponse::Ok { results, stats, .. } = ok(client
+            .evaluate(single(json!({"pick": choice(&criteria)})))
+            .await)
+        else {
+            unreachable!()
+        };
+        assert_eq!(stats.attempts, 1, "{n} options");
+        let Answer::Choice { probabilities, .. } = &results["e"].answers["pick"] else {
+            panic!("{results:?}")
+        };
+        assert_eq!(probabilities.len(), n);
+        assert!(
+            probabilities.values().all(|&p| p > 0.0),
+            "{probabilities:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_wide_choice_plays_groups_then_a_final_over_their_winners() {
+    let client = tournament(tiny_client());
+    for n in [17, 40, 255] {
+        let criteria = wide(n);
+        let keys: Vec<&String> = criteria.keys().collect();
+        let fine = json!({"type": "noul", "instructions": "Fine?"});
+        let EvaluateResponse::Ok { results, stats, .. } = ok(client
+            .evaluate(single(json!({"pick": choice(&criteria), "fine": fine})))
+            .await)
+        else {
+            unreachable!()
+        };
+        // The groups share the first round's passes with the other question
+        // (16 rows a pass on the tiny checkpoint); the final takes one more.
+        let parts = n.div_ceil(16);
+        assert_eq!(stats.attempts, (1 + parts).div_ceil(16) + 1, "{n} options");
+        assert_eq!((stats.requests, stats.questions), (1, 2));
+        let wide_answer = &results["e"].answers["pick"];
+        let Answer::Choice {
+            choice: picked,
+            probabilities,
+            confidence,
+        } = wide_answer
+        else {
+            panic!("{wide_answer:?}")
+        };
+        // Every option is answered and the distribution is whole; the
+        // finalists hold all of it.
+        assert_eq!(probabilities.keys().collect::<Vec<_>>(), keys);
+        assert!((probabilities.values().sum::<f64>() - 1.0).abs() < 1e-9);
+        let finalists: Map<String, Value> = probabilities
+            .iter()
+            .filter(|(_, &p)| p > 0.0)
+            .map(|(key, _)| (key.clone(), criteria[key].clone()))
+            .collect();
+        assert_eq!(finalists.len(), parts, "{probabilities:?}");
+        assert!(finalists.contains_key(picked));
+
+        // Played by hand like laya's `predict_tournament`: each group as its
+        // own question beside the rest of the request, then the winners as
+        // one question. Same rows in the same passes, so the same numbers.
+        let mut round: Map<String, Value> = (0..parts)
+            .map(|i| {
+                let group: Map<String, Value> = keys[i * n / parts..(i + 1) * n / parts]
+                    .iter()
+                    .map(|&key| (key.clone(), criteria[key].clone()))
+                    .collect();
+                (format!("group-{i:02}"), choice(&group))
+            })
+            .collect();
+        round.insert("fine".into(), fine.clone());
+        let EvaluateResponse::Ok {
+            results: played, ..
+        } = ok(client.evaluate(single(round.into())).await)
+        else {
+            unreachable!()
+        };
+        let winners: Vec<&str> = played["e"]
+            .answers
+            .iter()
+            .filter(|(qid, _)| qid.starts_with("group-"))
+            .map(|(_, answer)| choice_of(answer))
+            .collect();
+        assert_eq!(winners, finalists.keys().collect::<Vec<_>>());
+        assert_eq!(
+            format!("{:?}", played["e"].answers["fine"]),
+            format!("{:?}", results["e"].answers["fine"])
+        );
+        let EvaluateResponse::Ok { results: last, .. } = ok(client
+            .evaluate(single(json!({"pick": choice(&finalists)})))
+            .await)
+        else {
+            unreachable!()
+        };
+        let Answer::Choice {
+            choice: final_choice,
+            probabilities: final_probabilities,
+            confidence: final_confidence,
+        } = &last["e"].answers["pick"]
+        else {
+            panic!("{last:?}")
+        };
+        assert_eq!(final_choice, picked);
+        assert_eq!(final_confidence, confidence);
+        for (key, p) in final_probabilities {
+            assert_eq!(probabilities[key], *p, "{key}");
+        }
+        // Usage counts every row the encoder read, in both rounds.
+        let tokens = |results: &std::collections::BTreeMap<
+            String,
+            judge_contract::EvaluationResult,
+        >| { results["e"].usage.as_ref().unwrap().input_tokens.unwrap() };
+        assert_eq!(tokens(&results), tokens(&played) + tokens(&last));
+        assert_eq!(stats.input_tokens, tokens(&results));
+    }
 }
 
 #[tokio::test]
@@ -182,6 +312,9 @@ async fn model_listing_describes_the_loaded_checkpoint() {
     assert!(models[0].description.contains("in-process"));
     assert!(models[0].release_date.starts_with("local:"));
     assert_eq!(models[0].context_window, Some(128));
+    // No option count limit: the window bounds a row, and with
+    // `choice_tournament` wide choices fit in any case.
+    assert_eq!(models[0].max_options, None);
     assert!(stats.usage_complete);
 }
 
@@ -198,6 +331,7 @@ async fn routing_follows_explicit_model_then_workflow_then_state_language() {
     let routed = client.with_routing(judge_laya::Routing {
         auto_route: true,
         auto_task_detection: true,
+        ..Default::default()
     });
     let noul = json!({"q": {"type": "noul", "instructions": "Refund?"}});
     let portuguese = "O cliente diz que a fatura foi cobrada duas vezes e pede o reembolso até sexta, não dá para esperar.";
@@ -252,4 +386,28 @@ async fn routing_follows_explicit_model_then_workflow_then_state_language() {
     assert_eq!(model, "laya");
     assert_eq!(results.len(), 2);
     assert_eq!((stats.attempts, stats.requests, stats.questions), (2, 2, 2));
+
+    // Latin text no word list identifies is no evidence of English: it takes
+    // the default checkpoint like a state without letters (laya #203).
+    let multilingual =
+        tiny_client_named(&["laya-multilingual", "laya"]).with_routing(judge_laya::Routing {
+            auto_route: true,
+            ..Default::default()
+        });
+    for undecided in ["Quero cancelar", "ok thanks", "12345"] {
+        assert_eq!(
+            model_of(multilingual.evaluate(one(undecided, &noul)).await),
+            "laya-multilingual",
+            "{undecided}"
+        );
+        assert_eq!(
+            model_of(routed.evaluate(one(undecided, &noul)).await),
+            "laya",
+            "{undecided}"
+        );
+    }
+    assert_eq!(
+        model_of(multilingual.evaluate(one(english, &noul)).await),
+        "laya"
+    );
 }

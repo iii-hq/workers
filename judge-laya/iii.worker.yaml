@@ -12,6 +12,7 @@ config:
   preload: []
   auto_route: false
   auto_task_detection: false
+  choice_tournament: false
   threads: 8
   batch_questions: 16
   max_request_bytes: 8388608
