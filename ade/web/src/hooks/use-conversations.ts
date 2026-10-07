@@ -47,6 +47,8 @@ import { ringForCompletionEvent } from '@/lib/completion-bell'
 import { requestComposerFocus } from '@/lib/composer-insert'
 import { errText, isFunctionNotFound } from '@/lib/errors'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
+import { findMentions } from '@/lib/mentions/token'
+import { getMentionViewState } from '@/lib/mentions/views'
 import { newSessionId } from '@/lib/session-id'
 import {
   deleteAttachment,
@@ -209,8 +211,28 @@ export function draftSaveIsRedundant(
   )
 }
 
-function deriveTitle(text: string): string {
-  const clean = text.replace(/\s+/g, ' ').trim().toLowerCase()
+/** Mention tokens read as their item (`@KAN-12`, `@fix login`) when its
+ * view is cached — it is, for one just picked from the menu — else as
+ * `@<provider>`; a raw `@kanban(id="6ac4…")` makes a useless title. */
+function mentionTitleText(text: string): string {
+  const found = findMentions(text)
+  if (found.length === 0) return text
+  let out = ''
+  let last = 0
+  for (const mention of found) {
+    out += text.slice(last, mention.index)
+    const state = getMentionViewState(mention.name, mention.id)
+    out +=
+      state.status === 'ready'
+        ? `@${state.view.hint || state.view.label}`
+        : `@${mention.name}`
+    last = mention.index + mention.token.length
+  }
+  return out + text.slice(last)
+}
+
+export function deriveTitle(text: string): string {
+  const clean = mentionTitleText(text).replace(/\s+/g, ' ').trim().toLowerCase()
   if (!clean) return 'new chat'
   return clean.length > 32 ? `${clean.slice(0, 32)}…` : clean
 }
