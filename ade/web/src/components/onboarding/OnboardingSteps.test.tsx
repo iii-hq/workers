@@ -52,6 +52,8 @@ function controller(
       envFile: '.env',
       installed,
       consoleConfig: null,
+      browser: null,
+      browserError: null,
       ...snapshot,
     },
     scanning: false,
@@ -60,6 +62,9 @@ function controller(
     running: null,
     run: async () => true,
     judgeInstalled: installed.has('judge'),
+    checkChromium: async () => null,
+    installChromium: async () => ({ ok: true }),
+    chromiumProgress: null,
   }
 }
 
@@ -86,6 +91,7 @@ describe('ModelsStep', () => {
     const html = renderToStaticMarkup(
       <ModelsStep
         onboarding={controller({ installed: new Set(['llm-router']) })}
+        position={{ index: 1, total: 2 }}
         onBack={noop}
         onNext={noop}
       />,

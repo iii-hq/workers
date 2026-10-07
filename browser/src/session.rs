@@ -275,8 +275,8 @@ pub fn read_ring<T: Clone>(
 /// Newest screencast frame, replaced in place as Chromium pushes. Holds the
 /// CDP event by `Arc` so the push-rate pump only copies a pointer; the one
 /// owned copy of the base64 payload happens in the `browser::frame` handler,
-/// which runs at poll rate. `seq` is the change cursor `browser::frame`
-/// compares against `since_frame`.
+/// which a viewer calls once to seed its first paint. `seq` is the change
+/// cursor `browser::frame` compares against `since_frame`.
 #[derive(Clone)]
 pub struct LatestFrame {
     pub frame: Arc<ScreencastFrameEvent>,
@@ -429,6 +429,13 @@ pub struct Tab {
     /// `created_ms`. None = lives until closed.
     pub ttl_ms: Option<u64>,
     last_used_ms: AtomicU64,
+    /// Notified whenever the tab's inactivity deadline may have moved: it
+    /// was used, a viewer left, or `inactive_after_ms` changed. The live
+    /// page's idle timer (see `spawn_idle_timer`) re-arms on it.
+    activity: tokio::sync::Notify,
+    /// The `ttl_ms` timer: sleeps until `created_ms + ttl_ms`, then closes
+    /// the tab. Aborted when the tab closes first.
+    expiry: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Screencast frame cursor. On the tab, not the page, so a viewer that
     /// ignores frames older than the last one it saw keeps working after
     /// the tab slept and woke into a fresh page.
@@ -487,6 +494,13 @@ struct TabStore {
 impl Tab {
     pub fn touch(&self) {
         self.last_used_ms.store(now_ms() as u64, Ordering::Relaxed);
+        self.activity.notify_one();
+    }
+
+    /// The tab's idle deadline may have moved without it being used (a
+    /// viewer left, a setting changed): wake its idle timer to re-read it.
+    fn rearm_idle(&self) {
+        self.activity.notify_one();
     }
 
     pub fn last_used_ms(&self) -> i64 {
@@ -510,6 +524,25 @@ impl Tab {
         }
     }
 
+    /// The live page's title changed: keep it, and name the newest history
+    /// visit with it when that visit is the current page. False when the
+    /// title is what the tab already had.
+    pub fn retitle(&self, title: &str) -> bool {
+        {
+            let mut current = self.title.lock().unwrap_or_else(|p| p.into_inner());
+            if *current == title {
+                return false;
+            }
+            *current = title.to_string();
+        }
+        let url = self.url();
+        let mut history = self.history.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(last) = history.last_mut().filter(|last| last.url == url) {
+            last.title = title.to_string();
+        }
+        true
+    }
+
     /// A top-document navigation committed to `url`: the tab remembers
     /// where it is, the history panel and the back/forward stack learn about
     /// it. Idempotent, so the navigation pump and the handler that started
@@ -528,11 +561,6 @@ impl Tab {
     /// Whether this tab is written to `tabs.json`.
     pub fn persists(&self) -> bool {
         !self.incognito && !self.attached
-    }
-
-    pub fn expired(&self, now: i64) -> bool {
-        self.ttl_ms
-            .is_some_and(|ttl| now.saturating_sub(self.created_ms) >= ttl as i64)
     }
 
     /// Record a committed navigation. Consecutive visits to the same URL
@@ -788,6 +816,9 @@ pub struct Session {
     /// Requests the page has started and not finished (id → start epoch ms),
     /// so `browser::run` can wait for what an action triggered.
     pub inflight: Mutex<HashMap<String, i64>>,
+    /// Notified (`notify_waiters`) whenever `inflight` gains or loses a
+    /// request, so the network settle waits on the page, not on a clock.
+    pub inflight_changed: tokio::sync::Notify,
     /// Cross-call state for `browser::execute`; lives until the page closes.
     pub exec_state: Mutex<serde_json::Value>,
     /// Serializes explicit navigation, execute, and file-input attachment.
@@ -1247,7 +1278,55 @@ impl Sessions {
             iii,
         });
         sessions.restore();
+        for tab in sessions.list_tabs() {
+            sessions.arm_expiry(&tab);
+        }
         sessions
+    }
+
+    /// Start the tab's `ttl_ms` timer: it sleeps until the tab's own
+    /// expiry and closes it then (an already-expired restored tab closes
+    /// at once). Nothing to do for a tab without a lifetime, or outside a
+    /// runtime (unit tests that only build the registry).
+    fn arm_expiry(self: &Arc<Self>, tab: &Arc<Tab>) {
+        let Some(ttl_ms) = tab.ttl_ms else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let due_ms = tab.created_ms.saturating_add(ttl_ms as i64);
+        let at = tokio::time::Instant::now()
+            + std::time::Duration::from_millis(due_ms.saturating_sub(now_ms()).max(0) as u64);
+        let sessions = Arc::downgrade(self);
+        let id = tab.id.clone();
+        let timer = runtime.spawn(async move {
+            tokio::time::sleep_until(at).await;
+            let Some(sessions) = sessions.upgrade() else {
+                return;
+            };
+            tracing::info!(session_id = %id, "closing expired tab");
+            // On its own task: closing the tab aborts this timer.
+            tokio::spawn(async move {
+                sessions.stop(&id, "expired").await;
+            });
+        });
+        if let Some(previous) = tab
+            .expiry
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .replace(timer)
+        {
+            previous.abort();
+        }
+    }
+
+    /// `inactive_after_ms` may have changed: every live tab's idle timer
+    /// re-reads its deadline. Called by the configuration-change handler.
+    pub fn config_changed(&self) {
+        for tab in self.list_tabs() {
+            tab.rearm_idle();
+        }
     }
 
     pub fn profile_dir(&self) -> PathBuf {
@@ -1302,6 +1381,8 @@ impl Sessions {
                 created_ms: record.created_ms,
                 ttl_ms: record.ttl_ms,
                 last_used_ms: AtomicU64::new(now_ms() as u64),
+                activity: tokio::sync::Notify::new(),
+                expiry: Mutex::new(None),
                 frame_seq: AtomicU64::new(0),
                 ref_counter: AtomicU64::new(0),
                 pick_counter: AtomicU64::new(0),
@@ -1424,6 +1505,8 @@ impl Sessions {
             created_ms: now_ms(),
             ttl_ms: request.ttl_ms,
             last_used_ms: AtomicU64::new(now_ms() as u64),
+            activity: tokio::sync::Notify::new(),
+            expiry: Mutex::new(None),
             frame_seq: AtomicU64::new(0),
             ref_counter: AtomicU64::new(0),
             pick_counter: AtomicU64::new(0),
@@ -1441,6 +1524,7 @@ impl Sessions {
             .unwrap_or_else(|p| p.into_inner())
             .push(tab.clone());
         self.persist();
+        self.arm_expiry(&tab);
 
         let session = match self.wake(&tab, request.headful).await {
             Ok(session) => session,
@@ -1608,6 +1692,7 @@ impl Sessions {
             snapshot_keys: Mutex::new(None),
             dom_names: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashMap::new()),
+            inflight_changed: tokio::sync::Notify::new(),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
             page_navigation: Arc::default(),
@@ -1818,7 +1903,11 @@ impl Sessions {
     fn remove_tab(&self, id: &str) -> Option<Arc<Tab>> {
         let mut tabs = self.tabs.lock().unwrap_or_else(|p| p.into_inner());
         let index = tabs.iter().position(|t| t.id == id)?;
-        Some(tabs.remove(index))
+        let tab = tabs.remove(index);
+        if let Some(expiry) = tab.expiry.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            expiry.abort();
+        }
+        Some(tab)
     }
 
     /// Put a tab to sleep: close its page, keep the tab. Incognito and
@@ -1914,6 +2003,8 @@ impl Sessions {
             created_ms: now,
             ttl_ms: None,
             last_used_ms: AtomicU64::new(now as u64),
+            activity: tokio::sync::Notify::new(),
+            expiry: Mutex::new(None),
             frame_seq: AtomicU64::new(0),
             ref_counter: AtomicU64::new(0),
             pick_counter: AtomicU64::new(0),
@@ -1950,6 +2041,7 @@ impl Sessions {
             snapshot_keys: Mutex::new(None),
             dom_names: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashMap::new()),
+            inflight_changed: tokio::sync::Notify::new(),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
             page_navigation: Arc::default(),
@@ -2347,9 +2439,10 @@ impl Sessions {
     /// 1->0 transition, leaving it running while any other consumer remains
     /// (so stopping a recording never cuts off a UI viewer). Never
     /// underflows. Watching counts as using the tab, so the release also
-    /// touches it — the inactivity clock starts when the viewer leaves.
+    /// touches it — the inactivity clock starts when the viewer leaves. The
+    /// touch comes after the count drops, so the idle timer it wakes sees
+    /// the tab unwatched.
     pub async fn release_screencast(&self, session: &Arc<Session>) {
-        session.touch();
         let prev = session
             .screencast_consumers
             .fetch_update(
@@ -2358,38 +2451,12 @@ impl Sessions {
                 |n| n.checked_sub(1),
             )
             .unwrap_or(0);
+        session.touch();
         if prev == 1 {
             let _ = session
                 .page
                 .execute(cdp_page::StopScreencastParams::default())
                 .await;
-        }
-    }
-
-    /// Close expired tabs and put unused, unwatched tabs to sleep (incognito
-    /// and attached ones close). Called from the sweep task in `main`.
-    pub async fn sweep_idle(self: &Arc<Self>) {
-        let now = now_ms();
-        for tab in self.list_tabs() {
-            if tab.expired(now) {
-                tracing::info!(session_id = %tab.id, "closing expired tab");
-                self.stop(&tab.id, "expired").await;
-            }
-        }
-        let inactive_after_ms = self.config.load().inactive_after_ms;
-        if inactive_after_ms == 0 {
-            return;
-        }
-        let cutoff = now - inactive_after_ms as i64;
-        for session in self.live_sessions() {
-            if session.screencast_on()
-                || session.recording.lock().await.is_some()
-                || session.last_used_ms() >= cutoff
-            {
-                continue;
-            }
-            tracing::info!(session_id = %session.id, "sleeping idle tab");
-            self.sleep(&session.id, "idle").await;
         }
     }
 
@@ -2461,23 +2528,44 @@ async fn discovered_pages(browser: &Browser) -> Result<Vec<Page>, String> {
     Ok(Vec::new())
 }
 
-/// Spawn the system Chromium on `profile_dir`, reaping an orphan from a
+/// Spawn the resolved Chromium on `profile_dir`, reaping an orphan from a
 /// killed worker once if it still holds the profile lock.
 async fn launch_chromium(
     cfg: &WorkerConfig,
     headless: bool,
     profile: &std::path::Path,
 ) -> Result<(Browser, chromiumoxide::Handler), String> {
+    // One resolver for the launcher, browser::doctor and
+    // browser::chromium::status, so what they report is what launches. A
+    // miss is reported with the `chromium_missing` marker and the way out,
+    // never as chromiumoxide's bare "Could not auto detect" string.
+    let resolved = crate::chromium::resolve_executable(cfg)
+        .ok_or_else(|| crate::chromium::missing_error(cfg))?;
+    let no_sandbox = crate::chromium::needs_no_sandbox(&resolved);
+    if no_sandbox {
+        tracing::warn!(
+            path = %resolved.path.display(),
+            "launching chromium with --no-sandbox: this Linux blocks the user-namespace sandbox \
+             for binaries without an AppArmor profile"
+        );
+    }
+    tracing::debug!(path = %resolved.path.display(), source = resolved.source.as_str(), "launching chromium");
     std::fs::create_dir_all(profile)
         .map_err(|e| format!("cannot create profile dir {}: {e}", profile.display()))?;
-    let browser_config = build_browser_config(cfg, headless, profile)?;
+    let browser_config = build_browser_config(cfg, &resolved.path, no_sandbox, headless, profile)?;
     match Browser::launch(browser_config).await {
         Ok(launched) => Ok(launched),
         Err(first) if reap_orphan_chromium(profile) => {
             tracing::warn!(error = %first, "launch failed against an orphaned Chromium; reaped it, retrying");
-            Browser::launch(build_browser_config(cfg, headless, profile)?)
-                .await
-                .map_err(|e| format!("failed to launch Chromium: {e}"))
+            Browser::launch(build_browser_config(
+                cfg,
+                &resolved.path,
+                no_sandbox,
+                headless,
+                profile,
+            )?)
+            .await
+            .map_err(|e| format!("failed to launch Chromium: {e}"))
         }
         Err(e) => Err(format!("failed to launch Chromium: {e}")),
     }
@@ -2642,6 +2730,8 @@ fn reap_orphan_lightpanda(profile: &std::path::Path) {
 /// process instead of getting its own.
 fn build_browser_config(
     cfg: &WorkerConfig,
+    executable: &std::path::Path,
+    no_sandbox: bool,
     headless: bool,
     profile_dir: &std::path::Path,
 ) -> Result<BrowserConfig, String> {
@@ -2658,10 +2748,10 @@ fn build_browser_config(
     } else {
         builder.with_head()
     };
-    if !cfg.executable.is_empty() {
-        builder = builder.chrome_executable(&cfg.executable);
+    if no_sandbox {
+        builder = builder.no_sandbox();
     }
-    builder.build()
+    builder.chrome_executable(executable).build()
 }
 
 /// A worker killed without cleanup leaves its Chromium alive holding the
@@ -2784,6 +2874,108 @@ async fn note_navigation(sessions: &Arc<Sessions>, session: &Arc<Session>, url: 
         .await;
 }
 
+/// The page's title changed (reported by the title watcher): keep it on the
+/// tab and tell the tab strip (`browser::session-updated`).
+async fn note_title(sessions: &Arc<Sessions>, session: &Arc<Session>, title: &str) {
+    if !session.tab.retitle(title) {
+        return;
+    }
+    if session.tab.persists() {
+        sessions.persist();
+    }
+    sessions.emit_updated(&session.tab, true).await;
+}
+
+/// The tab's inactivity timer: sleeps until `last_used + inactive_after_ms`
+/// and puts the tab to sleep then (incognito and attached tabs close). Use
+/// re-arms it (`Tab::touch`), a watching viewer or a recording holds it off
+/// until released, and `inactive_after_ms: 0` disables it until the setting
+/// changes. Between those events and the deadline nothing wakes.
+fn spawn_idle_timer(sessions: Arc<Sessions>, session: Arc<Session>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        crate::deadline::until_due(&session.tab.activity, || {
+            let inactive_after_ms = sessions.config.load().inactive_after_ms;
+            // A recording holds a screencast consumer too.
+            if inactive_after_ms == 0 || session.screencast_on() {
+                return None;
+            }
+            let due_ms = session
+                .last_used_ms()
+                .saturating_add(inactive_after_ms as i64);
+            let wait = due_ms.saturating_sub(now_ms()).max(0) as u64;
+            Some(tokio::time::Instant::now() + std::time::Duration::from_millis(wait))
+        })
+        .await;
+        // On its own task: putting the tab to sleep aborts this timer with
+        // the page's other tasks.
+        tokio::spawn(async move {
+            let still_this_page = sessions
+                .get(&session.id)
+                .is_some_and(|live| Arc::ptr_eq(&live, &session));
+            if still_this_page {
+                tracing::info!(session_id = %session.id, "sleeping idle tab");
+                sessions.sleep(&session.id, "idle").await;
+            }
+        });
+    })
+}
+
+/// The binding the title watcher reports through, and the isolated world it
+/// runs in: the page's own scripts see neither.
+const TITLE_BINDING: &str = "__iiiTitle";
+const TITLE_WORLD: &str = "iii-title";
+/// Runs in every new top-level document (isolated world): reports the title
+/// once the document parsed, then on every change under `<head>` (a
+/// MutationObserver, so only when the DOM there actually changes).
+const TITLE_WATCH_SCRIPT: &str = r#"(() => {
+  if (window.top !== window) return;
+  const report = globalThis.__iiiTitle;
+  if (typeof report !== 'function') return;
+  let last;
+  const send = () => {
+    const title = document.title;
+    if (title === last) return;
+    last = title;
+    report(title);
+  };
+  const arm = () => {
+    send();
+    if (document.head) {
+      new MutationObserver(send).observe(document.head, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+      });
+    }
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', arm, { once: true });
+  } else {
+    arm();
+  }
+})()"#;
+
+/// Install the title watcher for every document this page loads from now
+/// on: the binding (exposed only to the watcher's isolated world) and the
+/// new-document script. False when the engine refuses either.
+async fn arm_title_watch(page: &Page) -> bool {
+    let Ok(binding) = runtime::AddBindingParams::builder()
+        .name(TITLE_BINDING)
+        .execution_context_name(TITLE_WORLD)
+        .build()
+    else {
+        return false;
+    };
+    let Ok(script) = cdp_page::AddScriptToEvaluateOnNewDocumentParams::builder()
+        .source(TITLE_WATCH_SCRIPT)
+        .world_name(TITLE_WORLD)
+        .build()
+    else {
+        return false;
+    };
+    page.execute(binding).await.is_ok() && page.execute(script).await.is_ok()
+}
+
 /// Arm the per-session CDP event listeners. Each pump owns one event stream,
 /// pushes into the ring buffer, and (console + pick) forwards to trigger
 /// subscribers.
@@ -2884,6 +3076,27 @@ async fn spawn_event_pumps(
                 }
             }
         }));
+    }
+
+    tasks.push(spawn_idle_timer(sessions.clone(), session.clone()));
+
+    // A title the page sets once it parsed, or later: the title watcher
+    // reports `document.title` through a binding the moment it changes, and
+    // the tab strip hears it as `browser::session-updated` instead of
+    // re-reading the list on a timer. Best-effort: an engine without
+    // isolated worlds or bindings keeps the title read at each navigation.
+    if let Ok(mut events) = page.event_listener::<runtime::EventBindingCalled>().await {
+        if arm_title_watch(page).await {
+            let s = session.clone();
+            let sx = sessions.clone();
+            tasks.push(tokio::spawn(async move {
+                while let Some(event) = events.next().await {
+                    if event.name == TITLE_BINDING {
+                        note_title(&sx, &s, &event.payload).await;
+                    }
+                }
+            }));
+        }
     }
 
     // console.* calls
@@ -2987,16 +3200,23 @@ async fn spawn_event_pumps(
                             inflight.clear();
                         }
                         inflight.insert(event.request_id.inner().to_string(), now_ms());
+                        drop(inflight);
+                        s.inflight_changed.notify_waiters();
                         continue;
                     }
                     Some(event) = finished.next() => event.request_id.inner().to_string(),
                     Some(event) = failed.next() => event.request_id.inner().to_string(),
                     else => break,
                 };
-                s.inflight
+                let removed = s
+                    .inflight
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .remove(&done);
+                    .remove(&done)
+                    .is_some();
+                if removed {
+                    s.inflight_changed.notify_waiters();
+                }
             }
         }));
     }
@@ -3681,6 +3901,62 @@ mod tests {
         );
         assert_eq!(nav.index, 2);
         assert!(nav.neighbour(false).is_none());
+    }
+
+    fn tab(url: &str, title: &str) -> Tab {
+        Tab {
+            id: "b1".to_string(),
+            incognito: false,
+            read_only: false,
+            attached: false,
+            created_ms: 1,
+            ttl_ms: None,
+            last_used_ms: AtomicU64::new(1),
+            activity: tokio::sync::Notify::new(),
+            expiry: Mutex::new(None),
+            frame_seq: AtomicU64::new(0),
+            ref_counter: AtomicU64::new(0),
+            pick_counter: AtomicU64::new(0),
+            next_element_id: AtomicU64::new(1),
+            dom_counter: AtomicU64::new(0),
+            url: Mutex::new(url.to_string()),
+            title: Mutex::new(title.to_string()),
+            history: Mutex::new(Vec::new()),
+            nav: Mutex::new(NavStack::default()),
+            downloads: Mutex::new(Vec::new()),
+            downloads_dir: None,
+        }
+    }
+
+    #[test]
+    fn a_new_title_renames_the_tab_and_its_current_visit() {
+        let tab = tab("https://a.test/", "");
+        tab.record_visit("https://old.test/", "Old");
+        tab.record_visit("https://a.test/", "");
+        assert!(tab.retitle("Inbox (3)"));
+        assert_eq!(tab.title(), "Inbox (3)");
+        let history = tab.history.lock().unwrap();
+        assert_eq!(history[0].title, "Old");
+        assert_eq!(history[1].title, "Inbox (3)");
+        drop(history);
+        // The same title again is no change (nothing to emit).
+        assert!(!tab.retitle("Inbox (3)"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn touching_a_tab_wakes_its_idle_timer() {
+        let tab = Arc::new(tab("about:blank", ""));
+        let woke = {
+            let tab = tab.clone();
+            tokio::spawn(async move { tab.activity.notified().await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!woke.is_finished());
+        tab.touch();
+        tokio::time::timeout(std::time::Duration::from_secs(1), woke)
+            .await
+            .expect("touch did not notify")
+            .unwrap();
     }
 
     #[test]

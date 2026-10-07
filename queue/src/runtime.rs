@@ -19,6 +19,13 @@ use crate::trigger::{Invoker, QueueTriggerHandler};
 
 const MAX_RESTART_REDELIVERIES: u32 = 3;
 const DEFAULT_NAMESPACE: &str = "default";
+/// Backoff before re-attaching a function-queue consumer whose delivery
+/// stream closed (e.g. a broker channel dropped): the first attempt waits
+/// this long and each failed attempt doubles it up to
+/// [`CONSUMER_RECONNECT_MAX_MS`]. A retry backoff after a failure, not a
+/// poll — a healthy consumer never reaches it.
+const CONSUMER_RECONNECT_INITIAL_MS: u64 = 100;
+const CONSUMER_RECONNECT_MAX_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -781,15 +788,17 @@ async fn run_supervised_consumer(
         .await;
 
         tracing::warn!(queue = %queue, "function queue consumer stream closed; reconnecting");
+        let mut backoff_ms = CONSUMER_RECONNECT_INITIAL_MS;
         receiver = loop {
-            tokio::time::sleep(Duration::from_millis(config.poll_interval_ms)).await;
+            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
             match adapter
                 .consume_function_queue(&queue, config.concurrency)
                 .await
             {
                 Ok(next) => break next,
                 Err(error) => {
-                    tracing::error!(queue = %queue, error = %error, "function queue consumer reconnect failed");
+                    backoff_ms = backoff_ms.saturating_mul(2).min(CONSUMER_RECONNECT_MAX_MS);
+                    tracing::error!(queue = %queue, error = %error, retry_in_ms = backoff_ms, "function queue consumer reconnect failed");
                 }
             }
         };
@@ -826,14 +835,12 @@ async fn run_concurrent(
         let invoker = invoker.clone();
         let active = active.clone();
         let max_retries = config.max_retries;
-        let poll_interval_ms = config.poll_interval_ms;
         let timeout_ms = config.timeout_ms;
         let redeliver_on_engine_restart = config.redeliver_on_engine_restart;
         tasks.spawn(async move {
             process_standard_message(
                 &queue_name,
                 max_retries,
-                poll_interval_ms,
                 timeout_ms,
                 redeliver_on_engine_restart,
                 active,
@@ -906,7 +913,6 @@ async fn run_grouped_fifo(
                 let idle_tx = idle_tx.clone();
                 let max_retries = config.max_retries;
                 let backoff_ms = config.backoff_ms;
-                let poll_interval_ms = config.poll_interval_ms;
                 let timeout_ms = config.timeout_ms;
                 let redeliver_on_engine_restart = config.redeliver_on_engine_restart;
                 tasks.spawn(async move {
@@ -917,7 +923,6 @@ async fn run_grouped_fifo(
                             &queue_name,
                             max_retries,
                             backoff_ms,
-                            poll_interval_ms,
                             timeout_ms,
                             redeliver_on_engine_restart,
                             active.clone(),
@@ -960,7 +965,6 @@ fn reap_finished(queue: &str, tasks: &mut tokio::task::JoinSet<()>) {
 async fn process_standard_message(
     queue: &str,
     max_retries: u32,
-    poll_interval_ms: u64,
     timeout_ms: u64,
     redeliver_on_engine_restart: bool,
     active: Arc<Semaphore>,
@@ -973,7 +977,6 @@ async fn process_standard_message(
         queue,
         &message.function_id,
         message.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE),
-        poll_interval_ms,
     )
     .await;
     let Ok(_permit) = active.acquire_owned().await else {
@@ -985,7 +988,6 @@ async fn process_standard_message(
         &message,
         message.attempt,
         timeout_ms,
-        poll_interval_ms,
         redeliver_on_engine_restart,
     )
     .await;
@@ -1006,7 +1008,6 @@ async fn process_fifo_message(
     queue: &str,
     max_retries: u32,
     backoff_ms: u64,
-    poll_interval_ms: u64,
     timeout_ms: u64,
     redeliver_on_engine_restart: bool,
     active: Arc<Semaphore>,
@@ -1021,7 +1022,6 @@ async fn process_fifo_message(
             queue,
             &message.function_id,
             message.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE),
-            poll_interval_ms,
         )
         .await;
         let Ok(permit) = active.clone().acquire_owned().await else {
@@ -1033,7 +1033,6 @@ async fn process_fifo_message(
             &message,
             attempt,
             timeout_ms,
-            poll_interval_ms,
             redeliver_on_engine_restart,
         )
         .await
@@ -1078,22 +1077,14 @@ async fn invoke_message_with_restart_policy(
     message: &QueueMessage,
     attempt: u32,
     timeout_ms: u64,
-    poll_interval_ms: u64,
     redeliver_on_engine_restart: bool,
 ) -> Result<Option<Value>, String> {
     if !redeliver_on_engine_restart {
         return invoke_message(queue, invoker, message, attempt, timeout_ms).await;
     }
 
-    invoke_checkpointed_message_across_engine_restarts(
-        queue,
-        invoker,
-        message,
-        attempt,
-        timeout_ms,
-        poll_interval_ms,
-    )
-    .await
+    invoke_checkpointed_message_across_engine_restarts(queue, invoker, message, attempt, timeout_ms)
+        .await
 }
 
 /// Replace a stranded checkpoint-safe invocation after an engine restart.
@@ -1105,10 +1096,12 @@ async fn invoke_checkpointed_message_across_engine_restarts(
     message: &QueueMessage,
     attempt: u32,
     timeout_ms: u64,
-    poll_interval_ms: u64,
 ) -> Result<Option<Value>, String> {
     let mut redeliveries = 0u32;
     loop {
+        // Subscribe to engine changes BEFORE sampling the baseline: a restart
+        // landing between the sample and the watch still wakes the watch.
+        let changes = invoker.engine_changes();
         // Capture the current epoch before starting this invocation. A
         // process-global epoch is unsafe here: after an idle engine restart it
         // would make the first post-restart delivery look interrupted.
@@ -1117,7 +1110,7 @@ async fn invoke_checkpointed_message_across_engine_restarts(
         };
         tokio::select! {
             result = invoke_message(queue, invoker, message, attempt, timeout_ms) => return result,
-            () = invoker.connection_lost_since(baseline) => {
+            () = invoker.connection_lost_since(baseline, changes) => {
                 if redeliveries >= MAX_RESTART_REDELIVERIES {
                     return Err(format!(
                         "{} crossed more than {MAX_RESTART_REDELIVERIES} engine restarts in one queue attempt",
@@ -1139,7 +1132,6 @@ async fn invoke_checkpointed_message_across_engine_restarts(
                         .namespace
                         .as_deref()
                         .unwrap_or(DEFAULT_NAMESPACE),
-                    poll_interval_ms,
                 )
                 .await;
             }
@@ -1206,13 +1198,21 @@ fn scrub_relevance_tags(header: &str) -> Option<String> {
     }
 }
 
+/// Hold a delivery until its target is registered. Event-driven: the
+/// availability check runs once up front and then once per engine registry
+/// change (`engine::functions-available` / `engine::workers-available`, see
+/// [`crate::trigger::EngineEvents`]), never on a timer. The change
+/// subscription is taken before the first check, so a registration landing
+/// between a negative check and the wait is not missed. There is no overall
+/// deadline: a restored job waits as long as its worker takes to boot,
+/// without spending retry budget.
 async fn wait_for_function(
     invoker: &Arc<dyn Invoker>,
     queue: &str,
     function_id: &str,
     namespace: &str,
-    poll_interval_ms: u64,
 ) {
+    let mut changes = invoker.engine_changes();
     let mut waiting = false;
     loop {
         match invoker.function_available(function_id, namespace).await {
@@ -1235,7 +1235,7 @@ async fn wait_for_function(
                 }
             }
         }
-        tokio::time::sleep(Duration::from_millis(poll_interval_ms.max(25))).await;
+        changes.changed().await;
     }
 }
 
@@ -1310,6 +1310,7 @@ mod tests {
     use std::sync::Mutex as StdMutex;
 
     use crate::store::TopicStats;
+    use crate::trigger::EngineChanges;
 
     type PublishedMessage = (
         String,
@@ -1477,6 +1478,7 @@ mod tests {
     #[derive(Default)]
     struct CrashOnceInvoker {
         calls: AtomicUsize,
+        first_call_started: tokio::sync::Notify,
         lost_fired: std::sync::atomic::AtomicBool,
     }
 
@@ -1484,6 +1486,7 @@ mod tests {
     impl Invoker for CrashOnceInvoker {
         async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
             if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.first_call_started.notify_one();
                 std::future::pending::<()>().await;
             }
             Ok(None)
@@ -1497,16 +1500,13 @@ mod tests {
             }))
         }
 
-        async fn connection_lost_since(&self, baseline: u64) {
-            loop {
-                if baseline == 1
-                    && self.calls.load(Ordering::SeqCst) == 1
-                    && !self.lost_fired.swap(true, Ordering::SeqCst)
-                {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(2)).await;
+        async fn connection_lost_since(&self, baseline: u64, _changes: EngineChanges) {
+            if baseline == 1 && !self.lost_fired.load(Ordering::SeqCst) {
+                self.first_call_started.notified().await;
+                self.lost_fired.store(true, Ordering::SeqCst);
+                return;
             }
+            std::future::pending::<()>().await
         }
     }
 
@@ -1527,7 +1527,7 @@ mod tests {
             Ok(Some(1))
         }
 
-        async fn connection_lost_since(&self, _baseline: u64) {
+        async fn connection_lost_since(&self, _baseline: u64, _changes: EngineChanges) {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     }
@@ -1535,12 +1535,14 @@ mod tests {
     #[derive(Default)]
     struct AlwaysRestartingInvoker {
         calls: AtomicUsize,
+        called: tokio::sync::Notify,
     }
 
     #[async_trait]
     impl Invoker for AlwaysRestartingInvoker {
         async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            self.called.notify_waiters();
             std::future::pending::<Result<Option<Value>, String>>().await
         }
 
@@ -1548,9 +1550,15 @@ mod tests {
             Ok(Some(self.calls.load(Ordering::SeqCst) as u64 + 1))
         }
 
-        async fn connection_lost_since(&self, baseline: u64) {
-            while self.calls.load(Ordering::SeqCst) < baseline as usize {
-                tokio::task::yield_now().await;
+        async fn connection_lost_since(&self, baseline: u64, _changes: EngineChanges) {
+            loop {
+                let called = self.called.notified();
+                tokio::pin!(called);
+                called.as_mut().enable();
+                if self.calls.load(Ordering::SeqCst) >= baseline as usize {
+                    return;
+                }
+                called.await;
             }
         }
     }
@@ -1588,6 +1596,96 @@ mod tests {
             *self.availability_namespace.lock().unwrap() = Some(namespace.to_string());
             Ok(true)
         }
+    }
+
+    /// Target availability flips only when a test says so; every check is
+    /// counted and the engine-change feed is driven by hand.
+    #[derive(Default)]
+    struct AppearingTargetInvoker {
+        available: std::sync::atomic::AtomicBool,
+        /// Register the target (and fire its change event) while the first
+        /// availability check is in flight, after it already read "missing".
+        register_during_first_check: bool,
+        checks: AtomicUsize,
+        events: crate::trigger::EngineEvents,
+    }
+
+    #[async_trait]
+    impl Invoker for AppearingTargetInvoker {
+        async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+            Ok(None)
+        }
+
+        fn engine_changes(&self) -> EngineChanges {
+            self.events.subscribe()
+        }
+
+        async fn function_available(
+            &self,
+            _function_id: &str,
+            _namespace: &str,
+        ) -> Result<bool, String> {
+            let check = self.checks.fetch_add(1, Ordering::SeqCst);
+            let available = self.available.load(Ordering::SeqCst);
+            if self.register_during_first_check && check == 0 {
+                self.available.store(true, Ordering::SeqCst);
+                self.events.notify();
+            }
+            Ok(available)
+        }
+    }
+
+    // A delivery held for an unregistered target re-checks once per engine
+    // change and never on a timer: hours of virtual time without a change
+    // cost no extra check.
+    #[tokio::test(start_paused = true)]
+    async fn held_delivery_rechecks_once_per_engine_change_never_on_a_timer() {
+        let concrete = Arc::new(AppearingTargetInvoker::default());
+        let invoker: Arc<dyn Invoker> = concrete.clone();
+        let held = tokio::spawn(async move {
+            wait_for_function(&invoker, "turns", "harness::turn", DEFAULT_NAMESPACE).await
+        });
+        let idle_hour = || tokio::time::sleep(Duration::from_secs(3600));
+
+        idle_hour().await;
+        assert_eq!(concrete.checks.load(Ordering::SeqCst), 1);
+        assert!(!held.is_finished());
+
+        // A change that does not register the target: exactly one re-check.
+        concrete.events.notify();
+        idle_hour().await;
+        assert_eq!(concrete.checks.load(Ordering::SeqCst), 2);
+        assert!(!held.is_finished());
+
+        // Registered but not yet announced: still held, still no timer check.
+        concrete.available.store(true, Ordering::SeqCst);
+        idle_hour().await;
+        assert_eq!(concrete.checks.load(Ordering::SeqCst), 2);
+
+        concrete.events.notify();
+        tokio::time::timeout(Duration::from_secs(1), held)
+            .await
+            .expect("the change announcing the target must release the delivery")
+            .unwrap();
+        assert_eq!(concrete.checks.load(Ordering::SeqCst), 3);
+    }
+
+    // The change subscription precedes the check, so a registration that
+    // lands between a negative check and the wait still releases it.
+    #[tokio::test(start_paused = true)]
+    async fn registration_racing_the_availability_check_is_not_missed() {
+        let concrete = Arc::new(AppearingTargetInvoker {
+            register_during_first_check: true,
+            ..AppearingTargetInvoker::default()
+        });
+        let invoker: Arc<dyn Invoker> = concrete.clone();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_function(&invoker, "turns", "harness::turn", DEFAULT_NAMESPACE),
+        )
+        .await
+        .expect("a registration racing the check must not be missed");
+        assert_eq!(concrete.checks.load(Ordering::SeqCst), 2);
     }
 
     fn message_for(
@@ -1760,7 +1858,6 @@ mod tests {
             r#type: "fifo".to_string(),
             message_group_field: Some("session_id".to_string()),
             concurrency: 2,
-            poll_interval_ms: 1,
             ..FunctionQueueConfig::default()
         };
         let (sender, receiver) = mpsc::channel(8);
@@ -1865,7 +1962,6 @@ mod tests {
                 "harness-turn",
                 3,
                 1,
-                1,
                 1_800_000,
                 true,
                 Arc::new(Semaphore::new(1)),
@@ -1894,7 +1990,6 @@ mod tests {
             process_standard_message(
                 "turns",
                 3,
-                1,
                 1_800_000,
                 false,
                 Arc::new(Semaphore::new(1)),
@@ -1922,7 +2017,6 @@ mod tests {
             &message,
             0,
             1_800_000,
-            1,
         )
         .await
         .unwrap_err();
@@ -1945,7 +2039,6 @@ mod tests {
         process_fifo_message(
             "harness-turn",
             3,
-            1,
             1,
             1_800_000,
             false,
@@ -1972,7 +2065,6 @@ mod tests {
         process_fifo_message(
             "harness-turn",
             2,
-            1,
             1,
             1_800_000,
             false,

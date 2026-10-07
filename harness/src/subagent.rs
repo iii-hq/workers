@@ -611,6 +611,10 @@ async fn seed_child(
         agent: agent.as_ref().map(|a| a.identity.clone()),
         preloaded_contracts,
         seeded_contracts,
+        // A child writes its progress labels for the same user, in the
+        // language the root session pinned. A parentless spawn has none to
+        // copy; a reused child session keeps its own (`send::seed_new`).
+        response_language: parent_record.and_then(|p| p.options.response_language.clone()),
         max_validation_retries: req
             .options
             .as_ref()
@@ -1036,6 +1040,7 @@ mod tests {
                 preloaded_contracts: None,
                 seeded_contracts: None,
                 system_prompt_ref: None,
+                response_language: None,
             },
             calls: Default::default(),
             parent: None,

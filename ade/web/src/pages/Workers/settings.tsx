@@ -121,7 +121,11 @@ export function SettingsTab({
       }))
     )
       return
-    if (!(await actions.track(`Saving ${name}`, () => api.edit(name, patch))))
+    if (
+      !(await actions.track(`Saving ${name}`, (operationId) =>
+        api.edit(name, patch, operationId),
+      ))
+    )
       return
     // Compose restarts a local worker whose entry it rewrote, but a package
     // only when its version changes: restart it here so the edit applies.

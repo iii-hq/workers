@@ -101,7 +101,7 @@ where
 fn deletion_queue_definition() -> Value {
     json!({"queue": crate::functions::delete_session_tree::QUEUE, "config": {
         "type": "fifo", "message_group_field": "operation_id", "concurrency": 2,
-        "max_retries": 3, "backoff_ms": 1_000, "poll_interval_ms": 100, "timeout_ms": 600_000,
+        "max_retries": 3, "backoff_ms": 1_000, "timeout_ms": 600_000,
         "redeliver_on_engine_restart": true
     }})
 }
@@ -119,7 +119,6 @@ fn turn_queue_definition() -> Value {
             "concurrency": 10,
             "max_retries": 3,
             "backoff_ms": 1_000,
-            "poll_interval_ms": 100,
             "redeliver_on_engine_restart": true
         }
     })
@@ -141,7 +140,6 @@ mod tests {
                     "concurrency": 10,
                     "max_retries": 3,
                     "backoff_ms": 1_000,
-                    "poll_interval_ms": 100,
                     "redeliver_on_engine_restart": true
                 }
             })
@@ -230,6 +228,8 @@ mod tests {
         assert_eq!(definition["config"]["message_group_field"], "operation_id");
         assert_eq!(definition["config"]["timeout_ms"], 600_000);
         assert_eq!(definition["config"]["redeliver_on_engine_restart"], true);
+        // The queue worker delivers on enqueue; the poll cadence is gone.
+        assert!(definition["config"].get("poll_interval_ms").is_none());
     }
 
     #[test]

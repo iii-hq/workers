@@ -34,6 +34,13 @@
           "model": {
             "type": "string"
           },
+          "prefix_divergences": {
+            "description": "Already-sent rows this session's requests rewrote, newest last (at most [`MAX_PREFIX_DIVERGENCES`]), carried from step to step.",
+            "items": {
+              "$ref": "#/definitions/PrefixDivergenceV1"
+            },
+            "type": "array"
+          },
           "prompt_sections_fallback": {
             "description": "Why no shared prefix went out: `disabled` (config), `no_stable_prefix` (empty identity prompt) or `prefix_rewritten` (a pre_generate hook replaced the prompt head; its prompt still wins, it just shares nothing).",
             "type": [
@@ -122,6 +129,77 @@
           "total",
           "turn_id",
           "usable"
+        ],
+        "type": "object"
+      },
+      "PrefixDivergenceV1": {
+        "description": "One generation that rewrote a row an earlier request of the session had already sent: a prefix-matching provider cache (DeepSeek) stops reusing at that row.",
+        "properties": {
+          "cache_read": {
+            "description": "`usage.cache_read` of the rewriting request: what the provider still reused.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "call_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cause": {
+            "description": "What rewrote the row, as far as the harness can tell: `prune` (context-manager pruned or reduced function results to fit the budget that step) or `system_prompt` (row 0: a compaction summary or a prompt change).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "index": {
+            "description": "First row (0 = system prompt, then one per message) that differs from the session's previous request. Absent when only the provider's wire mapping changed.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "prev_len": {
+            "description": "Rows the previous request carried.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "provider_note": {
+            "description": "The provider's own wire-level finding, cause included, when it reported one (a final-message warning starting with [`PROVIDER_PREFIX_NOTE`]).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "step": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "turn_id"
         ],
         "type": "object"
       },

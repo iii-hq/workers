@@ -238,7 +238,8 @@ type TailItem = { entry_id, message?: AgentMessage, custom?: { custom_type, data
 // function-calling assistant entry, the results answering ITS calls, and the
 // wake entries come back whole; every other entry of the run is
 // `elided: true`: text blocks kept, thinking dropped, function_call keeps
-// id + function_id with arguments: {}, function_result keeps
+// id + function_id with arguments: {} (agent_trigger keeps its string
+// function + description label, payload dropped), function_result keeps
 // function_call_id + is_error with content: [] and details: null.
 { session_id, limit?, before_entry_id?, until_entry_id?, include_custom?, include_image_data? }
   -> { messages: TailItem[] /* oldest first */, has_more, oldest_entry_id? }

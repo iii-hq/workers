@@ -281,8 +281,10 @@ impl Scenario {
     }
 
     /// Extra environment for the harness process under test — integration
-    /// knobs (e.g. a shrunken expiry-sweep interval) that tune the subject
-    /// for one scenario without touching the others.
+    /// knobs that tune the subject for one scenario without touching the
+    /// others. No scenario needs one right now (the expiry scenario's sweep
+    /// knob went with the sweep); kept for the next that does.
+    #[allow(dead_code)]
     pub(super) fn harness_env(mut self, key: &str, value: &str) -> Self {
         self.harness_env.push((key.to_string(), value.to_string()));
         self

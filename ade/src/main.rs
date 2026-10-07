@@ -86,16 +86,16 @@ async fn main() -> Result<()> {
     if let Some(port) = cli.http_port {
         cfg.http_port = port;
     }
+    let host_from_cli = cli.http_host.is_some();
     if let Some(host) = cli.http_host {
         cfg.http_host = host;
     }
-    let bind_host: std::net::IpAddr = cfg.http_host.trim().parse().map_err(|error| {
+    let seed_host: std::net::IpAddr = cfg.http_host.trim().parse().map_err(|error| {
         anyhow::anyhow!(
             "http_host {:?} is not an IP address ({error}); use 127.0.0.1, 0.0.0.0 or an interface address",
             cfg.http_host
         )
     })?;
-    server::set_bind_host(bind_host);
 
     let engine_url = cli.url;
 
@@ -140,6 +140,11 @@ async fn main() -> Result<()> {
         };
     cfg.http_port = runtime_config.http_port;
     cfg.data_dir = runtime_config.data_dir.clone();
+    // The interface is a boot-time decision: `--http-host` wins, then the
+    // stored `http_host` (compose's `config_override` lands there), then the
+    // local seed (`0.0.0.0` unless the seed file says otherwise).
+    let bind_host = bind_host_for(host_from_cli, seed_host, runtime_config.http_host);
+    server::set_bind_host(bind_host);
 
     // Ephemeral per-instance state (the workspace tabs/panes layout) lives
     // under `data_dir`, never in the committed configuration YAML. Entries
@@ -153,6 +158,7 @@ async fn main() -> Result<()> {
     }
 
     tracing::info!(
+        http_host = %bind_host,
         http_port = cfg.http_port,
         data_dir = %workspace.dir().await.display(),
         engine_url = %redact_url(&engine_url),
@@ -286,9 +292,31 @@ fn redact_url(s: &str) -> String {
     }
 }
 
+/// The interface to bind: an explicit `--http-host` first, then the stored
+/// configuration value, then the local seed.
+fn bind_host_for(
+    host_from_cli: bool,
+    seed_host: std::net::IpAddr,
+    stored: Option<std::net::IpAddr>,
+) -> std::net::IpAddr {
+    if host_from_cli {
+        return seed_host;
+    }
+    stored.unwrap_or(seed_host)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::redact_url;
+    use super::{bind_host_for, redact_url};
+
+    #[test]
+    fn bind_host_prefers_cli_then_stored_then_seed() {
+        let any = std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+        let local = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        assert_eq!(bind_host_for(false, any, None), any);
+        assert_eq!(bind_host_for(false, any, Some(local)), local);
+        assert_eq!(bind_host_for(true, any, Some(local)), any);
+    }
 
     #[test]
     fn redact_url_strips_userinfo_only() {

@@ -6,16 +6,22 @@
 //! per topic, and file-backed mode persists the full snapshot on every
 //! mutation. Retry backoff mirrors the builtin's exponential curve:
 //! `backoff_ms * 2^(attempts - 1)`.
+//!
+//! Consumers never poll the store. Every mutation that can make a job
+//! dequeueable (or move a queue's earliest due time) fires that queue's
+//! [`QueueStore::ready_signal`], and a consumer that finds nothing ready parks
+//! on that signal, plus a one-shot timer for the earliest delayed job
+//! ([`QueueStore::next_ready_delay`]) when a retry backoff is pending.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 const STORE_FILE_NAME: &str = "queue_store.json";
@@ -48,6 +54,20 @@ pub trait QueueStore: Send + Sync + 'static {
     /// retry attempt. Used when a function-queue consumer is replaced or
     /// shut down before it can acknowledge buffered deliveries.
     async fn requeue(&self, topic: &str, job: Job) -> anyhow::Result<()>;
+    /// Wake-up signal for `topic`. The store calls `notify_waiters` on it after
+    /// every mutation that can make a job dequeueable or move the queue's
+    /// earliest due time: enqueue, a retrying nack, requeue, and DLQ redrive.
+    ///
+    /// To avoid a lost wake-up, a consumer creates (and `enable`s) its
+    /// `Notified` future BEFORE the `dequeue` that comes back empty, then
+    /// waits on it — a mutation landing between the emptiness check and the
+    /// wait still wakes it.
+    fn ready_signal(&self, topic: &str) -> Arc<Notify>;
+    /// How long until the earliest waiting job of `topic` becomes
+    /// dequeueable: `Some(Duration::ZERO)` when one is ready now, `None`
+    /// when nothing is waiting at all. Lets an idle consumer sleep until
+    /// exactly that due time (a retry backoff) instead of re-checking.
+    async fn next_ready_delay(&self, topic: &str) -> Option<Duration>;
     async fn list_topics(&self) -> Vec<String>;
     async fn topic_stats(&self, topic: &str) -> TopicStats;
     async fn dlq_topics(&self) -> Vec<(String, u64)>;
@@ -77,6 +97,46 @@ struct SharedStore {
     /// Last snapshot revision written to disk. This also serializes access to
     /// the shared temporary snapshot path.
     persisted_revision: Mutex<u64>,
+    /// Per-queue wake-up signals (see [`QueueStore::ready_signal`]). Created
+    /// on demand by a waiting consumer; an entry no consumer holds any more is
+    /// dropped the next time its queue is signalled.
+    signals: StdMutex<HashMap<String, Arc<Notify>>>,
+}
+
+impl SharedStore {
+    fn new(data: StoreData, file_dir: Option<PathBuf>) -> Self {
+        let revision = data.revision;
+        Self {
+            inner: Mutex::new(data),
+            file_dir,
+            persisted_revision: Mutex::new(revision),
+            signals: StdMutex::new(HashMap::new()),
+        }
+    }
+
+    fn ready_signal(&self, topic: &str) -> Arc<Notify> {
+        self.signals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(topic.to_string())
+            .or_default()
+            .clone()
+    }
+
+    /// Wake every consumer parked on `topic`. Called after the mutation is
+    /// visible under the store lock, so a woken consumer's next `dequeue`
+    /// observes it.
+    fn notify_ready(&self, topic: &str) {
+        let mut signals = self.signals.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(signal) = signals.get(topic) {
+            if Arc::strong_count(signal) == 1 {
+                // Only the map holds it: no consumer is attached any more.
+                signals.remove(topic);
+            } else {
+                signal.notify_waiters();
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -92,11 +152,7 @@ pub struct FileStore {
 impl InMemoryStore {
     pub fn new() -> Self {
         Self {
-            shared: Arc::new(SharedStore {
-                inner: Mutex::new(StoreData::default()),
-                file_dir: None,
-                persisted_revision: Mutex::new(0),
-            }),
+            shared: Arc::new(SharedStore::new(StoreData::default(), None)),
         }
     }
 }
@@ -112,13 +168,8 @@ impl FileStore {
         let dir = path.as_ref().to_path_buf();
         std::fs::create_dir_all(&dir)?;
         let data = load_snapshot(&dir).await?;
-        let revision = data.revision;
         Ok(Self {
-            shared: Arc::new(SharedStore {
-                inner: Mutex::new(data),
-                file_dir: Some(dir),
-                persisted_revision: Mutex::new(revision),
-            }),
+            shared: Arc::new(SharedStore::new(data, Some(dir))),
         })
     }
 }
@@ -143,6 +194,14 @@ impl QueueStore for InMemoryStore {
 
     async fn requeue(&self, topic: &str, job: Job) -> anyhow::Result<()> {
         requeue(&self.shared, topic, job).await
+    }
+
+    fn ready_signal(&self, topic: &str) -> Arc<Notify> {
+        self.shared.ready_signal(topic)
+    }
+
+    async fn next_ready_delay(&self, topic: &str) -> Option<Duration> {
+        next_ready_delay(&self.shared, topic).await
     }
 
     async fn list_topics(&self) -> Vec<String> {
@@ -194,6 +253,14 @@ impl QueueStore for FileStore {
 
     async fn requeue(&self, topic: &str, job: Job) -> anyhow::Result<()> {
         requeue(&self.shared, topic, job).await
+    }
+
+    fn ready_signal(&self, topic: &str) -> Arc<Notify> {
+        self.shared.ready_signal(topic)
+    }
+
+    async fn next_ready_delay(&self, topic: &str) -> Option<Duration> {
+        next_ready_delay(&self.shared, topic).await
     }
 
     async fn list_topics(&self) -> Vec<String> {
@@ -253,6 +320,8 @@ async fn enqueue(shared: &SharedStore, topic: &str, payload: Value) -> anyhow::R
         *data = previous;
         return Err(err);
     }
+    drop(data);
+    shared.notify_ready(topic);
     Ok(id)
 }
 
@@ -293,10 +362,11 @@ async fn ack(shared: &SharedStore, topic: &str, job_id: &str) {
 
 async fn nack(shared: &SharedStore, topic: &str, mut job: Job, max_retries: u32, backoff_ms: u64) {
     job.attempts = job.attempts.saturating_add(1);
+    let retrying = job.attempts < max_retries;
     let snapshot = {
         let mut data = shared.inner.lock().await;
         remove_inflight(&mut data, topic, &job.id);
-        if job.attempts >= max_retries {
+        if !retrying {
             data.dlqs.entry(topic.to_string()).or_default().push(job);
             let dlq_depth = data.dlqs.get(topic).map_or(0, |q| q.len() as u64);
             let stats = data.stats.entry(topic.to_string()).or_default();
@@ -315,6 +385,11 @@ async fn nack(shared: &SharedStore, topic: &str, mut job: Job, max_retries: u32,
         mark_changed(&mut data);
         data.clone()
     };
+    if retrying {
+        // The retry is delayed, but waiters must still learn the queue's new
+        // earliest due time so they can arm a timer for it.
+        shared.notify_ready(topic);
+    }
     let _ = persist_if_needed(shared, &snapshot).await;
 }
 
@@ -332,7 +407,19 @@ async fn requeue(shared: &SharedStore, topic: &str, mut job: Job) -> anyhow::Res
         mark_changed(&mut data);
         data.clone()
     };
+    shared.notify_ready(topic);
     persist_if_needed(shared, &snapshot).await
+}
+
+async fn next_ready_delay(shared: &SharedStore, topic: &str) -> Option<Duration> {
+    let data = shared.inner.lock().await;
+    let earliest = data
+        .queues
+        .get(topic)?
+        .iter()
+        .map(|job| job.ready_at_ms)
+        .min()?;
+    Some(Duration::from_millis(earliest.saturating_sub(now_ms())))
 }
 
 fn remove_inflight(data: &mut StoreData, topic: &str, job_id: &str) {
@@ -414,6 +501,9 @@ async fn redrive_dlq(shared: &SharedStore, topic: &str) -> u64 {
         mark_changed(&mut data);
         (data.clone(), count)
     };
+    if snapshot_and_count.1 > 0 {
+        shared.notify_ready(topic);
+    }
     let _ = persist_if_needed(shared, &snapshot_and_count.0).await;
     snapshot_and_count.1
 }
@@ -442,6 +532,7 @@ async fn redrive_dlq_message(shared: &SharedStore, topic: &str, job_id: &str) ->
         mark_changed(&mut data);
         (data.clone(), true)
     };
+    shared.notify_ready(topic);
     let _ = persist_if_needed(shared, &snapshot_and_found.0).await;
     snapshot_and_found.1
 }
@@ -673,6 +764,90 @@ mod tests {
                 let demo = store.topic_stats("demo").await;
                 assert_eq!(demo.depth, 1);
                 assert_eq!(demo.dlq_depth, 1);
+                store
+            })
+        })
+        .await;
+    }
+
+    /// Every mutation that can make a job dequeueable — or move the queue's
+    /// earliest due time — wakes consumers parked on the queue's signal.
+    #[tokio::test]
+    async fn ready_signal_fires_on_every_mutation_that_can_make_a_job_ready() {
+        use futures::FutureExt;
+
+        async fn assert_signals<F: Future>(store: &Arc<dyn QueueStore>, what: &str, op: F) {
+            let signal = store.ready_signal("demo");
+            let notified = signal.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            op.await;
+            assert!(
+                notified.as_mut().now_or_never().is_some(),
+                "{what} must wake consumers parked on the queue"
+            );
+        }
+
+        for_each_backend(|store| {
+            Box::pin(async move {
+                assert_signals(&store, "enqueue", async {
+                    store.enqueue("demo", json!("a")).await.unwrap();
+                })
+                .await;
+                let job = store.dequeue("demo").await.unwrap();
+                assert_signals(&store, "retrying nack", store.nack("demo", job, 3, 10_000)).await;
+
+                // The backed-off "a" is skipped; "b" is the ready job.
+                store.enqueue("demo", json!("b")).await.unwrap();
+                let job = store.dequeue("demo").await.unwrap();
+                assert_eq!(job.payload, json!("b"));
+                assert_signals(&store, "requeue", async {
+                    store.requeue("demo", job).await.unwrap();
+                })
+                .await;
+
+                let job = store.dequeue("demo").await.unwrap();
+                store.nack("demo", job, 1, 1).await;
+                assert_signals(&store, "dlq redrive", async {
+                    assert_eq!(store.redrive_dlq("demo").await, 1);
+                })
+                .await;
+
+                let job = store.dequeue("demo").await.unwrap();
+                store.nack("demo", job, 1, 1).await;
+                let id = store.dlq_messages("demo", 1).await[0].id.clone();
+                assert_signals(&store, "single-message redrive", async {
+                    assert!(store.redrive_dlq_message("demo", &id).await);
+                })
+                .await;
+                store
+            })
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn next_ready_delay_reports_the_earliest_due_time() {
+        for_each_backend(|store| {
+            Box::pin(async move {
+                assert_eq!(store.next_ready_delay("demo").await, None);
+                store.enqueue("demo", json!("job")).await.unwrap();
+                assert_eq!(store.next_ready_delay("demo").await, Some(Duration::ZERO));
+
+                let job = store.dequeue("demo").await.unwrap();
+                store.nack("demo", job, 3, 10_000).await;
+                let due_in = store.next_ready_delay("demo").await.unwrap();
+                assert!(
+                    due_in > Duration::from_secs(9) && due_in <= Duration::from_secs(10),
+                    "a backed-off retry is due after its backoff, got {due_in:?}"
+                );
+
+                store.enqueue("demo", json!("ready")).await.unwrap();
+                assert_eq!(
+                    store.next_ready_delay("demo").await,
+                    Some(Duration::ZERO),
+                    "a ready job behind a delayed one is due now"
+                );
                 store
             })
         })

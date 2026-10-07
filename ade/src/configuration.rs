@@ -43,6 +43,9 @@ pub type ApplyLock = Arc<tokio::sync::Mutex<()>>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
     pub http_port: u16,
+    /// The stored `http_host`, when set. Boot-time only: read before the
+    /// listener binds, never rebinds live.
+    pub http_host: Option<std::net::IpAddr>,
     /// Directory for ephemeral per-instance state, as configured (NOT yet
     /// resolved — see [`RuntimeConfig::resolved_data_dir`]).
     pub data_dir: String,
@@ -53,6 +56,7 @@ impl RuntimeConfig {
     pub fn fallback(http_port: u16, data_dir: &str) -> Self {
         Self {
             http_port,
+            http_host: None,
             data_dir: data_dir.to_string(),
             disabled_workers: HashSet::new(),
         }
@@ -107,6 +111,12 @@ fn schema() -> Value {
                 "maximum": 65535,
                 "default": 3113,
                 "description": "TCP port for the ADE UI, injected assets, and /ws proxy. Changes rebind the listener live."
+            },
+            "http_host": {
+                "type": "string",
+                "minLength": 1,
+                "default": "0.0.0.0",
+                "description": "Interface the ADE listens on: 0.0.0.0 (the default) for every interface, so other machines on the network can open it; 127.0.0.1 for this machine only. Applies at the next start."
             },
             "data_dir": {
                 "type": "string",
@@ -312,6 +322,18 @@ fn runtime_config_from(
         }
     };
 
+    let http_host = match value.and_then(|value| value.get("http_host")) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(host)) => Some(host.trim().parse().map_err(|_| {
+            format!(
+                "stored `console.http_host` {host:?} is not an IP address; use 0.0.0.0, 127.0.0.1 or an interface address"
+            )
+        })?),
+        Some(_) => {
+            return Err("stored `console.http_host` must be an IP address string".to_string())
+        }
+    };
+
     let data_dir = match value.and_then(|value| value.get("data_dir")) {
         None | Some(Value::Null) => fallback_data_dir.to_string(),
         Some(Value::String(dir)) if !dir.trim().is_empty() => dir.trim().to_string(),
@@ -320,6 +342,7 @@ fn runtime_config_from(
 
     Ok(RuntimeConfig {
         http_port,
+        http_host,
         data_dir,
         disabled_workers: value.map(disabled_workers_from).unwrap_or_default(),
     })
@@ -665,6 +688,25 @@ mod tests {
         assert_eq!(section["auto_open"]["type"], "boolean");
         assert_eq!(section["auto_open"]["default"], true);
         assert_eq!(section["worker_sources"]["type"], "object");
+    }
+
+    #[test]
+    fn stored_http_host_is_read_for_the_next_start() {
+        let local =
+            runtime_config_from(Some(&json!({ "http_host": "127.0.0.1" })), 3113, "data/ade")
+                .unwrap();
+        assert_eq!(local.http_host, Some("127.0.0.1".parse().unwrap()));
+        assert_eq!(
+            runtime_config_from(Some(&json!({})), 3113, "data/ade")
+                .unwrap()
+                .http_host,
+            None
+        );
+        assert!(
+            runtime_config_from(Some(&json!({ "http_host": "localhost" })), 3113, "data/ade")
+                .is_err()
+        );
+        assert_eq!(schema()["properties"]["http_host"]["default"], "0.0.0.0");
     }
 
     #[test]

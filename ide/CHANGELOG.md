@@ -4,6 +4,23 @@
 
 ### Added
 
+- **No polling in the IDE page.** Two new trigger types replace every timer
+  and focus re-read: `shell::git-changed` (bind `{ path }`; one event per
+  ~200 ms batch naming what moved in the repository — `head`, `index`,
+  `refs`, `worktrees`, `repository` — including a `.git` appearing in a
+  folder that had none) and `shell::turns::changed` (bind
+  `{ session_id }`; fires when the session's change history is stored).
+  The branch chip no longer runs three gits on every click and focus
+  change: it reads again when the worker says the repository moved, reads
+  only `git status` when files change, and leaves a folder in no repository
+  alone until one appears. The Git window's log follows the same feed
+  instead of window focus, the Timeline reads the turn list on the
+  worker's word instead of every 1.5 s, the Source Control status follows
+  stages and commits made in a terminal, and "Add to stack" (and the chat
+  card of a `coder::scaffold-worker` that started its worker) follows the
+  `compose-operation` events of an operation bound before it starts
+  instead of polling `compose::operation` and `compose::status` every
+  second.
 - **Branch actions in the branch menu.** The IDE header's branch chip (the
   chat's keeps its plain list, each row with its Merge and Delete) opens with
   Update Project, Push…, New Branch… and Checkout Tag or Revision…, then

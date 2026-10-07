@@ -386,6 +386,8 @@ Conventions (hold these when adding functions to either surface):
 |---|---|---|
 | `shell::job-finished` | A background job finishes, is killed, or fails. A binding filtered by `job_id` also receives a retained terminal result when registered after completion. | `{ job_id, argv, status, exit_code, started_at_ms, finished_at_ms, duration_ms }` |
 | `shell::changed` | A file or directory under the watched root changes. | `{ path, kind, root, dir }` |
+| `shell::git-changed` | The repository `config.path` sits in changes state: HEAD, the index, refs, another worktree, or the repository itself appearing or going (a path in no repository is watched for a `.git`). One event per ~200 ms batch. `.git` is what `shell::changed` leaves out. | `{ path, worktree?, git_dir?, common_dir?, changes: ["head" \| "index" \| "refs" \| "worktrees" \| "repository"] }` |
+| `shell::turns::changed` | A session's change history (`shell::turns::list`) is stored again: a turn opened or closed, a change recorded. `config: { session_id? }`; at most one event per session per ~200 ms. | `{ session_id }` |
 
 ### Background job completion (`shell::job-finished`)
 

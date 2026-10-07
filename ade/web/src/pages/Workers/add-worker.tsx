@@ -77,7 +77,9 @@ export function AddWorkerDialog({
     if (!plan) return
     onOpenChange(false)
     void actions
-      .track(`Adding ${plan.name}`, () => api.add([plan.input]))
+      .track(`Adding ${plan.name}`, (operationId) =>
+        api.add([plan.input], operationId),
+      )
       .then((ok) => ok && onAdded(plan.name))
   }
 

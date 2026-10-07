@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import { Wordmark } from '@/components/ui/Wordmark'
 import type { JudgeOption } from '@/lib/onboarding/catalog'
+import { browserLabel } from '@/lib/onboarding/chromium'
 import { servesUsableModels } from '@/lib/onboarding/plan'
 import { Section, StepLayout } from './parts'
 import type { OnboardingController } from './use-onboarding'
@@ -68,6 +69,12 @@ export function ReadyStep({
         .flatMap((entry) => entry.workers ?? []),
     ),
   ]
+  // Chromium this setup downloaded for the browser worker.
+  const chromium = activity.some(
+    (entry) => entry.group === 'browser' && entry.status === 'done',
+  )
+    ? { version: snapshot.browser?.version, path: snapshot.browser?.path }
+    : null
   const secretRefs = connected.flatMap((provider) =>
     provider.credentialRef ? [provider.credentialRef] : [],
   )
@@ -81,6 +88,16 @@ export function ReadyStep({
       title: `${provider.title} connected`,
       detail: `${provider.modelCount} ${provider.modelCount === 1 ? 'model' : 'models'}${provider.credentialRef ? ` · key at ${provider.credentialRef}` : ''}`,
     })),
+    ...(chromium
+      ? [
+          {
+            title: `${browserLabel(chromium.version)} is ready for agents`,
+            detail: chromium.path
+              ? `they open and check the pages they build · ${chromium.path}`
+              : 'they open and check the pages they build',
+          },
+        ]
+      : []),
     ...(judge
       ? [
           {

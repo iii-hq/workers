@@ -80,6 +80,17 @@ export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
   return out
 }
 
+/**
+ * Catalog keys in the order `router::models::list` returned them. The router
+ * keeps each provider's own order (claude-code lists Sonnet 5.5 first), a
+ * better starting model than the alphabetically first one.
+ */
+export function catalogKeysInRouterOrder(
+  rows: readonly CatalogModelRow[],
+): string[] {
+  return rows.map((row) => makeCatalogModelKey(row.provider, row.id))
+}
+
 export function catalogRowsToModelOptions(
   rows: CatalogModelRow[],
 ): ModelOption[] {
@@ -216,7 +227,8 @@ export async function subscribeProviderChanges(
  * companion apps) reports `configured: false` to the router even when it is
  * signed in, so for those a default that reached the catalog is proof enough,
  * the same rule the picker uses to call its catalog usable.
- * `null` when no provider qualifies; callers fall back to the first key.
+ * `null` when no provider qualifies; callers fall back to the router's first
+ * model.
  */
 export function preferredStartingModel(
   providers: readonly ProviderListEntry[],

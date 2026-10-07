@@ -94,6 +94,13 @@ on navigation; re-snapshot before acting after any page change.
 - `browser::doctor` — read-only environment report: which Chromium would
   launch, its version, capacity, whether attach and recording are available,
   and anything degraded with how to enable it.
+- `browser::chromium::status` — read-only: whether a Chromium is found, its
+  path, version and source, and whether a download is available here.
+- `browser::chromium::install` — download Chromium (~200 MB) when the
+  machine has none; returns a `job_id` at once, progress on
+  `browser::chromium-install-progress`. A session error starting with
+  `chromium_missing:` means exactly this: tell the user, and offer the ADE's
+  Set up the harness → Browser step or this call (it needs their approval).
 - `browser::recording::start` / `browser::recording::stop` — capture a
   session's live viewport to a webm or mp4 file via ffmpeg; stop returns the
   path, duration, and frame count. Requires ffmpeg on PATH.

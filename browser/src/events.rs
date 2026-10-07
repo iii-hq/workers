@@ -28,6 +28,7 @@ pub const HANDOFF_REQUESTED: &str = "browser::handoff-requested";
 pub const HANDOFF_RESOLVED: &str = "browser::handoff-resolved";
 pub const DOWNLOAD_CHANGED: &str = "browser::download-changed";
 pub const FRAME_EVENT: &str = "browser::frame-event";
+pub const CHROMIUM_INSTALL_PROGRESS: &str = "browser::chromium-install-progress";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
@@ -42,6 +43,7 @@ pub enum EventKind {
     HandoffResolved,
     DownloadChanged,
     FrameEvent,
+    ChromiumInstallProgress,
 }
 
 impl EventKind {
@@ -58,10 +60,11 @@ impl EventKind {
             EventKind::HandoffResolved => HANDOFF_RESOLVED,
             EventKind::DownloadChanged => DOWNLOAD_CHANGED,
             EventKind::FrameEvent => FRAME_EVENT,
+            EventKind::ChromiumInstallProgress => CHROMIUM_INSTALL_PROGRESS,
         }
     }
 
-    pub fn all() -> [EventKind; 11] {
+    pub fn all() -> [EventKind; 12] {
         [
             EventKind::SessionStarted,
             EventKind::SessionStopped,
@@ -74,6 +77,7 @@ impl EventKind {
             EventKind::HandoffResolved,
             EventKind::DownloadChanged,
             EventKind::FrameEvent,
+            EventKind::ChromiumInstallProgress,
         ]
     }
 }
@@ -123,8 +127,11 @@ pub struct SessionStoppedEvent {
 }
 
 /// `browser::session-updated` — a tab woke up (`active: true`, its page is
-/// open again) or went to sleep (`active: false`, page closed, tab kept).
-/// The tab strip re-reads `browser::sessions::list` on this.
+/// open again), went to sleep (`active: false`, page closed, tab kept), or
+/// its live page's title changed (`active: true`; reported by an in-page
+/// title watcher the page cannot see). The tab strip re-reads
+/// `browser::sessions::list` on this; URL moves arrive as
+/// `browser::navigated`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionUpdatedEvent {
     pub session_id: String,
@@ -222,6 +229,12 @@ pub struct HandoffResolvedEvent {
     pub via: String,
     pub timestamp: i64,
 }
+
+/// `browser::chromium-install-progress` carries
+/// [`crate::chromium::install::InstallProgress`]: `{ job_id, phase, version?,
+/// bytes_done, bytes_total?, path?, error?, hint?, timestamp }`. It is not a
+/// session event, so it reaches only bindings without a `session_id` filter.
+pub use crate::chromium::install::InstallProgress as ChromiumInstallProgressEvent;
 
 /// The element payload inside `browser::picked`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -364,7 +377,7 @@ impl TriggerHandler for BrowserTriggerHandler {
 /// `functions::register_all` so handlers can capture the subscriber sets.
 pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     let sets = TriggerSets::new();
-    let descriptions: [(EventKind, &str); 11] = [
+    let descriptions: [(EventKind, &str); 12] = [
         (
             EventKind::SessionStarted,
             "A browser tab opened and is ready.",
@@ -375,7 +388,8 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         ),
         (
             EventKind::SessionUpdated,
-            "A browser tab woke up (page open again) or went to sleep (page closed, tab kept).",
+            "A browser tab woke up (page open again), went to sleep (page closed, tab kept), or its \
+             page's title changed.",
         ),
         (
             EventKind::Navigated,
@@ -408,6 +422,12 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         (
             EventKind::FrameEvent,
             "Internal: a live screencast frame of a watched tab (console viewport plumbing, high volume).",
+        ),
+        (
+            EventKind::ChromiumInstallProgress,
+            "A browser::chromium::install job moved: a new phase (resolving, downloading, \
+             extracting, verifying, done, failed) or about 1% more bytes. Not a session event: \
+             bind without a session_id filter.",
         ),
     ];
     for (kind, description) in descriptions {

@@ -41,6 +41,7 @@ import {
   type Snapshot,
 } from './compose-api'
 import { ContainerView, WorkerView } from './container'
+import { followOperation } from './follow-operation'
 import { groupContainers, toneFor } from './model'
 import { takePendingWorkerSearch } from './pending-selection'
 import { ProjectView } from './project'
@@ -60,7 +61,6 @@ interface WorkersProps {
 
 const PROJECT = 'project'
 const SKELETON_ROWS = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
-const POLL_MS = 1000
 
 export type Activity = {
   label: string
@@ -75,8 +75,15 @@ export type Actions = {
   busy: boolean
   /** A daemon operation that answers once it is done (up, down, restart). */
   run: (label: string, call: () => Promise<MutationOutcome>) => Promise<boolean>
-  /** An operation the daemon accepts and runs in the background (add, update, remove, edit). */
-  track: (label: string, start: () => Promise<Accepted>) => Promise<boolean>
+  /**
+   * An operation the daemon accepts and runs in the background (add, update,
+   * remove, edit), followed by its pushed progress. `start` must submit it
+   * under `operationId`: its progress is bound before it is submitted.
+   */
+  track: (
+    label: string,
+    start: (operationId: string) => Promise<Accepted>,
+  ) => Promise<boolean>
   confirm: ReturnType<typeof useConfirm>['confirm']
   /** Declared containers that are stopped or failed: an add or remove starts them. */
   idle: string[]
@@ -177,10 +184,15 @@ function WorkersPage({
   const { ref: bodyRef, narrow } = useContainerNarrow()
   const filterRef = useRef<HTMLInputElement>(null)
   const alive = useRef(true)
+  // Operations this page follows: leaving it unbinds their progress.
+  const following = useRef(new Set<AbortController>())
   useEffect(() => {
     alive.current = true
+    const followed = following.current
     return () => {
       alive.current = false
+      for (const controller of followed) controller.abort()
+      followed.clear()
     }
   }, [])
 
@@ -244,38 +256,45 @@ function WorkersPage({
       },
       async track(label, start) {
         setActivity({ label, state: 'running' })
+        const controller = new AbortController()
+        following.current.add(controller)
         try {
-          const accepted = await start()
-          const operationId = accepted.operation_id
-          setActivity({ label, state: 'running', operationId })
-          for (;;) {
-            await new Promise((resolve) => window.setTimeout(resolve, POLL_MS))
-            if (!alive.current) return false
-            const snapshot = await api.operation(operationId)
-            if (snapshot.status === 'running') {
-              setActivity({ label, state: 'running', operationId, snapshot })
-              continue
-            }
-            const ok = snapshot.status === 'succeeded'
-            finish({
-              label:
-                snapshot.status === 'cancelled'
-                  ? `${label} (cancelled)`
-                  : label,
-              state: ok ? 'succeeded' : 'failed',
-              operationId,
-              snapshot,
-              detail: ok ? undefined : snapshot.last_event?.detail,
-            })
-            return ok
-          }
+          // Pushed progress, bound before the mutation is submitted.
+          const snapshot = await followOperation({
+            iii,
+            start,
+            read: api.operation,
+            signal: controller.signal,
+            onProgress: (progress, operationId) => {
+              if (alive.current)
+                setActivity({
+                  label,
+                  state: 'running',
+                  operationId,
+                  snapshot: progress,
+                })
+            },
+          })
+          if (snapshot === null || !alive.current) return false
+          const ok = snapshot.status === 'succeeded'
+          finish({
+            label:
+              snapshot.status === 'cancelled' ? `${label} (cancelled)` : label,
+            state: ok ? 'succeeded' : 'failed',
+            operationId: snapshot.operation_id,
+            snapshot,
+            detail: ok ? undefined : snapshot.last_event?.detail,
+          })
+          return ok
         } catch (cause) {
           finish({ label, state: 'failed', detail: errorMessage(cause) })
           return false
+        } finally {
+          following.current.delete(controller)
         }
       },
     }),
-    [api, busy, confirm, finish, idle],
+    [api, busy, confirm, finish, idle, iii],
   )
 
   const declared = useMemo(

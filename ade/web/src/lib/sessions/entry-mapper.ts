@@ -875,6 +875,31 @@ export function notificationBindingId(
   return undefined
 }
 
+/**
+ * The label an elided call keeps. `session::messages-tail` drops every call's
+ * arguments except an `agent_trigger` wrapper's string `function` and
+ * `description`, so the placeholder row reads the same before and after the
+ * whole entry is fetched.
+ */
+function elidedTriggerLabel(
+  block: Extract<ContentBlock, { type: 'function_call' }>,
+): { functionId: string; description?: string; unresolvedTarget: boolean } {
+  if (block.function_id !== 'agent_trigger') {
+    return { functionId: block.function_id, unresolvedTarget: false }
+  }
+  const args =
+    block.arguments && typeof block.arguments === 'object'
+      ? (block.arguments as { function?: unknown; description?: unknown })
+      : {}
+  const description =
+    typeof args.description === 'string' && args.description.trim().length > 0
+      ? args.description.trim()
+      : undefined
+  return typeof args.function === 'string' && args.function.length > 0
+    ? { functionId: args.function, description, unresolvedTarget: false }
+    : { functionId: block.function_id, description, unresolvedTarget: true }
+}
+
 function assistantSegments(
   entryId: string,
   message: Extract<AgentMessage, { role: 'assistant' }>,
@@ -885,19 +910,21 @@ function assistantSegments(
   for (const [i, block] of message.content.entries()) {
     const id = `${entryId}:${i}`
     // A placeholder call: the page kept the block's id and function id and
-    // emptied the arguments. Not unwrapped — with `arguments: {}` an
-    // `agent_trigger` wrapper has no target to unwrap to, so the row keeps
-    // the wrapper name until its (elided) result names the real function.
+    // dropped the arguments — except an `agent_trigger` wrapper's label
+    // (`function` + `description`), which the row shows exactly as a whole
+    // entry would. A wrapper whose target did not survive keeps the wrapper
+    // name until its (elided) result names the real function.
     if (block.type === 'function_call' && elided) {
+      const { functionId, description, unresolvedTarget } =
+        elidedTriggerLabel(block)
       const msg: FunctionTriggerMessage = {
         id,
         role: 'function-trigger',
-        functionId: block.function_id,
+        functionId,
+        ...(description ? { description } : {}),
         input: undefined,
         unloaded: true,
-        ...(block.function_id === 'agent_trigger'
-          ? { unresolvedTarget: true }
-          : {}),
+        ...(unresolvedTarget ? { unresolvedTarget: true } : {}),
         functionTriggerId: block.id,
         sessionId,
         createdAt: message.timestamp,
@@ -1153,11 +1180,12 @@ export function applyEntryUpsert(
       filesystemAccess: existing.filesystemAccess ?? segment.filesystemAccess,
       resultEntryId: existing.resultEntryId ?? segment.resultEntryId,
       ...(stillUnloaded ? { unloaded: true } : {}),
-      // A re-read placeholder keeps the label its result already resolved;
-      // the page itself still only knows the wrapper name.
+      // A re-read placeholder keeps the label its result already resolved
+      // when the page itself only knows the wrapper name.
       ...(segment.unloaded && existing.functionId !== 'agent_trigger'
         ? { functionId: existing.functionId, unresolvedTarget: false }
         : {}),
+      description: segment.description ?? existing.description,
     }
   })
 

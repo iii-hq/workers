@@ -2289,9 +2289,14 @@ fn chromium_executable(config: &WorkerConfig, _real_chrome: bool) -> Result<Path
     let mut interactive = config.clone();
     interactive.engine = crate::config::BrowserEngine::Chromium;
     interactive.executable.clear();
-    crate::functions::doctor::detect_executable(&interactive).ok_or_else(|| {
-        "no Chromium executable found; configure browser.scrapling.chromium_executable".to_string()
-    })
+    crate::chromium::resolve_executable(&interactive)
+        .map(|resolved| resolved.path)
+        .ok_or_else(|| {
+            format!(
+                "{} (or configure browser.scrapling.chromium_executable)",
+                crate::chromium::missing_error(&interactive)
+            )
+        })
 }
 
 fn certify_chromium(path: &Path) -> Result<(), String> {

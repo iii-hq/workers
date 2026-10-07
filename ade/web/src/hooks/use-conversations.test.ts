@@ -45,6 +45,7 @@ import {
   shouldAcceptReconnectDirectoryRow,
   shouldQueueCompletionBell,
   shouldReplayQueuedCompletion,
+  startingModel,
   unsentDraft,
 } from './use-conversations'
 
@@ -2328,5 +2329,26 @@ it('keeps imported provenance separate while allowing normal session edits', () 
     external_source: 'claude-code',
     source_cwd: '/source',
     fs_scope: { root: '/ade' },
+  })
+})
+
+describe('startingModel', () => {
+  const sonnet = 'claude-code::claude-code/claude-sonnet-5-5'
+  const opus = 'claude-code::claude-code/claude-opus-5-5'
+  const gone = 'openai::gpt-old'
+  const valid = new Set([sonnet, opus])
+
+  it("keeps the person's last pick while the catalog offers it", () => {
+    expect(startingModel(opus, valid, sonnet, sonnet)).toBe(opus)
+  })
+
+  it('trusts the last pick before the catalog is known', () => {
+    expect(startingModel(gone, null, sonnet, null)).toBe(gone)
+  })
+
+  it("skips a missing pick for the provider default, then the router's first model", () => {
+    expect(startingModel(gone, valid, opus, sonnet)).toBe(opus)
+    expect(startingModel(gone, valid, null, sonnet)).toBe(sonnet)
+    expect(startingModel(null, valid, null, sonnet)).toBe(sonnet)
   })
 })

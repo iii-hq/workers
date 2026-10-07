@@ -4,6 +4,7 @@
 //! the change. Caps and timeouts hot-reload; `executable`/`headless`/viewport
 //! apply to sessions started after the change.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
@@ -89,10 +90,13 @@ struct OnConfigChangeResponse {
     ok: bool,
 }
 
+/// `on_change` runs after every successful reload, so timers that read a
+/// setting (the tabs' idle deadlines) re-arm on the new value.
 pub fn register_config_trigger(
     iii: &IIIClient,
     config: SharedConfig,
     guidance: crate::scrapling::GuidanceState,
+    on_change: Arc<dyn Fn() + Send + Sync>,
 ) -> Result<(), Error> {
     let cfg = config.clone();
     let engine = iii.clone();
@@ -102,8 +106,11 @@ pub fn register_config_trigger(
             let cfg = cfg.clone();
             let engine = engine.clone();
             let guidance = guidance.clone();
+            let on_change = on_change.clone();
             async move {
-                on_config_change(&engine, &cfg, &guidance).await;
+                if on_config_change(&engine, &cfg, &guidance).await {
+                    on_change();
+                }
                 Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
@@ -121,11 +128,12 @@ pub fn register_config_trigger(
     Ok(())
 }
 
+/// Reload the configuration; true when the new value is now live.
 async fn on_config_change(
     iii: &IIIClient,
     config: &SharedConfig,
     guidance: &crate::scrapling::GuidanceState,
-) {
+) -> bool {
     match fetch_config(iii).await {
         Ok(cfg) => {
             crate::scrapling::adaptive::configure_quota(cfg.scrapling.adaptive_quota());
@@ -135,8 +143,12 @@ async fn on_config_change(
             // console binds/unbinds the pre-generate guidance hook live.
             crate::scrapling::apply_guidance(iii, guidance, inject_guidance);
             tracing::info!("browser configuration reloaded");
+            true
         }
-        Err(e) => tracing::error!(error = %e, "config-change: keeping previous config"),
+        Err(e) => {
+            tracing::error!(error = %e, "config-change: keeping previous config");
+            false
+        }
     }
 }
 

@@ -1,10 +1,9 @@
 import type { ExtensionIii } from '@iii-dev/console-ui'
 import { BUILT_IN_PROVIDER, listProviders } from '../configuration'
 
-export type Engine = Pick<ExtensionIii, 'trigger'>
+/** The console's bus client: calls, plus the bindings that push changes. */
+export type Engine = Pick<ExtensionIii, 'trigger' | 'on' | 'registerTrigger' | 'browserId'>
 
-/** How often an open picker checks whether an added judge registered. */
-export const ADD_POLL_MS = 3_000
 /** An added judge that has not registered by then is reported as stuck. */
 export const ADD_GIVE_UP_MS = 10 * 60_000
 /**
@@ -12,13 +11,7 @@ export const ADD_GIVE_UP_MS = 10 * 60_000
  * reports success once the worker is ready, but also when a worker that is
  * not required failed to start, or was already declared and is stopped.
  */
-const REGISTER_GRACE_MS = 15_000
-/**
- * How long an open picker keeps checking after an add fails: a judge that
- * registers late (after the grace, or once its daemon restarted) still
- * turns into Added.
- */
-export const FAILED_WATCH_MS = 2 * 60_000
+export const REGISTER_GRACE_MS = 15_000
 
 export function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -95,6 +88,12 @@ interface OperationSnapshot {
   last_event?: { terminal?: boolean; detail?: string } | null
 }
 
+/** A `compose-operation` delivery; bound terminal-only, so the last one. */
+interface ProgressEvent {
+  operation_id?: string
+  terminal?: boolean
+}
+
 /**
  * Why a compose operation failed. A worker with no build for this platform
  * is the common case, and its detail wraps the reason in advice for the
@@ -105,42 +104,98 @@ function failureReason(detail: string | undefined): string {
   return /[^.]*does not support platform[^.]*\./.exec(detail)?.[0].trim() ?? detail
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+let followSeq = 0
 
 /**
+ * Start `compose::add` for `worker` and report a failure through `fail`.
+ *
  * `compose::add` only accepts the work: the operation resolves, installs and
- * starts the worker afterwards. Follow it until it ends, so a failure (no
- * build for this platform, a registry error) shows instead of a registration
- * that never comes. Success is settled by the judge registering; `fail` only
- * touches an add still in progress.
+ * starts the worker afterwards. Its end is pushed, never polled for: a
+ * terminal-only `compose-operation` binding goes in BEFORE the add, under an
+ * operation id chosen here, and `compose::operation` is read once after the
+ * accept (an operation that ended before the binding landed) and once when
+ * the terminal event arrives, for the status the event does not carry. A
+ * failure (no build for this platform, a registry error) shows instead of a
+ * registration that never comes. Success is settled by the judge registering;
+ * `fail` only touches an add still in progress.
  */
-async function followOperation(iii: Engine, worker: string, operationId: string, fail: (error: string) => void) {
-  const deadline = Date.now() + ADD_GIVE_UP_MS
-  while (Date.now() < deadline) {
-    await sleep(ADD_POLL_MS)
-    const snapshot = await iii
-      .trigger<OperationSnapshot>('compose::operation', { operation_id: operationId }, { timeoutMs: 5_000 })
-      .catch(() => null)
+export function addWorker(iii: Engine, worker: string, fail: (error: string) => void) {
+  let operationId = `compose:${crypto.randomUUID()}`
+  const handlerId = `iii::judge-ui::compose-operation::${++followSeq}`
+  let settled = false
+  let reading = false
+  let offTrigger: (() => void) | null = null
+  const unbind = () => {
+    try {
+      offTrigger?.()
+    } catch {
+      // already gone
+    }
+    offTrigger = null
+    offHandler()
+  }
+  const settle = (snapshot: OperationSnapshot | null, error?: string) => {
+    if (settled) return
+    settled = true
+    clearTimeout(giveUp)
+    unbind()
+    if (error !== undefined) return fail(error)
     if (snapshot?.status === 'failed') return fail(failureReason(snapshot.last_event?.detail))
     if (snapshot?.status === 'cancelled') return fail('The add was cancelled.')
-    if (snapshot?.last_event?.terminal) {
-      await sleep(REGISTER_GRACE_MS)
-      return fail(`${worker} was added but has not started; check its logs in Settings → Workers.`)
-    }
+    // Done: the judge registering settles it, unless it never does.
+    setTimeout(
+      () => fail(`${worker} was added but has not started; check its logs in Settings → Workers.`),
+      REGISTER_GRACE_MS,
+    )
   }
-}
+  const read = () =>
+    iii
+      .trigger<OperationSnapshot>('compose::operation', { operation_id: operationId }, { timeoutMs: 5_000 })
+      .catch(() => null)
+  // The one fallback: an operation that never ends (a daemon gone) is stuck.
+  const giveUp = setTimeout(
+    () => settle(null, 'Not registered after 10 minutes; check Settings → Workers.'),
+    ADD_GIVE_UP_MS,
+  )
+  const bind = () => {
+    try {
+      offTrigger?.()
+    } catch {
+      // already gone
+    }
+    offTrigger = iii.registerTrigger({
+      type: 'compose-operation',
+      function_id: `${handlerId}::${iii.browserId}`,
+      config: { operation_id: operationId, terminal_only: true },
+    })
+  }
+  const offHandler = iii.on<ProgressEvent>(handlerId, (event) => {
+    if (settled || reading || event?.operation_id !== operationId || event.terminal !== true) return
+    reading = true
+    void read().then((snapshot) => settle(snapshot))
+  })
+  bind()
 
-/** Start `compose::add` for `worker` and report a failure through `fail`. */
-export function addWorker(iii: Engine, worker: string, fail: (error: string) => void) {
   iii
     .trigger<{ status?: string; operation_id?: string; error?: { message?: string } | null }>(
       'compose::add',
-      { workers: [worker] },
+      { workers: [worker], operation_id: operationId },
       { timeoutMs: 600_000 },
     )
     .then((reply) => {
-      if (reply?.status === 'failed') fail(reply.error?.message ?? 'compose::add failed')
-      else if (reply?.operation_id) void followOperation(iii, worker, reply.operation_id, fail)
+      if (settled) return
+      if (reply?.status === 'failed') return settle(null, reply.error?.message ?? 'compose::add failed')
+      // A daemon that ignores the caller's id ran it under its own.
+      if (reply?.operation_id && reply.operation_id !== operationId) {
+        operationId = reply.operation_id
+        bind()
+      }
+      // The catch-up read: an operation that already ended sends nothing more.
+      return read().then((snapshot) => {
+        if (settled || reading || !snapshot?.status || snapshot.status === 'running') return
+        reading = true
+        settle(snapshot)
+      })
     })
-    .catch((error: unknown) => fail(message(error)))
+    .catch((error: unknown) => settle(null, message(error)))
 }

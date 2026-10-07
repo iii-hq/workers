@@ -198,21 +198,7 @@ pub async fn handle(
 
     let now = AgentMessage::now_ms();
     if binding.is_exhausted(now) {
-        let retirement_reason = exhausted_retirement_reason(&binding, now);
-        let retired = retire(deps, &binding).await;
-        return Ok(finish_pre_delivery_retirement(
-            deps,
-            &binding,
-            &event,
-            Skip {
-                gate: "lifecycle",
-                reason: "binding already spent".into(),
-                retire: true,
-            },
-            retirement_reason,
-            retired,
-        )
-        .await);
+        return Ok(stop_spent(deps, &binding, "binding already spent").await);
     }
 
     let event = match conditions::evaluate(deps, &binding, event).await {
@@ -231,22 +217,10 @@ pub async fn handle(
     // delivery and let a bounded lifecycle over-spend.
     let claimed = match store.claim_fire(&binding).await {
         Ok(crate::bindings::ClaimOutcome::Claimed(b)) => *b,
-        Ok(crate::bindings::ClaimOutcome::Exhausted) => {
-            let retirement_reason = exhausted_retirement_reason(&binding, AgentMessage::now_ms());
-            let retired = retire(deps, &binding).await;
-            return Ok(finish_pre_delivery_retirement(
-                deps,
-                &binding,
-                &event,
-                Skip {
-                    gate: "lifecycle",
-                    reason: "another fire spent the last of the budget".into(),
-                    retire: true,
-                },
-                retirement_reason,
-                retired,
-            )
-            .await);
+        Ok(crate::bindings::ClaimOutcome::Exhausted(current)) => {
+            return Ok(
+                stop_spent(deps, &current, "another fire spent the last of the budget").await,
+            );
         }
         Ok(crate::bindings::ClaimOutcome::Gone) => {
             return Ok(DeliverResult::stopped(
@@ -725,53 +699,47 @@ fn differs_only_by_trigger_id(expected: &Binding, current: &Binding) -> bool {
     &normalized == expected && current.trigger_id != expected.trigger_id
 }
 
+/// What a fire that finds its binding already spent does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PreDeliveryRetirementAction {
-    /// Another actor changed or removed the binding first, so this attempt
-    /// owns neither a retirement record nor a wake-lost notification.
-    LostRace,
-    /// Expiry has its own lifecycle record; an unfired once-wake also gets the
-    /// wake-lost notification from `report_expired_retirement`.
+enum SpentAttempt {
+    /// Delivered fires used the budget: this attempt is a duplicate of a
+    /// delivery that already happened (the same event by a second path —
+    /// the provider's live fire and a Compose recovery replay, an
+    /// at-least-once redelivery). The claiming delivery retires the binding
+    /// and writes its one record; this one stops without touching either,
+    /// so a once wake never shows a second, "skipped" outcome. A spent
+    /// record whose claimer died is cleaned up by the binding pass.
+    Duplicate,
+    /// The budget is left but the deadline passed: retire it, and only the
+    /// compare-and-delete winner reports the expiry (the wake-lost notice
+    /// for an unfired wake).
     Expired,
-    /// Non-expiry exhaustion remains a structured skipped attempt.
-    Skipped(fired::RetirementReason),
 }
 
-fn pre_delivery_retirement_action(
-    reason: fired::RetirementReason,
-    retired: bool,
-) -> PreDeliveryRetirementAction {
-    if !retired {
-        return PreDeliveryRetirementAction::LostRace;
-    }
-    if reason == fired::RetirementReason::Expired {
-        PreDeliveryRetirementAction::Expired
+fn spent_attempt(binding: &Binding) -> SpentAttempt {
+    if binding.is_spent() {
+        SpentAttempt::Duplicate
     } else {
-        PreDeliveryRetirementAction::Skipped(reason)
+        SpentAttempt::Expired
     }
 }
 
-/// Finish a pre-delivery lifecycle stop after the CAS result is known. Expiry
-/// writes exactly its lifecycle record (plus the wake-lost notification when
-/// applicable); it never also writes a `skipped` record for the same event.
-async fn finish_pre_delivery_retirement(
-    deps: &Deps,
-    binding: &Binding,
-    event: &Value,
-    skip: Skip,
-    reason: fired::RetirementReason,
-    retired: bool,
-) -> DeliverResult {
-    match pre_delivery_retirement_action(reason, retired) {
-        PreDeliveryRetirementAction::LostRace => DeliverResult::stopped(skip.gate, skip.reason),
-        PreDeliveryRetirementAction::Expired => {
-            crate::bindings::expiry::report_expired_retirement(deps, binding).await;
-            DeliverResult::stopped(skip.gate, skip.reason)
+async fn stop_spent(deps: &Deps, binding: &Binding, reason: &str) -> DeliverResult {
+    match spent_attempt(binding) {
+        SpentAttempt::Duplicate => {
+            tracing::debug!(
+                binding = %binding.id,
+                fires = binding.fires,
+                "duplicate fire for a spent binding; its delivery owns the outcome"
+            );
         }
-        PreDeliveryRetirementAction::Skipped(reason) => {
-            record_stop(deps, binding, event, skip, Some(reason)).await
+        SpentAttempt::Expired => {
+            if retire(deps, binding).await {
+                crate::bindings::expiry::report_expired_retirement(deps, binding).await;
+            }
         }
     }
+    DeliverResult::stopped("lifecycle", reason)
 }
 
 /// Record a non-delivery in the owner's timeline. This is the half today's
@@ -840,21 +808,6 @@ fn delivery_retirement_reason(
         return Some(fired::RetirementReason::MaxFires);
     }
     None
-}
-
-/// A delivery attempt that finds an already-spent binding did not itself
-/// consume it. Preserve an elapsed deadline when it is observable; otherwise
-/// the only honest reason for this skipped attempt is `exhausted`.
-fn exhausted_retirement_reason(binding: &Binding, now: i64) -> fired::RetirementReason {
-    if binding
-        .lifecycle
-        .expires_at
-        .is_some_and(|expires_at| now >= expires_at)
-    {
-        fired::RetirementReason::Expired
-    } else {
-        fired::RetirementReason::Exhausted
-    }
 }
 
 /// The record above is for the timeline; this is for the OWNER. A condition
@@ -1298,41 +1251,29 @@ mod tests {
     }
 
     #[test]
-    fn skipped_spent_attempts_preserve_expiry_or_report_exhaustion() {
+    fn a_spent_budget_is_a_silent_duplicate_and_only_a_deadline_reports() {
+        // A once wake its delivery already consumed: any further attempt
+        // (a recovery replay of the same event) is a duplicate — even past
+        // its deadline, it was delivered, not expired.
+        let mut consumed = wake_binding("compose-operation");
+        consumed.fires = 1;
+        assert_eq!(spent_attempt(&consumed), SpentAttempt::Duplicate);
+        consumed.lifecycle.expires_at = Some(100);
+        assert_eq!(spent_attempt(&consumed), SpentAttempt::Duplicate);
+
+        let mut bounded = wake_binding("cron");
+        bounded.lifecycle.once = false;
+        bounded.lifecycle.max_fires = Some(2);
+        bounded.fires = 2;
+        assert_eq!(spent_attempt(&bounded), SpentAttempt::Duplicate);
+
+        // An unfired wake past its deadline is an expiry: reported once, by
+        // the retirement CAS winner.
         let mut expired = wake_binding("timer");
         expired.lifecycle.expires_at = Some(100);
-        assert_eq!(
-            exhausted_retirement_reason(&expired, 100),
-            fired::RetirementReason::Expired
-        );
-
-        let consumed = wake_binding("state");
-        assert_eq!(
-            exhausted_retirement_reason(&consumed, 100),
-            fired::RetirementReason::Exhausted
-        );
-    }
-
-    #[test]
-    fn late_expiry_records_only_for_the_retirement_cas_winner() {
-        let mut wake = wake_binding("timer");
-        wake.lifecycle.expires_at = Some(100);
-        assert!(crate::bindings::expiry::is_unfired_wake(&wake));
-
-        assert_eq!(
-            pre_delivery_retirement_action(fired::RetirementReason::Expired, false),
-            PreDeliveryRetirementAction::LostRace,
-            "a losing late event must emit neither the wake notice nor a record"
-        );
-        assert_eq!(
-            pre_delivery_retirement_action(fired::RetirementReason::Expired, true),
-            PreDeliveryRetirementAction::Expired,
-            "the winner uses expiry reporting, never an additional skipped record"
-        );
-        assert_eq!(
-            pre_delivery_retirement_action(fired::RetirementReason::Exhausted, true),
-            PreDeliveryRetirementAction::Skipped(fired::RetirementReason::Exhausted)
-        );
+        assert!(expired.is_exhausted(100));
+        assert!(crate::bindings::expiry::is_unfired_wake(&expired));
+        assert_eq!(spent_attempt(&expired), SpentAttempt::Expired);
     }
 
     #[test]

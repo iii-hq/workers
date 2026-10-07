@@ -24,10 +24,8 @@ import {
 import { AddJudgePanel, type AddState } from './add'
 import {
   ADD_GIVE_UP_MS,
-  ADD_POLL_MS,
   addWorker,
   type Engine,
-  FAILED_WATCH_MS,
   type JudgeProvider,
   type JudgeSettings,
   listJudges,
@@ -46,6 +44,13 @@ export const SESSION_PROVIDER_KEY = 'judge_provider'
 const PICKER_PAGE = uiClasses.motionPickerPage ?? 'iii-ui-motion-picker-page'
 /** How long a page that is leaving stays rendered: the slide out. */
 const PAGE_TRANSITION_MS = 250
+/** A burst of engine changes (a worker registering its functions) reads once. */
+const LIVE_DEBOUNCE_MS = 300
+/** The hub's and every provider's configuration entry. */
+const JUDGE_CONFIGURATION = /^judge(-[a-z0-9-]{1,64})?$/
+
+/** Unique per open menu: two pickers never share a handler. */
+let liveSeq = 0
 
 type Page = 'judges' | 'add' | 'configure'
 
@@ -162,8 +167,8 @@ export function JudgeSessionPicker({
   const configureBackRef = useRef<HTMLButtonElement>(null)
   const returnFocusRef = useRef<HTMLElement | null>(null)
 
-  // Also settles adds: one is done once its judge registers, stuck after
-  // ADD_GIVE_UP_MS.
+  // Also settles adds: one is done once its judge registers (read again on
+  // the engine's own change events), stuck after ADD_GIVE_UP_MS.
   const refresh = useCallback(() => {
     // Without the settings the Default row has no name and no Configure.
     readJudgeSettings(iii)
@@ -197,15 +202,61 @@ export function JudgeSessionPicker({
       })
   }, [iii])
 
-  // Each poll re-renders the picker, which re-evaluates this bound.
-  const pending = [...adds.values()].some(
-    (add) => add.kind === 'adding' || (add.kind === 'failed' && Date.now() - add.at < FAILED_WATCH_MS),
+  // Configuration entries this picker reads, beyond the `judge-*` names.
+  const watchedIds = useRef(new Set<string>())
+  watchedIds.current = new Set(
+    [settings?.configurationId, ...(providers ?? []).map((entry) => entry.configurationId)].filter(
+      (id): id is string => typeof id === 'string',
+    ),
   )
+
+  // While the menu is open the list follows the engine, never a timer: a
+  // judge registering or going away (an add landing, late or not) fires
+  // `engine::functions-available`, a settings change the `configuration`
+  // trigger. The configuration binding names no id: an id-scoped binding
+  // holds the entry, and dropping it can start the entry's expiry.
   useEffect(() => {
-    if (!open || !pending) return
-    const timer = setInterval(refresh, ADD_POLL_MS)
-    return () => clearInterval(timer)
-  }, [open, pending, refresh])
+    if (!open) return
+    const seq = ++liveSeq
+    const functionsHandler = `iii::judge-ui::session::functions-${seq}`
+    const configurationHandler = `iii::judge-ui::session::configuration-${seq}`
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const schedule = () => {
+      if (timer !== null) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = null
+        refresh()
+      }, LIVE_DEBOUNCE_MS)
+    }
+    const offHandlers = [
+      iii.on(functionsHandler, schedule),
+      iii.on<{ id?: unknown }>(configurationHandler, (event) => {
+        const id = typeof event?.id === 'string' ? event.id : null
+        if (id !== null && (JUDGE_CONFIGURATION.test(id) || watchedIds.current.has(id))) schedule()
+      }),
+    ]
+    const offTriggers = [
+      { type: 'engine::functions-available', handler: functionsHandler },
+      { type: 'configuration', handler: configurationHandler },
+    ].flatMap(({ type, handler }) => {
+      try {
+        return [iii.registerTrigger({ type, function_id: `${handler}::${iii.browserId}`, config: {} })]
+      } catch {
+        // A trigger type missing on this engine: the menu reads on open.
+        return []
+      }
+    })
+    return () => {
+      if (timer !== null) clearTimeout(timer)
+      for (const off of [...offTriggers, ...offHandlers]) {
+        try {
+          off()
+        } catch {
+          // already gone
+        }
+      }
+    }
+  }, [open, iii, refresh])
 
   // A page that left keeps its content until it has slid out.
   useEffect(() => {

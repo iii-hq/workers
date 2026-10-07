@@ -53,14 +53,104 @@ pub struct TimerTriggerConfig {
     pub in_ms: Option<i64>,
 }
 
-struct Armed {
-    generation: u64,
-    handle: tokio::task::JoinHandle<()>,
+/// Keyed one-shot deadlines: each id holds at most one pending task that
+/// sleeps until an absolute epoch-ms instant, then runs its work once.
+///
+/// The harness's one timer facility — the `timer` trigger provider below and
+/// the binding-expiry deadlines (`bindings::expiry`) both arm through it, so
+/// nothing in the worker needs a periodic "is anything due?" scan. Re-arming
+/// an id replaces (aborts) its pending task; [`OneShots::cancel`] aborts it.
+/// A task that reaches its deadline DETACHES itself before running its work,
+/// so a cancel issued by that work (expiry deletes the binding, which cancels
+/// the binding's timer) never aborts the work mid-flight.
+#[derive(Clone, Default)]
+pub struct OneShots {
+    armed: Arc<Mutex<HashMap<String, Armed>>>,
+    next_generation: Arc<AtomicU64>,
 }
 
-impl Drop for Armed {
-    fn drop(&mut self) {
-        self.handle.abort();
+struct Armed {
+    generation: u64,
+    abort: tokio::task::AbortHandle,
+}
+
+impl OneShots {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Run `work` once at `at_ms` (epoch ms; a past instant runs now),
+    /// replacing whatever this id had pending.
+    pub fn arm<F>(&self, id: impl Into<String>, at_ms: i64, work: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let id = id.into();
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+        let armed = self.armed.clone();
+        let task_id = id.clone();
+        // Held across spawn + insert: a zero-wait task must not look for its
+        // entry before the entry exists.
+        let mut map = self.armed.lock().unwrap_or_else(|p| p.into_inner());
+        let handle = tokio::spawn(async move {
+            let wait = (at_ms - AgentMessage::now_ms()).max(0) as u64;
+            tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+            {
+                let mut map = armed.lock().unwrap_or_else(|p| p.into_inner());
+                if !map
+                    .get(&task_id)
+                    .is_some_and(|entry| entry.generation == generation)
+                {
+                    // Replaced or cancelled while waking; the newer arming
+                    // (if any) owns this id now.
+                    return;
+                }
+                map.remove(&task_id);
+            }
+            work.await;
+        });
+        let replaced = map.insert(
+            id,
+            Armed {
+                generation,
+                abort: handle.abort_handle(),
+            },
+        );
+        drop(map);
+        if let Some(old) = replaced {
+            old.abort.abort();
+        }
+    }
+
+    /// Abort the id's pending task. `true` when one was pending.
+    pub fn cancel(&self, id: &str) -> bool {
+        let removed = self
+            .armed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(id);
+        match removed {
+            Some(entry) => {
+                entry.abort.abort();
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn is_armed(&self, id: &str) -> bool {
+        self.armed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.armed.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -71,8 +161,7 @@ impl Drop for Armed {
 pub struct TimerBus {
     iii: Arc<IIIClient>,
     dispatch_timeout_ms: u64,
-    armed: Arc<Mutex<HashMap<String, Armed>>>,
-    next_generation: Arc<AtomicU64>,
+    timers: OneShots,
 }
 
 impl TimerBus {
@@ -80,8 +169,7 @@ impl TimerBus {
         Self {
             iii,
             dispatch_timeout_ms,
-            armed: Arc::new(Mutex::new(HashMap::new())),
-            next_generation: Arc::new(AtomicU64::new(1)),
+            timers: OneShots::new(),
         }
     }
 
@@ -93,42 +181,20 @@ impl TimerBus {
         metadata: Option<Value>,
         at: i64,
     ) {
-        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         let bus = self.clone();
         let task_id = id.clone();
-        let handle = tokio::spawn(async move {
-            let now = AgentMessage::now_ms();
-            let wait = (at - now).max(0) as u64;
-            tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+        self.timers.arm(id, at, async move {
             bus.fire(&task_id, &function_id, namespace, metadata, at)
                 .await;
-            bus.retire_if_current(&task_id, generation);
         });
-        // Replacing an existing entry drops it, which aborts the old task.
-        self.armed
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(id, Armed { generation, handle });
     }
 
-    fn retire_if_current(&self, id: &str, generation: u64) {
-        let mut armed = self.armed.lock().unwrap_or_else(|p| p.into_inner());
-        if armed
-            .get(id)
-            .is_some_and(|entry| entry.generation == generation)
-        {
-            armed.remove(id);
-        }
-    }
     pub fn cancel(&self, id: &str) {
-        self.armed
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(id);
+        self.timers.cancel(id);
     }
 
     pub fn armed_count(&self) -> usize {
-        self.armed.lock().unwrap_or_else(|p| p.into_inner()).len()
+        self.timers.len()
     }
 
     /// One fire, then done. Awaited (not void) so a failed dispatch is loggable
@@ -292,40 +358,43 @@ mod tests {
         assert_eq!(bus.armed_count(), 1);
     }
 
-    #[tokio::test]
-    async fn stale_timer_cleanup_preserves_replacement_generation() {
-        let iii = Arc::new(IIIClient::new("ws://127.0.0.1:0"));
-        let bus = TimerBus::new(iii, 1_000);
+    #[tokio::test(start_paused = true)]
+    async fn a_replaced_arming_never_runs_and_the_replacement_does() {
+        let timers = OneShots::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let deadline = AgentMessage::now_ms() + 60_000;
-        bus.arm("same".into(), "noop::fn".into(), None, None, deadline);
-        let old_generation = bus
-            .armed
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get("same")
-            .unwrap()
-            .generation;
-        bus.arm("same".into(), "noop::fn".into(), None, None, deadline);
-        let new_generation = bus
-            .armed
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get("same")
-            .unwrap()
-            .generation;
-        assert_ne!(old_generation, new_generation);
-
-        bus.retire_if_current("same", old_generation);
-        assert_eq!(bus.armed_count(), 1, "stale cleanup removed replacement");
+        let first = tx.clone();
+        timers.arm("same", deadline, async move {
+            first.send("first").unwrap();
+        });
+        let second = tx.clone();
+        timers.arm("same", deadline, async move {
+            second.send("second").unwrap();
+        });
         assert_eq!(
-            bus.armed
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .get("same")
-                .unwrap()
-                .generation,
-            new_generation
+            timers.len(),
+            1,
+            "re-arming replaces rather than duplicating"
         );
-        bus.cancel("same");
+        tokio::time::advance(std::time::Duration::from_millis(60_001)).await;
+        assert_eq!(rx.recv().await, Some("second"));
+        tokio::task::yield_now().await;
+        assert!(rx.try_recv().is_err(), "the replaced arming must never run");
+        assert!(timers.is_empty(), "a fired timer detaches itself");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn work_that_cancels_its_own_id_still_runs_to_completion() {
+        // Expiry's work deletes the binding, and the delete cancels the
+        // binding's timer — which must not abort the work in flight.
+        let timers = OneShots::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let inner = timers.clone();
+        timers.arm("self", AgentMessage::now_ms(), async move {
+            assert!(!inner.cancel("self"), "the task detached before its work");
+            tokio::task::yield_now().await;
+            tx.send("finished").unwrap();
+        });
+        assert_eq!(rx.recv().await, Some("finished"));
     }
 }

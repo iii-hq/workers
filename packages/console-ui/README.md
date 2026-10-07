@@ -166,8 +166,8 @@ Two subpaths DO bundle (React-free helpers and hooks the Console itself
 uses): `@iii-dev/console-ui/format` — `formatRelative`, `formatDuration`,
 `formatBytes`, `errorMessage`/`errorCode`, `copyText`, `unwrapEnvelope` —
 and `@iii-dev/console-ui/hooks` — `useContainerNarrow`, `usePaneState`,
-`useCopyFlash`, `useWorkerLive` (fetch + trigger bindings + visible-tab
-poll), `useDebounce`, `useSplitDrag` (pointer + arrow keys for a
+`useCopyFlash`, `useWorkerLive` (fetch + trigger bindings, re-read on tab
+focus when a binding is missing; no polling), `useDebounce`, `useSplitDrag` (pointer + arrow keys for a
 `role="separator"`).
 Newer shared components: `Eyebrow` (the mono caps label; `uiClasses.eyebrow`
 is the class form), `SearchField`, `Toolbar`/`StatusBar` (36 px raised and

@@ -93,6 +93,61 @@ project. By default the worker drives a Chromium/Chrome already installed on
 the machine; point `executable` at a specific binary if auto-detection picks
 the wrong one.
 
+### No Chrome on the machine?
+
+The worker can download its own Chromium. In the ADE, the setup wizard shows
+a **Browser** step with a **Download Chromium** button whenever the browser
+worker is installed and no Chromium is found (Set up the harness → Browser).
+From anywhere else:
+
+```bash
+iii trigger browser::chromium::status        # what is found, and where it looked
+iii trigger browser::chromium::install       # returns { job_id, status } at once
+```
+
+`browser::chromium::install` downloads the Stable
+[Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/)
+build for this platform (linux64, linux-arm64, mac-arm64, mac-x64, win64; about 200 MB)
+and keeps it in `${XDG_CACHE_HOME:-~/.cache}/iii/browser/chrome/<version>/`
+(`III_BROWSER_CACHE_DIR` replaces `~/.cache/iii/browser`), with
+`current.json` naming the version in use. The job runs in the background:
+it fetches the version manifest, streams the zip to a `.partial` file,
+unpacks it into a staging folder, runs the binary with `--version`, then
+moves it into place in one rename, so a failed or interrupted install never
+leaves a half-installed browser behind. One job runs per worker (a second
+call returns the running job) and a lock file in the cache keeps two workers
+sharing it apart. Progress arrives on the `browser::chromium-install-progress`
+trigger and in `browser::chromium::status` (`job`). On Linux, a machine
+missing Chromium's shared libraries fails at the `--version` step with a
+`hint` listing the Debian packages to install. When a Chromium is already
+found it does nothing unless `force: true`. Agents need approval to call it;
+`browser::chromium::status` is read-only and auto-allowed.
+
+Which binary launches is decided by one resolver, shared by sessions,
+`browser::doctor`, `browser::chromium::status` and the scraping browser
+tiers. First hit wins:
+
+1. the config `executable` (when set, nothing else is tried);
+2. the `CHROME` environment variable;
+3. a system install — `chrome`, `google-chrome(-stable)`, `chromium(-browser)`,
+   `msedge`/`microsoft-edge` on `PATH`, then the usual install locations;
+4. the downloaded copy (`current.json`);
+5. the newest Playwright (`ms-playwright/chromium-*`), then Puppeteer
+   (`~/.cache/puppeteer/chrome/*`), Chromium already on the machine.
+
+A Chrome you install yourself later therefore wins over the download without
+anything being removed.
+
+On a Linux that blocks unprivileged user namespaces for programs without an
+AppArmor profile (Ubuntu 23.10 and later), a Chromium from a user cache — the
+download, Playwright, Puppeteer — cannot start its sandbox ("No usable
+sandbox!"), so the worker launches those with `--no-sandbox`, as Playwright
+does; `browser::chromium::status` reports `sandboxed: false` and
+`browser::doctor` lists it as an issue. A distribution Chromium or Google
+Chrome ships the profile and keeps its sandbox. When nothing is found, session calls fail with an
+error that starts with `chromium_missing:` and says how to fix it; the ADE
+recognises the marker and offers the install.
+
 ### Engines
 
 Interactive sessions run on one of two engines, both driven over the Chrome
@@ -114,9 +169,9 @@ consistent, so clicking by `ref` works, and the accessibility tree names
 controls from their contents.
 
 What it cannot do, because nothing is laid out or painted: there is no
-screencast, so the console's live viewport and the corner preview stay on a
-single `browser::screenshot` frame (Lightpanda renders that as a text-only
-PNG); pick mode (`Overlay`), `browser::styles::read` (`CSS`), `clear-data`'s
+screencast, so the console's live viewport and the corner preview show a
+`browser::screenshot` instead (Lightpanda renders that as a text-only PNG),
+re-taken when the tab navigates or updates rather than on a timer; pick mode (`Overlay`), `browser::styles::read` (`CSS`), `clear-data`'s
 per-origin storage wipe, and recording are unavailable; `file://` pages are
 refused ("UnsupportedProtocol"); `headful: true` and
 `browser::sessions::attach` are Chromium only. `browser::doctor` reports the
@@ -216,7 +271,10 @@ names are unique per snapshot and fail closed when stale, never resolving to
 a different element). `browser::sessions::start` accepts `read_only: true`
 for inspection-only sessions where act/evaluate/execute/styles::write are
 rejected. `browser::doctor` reports the environment — detected Chromium,
-version, capacity — with an `enable_how` string for anything degraded.
+where it came from (`chromium_source`), version, capacity — with an
+`enable_how` string for anything degraded. `browser::chromium::status` and
+`browser::chromium::install` find and fetch Chromium (see
+[No Chrome on the machine?](#no-chrome-on-the-machine)).
 
 `browser::sessions::attach` binds a session to an already-running browser
 over CDP (start Chrome with `--remote-debugging-port`) instead of launching
@@ -421,7 +479,7 @@ Restart after changing a startup-snapshotted value.
 ```yaml
 browser:
   engine: chromium          # chromium | lightpanda (see Engines above)
-  executable: ''            # empty = auto-detect Chrome/Chromium/Edge, or `lightpanda` on PATH
+  executable: ''            # empty = auto-detect Chrome/Chromium/Edge (then the browser::chromium::install copy), or `lightpanda` on PATH
   data_dir: ./data/browser  # profile/ (cookies, logins), downloads/, tabs.json; startup setting
   headless: true            # false shows a real window locally
   max_sessions: 4           # tabs with a page open at once; the LRU unwatched tab sleeps past it
@@ -504,12 +562,13 @@ bindings accept an optional `{ "session_id": "..." }` filter.
 |---|---|---|
 | `browser::session-started` | A tab opened and is ready | `{ session_id, url, headless, preview, timestamp }` — `preview: false` when the opener passed `preview: false` to `sessions::start` (the console's own tab controls do) |
 | `browser::session-stopped` | A tab closed for good | `{ session_id, reason: "stopped" \| "idle" \| "expired" \| "crashed", timestamp }` |
-| `browser::session-updated` | A tab woke (`active: true`) or went to sleep (`active: false`) | `{ session_id, active, url, title, timestamp }` |
+| `browser::session-updated` | A tab woke (`active: true`), went to sleep (`active: false`), or its live page's title changed (`active: true`) | `{ session_id, active, url, title, timestamp }` |
 | `browser::navigated` | The page committed a navigation | `{ session_id, url, timestamp }` |
 | `browser::console-event` | A console/log/exception entry was captured | `{ session_id, entry }` |
 | `browser::picked` | The human picked an element in inspect mode | `{ session_id, element, timestamp }` |
 | `browser::handoff-requested` | A session paused for a human step (CAPTCHA, 2FA, payment) | `{ session_id, handoff_id, instructions, timestamp }` |
 | `browser::frame-event` | Internal: a live screencast frame of a watched tab (console viewport plumbing) | `{ session_id, frame, width, height, frame_seq, timestamp }` |
+| `browser::chromium-install-progress` | A `browser::chromium::install` job entered a phase or moved ~1 % (at most every 250 ms) | `{ job_id, phase: "resolving" \| "downloading" \| "extracting" \| "verifying" \| "done" \| "failed", version?, bytes_done, bytes_total?, path?, error?, hint?, timestamp }` — not a session event: bind it without a `session_id` filter |
 
 `browser::console-event` is high-volume; bind it with a `session_id` filter
 and treat `browser::console::read` as the durable record. `browser::picked`

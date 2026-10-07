@@ -249,8 +249,16 @@ async fn run_watch(
     healthy: Arc<AtomicBool>,
 ) {
     let mut pending: HashMap<ChangeKind, PendingEvent> = HashMap::new();
-    let mut tick = tokio::time::interval(Duration::from_millis(25));
     loop {
+        // Sleep until the earliest coalesced change is due; with nothing
+        // pending, wait for the filesystem alone (no idle wake-ups).
+        let next_due = pending.values().map(|event| event.due).min();
+        let due_timer = async move {
+            match next_due {
+                Some(due) => tokio::time::sleep_until(due).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::select! {
             event = rx.recv() => {
                 let Some(event) = event else { break };
@@ -270,7 +278,7 @@ async fn run_watch(
                     }
                 }
             }
-            _ = tick.tick() => {
+            _ = due_timer => {
                 let now = tokio::time::Instant::now();
                 let due: Vec<ChangeKind> = pending
                     .iter()

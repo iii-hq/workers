@@ -54,8 +54,9 @@ pub struct TailItem {
     pub origin: Option<crate::types::JsonMap>,
     /// Present and true when this entry sits inside a collapsed activity
     /// run and the heavy parts of its message were left out: `function_call`
-    /// blocks keep `id` + `function_id` but carry `arguments: {}`,
-    /// `function_result` messages keep `function_call_id` + `is_error` with
+    /// blocks keep `id` + `function_id` but carry `arguments: {}` (an
+    /// `agent_trigger` call keeps its string `function` + `description`
+    /// label and drops `payload`), `function_result` messages keep `function_call_id` + `is_error` with
     /// `content: []` and `details: null`, thinking is dropped, text is kept.
     /// `session::messages-range` returns the whole entry.
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -89,6 +89,12 @@ old listeners and their live configuration remain unchanged. Set
 `webhook_listener: null` to disable it live. Shutdown drains both listeners
 and serializes with reload; a late reload cannot restart a stopped server.
 
+`http::status` reports where the server actually listens: `{ host, port,
+url, last_reload_error }`, where `url` is the base URL to open from this
+machine (`http://127.0.0.1:<port>` when it listens on every interface). It
+is read-only and open to agents, so code and agents build page URLs from it
+instead of assuming port 3111.
+
 ## Trigger type
 
 This worker always registers the `http` trigger type. Bind a function to it

@@ -1,9 +1,13 @@
 import type { Host } from '@iii-dev/console-ui'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { activeTurnFromStatus, canActivateHarnessTurn } from './turn-status'
 
 const TURN_STARTED_FN = 'iii::shell-ui::turn-started'
 const TURN_COMPLETED_FN = 'iii::shell-ui::turn-completed'
+const TURNS_CHANGED_FN = 'iii::shell-ui::turns-changed'
+/** `shell::turns::changed` already folds a burst into one event per 200 ms;
+    this folds the few left into one list read. */
+export const TURNS_CHANGED_DEBOUNCE_MS = 150
 
 interface TurnStartedEvent {
   session_id: string
@@ -121,4 +125,48 @@ export function useHarnessTurn(
   }, [host, conversationId, scope])
 
   return state
+}
+
+/** Calls `onChange` when the ide worker stores a new record of the chat's
+    change history (`shell::turns::changed`): a turn opened or closed, a
+    file change recorded. Debounced; nothing is read on a timer. `scope`
+    keeps two panes beside one chat on separate functions. */
+export function useTurnsChanged(
+  host: Host,
+  conversationId: string | null | undefined,
+  scope: string,
+  onChange: () => void,
+): void {
+  const onChangeRef = useRef(onChange)
+  onChangeRef.current = onChange
+  useEffect(() => {
+    if (!conversationId) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const functionId = `${TURNS_CHANGED_FN}::${scope}`
+    const offHandler = host.iii.on<{ session_id?: string }>(functionId, (event) => {
+      if (event?.session_id !== conversationId || timer !== null) return
+      timer = setTimeout(() => {
+        timer = null
+        onChangeRef.current()
+      }, TURNS_CHANGED_DEBOUNCE_MS)
+    })
+    let offTrigger: () => void = () => {}
+    try {
+      offTrigger = host.iii.registerTrigger({
+        type: 'shell::turns::changed',
+        function_id: `${functionId}::${host.iii.browserId}`,
+        config: { session_id: conversationId },
+      })
+    } catch {
+      // No ide worker: the list still follows turn boundaries.
+    }
+    return () => {
+      if (timer !== null) clearTimeout(timer)
+      try {
+        offTrigger()
+      } finally {
+        offHandler()
+      }
+    }
+  }, [host, conversationId, scope])
 }

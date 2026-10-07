@@ -4,7 +4,7 @@
  * the tree. The wizard host mounted once in `App` is the only listener.
  */
 
-export type WizardStepId = 'welcome' | 'models' | 'judge' | 'ready'
+export type WizardStepId = 'welcome' | 'models' | 'browser' | 'judge' | 'ready'
 
 type Listener = (step: WizardStepId | undefined) => void
 

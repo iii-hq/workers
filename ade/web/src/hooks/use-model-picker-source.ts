@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { onHarnessConfigSaved } from '@/lib/harness-config-events'
 import {
+  catalogKeysInRouterOrder,
   catalogRowsToModelOptions,
   fetchModelsCatalog,
   fetchProviderList,
@@ -35,6 +36,9 @@ export function useModelPickerSource(
   refresh: () => Promise<void>
 } {
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
+  // Catalog keys in the router's order (its best model first), unlike the
+  // picker's alphabetical list: the fallback for a new chat comes from here.
+  const [catalogKeys, setCatalogKeys] = useState<string[]>([])
   const [presentProviders, setPresentProviders] = useState<ProviderListEntry[]>(
     [],
   )
@@ -47,11 +51,13 @@ export function useModelPickerSource(
   const refresh = useCallback(async () => {
     if (backendId !== 'real') {
       setModelOptions([])
+      setCatalogKeys([])
       setCatalogLoading(false)
       return
     }
     if (!harnessAvailable) {
       setModelOptions([])
+      setCatalogKeys([])
       setCatalogLoading(false)
       return
     }
@@ -63,9 +69,11 @@ export function useModelPickerSource(
     try {
       const rows = await fetchModelsCatalog()
       setModelOptions(catalogRowsToModelOptions(rows))
+      setCatalogKeys(catalogKeysInRouterOrder(rows))
       hasCatalog.current = true
     } catch {
       setModelOptions([])
+      setCatalogKeys([])
     } finally {
       setCatalogLoading(false)
     }
@@ -169,11 +177,6 @@ export function useModelPickerSource(
         .catch(() => undefined)
     })
   }, [backendId, harnessAvailable, refresh])
-
-  const catalogKeys = useMemo(
-    () => modelOptions.map((o) => o.id),
-    [modelOptions],
-  )
 
   return {
     modelOptions,

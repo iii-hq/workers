@@ -1,7 +1,8 @@
 /* The New worker dialog's logic, free of React so the tests run it in
    node: the worker-name rule (the one coder::scaffold-worker enforces),
    the folder default, which file to open, the dialog's steps, and "Add to
-   stack" over the compose daemon's own functions. */
+   stack" over the compose daemon's own functions, followed through its
+   `compose-operation` events rather than by asking again. */
 
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { joinRel, stripDirSlash } from './paths'
@@ -236,6 +237,66 @@ export function workerFunctions(entries: FunctionEntry[], name: string): Functio
 
 export type Trigger = <T>(functionId: string, payload: Record<string, unknown>) => Promise<T>
 
+/** One `compose-operation` event (iii-compose's ProgressEvent). */
+export interface ProgressEvent {
+  operation_id: string
+  /** The container the event is about; absent for the operation as a whole. */
+  container?: string | null
+  /** A container's `waiting`, `configuring`, `preparing`, `registering`,
+      `starting`, `ready`, `failed` or `warning`; `complete` at the end. */
+  phase: string
+  detail: string
+  /** The operation's last event, success or failure alike. */
+  terminal: boolean
+}
+
+/** Bind `compose-operation` for one operation: `onEvent` hears each of its
+    events until the returned unbind. */
+export type Subscribe = (operationId: string, onEvent: (event: ProgressEvent) => void) => () => void
+
+/** The client half of `Subscribe`: what the console's engine client offers. */
+export interface EventClient {
+  browserId: string
+  on<P = unknown>(functionId: string, handler: (payload: P) => void | Promise<void>): () => void
+  registerTrigger(input: { type: string; function_id: string; config: Record<string, unknown> }): () => void
+}
+
+let followers = 0
+
+/** `Subscribe` over the console's engine client, one browser function per
+    operation (the `iii::` prefix keeps its invocations out of traces). */
+export function composeOperations(iii: EventClient): Subscribe {
+  return (operationId, onEvent) => {
+    followers += 1
+    const functionId = `iii::shell-ui::compose-operation::${followers}`
+    const offHandler = iii.on<ProgressEvent>(functionId, (event) => {
+      if (event?.operation_id === operationId && typeof event.phase === 'string') onEvent(event)
+    })
+    let offTrigger: () => void = () => {}
+    try {
+      offTrigger = iii.registerTrigger({
+        type: 'compose-operation',
+        function_id: `${functionId}::${iii.browserId}`,
+        config: { operation_id: operationId },
+      })
+    } catch {
+      // No compose daemon to bind: the snapshot read after the start answers.
+    }
+    return () => {
+      try {
+        offTrigger()
+      } finally {
+        offHandler()
+      }
+    }
+  }
+}
+
+/** A caller-chosen operation id: bound before compose::add runs it. */
+export function newOperationId(): string {
+  return `compose:${crypto.randomUUID()}`
+}
+
 export type StackOutcome = { ok: true } | { ok: false; error: string; logs: string[]; owned: boolean }
 
 interface ComposeStatus {
@@ -251,17 +312,30 @@ interface ComposeLogs {
   containers: { entries: { message: string }[] }[]
 }
 
-export const POLL_MS = 1000
-/** Ten minutes, compose::add's own default timeout. */
-export const MAX_POLLS = 600
+interface MutationOutcome {
+  status?: 'ok' | 'failed'
+  error?: { message?: string } | null
+}
+
+/** Ten minutes, compose::add's own default timeout: one timer, not a loop. */
+export const GIVE_UP_MS = 600_000
 const LOG_TAIL = 40
+/** Container phases that mean its process is on its way up. */
+const STARTING_PHASES = new Set(['starting', 'registering'])
 
 /** coder::scaffold-worker returns only the worker's own container, so a
     missing http is declared here, as the -ade templates' worker-compose.yaml
     declares it. */
 const HTTP_CONTAINER = { worker: 'package://http', version: 'latest', config_name: 'http' }
 
-const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+export interface FollowOptions {
+  /** The container was added by this flow: a failure leaves it ours to restart. */
+  owned?: boolean
+  /** How long to wait for a verdict before giving up. */
+  giveUpMs?: number
+  /** Stops following (the dialog or the card closed). */
+  signal?: AbortSignal
+}
 
 /** Adds a scaffolded worker (and the containers it requires that the stack
     lacks) and follows it until it runs or fails. compose::add keys a path
@@ -272,9 +346,10 @@ const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
     restarts it. */
 export async function addToStack(
   trigger: Trigger,
+  subscribe: Subscribe,
   result: ScaffoldResult,
   onProgress: (phase: StackPhase) => void,
-  { owned = false, sleep = pause }: { owned?: boolean; sleep?: (ms: number) => Promise<void> } = {},
+  { owned = false, ...options }: FollowOptions & { operationId?: string } = {},
 ): Promise<StackOutcome> {
   const key = result.name
   // A retry already owns the container, whatever fails before the first compose call.
@@ -282,23 +357,41 @@ export async function addToStack(
   try {
     const before = await trigger<ComposeStatus>('compose::status', {})
     const declared = new Set(before.containers.map((container) => container.container))
-    let operation: string | null = null
     if (declared.has(key)) {
       if (!owned) {
         return { ok: false, error: `a container named ${key} already exists in the stack`, logs: [], owned: false }
       }
       // `container` is never empty here: an empty key is never declared.
-      await trigger('compose::restart', { container: key })
-    } else {
-      sent = true
-      const missing = result.requires.filter((name) => !declared.has(name))
-      const workers = [result.compose, ...missing.map((name) => (name === 'http' ? HTTP_CONTAINER : name))]
-      operation = (await trigger<{ operation_id: string }>('compose::add', { workers })).operation_id
+      // compose::restart answers once the container is back up, or not.
+      onProgress('starting')
+      const restarted = await trigger<MutationOutcome>('compose::restart', { container: key })
+      const failed = restarted?.status === 'failed' ? (restarted.error?.message ?? `${key} did not restart.`) : null
+      return await afterRestart(trigger, key, failed)
     }
-    return followStart(trigger, key, operation, onProgress, { owned: sent, sleep })
+    sent = true
+    const missing = result.requires.filter((name) => !declared.has(name))
+    const workers = [result.compose, ...missing.map((name) => (name === 'http' ? HTTP_CONTAINER : name))]
+    const operation = options.operationId ?? newOperationId()
+    return await followStart(trigger, subscribe, key, operation, onProgress, {
+      ...options,
+      owned: true,
+      start: async () => {
+        await trigger('compose::add', { workers, operation_id: operation })
+      },
+    })
   } catch (error) {
     return withLogs(trigger, key, errorMessage(error), sent)
   }
+}
+
+/** A restart that returned: the container's state is the verdict. */
+async function afterRestart(trigger: Trigger, key: string, failed: string | null): Promise<StackOutcome> {
+  const status = await trigger<ComposeStatus>('compose::status', {})
+  const container = status.containers.find((entry) => entry.container === key)
+  if (container?.state === 'failed')
+    return withLogs(trigger, key, container.last_error ?? `${key} failed to start.`, true)
+  if (failed !== null && container?.state !== 'ready') return withLogs(trigger, key, failed, true)
+  return { ok: true }
 }
 
 /** A failed outcome, with the container's last log lines when it has any. */
@@ -313,43 +406,89 @@ async function withLogs(trigger: Trigger, key: string, error: string, owned: boo
   return { ok: false, error, logs, owned }
 }
 
-/** Follows container `key` until it runs or fails: through `operation`
-    (compose::add's) while that runs, then by its compose::status state.
-    Also what a coder::scaffold-worker call that started the worker
-    follows, with the operation id it returned. */
-export async function followStart(
+/** Follows container `key` through compose operation `operation` until it
+    runs or fails. The operation's events are bound first, then `start`
+    (when given) submits it, then its snapshot is read once: an operation
+    that ended before the binding took still answers. From there on only
+    events move it: the container's `starting`, `ready` or `failed`, and the
+    operation's terminal event, after which the container's state is read
+    once for the verdict. Also what a coder::scaffold-worker call that
+    started the worker follows, with the operation id it returned. */
+export function followStart(
   trigger: Trigger,
+  subscribe: Subscribe,
   key: string,
-  operation: string | null,
+  operation: string,
   onProgress: (phase: StackPhase) => void,
-  { owned = true, sleep = pause }: { owned?: boolean; sleep?: (ms: number) => Promise<void> } = {},
+  { owned = true, giveUpMs = GIVE_UP_MS, signal, start }: FollowOptions & { start?: () => Promise<void> } = {},
 ): Promise<StackOutcome> {
-  const fail = (error: string) => withLogs(trigger, key, error, owned)
-  try {
-    for (let poll = 0; poll < MAX_POLLS; poll++) {
-      // The operation first: once it has ended, the status read after it is final.
-      let op: ComposeOperation | null = null
-      if (operation !== null) {
-        try {
-          op = await trigger<ComposeOperation>('compose::operation', { progress_operation_id: operation })
-        } catch {
-          // An operation compose no longer knows (an old call): the
-          // container's own state answers from here on.
-          operation = null
-        }
-      }
-      const status = await trigger<ComposeStatus>('compose::status', {})
-      const container = status.containers.find((entry) => entry.container === key)
-      if (container?.state === 'ready') return { ok: true }
-      if (container?.state === 'failed') return fail(container.last_error ?? `${key} failed to start.`)
-      if (op !== null && op.status !== 'running') return fail(op.last_event?.detail ?? `compose::add ${op.status}.`)
-      // No operation to wait on and no container: nothing will start it.
-      if (op === null && !container) return fail(`${key} is not in the stack.`)
-      onProgress(container?.state === 'starting' ? 'starting' : 'installing')
-      await sleep(POLL_MS)
+  return new Promise<StackOutcome>((resolve) => {
+    let done = false
+    let settling = false
+    let off: () => void = () => {}
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const finish = (outcome: StackOutcome | Promise<StackOutcome>) => {
+      if (done) return
+      done = true
+      off()
+      if (timer !== null) clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+      resolve(outcome)
     }
-    return fail(`${key} did not start within ${(MAX_POLLS * POLL_MS) / 60_000} minutes.`)
-  } catch (error) {
-    return fail(errorMessage(error))
-  }
+    const fail = (error: string) => finish(withLogs(trigger, key, error, owned))
+    const abort = () => finish({ ok: false, error: 'stopped following the start', logs: [], owned })
+    // The operation is over, or compose no longer knows it: one read of
+    // the container's state decides.
+    const settle = async (op: ComposeOperation | null, known: boolean) => {
+      if (done || settling) return
+      settling = true
+      try {
+        const status = await trigger<ComposeStatus>('compose::status', {})
+        if (done) return
+        const container = status.containers.find((entry) => entry.container === key)
+        if (container?.state === 'ready') return finish({ ok: true })
+        if (container?.state === 'failed') return fail(container.last_error ?? `${key} failed to start.`)
+        if (!known) {
+          return fail(
+            container
+              ? `compose no longer tracks the operation that starts ${key}; see the Workers page.`
+              : `${key} is not in the stack.`,
+          )
+        }
+        fail(op?.last_event?.detail ?? `compose::add ${op?.status ?? 'ended'}.`)
+      } catch (error) {
+        fail(errorMessage(error))
+      }
+    }
+    const snapshot = () =>
+      trigger<ComposeOperation>('compose::operation', { progress_operation_id: operation }).then(
+        (op) => ({ op, known: true }),
+        () => ({ op: null, known: false }),
+      )
+
+    if (signal?.aborted) return abort()
+    signal?.addEventListener('abort', abort)
+    timer = setTimeout(() => fail(`${key} did not start within ${giveUpMs / 60_000} minutes.`), giveUpMs)
+    off = subscribe(operation, (event) => {
+      if (done) return
+      if (event.container === key) {
+        if (event.phase === 'ready') return finish({ ok: true })
+        if (event.phase === 'failed') return fail(event.detail || `${key} failed to start.`)
+        if (STARTING_PHASES.has(event.phase)) onProgress('starting')
+      }
+      if (event.terminal) void snapshot().then(({ op, known }) => settle(op, known))
+    })
+    void (async () => {
+      try {
+        if (start) await start()
+        if (done) return
+        const { op, known } = await snapshot()
+        if (done) return
+        if (!known || op === null || op.status !== 'running') return void settle(op, known)
+        onProgress('installing')
+      } catch (error) {
+        fail(errorMessage(error))
+      }
+    })()
+  })
 }

@@ -80,6 +80,7 @@ import { type GitChange, type GitState, gitChanges } from './git'
 import type { CommitDetails, CommitFile } from './git-log-window'
 import { gitDiscard } from './git-actions'
 import { EDITOR_FULL_READ_BUDGET } from './large-file'
+import { watchGit } from './git-watch'
 import { useWorkspaceChanges } from './live'
 import {
   canGoBack,
@@ -147,7 +148,7 @@ import { TimelineTab } from './TimelineTab'
 import { TurnReviewBridge } from './TurnReviewBridge'
 import type { TreeChange } from './tree-model'
 import { describeRevert, revertTurn } from './turn-revert'
-import { useHarnessTurn } from './turn'
+import { useHarnessTurn, useTurnsChanged } from './turn'
 import { fetchSessionTurns, relativeToRoot, type SessionTurnSummary, turnTitle } from './turns'
 import { useCompareRefs } from './use-compare-refs'
 import { useSourceControl } from './use-source-control'
@@ -594,6 +595,19 @@ export function ShellExplorerPage({
     setGit(null)
     void refreshGit()
   }, [refreshGit])
+  // A stage, a commit or a switch made outside the page (a terminal, an
+  // agent) is no file change the watch reports: the worker's repository
+  // feed says so instead. The Source Control tabs read again only when the
+  // status did move.
+  useEffect(() => {
+    if (!root) return
+    return watchGit(host, root, () => {
+      const before = gitRef.current
+      void refreshGit({ quiet: true }).then((state) => {
+        if (state !== null && state !== before && scmActiveRef.current) setGitEpoch((value) => value + 1)
+      })
+    })
+  }, [host, root, refreshGit])
 
   // Folders the page expands on its own (restored state, reveals) are
   // listed the same way a click would list them.
@@ -626,8 +640,8 @@ export function ShellExplorerPage({
     void fetchSessionTurns(host, conversationId)
       .then((turns) => {
         if (sessionTurnsSeqRef.current !== seq) return
-        // A poll that finds the same list keeps the old one: a new array
-        // would re-render the whole page every tick of a running turn.
+        // A read that finds the same list keeps the old one: a new array
+        // would re-render the whole page on every change a turn records.
         const key = JSON.stringify(turns)
         if (key === sessionTurnsKeyRef.current) return
         sessionTurnsKeyRef.current = key
@@ -642,8 +656,9 @@ export function ShellExplorerPage({
         })
         // A running turn keeps gaining files. The record a diff tab cached
         // before a file landed says the turn never touched it, and a disk
-        // burst alone re-reads that same stale record; the polled list is
-        // what knows better. In the same batch as the list: one render.
+        // burst alone re-reads that same stale record; the list read on the
+        // worker's word is what knows better. In the same batch as the
+        // list: one render.
         const shape = turnsShape(turns)
         if (shape === sessionTurnsShapeRef.current) return
         sessionTurnsShapeRef.current = shape
@@ -655,18 +670,10 @@ export function ShellExplorerPage({
   // biome-ignore lint/correctness/useExhaustiveDependencies: turn boundaries are the refresh triggers
   useEffect(() => {
     refreshSessionTurns()
-    if (!harnessTurn.active) return
-    // A hidden tab skips the poll, and catches up when it shows again.
-    const tick = () => {
-      if (document.visibilityState !== 'hidden') refreshSessionTurns()
-    }
-    const timer = window.setInterval(tick, 1_500)
-    document.addEventListener('visibilitychange', tick)
-    return () => {
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', tick)
-    }
   }, [harnessTurn.active, harnessTurn.completedAtMs, harnessTurn.turnId, refreshSessionTurns])
+  // Between the boundaries, the worker says when the history gained a
+  // change (shell::turns::changed); the list is read then, never on a timer.
+  useTurnsChanged(host, conversationId, paneScope, refreshSessionTurns)
   // A turn that completed may have become an older turn's "after" side.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the completion stamp is the trigger
   useEffect(() => {
@@ -1912,7 +1919,7 @@ export function ShellExplorerPage({
   // The page's verbs, for the palette and for the keyboard while this pane
   // has the focus. The keys stay clear of the console's own.
   // The commands read the page's latest verbs and state through a ref: they
-  // register once, instead of again on every poll, burst and toggle.
+  // register once, instead of again on every read, burst and toggle.
   const verbsRef = useRef({
     frameEl,
     toggleTerminal,

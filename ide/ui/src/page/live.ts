@@ -12,6 +12,7 @@
 
 import { useEffect, useRef } from 'react'
 import type { Host } from '@iii-dev/console-ui'
+import { publishWorktree } from './git-watch'
 
 const EVENTS_FN = 'iii::shell-ui::changed'
 
@@ -43,6 +44,9 @@ export function useWorkspaceChanges(
   useEffect(() => {
     if (!root) return
     const functionId = `${EVENTS_FN}::${scope}`
+    // The branch chips on this folder read their dirty mark again from
+    // these events instead of binding a watch of their own.
+    const chips = publishWorktree(host, root)
     const offHandler = host.iii.on<WorkspaceChangedEvent>(
       functionId,
       (event) => {
@@ -53,6 +57,7 @@ export function useWorkspaceChanges(
         ) {
           return
         }
+        if (event.ignored !== true) chips.note()
         handlerRef.current(event)
       },
     )
@@ -67,6 +72,7 @@ export function useWorkspaceChanges(
     return () => {
       offTrigger()
       offHandler()
+      chips.off()
     }
   }, [host, root, scope])
 }

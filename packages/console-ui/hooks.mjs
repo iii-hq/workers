@@ -145,11 +145,13 @@ export function useCopyFlash(text, ms = 1400) {
 /**
  * Live worker data: `fetch()` once, re-fetch on every one of `triggers`
  * (a type, or `{ type, config }` for a stream/filtered binding; each bound
- * to one tab-scoped handler `handlerId::<browserId>`), and fall
- * back to a visible-tab poll while any binding is missing. Stale responses
+ * to one tab-scoped handler `handlerId::<browserId>`). There is no timer:
+ * while a binding is missing (`live: false`), the data is re-read when the
+ * tab becomes visible or focused again, and on `refresh()`. Stale responses
  * are dropped by a monotonic token; everything unbinds on cleanup.
+ * `pollMs` is accepted for compatibility and ignored.
  */
-export function useWorkerLive({ iii, triggers, fetch, pollMs = 15_000, handlerId }) {
+export function useWorkerLive({ iii, triggers, fetch, handlerId }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -180,7 +182,7 @@ export function useWorkerLive({ iii, triggers, fetch, pollMs = 15_000, handlerId
         )
       }
     } catch {
-      // Worker absent or trigger type unregistered — the poll below covers it.
+      // Worker absent or trigger type unregistered — re-read on tab focus.
       ok = false
     }
     setLive(ok)
@@ -219,14 +221,21 @@ export function useWorkerLive({ iii, triggers, fetch, pollMs = 15_000, handlerId
       })
   }, [iii, token])
 
+  // Without a live binding, catch up when the person comes back to the tab
+  // instead of re-reading on a timer.
   useEffect(() => {
-    if (live) return
-    const id = setInterval(() => {
+    if (live || typeof window === 'undefined') return
+    const onVisible = () => {
       if (typeof document !== 'undefined' && document.hidden) return
       refresh()
-    }, pollMs)
-    return () => clearInterval(id)
-  }, [live, pollMs, refresh])
+    }
+    window.addEventListener('focus', onVisible)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.removeEventListener('focus', onVisible)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [live, refresh])
 
   return { data, loading, error, live, refresh }
 }

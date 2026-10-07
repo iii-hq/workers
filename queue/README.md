@@ -75,7 +75,6 @@ queue_configs:
     concurrency: 10
     max_retries: 3
     backoff_ms: 1000
-    poll_interval_ms: 100
 ```
 
 For FIFO named queues, messages with the same group-field value run in order;
@@ -83,7 +82,16 @@ different groups run concurrently up to `concurrency`.
 Each target invocation has a configurable `timeout_ms`; when omitted, it
 defaults to 1,800,000 milliseconds (30 minutes).
 After a restart, a delivery waits until its target function is registered and
-does not consume retry budget while the target worker is still booting.
+does not consume retry budget while the target worker is still booting. The
+wait is event-driven: the worker binds the engine's
+`engine::functions-available` and `engine::workers-available` triggers (to the
+internal `queue::on-engine-change` function) and re-checks the target once per
+change, never on a timer. The same feed drives the
+`redeliver_on_engine_restart` restart check.
+
+`poll_interval_ms` is deprecated and ignored (still accepted so existing
+definitions validate): consumers wake on enqueue, and a backed-off retry is
+delivered at exactly its due time.
 
 `adapter.name` selects the transport: `builtin` (default), `redis`, or
 `rabbitmq`. Changing the adapter config hot-swaps the transport and
@@ -100,7 +108,9 @@ In-process, single-worker transport. Full fan-out (every subscriber on a
 topic receives every published message), retries, DLQ, redrive/discard,
 and both `fifo` and `concurrent` subscriber modes. The legacy aliases
 `in_memory` and `file_based` are also accepted as `adapter.name` and both
-resolve to this transport.
+resolve to this transport. Consumers do not poll the store: an idle consumer
+parks until an enqueue, retry, requeue, or redrive on its queue wakes it, or
+until the earliest backed-off retry reaches its due time.
 
 ```yaml
 adapter:
@@ -252,6 +262,6 @@ enqueue actions through the registered `engine::queue::enqueue` provider.
   depth; this worker only returns topics that currently have dead-lettered
   messages. Documented divergence, not a bug to reconcile.
 - **Fifo retry via `nack` can be overtaken by newer arrivals.** A failed
-  fifo message is re-queued via `nack` rather than blocking the poller
+  fifo message is re-queued via `nack` rather than blocking the consumer
   in-place (the engine's `FifoWorker` blocks); a message enqueued after
   the failure can be delivered before the retried one catches up.

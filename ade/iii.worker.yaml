@@ -21,7 +21,7 @@ scripts:
 
 config:
   http_port: 3113
-  http_host: 127.0.0.1
+  http_host: 0.0.0.0
   # Ephemeral workspace layout (tabs/panes) — never the committed config YAML.
   data_dir: data/ade
 dependencies:

@@ -121,7 +121,10 @@ impl EngineClient {
         // Capture the epoch immediately before the invocation instead of
         // comparing against process-global state. A global baseline becomes
         // stale when the engine restarts while this worker is idle and would
-        // falsely interrupt the first slow call made afterwards.
+        // falsely interrupt the first slow call made afterwards. Subscribe to
+        // the change feed FIRST, so a restart landing between the sample and
+        // the wait still wakes it.
+        let changes = crate::engine_events::subscribe_changes();
         let baseline = engine_epoch_ms(&self.iii).await;
         let mut request: TriggerRequestWithMetadata = TriggerRequest {
             function_id: function_id.to_string(),
@@ -138,7 +141,7 @@ impl EngineClient {
             Some(baseline) => {
                 tokio::select! {
                     result = call => result,
-                    () = engine_link_interrupted(&self.iii, baseline) => {
+                    () = engine_link_interrupted(&self.iii, baseline, changes) => {
                         return Err(DispatchError {
                             code: Some("engine_restart".to_string()),
                             message: format!("{function_id}: {ENGINE_RESTART_INTERRUPTED}"),
@@ -327,10 +330,7 @@ fn nonempty_env(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// How often an in-flight dispatch samples the engine epoch, and how long
-/// one sample may take. Sampling is cheap relative to the dispatched calls
-/// it guards; dispatches shorter than the first interval never even probe.
-const ENGINE_EPOCH_PROBE_INTERVAL_MS: u64 = 1_000;
+/// How long one engine-epoch sample may take.
 const ENGINE_EPOCH_PROBE_TIMEOUT_MS: u64 = 3_000;
 
 /// The engine's boot identity: the earliest `connected_at_ms` among its
@@ -371,18 +371,38 @@ fn parse_engine_epoch(response: &Value) -> Option<u64> {
 /// epoch read that succeeds with a changed value doubles as proof the
 /// engine is answering again, so the caller can immediately persist the
 /// synthesized "interrupted" result without tripping over the same outage.
-async fn engine_link_interrupted(iii: &IIIClient, baseline: u64) {
+///
+/// Sampled once per engine worker change, never on a timer: a restarted
+/// engine is reconnected to by every worker, this one included — its SDK
+/// replays the `engine::workers-available` binding before announcing, so its
+/// own announce reaches [`crate::engine_events`] on the new engine.
+async fn engine_link_interrupted(
+    iii: &IIIClient,
+    baseline: u64,
+    changes: tokio::sync::watch::Receiver<u64>,
+) {
+    wait_for_epoch_change(baseline, changes, || engine_epoch_ms(iii)).await
+}
+
+/// Resolve once `probe` reports an epoch other than `baseline`, re-probing
+/// once per engine change. An unreadable epoch (`None`, outage in progress)
+/// never trips by itself; the next change decides. A closed feed never
+/// resolves: the dispatch then ends on its own timeout, as it would without
+/// the restart check.
+async fn wait_for_epoch_change<P, F>(
+    baseline: u64,
+    mut changes: tokio::sync::watch::Receiver<u64>,
+    mut probe: P,
+) where
+    P: FnMut() -> F,
+    F: std::future::Future<Output = Option<u64>>,
+{
     loop {
-        tokio::time::sleep(std::time::Duration::from_millis(
-            ENGINE_EPOCH_PROBE_INTERVAL_MS,
-        ))
-        .await;
-        // An unreadable epoch (outage in progress) never trips by itself:
-        // the first successful sample afterwards decides.
-        if let Some(epoch) = engine_epoch_ms(iii).await {
-            if epoch != baseline {
-                return;
-            }
+        if changes.changed().await.is_err() {
+            return std::future::pending().await;
+        }
+        if probe().await.is_some_and(|epoch| epoch != baseline) {
+            return;
         }
     }
 }
@@ -523,6 +543,40 @@ fn descriptor_of(v: &Value) -> Option<FunctionDescriptor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The restart check never runs on a clock: with no engine change it
+    /// probes nothing however long the dispatch runs; each change probes
+    /// once, and only a changed epoch interrupts.
+    #[tokio::test(start_paused = true)]
+    async fn the_restart_check_probes_once_per_engine_change_and_never_on_a_clock() {
+        let (feed, changes) = tokio::sync::watch::channel(0u64);
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let epochs = Arc::new(std::sync::Mutex::new(vec![Some(7), None, Some(9)]));
+        let wait = {
+            let probes = probes.clone();
+            let epochs = epochs.clone();
+            tokio::spawn(wait_for_epoch_change(7, changes, move || {
+                probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let epoch = epochs.lock().unwrap().remove(0);
+                async move { epoch }
+            }))
+        };
+        tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // Same engine, then an unreadable sample: neither interrupts.
+        for _ in 0..2 {
+            feed.send_modify(|generation| *generation += 1);
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            assert!(!wait.is_finished());
+        }
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 2);
+        feed.send_modify(|generation| *generation += 1);
+        tokio::time::timeout(std::time::Duration::from_secs(1), wait)
+            .await
+            .expect("a changed epoch interrupts")
+            .unwrap();
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
 
     #[test]
     fn engine_epoch_uses_the_oldest_in_process_engine_worker() {

@@ -1099,37 +1099,70 @@ pub fn arguments_degraded(arguments: &Value) -> bool {
     }
 }
 
-/// Provider-degraded arguments (a stream cut by the output-token limit or
-/// arguments that never formed one valid JSON object, salvaged to a
-/// `"_partial": true` prefix or a raw `{"_raw": …}` evidence object) must
-/// never execute: the salvage preserves evidence for the transcript, not
-/// intent. Teachable local failure, mirroring [`wrapper_without_target_result`].
+/// Provider-degraded arguments (a stream cut by the output-token limit, text
+/// that stopped before the object closed, or text that is not valid JSON,
+/// salvaged to a `"_partial": true` prefix or a raw `{"_raw": …}` evidence
+/// object) must never execute: the salvage preserves evidence for the
+/// transcript, not intent. Teachable local failure, mirroring
+/// [`wrapper_without_target_result`].
 ///
-/// The wording names the real cause. Only an ok `Done` outcome reaches
-/// dispatch (a dead stream goes to transient resume instead), so this is
-/// never a transport failure: either the model ran out of output room
-/// (`stop_reason: length`) or the arguments came back incomplete/invalid.
+/// The wording names the real cause, so the model fixes the right thing:
+/// - `stop_reason: length` — the model ran out of output room;
+/// - `_invalid` (set by the router's salvage) — the JSON has a syntax error,
+///   reported with the parser's message and the text around it;
+/// - otherwise — the arguments stopped before the object was complete.
+///
+/// Only an ok `Done` outcome reaches dispatch (a dead stream goes to transient
+/// resume instead), so this is never a transport failure.
 pub fn truncated_arguments_result(
     function_id: &str,
     arguments: &Value,
     stop_reason: crate::types::event::StopReason,
 ) -> ResultData {
-    let got = salvage_preview(arguments);
     let hit_output_limit = stop_reason == crate::types::event::StopReason::Length;
-    let msg = if hit_output_limit {
-        format!(
-            "{function_id} did not run: the model reached its maximum output length before it \
-             finished writing this call's arguments, so they arrived incomplete (received {got}). \
-             Nothing is wrong on the system side; the output was simply too long for one turn. \
-             Produce it in smaller pieces: send this call with a shorter payload and continue in \
-             follow-up calls (for example, create a file with its first part and append the rest \
-             in later calls), or split the work across several smaller calls."
+    let invalid = (!hit_output_limit)
+        .then(|| arguments.get("_invalid"))
+        .flatten()
+        .filter(|invalid| invalid.is_object());
+    let (msg, cause) = if hit_output_limit {
+        let got = salvage_preview(arguments);
+        (
+            format!(
+                "{function_id} did not run: the model reached its maximum output length before \
+                 it finished writing this call's arguments, so they arrived incomplete (received \
+                 {got}). The output was too long for one turn. Produce it in smaller pieces: send \
+                 this call with a shorter payload and continue in follow-up calls (for example, \
+                 create a file with its first part and append the rest in later calls), or split \
+                 the work across several smaller calls."
+            ),
+            "max_output_tokens",
+        )
+    } else if let Some(invalid) = invalid {
+        let error = invalid
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("syntax error");
+        let near = invalid
+            .get("context")
+            .and_then(Value::as_str)
+            .map(|context| truncate_chars(context, PREVIEW_CHARS))
+            .unwrap_or_default();
+        (
+            format!(
+                "{function_id} did not run: its arguments are not valid JSON ({error}, near \
+                 `{near}`). Nothing ran. Re-send the call with every bracket and quote balanced; \
+                 a large edit is easier to get right as several smaller calls."
+            ),
+            "invalid_json",
         )
     } else {
-        format!(
-            "{function_id} did not run: the model ended its turn before this call's arguments \
-             formed one complete, valid JSON object (received {got}). Nothing is wrong on the \
-             system side. Re-issue the call with complete, valid JSON arguments."
+        let got = salvage_preview(arguments);
+        (
+            format!(
+                "{function_id} did not run: its arguments stopped before the JSON object was \
+                 complete (received {got}). Nothing ran. Re-send the complete call."
+            ),
+            "incomplete_json",
         )
     };
     ResultData {
@@ -1137,7 +1170,7 @@ pub fn truncated_arguments_result(
         is_error: true,
         details: json!({
             "error": "arguments_truncated",
-            "cause": if hit_output_limit { "max_output_tokens" } else { "incomplete_json" },
+            "cause": cause,
             "message": msg,
         }),
     }
@@ -1154,12 +1187,15 @@ fn salvage_preview(arguments: &Value) -> String {
     }
 }
 
-/// The salvaged fields without the `_partial`/`_raw`/`_streaming` markers.
+/// The salvaged fields without the `_partial`/`_raw`/`_streaming`/`_invalid`
+/// markers.
 fn without_salvage_markers(arguments: &Value) -> Value {
     match arguments {
         Value::Object(map) => Value::Object(
             map.iter()
-                .filter(|(k, _)| !matches!(k.as_str(), "_partial" | "_raw" | "_streaming"))
+                .filter(|(k, _)| {
+                    !matches!(k.as_str(), "_partial" | "_raw" | "_streaming" | "_invalid")
+                })
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
         ),
@@ -1428,9 +1464,50 @@ mod tests {
             ContentBlock::Text { text } => text.clone(),
             other => panic!("want text, got {other:?}"),
         };
-        assert!(text.contains("complete, valid JSON"), "{text}");
+        assert!(
+            text.contains("stopped before the JSON object was complete"),
+            "{text}"
+        );
         assert!(!text.contains("maximum output length"), "{text}");
         assert_eq!(bad.details["cause"], "incomplete_json");
+    }
+
+    #[test]
+    fn truncated_arguments_report_a_syntax_error_where_it_happened() {
+        use crate::types::event::StopReason;
+        // What the router's salvage stores for `…"path":"web/App.tsx"}]}`: the
+        // fields that parsed, plus where the text stopped being JSON.
+        let args = json!({
+            "_partial": true,
+            "files": [{ "ops": [{ "op": "replace" }] }],
+            "path": "web/App.tsx",
+            "_invalid": {
+                "error": "unexpected data after the root value",
+                "offset": 61,
+                "context": "\"path\":\"web/App.tsx\"}]}",
+            },
+        });
+        let bad = truncated_arguments_result("coder::update-file", &args, StopReason::End);
+        let text = match &bad.content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("want text, got {other:?}"),
+        };
+        assert!(text.contains("not valid JSON"), "{text}");
+        assert!(
+            text.contains("unexpected data after the root value"),
+            "{text}"
+        );
+        assert!(text.contains(r#"near `"path":"web/App.tsx"}]}`"#), "{text}");
+        assert!(
+            !text.contains("_invalid") && !text.contains("_partial"),
+            "{text}"
+        );
+        assert!(!text.contains("stopped before"), "{text}");
+        assert_eq!(bad.details["cause"], "invalid_json");
+
+        // The output limit still wins: a cut stream is not a syntax error.
+        let cut = truncated_arguments_result("coder::update-file", &args, StopReason::Length);
+        assert_eq!(cut.details["cause"], "max_output_tokens");
     }
 
     #[test]

@@ -402,9 +402,9 @@ const SEARCH_INSTALL_WORKFLOW_REPEAT: &str = "Installation workflow: follow the 
 earlier in this session (registry::workers::info, compose-operation wake, compose::add, \
 engine::workers::info).";
 
-const SEARCH_LANGUAGE_GUIDANCE: &str = "Keep user-facing text in the language of the user's task, \
-including progress, tool descriptions, and the final response, unless the user explicitly \
-requests another language. English search capabilities and tool or notification text do not \
+const SEARCH_LANGUAGE_GUIDANCE: &str = "Keep user-facing text in the session's response language \
+(the language of the user's first message), including progress, tool descriptions, and the final \
+response, unless the user explicitly requests another language. English search capabilities and tool or notification text do not \
 change the response language.";
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
@@ -3244,7 +3244,7 @@ mod tests {
             .contains("Always write every `capabilities` entry in English"));
         assert!(response
             .guidance
-            .contains("Keep user-facing text in the language of the user's task"));
+            .contains("Keep user-facing text in the session's response language"));
         assert!(!response
             .guidance
             .contains("Register a one-shot compose-operation wake"));
@@ -3319,7 +3319,7 @@ mod tests {
             assert!(response.installable.is_empty());
             assert!(response
                 .guidance
-                .contains("Keep user-facing text in the language of the user's task"));
+                .contains("Keep user-facing text in the session's response language"));
         }
     }
 
@@ -3459,7 +3459,7 @@ mod tests {
             assert!(guidance.contains("preserve that exact package name"));
             assert!(guidance
                 .contains("If that package or requested version is absent, report it and stop"));
-            assert!(guidance.contains("Keep user-facing text in the language of the user's task"));
+            assert!(guidance.contains("Keep user-facing text in the session's response language"));
             assert_eq!(
                 guidance
                     .matches("Register a one-shot compose-operation wake")

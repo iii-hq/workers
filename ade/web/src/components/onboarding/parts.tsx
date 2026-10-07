@@ -15,6 +15,25 @@ import {
 import { cn } from '@/lib/utils'
 import type { ActivityEntry } from './use-onboarding'
 
+/** Where a step sits among the setup steps (Welcome and Ready not counted). */
+export interface StepPosition {
+  /** 1-based. */
+  index: number
+  total: number
+}
+
+/** `Step 2 of 3 · Optional`, from the wizard's actual list of steps. */
+export function stepEyebrow(
+  position: StepPosition | undefined,
+  optional = false,
+): string | undefined {
+  const parts = [
+    position ? `Step ${position.index} of ${position.total}` : null,
+    optional ? 'Optional' : null,
+  ].filter((part): part is string => part !== null)
+  return parts.length > 0 ? parts.join(' · ') : undefined
+}
+
 export function StepHeader({
   eyebrow,
   title,

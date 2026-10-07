@@ -4,6 +4,7 @@
 
 pub mod act;
 pub mod attach;
+pub mod chromium;
 pub mod clear_data;
 pub mod console;
 pub mod cookies;
@@ -145,6 +146,19 @@ pub const DOCTOR_DESC: &str =
     "Diagnose the browser environment: which Chromium the worker would launch, its version, \
      session capacity, and any degraded capability with how to enable it. Never starts a \
      browser.";
+pub const CHROMIUM_STATUS_ID: &str = "browser::chromium::status";
+pub const CHROMIUM_STATUS_DESC: &str =
+    "Whether this machine has a Chromium the worker can launch: the binary, its version, where \
+     it came from (config, $CHROME, a system install, the copy browser::chromium::install \
+     downloaded, or a Playwright/Puppeteer cache), every place searched, whether a download is \
+     available here, and the latest install job. Read-only; never starts a browser.";
+pub const CHROMIUM_INSTALL_ID: &str = "browser::chromium::install";
+pub const CHROMIUM_INSTALL_DESC: &str =
+    "Download Chromium (Chrome for Testing, Stable, about 200 MB) into the worker's cache \
+     (~/.cache/iii/browser/chrome) for a machine with no Chrome or Chromium. Returns at once \
+     with a job_id; progress arrives on the browser::chromium-install-progress trigger and in \
+     browser::chromium::status. A Chrome installed on the system still takes precedence. Does \
+     nothing when a Chromium is already found, unless force=true.";
 pub const HANDOFF_ID: &str = "browser::handoff";
 pub const HANDOFF_DESC: &str =
     "Pause a session for a step only a human can do (CAPTCHA, 2FA, payment): show an in-page \
@@ -191,7 +205,8 @@ pub const SCREENCAST_STOP_DESC: &str =
 pub const FRAME_ID: &str = "browser::frame";
 pub const FRAME_DESC: &str =
     "Internal: newest screencast frame, or nothing when since_frame is still current. No \
-     capture round-trip; poll fast. Not an agent function.";
+     capture round-trip: a viewer reads it once for its first paint, then frames arrive on \
+     browser::frame-event. Not an agent function.";
 pub const RECORDING_START_ID: &str = "browser::recording::start";
 pub const RECORDING_START_DESC: &str =
     "Record a session's live viewport to a video file (webm or mp4). Turns the screencast on \
@@ -311,6 +326,14 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<attach::AttachInput, attach::AttachOutput>(SESSIONS_ATTACH_ID, SESSIONS_ATTACH_DESC),
         spec::<attach::TabsListInput, attach::TabsListOutput>(TABS_LIST_ID, TABS_LIST_DESC),
         spec::<doctor::DoctorInput, doctor::DoctorOutput>(DOCTOR_ID, DOCTOR_DESC),
+        spec::<chromium::ChromiumStatusInput, chromium::ChromiumStatusOutput>(
+            CHROMIUM_STATUS_ID,
+            CHROMIUM_STATUS_DESC,
+        ),
+        spec::<chromium::ChromiumInstallInput, chromium::ChromiumInstallOutput>(
+            CHROMIUM_INSTALL_ID,
+            CHROMIUM_INSTALL_DESC,
+        ),
         spec::<navigate::NavigateInput, navigate::NavigateOutput>(NAVIGATE_ID, NAVIGATE_DESC),
         spec::<snapshot::SnapshotInput, snapshot::SnapshotOutput>(SNAPSHOT_ID, SNAPSHOT_DESC),
         spec::<elements::ElementsInput, elements::ElementsOutput>(ELEMENTS_ID, ELEMENTS_DESC),
@@ -414,6 +437,8 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_sessions_attach(iii, sessions);
     register_tabs_list(iii, sessions);
     register_doctor(iii, sessions);
+    register_chromium_status(iii, sessions);
+    register_chromium_install(iii, sessions);
     register_navigate(iii, sessions);
     register_snapshot(iii, sessions);
     register_elements(iii, sessions);
@@ -1567,30 +1592,47 @@ const NETWORK_SETTLE_MAX_MS: u64 = 5_000;
 /// network stayed quiet for `NETWORK_QUIET_MS` (or, when none started,
 /// `NETWORK_START_GRACE_MS` passed). False when some were still in flight
 /// at the cap. Long-lived requests (SSE, long polls) cost the cap once.
+/// Driven by the page's request events (`Session::inflight_changed`): it
+/// wakes when a request starts or ends, or when the quiet window, the grace,
+/// or the cap is due — never on a cadence.
 async fn settle_network(session: &Session, since_ms: i64, deadline: std::time::Instant) -> bool {
-    let begun = std::time::Instant::now();
-    let cap = (begun + Duration::from_millis(NETWORK_SETTLE_MAX_MS)).min(deadline);
-    let mut quiet_since: Option<std::time::Instant> = None;
+    let begun = tokio::time::Instant::now();
+    let cap = (begun + Duration::from_millis(NETWORK_SETTLE_MAX_MS))
+        .min(tokio::time::Instant::from_std(deadline));
+    let grace = begun + Duration::from_millis(NETWORK_START_GRACE_MS);
+    let mut quiet_since: Option<tokio::time::Instant> = None;
     let mut saw_request = false;
     loop {
+        // Subscribe before reading, so a change between the read and the
+        // wait is not missed.
+        let changed = session.inflight_changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
         let pending = session.pending_requests_since(since_ms);
-        let now = std::time::Instant::now();
-        if pending > 0 {
+        let now = tokio::time::Instant::now();
+        let due = if pending > 0 {
             saw_request = true;
             quiet_since = None;
+            cap
         } else if !saw_request {
-            if now.duration_since(begun) >= Duration::from_millis(NETWORK_START_GRACE_MS) {
+            if now >= grace {
                 return true;
             }
-        } else if now.duration_since(*quiet_since.get_or_insert(now))
-            >= Duration::from_millis(NETWORK_QUIET_MS)
-        {
-            return true;
-        }
+            grace
+        } else {
+            let quiet = *quiet_since.get_or_insert(now) + Duration::from_millis(NETWORK_QUIET_MS);
+            if now >= quiet {
+                return true;
+            }
+            quiet
+        };
         if now >= cap {
             return pending == 0;
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        tokio::select! {
+            _ = changed => {}
+            _ = tokio::time::sleep_until(due.min(cap)) => {}
+        }
     }
 }
 
@@ -1948,9 +1990,21 @@ fn register_handoff(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
 
                 let (handoff_id, mut confirm_rx) = sx.register_handoff(&req.session_id);
-                // Mount the in-page continue banner carrying the poll flag.
-                // Best-effort: on a page that rejects injection the
-                // confirm-call path still resolves the same handoff.
+                // The continue control reports its click through a CDP
+                // binding: listen first, then expose the binding, then mount
+                // the banner, so no click can land before the listener.
+                // Best-effort: on a page that rejects the binding or the
+                // injection the confirm-call path still resolves the same
+                // handoff.
+                let mut clicks = session
+                    .page
+                    .event_listener::<cdp_rt::EventBindingCalled>()
+                    .await
+                    .ok();
+                let _ = session
+                    .page
+                    .execute(cdp_rt::AddBindingParams::new(handoff::BINDING))
+                    .await;
                 let _ = session
                     .page
                     .evaluate(handoff::banner_script(&handoff_id, &req.instructions))
@@ -1970,25 +2024,31 @@ fn register_handoff(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .await;
 
                 // Park until: a confirm call fires the oneshot, the human
-                // clicks the in-page control (polled), or the timeout fires.
-                let poll = handoff::poll_script(&handoff_id);
+                // clicks the in-page control (the binding event), or the
+                // timeout fires. Nothing re-reads the page meanwhile.
                 let deadline = tokio::time::Instant::now() + wait;
                 let via = loop {
-                    let tick = tokio::time::sleep(Duration::from_millis(handoff::POLL_INTERVAL_MS));
+                    let click = async {
+                        match clicks.as_mut() {
+                            Some(events) => futures::StreamExt::next(events).await,
+                            None => std::future::pending().await,
+                        }
+                    };
                     tokio::select! {
                         // Ok = a confirm call fired the sender; Err = the
                         // sender was dropped (session stopped mid-handoff).
                         res = &mut confirm_rx => break if res.is_ok() { "confirm_call" } else { "cancelled" },
                         _ = tokio::time::sleep_until(deadline) => break "timeout",
-                        _ = tick => {
-                            if let Ok(v) = session.page.evaluate(poll.clone()).await {
-                                if v.value().and_then(|x| x.as_bool()).unwrap_or(false) {
-                                    break "in_page";
-                                }
+                        // A closed stream (page gone) disables this branch;
+                        // the confirm channel or the timeout ends the wait.
+                        Some(event) = click => {
+                            if handoff::is_in_page_confirm(&event.name, &event.payload, &handoff_id) {
+                                break "in_page";
                             }
                         }
                     }
                 };
+                drop(clicks);
 
                 sx.drop_handoff(&handoff_id);
                 let _ = session
@@ -2043,6 +2103,79 @@ fn register_handoff_confirm(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     );
 }
 
+fn register_chromium_status(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        CHROMIUM_STATUS_ID,
+        RegisterFunction::new_async(move |_req: chromium::ChromiumStatusInput| {
+            let sx = sx.clone();
+            async move {
+                let cfg = sx.config.load_full();
+                tokio::task::spawn_blocking(move || chromium::status(&cfg))
+                    .await
+                    .map_err(|e| handler_err(format!("chromium status failed: {e}")))
+            }
+        })
+        .description(CHROMIUM_STATUS_DESC),
+    );
+}
+
+fn register_chromium_install(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        CHROMIUM_INSTALL_ID,
+        RegisterFunction::new_async(move |req: chromium::ChromiumInstallInput| {
+            let sx = sx.clone();
+            async move {
+                let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+                let Some(platform) = crate::chromium::cft_platform(os, arch) else {
+                    return Err(handler_err(format!(
+                        "{}: {}",
+                        crate::chromium::UNSUPPORTED_CODE,
+                        crate::chromium::unsupported_reason(os, arch)
+                    )));
+                };
+                if !req.force {
+                    let cfg = sx.config.load_full();
+                    if let Some(found) = crate::chromium::resolve_executable(&cfg) {
+                        let path = found.path.clone();
+                        let version =
+                            tokio::task::spawn_blocking(move || doctor::chromium_version(&path))
+                                .await
+                                .ok()
+                                .flatten();
+                        return Ok(chromium::ChromiumInstallOutput {
+                            job_id: None,
+                            status: chromium::InstallStatus::AlreadyInstalled,
+                            path: Some(found.path.display().to_string()),
+                            version,
+                        });
+                    }
+                }
+                let (job_id, status) = match crate::chromium::install::start(
+                    sx.emitter.clone(),
+                    platform,
+                    req.force,
+                ) {
+                    crate::chromium::install::Start::Started(id) => {
+                        (id, chromium::InstallStatus::Started)
+                    }
+                    crate::chromium::install::Start::Running(id) => {
+                        (id, chromium::InstallStatus::Running)
+                    }
+                };
+                Ok::<_, Error>(chromium::ChromiumInstallOutput {
+                    job_id: Some(job_id),
+                    status,
+                    path: None,
+                    version: None,
+                })
+            }
+        })
+        .description(CHROMIUM_INSTALL_DESC),
+    );
+}
+
 fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     let sx = sessions.clone();
     iii.register_function(
@@ -2053,7 +2186,9 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let cfg = sx.config.load_full();
                 let mut issues = Vec::new();
 
-                let chromium_path = doctor::detect_executable(&cfg);
+                let detected = doctor::detect(&cfg);
+                let chromium_source = detected.as_ref().and_then(|(_, source)| *source);
+                let chromium_path = detected.map(|(path, _)| path);
                 let chromium_version = match &chromium_path {
                     Some(path) => {
                         let path = path.clone();
@@ -2067,6 +2202,20 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 };
                 if chromium_path.is_none() {
                     issues.push(doctor::missing_executable_issue(&cfg));
+                }
+                let unsandboxed = chromium_source.is_some_and(|source| {
+                    crate::chromium::runs_without_sandbox(
+                        source,
+                        crate::chromium::userns_sandbox_blocked(),
+                    )
+                });
+                if unsandboxed {
+                    issues.push(doctor::DoctorIssue {
+                        what: "Chromium runs without its sandbox: this Linux blocks the \
+                               user-namespace sandbox for a Chromium that has no AppArmor profile"
+                            .to_string(),
+                        enable_how: crate::chromium::NO_SANDBOX_HOW.to_string(),
+                    });
                 }
 
                 let active_sessions = sx.live_count() as u64;
@@ -2097,6 +2246,7 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     engine: cfg.engine.as_str().to_string(),
                     chromium_path: chromium_path.map(|p| p.display().to_string()),
                     chromium_version,
+                    chromium_source,
                     headless_default: cfg.headless,
                     max_sessions: cfg.max_sessions,
                     active_sessions,
@@ -2992,18 +3142,17 @@ async fn history_committed(
             else => break,
         }
     }
-    loop {
-        let ready = session
-            .page
-            .evaluate("document.readyState")
-            .await
-            .ok()
-            .and_then(|r| r.into_value::<String>().ok());
-        if ready.as_deref() == Some("complete") {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    // Then the document's own `load` (already complete answers at once).
+    // A failed read (the document swapped again) ends the wait: the move
+    // committed, and the caller's timeout bounds the rest.
+    let _ = session
+        .page
+        .evaluate(
+            "new Promise((resolve) => document.readyState === 'complete' \
+               ? resolve(true) \
+               : window.addEventListener('load', () => resolve(true), { once: true }))",
+        )
+        .await;
 }
 
 fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
@@ -3623,7 +3772,7 @@ fn register_frame(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let active = session.screencast_on();
                 // Clone the Arc under the lock and release it before copying
                 // the base64 payload, so the push-rate pump never waits
-                // behind this poll-rate copy.
+                // behind this copy.
                 let latest = {
                     let slot = session
                         .latest_frame

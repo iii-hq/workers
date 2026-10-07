@@ -51,6 +51,11 @@ globset = "0.4"
 # Output-contract JSON Schema validation (json contracts with a schema).
 jsonschema = { version = "0.18", default-features = false }
 sha2 = "0.10"
+# Pins the session's response language from the user's first message
+# (`language.rs`); regex (already in the tree via jsonschema) strips code,
+# mentions, quotes and URLs before detection.
+whatlang = "0.18"
+regex = "1"
 
 [dev-dependencies]
 futures-util = "0.3"
@@ -58,7 +63,9 @@ tokio-tungstenite = "0.28"
 opentelemetry_sdk = { version = "0.31", features = ["testing"] }
 serde_json = "1"
 tempfile = "3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+# `test-util`: paused-clock tests pin that deadlines fire on their own timer,
+# with no periodic sweep behind them.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "test-util"] }
 
 # The integration runner digests every spawned binary before boot. Optimizing sha2 in
 # development avoids a long stall when hashing large debug worker binaries.

@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::types::content::ContentBlock;
 use crate::types::message::AssistantMessage;
 use crate::types::model::AgentFunction;
-use crate::types::turn::{ExposeMode, FunctionPolicy};
+use crate::types::turn::{ExposeMode, FunctionPolicy, ResponseLanguage};
 
 /// The single generic invocation surface name (default exposure).
 pub const AGENT_TRIGGER_NAME: &str = "agent_trigger";
@@ -183,8 +183,10 @@ fn build_set(patterns: &[String]) -> Option<GlobSet> {
 }
 
 /// The single `agent_trigger` schema attached by default — the model triggers
-/// any allowed function via `{ function, description, payload }`.
-pub fn agent_trigger_schema() -> AgentFunction {
+/// any allowed function via `{ function, description, payload }`. The
+/// `description` label names the session's response language (unknown: the
+/// one the session context names), so a model never guesses one.
+pub fn agent_trigger_schema(language: Option<&ResponseLanguage>) -> AgentFunction {
     AgentFunction {
         name: AGENT_TRIGGER_NAME.to_string(),
         description:
@@ -204,7 +206,7 @@ pub fn agent_trigger_schema() -> AgentFunction {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 120,
-                    "description": "Short user-facing description of the action in the user's language. Describe the work, not the function id."
+                    "description": crate::language::description_field_text(language)
                 },
                 "payload": { "type": "object", "description": "Arguments for the target function." }
             },
@@ -316,13 +318,15 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                 } else {
                     (function_id.clone(), arguments.clone())
                 };
-            // Truncation markers on the wrapper must survive the unwrap: a
+            // Degradation markers on the wrapper must survive the unwrap: a
             // max_tokens cut landing after a complete `payload` salvages to
-            // `{function, payload, _partial: true}`, and unwrapping the
-            // payload verbatim would shed the marker — bypassing the turn
-            // loop's refusal to execute provider-degraded arguments.
+            // `{function, payload, _partial: true}`, and arguments that were
+            // not valid JSON carry `_invalid: {error, offset, context}`.
+            // Unwrapping the payload verbatim would shed the marker —
+            // bypassing the turn loop's refusal to execute provider-degraded
+            // arguments.
             if let Value::Object(p) = &mut payload {
-                for marker in ["_partial", "_raw"] {
+                for marker in ["_partial", "_raw", "_invalid"] {
                     if let Some(v) = arguments.get(marker) {
                         if !p.contains_key(marker) {
                             p.insert(marker.to_string(), v.clone());
@@ -540,7 +544,7 @@ mod tests {
 
     #[test]
     fn agent_trigger_schema_requires_a_bounded_user_facing_description() {
-        let schema = agent_trigger_schema();
+        let schema = agent_trigger_schema(None);
         let description = &schema.parameters["properties"]["description"];
         assert_eq!(description["type"], "string");
         assert_eq!(description["minLength"], 1);
@@ -551,8 +555,31 @@ mod tests {
     }
 
     #[test]
+    fn agent_trigger_schema_names_the_response_language() {
+        let english = ResponseLanguage {
+            code: "eng".into(),
+            name: "English".into(),
+        };
+        let named = agent_trigger_schema(Some(&english));
+        assert_eq!(
+            named.parameters["properties"]["description"]["description"],
+            "Short user-facing description of the action, written in English. Describe the \
+             work, not the function id."
+        );
+        let unknown = agent_trigger_schema(None);
+        let text = unknown.parameters["properties"]["description"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(text.contains(
+            "in the response language named in the session context (else the language of the \
+             user's own prose); never inferred from names, paths or locale"
+        ));
+        assert!(!text.contains("user's language"));
+    }
+
+    #[test]
     fn agent_trigger_schema_explains_serial_and_bulk_dispatch() {
-        let description = agent_trigger_schema().description;
+        let description = agent_trigger_schema(None).description;
         assert!(
             description.contains("one assistant response execute sequentially in content order")
         );
@@ -562,7 +589,7 @@ mod tests {
 
     #[test]
     fn agent_trigger_schema_defaults_discovery_to_directory_search() {
-        let description = agent_trigger_schema().description;
+        let description = agent_trigger_schema(None).description;
         let primary = description
             .find("Discover task-capability IDs with directory::search_functions")
             .expect("tool description makes directory search the default discovery path");

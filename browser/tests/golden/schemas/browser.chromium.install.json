@@ -1,0 +1,75 @@
+{
+  "function_id": "browser::chromium::install",
+  "description": "Download Chromium (Chrome for Testing, Stable, about 200 MB) into the worker's cache (~/.cache/iii/browser/chrome) for a machine with no Chrome or Chromium. Returns at once with a job_id; progress arrives on the browser::chromium-install-progress trigger and in browser::chromium::status. A Chrome installed on the system still takes precedence. Does nothing when a Chromium is already found, unless force=true.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ChromiumInstallInput",
+    "type": "object",
+    "properties": {
+      "force": {
+        "description": "Download even when a Chromium is already found (a system one, or the same version already downloaded).",
+        "default": false,
+        "type": "boolean"
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ChromiumInstallOutput",
+    "type": "object",
+    "required": [
+      "status"
+    ],
+    "properties": {
+      "job_id": {
+        "description": "The install job; its progress arrives on the `browser::chromium-install-progress` trigger and in `browser::chromium::status` (`job`). Absent for `already-installed`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "path": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "status": {
+        "$ref": "#/definitions/InstallStatus"
+      },
+      "version": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "definitions": {
+      "InstallStatus": {
+        "oneOf": [
+          {
+            "description": "A new background job started; follow `job_id`.",
+            "type": "string",
+            "enum": [
+              "started"
+            ]
+          },
+          {
+            "description": "A job was already running; `job_id` is that job.",
+            "type": "string",
+            "enum": [
+              "running"
+            ]
+          },
+          {
+            "description": "Nothing to do: a Chromium is already found (`path`, `version`).",
+            "type": "string",
+            "enum": [
+              "already-installed"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

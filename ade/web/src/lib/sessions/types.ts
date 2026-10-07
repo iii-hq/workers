@@ -113,9 +113,11 @@ export type SessionMeta = {
  *
  * `elided` marks a placeholder inside a collapsed activity run on a tail
  * page: the assistant keeps its text and every `function_call` id + function
- * id but `arguments: {}`, a `function_result` keeps its pairing fields with
- * `content: []`. It says "fetch me later through `session::messages-range`",
- * never "this message was that small".
+ * id but `arguments: {}` — an `agent_trigger` call keeps its string
+ * `function` + `description` (the row's label) and drops only `payload` — and
+ * a `function_result` keeps its pairing fields with `content: []`. It says
+ * "fetch me later through `session::messages-range`", never "this message was
+ * that small".
  */
 export type TranscriptItem = {
   entry_id: string

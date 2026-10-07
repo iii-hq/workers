@@ -43,6 +43,13 @@ pub struct Deps {
     /// SDK handles for the delivery triggers this process registered; see
     /// [`crate::bindings::TriggerHandles`].
     pub trigger_handles: crate::bindings::TriggerHandles,
+    /// One deadline timer per binding with an `expires_at`
+    /// ([`crate::bindings::expiry`]); the binding store cancels a binding's
+    /// timer whenever it deletes the record.
+    pub expiry_timers: crate::timer::OneShots,
+    /// Coalesced wake-ups for the recovery passes the engine's worker
+    /// connect/disconnect/announce feed drives; see [`crate::engine_events`].
+    pub kicks: crate::engine_events::RecoveryKicks,
 }
 
 impl Deps {
@@ -73,6 +80,8 @@ impl Deps {
             inflight: crate::inflight::InflightSteps::new(),
             projects: ProjectStore::default(),
             trigger_handles: crate::bindings::TriggerHandles::default(),
+            expiry_timers: crate::timer::OneShots::new(),
+            kicks: crate::engine_events::RecoveryKicks::default(),
         }
     }
 
@@ -125,5 +134,6 @@ impl Deps {
             cfg.session_timeout_ms,
             self.events.clone(),
         )
+        .with_expiry_timers(self.expiry_timers.clone())
     }
 }

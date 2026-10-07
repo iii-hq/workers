@@ -18,15 +18,20 @@ import {
   StatusChip,
   StepHeader,
   StepLayout,
+  type StepPosition,
+  stepEyebrow,
 } from './parts'
 import type { OnboardingController } from './use-onboarding'
 
 export function JudgeStep({
   onboarding,
+  position,
   onBack,
   onNext,
 }: {
   onboarding: OnboardingController
+  /** Its place among the setup steps, for the "Step N of M" line. */
+  position?: StepPosition
   onBack: () => void
   /** `judge` is the option set up, `null` when skipped. */
   onNext: (judge: JudgeOption | null) => void
@@ -101,7 +106,7 @@ export function JudgeStep({
       }
     >
       <StepHeader
-        eyebrow="Step 2 of 2 · Optional"
+        eyebrow={stepEyebrow(position, true)}
         title="Let Judge make the small decisions"
         lead="Agents make many tiny choices along the way. Judge answers them with a model trained only for typed decisions, so your main model spends its tokens on the work itself."
       />

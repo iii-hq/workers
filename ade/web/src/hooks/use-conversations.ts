@@ -1514,6 +1514,22 @@ let tailReaderUnavailable = false
 const HYDRATION_READ_TIMEOUT_MS = 5_000
 
 /**
+ * The model a new chat starts on: the person's last pick while the catalog
+ * still offers it, else the provider-declared default, else the router's
+ * first model. Before the catalog is known (`valid` null) the last pick is
+ * trusted; the catalog migration corrects it once the catalog lands.
+ */
+export function startingModel(
+  lastModel: ModelId | null,
+  valid: ReadonlySet<string> | null,
+  preferredModel: ModelId | null,
+  firstCatalogKey: ModelId | null,
+): ModelId | null {
+  if (lastModel && (valid === null || valid.has(lastModel))) return lastModel
+  return preferredModel ?? firstCatalogKey ?? lastModel
+}
+
+/**
  * The page a chat opens on: the newest `TRANSCRIPT_TAIL_PAGE_LIMIT` blocks.
  * A session-manager that predates `session::messages-tail` answers
  * `function_not_found`; the console then reads the whole transcript as it
@@ -1563,6 +1579,8 @@ export function useConversations(
     catalogKeysForValidation && catalogKeysForValidation.length > 0
       ? [...catalogKeysForValidation].sort().join('\u0001')
       : ''
+  /** The router's first model: the fallback when no provider declares one. */
+  const firstCatalogKey = catalogKeysForValidation?.[0] ?? null
 
   const [conversations, setConversations] = useState<Conversation[]>(() => {
     /* Always boot with one local draft so the chat surface has something to
@@ -2543,10 +2561,14 @@ export function useConversations(
     if (catalogReady === false) return
     const keys = catalogSig.split('\u0001')
     const valid = new Set(keys)
-    // A provider's declared default beats the alphabetically first key.
+    // A provider's declared default first, then the router's first model.
     const preferred =
       preferredModel && valid.has(preferredModel) ? preferredModel : null
-    const fallback = preferred ?? keys[0]
+    const fallback =
+      preferred ??
+      (firstCatalogKey && valid.has(firstCatalogKey)
+        ? firstCatalogKey
+        : keys[0])
     // The provider list can land after the catalog; remember the interim
     // pick so drafts still on it follow the provider default when it arrives.
     const interim = interimModelRef.current
@@ -2554,11 +2576,10 @@ export function useConversations(
     setConversations((prev) => {
       return applyCatalogModelFallback(prev, valid, fallback, interim)
     })
-    const lastModel = loadLastModel()
-    if (lastModel && !valid.has(lastModel)) {
-      saveLastModel(fallback)
-    }
-  }, [catalogSig, catalogReady, preferredModel])
+    // The person's last pick is kept even when this read lacks it (a provider
+    // restarting, a key being re-entered): new chats skip it while it is
+    // missing (`startingModel`) and use it again once it is back.
+  }, [catalogSig, catalogReady, preferredModel, firstCatalogKey])
 
   useEffect(() => {
     saveActiveId(activeId)
@@ -2596,7 +2617,12 @@ export function useConversations(
         return pending.id
       }
       const next = emptyConversation(
-        loadLastModel() ?? preferredModel,
+        startingModel(
+          loadLastModel(),
+          catalogSig ? new Set(catalogSig.split('\u0001')) : null,
+          preferredModel,
+          firstCatalogKey,
+        ),
         loadLastThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
         draft,
       )
@@ -2604,7 +2630,7 @@ export function useConversations(
       setActiveId(next.id)
       return next.id
     },
-    [conversations, activeId, preferredModel],
+    [conversations, activeId, preferredModel, catalogSig, firstCatalogKey],
   )
 
   const select = useCallback((id: string) => {

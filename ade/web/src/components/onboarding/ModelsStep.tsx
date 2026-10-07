@@ -28,6 +28,8 @@ import {
   StatusChip,
   StepHeader,
   StepLayout,
+  type StepPosition,
+  stepEyebrow,
 } from './parts'
 import type { OnboardingController } from './use-onboarding'
 
@@ -49,10 +51,13 @@ const ROUTER_KEY_STORES = ['vault', 'env'] as const
  */
 export function ModelsStep({
   onboarding,
+  position,
   onBack,
   onNext,
 }: {
   onboarding: OnboardingController
+  /** Its place among the setup steps, for the "Step N of M" line. */
+  position?: StepPosition
   onBack: () => void
   onNext: () => void
 }) {
@@ -88,10 +93,12 @@ export function ModelsStep({
     [registry],
   )
 
-  // Recommended choices start selected; the user's own clicks win after.
+  // Recommended choices start selected until a provider is connected; the
+  // user's own clicks win after.
+  const nothingConnected = !choices.some((choice) => choice.ready)
   const draftFor = (choice: ProviderChoice): Draft =>
     resolveDraft(drafts.get(choice.providerId), {
-      selected: choice.recommended && !choice.ready && usable(choice),
+      selected: preselected(choice, nothingConnected),
       key:
         choice.kind === 'key' ? defaultKeyInput(choice.detection) : undefined,
     })
@@ -264,7 +271,7 @@ export function ModelsStep({
       }
     >
       <StepHeader
-        eyebrow="Step 1 of 2"
+        eyebrow={stepEyebrow(position)}
         title="Connect a model"
         lead="Pick at least one. What's recommended comes from what this machine already has: a coding agent you're signed in to needs no API key, and a key you've already exported is reused without copying it anywhere."
         action={
@@ -418,6 +425,21 @@ function ToolDetails({ tool }: { tool: ToolScan }) {
         <span className="truncate font-mono text-[12px] text-ink">{cli}</span>
       ) : null}
     </>
+  )
+}
+
+/**
+ * Whether a choice starts checked. Recommendations are a starting point for
+ * the first connection only: once a provider is connected, coming back to
+ * this step (Back, or reopening setup) never re-checks the ones the person
+ * left out.
+ */
+export function preselected(
+  choice: ProviderChoice,
+  nothingConnected: boolean,
+): boolean {
+  return (
+    nothingConnected && choice.recommended && !choice.ready && usable(choice)
   )
 }
 

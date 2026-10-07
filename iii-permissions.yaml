@@ -66,6 +66,9 @@ rules:
   - '!secrets::access'
   - '!secrets::import'
   - '!secrets::on-config-change'
+  # queue's engine event handler (functions/workers available): wakes waits
+  # for a target function and the engine-restart check; engine dispatch only.
+  - '!queue::on-engine-change'
   # judge-typesafe's own secrets::changed handler (drops a rotated key).
   - '!judge-typesafe::on-secret-change'
   - '!directory::pre-generate'
@@ -180,6 +183,11 @@ rules:
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
   - '!harness::on-session-deleted'
+  # Engine event handlers (worker connect/disconnect, compose operations) that
+  # drive binding expiry, orphaned-turn recovery and discovery instead of
+  # timers: invoked only by the engine's trigger dispatch.
+  - '!harness::on-engine-change'
+  - '!harness::on-compose-operation'
   # kanban: console asset delivery and the configuration reload sink are
   # engine plumbing. Deleting/restoring a ticket is the human's call from the
   # ticket screen; the ticket working loop is allowlisted below.
@@ -240,6 +248,16 @@ rules:
   - '!browser::screencast::stop'
   - '!browser::frame'
   - '!browser::on-config-change'
+  # http::status only reports where the public HTTP server listens (host,
+  # port, local base URL) and its last reload error: read-only, so agents
+  # build page URLs from it instead of assuming port 3111.
+  - http::status
+  # browser::chromium::status only reports which Chromium the worker would
+  # launch (path, version, where it searched) and the latest install job:
+  # read-only, never starts a browser. browser::chromium::install downloads
+  # and unpacks ~200 MB of executable code into the user's cache, so it
+  # stays at the needs_approval default (the ADE calls it as the user).
+  - browser::chromium::status
   # computer: same split as browser. screencast::*/frame exist only to feed the
   # console viewport; the desktop surface the agent actually uses (sessions,
   # screenshot, observe, act, displays) stays at the needs_approval default,

@@ -19,8 +19,8 @@ use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
 use crate::types::model::{Model, ProviderDefaults, ThinkingLevel};
 use crate::types::output::OutputContract;
 use crate::types::turn::{
-    FunctionContractLedgerEntry, FunctionPolicy, IdemRecord, ParentLink, SkillContext, TurnOptions,
-    TurnRecord, TurnStatus,
+    FunctionContractLedgerEntry, FunctionPolicy, IdemRecord, ParentLink, ResponseLanguage,
+    SkillContext, TurnOptions, TurnRecord, TurnStatus,
 };
 
 /// `message` is either a plain string (sugar for a user text message) or a
@@ -452,6 +452,18 @@ async fn start_with_delivery_lock(
     // Normalise the incoming message and validate its role.
     let message = normalize_message(req.message)?;
     tag_send_span_with_message(&message);
+    options.response_language = resolve_response_language(
+        existing_metadata
+            .as_ref()
+            .or(req
+                .session
+                .as_ref()
+                .and_then(|init| init.metadata.as_ref())
+                .and_then(Value::as_object))
+            .and_then(crate::language::from_metadata),
+        prev.as_ref().map(|record| &record.options),
+        &message,
+    );
 
     // Resolve the session (ensure if id given, else create).
     let (title, metadata, kind) = req
@@ -460,6 +472,7 @@ async fn start_with_delivery_lock(
         .map(|s| (s.title.clone(), s.metadata.clone(), s.kind.clone()))
         .unwrap_or((None, None, None));
     let metadata = session_metadata_with_agent(metadata, agent.as_ref());
+    let metadata = session_metadata_with_language(metadata, options.response_language.as_ref());
     let topology = deps.topology.lock().await;
     if let Some(parent) = metadata
         .as_ref()
@@ -477,14 +490,37 @@ async fn start_with_delivery_lock(
                 .ensure(id, title.as_deref(), metadata.as_ref(), kind.as_deref())
                 .await?;
             // Console materialises its draft before calling harness::send, so
-            // ensure cannot apply the authoritative Directory snapshot on
-            // creation. Merge it into the stored whole-object metadata once.
-            if let Some(agent) = agent.as_ref() {
-                let snapshot = agent.session_metadata();
-                if ensured.metadata.get("agent_profile") != Some(&snapshot) {
-                    let mut stored = ensured.metadata;
+            // ensure cannot apply the authoritative Directory snapshot, nor a
+            // response language pinned by this send, on creation. Merge them
+            // into the stored whole-object metadata once.
+            let agent_snapshot = agent
+                .as_ref()
+                .map(|agent| agent.session_metadata())
+                .filter(|snapshot| ensured.metadata.get("agent_profile") != Some(snapshot));
+            let language = options
+                .response_language
+                .as_ref()
+                .map(crate::language::metadata_value)
+                .filter(|value| ensured.metadata.get(crate::language::METADATA_KEY) != Some(value));
+            if agent_snapshot.is_some() || language.is_some() {
+                let mut stored = ensured.metadata;
+                let agent_stale = agent_snapshot.is_some();
+                if let Some(snapshot) = agent_snapshot {
                     stored.insert("agent_profile".into(), snapshot);
-                    session.set_metadata(id, stored).await?;
+                }
+                if let Some(language) = language {
+                    stored.insert(crate::language::METADATA_KEY.into(), language);
+                }
+                match session.set_metadata(id, stored).await {
+                    Err(error) if agent_stale => return Err(error),
+                    // The turn record carries the language too; only its
+                    // durable mirror is missing, so the send goes on.
+                    Err(error) => tracing::warn!(
+                        session_id = %id,
+                        error = %error,
+                        "could not store the response language in session metadata"
+                    ),
+                    Ok(()) => {}
                 }
             }
             id.clone()
@@ -827,7 +863,7 @@ async fn try_enqueue(
     let recheck = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     let outcome = match recheck {
         Some(r) if !r.status.is_terminal() => {
-            if filesystem_root_refresh_needed(&r.options, options) {
+            if merge_refresh_needed(&r.options, options) {
                 seed_or_merge_queued(deps, cfg, session_id, options, d).await?
             } else {
                 StartOutcome {
@@ -849,6 +885,13 @@ fn filesystem_root_refresh_needed(current: &TurnOptions, incoming: &TurnOptions)
     incoming
         .filesystem_root()
         .is_some_and(|root| current.filesystem_root() != Some(root))
+}
+
+/// Whether a queued steer must still reach the running record: a new working
+/// directory, or a response language the running turn has not pinned yet.
+fn merge_refresh_needed(current: &TurnOptions, incoming: &TurnOptions) -> bool {
+    filesystem_root_refresh_needed(current, incoming)
+        || (current.response_language.is_none() && incoming.response_language.is_some())
 }
 
 async fn seed_or_merge_queued(
@@ -1192,6 +1235,8 @@ fn build_options(
         max_transient_resumes: cfg.max_transient_resumes,
         preloaded_contracts: agent.map(|a| a.contract_digests.clone()),
         seeded_contracts: None,
+        // Resolved in `start` once the message is normalised.
+        response_language: None,
     }
 }
 
@@ -1209,6 +1254,41 @@ pub(crate) fn session_metadata_with_agent(
         .unwrap_or_default();
     object.insert("agent_profile".into(), agent.session_metadata());
     Some(Value::Object(object))
+}
+
+/// Mirror the pinned response language into session metadata (applied when
+/// the session is created; `start` merges it into an existing one), so it
+/// outlives the turn record and clients can read it.
+fn session_metadata_with_language(
+    metadata: Option<Value>,
+    language: Option<&ResponseLanguage>,
+) -> Option<Value> {
+    let Some(language) = language else {
+        return metadata;
+    };
+    let mut object = metadata
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    object.insert(
+        crate::language::METADATA_KEY.into(),
+        crate::language::metadata_value(language),
+    );
+    Some(Value::Object(object))
+}
+
+/// The session's response language for this send: the one its metadata pins,
+/// else the prior turn's, else detected from this message — the first one
+/// whose prose is long enough to tell (`None` waits for a later message).
+/// Once pinned it never changes here; an explicit "answer in Portuguese" is
+/// the prompt's rule to honor.
+fn resolve_response_language(
+    stored: Option<ResponseLanguage>,
+    prev: Option<&TurnOptions>,
+    message: &AgentMessage,
+) -> Option<ResponseLanguage> {
+    stored
+        .or_else(|| prev.and_then(|options| options.response_language.clone()))
+        .or_else(|| crate::language::detect(message))
 }
 
 /// The dispatch policy a send runs under — and the one its profile's
@@ -1481,6 +1561,7 @@ async fn seed_or_merge(
             match recheck {
                 Some(mut r) if !r.status.is_terminal() => {
                     let changed = r.options.refresh_filesystem_root_from(&options)
+                        | r.options.adopt_response_language_from(&options)
                         | merge_explicit_skill_filter(&mut r.options, &options, skills_explicit)?;
                     if changed {
                         r.updated_at = AgentMessage::now_ms();
@@ -1628,6 +1709,11 @@ pub(crate) async fn seed_new(
     super::delete_session_tree::ensure_live(deps, session_id).await?;
     if let Some(prior) = prior {
         inherit_prior_filesystem_root(&mut options, &prior.options);
+        // A pinned language outlives every turn of its session, whichever
+        // path seeds the next one.
+        if options.response_language.is_none() {
+            options.response_language = prior.options.response_language.clone();
+        }
     }
     let lineage = lineage.for_seed(prior);
     let turn_id = ids::new_turn_id();
@@ -1787,6 +1873,77 @@ mod tests {
     use iii_helpers::observability::opentelemetry::Context;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
     use std::sync::Arc;
+
+    fn language(code: &str, name: &str) -> ResponseLanguage {
+        ResponseLanguage {
+            code: code.into(),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn the_response_language_is_pinned_once_and_then_inherited() {
+        let long = normalize_message(MessageInput::Text(
+            "Explain this project and help me decide what to work on next.".into(),
+        ))
+        .unwrap();
+        let short = normalize_message(MessageInput::Text("ok".into())).unwrap();
+        let english = language("eng", "English");
+        let portuguese = language("por", "Portuguese");
+
+        // First message with enough prose: detected.
+        assert_eq!(
+            resolve_response_language(None, None, &long),
+            Some(english.clone())
+        );
+        // Too short: left unset, to be retried on the next message.
+        assert_eq!(resolve_response_language(None, None, &short), None);
+        // Pinned on the session: never re-detected from a later message.
+        let mut prev = options_with(None);
+        prev.response_language = Some(portuguese.clone());
+        assert_eq!(
+            resolve_response_language(None, Some(&prev), &long),
+            Some(portuguese.clone())
+        );
+        // Session metadata (the durable mirror) wins over the turn record.
+        assert_eq!(
+            resolve_response_language(Some(english.clone()), Some(&prev), &short),
+            Some(english.clone())
+        );
+        // A prior turn that never pinned one still lets this message pin it.
+        assert_eq!(
+            resolve_response_language(None, Some(&options_with(None)), &long),
+            Some(english)
+        );
+    }
+
+    #[test]
+    fn the_response_language_is_mirrored_into_session_metadata() {
+        let english = language("eng", "English");
+        assert_eq!(session_metadata_with_language(None, None), None);
+        let merged = session_metadata_with_language(
+            Some(serde_json::json!({ "parent_session_id": "s_parent" })),
+            Some(&english),
+        )
+        .unwrap();
+        assert_eq!(merged["parent_session_id"], "s_parent");
+        assert_eq!(
+            crate::language::from_metadata(merged.as_object().unwrap()),
+            Some(english)
+        );
+    }
+
+    #[test]
+    fn a_queued_steer_reaches_a_running_turn_only_to_pin_a_first_language() {
+        let running = options_with(None);
+        let mut incoming = options_with(None);
+        assert!(!merge_refresh_needed(&running, &incoming));
+        incoming.response_language = Some(language("eng", "English"));
+        assert!(merge_refresh_needed(&running, &incoming));
+        let mut pinned = options_with(None);
+        pinned.response_language = Some(language("por", "Portuguese"));
+        assert!(!merge_refresh_needed(&pinned, &incoming));
+    }
 
     #[test]
     fn a_reused_session_must_be_writable() {
@@ -2277,6 +2434,7 @@ mod tests {
             preloaded_contracts: None,
             seeded_contracts: None,
             system_prompt_ref: None,
+            response_language: None,
         }
     }
 

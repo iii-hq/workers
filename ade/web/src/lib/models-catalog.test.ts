@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   type CatalogModelRow,
+  catalogKeysInRouterOrder,
   catalogRowsToModelOptions,
   type ProviderListEntry,
   parseProviderList,
@@ -175,6 +176,31 @@ describe('preferredStartingModel', () => {
     ])
     expect(preferredStartingModel(providers, keys)).toBe(
       'openai-codex::codex/gpt-6-luna',
+    )
+  })
+})
+
+describe('catalogKeysInRouterOrder', () => {
+  it("keeps the router's order instead of sorting by name", () => {
+    const rows = [
+      {
+        provider: 'claude-code',
+        id: 'claude-code/claude-sonnet-5-5',
+        display_name: 'Claude Sonnet 5.5',
+      },
+      {
+        provider: 'claude-code',
+        id: 'claude-code/claude-fable-5',
+        display_name: 'Claude Fable 5',
+      },
+    ] as CatalogModelRow[]
+    expect(catalogKeysInRouterOrder(rows)).toEqual([
+      'claude-code::claude-code/claude-sonnet-5-5',
+      'claude-code::claude-code/claude-fable-5',
+    ])
+    // The picker still lists them alphabetically.
+    expect(catalogRowsToModelOptions(rows).map((o) => o.id)[0]).toBe(
+      'claude-code::claude-code/claude-fable-5',
     )
   })
 })

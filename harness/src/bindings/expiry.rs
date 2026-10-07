@@ -4,7 +4,8 @@
 //!
 //! Two paths retire an unfired wake:
 //!
-//! * its `lifecycle.expires_at` passes — found by the periodic [`sweep`];
+//! * its `lifecycle.expires_at` passes — the binding's own deadline timer
+//!   ([`arm`]) fires at that instant;
 //! * a lineage session unregisters it out from under the parked owner
 //!   (`engine::unregister_trigger` from a child cleaning up the run).
 //!
@@ -13,85 +14,209 @@
 //! `trigger_fired` record every other delivery outcome writes — so the
 //! timeline can answer "why did this session un-park with no event?".
 //!
-//! The sweep DELETES the record before it notifies. The delete is the atomic
-//! claim against a concurrent real fire: `claim_fire`'s compare-and-set
-//! resolves to `Gone` once the record is missing, so one hand can never tell
-//! the owner "nothing is coming" while the other delivers the wake.
+//! Deadlines are timers, not a scan. A binding with an `expires_at` gets one
+//! one-shot ([`crate::timer::OneShots`], keyed by binding id) armed when it is
+//! registered and re-armed from the durable store by every [`sweep`] — run
+//! once at boot and again on each engine worker connect/disconnect/announce
+//! ([`crate::engine_events`]), which is how the bindings of a harness
+//! instance that went away get a timer in the instances that remain. The
+//! store cancels the timer whenever it deletes the record: a fire that
+//! retires the binding, an unregister, a session teardown.
+//!
+//! Retirement DELETES the record before it notifies. The delete is the
+//! atomic claim against a concurrent real fire: `claim_fire`'s
+//! compare-and-set resolves to `Gone` once the record is missing, so one hand
+//! can never tell the owner "nothing is coming" while the other delivers the
+//! wake.
 
+use std::future::Future;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use super::Binding;
+use super::{Binding, BindingStore};
 use crate::deps::Deps;
 use crate::subscriptions::fired;
+use crate::timer::OneShots;
 use crate::types::message::AgentMessage;
 
-/// Environment override for the sweep cadence — integration runs shrink it to
-/// exercise expiry in seconds. The default trades precision for quiet: a wake
-/// deadline is minutes-scale, so a half-minute lag on the notice is noise.
-pub const SWEEP_INTERVAL_ENV: &str = "III_HARNESS_EXPIRY_SWEEP_MS";
-pub const DEFAULT_SWEEP_INTERVAL_MS: u64 = 30_000;
+/// Store reads at a deadline that fail are retried this many times, on a
+/// doubling backoff from [`RETRY_BASE_MS`]. Past that, the next sweep — the
+/// state worker coming back is itself an engine worker event — retires it.
+const RETRY_ATTEMPTS: u32 = 5;
+const RETRY_BASE_MS: i64 = 1_000;
+/// Compare-and-delete rounds against concurrent fires before giving up to
+/// the next sweep (the same bound the store's own retries use).
+const RETIRE_ROUNDS: usize = 8;
 
-pub fn sweep_interval_ms() -> u64 {
-    std::env::var(SWEEP_INTERVAL_ENV)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|ms| *ms > 0)
-        .unwrap_or(DEFAULT_SWEEP_INTERVAL_MS)
-}
-
-/// Periodic expiry sweep, spawned at startup for the worker lifetime.
-pub async fn run_loop(deps: Arc<Deps>) {
-    let interval = std::time::Duration::from_millis(sweep_interval_ms());
+/// Boot pass, then one pass per engine worker change. Never on a clock: the
+/// deadlines themselves are the binding timers each pass (re-)arms.
+pub async fn run(deps: Arc<Deps>) {
+    sweep(&deps).await;
     loop {
-        tokio::time::sleep(interval).await;
+        deps.kicks.bindings.notified().await;
         sweep(&deps).await;
     }
 }
 
-/// One pass: retire every binding whose lifecycle is spent and persist its
-/// structured expiry. An unfired once-wake additionally wakes its owner.
+/// One reconciliation pass over the durable store: drop delivery triggers
+/// whose record is gone, retry Compose wake recovery, retire every binding
+/// whose lifecycle is already spent (an unfired once-wake also wakes its
+/// owner), and arm the deadline timer of every other binding that has one.
 /// Returns how many were retired.
 pub async fn sweep(deps: &Deps) -> usize {
     let store = deps.bindings().await;
     let bindings = match store.list().await {
         Ok(b) => b,
         Err(e) => {
-            tracing::warn!(error = %e, "expiry sweep skipped: binding store unreadable");
+            tracing::warn!(error = %e, "binding pass skipped: binding store unreadable");
             return 0;
         }
     };
     super::gc::reconcile_orphan_delivery_triggers(deps, &bindings).await;
-    // Recovery runs independently with bounded concurrency and probe timeouts;
-    // an unavailable Compose diagnostic must not hold up wake expiry. Repeating
-    // from the durable watch closes even a provider activation after the first
-    // snapshot, including after reconnect or a harness restart.
+    // Recovery runs independently with bounded concurrency and probe
+    // timeouts; an unavailable Compose diagnostic must not hold up expiry.
+    // Re-running it from the durable watch on every worker change closes a
+    // provider activation that came after the registration-time snapshot,
+    // including after a reconnect or a harness restart.
     for binding in &bindings {
         super::compose::schedule(deps, binding);
     }
     let now = AgentMessage::now_ms();
     let mut retired = 0usize;
-    for binding in bindings.into_iter().filter(|b| b.is_exhausted(now)) {
-        // Delete FIRST, but only while the record still equals the listed
-        // snapshot. A racing real fire increments it with CAS; that makes this
-        // claim lose instead of deleting the delivered record and emitting a
-        // false "expired unfired" notice.
-        if !matches!(store.delete_if_unchanged(&binding).await, Ok(true)) {
-            continue;
+    for binding in bindings {
+        if binding.is_exhausted(now) {
+            retired += usize::from(retire_due(deps, &binding.id, now).await);
+        } else {
+            arm(deps, &binding);
         }
-        if let Some(trigger_id) = binding.trigger_id.as_deref() {
-            crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
-        }
-        retired += 1;
-        tracing::info!(
-            binding = %binding.id,
-            fires = binding.fires,
-            "expired binding retired by sweep"
-        );
-        report_expired_retirement(deps, &binding).await;
     }
     retired
+}
+
+/// Arm `binding`'s deadline timer: at `expires_at` it is retired through
+/// [`retire_due`]. A binding without a deadline gets none; one already armed
+/// in this process keeps its timer.
+pub fn arm(deps: &Deps, binding: &Binding) {
+    let worker = deps.clone();
+    schedule(&deps.expiry_timers, binding, move |id, due| async move {
+        retire_due(&worker, &id, due).await;
+    });
+}
+
+/// The timer half of [`arm`], over any due action — what the paused-clock
+/// tests drive. Returns whether a timer is armed for the binding.
+fn schedule<F, Fut>(timers: &OneShots, binding: &Binding, on_due: F) -> bool
+where
+    F: FnOnce(String, i64) -> Fut,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    let Some(due) = binding.lifecycle.expires_at else {
+        return false;
+    };
+    if timers.is_armed(&binding.id) {
+        // Deadlines never move once registered; the pending timer stands.
+        return true;
+    }
+    timers.arm(binding.id.clone(), due, on_due(binding.id.clone(), due));
+    true
+}
+
+/// A binding's deadline `due` passed (by its timer, or a pass found it
+/// spent): retire it if the durable record is still spent, re-reading after
+/// every lost compare-and-delete — a racing fire that moved the record does
+/// not get to strand a standing binding past its deadline. `true` when this
+/// caller retired it.
+pub async fn retire_due(deps: &Deps, binding_id: &str, due: i64) -> bool {
+    retire_due_attempt(deps, binding_id, due, 0).await
+}
+
+async fn retire_due_attempt(deps: &Deps, binding_id: &str, due: i64, attempt: u32) -> bool {
+    let store = deps.bindings().await;
+    for _ in 0..RETIRE_ROUNDS {
+        let binding = match store.get(binding_id).await {
+            Ok(Some(binding)) => binding,
+            // Already retired by a fire, an unregister, or another instance.
+            Ok(None) => return false,
+            Err(error) => {
+                retry_later(deps, binding_id, due, attempt, &error.to_string());
+                return false;
+            }
+        };
+        // The timer is the clock: by its measure `due` has passed, even if
+        // the wall clock lags a few milliseconds behind the monotonic sleep.
+        let now = AgentMessage::now_ms().max(due);
+        if !binding.is_exhausted(now) {
+            // Not spent at this deadline (a later or no deadline): follow
+            // the record instead of retiring early.
+            arm(deps, &binding);
+            return false;
+        }
+        if retire_spent(deps, &store, &binding).await {
+            return true;
+        }
+    }
+    tracing::warn!(
+        binding = %binding_id,
+        "expired binding kept moving under retirement; the next binding pass retries"
+    );
+    false
+}
+
+fn retry_later(deps: &Deps, binding_id: &str, due: i64, attempt: u32, error: &str) {
+    if attempt >= RETRY_ATTEMPTS {
+        tracing::warn!(
+            binding = %binding_id,
+            error,
+            "binding store unreadable at its deadline; the next binding pass retires it"
+        );
+        return;
+    }
+    let backoff = RETRY_BASE_MS << attempt;
+    tracing::warn!(
+        binding = %binding_id,
+        error,
+        backoff_ms = backoff,
+        "binding store unreadable at its deadline; retrying"
+    );
+    let worker = deps.clone();
+    let id = binding_id.to_string();
+    deps.expiry_timers
+        .arm(binding_id, AgentMessage::now_ms() + backoff, async move {
+            retire_due_attempt(&worker, &id, due, attempt + 1).await;
+        });
+}
+
+/// Retire one spent binding: compare-and-delete FIRST (only while the record
+/// still equals this snapshot — a racing fire's CAS makes this claim lose),
+/// then unregister its engine trigger, then report an EXPIRY. A binding its
+/// delivered fires used up is only cleaned up: the delivery that claimed
+/// the last slot already wrote the binding's outcome (or is writing it right
+/// now — a pass can land between its claim and its own retirement), so a
+/// second, "expired" record would be a false duplicate. `false` when the
+/// record moved or the delete failed.
+async fn retire_spent(deps: &Deps, store: &BindingStore, binding: &Binding) -> bool {
+    if !matches!(store.delete_if_unchanged(binding).await, Ok(true)) {
+        return false;
+    }
+    if let Some(trigger_id) = binding.trigger_id.as_deref() {
+        crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
+    }
+    if binding.is_spent() {
+        tracing::debug!(
+            binding = %binding.id,
+            fires = binding.fires,
+            "spent binding record cleaned up; its delivery owns the outcome"
+        );
+        return true;
+    }
+    tracing::info!(
+        binding = %binding.id,
+        fires = binding.fires,
+        "expired binding retired"
+    );
+    report_expired_retirement(deps, binding).await;
+    true
 }
 
 /// A wake binding that never delivered — the only shape whose retirement
@@ -288,6 +413,71 @@ mod tests {
         }
     }
 
+    /// The deadline is its own timer: nothing runs while it is ahead — no
+    /// sweep, no other wake-up — and the retirement runs AT `expires_at`.
+    #[tokio::test(start_paused = true)]
+    async fn a_deadline_runs_its_retirement_at_the_due_instant_and_not_before() {
+        let timers = OneShots::new();
+        let deadline = AgentMessage::now_ms() + 90_000;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let started = tokio::time::Instant::now();
+        assert!(schedule(
+            &timers,
+            &wake(Some(deadline)),
+            move |id, due| async move {
+                tx.send((id, due, tokio::time::Instant::now())).unwrap();
+            }
+        ));
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_millis(89_000)).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "a pending deadline runs nothing early"
+        );
+        let (id, due, fired_at) = rx.recv().await.expect("the deadline must fire");
+        assert_eq!(id, "sub_1");
+        assert_eq!(due, deadline);
+        let waited = (fired_at - started).as_millis();
+        assert!(
+            (89_990..=90_010).contains(&waited),
+            "fired after {waited}ms, not at its 90s deadline"
+        );
+        assert!(timers.is_empty(), "a fired deadline detaches itself");
+    }
+
+    /// A binding deleted before its deadline (a fire that consumed it, an
+    /// unregister) has its timer cancelled by the store — the retirement
+    /// never runs, however long the clock goes on.
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_deadline_never_runs() {
+        let timers = OneShots::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        assert!(schedule(
+            &timers,
+            &wake(Some(AgentMessage::now_ms() + 60_000)),
+            move |id, _| async move {
+                tx.send(id).unwrap();
+            }
+        ));
+        tokio::task::yield_now().await;
+        assert!(timers.cancel("sub_1"));
+        tokio::time::advance(std::time::Duration::from_secs(3_600)).await;
+        assert!(rx.recv().await.is_none(), "the cancelled retirement ran");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_a_deadline_arms_and_rearming_keeps_the_pending_timer() {
+        let timers = OneShots::new();
+        assert!(!schedule(&timers, &wake(None), |_, _| async {}));
+        assert!(timers.is_empty(), "no deadline, no timer");
+        let binding = wake(Some(AgentMessage::now_ms() + 60_000));
+        assert!(schedule(&timers, &binding, |_, _| async {}));
+        assert!(schedule(&timers, &binding, |_, _| async {
+            panic!("a re-arm must not replace the pending deadline");
+        }));
+        assert_eq!(timers.len(), 1);
+    }
+
     #[test]
     fn only_a_never_fired_once_wake_warrants_a_notification() {
         assert!(is_unfired_wake(&wake(None)));
@@ -396,20 +586,5 @@ mod tests {
         assert_ne!(wake_id, record_id);
         assert_ne!(wake_id, "e_fire_sub_1_1");
         assert_ne!(record_id, "e_trigfired_sub_1_1");
-    }
-
-    #[test]
-    fn sweep_interval_parses_only_positive_ms() {
-        // The env override is read directly in sweep_interval_ms; pin the
-        // parse rules through the same code path used at startup.
-        std::env::remove_var(SWEEP_INTERVAL_ENV);
-        assert_eq!(sweep_interval_ms(), DEFAULT_SWEEP_INTERVAL_MS);
-        std::env::set_var(SWEEP_INTERVAL_ENV, "500");
-        assert_eq!(sweep_interval_ms(), 500);
-        std::env::set_var(SWEEP_INTERVAL_ENV, "0");
-        assert_eq!(sweep_interval_ms(), DEFAULT_SWEEP_INTERVAL_MS);
-        std::env::set_var(SWEEP_INTERVAL_ENV, "nonsense");
-        assert_eq!(sweep_interval_ms(), DEFAULT_SWEEP_INTERVAL_MS);
-        std::env::remove_var(SWEEP_INTERVAL_ENV);
     }
 }

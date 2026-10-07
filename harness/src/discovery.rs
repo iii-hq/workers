@@ -25,7 +25,14 @@
 //! contracts may be stale.
 //!
 //! The trigger only fires ON CHANGE, so the snapshot is seeded once at boot;
-//! after that the trigger keeps it live (plus a low-frequency safety reload).
+//! after that the trigger keeps it live. The engine computes "change" over
+//! the function-ID set only, so a worker that restarts with the same ids but
+//! new schemas or descriptions never fires it; every worker announce
+//! (`engine::workers-available` → [`crate::engine_events`]) therefore runs
+//! [`refresh`], which re-reads every schema rather than carrying the cached
+//! ones forward. No timer reloads anything. A live worker re-registering an
+//! existing id with a new schema, without reconnecting, is still invisible:
+//! the engine emits no event for it.
 //! [`build_tools`](crate::turn_loop) reads it under
 //! [`Deps::functions`](crate::deps::Deps::functions).
 
@@ -33,7 +40,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
@@ -78,7 +84,6 @@ pub type FunctionsCell = Arc<RwLock<Arc<FunctionsSnapshot>>>;
 
 const FUNCTIONS_FN_ID: &str = "harness::on-functions-change";
 const FUNCTIONS_TRIGGER_TYPE: &str = "engine::functions-available";
-const SAFETY_RELOAD_SECS: u64 = 300;
 
 /// An empty registry snapshot (generation 0) — seeded at boot, then kept live
 /// by the trigger. The boot seed bumps it to 1 on the first non-empty apply.
@@ -125,8 +130,8 @@ fn fingerprint_of<'a>(functions: impl IntoIterator<Item = &'a FunctionDescriptor
 /// registry-changed notice and the discovery hint, and a no-op bump invalidates
 /// the provider's prompt-cache prefix for nothing. A response-schema-only
 /// change is fingerprint-invisible and goes un-noticed until a list-visible
-/// field moves — the schema-aware `functions_hash` named at the safety-reload
-/// ponytail comment is the real fix for that.
+/// field moves — a schema-aware engine `functions_hash` (with an event per
+/// re-registration) is the real fix for that.
 pub async fn apply(cell: &FunctionsCell, functions: Vec<FunctionDescriptor>) {
     apply_with_internal(cell, functions, None).await;
 }
@@ -187,12 +192,24 @@ async fn prev_params(cell: &FunctionsCell) -> HashMap<String, Value> {
         .collect()
 }
 
+/// Which schemas a reload re-reads from `engine::functions::info`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hydration {
+    /// Only ids with no cached schema (the function-set changed).
+    Missing,
+    /// Every id: a worker announced, and may have re-registered its ids with
+    /// new schemas. Cached schemas stay as the fallback for a failed fetch,
+    /// so a flaky read never reads as a contract change.
+    All,
+}
+
 /// Carry a prior `parameters` forward for any id still `None`; report the ids
 /// that need an `engine::functions::info` fan-out. Every descriptor is retained
 /// in the output — a still-`None` one is flagged for fetch, never dropped.
 fn plan_hydration(
     functions: Vec<FunctionDescriptor>,
     prev: &HashMap<String, Value>,
+    mode: Hydration,
 ) -> (Vec<FunctionDescriptor>, Vec<String>) {
     let mut needs_fetch = Vec::new();
     let carried = functions
@@ -200,7 +217,12 @@ fn plan_hydration(
         .map(|mut d| {
             if d.parameters.is_none() {
                 match prev.get(&d.function_id) {
-                    Some(p) => d.parameters = Some(p.clone()),
+                    Some(p) => {
+                        d.parameters = Some(p.clone());
+                        if mode == Hydration::All {
+                            needs_fetch.push(d.function_id.clone());
+                        }
+                    }
                     None => needs_fetch.push(d.function_id.clone()),
                 }
             }
@@ -223,22 +245,23 @@ async fn hydrate(
     engine: &EngineClient,
     cell: &FunctionsCell,
     functions: Vec<FunctionDescriptor>,
+    mode: Hydration,
 ) -> Vec<FunctionDescriptor> {
     let prev = prev_params(cell).await;
-    let (mut carried, needs_fetch) = plan_hydration(functions, &prev);
+    let (mut carried, needs_fetch) = plan_hydration(functions, &prev, mode);
     if needs_fetch.is_empty() {
         return carried;
     }
-    let mut fetched: HashMap<String, Value> = HashMap::new();
+    // A fetched schema-less descriptor is an answer too (its schema went
+    // away); only a failed read keeps what the descriptor already carries.
+    let mut fetched: HashMap<String, Option<Value>> = HashMap::new();
     let mut batch_supported = true;
     for chunk in needs_fetch.chunks(INFO_BATCH_MAX) {
         if batch_supported {
             match engine.functions_info_batch(chunk).await {
                 Some(descriptors) => {
                     for d in descriptors {
-                        if let Some(p) = d.parameters {
-                            fetched.insert(d.function_id, p);
-                        }
+                        fetched.insert(d.function_id, d.parameters);
                     }
                     continue;
                 }
@@ -248,30 +271,48 @@ async fn hydrate(
             }
         }
         for id in chunk {
-            if let Some(params) = engine.functions_info(id).await.and_then(|d| d.parameters) {
-                fetched.insert(id.clone(), params);
+            if let Some(d) = engine.functions_info(id).await {
+                fetched.insert(id.clone(), d.parameters);
             }
-            // failure or schema-less: leave it None below (never dropped).
+            // failure: keep the carried value below (never dropped).
         }
     }
-    for d in carried.iter_mut().filter(|d| d.parameters.is_none()) {
-        if let Some(p) = fetched.get(&d.function_id) {
-            d.parameters = Some(p.clone());
-        }
-    }
+    apply_fetched(&mut carried, &fetched);
     carried
+}
+
+/// Overlay what `engine::functions::info` answered onto the carried
+/// descriptors; an id it did not answer for keeps its carried schema.
+fn apply_fetched(carried: &mut [FunctionDescriptor], fetched: &HashMap<String, Option<Value>>) {
+    for d in carried.iter_mut() {
+        if let Some(p) = fetched.get(&d.function_id) {
+            d.parameters = p.clone();
+        }
+    }
 }
 
 /// Fetch the authoritative registry, hydrate schemas, and swap the snapshot;
 /// returns the count.
-async fn reload(iii: &Arc<IIIClient>, cell: &FunctionsCell, timeout_ms: u64) -> usize {
+async fn reload(
+    iii: &Arc<IIIClient>,
+    cell: &FunctionsCell,
+    timeout_ms: u64,
+    mode: Hydration,
+) -> usize {
     let engine = EngineClient::new(iii.clone(), timeout_ms);
     let (functions, internal_ids) =
         tokio::join!(engine.functions_list(), engine.internal_function_ids());
-    let functions = hydrate(&engine, cell, functions).await;
+    let functions = hydrate(&engine, cell, functions, mode).await;
     let count = functions.len();
     apply_with_internal(cell, functions, internal_ids).await;
     count
+}
+
+/// Re-read the registry AND every schema — run on each worker announce,
+/// where a restarted worker may have changed contracts under unchanged ids.
+/// The generation moves only if something actually changed.
+pub async fn refresh(iii: &Arc<IIIClient>, cell: &FunctionsCell, timeout_ms: u64) -> usize {
+    reload(iii, cell, timeout_ms, Hydration::All).await
 }
 
 /// Seed the snapshot from the registry. The trigger fires only on change, so
@@ -283,7 +324,7 @@ pub async fn seed(iii: &Arc<IIIClient>, cell: &FunctionsCell, timeout_ms: u64) {
     let (functions, internal_ids) =
         tokio::join!(engine.functions_list(), engine.internal_function_ids());
     apply_with_internal(cell, functions.clone(), internal_ids).await;
-    let hydrated = hydrate(&engine, cell, functions).await;
+    let hydrated = hydrate(&engine, cell, functions, Hydration::Missing).await;
     let count = hydrated.len();
     apply(cell, hydrated).await;
     tracing::info!(count, "seeded function-registry cache");
@@ -306,23 +347,10 @@ pub struct OnFunctionsChangeResponse {
 
 /// Register the internal change handler and bind the
 /// `engine::functions-available` trigger. Best-effort: a failed bind warns (the
-/// seeded snapshot still serves — it just won't update until restart) rather
-/// than bricking boot. The handler is tagged `internal` so it stays off the
-/// public catalog (and out of the very cache it maintains).
+/// seeded snapshot still serves, refreshed on worker announces) rather than
+/// bricking boot. The handler is tagged `internal` so it stays off the public
+/// catalog (and out of the very cache it maintains).
 pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, timeout_ms: u64) {
-    // ponytail: 5-min safety reload; the real fix is schema-aware functions_hash in the engine
-    let reload_iii = iii.clone();
-    let reload_cell = cell.clone();
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(SAFETY_RELOAD_SECS));
-        ticker.tick().await; // consume the immediate first tick
-        loop {
-            ticker.tick().await;
-            let count = reload(&reload_iii, &reload_cell, timeout_ms).await;
-            tracing::debug!(count, "function-registry cache safety-reloaded");
-        }
-    });
-
     let engine = iii.clone();
     iii.register_function(
         FUNCTIONS_FN_ID,
@@ -330,7 +358,7 @@ pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, tim
             let engine = engine.clone();
             let cell = cell.clone();
             async move {
-                let count = reload(&engine, &cell, timeout_ms).await;
+                let count = reload(&engine, &cell, timeout_ms, Hydration::Missing).await;
                 tracing::debug!(count, "function-registry cache refreshed");
                 Ok::<OnFunctionsChangeResponse, Error>(OnFunctionsChangeResponse { ok: true })
             }
@@ -355,7 +383,7 @@ pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, tim
         Err(e) => tracing::warn!(
             trigger_type = FUNCTIONS_TRIGGER_TYPE,
             error = %e,
-            "binding engine::functions-available failed; cache will not auto-refresh"
+            "binding engine::functions-available failed; cache refreshes only on worker announces"
         ),
     }
 }
@@ -464,13 +492,47 @@ mod tests {
         assert_eq!(cell.read().await.generation, 1);
     }
 
+    /// A worker announce re-reads every schema: a restarted worker may have
+    /// changed a contract under an unchanged id, which the engine's id-set
+    /// change trigger never reports. The cached schema stays as the fallback.
+    #[test]
+    fn an_announce_refetches_every_schema_and_keeps_the_cache_as_fallback() {
+        let prev: HashMap<String, Value> = [("a::b".to_string(), json!({ "type": "object" }))]
+            .into_iter()
+            .collect();
+        let (mut carried, needs_fetch) = plan_hydration(
+            vec![desc("a::b", None), desc("c::d", None)],
+            &prev,
+            Hydration::All,
+        );
+        assert_eq!(needs_fetch, vec!["a::b".to_string(), "c::d".to_string()]);
+        // Only c::d answered: a::b keeps its cached schema, never `None`.
+        let fetched: HashMap<String, Option<Value>> =
+            [("c::d".to_string(), Some(json!({ "type": "string" })))]
+                .into_iter()
+                .collect();
+        apply_fetched(&mut carried, &fetched);
+        assert_eq!(carried[0].parameters, Some(json!({ "type": "object" })));
+        assert_eq!(carried[1].parameters, Some(json!({ "type": "string" })));
+        // An answered changed schema replaces the cached one.
+        let changed: HashMap<String, Option<Value>> =
+            [("a::b".to_string(), Some(json!({ "type": "array" })))]
+                .into_iter()
+                .collect();
+        apply_fetched(&mut carried, &changed);
+        assert_eq!(carried[0].parameters, Some(json!({ "type": "array" })));
+    }
+
     #[test]
     fn plan_hydration_carries_forward_and_retains_unresolved() {
         let prev: HashMap<String, Value> = [("a::b".to_string(), json!({ "type": "object" }))]
             .into_iter()
             .collect();
-        let (carried, needs_fetch) =
-            plan_hydration(vec![desc("a::b", None), desc("c::d", None)], &prev);
+        let (carried, needs_fetch) = plan_hydration(
+            vec![desc("a::b", None), desc("c::d", None)],
+            &prev,
+            Hydration::Missing,
+        );
 
         assert_eq!(carried.len(), 2);
         let a = carried.iter().find(|d| d.function_id == "a::b").unwrap();

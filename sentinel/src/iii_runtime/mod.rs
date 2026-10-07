@@ -498,7 +498,6 @@ impl IngestQueue {
                 "concurrency": concurrency,
                 "max_retries": 3,
                 "backoff_ms": 1_000,
-                "poll_interval_ms": 100,
                 "redeliver_on_engine_restart": true,
             },
         });

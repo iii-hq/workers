@@ -24,6 +24,7 @@ import { type ReactNode, useCallback, useEffect, useId, useReducer, useRef, useS
 import { joinPath } from './coder'
 import {
   addToStack,
+  composeOperations,
   defaultDirectory,
   entryFile,
   type FunctionEntry,
@@ -104,12 +105,21 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
   const ready = state.step === 'form' && picked !== undefined && name !== '' && nameError === null
 
   const addedAt = useRef(0)
+  // Closing stops following the add: its compose-operation binding goes.
+  const following = useRef<AbortController | null>(null)
+  useEffect(() => () => following.current?.abort(), [])
   const add = (result: ScaffoldResult, owned: boolean) => {
     addedAt.current = Date.now()
     dispatch({ type: 'add' })
     const trigger: Trigger = <T,>(functionId: string, payload: Record<string, unknown>) =>
       mounted.current ? host.iii.trigger<T>(functionId, payload) : Promise.reject<T>(new Error('the dialog closed'))
-    void addToStack(trigger, result, (phase) => dispatch({ type: 'progress', phase }), { owned }).then((outcome) =>
+    following.current?.abort()
+    const controller = new AbortController()
+    following.current = controller
+    void addToStack(trigger, composeOperations(host.iii), result, (phase) => dispatch({ type: 'progress', phase }), {
+      owned,
+      signal: controller.signal,
+    }).then((outcome) =>
       dispatch(
         outcome.ok
           ? { type: 'added' }

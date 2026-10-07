@@ -88,9 +88,13 @@ pub async fn handle(
     let seeded = record
         .as_ref()
         .and_then(|record| record.options.seeded_contracts.as_deref());
+    let response_language = record
+        .as_ref()
+        .and_then(|record| record.options.response_language.as_ref());
     let runtime = crate::turn_loop::runtime_context_aid(
         &req.session_id,
         filesystem_root.as_deref(),
+        response_language,
         policy,
         seeded,
     );

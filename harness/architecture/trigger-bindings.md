@@ -263,17 +263,23 @@ one. "Why did this never fire?" must be answerable from the owner's timeline.
 ### Wake expiry — a wake's death wakes its owner
 
 A session that arms a one-shot wake parks (`terminal: false`) until the wake
-fires. Before the expiry sweep, that park had no exit but the fire itself:
+fires. Before wake expiry, that park had no exit but the fire itself:
 `expires_at` was only consulted at claim time, so a wake nobody ever fired
 ignored its own deadline, and `session_expects_wake` counted exhausted
 bindings — the session stayed non-terminal forever (the reactive discovery
 run's coordinator, parked beside a finished operation).
 
-Now a periodic sweep (`III_HARNESS_EXPIRY_SWEEP_MS`, default 30s) retires
-every lifecycle-spent binding, and for a **never-fired wake** delivers a
+Now every binding with an `expires_at` has its own one-shot deadline timer
+(no periodic sweep): armed when the binding is registered, re-armed from the
+durable store by the binding pass that runs at boot and on every engine worker
+connect/disconnect/announce (`engine::workers-available` — how bindings
+registered by a harness instance that has since gone away get a timer in the
+survivors), and cancelled by the store whenever the record is deleted (a fire
+that consumes it, an unregister, a session teardown). When it fires it
+retires the lifecycle-spent binding, and for a **never-fired wake** delivers a
 final `[notification]` into its destination session plus a `trigger_fired`
 record (`note: "expired unfired …"`, entry ids `e_expire_<id>` /
-`e_trigexpired_<id>` — distinct from every real fire's pair). The sweep
+`e_trigexpired_<id>` — distinct from every real fire's pair). Retirement
 deletes the record FIRST: the delete is the atomic claim against a concurrent
 real fire (`claim_fire`'s CAS resolves to `Gone` once the record is missing),
 so the owner is never told "nothing is coming" by one hand while the other
@@ -281,6 +287,12 @@ delivers. The same notice covers a lineage teardown that unregisters someone
 else's armed wake. `is_armed_wake` discounts exhausted bindings, so the woken
 turn completes terminal; `harness::status` exposes the armed set as
 `armed_wakes` (watch, config, created_at, expires_at). Pinned by E2E-012.
+
+The same event-driven binding pass also drops engine delivery triggers whose
+record is gone (a state adapter restart) and retries Compose wake recovery;
+the harness additionally holds one standing `compose-operation` subscription
+(terminal events, every operation) so an operation that finishes inside a
+per-binding watch's activation window still recovers its wakes.
 
 ## What stays out of scope
 

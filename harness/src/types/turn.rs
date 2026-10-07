@@ -108,8 +108,21 @@ pub struct AgentIdentity {
     pub color: Option<String>,
 }
 
+/// The language every user-facing text of a session is written in: detected
+/// from the user's first message with enough prose (`crate::language`), then
+/// pinned. Named to the model in the runtime context and the `agent_trigger`
+/// schema so it never guesses one from names, paths or the locale.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ResponseLanguage {
+    /// ISO 639-3 code (`eng`, `por`, `spa`).
+    pub code: String,
+    /// English name (`English`, `Portuguese`, `Spanish`).
+    pub name: String,
+}
+
 /// Per-send options frozen onto the turn record when it is created; they
-/// apply unchanged until the turn ends (a merged send never changes them).
+/// apply unchanged until the turn ends (a merged send never changes them,
+/// except to adopt a first `response_language`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TurnOptions {
     pub model: String,
@@ -175,6 +188,12 @@ pub struct TurnOptions {
     /// prefix; its digests are merged into `preloaded_contracts`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seeded_contracts: Option<String>,
+    /// The session's pinned response language. Set once from the first user
+    /// message whose prose detects reliably (mirrored in session metadata
+    /// `response_language`), inherited by every later turn and copied to
+    /// spawned children. `None` until a message is long enough to tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_language: Option<ResponseLanguage>,
     /// Cap on output-contract validation retries before finalising with a
     /// best-effort result (harness.md § Output contract).
     #[serde(default = "default_max_validation_retries")]
@@ -206,6 +225,17 @@ impl TurnOptions {
             .and_then(Value::as_object)
             .and_then(|scope| scope.get(FS_SCOPE_ROOT_KEY))
             .and_then(Value::as_str)
+    }
+
+    /// Adopt `incoming`'s response language when this turn has none yet — a
+    /// steer merged into a running turn whose first message was too short to
+    /// detect. A pinned language never changes this way.
+    pub fn adopt_response_language_from(&mut self, incoming: &TurnOptions) -> bool {
+        if self.response_language.is_some() || incoming.response_language.is_none() {
+            return false;
+        }
+        self.response_language = incoming.response_language.clone();
+        true
     }
 
     pub fn refresh_filesystem_root_from(&mut self, incoming: &TurnOptions) -> bool {
@@ -554,6 +584,7 @@ pub(crate) mod tests {
                 preloaded_contracts: None,
                 seeded_contracts: None,
                 system_prompt_ref: None,
+                response_language: None,
             },
             calls: Default::default(),
             parent: None,
@@ -822,6 +853,7 @@ pub(crate) mod tests {
         assert_eq!(r.options.agent, None);
         assert_eq!(r.options.preloaded_contracts, None);
         assert_eq!(r.options.seeded_contracts, None);
+        assert_eq!(r.options.response_language, None);
     }
 
     #[test]
@@ -864,6 +896,42 @@ pub(crate) mod tests {
         assert_eq!(value["skill_ack"]["generation"], 3);
         let back: TurnRecord = serde_json::from_value(value).unwrap();
         assert_eq!(back, r);
+    }
+
+    #[test]
+    fn response_language_round_trips_and_is_adopted_only_when_unset() {
+        let english = ResponseLanguage {
+            code: "eng".into(),
+            name: "English".into(),
+        };
+        let mut r = record();
+        assert!(serde_json::to_value(&r.options)
+            .unwrap()
+            .get("response_language")
+            .is_none());
+        r.options.response_language = Some(english.clone());
+        let value = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            value["options"]["response_language"],
+            json!({ "code": "eng", "name": "English" })
+        );
+        assert_eq!(serde_json::from_value::<TurnRecord>(value).unwrap(), r);
+
+        let mut running = record().options;
+        let mut incoming = record().options;
+        assert!(!running.adopt_response_language_from(&incoming));
+        incoming.response_language = Some(english.clone());
+        assert!(running.adopt_response_language_from(&incoming));
+        assert_eq!(running.response_language, Some(english));
+        incoming.response_language = Some(ResponseLanguage {
+            code: "spa".into(),
+            name: "Spanish".into(),
+        });
+        assert!(
+            !running.adopt_response_language_from(&incoming),
+            "a pinned language never changes on a merge"
+        );
+        assert_eq!(running.response_language.unwrap().name, "English");
     }
 
     #[test]

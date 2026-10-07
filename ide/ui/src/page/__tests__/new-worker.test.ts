@@ -1,19 +1,23 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   addToStack,
+  composeOperations,
   defaultDirectory,
+  type EventClient,
   entryFile,
   followStart,
   formatElapsed,
+  GIVE_UP_MS,
   type ListTemplatesResult,
-  MAX_POLLS,
   NEW_WORKER_INITIAL,
   type NewWorkerAction,
   type NewWorkerState,
   newWorkerReducer,
+  type ProgressEvent,
   pickTemplate,
   type ScaffoldResult,
   type StackPhase,
+  type Subscribe,
   sourceLabel,
   stackSteps,
   type Trigger,
@@ -197,14 +201,16 @@ describe('newWorkerReducer', () => {
 })
 
 // A fake bus: each function answers from its own queue, and the last answer
-// repeats for every later call.
+// repeats for every later call. An answer that is a function is called with
+// the payload (to look at what is bound at that moment).
 function bus(replies: Record<string, unknown[]>) {
   const calls: Array<[string, Record<string, unknown>]> = []
   const trigger: Trigger = async <T>(functionId: string, payload: Record<string, unknown>): Promise<T> => {
     calls.push([functionId, payload])
     const queue = replies[functionId]
     if (queue === undefined || queue.length === 0) throw new Error(`unexpected call ${functionId}`)
-    const next = queue.length > 1 ? queue.shift() : queue[0]
+    let next = queue.length > 1 ? queue.shift() : queue[0]
+    if (typeof next === 'function') next = next(payload)
     if (next instanceof Error) throw next
     return next as T
   }
@@ -213,11 +219,23 @@ function bus(replies: Record<string, unknown[]>) {
   return { trigger, calls, count, payload }
 }
 
+// A fake compose-operation feed: what is bound, and events sent to it.
+function feed() {
+  const bound = new Map<string, (event: ProgressEvent) => void>()
+  const subscribe: Subscribe = (operationId, onEvent) => {
+    bound.set(operationId, onEvent)
+    return () => bound.delete(operationId)
+  }
+  const emit = (operationId: string, event: Partial<ProgressEvent>) =>
+    bound.get(operationId)?.({ operation_id: operationId, phase: 'complete', detail: '', terminal: false, ...event })
+  return { bound, subscribe, emit }
+}
+
 const status = (...rows: Array<[string, string, string?]>) => ({
   containers: rows.map(([container, state, lastError]) => ({ container, state, last_error: lastError ?? null })),
 })
 const accepted = (id: string) => ({ operation_id: id, requested: 1, status: 'accepted' })
-const noWait = async () => {}
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('stackSteps', () => {
   const at = (step: NewWorkerState['step'], phase: StackPhase = 'installing') =>
@@ -252,43 +270,79 @@ describe('workerFunctions', () => {
 })
 
 describe('addToStack', () => {
-  it('adds the worker with the missing http, then follows it to ready', async () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('binds the operation before compose::add, then follows its events to ready', async () => {
+    const events = feed()
     const fake = bus({
-      'compose::status': [
-        status(['ide', 'ready']),
-        status(['ide', 'ready']),
-        status(['ide', 'ready'], ['my-thing', 'starting']),
-        status(['ide', 'ready'], ['my-thing', 'ready']),
+      'compose::status': [status(['ide', 'ready'])],
+      'compose::add': [
+        () => {
+          // Bound first: no event of the operation falls before the binding.
+          expect([...events.bound.keys()]).toEqual(['op-1'])
+          return accepted('op-1')
+        },
       ],
-      'compose::add': [accepted('op-1')],
       'compose::operation': [{ status: 'running' }],
     })
     const progress: StackPhase[] = []
-    const outcome = await addToStack(fake.trigger, RESULT, (phase) => progress.push(phase), { sleep: noWait })
-    expect(outcome).toEqual({ ok: true })
-    expect(fake.payload('compose::status')).toEqual({})
+    const pending = addToStack(fake.trigger, events.subscribe, RESULT, (phase) => progress.push(phase), {
+      operationId: 'op-1',
+    })
+    await flush()
     // The same http declaration as the -ade templates' worker-compose.yaml.
     expect(fake.payload('compose::add')).toEqual({
       workers: [RESULT.compose, { worker: 'package://http', version: 'latest', config_name: 'http' }],
+      operation_id: 'op-1',
     })
+    // One catch-up read of the snapshot, and nothing read again after it.
     expect(fake.payload('compose::operation')).toEqual({ progress_operation_id: 'op-1' })
+    events.emit('op-1', { container: 'http', phase: 'ready' })
+    events.emit('op-1', { container: 'my-thing', phase: 'starting' })
+    events.emit('op-1', { container: 'my-thing', phase: 'ready' })
+    expect(await pending).toEqual({ ok: true })
     expect(progress).toEqual(['installing', 'starting'])
+    expect(fake.calls.map(([fn]) => fn)).toEqual(['compose::status', 'compose::add', 'compose::operation'])
+    expect(events.bound.size).toBe(0)
   })
 
   it('adds only the worker when the stack already runs http', async () => {
+    const events = feed()
     const fake = bus({
-      'compose::status': [status(['http', 'ready']), status(['http', 'ready'], ['my-thing', 'ready'])],
+      'compose::status': [status(['http', 'ready'])],
       'compose::add': [accepted('op-2')],
       'compose::operation': [{ status: 'running' }],
     })
-    expect(await addToStack(fake.trigger, RESULT, () => {}, { sleep: noWait })).toEqual({ ok: true })
-    expect(fake.payload('compose::add')).toEqual({ workers: [RESULT.compose] })
+    const pending = addToStack(fake.trigger, events.subscribe, RESULT, () => {}, { operationId: 'op-2' })
+    await flush()
+    events.emit('op-2', { container: 'my-thing', phase: 'ready' })
+    expect(await pending).toEqual({ ok: true })
+    expect(fake.payload('compose::add')).toEqual({ workers: [RESULT.compose], operation_id: 'op-2' })
+  })
+
+  it('picks its own operation id when none is given', async () => {
+    const events = feed()
+    const fake = bus({
+      'compose::status': [status(['http', 'ready'])],
+      'compose::add': [accepted('whatever')],
+      'compose::operation': [{ status: 'running' }],
+    })
+    const pending = addToStack(fake.trigger, events.subscribe, RESULT, () => {})
+    await flush()
+    const [id] = [...events.bound.keys()]
+    expect(id).toMatch(/^compose:[0-9a-f-]{36}$/)
+    expect(fake.payload('compose::add')?.operation_id).toBe(id)
+    events.emit(id, { container: 'my-thing', phase: 'ready' })
+    expect(await pending).toEqual({ ok: true })
   })
 
   it('refuses a name the stack already has, before compose::add', async () => {
     // compose::add would repoint the existing my-thing container at the new folder.
+    const events = feed()
     const fake = bus({ 'compose::status': [status(['ide', 'ready'], ['my-thing', 'ready'])] })
-    const outcome = await addToStack(fake.trigger, RESULT, () => {}, { sleep: noWait })
+    const outcome = await addToStack(fake.trigger, events.subscribe, RESULT, () => {})
     expect(outcome).toEqual({
       ok: false,
       error: 'a container named my-thing already exists in the stack',
@@ -296,11 +350,13 @@ describe('addToStack', () => {
       owned: false,
     })
     expect(fake.calls.map(([fn]) => fn)).toEqual(['compose::status'])
+    expect(events.bound.size).toBe(0)
   })
 
   it('returns the error and the log tail of a container that failed', async () => {
+    const events = feed()
     const fake = bus({
-      'compose::status': [status(), status(['my-thing', 'failed', 'pre_run exited with status 1'])],
+      'compose::status': [status()],
       'compose::add': [accepted('op-3')],
       'compose::operation': [{ status: 'running' }],
       'compose::logs': [
@@ -315,17 +371,21 @@ describe('addToStack', () => {
         },
       ],
     })
-    const outcome = await addToStack(fake.trigger, RESULT, () => {}, { sleep: noWait })
-    expect(outcome).toEqual({
+    const pending = addToStack(fake.trigger, events.subscribe, RESULT, () => {}, { operationId: 'op-3' })
+    await flush()
+    events.emit('op-3', { container: 'my-thing', phase: 'failed', detail: 'pre_run exited with status 1' })
+    expect(await pending).toEqual({
       ok: false,
       error: 'pre_run exited with status 1',
       logs: ['npm ERR! missing script: build'],
       owned: true,
     })
     expect(fake.payload('compose::logs')).toEqual({ container: 'my-thing', tail: 40 })
+    expect(events.bound.size).toBe(0)
   })
 
-  it('stops waiting when the add operation fails before the container appears', async () => {
+  it('stops at an add operation that failed before the binding heard it', async () => {
+    const events = feed()
     const fake = bus({
       'compose::status': [status()],
       'compose::add': [accepted('op-4')],
@@ -333,18 +393,50 @@ describe('addToStack', () => {
       'compose::logs': [new Error('UNKNOWN_CONTAINER')],
     })
     const progress: StackPhase[] = []
-    const outcome = await addToStack(fake.trigger, RESULT, (phase) => progress.push(phase), { sleep: noWait })
+    const outcome = await addToStack(fake.trigger, events.subscribe, RESULT, (phase) => progress.push(phase), {
+      operationId: 'op-4',
+    })
     expect(outcome).toEqual({ ok: false, error: 'could not resolve http', logs: [], owned: true })
     expect(progress).toEqual([])
+    expect(events.bound.size).toBe(0)
+  })
+
+  it('reads the verdict once when the operation’s terminal event arrives', async () => {
+    const events = feed()
+    const fake = bus({
+      'compose::status': [status(), status(['my-thing', 'starting'])],
+      'compose::add': [accepted('op-5')],
+      'compose::operation': [
+        { status: 'running' },
+        { status: 'succeeded', last_event: { detail: 'my-thing is not required and did not start' } },
+      ],
+      'compose::logs': [{ containers: [] }],
+    })
+    const pending = addToStack(fake.trigger, events.subscribe, RESULT, () => {}, { operationId: 'op-5' })
+    await flush()
+    events.emit('op-5', { phase: 'complete', terminal: true })
+    expect(await pending).toEqual({
+      ok: false,
+      error: 'my-thing is not required and did not start',
+      logs: [],
+      owned: true,
+    })
+    expect(fake.count('compose::operation')).toBe(2)
+    expect(fake.count('compose::status')).toBe(2)
   })
 
   it('restarts the container a failed attempt added, on retry', async () => {
+    const events = feed()
     const fake = bus({
       'compose::status': [status(['my-thing', 'failed']), status(['my-thing', 'ready'])],
       'compose::restart': [{ status: 'ok', changed: true }],
     })
-    const outcome = await addToStack(fake.trigger, RESULT, () => {}, { owned: true, sleep: noWait })
+    const progress: StackPhase[] = []
+    const outcome = await addToStack(fake.trigger, events.subscribe, RESULT, (phase) => progress.push(phase), {
+      owned: true,
+    })
     expect(outcome).toEqual({ ok: true })
+    expect(progress).toEqual(['starting'])
     expect(fake.payload('compose::restart')).toEqual({ container: 'my-thing' })
     expect(fake.count('compose::add')).toBe(0)
     expect(fake.count('compose::operation')).toBe(0)
@@ -353,64 +445,140 @@ describe('addToStack', () => {
   it('keeps owned on a retry whose first status read fails', async () => {
     // The dialog stores this owned and passes it to the next Retry; losing it would
     // stop that Retry at "already exists in the stack" for good.
+    const events = feed()
     const fake = bus({ 'compose::status': [new Error('bus down')], 'compose::logs': [new Error('UNKNOWN_CONTAINER')] })
-    const outcome = await addToStack(fake.trigger, RESULT, () => {}, { owned: true, sleep: noWait })
+    const outcome = await addToStack(fake.trigger, events.subscribe, RESULT, () => {}, { owned: true })
     expect(outcome).toEqual({ ok: false, error: 'bus down', logs: [], owned: true })
     // A first attempt that never reached compose still owns nothing.
     const first = bus({ 'compose::status': [new Error('bus down')], 'compose::logs': [new Error('UNKNOWN_CONTAINER')] })
-    expect(await addToStack(first.trigger, RESULT, () => {}, { sleep: noWait })).toMatchObject({ owned: false })
+    expect(await addToStack(first.trigger, events.subscribe, RESULT, () => {})).toMatchObject({ owned: false })
   })
 
-  it('gives up after MAX_POLLS reads', async () => {
+  it('gives up once, after GIVE_UP_MS without a verdict, reading nothing meanwhile', async () => {
+    vi.useFakeTimers()
+    const events = feed()
     const fake = bus({
-      'compose::status': [status(), status(['my-thing', 'starting'])],
-      'compose::add': [accepted('op-5')],
+      'compose::status': [status()],
+      'compose::add': [accepted('op-6')],
       'compose::operation': [{ status: 'running' }],
       'compose::logs': [{ containers: [] }],
     })
-    const outcome = await addToStack(fake.trigger, RESULT, () => {}, { sleep: noWait })
-    expect(outcome).toEqual({ ok: false, error: 'my-thing did not start within 10 minutes.', logs: [], owned: true })
-    expect(fake.count('compose::status')).toBe(MAX_POLLS + 1)
+    const pending = addToStack(fake.trigger, events.subscribe, RESULT, () => {}, { operationId: 'op-6' })
+    await vi.advanceTimersByTimeAsync(GIVE_UP_MS - 1)
+    expect(fake.calls.map(([fn]) => fn)).toEqual(['compose::status', 'compose::add', 'compose::operation'])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await pending).toEqual({
+      ok: false,
+      error: 'my-thing did not start within 10 minutes.',
+      logs: [],
+      owned: true,
+    })
+    expect(events.bound.size).toBe(0)
+  })
+
+  it('stops following, and unbinds, when the dialog closes', async () => {
+    const events = feed()
+    const fake = bus({
+      'compose::status': [status()],
+      'compose::add': [accepted('op-7')],
+      'compose::operation': [{ status: 'running' }],
+    })
+    const controller = new AbortController()
+    const pending = addToStack(fake.trigger, events.subscribe, RESULT, () => {}, {
+      operationId: 'op-7',
+      signal: controller.signal,
+    })
+    await flush()
+    expect(events.bound.size).toBe(1)
+    controller.abort()
+    expect(await pending).toMatchObject({ ok: false, owned: true })
+    expect(events.bound.size).toBe(0)
   })
 })
 
 describe('followStart', () => {
   it('follows a scaffold-started worker through its operation to ready', async () => {
-    const fake = bus({
-      'compose::operation': [{ status: 'running' }, { status: 'succeeded' }],
-      'compose::status': [status(['my-thing', 'starting']), status(['my-thing', 'ready'])],
-    })
+    const events = feed()
+    const fake = bus({ 'compose::operation': [{ status: 'running' }] })
     const progress: StackPhase[] = []
-    expect(
-      await followStart(fake.trigger, 'my-thing', 'op-1', (phase) => progress.push(phase), { sleep: noWait }),
-    ).toEqual({
-      ok: true,
-    })
+    const pending = followStart(fake.trigger, events.subscribe, 'my-thing', 'op-1', (phase) => progress.push(phase))
+    await flush()
     expect(fake.payload('compose::operation')).toEqual({ progress_operation_id: 'op-1' })
-    expect(progress).toEqual(['starting'])
+    events.emit('op-1', { container: 'my-thing', phase: 'registering' })
+    events.emit('op-1', { container: 'my-thing', phase: 'ready' })
+    expect(await pending).toEqual({ ok: true })
+    expect(progress).toEqual(['installing', 'starting'])
+    expect(fake.count('compose::status')).toBe(0)
+  })
+
+  it('answers from the snapshot when the operation ended before the binding', async () => {
+    const events = feed()
+    const fake = bus({
+      'compose::operation': [{ status: 'succeeded' }],
+      'compose::status': [status(['my-thing', 'ready'])],
+    })
+    expect(await followStart(fake.trigger, events.subscribe, 'my-thing', 'op-1', () => {})).toEqual({ ok: true })
   })
 
   it('answers from the container once compose no longer knows the operation', async () => {
     // An old chat card: the operation is gone, the worker still runs.
+    const events = feed()
     const fake = bus({
       'compose::operation': [new Error('operation not found')],
       'compose::status': [status(['my-thing', 'ready'])],
     })
-    expect(await followStart(fake.trigger, 'my-thing', 'op-old', () => {}, { sleep: noWait })).toEqual({ ok: true })
+    expect(await followStart(fake.trigger, events.subscribe, 'my-thing', 'op-old', () => {})).toEqual({ ok: true })
     expect(fake.count('compose::operation')).toBe(1)
   })
 
   it('reports a worker that is in no operation and not in the stack', async () => {
+    const events = feed()
     const fake = bus({
       'compose::operation': [new Error('operation not found')],
       'compose::status': [status(['ide', 'ready'])],
       'compose::logs': [new Error('no container')],
     })
-    expect(await followStart(fake.trigger, 'my-thing', 'op-old', () => {}, { sleep: noWait })).toEqual({
+    expect(await followStart(fake.trigger, events.subscribe, 'my-thing', 'op-old', () => {})).toEqual({
       ok: false,
       error: 'my-thing is not in the stack.',
       logs: [],
       owned: true,
     })
+  })
+})
+
+describe('composeOperations', () => {
+  it('binds compose-operation on the operation, hears only it, and unbinds', () => {
+    const handlers = new Map<string, (payload: unknown) => void>()
+    const triggers: Array<{ type: string; function_id: string; config: Record<string, unknown> }> = []
+    let unbound = 0
+    const client: EventClient = {
+      browserId: 'console-1',
+      on: (functionId, handler) => {
+        handlers.set(functionId, handler as (payload: unknown) => void)
+        return () => handlers.delete(functionId)
+      },
+      registerTrigger: (input) => {
+        triggers.push(input)
+        return () => {
+          unbound += 1
+        }
+      },
+    }
+    const heard: string[] = []
+    const off = composeOperations(client)('op-9', (event) => heard.push(event.phase))
+    expect(triggers).toHaveLength(1)
+    const [binding] = triggers
+    expect(binding.type).toBe('compose-operation')
+    expect(binding.config).toEqual({ operation_id: 'op-9' })
+    const [functionId] = [...handlers.keys()]
+    expect(functionId.startsWith('iii::shell-ui::compose-operation::')).toBe(true)
+    expect(binding.function_id).toBe(`${functionId}::console-1`)
+    handlers.get(functionId)?.({ operation_id: 'op-9', phase: 'starting', detail: '', terminal: false })
+    handlers.get(functionId)?.({ operation_id: 'other', phase: 'ready', detail: '', terminal: false })
+    expect(heard).toEqual(['starting'])
+    off()
+    expect(unbound).toBe(1)
+    expect(handlers.size).toBe(0)
   })
 })

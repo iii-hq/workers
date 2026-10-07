@@ -2,6 +2,8 @@ import type { Host } from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
 import {
   BROWSER_FRAME_EVENT_TRIGGER,
+  BROWSER_NAVIGATED_TRIGGER,
+  BROWSER_SESSION_UPDATED_TRIGGER,
   parseFrameEvent,
   readBrowserFrame,
   startBrowserScreencast,
@@ -16,14 +18,13 @@ import { useBrowserSessionEvent } from '../lib/events'
  * `browser::frame-event` trigger (bound with this tab's `session_id`, the
  * same path the console and network feeds use) and this hook paints it. No
  * polling. One `browser::frame` seed read paints the current frame
- * immediately (the trigger only delivers frames produced after the binding);
- * a `browser::screenshot` is the last-resort first paint if the screencast
- * surface is unavailable (older worker). `screencast::stop` runs on unmount
+ * immediately (the trigger only delivers frames produced after the binding).
+ * An engine without a screencast (Lightpanda, which paints nothing) shows a
+ * `browser::screenshot` instead, re-taken when the tab navigates or updates
+ * (`browser::navigated` / `browser::session-updated` for this tab), on a
+ * reseed, and on wake — never on a timer. `screencast::stop` runs on unmount
  * and tab switch (idempotent).
  */
-
-/** Screenshot cadence when the engine has no screencast. */
-const SCREENSHOT_POLL_MS = 1500
 
 export interface LiveFrame {
   dataUrl: string
@@ -58,6 +59,11 @@ export function useLiveFrames(
   const [error, setError] = useState<string | null>(null)
   // Newest applied frame seq, so an out-of-order stream push is ignored.
   const lastSeqRef = useRef(0)
+  // The tab whose screencast would not start (an engine without one):
+  // screenshots stand in, re-taken on its navigation/update events.
+  const [stillsFor, setStillsFor] = useState<string | null>(null)
+  const stillsOnly = sessionId !== null && stillsFor === sessionId
+  const [stillToken, setStillToken] = useState(0)
 
   // The stale image never bleeds into a newly selected session.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on session change only
@@ -82,22 +88,9 @@ export function useLiveFrames(
       try {
         await started
       } catch {
-        // No screencast (older worker, or an engine without one such as
-        // Lightpanda): poll screenshots so navigations still show up.
-        while (!cancelled) {
-          const shot = await takeBrowserScreenshot(host.iii, sessionId).catch(
-            () => null,
-          )
-          if (cancelled) return
-          if (shot?.dataUrl) {
-            setFrame({
-              dataUrl: shot.dataUrl,
-              width: shot.width,
-              height: shot.height,
-            })
-          }
-          await new Promise((r) => setTimeout(r, SCREENSHOT_POLL_MS))
-        }
+        // No screencast (an engine without one, such as Lightpanda): fall
+        // back to event-driven screenshots (see the stills effect below).
+        if (!cancelled) setStillsFor(sessionId)
         return
       }
       if (cancelled) return
@@ -127,6 +120,44 @@ export function useLiveFrames(
     }
   }, [host, enabled, sessionId, wakeToken])
 
+  // Screenshot stand-in: one now, then one per navigation / tab update of
+  // this tab (and per reseed or wake). The newest request wins.
+  useEffect(() => {
+    if (!enabled || !sessionId || !stillsOnly) return
+    let cancelled = false
+    void takeBrowserScreenshot(host.iii, sessionId)
+      .then((shot) => {
+        if (cancelled || !shot?.dataUrl) return
+        setFrame({ dataUrl: shot.dataUrl, width: shot.width, height: shot.height })
+        setError(null)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [host, enabled, sessionId, stillsOnly, stillToken, reseedToken, wakeToken])
+
+  const retakeStill = () => setStillToken((t) => t + 1)
+  useBrowserSessionEvent({
+    host,
+    enabled: enabled && stillsOnly && !!sessionId,
+    triggerType: BROWSER_NAVIGATED_TRIGGER,
+    sessionId,
+    fnId: 'iii::browser-ui::still-navigated',
+    onEvent: retakeStill,
+  })
+  useBrowserSessionEvent({
+    host,
+    enabled: enabled && stillsOnly && !!sessionId,
+    triggerType: BROWSER_SESSION_UPDATED_TRIGGER,
+    sessionId,
+    fnId: 'iii::browser-ui::still-updated',
+    // A tab going to sleep has nothing to show, and a screenshot would wake it.
+    onEvent: (payload) => {
+      if ((payload as { active?: unknown } | null)?.active !== false) retakeStill()
+    },
+  })
+
   useBrowserSessionEvent({
     host,
     enabled: enabled && !!sessionId,
@@ -153,8 +184,7 @@ export function useLiveFrames(
     let cancelled = false
     void readBrowserFrame(host.iii, sessionId)
       .then((seed) => {
-        if (cancelled || !seed?.frame || seed.frame_seq <= lastSeqRef.current)
-          return
+        if (cancelled || !seed?.frame || seed.frame_seq <= lastSeqRef.current) return
         lastSeqRef.current = seed.frame_seq
         setFrame({
           dataUrl: `data:image/jpeg;base64,${seed.frame}`,

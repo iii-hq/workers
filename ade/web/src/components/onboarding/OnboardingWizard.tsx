@@ -16,6 +16,7 @@ import {
   saveOnboardingState,
 } from '@/lib/onboarding/api'
 import { type JudgeOption, TOUR_PAGE } from '@/lib/onboarding/catalog'
+import { chromiumMissing } from '@/lib/onboarding/chromium'
 import {
   browserIsAutomated,
   onOnboardingWizardRequest,
@@ -26,8 +27,10 @@ import { servesUsableModels } from '@/lib/onboarding/plan'
 import { prepareTour } from '@/lib/onboarding/tour'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { cn } from '@/lib/utils'
+import { BrowserStep } from './BrowserStep'
 import { JudgeStep } from './JudgeStep'
 import { ModelsStep } from './ModelsStep'
+import type { StepPosition } from './parts'
 import { ReadyStep, type TourState } from './ReadyStep'
 import { connectedModelCount, useOnboarding } from './use-onboarding'
 import { WelcomeStep } from './WelcomeStep'
@@ -35,9 +38,23 @@ import { WelcomeStep } from './WelcomeStep'
 const STEPS: { id: WizardStepId; title: string; optional?: boolean }[] = [
   { id: 'welcome', title: 'Welcome' },
   { id: 'models', title: 'Models' },
+  // Listed only while it has something to do (see `showBrowser`).
+  { id: 'browser', title: 'Browser', optional: true },
   { id: 'judge', title: 'Judge', optional: true },
   { id: 'ready', title: 'Ready' },
 ]
+
+/** "Step N of M" counts the steps that set something up. */
+export function stepPosition(
+  steps: readonly { id: WizardStepId }[],
+  id: WizardStepId,
+): StepPosition | undefined {
+  const setup = steps.filter(
+    (entry) => entry.id !== 'welcome' && entry.id !== 'ready',
+  )
+  const index = setup.findIndex((entry) => entry.id === id)
+  return index < 0 ? undefined : { index: index + 1, total: setup.length }
+}
 
 /**
  * The first-run setup wizard. Mounted once in `App`: it opens by itself the
@@ -50,6 +67,11 @@ const STEPS: { id: WizardStepId; title: string; optional?: boolean }[] = [
  * Finishing records `completed` and skipping records `dismissed`, beside the
  * workspace layout in the ADE's data directory. After either, it reopens on
  * its own only while no model is connected.
+ *
+ * The Browser step joins the list when the project runs the browser worker
+ * and the machine has no Chromium for it (or someone asks for it — the
+ * command palette's "Install Chromium", a chat error that says Chromium is
+ * missing), and stays listed once shown.
  *
  * Once a model is connected, Ready offers the guided tour. Accepting adds
  * the `onboarding` worker that carries it — quietly: it is how the tour is
@@ -73,6 +95,13 @@ export function OnboardingWizardHost() {
     void refreshModels?.()
   })
   const busy = onboarding.running !== null || tour.kind === 'preparing'
+  const needsBrowser = chromiumMissing(onboarding.snapshot.browser)
+  const [browserListed, setBrowserListed] = useState(false)
+  useEffect(() => {
+    if (needsBrowser) setBrowserListed(true)
+  }, [needsBrowser])
+  const showBrowser = browserListed || needsBrowser || step === 'browser'
+  const steps = STEPS.filter((entry) => entry.id !== 'browser' || showBrowser)
 
   useEffect(() => {
     if (!live) return
@@ -108,6 +137,7 @@ export function OnboardingWizardHost() {
     () =>
       onOnboardingWizardRequest((target) => {
         const next = target ?? 'welcome'
+        if (next === 'browser') setBrowserListed(true)
         setStep(next)
         setVisited((current) => new Set([...current, next]))
         setOpen(true)
@@ -116,6 +146,7 @@ export function OnboardingWizardHost() {
   )
 
   const go = useCallback((next: WizardStepId) => {
+    if (next === 'browser') setBrowserListed(true)
     setStep(next)
     setVisited((current) => new Set([...current, next]))
   }, [])
@@ -152,13 +183,25 @@ export function OnboardingWizardHost() {
             .flatMap((entry) => entry.workers ?? []),
         ),
       ]
+      const chromiumInstalled = onboarding.activity.some(
+        (entry) => entry.group === 'browser' && entry.status === 'done',
+      )
       record('completed', {
         providers,
         judge: judgeChoice?.id ?? null,
         workers_added: workers,
+        chromium_installed: chromiumInstalled
+          ? (onboarding.snapshot.browser?.version ?? true)
+          : false,
       })
     },
-    [go, onboarding.activity, onboarding.snapshot.providers, record],
+    [
+      go,
+      onboarding.activity,
+      onboarding.snapshot.browser,
+      onboarding.snapshot.providers,
+      record,
+    ],
   )
 
   const start = useCallback(() => {
@@ -179,7 +222,7 @@ export function OnboardingWizardHost() {
     requestPanelOpen({ pageId: TOUR_PAGE })
   }, [])
 
-  const index = STEPS.findIndex((entry) => entry.id === step)
+  const index = steps.findIndex((entry) => entry.id === step)
   const content = useRef<HTMLDivElement>(null)
   // A new step moves the caret to its primary action, so the keyboard path
   // through setup is Enter, Enter, Enter.
@@ -223,7 +266,7 @@ export function OnboardingWizardHost() {
           <Eyebrow className="mb-3 px-2 text-[12px] text-ink">
             Set up the harness
           </Eyebrow>
-          {STEPS.map((entry, position) => {
+          {steps.map((entry, position) => {
             const current = entry.id === step
             const done = position < index || (entry.id === 'ready' && current)
             const reachable = !busy && visited.has(entry.id) && step !== 'ready'
@@ -264,13 +307,13 @@ export function OnboardingWizardHost() {
               role="progressbar"
               aria-label="Setup progress"
               aria-valuemin={1}
-              aria-valuemax={STEPS.length}
+              aria-valuemax={steps.length}
               aria-valuenow={index + 1}
               className="h-1 flex-1 overflow-hidden rounded-full bg-surface"
             >
               <span
                 className="block h-full rounded-full bg-ink transition-[width] duration-300"
-                style={{ width: `${((index + 1) / STEPS.length) * 100}%` }}
+                style={{ width: `${((index + 1) / steps.length) * 100}%` }}
               />
             </span>
           </div>
@@ -285,13 +328,22 @@ export function OnboardingWizardHost() {
           ) : step === 'models' ? (
             <ModelsStep
               onboarding={onboarding}
+              position={stepPosition(steps, 'models')}
               onBack={() => go('welcome')}
+              onNext={() => go(showBrowser ? 'browser' : 'judge')}
+            />
+          ) : step === 'browser' ? (
+            <BrowserStep
+              onboarding={onboarding}
+              position={stepPosition(steps, 'browser')}
+              onBack={() => go('models')}
               onNext={() => go('judge')}
             />
           ) : step === 'judge' ? (
             <JudgeStep
               onboarding={onboarding}
-              onBack={() => go('models')}
+              position={stepPosition(steps, 'judge')}
+              onBack={() => go(showBrowser ? 'browser' : 'models')}
               onNext={finishTo}
             />
           ) : (

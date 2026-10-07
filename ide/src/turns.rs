@@ -927,6 +927,9 @@ pub struct TurnLog {
     /// one ended; what a contested workspace watch consults before it
     /// records a write under the session.
     activity: std::sync::Mutex<HashMap<String, Activity>>,
+    /// The `shell::turns::changed` feed, told of every stored record; unset
+    /// in unit tests.
+    changes: std::sync::OnceLock<Arc<crate::turn_events::TurnsChanged>>,
 }
 
 /// Where a child's changes belong: the top-level session and turn above it.
@@ -962,7 +965,13 @@ impl TurnLog {
             parents: std::sync::Mutex::new(HashMap::new()),
             claims: std::sync::Mutex::new(HashMap::new()),
             activity: std::sync::Mutex::new(HashMap::new()),
+            changes: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Wake `shell::turns::changed` bindings whenever a record is stored.
+    pub fn notify_changes(&self, feed: Arc<crate::turn_events::TurnsChanged>) {
+        let _ = self.changes.set(feed);
     }
 
     fn parents(&self) -> std::sync::MutexGuard<'_, HashMap<String, (String, String)>> {
@@ -1304,6 +1313,9 @@ impl TurnLog {
         apply(&mut record);
         enforce_budgets(&mut record);
         self.store.store(&record).await?;
+        if let Some(feed) = self.changes.get() {
+            feed.notify(session_id);
+        }
         // A turn the cap dropped takes its trees with it.
         let dropped: Vec<(String, TurnSnapshot)> = pinned
             .into_iter()
@@ -1771,6 +1783,9 @@ pub fn register(
         data_dir.clone(),
         config.max_blob_bytes,
     )));
+    // Surfaces that list a session's turns hear each stored record instead
+    // of asking again on a timer.
+    log.notify_changes(crate::turn_events::register_turns_changed_trigger(iii));
     let observers = crate::turn_observe::TurnObservers::new(log.clone(), data_dir);
 
     {
@@ -2365,6 +2380,22 @@ mod tests {
 
     fn log_in(dir: &Path) -> Arc<TurnLog> {
         Arc::new(TurnLog::new(TurnStore::new(dir.join("turns"), 1024 * 1024)))
+    }
+
+    /// The Timeline no longer re-lists turns on a timer: a stored record
+    /// must wake `shell::turns::changed` bindings on its session.
+    #[tokio::test]
+    async fn a_stored_record_wakes_the_session_turns_feed() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = log_in(dir.path());
+        let feed = crate::turn_events::TurnsChanged::new(None);
+        feed.bind_for_test("timeline", Some("s1"));
+        log.notify_changes(feed.clone());
+        log.on_turn_started("s1", "t1").await.unwrap();
+        log.on_turn_started("s2", "t1").await.unwrap();
+        log.on_turn_completed("s1", "t1").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert_eq!(feed.fired_sessions(), ["s1"]);
     }
 
     fn call(function_id: &str, arguments: Value) -> HookCall {

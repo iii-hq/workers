@@ -10,8 +10,9 @@
 //! * `session_expects_wake` counted exhausted bindings, so even an EXPIRED
 //!   wake kept its session non-terminal forever.
 //!
-//! The fix under test: the expiry sweep retires the binding (delete-first, so
-//! it can never race a real fire), injects a `[notification]` naming the
+//! The fix under test: the binding's own deadline timer retires it at
+//! `expires_at` (delete-first, so it can never race a real fire — and no
+//! periodic sweep is involved), injects a `[notification]` naming the
 //! watch, the deadline, and the finality, and writes the same `trigger_fired`
 //! record every delivery outcome writes. The woken turn then completes
 //! TERMINAL — proven here by the run finishing at all, since the completion
@@ -21,8 +22,7 @@
 //! in the suite), declared via `parked_completions(1)`; the expiry wake is an
 //! externally initiated turn with its own trace. The binding's deadline is a
 //! relative `expires_in_ms` (the contract's only form — resolved server-side
-//! at registration), and the sweep interval is shrunk via the harness env so
-//! expiry lands in seconds.
+//! at registration); the timer fires at that instant, with no harness knob.
 
 use serde_json::{json, Value};
 
@@ -35,15 +35,10 @@ use crate::fixtures::ScenarioFixture;
 const REGISTER: &str = "engine::register_trigger";
 const SCOPE: &str = "e2e-012";
 const KEY: &str = "never";
-/// The harness's expiry-sweep cadence knob (`bindings::expiry` — the e2e
-/// crate tests the BINARY, so the name is pinned here as a string and by the
-/// harness's own `sweep_interval_parses_only_positive_ms` unit test).
-const SWEEP_INTERVAL_ENV: &str = "III_HARNESS_EXPIRY_SWEEP_MS";
-
 /// Relative to REGISTRATION (server-side resolution), so a slow machine can
 /// never lose the window to boot: the deadline starts counting only once the
-/// arm call lands. Comfortably inside the 60s scenario deadline with the
-/// 500ms sweep.
+/// arm call lands. Comfortably inside the 60s scenario deadline; the binding's
+/// timer fires at it.
 const EXPIRES_IN_MS: u64 = 12_000;
 
 pub(super) fn scenario() -> ScenarioFixture {
@@ -92,7 +87,6 @@ pub(super) fn scenario() -> ScenarioFixture {
     .parked_completions(1)
     // The send's trace plus the externally initiated expiry wake's.
     .expect_traces(2)
-    .harness_env(SWEEP_INTERVAL_ENV, "500")
     .function(record.clone())
     .generation(
         Generation::new(1)
@@ -130,7 +124,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .respond(Response::text("armed and parked", 10, 2)),
     )
     // The expiry-woken turn: a fresh externally initiated turn carrying the
-    // wake-lost notification as its user message. The sweep's engine-side
+    // wake-lost notification as its user message. The expiry's engine-side
     // unregister changes the registry, but not the functions this session may
     // call (REGISTER and `record`), so no registry-changed notice may reach
     // it. Advisory tail messages are invisible to matchers (the scripted
@@ -286,7 +280,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                 .get("armed_wakes")
                 .and_then(Value::as_array)
                 .is_none_or(Vec::is_empty),
-            "no armed wake may survive the sweep: {}",
+            "no armed wake may survive its expiry: {}",
             run.status
         );
         run.expect_no_duplicate_messages()
@@ -305,13 +299,10 @@ mod tests {
         // Two completions, ONE terminal: the arm turn parks.
         assert_eq!(fixture.expected_turn_statuses.len(), 2);
         assert_eq!(fixture.expected_terminal_turns, 1);
-        // No probes — the wake is the sweep's, externally initiated.
+        // No probes — the wake is the deadline timer's, externally initiated.
         assert!(fixture.probe_actions.is_empty());
         assert_eq!(fixture.expected_traces(), 2);
-        // The sweep knob rides the fixture env into the subject process.
-        assert!(fixture
-            .harness_env
-            .iter()
-            .any(|(k, v)| k == SWEEP_INTERVAL_ENV && v == "500"));
+        // No cadence knob: the deadline is a timer, not a tuned sweep.
+        assert!(fixture.harness_env.is_empty());
     }
 }

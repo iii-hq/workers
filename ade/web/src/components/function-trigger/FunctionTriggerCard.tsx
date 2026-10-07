@@ -18,6 +18,10 @@ import {
   rawRedactor,
   useFunctionTriggerRenderers,
 } from '@/components/function-trigger/renderer-registry'
+import {
+  ChromiumMissingAction,
+  isChromiumMissingCall,
+} from '@/components/onboarding/ChromiumMissingAction'
 import { AlwaysAllowButton } from '@/components/permissions/AlwaysAllowButton'
 import {
   type FilesystemAccessAction,
@@ -699,6 +703,9 @@ export function FunctionTriggerCard({
   // A gate denial is an error envelope, but the function never ran —
   // "failed" would misreport a rejection as a failed execution.
   const denied = errored && isDeniedOutput(message.output)
+  // A browser call that failed for want of Chromium offers the fix inline.
+  const chromiumMissing =
+    errored && isChromiumMissingCall(message.functionId, message.output)
   // "triggered" is an execution claim, so a settled card only makes it when
   // the call actually ran. Denials are recognized by the gate's envelope in
   // the error details (see isDeniedOutput) — a plain run error keeps the
@@ -804,6 +811,7 @@ export function FunctionTriggerCard({
             </Tabs>
           </CollapsibleCardContent>
         </CollapsibleCard>
+        {chromiumMissing ? <ChromiumMissingAction /> : null}
       </section>
     )
   }
@@ -1089,6 +1097,7 @@ export function FunctionTriggerCard({
           ) : null}
         </div>
       ) : null}
+      {chromiumMissing ? <ChromiumMissingAction /> : null}
     </section>
   )
 }

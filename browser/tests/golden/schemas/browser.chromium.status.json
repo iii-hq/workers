@@ -1,0 +1,282 @@
+{
+  "function_id": "browser::chromium::status",
+  "description": "Whether this machine has a Chromium the worker can launch: the binary, its version, where it came from (config, $CHROME, a system install, the copy browser::chromium::install downloaded, or a Playwright/Puppeteer cache), every place searched, whether a download is available here, and the latest install job. Read-only; never starts a browser.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ChromiumStatusInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ChromiumStatusOutput",
+    "type": "object",
+    "required": [
+      "engine",
+      "found",
+      "install",
+      "searched"
+    ],
+    "properties": {
+      "engine": {
+        "description": "The configured interactive engine (`chromium` or `lightpanda`). Scrapling's browser tiers use Chromium either way.",
+        "type": "string"
+      },
+      "found": {
+        "description": "A Chromium the worker can launch exists.",
+        "type": "boolean"
+      },
+      "install": {
+        "$ref": "#/definitions/InstallSupport"
+      },
+      "job": {
+        "description": "This worker's latest install job, running or finished.",
+        "anyOf": [
+          {
+            "$ref": "#/definitions/InstallProgress"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "path": {
+        "description": "The binary sessions launch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "sandboxed": {
+        "description": "False when sessions launch this Chromium with `--no-sandbox` (a cache copy on a Linux that blocks the user-namespace sandbox).",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "searched": {
+        "description": "The places looked, in order.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "source": {
+        "description": "Where it came from: `configured`, `env`, `system`, `managed` (the download), `playwright`, or `puppeteer`.",
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Source"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "version": {
+        "description": "`<binary> --version`, first line.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "definitions": {
+      "InstallProgress": {
+        "description": "`browser::chromium-install-progress` — one install job moved: a new phase, or about 1 % more bytes (at most every 250 ms). Also the `job` field of `browser::chromium::status`.",
+        "type": "object",
+        "required": [
+          "bytes_done",
+          "job_id",
+          "phase",
+          "timestamp"
+        ],
+        "properties": {
+          "bytes_done": {
+            "description": "Bytes downloaded (downloading) or unpacked (extracting) so far.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "bytes_total": {
+            "description": "Total for `bytes_done`, when known.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "error": {
+            "description": "What went wrong (failed).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hint": {
+            "description": "How to fix it, when known (failed) — e.g. the system packages a Linux machine is missing.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "path": {
+            "description": "The installed binary (done).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phase": {
+            "$ref": "#/definitions/Phase"
+          },
+          "timestamp": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "version": {
+            "description": "Chrome for Testing version being installed, once known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "InstallSupport": {
+        "description": "Whether `browser::chromium::install` can download a Chromium here.",
+        "type": "object",
+        "required": [
+          "approx_download_mb",
+          "dir",
+          "supported"
+        ],
+        "properties": {
+          "approx_download_mb": {
+            "description": "Roughly how big the download is.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "dir": {
+            "description": "Where the download is kept (`III_BROWSER_CACHE_DIR`, else `${XDG_CACHE_HOME:-~/.cache}/iii/browser`, plus `/chrome`).",
+            "type": "string"
+          },
+          "platform": {
+            "description": "Chrome for Testing platform: `linux64`, `linux-arm64`, `mac-arm64`, `mac-x64`, or `win64`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "description": "Why there is no download here (unsupported platforms).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supported": {
+            "description": "A Chrome for Testing build exists for this platform.",
+            "type": "boolean"
+          }
+        }
+      },
+      "Phase": {
+        "oneOf": [
+          {
+            "description": "Reading the Chrome for Testing manifest.",
+            "type": "string",
+            "enum": [
+              "resolving"
+            ]
+          },
+          {
+            "description": "Streaming the zip; `bytes_done`/`bytes_total` are download bytes.",
+            "type": "string",
+            "enum": [
+              "downloading"
+            ]
+          },
+          {
+            "description": "Unpacking; `bytes_done`/`bytes_total` are unpacked bytes.",
+            "type": "string",
+            "enum": [
+              "extracting"
+            ]
+          },
+          {
+            "description": "Running the new binary with `--version`.",
+            "type": "string",
+            "enum": [
+              "verifying"
+            ]
+          },
+          {
+            "description": "Installed; `path` and `version` are set.",
+            "type": "string",
+            "enum": [
+              "done"
+            ]
+          },
+          {
+            "description": "Stopped; `error` (and maybe `hint`) say why.",
+            "type": "string",
+            "enum": [
+              "failed"
+            ]
+          }
+        ]
+      },
+      "Source": {
+        "description": "Where the resolved binary came from.",
+        "oneOf": [
+          {
+            "description": "The worker config `executable`.",
+            "type": "string",
+            "enum": [
+              "configured"
+            ]
+          },
+          {
+            "description": "The `CHROME` environment variable.",
+            "type": "string",
+            "enum": [
+              "env"
+            ]
+          },
+          {
+            "description": "A system Chrome/Chromium/Edge.",
+            "type": "string",
+            "enum": [
+              "system"
+            ]
+          },
+          {
+            "description": "The copy `browser::chromium::install` downloaded.",
+            "type": "string",
+            "enum": [
+              "managed"
+            ]
+          },
+          {
+            "description": "A Playwright-installed Chromium.",
+            "type": "string",
+            "enum": [
+              "playwright"
+            ]
+          },
+          {
+            "description": "A Puppeteer-installed Chrome.",
+            "type": "string",
+            "enum": [
+              "puppeteer"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

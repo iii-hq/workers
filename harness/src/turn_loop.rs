@@ -25,7 +25,7 @@ use crate::types::event::ErrorKind;
 use crate::types::message::{empty_assistant, AgentMessage, AssistantMessage};
 use crate::types::model::AgentFunction;
 use crate::types::turn::{
-    CallCheckpoint, CallState, ExposeMode, FunctionPolicy, TurnRecord, TurnStatus,
+    CallCheckpoint, CallState, ExposeMode, FunctionPolicy, ResponseLanguage, TurnRecord, TurnStatus,
 };
 
 #[derive(Clone, Copy)]
@@ -191,6 +191,9 @@ pub async fn enqueue_step(
             }
         }
     }
+    // The record may already say `Running` at this step: follow up once its
+    // window passes, or nothing would ever run it (inflight.rs).
+    crate::inflight::suspect_unenqueued(session_id, turn_id, step);
     Err(HarnessError::Dependency(format!(
         "enqueue harness::turn: {last_error}"
     )))
@@ -581,12 +584,13 @@ async fn generate_step(
     // are persisted as `model_notice` entries where they were sent and
     // replayed there on every later step (crate::window).
     let current_generation = functions.generation;
-    // The runtime context (session id, working directory, dispatch policy,
-    // seeded contracts) is frozen into the system prompt at the session's
-    // first step; a later change reaches the model as a notice.
+    // The runtime context (session id, working directory, response language,
+    // dispatch policy, seeded contracts) is frozen into the system prompt at
+    // the session's first step; a later change reaches the model as a notice.
     let current_aid = runtime_context_aid(
         &record.session_id,
         record.options.filesystem_root(),
+        record.options.response_language.as_ref(),
         record.options.functions.as_ref(),
         record.options.seeded_contracts.as_deref(),
     );
@@ -685,7 +689,11 @@ async fn generate_step(
             "native exposure matched no registry functions; the model has no tools this turn"
         );
     }
-    let mut tools = provider_tools(expose, &decision_tools);
+    let mut tools = provider_tools(
+        expose,
+        &decision_tools,
+        record.options.response_language.as_ref(),
+    );
     if let Some(submit) = strategy.submit_result_tool() {
         tools.push(submit);
     }
@@ -3607,17 +3615,24 @@ fn with_runtime_context(
 
 /// The deterministic session context appended to every model-facing prompt.
 /// Kept separate so read-only previews use the same construction as a turn.
-/// A spawned child's seeded `<preloaded_functions>` block closes it: after the
-/// cache seam, so it never forks the stable prefix sessions share.
+/// The response-language line names the session's pinned language, once one
+/// is (`crate::language`), right after the working directory, whose path must
+/// never be read as a hint of it. A spawned child's seeded
+/// `<preloaded_functions>` block closes it: after the cache seam, so it never
+/// forks the stable prefix sessions share.
 pub(crate) fn runtime_context_aid(
     session_id: &str,
     filesystem_root: Option<&str>,
+    response_language: Option<&ResponseLanguage>,
     functions: Option<&FunctionPolicy>,
     seeded_contracts: Option<&str>,
 ) -> String {
     let mut lines = vec![format!("Your session id is {session_id}.")];
     if let Some(dir) = filesystem_root {
         lines.push(format!("Your working directory is {dir}."));
+    }
+    if let Some(language) = response_language {
+        lines.push(crate::language::runtime_line(language));
     }
     if let Some(aid) = policy_aid(functions) {
         lines.push(aid);
@@ -4041,13 +4056,15 @@ fn concrete_allowed_tools(
 
 /// The invocation-schema surface attached to the generate request
 /// (harness.md § Exposure modes). Default: the single `agent_trigger`
-/// schema. Native: the concrete allowed tools verbatim.
+/// schema, its `description` label naming the session's response language.
+/// Native: the concrete allowed tools verbatim.
 fn provider_tools(
     expose: ExposeMode,
     concrete: &[crate::types::model::AgentFunction],
+    response_language: Option<&ResponseLanguage>,
 ) -> Vec<crate::types::model::AgentFunction> {
     match expose {
-        ExposeMode::AgentTrigger => vec![policy::agent_trigger_schema()],
+        ExposeMode::AgentTrigger => vec![policy::agent_trigger_schema(response_language)],
         ExposeMode::Native => concrete.to_vec(),
     }
 }
@@ -4667,6 +4684,48 @@ mod tests {
         );
     }
 
+    /// Prevents: a model guessing the response language from the username
+    /// in the working directory (an English session labelled in Spanish).
+    /// The aid names it right after the directory; pinning it later changes
+    /// the aid, so it reaches the model as a runtime-context notice.
+    #[test]
+    fn runtime_context_names_the_response_language_after_the_working_directory() {
+        let english = super::ResponseLanguage {
+            code: "eng".into(),
+            name: "English".into(),
+        };
+        let named =
+            super::runtime_context_aid("s_1", Some("/home/sergio/app"), Some(&english), None, None);
+        let lines: Vec<&str> = named.lines().collect();
+        assert_eq!(lines[1], "Your working directory is /home/sergio/app.");
+        assert!(lines[2].starts_with("Response language: English (from the user's first message)."));
+        let unknown = super::runtime_context_aid("s_1", Some("/home/sergio/app"), None, None, None);
+        assert!(
+            !unknown.contains("Response language"),
+            "an unpinned session's runtime context is unchanged"
+        );
+        let notice = super::runtime_change_notice(&unknown, &named, None).expect("pinned later");
+        assert!(notice.contains("Response language: English"));
+    }
+
+    #[test]
+    fn the_agent_trigger_tool_names_the_response_language() {
+        let english = super::ResponseLanguage {
+            code: "eng".into(),
+            name: "English".into(),
+        };
+        let label = |language: Option<&super::ResponseLanguage>| {
+            super::provider_tools(super::ExposeMode::AgentTrigger, &[], language)[0].parameters
+                ["properties"]["description"]["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(label(Some(&english)).contains("written in English."));
+        assert!(label(None).contains("named in the session context"));
+        assert!(super::provider_tools(super::ExposeMode::Native, &[], Some(&english)).is_empty());
+    }
+
     /// Prevents: a child's seeded contracts forking the stable prefix every
     /// default-identity session shares (MOT-4851) — they ride after the seam.
     #[test]
@@ -4681,7 +4740,8 @@ mod tests {
             .unwrap()
         };
         let block = "<preloaded_functions>\n### `state::get`\n</preloaded_functions>";
-        let aid = |seeded: Option<&str>| super::runtime_context_aid("s_1", None, None, seeded);
+        let aid =
+            |seeded: Option<&str>| super::runtime_context_aid("s_1", None, None, None, seeded);
         let (plain_stable, plain_full) =
             super::with_runtime_context(Some("identity".into()), &record(None), &aid(None));
         let (stable, full) = super::with_runtime_context(
@@ -4704,7 +4764,8 @@ mod tests {
     /// model, or reaching it again on every step (MOT-4845).
     #[test]
     fn runtime_change_notice_carries_the_whole_changed_aid_once() {
-        let aid = |seeded: Option<&str>| super::runtime_context_aid("s_1", None, None, seeded);
+        let aid =
+            |seeded: Option<&str>| super::runtime_context_aid("s_1", None, None, None, seeded);
         let frozen = aid(None);
         assert_eq!(super::runtime_change_notice(&frozen, &frozen, None), None);
 

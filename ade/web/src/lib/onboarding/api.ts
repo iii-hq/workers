@@ -21,6 +21,7 @@ import {
 } from '@/lib/secrets'
 import { fetchEngineWorkersList } from '@/pages/Workers/api/workers'
 import { workerSource } from './catalog'
+import { type Done, type WakeTrigger, waitForEvents } from './event-wait'
 import type { PlanStep, ProviderState, ToolScan } from './plan'
 import { setPath } from './plan'
 
@@ -52,16 +53,37 @@ export interface StepResult {
 }
 
 const COMPOSE_ADD_TIMEOUT_MS = 600_000
-const OPERATION_POLL_MS = 700
 /** A worker built from source can take minutes to compile on first start. */
 const WORKER_START_TIMEOUT_MS = 600_000
 const MODELS_TIMEOUT_MS = 90_000
 /** A local judge may download its model on first start. */
 const JUDGE_TIMEOUT_MS = 600_000
+/** The longest a judge provider waits for its model to load in one call. */
+const JUDGE_LOAD_WAIT_MS = 300_000
 const CONFIGURATION_TIMEOUT_MS = 30_000
 
-const sleep = (ms: number) =>
-  new Promise<void>((resolve) => window.setTimeout(resolve, ms))
+/**
+ * Every wait below is event-driven (see `./event-wait`): these are the quiet
+ * spells after which it reads the state once more, in case an event was
+ * missed — never a repeating timer.
+ */
+const COMPOSE_SILENCE_MS = 30_000
+const WORKERS_SILENCE_MS = 30_000
+const MODELS_SILENCE_MS = 15_000
+const JUDGE_SILENCE_MS = 30_000
+const CONFIGURATION_SILENCE_MS = 10_000
+
+/** Compose streams an add's progress on this trigger type. */
+const COMPOSE_OPERATION_TRIGGER = 'compose-operation'
+/** The engine fires this when a worker connects, registers, or leaves. */
+const WORKERS_AVAILABLE_TRIGGER = 'engine::workers-available'
+/** ...and this when the function registry changes. */
+const FUNCTIONS_AVAILABLE_TRIGGER = 'engine::functions-available'
+/** Worker-manager lifecycle, where an engine still publishes it. */
+const WORKER_LIFECYCLE_TRIGGER = 'worker'
+const CONFIGURATION_TRIGGER = 'configuration'
+const ROUTER_MODELS_CHANGED = 'router::models::changed'
+const ROUTER_PROVIDER_CHANGED = 'router::provider::changed'
 
 /**
  * An error as the wizard shows it: its own messages keep their sentence
@@ -224,7 +246,12 @@ export async function runStep(
     case 'store-secret':
       return storeSecret(step)
     case 'set-config':
-      return setConfigurationValue(step.configuration, step.path, step.value)
+      return setConfigurationValue(
+        step.configuration,
+        step.path,
+        step.value,
+        context.signal,
+      )
     case 'wait-models':
       return waitForModels(step.providerId, step.title, context)
     case 'check-judge':
@@ -240,55 +267,213 @@ interface OperationSnapshot {
   last_event?: { detail?: string; container?: string | null } | null
 }
 
+/** One `compose-operation` event (iii-compose `ProgressEvent`). */
+export interface ComposeProgressEvent {
+  operation_id: string
+  phase: string
+  detail: string
+  container?: string | null
+  current?: number | null
+  total?: number | null
+  terminal: boolean
+}
+
+function asComposeEvent(payload: unknown): ComposeProgressEvent | null {
+  const row = asRecord(payload)
+  const operationId = asString(row?.operation_id)
+  if (!row || !operationId) return null
+  const number = (value: unknown) =>
+    typeof value === 'number' && Number.isFinite(value) ? value : undefined
+  return {
+    operation_id: operationId,
+    phase: typeof row.phase === 'string' ? row.phase : '',
+    detail: typeof row.detail === 'string' ? row.detail : '',
+    container: asString(row.container) ?? null,
+    current: number(row.current),
+    total: number(row.total),
+    terminal: row.terminal === true,
+  }
+}
+
+/** The activity-log line for one compose event: `phase · container · detail`. */
+export function composeEventProgress(
+  event: ComposeProgressEvent,
+): StepProgress {
+  const container =
+    event.container && !event.detail.includes(event.container)
+      ? event.container
+      : undefined
+  const { current, total } = event
+  return {
+    note: [event.phase, container, event.detail].filter(Boolean).join(' · '),
+    // `total` is a tree depth on some phases; only a real count is progress.
+    progress:
+      current != null && total != null && total > 0 && current <= total
+        ? current / total
+        : undefined,
+  }
+}
+
+/**
+ * The terminal event names no status; it is read from `compose::operation`.
+ * When that read fails, its detail is the last word (iii-compose
+ * `ADD_DETAILS`: success says the workers are ready, a partial success says
+ * it still succeeded).
+ */
+function terminalDetailOutcome(detail: string): Done<undefined> {
+  if (/all requested workers are ready|still succeeded/i.test(detail)) {
+    return { value: undefined }
+  }
+  throw new Error(detail || 'compose failed')
+}
+
+/** A caller-chosen operation id, so its events can be bound before it starts. */
+function newOperationId(): string {
+  const id =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+  return `ade-setup:${id}`
+}
+
+function operationTrigger(operationId: string): WakeTrigger {
+  return {
+    type: COMPOSE_OPERATION_TRIGGER,
+    config: { operation_id: operationId, terminal_only: false },
+  }
+}
+
+/**
+ * `compose::add` and follow its operation to the end through
+ * `compose-operation` events: bound before the add starts, one
+ * `compose::operation` read to catch up, one more when the terminal event
+ * arrives (it carries no status), and one after a long silence.
+ */
+async function composeAdd(
+  sources: readonly (string | Record<string, unknown>)[],
+  { report, signal }: Pick<RunContext, 'report' | 'signal'>,
+): Promise<void> {
+  const client = await getIiiClient()
+  const requested = newOperationId()
+  // `null` once compose answered without an operation (finished in-line).
+  let operationId: string | null = requested
+  let terminal: ComposeProgressEvent | null = null
+  let heard = false
+  await waitForEvents<undefined>({
+    handler: 'iii::console::onboarding::compose',
+    triggers: [operationTrigger(requested)],
+    start: async (arm) => {
+      report({ note: 'asking compose to declare them' })
+      const accepted = await client.trigger<{ operation_id?: string }>(
+        'compose::add',
+        { workers: sources, operation_id: requested },
+        { timeoutMs: COMPOSE_ADD_TIMEOUT_MS },
+      )
+      const id = accepted?.operation_id ?? null
+      if (id && id !== requested) {
+        // An older compose ignored ours: follow the id it chose.
+        operationId = id
+        await arm(operationTrigger(id))
+      } else if (!id) {
+        operationId = null
+      }
+    },
+    onEvent: (payload) => {
+      const event = asComposeEvent(payload)
+      if (!event || event.operation_id !== operationId) return 'ignore'
+      heard = true
+      report(composeEventProgress(event))
+      if (!event.terminal) return 'progress'
+      terminal = event
+      return 'check'
+    },
+    check: async (cause) => {
+      if (!operationId) return { value: undefined }
+      let snapshot: OperationSnapshot
+      try {
+        snapshot = await client.trigger<OperationSnapshot>(
+          'compose::operation',
+          { operation_id: operationId },
+          { timeoutMs: 10_000 },
+        )
+      } catch (error) {
+        if (terminal) return terminalDetailOutcome(terminal.detail)
+        throw error
+      }
+      const detail = snapshot.last_event?.detail
+      if (!heard) {
+        report({
+          note: [snapshot.phase, detail].filter(Boolean).join(' · '),
+          progress:
+            snapshot.total > 0
+              ? snapshot.completed / snapshot.total
+              : undefined,
+        })
+      }
+      if (snapshot.status === 'failed' || snapshot.status === 'cancelled') {
+        throw new Error(detail || `compose ${snapshot.status}`)
+      }
+      if (snapshot.status === 'succeeded') return { value: undefined }
+      // Still running by the snapshot although the event said it ended.
+      if (cause.kind === 'event' && terminal) {
+        return terminalDetailOutcome(terminal.detail)
+      }
+      return null
+    },
+    timeoutMs: COMPOSE_ADD_TIMEOUT_MS,
+    onTimeout: () => {
+      throw new Error('compose did not finish adding them in time')
+    },
+    silenceMs: COMPOSE_SILENCE_MS,
+    signal,
+  })
+}
+
+/**
+ * Wait until every worker in `names` is connected: re-read the worker list
+ * once now and once per `engine::workers-available` (a worker connected or
+ * registered) — or worker-manager lifecycle — event.
+ */
+async function waitForWorkers(
+  names: readonly string[],
+  { report, signal }: Pick<RunContext, 'report' | 'signal'>,
+): Promise<void> {
+  let waiting = [...names]
+  await waitForEvents<undefined>({
+    handler: 'iii::console::onboarding::workers',
+    triggers: [
+      { type: WORKERS_AVAILABLE_TRIGGER },
+      {
+        type: WORKER_LIFECYCLE_TRIGGER,
+        config: { operations: ['add'], stages: ['done'] },
+      },
+    ],
+    check: async () => {
+      const connected = await installedWorkerNames()
+      waiting = names.filter((worker) => !connected.has(worker))
+      if (waiting.length === 0) return { value: undefined }
+      report({ note: `waiting for ${waiting.join(', ')} to connect` })
+      return null
+    },
+    timeoutMs: WORKER_START_TIMEOUT_MS,
+    onTimeout: () => {
+      throw new Error(`${waiting.join(', ')} did not start in time`)
+    },
+    silenceMs: WORKERS_SILENCE_MS,
+    signal,
+  })
+}
+
 async function addWorkers(
   workers: readonly string[],
   { consoleConfig, report, signal }: RunContext,
 ): Promise<StepResult> {
-  const client = await getIiiClient()
   const before = await installedWorkerNames()
   const missing = workers.filter((worker) => !before.has(worker))
   if (missing.length === 0) return { note: 'already running' }
   const sources = missing.map((worker) => workerSource(worker, consoleConfig))
-  report({ note: 'asking compose to declare them' })
-  const accepted = await client.trigger<{ operation_id?: string }>(
-    'compose::add',
-    { workers: sources },
-    { timeoutMs: COMPOSE_ADD_TIMEOUT_MS },
-  )
-  const operationId = accepted?.operation_id
-  if (operationId) {
-    for (;;) {
-      if (signal.cancelled) throw new Error('cancelled')
-      const snapshot = await client.trigger<OperationSnapshot>(
-        'compose::operation',
-        { operation_id: operationId },
-        { timeoutMs: 10_000 },
-      )
-      const detail = snapshot.last_event?.detail
-      report({
-        note: [snapshot.phase, detail].filter(Boolean).join(' · '),
-        progress:
-          snapshot.total > 0 ? snapshot.completed / snapshot.total : undefined,
-      })
-      if (snapshot.status === 'failed' || snapshot.status === 'cancelled') {
-        throw new Error(detail || `compose ${snapshot.status}`)
-      }
-      if (snapshot.status === 'succeeded') break
-      await sleep(OPERATION_POLL_MS)
-    }
-  }
-  const deadline = Date.now() + WORKER_START_TIMEOUT_MS
-  for (;;) {
-    const names = await installedWorkerNames()
-    const waiting = missing.filter((worker) => !names.has(worker))
-    if (waiting.length === 0) break
-    if (signal.cancelled) throw new Error('cancelled')
-    if (Date.now() > deadline) {
-      throw new Error(`${waiting.join(', ')} did not start in time`)
-    }
-    report({ note: `waiting for ${waiting.join(', ')} to connect` })
-    await sleep(1_500)
-  }
+  await composeAdd(sources, { report, signal })
+  await waitForWorkers(missing, { report, signal })
   return { note: `${missing.join(', ')} running` }
 }
 
@@ -311,22 +496,54 @@ async function storeSecret(
   }
 }
 
+/**
+ * The entry id of `family` once its worker registered it: re-listed once per
+ * `configuration` registered/updated event. The binding names no
+ * configuration id on purpose — a per-id binding keeps that entry's TTL
+ * slot, and dropping it would start the entry's expiry countdown.
+ */
+function waitForConfiguration(
+  family: string,
+  signal?: RunContext['signal'],
+): Promise<string> {
+  const missing = () =>
+    new Error(`the ${family} configuration is not registered`)
+  return waitForEvents<string>({
+    handler: 'iii::console::onboarding::configuration',
+    triggers: [
+      {
+        type: CONFIGURATION_TRIGGER,
+        config: {
+          event_types: ['configuration:registered', 'configuration:updated'],
+        },
+      },
+    ],
+    check: async () => {
+      const id = await configurationId(family)
+      return id ? { value: id } : null
+    },
+    timeoutMs: CONFIGURATION_TIMEOUT_MS,
+    onTimeout: async () => {
+      const id = await configurationId(family)
+      if (!id) throw missing()
+      return id
+    },
+    silenceMs: CONFIGURATION_SILENCE_MS,
+    signal,
+  })
+}
+
 async function setConfigurationValue(
   family: string,
   path: readonly string[],
   value: string,
+  signal?: RunContext['signal'],
 ): Promise<StepResult> {
   const client = await getIiiClient()
   // A worker added a moment ago registers its entry as it boots.
-  const deadline = Date.now() + CONFIGURATION_TIMEOUT_MS
-  let id = await configurationId(family)
-  while (!id) {
-    if (Date.now() > deadline) {
-      throw new Error(`the ${family} configuration is not registered`)
-    }
-    await sleep(1_000)
-    id = await configurationId(family)
-  }
+  const id =
+    (await configurationId(family)) ??
+    (await waitForConfiguration(family, signal))
   const current = await client.trigger<{ value?: unknown }>(
     'configuration::get',
     { id, raw: true },
@@ -338,32 +555,70 @@ async function setConfigurationValue(
   return { note: id }
 }
 
+/** The provider a `router::models::changed` / `router::provider::changed` event is about. */
+function eventProvider(payload: unknown): string | undefined {
+  return asString(asRecord(payload)?.provider)
+}
+
+/** The router's events about one provider; everything else is ignored. */
+function providerEvents(providerId: string) {
+  return {
+    triggers: [
+      { type: ROUTER_MODELS_CHANGED },
+      { type: ROUTER_PROVIDER_CHANGED },
+    ] satisfies WakeTrigger[],
+    onEvent: (payload: unknown) =>
+      eventProvider(payload) === providerId ? ('check' as const) : 'ignore',
+  }
+}
+
+async function countProviderModels(providerId: string): Promise<number> {
+  const client = await getIiiClient()
+  const result = await client.trigger<{ models?: unknown[] }>(
+    'router::models::list',
+    { provider: providerId },
+  )
+  return Array.isArray(result?.models) ? result.models.length : 0
+}
+
+/**
+ * Wait for the provider's chat models to reach the router: re-read once per
+ * `router::models::changed` / `router::provider::changed` event about it (a
+ * catalog reconciled, the provider registered or came back).
+ */
 async function waitForModels(
   providerId: string,
   title: string,
   { report, signal }: RunContext,
 ): Promise<StepResult> {
   const client = await getIiiClient()
-  const deadline = Date.now() + MODELS_TIMEOUT_MS
+  const found = (count: number): Done<StepResult> => ({
+    value: { note: `${count} ${count === 1 ? 'model' : 'models'}` },
+  })
+  let state: ProviderState | undefined
   let asked = 0
-  for (;;) {
-    if (signal.cancelled) throw new Error('cancelled')
-    const result = await client.trigger<{ models?: unknown[] }>(
-      'router::models::list',
-      { provider: providerId },
-    )
-    const count = Array.isArray(result?.models) ? result.models.length : 0
-    if (count > 0) {
-      return { note: `${count} ${count === 1 ? 'model' : 'models'}` }
-    }
-    const state = (await readProviderStates()).find(
-      (provider) => provider.id === providerId,
-    )
-    if (state?.credentialError) throw new Error(state.credentialError)
-    // Once the router holds a credential, ask the provider for its catalog
-    // and wait for the answer: a rejected key comes back as an empty list,
-    // and saying so now beats a timeout a minute and a half later.
-    if (state?.configured) {
+  return waitForEvents<StepResult>({
+    handler: 'iii::console::onboarding::models',
+    ...providerEvents(providerId),
+    check: async () => {
+      const count = await countProviderModels(providerId)
+      if (count > 0) return found(count)
+      state = (await readProviderStates()).find(
+        (provider) => provider.id === providerId,
+      )
+      if (state?.credentialError) throw new Error(state.credentialError)
+      if (!state?.configured) {
+        report({
+          note: state
+            ? 'waiting for the provider to list its models'
+            : 'waiting for the provider to register',
+        })
+        return null
+      }
+      // Once the router holds a credential, ask the provider for its
+      // catalog: a rejected key comes back as an empty list, and saying so
+      // now beats a timeout a minute and a half later. The answer also
+      // arrives as a `router::models::changed` event, which asks once more.
       report({ note: 'asking the provider for its models with this key' })
       const refreshed = await client
         .trigger<{ count?: number }>(
@@ -373,27 +628,27 @@ async function waitForModels(
         )
         .catch(() => null)
       asked++
-      if ((refreshed?.count ?? 0) === 0 && asked >= 2) {
+      if ((refreshed?.count ?? 0) > 0) {
+        const listed = await countProviderModels(providerId)
+        if (listed > 0) return found(listed)
+      } else if (asked >= 2) {
         throw new Error(
           `${title} returned no models for this key. Check that the key is valid and has API access, then connect again — or paste a different key.`,
         )
       }
-    } else {
-      report({
-        note: state
-          ? 'waiting for the provider to list its models'
-          : 'waiting for the provider to register',
-      })
-    }
-    if (Date.now() > deadline) {
+      return null
+    },
+    timeoutMs: MODELS_TIMEOUT_MS,
+    onTimeout: () => {
       throw new Error(
         state
           ? `${title} has not listed any models yet. Open the model picker to check its credentials.`
           : `${title} did not register with llm-router.`,
       )
-    }
-    await sleep(1_500)
-  }
+    },
+    silenceMs: MODELS_SILENCE_MS,
+    signal,
+  })
 }
 
 /** The hub's error for a provider that answered, as `judge::*` returns it. */
@@ -406,10 +661,28 @@ interface JudgeFailure {
 type JudgeAnswer = JudgeFailure & { models?: unknown[]; status?: string }
 
 /**
+ * The judge functions an `engine::functions-available` payload lists, as one
+ * comparable string — the hub's and every `judge-<provider>`'s. A provider
+ * registers its functions once it is ready (a local one after downloading
+ * its model), which is the event worth re-asking on; every other registry
+ * change (a console tab's handlers) is not.
+ */
+export function judgeFunctionsSignature(payload: unknown): string | null {
+  const functions = asRecord(payload)?.functions
+  if (!Array.isArray(functions)) return null
+  return functions
+    .map((row) => asString(asRecord(row)?.function_id))
+    .filter((id): id is string => id?.startsWith('judge') === true)
+    .sort()
+    .join(',')
+}
+
+/**
  * Ask the judge hub for its models. A success proves the strategy is up and,
  * for a hosted judge, that its key works; a 401/403 is the key, said plainly.
- * Anything else (the provider still starting, a model still downloading) is
- * waited out.
+ * The call itself waits for a local provider's model to load (up to the
+ * provider's 5-minute cap); anything else (the provider not registered yet)
+ * is asked again when the registry announces new judge functions.
  */
 async function checkJudge(
   title: string,
@@ -417,49 +690,79 @@ async function checkJudge(
   { report, signal }: RunContext,
 ): Promise<StepResult> {
   const client = await getIiiClient()
-  const deadline = Date.now() + JUDGE_TIMEOUT_MS
-  for (;;) {
-    if (signal.cancelled) throw new Error('cancelled')
-    // The hub answers a provider failure as a result with `status: "error"`,
-    // and the bus rejects with the same shape; read both the same way.
-    let answer: JudgeAnswer | null
-    let last = ''
+  const deadlineAt = Date.now() + JUDGE_TIMEOUT_MS
+  let last = ''
+  let seen: string | null = null
+  // A provider whose operator lowered its timeout cap refuses the long
+  // wait as `invalid_request`; ask with the hub's default from then on.
+  let longWait = true
+  const ask = async (): Promise<JudgeAnswer | null> => {
+    const waitMs = Math.min(
+      JUDGE_LOAD_WAIT_MS,
+      Math.max(1_000, deadlineAt - Date.now()),
+    )
     try {
-      answer = await client.trigger<JudgeAnswer>(
+      return await client.trigger<JudgeAnswer>(
         'judge::models::list',
-        {},
-        { timeoutMs: 30_000 },
+        longWait ? { timeout_ms: waitMs } : {},
+        { timeoutMs: (longWait ? waitMs : 30_000) + 10_000 },
       )
     } catch (error) {
-      answer =
-        error && typeof error === 'object' ? (error as JudgeAnswer) : null
       last = readableError(error)
+      return error && typeof error === 'object' ? (error as JudgeAnswer) : null
     }
-    // An auth failure is final: say so now instead of waiting it out.
-    const failure = judgeFailure(answer, title, hosted)
-    if (failure) throw new Error(failure)
-    if (!last && answer?.status !== 'error') {
-      const count = Array.isArray(answer?.models) ? answer.models.length : 0
-      return {
-        note:
-          count > 0
-            ? `answering · ${count} ${count === 1 ? 'model' : 'models'}`
-            : 'answering',
+  }
+  return waitForEvents<StepResult>({
+    handler: 'iii::console::onboarding::judge',
+    triggers: [{ type: FUNCTIONS_AVAILABLE_TRIGGER }],
+    onEvent: (payload) => {
+      const signature = judgeFunctionsSignature(payload)
+      if (signature === null || signature === seen) return 'ignore'
+      seen = signature
+      return 'check'
+    },
+    check: async () => {
+      report({ note: `asking ${title}` })
+      last = ''
+      // The hub answers a provider failure as a result with `status:
+      // "error"`, and the bus rejects with the same shape; read both alike.
+      let answer = await ask()
+      if (longWait && answer?.code === 'invalid_request') {
+        longWait = false
+        last = ''
+        answer = await ask()
       }
-    }
-    last = answer?.provider_error?.detail?.message ?? last
-    if (Date.now() > deadline) {
+      // An auth failure is final: say so now instead of waiting it out.
+      const failure = judgeFailure(answer, title, hosted)
+      if (failure) throw new Error(failure)
+      if (!last && answer?.status !== 'error') {
+        const count = Array.isArray(answer?.models) ? answer.models.length : 0
+        return {
+          value: {
+            note:
+              count > 0
+                ? `answering · ${count} ${count === 1 ? 'model' : 'models'}`
+                : 'answering',
+          },
+        }
+      }
+      last = answer?.provider_error?.detail?.message ?? last
+      report({
+        note: last
+          ? `waiting for ${title} — ${last}`
+          : `waiting for ${title} to answer`,
+      })
+      return null
+    },
+    timeoutMs: JUDGE_TIMEOUT_MS,
+    onTimeout: () => {
       throw new Error(
         `${title} did not answer in time${last ? `: ${last}` : ''}`,
       )
-    }
-    report({
-      note: last
-        ? `waiting for ${title} — ${last}`
-        : `waiting for ${title} to answer`,
-    })
-    await sleep(2_000)
-  }
+    },
+    silenceMs: JUDGE_SILENCE_MS,
+    signal,
+  })
 }
 
 export function judgeFailure(
@@ -516,16 +819,25 @@ export async function checkProviderKey(
   { settleMs = 6_000 }: { settleMs?: number } = {},
 ): Promise<ProviderKeyCheck> {
   const client = await getIiiClient()
-  const deadline = Date.now() + settleMs
-  let state = (await readProviderStates()).find(
-    (provider) => provider.id === providerId,
-  )
-  while (state && !state.configured && !state.credentialError) {
-    if (Date.now() > deadline) break
-    await sleep(500)
-    state = (await readProviderStates()).find(
-      (provider) => provider.id === providerId,
-    )
+  const read = async () =>
+    (await readProviderStates()).find((provider) => provider.id === providerId)
+  const settled = (state: ProviderState | undefined) =>
+    !state || state.configured || state.credentialError !== undefined
+  let state = await read()
+  if (!settled(state)) {
+    // The router resolves the new key, then has the provider re-list its
+    // models: the `router::*::changed` events about it are the moments to
+    // look again; at `settleMs` look one last time and take what is there.
+    state = await waitForEvents<ProviderState | undefined>({
+      handler: 'iii::console::provider-key',
+      ...providerEvents(providerId),
+      check: async () => {
+        const next = await read()
+        return settled(next) ? { value: next } : null
+      },
+      timeoutMs: settleMs,
+      onTimeout: read,
+    })
   }
   if (!state?.configured) {
     return { configured: false, models: 0, error: state?.credentialError }

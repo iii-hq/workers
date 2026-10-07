@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
-import type { ExtensionIii, WorkerConfigurationPanelProps } from '@iii-dev/console-ui'
+import type { WorkerConfigurationPanelProps } from '@iii-dev/console-ui'
 import { act, type ReactNode, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { Engine } from './engine'
 import { JudgeSessionPicker, SESSION_PROVIDER_KEY } from './index'
 
 // The console provides these via its import map; the menu opens on mount,
@@ -87,13 +88,61 @@ function engine(registered = ['typesafe', 'semif']) {
     }
     if (id === 'compose::add') {
       if (state.addReply instanceof Error) throw state.addReply
-      return state.addReply
+      // The daemon runs it under the caller's id.
+      return state.addReply &&
+        typeof state.addReply === 'object' &&
+        (state.addReply as { status?: string }).status === 'accepted'
+        ? { ...state.addReply, operation_id: payload?.operation_id }
+        : state.addReply
     }
     if (id === 'compose::operation') return state.operation
     return {}
   })
-  return Object.assign({ trigger }, { state })
+  // The bus: handlers the page registers and the bindings that route to them.
+  const handlers = new Map<string, (payload: unknown) => void>()
+  const bindings: { type: string; function_id: string; config: Record<string, unknown> }[] = []
+  const on = vi.fn((id: string, handler: (payload: unknown) => void) => {
+    handlers.set(id, handler)
+    return () => handlers.delete(id)
+  })
+  const registerTrigger = vi.fn((input: { type: string; function_id: string; config: Record<string, unknown> }) => {
+    bindings.push(input)
+    return () => {
+      const at = bindings.indexOf(input)
+      if (at >= 0) bindings.splice(at, 1)
+    }
+  })
+  /** Deliver `payload` to every binding of `type` whose config `match` accepts. */
+  const emit = (type: string, payload: unknown, match: (config: Record<string, unknown>) => boolean = () => true) => {
+    for (const binding of [...bindings]) {
+      if (binding.type !== type || !match(binding.config)) continue
+      handlers.get(binding.function_id.replace(/::console-test$/, ''))?.(payload)
+    }
+  }
+  return Object.assign({ trigger, on, registerTrigger, browserId: 'console-test' }, { state, bindings, handlers, emit })
 }
+
+/** The operation id the page bound its `compose-operation` progress to. */
+function boundOperation(iii: ReturnType<typeof engine>): string {
+  const binding = iii.bindings.find((entry) => entry.type === 'compose-operation')
+  if (!binding) throw new Error('no compose-operation binding')
+  return String(binding.config.operation_id)
+}
+
+/** Compose ends the operation: its terminal event reaches the page. */
+function endOperation(iii: ReturnType<typeof engine>, operationId: string) {
+  iii.emit(
+    'compose-operation',
+    { operation_id: operationId, sequence: 9, phase: 'complete', detail: '', terminal: true },
+    (config) => config.operation_id === operationId,
+  )
+}
+
+/** Past the live list's debounce. */
+const settle = (ms = 350) =>
+  act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, ms))
+  })
 
 /** The registry's `tag=evaluation` page: judges plus unrelated workers. */
 function registry(ok = true) {
@@ -141,7 +190,7 @@ async function mount(
   await act(async () => {
     root!.render(
       <JudgeSessionPicker
-        iii={iii as unknown as Pick<ExtensionIii, 'trigger'>}
+        iii={iii as unknown as Engine}
         configurationPanel={panel ?? undefined}
         sessionId="s1"
         isStreaming={false}
@@ -309,12 +358,27 @@ describe('per-session judge provider', () => {
     const rows = () => [...view.querySelectorAll('.judge-ui-session-add-title [data-label]')].map((row) => row.textContent)
     expect(rows()).toEqual(['decider'])
     await act(async () => button('Add decider').click())
-    expect(iii.trigger).toHaveBeenCalledWith('compose::add', { workers: ['judge-decider'] }, { timeoutMs: 600_000 })
-    expect(view.textContent).toContain('Adding…')
-    iii.state.registered.push('decider')
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 3_100))
+    const operationId = boundOperation(iii)
+    expect(operationId).toMatch(/^compose:[0-9a-f-]{36}$/)
+    // Bound terminal-only, before the add, under the id the add then names.
+    expect(iii.registerTrigger).toHaveBeenCalledWith({
+      type: 'compose-operation',
+      function_id: expect.stringMatching(/^iii::judge-ui::compose-operation::\d+::console-test$/),
+      config: { operation_id: operationId, terminal_only: true },
     })
+    const bound = iii.registerTrigger.mock.invocationCallOrder.at(-1)!
+    const added = iii.trigger.mock.calls.findIndex(([id]) => id === 'compose::add')
+    expect(iii.trigger.mock.invocationCallOrder[added]).toBeGreaterThan(bound)
+    expect(iii.trigger).toHaveBeenCalledWith(
+      'compose::add',
+      { workers: ['judge-decider'], operation_id: operationId },
+      { timeoutMs: 600_000 },
+    )
+    expect(view.textContent).toContain('Adding…')
+    // The judge registering is an engine event, not something polled for.
+    iii.state.registered.push('decider')
+    await act(async () => iii.emit('engine::functions-available', { event: 'functions_changed', functions: [] }))
+    await settle()
     await act(async () => button('Configure').click())
     expect(activePage()).toBe('configure')
     expect(view.querySelector('[data-panel]')?.getAttribute('data-panel')).toBe('judge-decider')
@@ -342,33 +406,63 @@ describe('per-session judge provider', () => {
     // The daemon's detail, verbatim: the reason sits between resolver noise
     // and advice for the publisher.
     const detail = `container 'judge-decider': no version of 'judge-decider' satisfies '*'. ${reason} Publish a 'judge-decider' binary for 'x86_64-unknown-linux-musl' or install on a supported platform. (available: x86_64-unknown-linux-gnu)`
-    iii.state.addReply = { status: 'accepted', operation_id: 'op-1', requested: 1 }
-    iii.state.operation = { status: 'failed', last_event: { terminal: true, detail } }
+    iii.state.addReply = { status: 'accepted', requested: 1 }
     const { view, button } = await mount({}, { iii })
     await act(async () => button('Add a judge').click())
     await act(async () => {})
     await act(async () => button('Add decider').click())
+    await act(async () => {})
+    const operationId = boundOperation(iii)
+    // The one catch-up read finds it still running: nothing more is read
+    // until compose says it ended.
+    expect(iii.trigger).toHaveBeenCalledWith('compose::operation', { operation_id: operationId }, { timeoutMs: 5_000 })
+    const reads = () => iii.trigger.mock.calls.filter(([id]) => id === 'compose::operation').length
+    expect(reads()).toBe(1)
     expect(view.textContent).toContain('Adding…')
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 3_100))
-    })
-    expect(iii.trigger).toHaveBeenCalledWith('compose::operation', { operation_id: 'op-1' }, { timeoutMs: 5_000 })
+    iii.state.operation = { status: 'failed', last_event: { terminal: true, detail } }
+    await act(async () => endOperation(iii, operationId))
+    await act(async () => {})
+    expect(reads()).toBe(2)
     expect(view.querySelector('[role="alert"]')?.textContent).toBe(reason)
     expect(view.querySelector('button[aria-label="Retry adding decider"]')).not.toBeNull()
-  }, 10_000)
+    // Settled: the binding is gone.
+    expect(iii.bindings.some((entry) => entry.type === 'compose-operation')).toBe(false)
+  })
+
+  it('settles from the catch-up read an operation that ended before its binding landed', async () => {
+    vi.stubGlobal('fetch', registry())
+    const iii = engine()
+    iii.state.addReply = { status: 'accepted', requested: 1 }
+    iii.state.operation = { status: 'cancelled', last_event: { terminal: true, detail: 'operation cancelled' } }
+    const { view, button } = await mount({}, { iii })
+    await act(async () => button('Add a judge').click())
+    await act(async () => {})
+    await act(async () => button('Add decider').click())
+    await act(async () => {})
+    expect(view.querySelector('[role="alert"]')?.textContent).toBe('The add was cancelled.')
+    expect(iii.bindings.some((entry) => entry.type === 'compose-operation')).toBe(false)
+  })
 
   it('reports an add that compose calls done but whose judge never starts', async () => {
     vi.stubGlobal('fetch', registry())
     const iii = engine()
     // A worker that is not required and failed to start, or one declared and
     // stopped, still ends the operation as succeeded.
-    iii.state.addReply = { status: 'accepted', operation_id: 'op-3', requested: 1 }
-    iii.state.operation = { status: 'succeeded', last_event: { terminal: true, detail: 'all requested workers are ready' } }
+    iii.state.addReply = { status: 'accepted', requested: 1 }
     const { view, button } = await mount({}, { iii })
     vi.useFakeTimers()
     await act(async () => button('Add a judge').click())
     await act(async () => {})
     await act(async () => button('Add decider').click())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    const operationId = boundOperation(iii)
+    iii.state.operation = {
+      status: 'succeeded',
+      last_event: { terminal: true, detail: 'all requested workers are ready' },
+    }
+    await act(async () => endOperation(iii, operationId))
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3_100)
     })
@@ -379,12 +473,46 @@ describe('per-session judge provider', () => {
     expect(view.querySelector('[role="alert"]')?.textContent).toBe(
       'judge-decider was added but has not started; check its logs in Settings → Workers.',
     )
-    // It starts late: the open picker keeps checking and settles it.
+    // It starts late: the engine says so, and the open picker settles it.
     iii.state.registered.push('decider')
+    await act(async () => iii.emit('engine::functions-available', { event: 'functions_changed', functions: [] }))
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3_100)
+      await vi.advanceTimersByTimeAsync(400)
     })
     expect(view.querySelector('[data-page="add"] .judge-ui-session-add-row button')?.textContent).toBe('Configure')
+  })
+
+  it('never reads the judges on a timer, only on engine changes while the menu is open', async () => {
+    const iii = engine()
+    const { view, labels } = await mount({}, { iii })
+    vi.useFakeTimers()
+    const lists = () => iii.trigger.mock.calls.filter(([id]) => id === 'engine::functions::list').length
+    const before = lists()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(lists()).toBe(before)
+    // The configuration binding names no id; another worker's entry is not news.
+    expect(iii.bindings.find((entry) => entry.type === 'configuration')?.config).toEqual({})
+    await act(async () => iii.emit('configuration', { type: 'configuration', event_type: 'updated', id: 'llm-router' }))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+    expect(lists()).toBe(before)
+    // A judge's settings changing is: a burst reads once.
+    iii.state.models['judge-semif'] = 'qwen3.5-9b'
+    await act(async () => {
+      iii.emit('configuration', { type: 'configuration', event_type: 'updated', id: 'judge-semif' })
+      iii.emit('configuration', { type: 'configuration', event_type: 'updated', id: 'judge-semif' })
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+    expect(lists()).toBe(before + 1)
+    expect(labels()).toContain('qwen3.5-9b')
+    // Closing the menu unbinds both.
+    await act(async () => view.querySelector<HTMLElement>('[data-close-menu]')!.click())
+    expect(iii.bindings.filter((entry) => entry.type !== 'compose-operation')).toEqual([])
   })
 
   it('says so when the registry is unreachable', async () => {

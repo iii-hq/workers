@@ -112,7 +112,7 @@ the only contract.
 - `engine::triggers::list` / `engine::triggers::info { id }` — legal trigger types and their config schemas
 - `engine::registered-triggers::list` — every trigger instance already bound
 
-**2. Call a function.** Use `agent_trigger` with `{ function: "<worker>::<fn>", description: "<short user-facing action>", payload: { ... } }`. The description is shown as the agent's activity in chat; keep it concise and in the user's language. The payload is a JSON object (never a stringified one), and you fetch the contract via `engine::functions::info` before the first call.
+**2. Call a function.** Use `agent_trigger` with `{ function: "<worker>::<fn>", description: "<short user-facing action>", payload: { ... } }`. The description is shown as the agent's activity in chat; keep it concise and in the session's response language (named in the runtime context, detected from the user's first message). The payload is a JSON object (never a stringified one), and you fetch the contract via `engine::functions::info` before the first call.
 
 **3. Need a capability that is not registered?**
 - `directory::registry::workers::list { search: "<capability>" }`
@@ -334,7 +334,7 @@ turn: the profile's RESOLVED system prompt — the directory composes `extends`
 chains root-first, so `tech-lead` extending the bundled `iii` base arrives as
 the full iii doctrine followed by the tech-lead body — IS the session
 identity. Nothing built-in sits underneath it and no prefix is added; the
-usual per-step runtime context (session id, working directory, policy aid,
+usual per-step runtime context (session id, working directory, response language, policy aid,
 skills index, hook injections) follows it. A profile whose `extends` chain does not resolve is refused as an
 invalid request with the directory's D415 text. The profile's `skills` are
 PRELOADED: each id's body is fetched once from `directory::skills::get` and

@@ -197,7 +197,7 @@ function TimelineTabView({
 }
 
 /** One turn and its files. Memoized, and given the active file only when
-    it is the active turn, so a poll that changes the running turn or a
+    it is the active turn, so a list read that changes the running turn or a
     click on another turn's file leaves the other turns alone. */
 const TurnSection = memo(function TurnSection({
   turn,

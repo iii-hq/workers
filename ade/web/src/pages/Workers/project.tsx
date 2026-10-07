@@ -120,15 +120,16 @@ export function ProjectView({
       one
         ? `Updating ${names[0]} to ${latest.of(names[0])}`
         : `Updating ${names.length} packages`,
-      () =>
+      (operationId) =>
         inPlace
           ? api.setVersions(
               chosen.map((c) => ({
                 ref: c.ref,
                 version: latest.of(c.name) ?? 'latest',
               })),
+              operationId,
             )
-          : api.update(targets),
+          : api.update(targets, operationId),
     )
   }
 

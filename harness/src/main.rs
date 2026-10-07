@@ -18,7 +18,9 @@
 //!   8. Bind the cron pending-sweep (retain its handle for live re-bind).
 //!   9. LAST: bind the configuration-change trigger so its handler closes over
 //!      the fully-built snapshot cell + the cron handle.
-//!  10. Emit `harness::ready`, then sleep on Ctrl+C and shut down cleanly.
+//!  10. Emit `harness::ready`, run the boot recovery passes, bind the engine's
+//!      worker change feed that re-runs them, then sleep on Ctrl+C and shut
+//!      down cleanly. Nothing in the worker runs on a periodic timer.
 
 use std::sync::Arc;
 
@@ -188,11 +190,18 @@ async fn main() -> Result<()> {
 
     // Background GC of durable spawn/notify bindings orphaned across restarts
     // (their in-memory session tracking is gone; their owner session may have
-    // been deleted while this harness was down). Non-blocking — never delays
+    // been deleted while this harness was down), then the binding pass: it
+    // retires lifecycle-spent bindings (an unfired wake past its deadline
+    // wakes its owner) and arms every other deadline as its own timer — the
+    // timer, not a sweep, is what turns `expires_at` into that notice. The
+    // pass re-runs on each engine worker change. Non-blocking — never delays
     // ready.
     {
         let deps = deps.clone();
-        tokio::spawn(async move { harness::bindings::gc::run(&deps).await });
+        tokio::spawn(async move {
+            harness::bindings::gc::run(&deps).await;
+            harness::bindings::expiry::run(deps).await;
+        });
     }
     // Sessions the store still reports `working` after a restart (a terminal
     // projection lost while the session-manager was down): re-derive their
@@ -201,14 +210,16 @@ async fn main() -> Result<()> {
         let deps = deps.clone();
         tokio::spawn(async move { harness::session_status::sweep(&deps).await });
     }
-    // Wake-expiry sweep: a wake whose lifecycle deadline passes unfired must
-    // wake its owner with the news — this loop is what turns `expires_at`
-    // into that notice instead of a session parked forever.
-    tokio::spawn(harness::bindings::expiry::run_loop(deps.clone()));
     // Orphaned-turn recovery: a `Running` turn whose step never reached the
     // queue (enqueue failed during an outage) is re-enqueued so it resumes
-    // or observes its stop instead of wedging the session.
-    tokio::spawn(harness::inflight::run_loop(deps.clone()));
+    // or observes its stop instead of wedging the session. One pass after
+    // boot, then one per engine worker change plus known-due follow-ups.
+    tokio::spawn(harness::inflight::run(deps.clone()));
+    // Compose wakes whose operation finished inside their activation window.
+    harness::bindings::compose::register_terminal_watch(&deps);
+    // The engine's worker connect/disconnect/announce feed: kicks the binding
+    // pass, the orphaned-turn pass, and (on announce) the catalog refresh.
+    harness::engine_events::register(&deps);
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("harness shutting down");

@@ -49,7 +49,27 @@ vi.mock('../git-log-window', async (original) => ({
     sha === 'wedged' ? new Promise<never>(() => {}) : 'G',
 }))
 
-const host = {} as Host
+// The log binds the worker's repository feed; `fire` sends it an event.
+const feed = new Map<string, (payload: unknown) => void>()
+const bindings: Array<{ type: string; function_id: string; config: Record<string, unknown> }> = []
+const host = {
+  iii: {
+    browserId: 'tab',
+    on: (functionId: string, handler: (payload: unknown) => void) => {
+      feed.set(functionId, handler)
+      return () => feed.delete(functionId)
+    },
+    registerTrigger: (input: (typeof bindings)[number]) => {
+      bindings.push(input)
+      return () => bindings.splice(bindings.indexOf(input), 1)
+    },
+  },
+} as unknown as Host
+const fire = (changes: string[]) => {
+  for (const binding of bindings.filter((b) => b.type === 'shell::git-changed')) {
+    feed.get(binding.function_id.replace(/::tab$/, ''))?.({ path: binding.config.path, changes })
+  }
+}
 const snapshot = (signature: string): RefsSnapshot => ({
   refs: [],
   head: 'h',
@@ -115,8 +135,6 @@ describe('the log', () => {
   })
 
   it('reads the refs on a new filter, then the log once from what they say', async () => {
-    vi.stubGlobal('window', new EventTarget())
-    vi.stubGlobal('document', new EventTarget())
     const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
     const log = mount((filter: LogFilter) => useGitLog(host, '/log', 0, true, filter, null), {})
     await settle()
@@ -152,8 +170,6 @@ describe('the log', () => {
   })
 
   it('stops loading when the folder stops being a repository mid-read', async () => {
-    vi.stubGlobal('window', new EventTarget())
-    vi.stubGlobal('document', new EventTarget())
     const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
     git.hold = true
     const log = mount(() => useGitLog(host, '/gone', 0, true, {}, null), undefined)
@@ -167,6 +183,32 @@ describe('the log', () => {
     expect(log.result.loading).toBe(false)
     git.hold = false
     git.notRepo = false
+    log.unmount()
+  })
+
+  it('reads the refs again when the worker reports they moved, and only while it shows', async () => {
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+    let active = true
+    const log = mount(() => useGitLog(host, '/watched', 0, active, {}, null), undefined)
+    await settle()
+    expect(git.refs).toBe(1)
+    expect(bindings.map((b) => [b.type, b.config])).toEqual([['shell::git-changed', { path: '/watched' }]])
+
+    // A commit in a terminal: a ref moved.
+    git.signature = 'b'
+    fire(['index', 'refs'])
+    await settle()
+    expect(git.refs).toBe(2)
+    expect(log.result.snapshot?.signature).toBe('b')
+    // Staging alone moves no ref.
+    fire(['index'])
+    await settle()
+    expect(git.refs).toBe(2)
+
+    // Hidden, the log lets go of the feed.
+    active = false
+    log.rerender(undefined)
+    expect(bindings).toEqual([])
     log.unmount()
   })
 })

@@ -1656,7 +1656,11 @@ describe('applyFcallPatch / clearTransientFlags', () => {
 describe('elided placeholders', () => {
   function elidedCall(
     entryId: string,
-    calls: Array<{ id: string; functionId: string }>,
+    calls: Array<{
+      id: string
+      functionId: string
+      arguments?: Record<string, unknown>
+    }>,
     text?: string,
   ): TranscriptItem {
     return {
@@ -1668,7 +1672,7 @@ describe('elided placeholders', () => {
             type: 'function_call' as const,
             id: c.id,
             function_id: c.functionId,
-            arguments: {},
+            arguments: c.arguments ?? {},
           })),
         ],
         'function_call',
@@ -1739,6 +1743,129 @@ describe('elided placeholders', () => {
       pendingApproval: false,
     })
     expect(messages[0]).not.toHaveProperty('output')
+  })
+
+  /* The page keeps an `agent_trigger` call's label (`function` +
+     `description`) and drops its payload: a reloaded collapsed run reads
+     the same as the live one did, instead of falling back to bare ids. */
+  it('labels a paged-out agent_trigger row from its kept fields', () => {
+    const segments = entrySegments(
+      elidedCall('e_a1', [
+        {
+          id: 'fc_1',
+          functionId: 'agent_trigger',
+          arguments: {
+            function: 'compose::status',
+            description: '  Check existing containers ',
+          },
+        },
+      ]),
+    )
+    expect(segments).toHaveLength(1)
+    expect(segments[0]).toMatchObject({
+      role: 'function-trigger',
+      functionId: 'compose::status',
+      description: 'Check existing containers',
+      functionTriggerId: 'fc_1',
+      unloaded: true,
+    })
+    expect(segments[0]).not.toHaveProperty('unresolvedTarget')
+    expect((segments[0] as FunctionTriggerMessage).input).toBeUndefined()
+
+    // Its elided result settles the row without touching the label.
+    const messages = transcriptToMessages([
+      elidedCall('e_a1', [
+        {
+          id: 'fc_1',
+          functionId: 'agent_trigger',
+          arguments: {
+            function: 'compose::status',
+            description: 'Check existing containers',
+          },
+        },
+      ]),
+      elidedResult('e_r1', 'fc_1', 'compose::status'),
+    ])
+    expect(messages[0]).toMatchObject({
+      functionId: 'compose::status',
+      description: 'Check existing containers',
+      unresolvedTarget: false,
+      unloaded: true,
+      running: false,
+    })
+  })
+
+  it('keeps a paged-out agent_trigger row unresolved without a target', () => {
+    const segments = entrySegments(
+      elidedCall('e_a1', [
+        {
+          id: 'fc_1',
+          functionId: 'agent_trigger',
+          arguments: { description: 'Read the config' },
+        },
+      ]),
+    )
+    expect(segments[0]).toMatchObject({
+      functionId: 'agent_trigger',
+      description: 'Read the config',
+      unresolvedTarget: true,
+      unloaded: true,
+    })
+  })
+
+  /* The whole entry replacing the placeholder keeps the label even when
+     its own arguments carry none (and swaps in its own when they do). */
+  it('keeps the placeholder description when the whole entry lands', () => {
+    const page = transcriptToMessages([
+      elidedCall('e_a1', [
+        {
+          id: 'fc_1',
+          functionId: 'agent_trigger',
+          arguments: { function: 'fs::read', description: 'Read the config' },
+        },
+      ]),
+    ])
+    const whole = applyEntryUpsert(
+      page,
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'agent_trigger',
+            arguments: { function: 'fs::read', payload: { path: 'a.yaml' } },
+          },
+        ],
+        'function_call',
+      ),
+    )
+    expect(whole[0]).toMatchObject({
+      functionId: 'fs::read',
+      description: 'Read the config',
+      input: { path: 'a.yaml' },
+    })
+
+    const relabeled = applyEntryUpsert(
+      page,
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'agent_trigger',
+            arguments: {
+              function: 'fs::read',
+              description: 'Read the YAML config',
+              payload: { path: 'a.yaml' },
+            },
+          },
+        ],
+        'function_call',
+      ),
+    )
+    expect(relabeled[0]).toMatchObject({ description: 'Read the YAML config' })
   })
 
   it('never marks a placeholder running while the session works', () => {

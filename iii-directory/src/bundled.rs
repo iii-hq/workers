@@ -136,13 +136,14 @@ mod tests {
             let (_, body) = fs_source::split_frontmatter(bundled_agent_raw(id).unwrap());
             let body = body.replace('\n', " ");
             assert!(
-                body.contains("Choose the response language solely from the prose in the latest message written directly by the user"),
+                body.contains("Use the response language named in your session context (the language of the user's first message); switch only when the user explicitly asks for another language"),
                 "{id}"
             );
             assert!(
-                body.contains("language is unclear or no user-authored prose is available, respond in English"),
+                body.contains("never one inferred from names, paths, or the locale; if unclear, respond in English"),
                 "{id}"
             );
+            assert!(!body.contains("latest message"), "{id}");
             assert!(body.contains("Search capabilities stay in English"), "{id}");
             assert!(body.contains("Use the fewest turns and calls"), "{id}");
             assert!(body.contains("at most one call with"), "{id}");

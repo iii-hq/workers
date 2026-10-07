@@ -128,7 +128,7 @@ async fn replay_delivery_triggers(
             }
         }
         if binding.is_exhausted(now_ms) {
-            // The expiry sweep owns retirement and its owner notice.
+            // Expiry (bindings::expiry) owns retirement and its owner notice.
             continue;
         }
         let Some((trigger_type, config)) = binding.trigger_watch() else {
@@ -329,9 +329,10 @@ async fn retire_legacy(deps: &Deps) -> usize {
 }
 
 /// Engine providers outlive an in-memory state adapter restart. Startup and
-/// the periodic expiry pass both remove delivery triggers whose trusted
-/// `__binding` pointer no longer resolves, so recurring providers do not
-/// invoke a permanent no-op forever.
+/// every binding pass (each engine worker connect/disconnect/announce — the
+/// state worker coming back among them) remove delivery triggers whose
+/// trusted `__binding` pointer no longer resolves, so recurring providers do
+/// not invoke a permanent no-op forever.
 pub async fn reconcile_orphan_delivery_triggers(
     deps: &Deps,
     bindings: &[crate::bindings::Binding],

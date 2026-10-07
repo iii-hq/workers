@@ -2,8 +2,9 @@
    a branch pick leave, and their graph, read only while the log shows.
 
    The refs are re-read (a few tens of milliseconds) when anything might
-   have moved them: the root, the caller's refresh key, window focus, the
-   tab coming back, a new filter or branch. When their listing is unchanged
+   have moved them: the root, the caller's refresh key, the ide worker
+   reporting the repository moved (`shell::git-changed`: a commit, a fetch
+   or a switch in a terminal), a new filter or branch. When their listing is unchanged
    nothing else runs (a new filter's log still starts over, once); when it
    changed, the log starts over from the new tips, reading as many rows as
    were loaded so the view keeps its place. A read that a newer one
@@ -30,6 +31,7 @@ import {
   readWorkingDiff,
   showsGraph,
 } from './git-log-window'
+import { watchGit } from './git-watch'
 
 const PAGE = 1000
 const DETAILS_DEBOUNCE_MS = 150
@@ -263,28 +265,15 @@ export function useGitLog(
     if (state.snapshot !== null) force.current = 'filter'
   }, [restart, root])
 
-  // Coming back to the window: a commit or a fetch in a terminal moves refs
-  // the file watcher does not see (it leaves `.git` out).
+  // A commit or a fetch in a terminal moves refs the file watcher does not
+  // see (it leaves `.git` out): the worker's repository feed reports them.
+  // Only the index moving changes no ref.
   useEffect(() => {
-    if (!active) return
-    // Coming back fires both focus and visibilitychange: one read.
-    let last = 0
-    const once = () => {
-      if (Date.now() - last < 1000) return
-      last = Date.now()
-      readRefsNow()
-    }
-    const onFocus = once
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') once()
-    }
-    window.addEventListener('focus', onFocus)
-    document.addEventListener('visibilitychange', onVisible)
-    return () => {
-      window.removeEventListener('focus', onFocus)
-      document.removeEventListener('visibilitychange', onVisible)
-    }
-  }, [active, readRefsNow])
+    if (!active || root === null) return
+    return watchGit(host, root, (event) => {
+      if (event.changes.some((change) => change !== 'index')) readRefsNow()
+    })
+  }, [host, root, active, readRefsNow])
 
   const loadMore = useCallback(() => {
     const state = live.current

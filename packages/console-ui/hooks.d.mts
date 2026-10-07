@@ -60,7 +60,7 @@ export interface WorkerLiveOptions<T> {
    */
   triggers: readonly (string | { type: string; config?: Record<string, unknown> })[]
   fetch: () => Promise<T>
-  /** Visible-tab poll cadence while the live bindings are unavailable (default 15000). */
+  /** @deprecated Ignored: without live bindings the data is re-read on tab focus, never on a timer. */
   pollMs?: number
   /** Tab-scoped handler id, e.g. `iii::<worker>-ui::events`; the host appends `::<browserId>`. */
   handlerId: string

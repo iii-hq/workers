@@ -266,6 +266,15 @@ pub fn handle_sse_event(
         return vec![];
     };
     let Ok(parsed) = serde_json::from_str::<Value>(data_line) else {
+        // A lost delta would show up later as a cut or invalid tool input;
+        // leave a trace of where it went (gateways' `[DONE]` is expected).
+        if data_line.trim() == "[DONE]" {
+            return vec![];
+        }
+        tracing::warn!(
+            bytes = data_line.len(),
+            "dropping an SSE data line that is not JSON"
+        );
         return vec![];
     };
     let Some(event_type) = parsed.get("type").and_then(Value::as_str) else {

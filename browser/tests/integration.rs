@@ -106,7 +106,16 @@ async fn boot() -> Option<Harness> {
     boot_lane(Lane::Chromium).await
 }
 
+/// A Chromium lane whose worker starts from `seed` (YAML under `browser:`).
+async fn boot_seeded(seed: &str) -> Option<Harness> {
+    boot_with(Lane::Chromium, Some(seed.to_string())).await
+}
+
 async fn boot_lane(lane: Lane) -> Option<Harness> {
+    boot_with(lane, None).await
+}
+
+async fn boot_with(lane: Lane, chromium_seed: Option<String>) -> Option<Harness> {
     let iii_bin = which::which("iii").ok()?;
     // The worker seeds its configuration from `--config` when no
     // configuration worker is around (the case here): the Lightpanda lane
@@ -116,7 +125,7 @@ async fn boot_lane(lane: Lane) -> Option<Harness> {
             if !chromium_present() {
                 return None;
             }
-            None
+            chromium_seed
         }
         Lane::Lightpanda => {
             let bin = lightpanda_binary()?;
@@ -2112,5 +2121,220 @@ async fn a_navigation_that_timed_out_never_reaches_the_tab_later() {
     call("browser::sessions::stop", json!({ "session_id": id }))
         .await
         .expect("stop");
+    client.shutdown_async().await;
+}
+
+/// The tab strip and a parked handoff hear the page instead of re-reading
+/// it: a title the page sets after it loaded arrives as
+/// `browser::session-updated`, and the in-page continue click resolves
+/// `browser::handoff` through its binding (no page polling on either path).
+#[tokio::test]
+async fn late_titles_and_handoff_clicks_arrive_as_events() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    sleep(Duration::from_millis(500)).await;
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let client = &client;
+        async move {
+            timeout(
+                Duration::from_secs(40),
+                client.trigger(TriggerRequest {
+                    function_id: function_id.into(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(35_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+            .expect("trigger failed")
+        }
+    };
+
+    let (titles_tx, mut titles) = tokio::sync::mpsc::unbounded_channel::<String>();
+    client.register_function(
+        "iii::browser-test::updated",
+        RegisterFunction::new_async(move |event: serde_json::Value| {
+            let titles_tx = titles_tx.clone();
+            async move {
+                if let Some(title) = event["title"].as_str() {
+                    let _ = titles_tx.send(title.to_string());
+                }
+                Ok::<_, iii_sdk::errors::Error>(json!({ "ok": true }))
+            }
+        }),
+    );
+
+    let page = serve_html("<!doctype html><title>first</title><p>titled later</p>");
+    let started = call("browser::sessions::start", json!({ "url": page })).await;
+    let sid = started["session_id"]
+        .as_str()
+        .expect("session_id")
+        .to_string();
+    client
+        .register_trigger(RegisterTriggerInput::new(
+            "browser::session-updated".to_string(),
+            "iii::browser-test::updated".to_string(),
+            json!({ "session_id": sid }),
+        ))
+        .expect("session-updated trigger");
+    sleep(Duration::from_millis(500)).await;
+
+    call(
+        "browser::evaluate",
+        json!({ "session_id": sid, "expression": "document.title = 'second'; true" }),
+    )
+    .await;
+    let retitled = timeout(Duration::from_secs(10), async {
+        while let Some(title) = titles.recv().await {
+            if title == "second" {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(
+        retitled,
+        Ok(true),
+        "no session-updated carried the new title"
+    );
+    let history = call("browser::history::list", json!({ "session_id": sid })).await;
+    assert_eq!(history["visits"][0]["title"], "second", "{history}");
+
+    // The human's click on the in-page banner resolves the parked call.
+    let handoff = call(
+        "browser::handoff",
+        json!({ "session_id": sid, "instructions": "press continue", "timeout_ms": 20_000 }),
+    );
+    let click = async {
+        sleep(Duration::from_millis(1_500)).await;
+        call(
+            "browser::evaluate",
+            json!({
+                "session_id": sid,
+                "expression": "document.querySelector('[id^=\"iii-handoff-\"] button').click(); true"
+            }),
+        )
+        .await
+    };
+    let t = std::time::Instant::now();
+    let (handoff, clicked) = tokio::join!(handoff, click);
+    assert_eq!(clicked["value"], true, "{clicked}");
+    assert_eq!(handoff["via"], "in_page", "{handoff}");
+    assert_eq!(handoff["confirmed"], true, "{handoff}");
+    assert!(t.elapsed() < Duration::from_secs(15), "{:?}", t.elapsed());
+
+    call("browser::sessions::stop", json!({ "session_id": sid })).await;
+    client.shutdown_async().await;
+}
+
+/// Tabs sleep and expire on their own deadlines, with no sweep: an unused
+/// tab sleeps `inactive_after_ms` after its last use (a call re-arms it),
+/// and a `ttl_ms` tab closes when its lifetime is up.
+#[tokio::test]
+async fn idle_and_expired_tabs_go_on_their_own_deadlines() {
+    let Some(h) = boot_seeded("browser:\n  inactive_after_ms: 2000\n").await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    sleep(Duration::from_millis(500)).await;
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let client = &client;
+        async move {
+            timeout(
+                Duration::from_secs(40),
+                client.trigger(TriggerRequest {
+                    function_id: function_id.into(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(35_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+            .expect("trigger failed")
+        }
+    };
+    let (events_tx, mut events) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    client.register_function(
+        "iii::browser-test::lifecycle",
+        RegisterFunction::new_async(move |event: serde_json::Value| {
+            let events_tx = events_tx.clone();
+            async move {
+                let _ = events_tx.send(event);
+                Ok::<_, iii_sdk::errors::Error>(json!({ "ok": true }))
+            }
+        }),
+    );
+    for trigger in ["browser::session-updated", "browser::session-stopped"] {
+        client
+            .register_trigger(RegisterTriggerInput::new(
+                trigger.to_string(),
+                "iii::browser-test::lifecycle".to_string(),
+                json!({}),
+            ))
+            .expect("lifecycle trigger");
+    }
+    sleep(Duration::from_millis(500)).await;
+
+    let idle = call("browser::sessions::start", json!({})).await;
+    let idle_id = idle["session_id"].as_str().expect("id").to_string();
+    let expiring = call("browser::sessions::start", json!({ "ttl_ms": 1_000 })).await;
+    let expiring_id = expiring["session_id"].as_str().expect("id").to_string();
+
+    // A call 1s in re-arms the idle tab's deadline from that call.
+    sleep(Duration::from_millis(1_000)).await;
+    call(
+        "browser::evaluate",
+        json!({ "session_id": idle_id, "expression": "1" }),
+    )
+    .await;
+    let used = std::time::Instant::now();
+
+    let mut slept_after = None;
+    let mut expired = false;
+    let waited = timeout(Duration::from_secs(15), async {
+        while let Some(event) = events.recv().await {
+            let sid = event["session_id"].as_str().unwrap_or_default();
+            if sid == idle_id && event["active"] == false {
+                slept_after = Some(used.elapsed());
+            }
+            if sid == expiring_id && event["reason"] == "expired" {
+                expired = true;
+            }
+            if slept_after.is_some() && expired {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(
+        waited.is_ok(),
+        "slept after {slept_after:?}, expired: {expired}"
+    );
+    let slept_after = slept_after.expect("idle tab slept");
+    assert!(
+        slept_after >= Duration::from_millis(1_500),
+        "the call did not re-arm the idle deadline: slept {slept_after:?} after it"
+    );
+
+    let listed = call("browser::sessions::list", json!({})).await;
+    let tabs = listed["sessions"].as_array().expect("sessions");
+    let idle_tab = tabs
+        .iter()
+        .find(|t| t["session_id"] == idle_id.as_str())
+        .expect("the idle tab is kept");
+    assert_eq!(idle_tab["active"], false, "{idle_tab}");
+    assert!(
+        !tabs.iter().any(|t| t["session_id"] == expiring_id.as_str()),
+        "{listed}"
+    );
+
+    call("browser::sessions::stop", json!({ "session_id": idle_id })).await;
     client.shutdown_async().await;
 }

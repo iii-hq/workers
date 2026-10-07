@@ -21,6 +21,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { unwrapEnvelope } from '../lib/envelope'
 import { ErrorDisplayView } from '../lib/errors'
 import {
+  composeOperations,
   entryFile,
   type FunctionEntry,
   followStart,
@@ -194,25 +195,23 @@ function useFollowStart(
   )
   const since = useRef(Date.now())
   useEffect(() => {
-    if (key === null || name === null || SETTLED.has(key)) return
+    if (key === null || name === null || operation === null || SETTLED.has(key)) return
     since.current = Date.now()
     let closed = false
+    const controller = new AbortController()
     let phase: StackPhase = 'installing'
     const trigger: Trigger = <T,>(functionId: string, payload: Record<string, unknown>) =>
       closed ? Promise.reject<T>(new Error('the card closed')) : host.iii.trigger<T>(functionId, payload)
-    const sleep = (ms: number) =>
-      new Promise<void>((resolve, reject) =>
-        setTimeout(() => (closed ? reject(new Error('the card closed')) : resolve()), ms),
-      )
     void followStart(
       trigger,
+      composeOperations(host.iii),
       name,
       operation,
       (next) => {
         phase = next
         if (!closed) setFollow({ step: 'adding', phase })
       },
-      { sleep },
+      { signal: controller.signal },
     ).then((outcome) => {
       if (closed) return
       const settled: Follow = outcome.ok
@@ -223,6 +222,7 @@ function useFollowStart(
     })
     return () => {
       closed = true
+      controller.abort()
     }
   }, [host, key, name, operation])
   return { follow, since: since.current }

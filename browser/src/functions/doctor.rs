@@ -6,6 +6,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::chromium::Source;
 use crate::config::{BrowserEngine, WorkerConfig};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -31,6 +32,11 @@ pub struct DoctorOutput {
     /// `<binary> --version`, first line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chromium_version: Option<String>,
+    /// Where the Chromium came from: `configured`, `env`, `system`,
+    /// `managed` (downloaded by browser::chromium::install), `playwright`,
+    /// or `puppeteer`. Absent for Lightpanda or when nothing was found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chromium_source: Option<Source>,
     pub headless_default: bool,
     /// Live-tab cap (`max_sessions`).
     pub max_sessions: u64,
@@ -66,45 +72,29 @@ pub fn ffmpeg_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Candidate system installs checked when config `executable` is empty, in
-/// order. Mirrors the auto-detection the launcher performs.
-#[cfg(target_os = "macos")]
-const CANDIDATES: &[&str] = &[
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-];
-
-#[cfg(target_os = "linux")]
-const CANDIDATES: &[&str] = &[
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/microsoft-edge",
-];
-
-#[cfg(target_os = "windows")]
-const CANDIDATES: &[&str] = &[
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-];
-
-/// Resolve the engine binary the worker would launch: the configured
-/// `executable` when set, otherwise the first existing system Chromium
-/// candidate, or `lightpanda` on PATH for the Lightpanda engine.
+/// Resolve the engine binary the worker would launch: for Chromium, the
+/// shared resolver ([`crate::chromium::resolve_executable`]: config,
+/// `$CHROME`, system installs, the managed download, Playwright/Puppeteer
+/// caches); for Lightpanda, the configured `executable` or `lightpanda` on
+/// PATH.
 pub fn detect_executable(cfg: &WorkerConfig) -> Option<std::path::PathBuf> {
-    if !cfg.executable.is_empty() {
-        let path = std::path::PathBuf::from(&cfg.executable);
-        return path.exists().then_some(path);
-    }
+    detect(cfg).map(|(path, _)| path)
+}
+
+/// [`detect_executable`] plus where a Chromium came from (`None` for
+/// Lightpanda).
+pub fn detect(cfg: &WorkerConfig) -> Option<(std::path::PathBuf, Option<Source>)> {
     match cfg.engine {
-        BrowserEngine::Chromium => CANDIDATES
-            .iter()
-            .map(std::path::PathBuf::from)
-            .find(|p| p.exists()),
-        BrowserEngine::Lightpanda => find_on_path(LIGHTPANDA_BINARY),
+        BrowserEngine::Chromium => {
+            crate::chromium::resolve_executable(cfg).map(|r| (r.path, Some(r.source)))
+        }
+        BrowserEngine::Lightpanda => {
+            if !cfg.executable.is_empty() {
+                let path = std::path::PathBuf::from(&cfg.executable);
+                return path.exists().then_some((path, None));
+            }
+            find_on_path(LIGHTPANDA_BINARY).map(|p| (p, None))
+        }
     }
 }
 
@@ -123,11 +113,19 @@ pub fn missing_executable_issue(cfg: &WorkerConfig) -> DoctorIssue {
     let configured = (!cfg.executable.is_empty())
         .then(|| format!("configured executable '{}' does not exist", cfg.executable));
     match cfg.engine {
-        BrowserEngine::Chromium => DoctorIssue {
-            what: configured.unwrap_or_else(|| "no Chromium/Chrome install found".to_string()),
-            enable_how: "install Google Chrome or Chromium, or point the worker config \
-                         `executable` at a browser binary"
-                .to_string(),
+        BrowserEngine::Chromium => match configured {
+            Some(what) => DoctorIssue {
+                what,
+                enable_how: "fix or clear the worker config `executable` (empty auto-detects)"
+                    .to_string(),
+            },
+            None => DoctorIssue {
+                what: format!(
+                    "{}: no Chromium/Chrome install found",
+                    crate::chromium::MISSING_CODE
+                ),
+                enable_how: crate::chromium::install_advice(),
+            },
         },
         BrowserEngine::Lightpanda => DoctorIssue {
             what: configured.unwrap_or_else(|| "no `lightpanda` binary found on PATH".to_string()),
@@ -190,6 +188,9 @@ mod tests {
         assert!(missing_executable_issue(&cfg)
             .enable_how
             .contains("lightpanda-io/browser/releases"));
+        let chromium = missing_executable_issue(&WorkerConfig::default());
+        assert!(chromium.what.starts_with(crate::chromium::MISSING_CODE));
+        assert!(chromium.enable_how.contains("browser::chromium::install"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

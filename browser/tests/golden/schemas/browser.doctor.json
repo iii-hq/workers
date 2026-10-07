@@ -62,6 +62,17 @@
           "null"
         ]
       },
+      "chromium_source": {
+        "description": "Where the Chromium came from: `configured`, `env`, `system`, `managed` (downloaded by browser::chromium::install), `playwright`, or `puppeteer`. Absent for Lightpanda or when nothing was found.",
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Source"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "chromium_version": {
         "description": "`<binary> --version`, first line.",
         "type": [
@@ -131,6 +142,53 @@
             "type": "string"
           }
         }
+      },
+      "Source": {
+        "description": "Where the resolved binary came from.",
+        "oneOf": [
+          {
+            "description": "The worker config `executable`.",
+            "type": "string",
+            "enum": [
+              "configured"
+            ]
+          },
+          {
+            "description": "The `CHROME` environment variable.",
+            "type": "string",
+            "enum": [
+              "env"
+            ]
+          },
+          {
+            "description": "A system Chrome/Chromium/Edge.",
+            "type": "string",
+            "enum": [
+              "system"
+            ]
+          },
+          {
+            "description": "The copy `browser::chromium::install` downloaded.",
+            "type": "string",
+            "enum": [
+              "managed"
+            ]
+          },
+          {
+            "description": "A Playwright-installed Chromium.",
+            "type": "string",
+            "enum": [
+              "playwright"
+            ]
+          },
+          {
+            "description": "A Puppeteer-installed Chrome.",
+            "type": "string",
+            "enum": [
+              "puppeteer"
+            ]
+          }
+        ]
       }
     }
   }

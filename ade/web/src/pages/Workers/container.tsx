@@ -157,7 +157,9 @@ export function ContainerView({
     })
     if (
       ok &&
-      (await actions.track(`Removing ${name}`, () => api.remove([name])))
+      (await actions.track(`Removing ${name}`, (operationId) =>
+        api.remove([name], operationId),
+      ))
     )
       onRemoved()
   }
