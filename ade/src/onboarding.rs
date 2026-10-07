@@ -19,6 +19,13 @@
 //! reports whether the wizard may open by itself here at all: not where the
 //! ADE configuration sets `onboarding.auto_open: false`, nor where the
 //! worker's environment sets `III_CONSOLE_ONBOARDING_AUTO_OPEN=false`.
+//!
+//! `console::onboarding::prompts` lists the example prompts the wizard's
+//! last step offers, from `onboarding.yaml` at the project root (the Compose
+//! directory, `III_COMPOSE_DIR`), which the project's template ships. It is
+//! read on every call, so an edit shows the next time the step opens. Every
+//! entry is validated on its own: an invalid one is skipped with a warning,
+//! and a missing or broken file lists none — it never fails the wizard.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -162,6 +169,56 @@ pub struct SetInput {
     pub summary: Option<Value>,
 }
 
+/// File at the project root declaring the setup wizard's example prompts.
+pub const PROMPTS_FILE: &str = "onboarding.yaml";
+
+/// A file larger than this is not read: it is not a list of a few prompts.
+const MAX_PROMPTS_FILE_BYTES: u64 = 256 * 1024;
+const MAX_PROMPTS: usize = 12;
+const MAX_PROMPT_MODELS: usize = 16;
+const MAX_TITLE_CHARS: usize = 80;
+const MAX_DESCRIPTION_CHARS: usize = 280;
+const MAX_PROMPT_CHARS: usize = 4_000;
+const MAX_ID_CHARS: usize = 128;
+/// The agent profile a prompt runs with when it names none.
+const DEFAULT_PROMPT_AGENT: &str = "default";
+/// The ADE thinking levels a prompt may ask for; none keeps the default.
+const PROMPT_EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "off"];
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PromptsInput {}
+
+/// One entry of a prompt's model priority list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct PromptModel {
+    /// Router provider id (`claude-code`, `anthropic`).
+    pub provider: String,
+    /// The model id, bare or as the provider lists it (`claude-code/claude-sonnet-5-5`).
+    pub model: String,
+    /// An ADE thinking level; absent keeps the chat's default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+/// An example prompt, as the wizard shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ExamplePrompt {
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Agent profile id the new chat selects.
+    pub agent: String,
+    /// The text prefilled in the composer; the user sends it.
+    pub prompt: String,
+    /// Model priority list: the first one this machine has wins.
+    pub models: Vec<PromptModel>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PromptsOutput {
+    pub prompts: Vec<ExamplePrompt>,
+}
+
 pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
     iii.register_function(
         "console::onboarding::scan",
@@ -173,6 +230,22 @@ pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
         .description(
             "Look for the Codex and Claude Code CLIs on the ADE host and whether each is signed \
              in, for the setup wizard. Reports presence and paths only, never credentials.",
+        )
+        .metadata(json!({ "internal": true })),
+    );
+
+    iii.register_function(
+        "console::onboarding::prompts",
+        RegisterFunction::new_async(|_: PromptsInput| async move {
+            let path = iii_worker_paths::project_path(PROMPTS_FILE);
+            Ok::<_, Error>(PromptsOutput {
+                prompts: load_prompts(&path).await,
+            })
+        })
+        .description(
+            "List the example prompts the project's onboarding.yaml declares for the last step \
+             of the ADE setup wizard: each one's text, agent profile and model priority list. \
+             Empty when the file is missing or invalid.",
         )
         .metadata(json!({ "internal": true })),
     );
@@ -285,6 +358,205 @@ async fn save_state(dir: &Path, state: &OnboardingState) -> Result<(), String> {
     if let Err(error) = tokio::fs::rename(&tmp, &path).await {
         let _ = tokio::fs::remove_file(&tmp).await;
         return Err(format!("cannot move onboarding state into place: {error}"));
+    }
+    Ok(())
+}
+
+/// The example prompts in `path`; none when it is missing, too large or not
+/// a prompts file.
+async fn load_prompts(path: &Path) -> Vec<ExamplePrompt> {
+    match tokio::fs::metadata(path).await {
+        Ok(metadata) if metadata.len() > MAX_PROMPTS_FILE_BYTES => {
+            tracing::warn!(
+                path = %path.display(),
+                bytes = metadata.len(),
+                "the example prompts file is too large; the setup wizard shows none"
+            );
+            return Vec::new();
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "cannot read the example prompts file");
+            return Vec::new();
+        }
+    }
+    match tokio::fs::read_to_string(path).await {
+        Ok(text) => parse_prompts(&text),
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "cannot read the example prompts file");
+            Vec::new()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPromptsFile {
+    #[serde(default)]
+    prompts: Option<Vec<serde_yaml::Value>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPrompt {
+    title: Option<String>,
+    description: Option<String>,
+    agent: Option<String>,
+    prompt: Option<String>,
+    #[serde(default)]
+    models: Option<Vec<serde_yaml::Value>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPromptModel {
+    provider: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+/// Every valid prompt in an `onboarding.yaml` body, in file order, at most
+/// [`MAX_PROMPTS`]. An invalid entry is skipped with a warning; a body that
+/// is not a prompts file lists none.
+fn parse_prompts(text: &str) -> Vec<ExamplePrompt> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    let file: RawPromptsFile = match serde_yaml::from_str(text) {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::warn!(%error, "{PROMPTS_FILE} is not a valid prompts file; the setup wizard shows no example prompts");
+            return Vec::new();
+        }
+    };
+    let entries = file.prompts.unwrap_or_default();
+    let total = entries.len();
+    let mut prompts = Vec::new();
+    for (index, entry) in entries.into_iter().enumerate() {
+        if prompts.len() == MAX_PROMPTS {
+            tracing::warn!(
+                skipped = total - index,
+                "{PROMPTS_FILE} lists more than {MAX_PROMPTS} prompts; the rest are skipped"
+            );
+            break;
+        }
+        match prompt_entry(entry) {
+            Ok(prompt) => prompts.push(prompt),
+            Err(reason) => {
+                tracing::warn!(index, %reason, "skipping an example prompt in {PROMPTS_FILE}")
+            }
+        }
+    }
+    prompts
+}
+
+fn prompt_entry(value: serde_yaml::Value) -> Result<ExamplePrompt, String> {
+    let raw: RawPrompt = serde_yaml::from_value(value).map_err(|error| error.to_string())?;
+    let title = one_line(raw.title.as_deref()).ok_or("it has no title")?;
+    within("title", &title, MAX_TITLE_CHARS)?;
+    let description = one_line(raw.description.as_deref());
+    if let Some(description) = &description {
+        within("description", description, MAX_DESCRIPTION_CHARS)?;
+    }
+    let prompt = raw
+        .prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+        .ok_or_else(|| format!("{title:?} has no prompt"))?
+        .to_string();
+    within("prompt", &prompt, MAX_PROMPT_CHARS)?;
+    let agent = match one_line(raw.agent.as_deref()) {
+        None => DEFAULT_PROMPT_AGENT.to_string(),
+        Some(agent) if is_profile_id(&agent) => agent,
+        Some(agent) => {
+            return Err(format!(
+                "{title:?} names an invalid agent profile {agent:?}"
+            ))
+        }
+    };
+    let raw_models = raw.models.unwrap_or_default();
+    if raw_models.len() > MAX_PROMPT_MODELS {
+        tracing::warn!(
+            prompt = %title,
+            "an example prompt lists more than {MAX_PROMPT_MODELS} models; the rest are skipped"
+        );
+    }
+    let models = raw_models
+        .into_iter()
+        .take(MAX_PROMPT_MODELS)
+        .enumerate()
+        .filter_map(|(index, value)| match prompt_model(value) {
+            Ok(model) => Some(model),
+            Err(reason) => {
+                tracing::warn!(prompt = %title, index, %reason, "skipping a model of an example prompt");
+                None
+            }
+        })
+        .collect();
+    Ok(ExamplePrompt {
+        title,
+        description,
+        agent,
+        prompt,
+        models,
+    })
+}
+
+fn prompt_model(value: serde_yaml::Value) -> Result<PromptModel, String> {
+    let raw: RawPromptModel = serde_yaml::from_value(value).map_err(|error| error.to_string())?;
+    let provider = model_id("provider", raw.provider.as_deref())?;
+    let model = model_id("model", raw.model.as_deref())?;
+    let effort = match raw.effort.as_deref().map(str::trim) {
+        None | Some("") | Some("default") => None,
+        Some(effort) => {
+            let effort = effort.to_ascii_lowercase();
+            if !PROMPT_EFFORTS.contains(&effort.as_str()) {
+                return Err(format!(
+                    "effort {effort:?} is not one of {}",
+                    PROMPT_EFFORTS.join(", ")
+                ));
+            }
+            Some(effort)
+        }
+    };
+    Ok(PromptModel {
+        provider,
+        model,
+        effort,
+    })
+}
+
+/// A provider or model id: present, one token, no longer than ids get.
+fn model_id(field: &str, value: Option<&str>) -> Result<String, String> {
+    let value = value.map(str::trim).unwrap_or_default();
+    if value.is_empty() {
+        return Err(format!("it has no {field}"));
+    }
+    if value.chars().count() > MAX_ID_CHARS
+        || value.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(format!("{field} {value:?} is not an id"));
+    }
+    Ok(value.to_string())
+}
+
+/// An agent profile id as the Directory names them (its file name).
+fn is_profile_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().count() <= MAX_ID_CHARS
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// Trimmed, inner whitespace collapsed; `None` when blank.
+fn one_line(value: Option<&str>) -> Option<String> {
+    let line = value?.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!line.is_empty()).then_some(line)
+}
+
+fn within(field: &str, value: &str, max: usize) -> Result<(), String> {
+    if value.chars().count() > max {
+        return Err(format!("its {field} is longer than {max} characters"));
     }
     Ok(())
 }
@@ -653,6 +925,161 @@ mod tests {
             "~/.codex/auth.json"
         );
         assert_eq!(abbreviate(Path::new("/opt/x"), Some(home)), "/opt/x");
+    }
+
+    const PROMPTS: &str = r#"
+# Example prompts for the setup wizard.
+prompts:
+  - title: Build a TODO app
+    description: >-
+      A todo list with notes
+      and a public page
+    agent: ade-worker-builder
+    prompt: >-
+      Build a TODO app.
+      Show how many todos are still open.
+    models:
+      - { provider: claude-code, model: claude-sonnet-5-5, effort: medium }
+      - { provider: openai-codex, model: codex/gpt-6.1-sol, effort: XHigh }
+      - { provider: openai, model: gpt-6.1-sol }
+  - title: Explain this project
+    prompt: |
+      Explain this project.
+      Then help me decide what to work on next.
+"#;
+
+    #[test]
+    fn parses_prompts_with_their_profile_and_model_priority() {
+        let prompts = parse_prompts(PROMPTS);
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(
+            prompts[0],
+            ExamplePrompt {
+                title: "Build a TODO app".into(),
+                description: Some("A todo list with notes and a public page".into()),
+                agent: "ade-worker-builder".into(),
+                prompt: "Build a TODO app. Show how many todos are still open.".into(),
+                models: vec![
+                    PromptModel {
+                        provider: "claude-code".into(),
+                        model: "claude-sonnet-5-5".into(),
+                        effort: Some("medium".into()),
+                    },
+                    PromptModel {
+                        provider: "openai-codex".into(),
+                        model: "codex/gpt-6.1-sol".into(),
+                        effort: Some("xhigh".into()),
+                    },
+                    PromptModel {
+                        provider: "openai".into(),
+                        model: "gpt-6.1-sol".into(),
+                        effort: None,
+                    },
+                ],
+            }
+        );
+        // No agent runs the default profile; a literal block keeps its lines.
+        assert_eq!(prompts[1].agent, "default");
+        assert_eq!(prompts[1].description, None);
+        assert_eq!(
+            prompts[1].prompt,
+            "Explain this project.\nThen help me decide what to work on next."
+        );
+        assert!(prompts[1].models.is_empty());
+        let wire = serde_json::to_value(&prompts[1]).unwrap();
+        assert!(wire.get("description").is_none());
+    }
+
+    #[test]
+    fn skips_invalid_entries_and_keeps_the_rest() {
+        let long_title = "t".repeat(MAX_TITLE_CHARS + 1);
+        let text = format!(
+            r#"
+prompts:
+  - title: No prompt
+  - prompt: No title
+  - title: {long_title}
+    prompt: Too long a title
+  - title: Bad agent
+    agent: "../etc/passwd"
+    prompt: x
+  - title: Models as a map
+    prompt: x
+    models: {{ provider: openai }}
+  - "just a string"
+  - title: Kept
+    prompt: Keep me
+    models:
+      - {{ provider: openai, model: gpt-6.1-sol, effort: extreme }}
+      - {{ provider: openai }}
+      - {{ provider: "open ai", model: gpt }}
+      - {{ provider: anthropic, model: claude-sonnet-5-5, effort: default }}
+      - 42
+"#
+        );
+        let prompts = parse_prompts(&text);
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].title, "Kept");
+        // Only the model entry that validates is kept; `default` means none.
+        assert_eq!(
+            prompts[0].models,
+            vec![PromptModel {
+                provider: "anthropic".into(),
+                model: "claude-sonnet-5-5".into(),
+                effort: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn caps_how_many_prompts_and_models_it_lists() {
+        let models = (0..MAX_PROMPT_MODELS + 4)
+            .map(|index| format!("      - {{ provider: p, model: m{index} }}\n"))
+            .collect::<String>();
+        let mut text = String::from("prompts:\n");
+        for index in 0..MAX_PROMPTS + 3 {
+            text.push_str(&format!(
+                "  - title: Prompt {index}\n    prompt: Do {index}\n    models:\n{models}"
+            ));
+        }
+        let prompts = parse_prompts(&text);
+        assert_eq!(prompts.len(), MAX_PROMPTS);
+        assert_eq!(prompts[0].models.len(), MAX_PROMPT_MODELS);
+        assert_eq!(
+            prompts[MAX_PROMPTS - 1].title,
+            format!("Prompt {}", MAX_PROMPTS - 1)
+        );
+    }
+
+    #[test]
+    fn a_broken_or_foreign_file_lists_no_prompts() {
+        for text in [
+            "",
+            "   \n",
+            "prompts: [",
+            "- title: a list at the top",
+            "prompts: not a list",
+            "other: 1",
+            "prompts:",
+        ] {
+            assert!(parse_prompts(text).is_empty(), "{text:?} should list none");
+        }
+    }
+
+    #[tokio::test]
+    async fn loads_prompts_from_the_file_and_none_without_it() {
+        let dir = scratch_dir("prompts");
+        let path = dir.join(PROMPTS_FILE);
+        assert!(load_prompts(&path).await.is_empty());
+        std::fs::write(&path, PROMPTS).unwrap();
+        assert_eq!(load_prompts(&path).await.len(), 2);
+        let too_large = "#".repeat(MAX_PROMPTS_FILE_BYTES as usize + 1);
+        std::fs::write(&path, too_large).unwrap();
+        assert!(load_prompts(&path).await.is_empty());
+        // A directory where the file should be is no file at all.
+        let as_dir = dir.join("as-dir");
+        std::fs::create_dir_all(as_dir.join(PROMPTS_FILE)).unwrap();
+        assert!(load_prompts(&as_dir.join(PROMPTS_FILE)).await.is_empty());
     }
 
     #[tokio::test]

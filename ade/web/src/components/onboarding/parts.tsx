@@ -1,16 +1,18 @@
-import { Check, CircleAlert, LoaderCircle } from 'lucide-react'
+import { Boxes, Check, CircleAlert, LoaderCircle } from 'lucide-react'
 import type * as React from 'react'
 import { useEffect, useRef } from 'react'
-import { KeyChoice, KeyDestination } from '@/components/secrets/KeyChoice'
+import { KeyChoice } from '@/components/secrets/KeyChoice'
 import { Chip } from '@/components/ui/Chip'
 import { Eyebrow } from '@/components/ui/Eyebrow'
 import { describeStep, type PlanStep } from '@/lib/onboarding/plan'
 import {
+  DEFAULT_ENV_FILE,
   defaultKeyInput,
   type KeyDetection,
   type KeyInput,
   type KeyStore,
   keyInputReady,
+  keyStore,
 } from '@/lib/secrets'
 import { cn } from '@/lib/utils'
 import type { ActivityEntry } from './use-onboarding'
@@ -132,6 +134,39 @@ export function StatusChip({
   )
 }
 
+/**
+ * A worker setup adds, said plainly every time: iii is composable, and each
+ * new worker brings new behavior to the project.
+ */
+export function NewWorkerNote({
+  workers,
+  className,
+}: {
+  workers: readonly string[]
+  className?: string
+}) {
+  if (workers.length === 0) return null
+  return (
+    <span
+      className={cn(
+        'flex items-start gap-1.5 font-sans text-[13px] leading-5 text-ink',
+        className,
+      )}
+    >
+      <Boxes className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden />
+      <span>
+        {workers.length === 1 ? 'Adds a new worker: ' : 'Adds new workers: '}
+        {workers.map((worker, index) => (
+          <span key={worker}>
+            {index > 0 ? ', ' : null}
+            <span className="font-mono text-[12px] font-medium">{worker}</span>
+          </span>
+        ))}
+      </span>
+    </span>
+  )
+}
+
 /** What a plan will do, read before the button is pressed. */
 export function PlanPreview({
   steps,
@@ -144,50 +179,51 @@ export function PlanPreview({
   return (
     <Section title={title}>
       <ol className="flex flex-col gap-2 rounded-md bg-card-highlight px-3 py-3">
-        {steps.map((step, index) => {
-          const { title: line, detail } = describeStep(step)
-          return (
-            <li
-              // biome-ignore lint/suspicious/noArrayIndexKey: a plan is rebuilt whole; its order is its identity
-              key={index}
-              className="flex gap-3 font-sans text-[14px] text-ink"
-            >
-              <span className="w-4 shrink-0 text-right font-mono text-[12px] leading-5 tabular-nums text-ink">
-                {index + 1}
-              </span>
-              <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="leading-5">{line}</span>
-                {step.kind === 'add-workers' ? (
-                  <span className="flex flex-col gap-0.5">
-                    {step.workers.map((worker) => (
-                      <span
-                        key={worker}
-                        className="text-[13px] leading-relaxed text-ink"
-                      >
-                        <span className="font-mono text-ink">{worker}</span>
-                        {' — '}
-                        {step.why[worker]}
+        {steps.map((step, index) => (
+          <li
+            // biome-ignore lint/suspicious/noArrayIndexKey: a plan is rebuilt whole; its order is its identity
+            key={index}
+            className="flex gap-3 font-sans text-[14px] text-ink"
+          >
+            <span className="w-4 shrink-0 text-right font-mono text-[12px] leading-5 tabular-nums text-ink">
+              {index + 1}
+            </span>
+            <span className="flex min-w-0 flex-col gap-1">
+              <span className="leading-5">{describeStep(step)}</span>
+              {step.kind === 'add-workers' ? (
+                <span className="flex flex-col gap-0.5">
+                  {step.workers.map((worker) => (
+                    <span
+                      key={worker}
+                      className="text-[13px] leading-relaxed text-ink"
+                    >
+                      <span className="font-mono text-[12px] font-medium">
+                        {worker}
                       </span>
-                    ))}
-                  </span>
-                ) : (
-                  <span className="break-all font-mono text-[12px] text-ink">
-                    {detail}
-                  </span>
-                )}
-              </span>
-            </li>
-          )
-        })}
+                      {step.why[worker] ? ` — ${step.why[worker]}` : null}
+                    </span>
+                  ))}
+                </span>
+              ) : null}
+            </span>
+          </li>
+        ))}
       </ol>
+      {steps.some((step) => step.kind === 'add-workers') ? (
+        <p className="font-sans text-[13px] leading-relaxed text-ink">
+          iii is composable: each worker adds new behavior to your project, and
+          stays listed in <span className="font-mono">worker-compose.yaml</span>
+          .
+        </p>
+      ) : null}
     </Section>
   )
 }
 
 /**
  * Every action the wizard ran in this part of setup, live: the worker being
- * added and its compose phase, the secret stored, the setting written. The
- * log is `role="log"` so assistive tech hears each line as it lands.
+ * added, the key stored, the check that it answers. The log is `role="log"`
+ * so assistive tech hears each line as it lands.
  */
 export function ActivityLog({
   entries,
@@ -241,9 +277,6 @@ export function ActivityLog({
                   </span>
                 ) : null}
               </span>
-              <span className="break-all font-mono text-[12px] text-ink">
-                {entry.detail}
-              </span>
               {entry.note ? (
                 <span
                   className={cn(
@@ -285,8 +318,8 @@ function ActivityIcon({ status }: { status: ActivityEntry['status'] }) {
 }
 
 /**
- * The wizard's key chooser: the console's shared `KeyChoice`, then where the
- * key goes, so storing it is never a surprise.
+ * The wizard's key chooser: the console's shared `KeyChoice`, then one plain
+ * line on where the key goes, so storing it is never a surprise.
  */
 export function KeyField({
   envVar,
@@ -318,11 +351,11 @@ export function KeyField({
         stores={stores}
         envFile={envFile}
       />
-      <KeyDestination
-        name={envVar}
-        input={value ?? defaultKeyInput(detection)}
-        envFile={envFile}
-      />
+      <p className="font-sans text-[12px] leading-relaxed text-ink-faint">
+        {keyStore(value ?? defaultKeyInput(detection)) === 'env'
+          ? `Kept in this project's ${envFile ?? DEFAULT_ENV_FILE} file.`
+          : 'Stored encrypted on this machine. It never lands in a file you commit.'}
+      </p>
     </div>
   )
 }

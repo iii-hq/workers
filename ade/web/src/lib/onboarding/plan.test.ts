@@ -67,7 +67,7 @@ describe('providerChoices', () => {
     expect(codex.recommended).toBe(false)
     expect(codex.reason).toMatch(/not signed in/)
     expect(byId(choices, 'anthropic').reason).toBe(
-      'Found ANTHROPIC_API_KEY in your shell profile.',
+      'Found your Anthropic key in your shell profile.',
     )
   })
 
@@ -249,11 +249,24 @@ describe('connectPlan', () => {
       configuration: 'llm-router',
       path: ['providers', 'anthropic', 'api_key'],
       value: 'secret://ANTHROPIC_API_KEY',
+      owner: 'Anthropic',
     })
     const store = plan[1]
     if (store.kind !== 'store-secret') throw new Error('expected store-secret')
     expect(store.consumers).toEqual(['llm-router'])
-    expect(store.from).toBe('your shell profile')
+    // Short sentences for someone exploring iii; only workers are named.
+    expect(plan.map(describeStep)).toEqual([
+      'Add 2 workers: secrets and provider-claude-code',
+      'Store your Anthropic key encrypted on this machine',
+      'Connect Anthropic with that key',
+      'Check that Claude Code models are ready',
+      'Check that Anthropic models are ready',
+    ])
+    for (const step of plan) {
+      expect(describeStep(step)).not.toMatch(
+        /secret:\/\/|env:\/\/|::|llm-router|ANTHROPIC_API_KEY/,
+      )
+    }
   })
 
   it('never puts a pasted key in a description', () => {
@@ -267,8 +280,7 @@ describe('connectPlan', () => {
       new Set(['secrets']),
     )
     for (const step of plan) {
-      const { title, detail } = describeStep(step)
-      expect(`${title} ${detail}`).not.toContain('very-secret')
+      expect(describeStep(step)).not.toContain('very-secret')
     }
   })
 
@@ -282,8 +294,8 @@ describe('connectPlan', () => {
       'set-config',
       'wait-models',
     ])
-    expect(describeStep(plan[0]).title).toBe(
-      'Let llm-router read ANTHROPIC_API_KEY',
+    expect(describeStep(plan[0])).toBe(
+      'Use your Anthropic key already saved on this machine',
     )
   })
 
@@ -292,10 +304,9 @@ describe('connectPlan', () => {
       [{ choice: byId(choices, 'anthropic'), key: { mode: 'env' } }],
       new Set(['secrets', 'provider-anthropic']),
     )
-    expect(describeStep(shared[0])).toEqual({
-      title: 'Let llm-router read ANTHROPIC_API_KEY from this project’s .env',
-      detail: 'secrets::access ANTHROPIC_API_KEY → env://ANTHROPIC_API_KEY',
-    })
+    expect(describeStep(shared[0])).toBe(
+      'Use your Anthropic key from this project’s .env',
+    )
     expect(shared[1]).toMatchObject({
       kind: 'set-config',
       path: ['providers', 'anthropic', 'api_key'],
@@ -314,14 +325,9 @@ describe('connectPlan', () => {
       ],
       new Set(['secrets', 'provider-anthropic']),
     )
-    const { title, detail } = describeStep(pasted[0])
-    expect(title).toBe(
-      'Write ANTHROPIC_API_KEY to this project’s .env, from the key you pasted',
-    )
-    expect(detail).toBe(
-      'secrets::set ANTHROPIC_API_KEY store=env → env://ANTHROPIC_API_KEY',
-    )
-    expect(`${title} ${detail}`).not.toContain('very-secret')
+    const title = describeStep(pasted[0])
+    expect(title).toBe('Save your Anthropic key in this project’s .env')
+    expect(title).not.toContain('very-secret')
     expect(pasted[1]).toMatchObject({ value: 'env://ANTHROPIC_API_KEY' })
     // A namespace whose secrets worker uses another env file says so.
     const staging = connectPlan(
@@ -338,8 +344,8 @@ describe('connectPlan', () => {
       new Set(['secrets', 'provider-anthropic']),
       '.env.staging',
     )
-    expect(describeStep(staging[0]).title).toBe(
-      'Write ANTHROPIC_API_KEY to this project’s .env.staging, from the key you pasted',
+    expect(describeStep(staging[0])).toBe(
+      'Save your Anthropic key in this project’s .env.staging',
     )
   })
 
@@ -375,7 +381,7 @@ describe('connectPlan', () => {
       choices,
     )
     expect(extra.title).toBe('Sarvam')
-    expect(extra.reason).toBe('Sarvam provider worker')
+    expect(extra.reason).toBe('Set it up after it is added.')
     expect(
       connectPlan([{ choice: extra }], new Set()).map((s) => s.kind),
     ).toEqual(['add-workers'])
@@ -407,6 +413,13 @@ describe('judgePlan', () => {
       path: ['provider'],
       value: 'typesafe',
     })
+    expect(plan.map(describeStep)).toEqual([
+      'Add 2 workers: judge and judge-typesafe',
+      'Store your TypeSafe key encrypted on this machine',
+      'Connect Jev by TypeSafe with that key',
+      'Have Judge answer with Jev by TypeSafe',
+      'Check that Jev by TypeSafe answers',
+    ])
   })
 
   it('needs no key for a local judge', () => {

@@ -5,9 +5,7 @@ import { Button } from '@/components/ui/Button'
 import { Skeleton } from '@/components/ui/Skeleton'
 import {
   BROWSER_WORKER,
-  browserLabel,
   type ChromiumInstallProgress,
-  type ChromiumSource,
   type ChromiumState,
   describeProgress,
   manualInstall,
@@ -27,21 +25,13 @@ import type { OnboardingController } from './use-onboarding'
 const LEAD =
   'Agents open the pages they build in Chromium to make sure they work.'
 
-const SOURCE_LABEL: Record<ChromiumSource, string> = {
-  configured: 'set in the browser worker’s configuration',
-  env: 'from the CHROME environment variable',
-  system: 'installed on this machine',
-  managed: 'downloaded by setup',
-  playwright: 'from Playwright’s browser cache',
-  puppeteer: 'from Puppeteer’s browser cache',
-}
-
 /**
  * Setup's browser step: shown when the project runs the browser worker and
  * the machine has no Chromium for it. One button downloads a private copy
  * (followed live through the worker's progress events); people who would
  * rather install Chrome themselves get the one command for their system and
- * a way to check again.
+ * a way to check again. It says what a person exploring iii needs — the
+ * size, that it happens once — and leaves out where it lands on disk.
  */
 export function BrowserStep({
   onboarding,
@@ -228,18 +218,8 @@ function DownloadPanel({ state }: { state: ChromiumState }) {
           Download Chromium, just for agents
         </h3>
         <p className="text-pretty font-sans text-[13px] leading-relaxed text-ink">
-          About {state.approxDownloadMb} MB, downloaded once from Google's
-          Chrome for Testing
-          {state.installDir ? (
-            <>
-              {' '}
-              and kept in{' '}
-              <span className="break-all font-mono text-[12px]">
-                {state.installDir}
-              </span>
-            </>
-          ) : null}
-          . It leaves any Chrome you install yourself untouched.
+          About {state.approxDownloadMb} MB, downloaded once for this machine.
+          It leaves any Chrome you install yourself untouched.
         </p>
       </span>
     </section>
@@ -296,8 +276,7 @@ function ProgressPanel({
         {progress?.bytes_total
           ? `${megabytes(progress.bytes_total)} in all`
           : `About ${state?.approxDownloadMb ?? 200} MB in all`}
-        {state?.installDir ? ` · kept in ${state.installDir}` : ''}. This
-        usually takes a minute or two.
+        . This usually takes a minute or two.
       </p>
     </section>
   )
@@ -342,7 +321,7 @@ function ReadyPanel({
   state: ChromiumState
   installedHere: boolean
 }) {
-  const name = browserLabel(state.version)
+  const name = 'Chromium'
   if (state.engine === 'lightpanda' && !state.found) {
     return (
       <p className="rounded-md bg-ok-muted px-4 py-3 font-sans text-[14px] text-ink">
@@ -365,12 +344,6 @@ function ReadyPanel({
         <span className="font-sans text-[13px] leading-relaxed text-ink">
           Agents can open the pages they build and check that they work.
         </span>
-        {state.path ? (
-          <span className="break-all font-mono text-[12px] text-ink">
-            {state.path}
-            {state.source ? ` · ${SOURCE_LABEL[state.source]}` : ''}
-          </span>
-        ) : null}
       </span>
     </section>
   )
@@ -417,8 +390,7 @@ function ManualInstall({
         </p>
         {stillMissing ? (
           <p role="status" className="font-sans text-[13px] text-alert-strong">
-            Still no Chromium. The worker looks in the usual install folders and
-            on PATH; once the install finishes, check again.
+            Still no Chromium. Once the install finishes, check again.
           </p>
         ) : null}
         {showCheck ? (

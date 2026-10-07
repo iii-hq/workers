@@ -13,12 +13,7 @@ import { resolveConfigurationFamily } from '@/lib/configuration-family'
 import { fetchConsoleConfigValue } from '@/lib/console-config'
 import { getIiiClient } from '@/lib/iii-client'
 import { normalizeErrorMessage } from '@/lib/providers'
-import {
-  DEFAULT_ENV_FILE,
-  isMissingFunction,
-  keyStore,
-  storeKey,
-} from '@/lib/secrets'
+import { isMissingFunction, storeKey } from '@/lib/secrets'
 import { fetchEngineWorkersList } from '@/pages/Workers/api/workers'
 import { workerSource } from './catalog'
 import { type Done, type WakeTrigger, waitForEvents } from './event-wait'
@@ -363,7 +358,7 @@ async function composeAdd(
     handler: 'iii::console::onboarding::compose',
     triggers: [operationTrigger(requested)],
     start: async (arm) => {
-      report({ note: 'asking compose to declare them' })
+      report({ note: 'adding to worker-compose.yaml' })
       const accepted = await client.trigger<{ operation_id?: string }>(
         'compose::add',
         { workers: sources, operation_id: requested },
@@ -480,20 +475,17 @@ async function addWorkers(
 async function storeSecret(
   step: Extract<PlanStep, { kind: 'store-secret' }>,
 ): Promise<StepResult> {
-  const meta = await storeKey(
+  await storeKey(
     step.name,
     step.input,
     step.consumers,
     `Added by the ADE setup wizard for ${step.consumers.join(', ')}`,
   )
-  return {
-    note:
-      step.input.mode === 'stored' || step.input.mode === 'env'
-        ? `${meta.consumers.join(', ')} can read it`
-        : keyStore(step.input) === 'env'
-          ? `written to ${step.envFile ?? DEFAULT_ENV_FILE} (${meta.hint})`
-          : `stored ${meta.hint}`,
-  }
+  // The masked hint tells which key it was; the reference it got does not
+  // belong in setup's log.
+  return step.input.mode === 'stored' || step.input.mode === 'env'
+    ? {}
+    : { note: 'saved' }
 }
 
 /**
@@ -552,7 +544,7 @@ async function setConfigurationValue(
     id,
     value: setPath(current?.value ?? null, path, value),
   })
-  return { note: id }
+  return {}
 }
 
 /** The provider a `router::models::changed` / `router::provider::changed` event is about. */
@@ -736,13 +728,9 @@ async function checkJudge(
       const failure = judgeFailure(answer, title, hosted)
       if (failure) throw new Error(failure)
       if (!last && answer?.status !== 'error') {
-        const count = Array.isArray(answer?.models) ? answer.models.length : 0
         return {
           value: {
-            note:
-              count > 0
-                ? `answering · ${count} ${count === 1 ? 'model' : 'models'}`
-                : 'answering',
+            note: 'answering',
           },
         }
       }

@@ -3,10 +3,10 @@
  * before anything runs: which providers to recommend from what was found on
  * this machine, and the exact list of engine actions a choice turns into.
  *
- * Transparency is the point of the plan: every worker the wizard adds, every
- * secret it stores and every configuration value it writes is a `PlanStep`
- * the user reads before pressing the button, and the same steps become the
- * activity log while they run.
+ * Every action is a `PlanStep` the user reads before pressing the button,
+ * and the same steps become the activity log while they run. They read as
+ * short sentences for someone exploring iii: the one thing they always name
+ * is a worker being added, since each one brings new behavior to the project.
  */
 
 import {
@@ -160,18 +160,12 @@ export function registryChoices(
         ready: false,
         installed: false,
         recommended: false,
-        reason:
-          firstSentence(row.description) ??
-          'A provider worker from the registry.',
+        // Registry descriptions are written for worker authors; the wizard
+        // only says what happens next.
+        reason: 'Set it up after it is added.',
         modelCount: 0,
       }
     })
-}
-
-function firstSentence(text: string | null): string | null {
-  if (!text) return null
-  const end = text.search(/[.;](\s|$)/)
-  return (end > 0 ? text.slice(0, end) : text).trim() || null
 }
 
 export interface ChoiceInputs {
@@ -315,12 +309,11 @@ function keyReason(
   ready: boolean,
 ): string {
   if (ready) return 'Connected.'
-  if (detection?.stored) {
-    return `${provider.envVar} is already in the secrets store.`
-  }
+  if (detection?.stored) return 'Your key is already saved on this machine.'
   const source = preferredSource(detection)
-  if (source) return `Found ${provider.envVar} in ${sourceLabel(source)}.`
-  return `Needs an API key (${provider.envVar}).`
+  if (source)
+    return `Found your ${provider.title} key in ${sourceLabel(source)}.`
+  return 'Needs an API key.'
 }
 
 /* ------------------------------------------------------------------ */
@@ -338,8 +331,8 @@ export type PlanStep =
       kind: 'store-secret'
       name: string
       input: KeyInput
-      /** Human description of where the value comes from. */
-      from: string
+      /** Whose key it is, as the user knows it (`Anthropic`). */
+      owner: string
       consumers: string[]
       /** The secrets worker's env file, by name, for an env store key. */
       envFile?: string
@@ -351,6 +344,8 @@ export type PlanStep =
       /** Dotted path inside the entry value. */
       path: string[]
       value: string
+      /** What the value is for, as the user knows it (`Anthropic`, `Laya`). */
+      owner: string
     }
   | { kind: 'wait-models'; providerId: string; title: string }
   /** Ask the judge hub for its models: proves the strategy answers, key included. */
@@ -383,16 +378,15 @@ export function connectPlan(
   // llm-router depends on it, so it is normally running already; a project
   // set up before that gets it here, without a question of its own.
   if (keyed.length > 0 && !installedWorkers.has(SECRETS_WORKER)) {
-    why[SECRETS_WORKER] =
-      'Keeps API keys encrypted or in this project’s .env, outside every file you commit.'
+    why[SECRETS_WORKER] = SECRETS_WHY
   }
   for (const { choice } of pending) {
     if (choice.installed || installedWorkers.has(choice.worker)) continue
     why[choice.worker] =
       choice.kind === 'subscription'
-        ? `Serves ${choice.title} models from ${choice.provider.plan}.`
+        ? `Lets agents use ${choice.title} models, from ${choice.provider.plan}.`
         : choice.kind === 'key'
-          ? `Serves ${choice.title} models through llm-router.`
+          ? `Lets agents use ${choice.title} models.`
           : `Adds ${choice.title}; finish its sign-in or key in the model picker.`
   }
 
@@ -402,8 +396,9 @@ export function connectPlan(
   for (const { choice, key } of keyed) {
     if (choice.kind !== 'key' || !key) continue
     steps.push(
-      ...keyReferenceSteps(
+      keyStep(
         choice.provider.envVar,
+        choice.title,
         key,
         ['llm-router'],
         envFile,
@@ -414,6 +409,7 @@ export function connectPlan(
       configuration: ROUTER_CONFIGURATION,
       path: ['providers', choice.providerId, 'api_key'],
       value: keyReference(choice.provider.envVar, key),
+      owner: choice.title,
     })
   }
   // A registry provider the wizard has no recipe for may need a sign-in
@@ -429,34 +425,53 @@ export function connectPlan(
   return steps
 }
 
+/** Why the secrets worker is added, when a key needs it. */
+const SECRETS_WHY = 'Keeps your API keys safe, outside every file you commit.'
+
 /**
  * Put the key where `key` says for `consumers` — or, when it is already
  * there, make sure they may read it. An import's value never passes through
  * the browser.
  */
-function keyReferenceSteps(
+function keyStep(
   name: string,
+  owner: string,
   key: KeyInput,
   consumers: string[],
   envFile: string = DEFAULT_ENV_FILE,
-): PlanStep[] {
-  return [
-    {
-      kind: 'store-secret',
-      name,
-      input: key,
-      from:
-        key.mode === 'paste'
-          ? 'the key you pasted'
-          : key.mode === 'stored'
-            ? 'the secrets store'
-            : key.mode === 'env'
-              ? `this project’s ${envFile}`
-              : sourceLabel(key.source),
-      consumers,
-      ...(keyStore(key) === 'env' ? { envFile } : {}),
-    },
-  ]
+): PlanStep {
+  return {
+    kind: 'store-secret',
+    name,
+    input: key,
+    owner,
+    consumers,
+    ...(keyStore(key) === 'env' ? { envFile } : {}),
+  }
+}
+
+/**
+ * The workers setting Judge up with `option` adds, each with what it brings:
+ * the secrets worker (only for a hosted judge's key), the `judge` hub, and
+ * the option's own worker — whichever is not running yet.
+ */
+export function judgeWorkers(
+  option: JudgeOption,
+  installedWorkers: ReadonlySet<string>,
+  withKey = option.envVar !== undefined,
+): Record<string, string> {
+  const why: Record<string, string> = {}
+  if (option.envVar && withKey && !installedWorkers.has(SECRETS_WORKER)) {
+    why[SECRETS_WORKER] = SECRETS_WHY
+  }
+  if (!installedWorkers.has(JUDGE_HUB_WORKER)) {
+    why[JUDGE_HUB_WORKER] =
+      'Answers the small decisions agents make along the way.'
+  }
+  if (!installedWorkers.has(option.worker)) {
+    why[option.worker] = `Runs ${option.title}, the model behind those answers.`
+  }
+  return why
 }
 
 /** The actions that set Judge up with one strategy. */
@@ -465,28 +480,22 @@ export function judgePlan(
   key: KeyInput | undefined,
   installedWorkers: ReadonlySet<string>,
 ): PlanStep[] {
-  const why: Record<string, string> = {}
-  if (option.envVar && key && !installedWorkers.has(SECRETS_WORKER)) {
-    why[SECRETS_WORKER] =
-      'Stores API keys encrypted, outside every file you commit.'
-  }
-  if (!installedWorkers.has(JUDGE_HUB_WORKER)) {
-    why[JUDGE_HUB_WORKER] =
-      'The hub harness, function search and the browser ask for decisions.'
-  }
-  if (!installedWorkers.has(option.worker)) {
-    why[option.worker] = `Answers those decisions with ${option.title}.`
-  }
+  const why = judgeWorkers(option, installedWorkers, Boolean(key))
   const steps: PlanStep[] = []
   const workers = Object.keys(why)
   if (workers.length > 0) steps.push({ kind: 'add-workers', workers, why })
   if (option.envVar && key) {
-    steps.push(...keyReferenceSteps(option.envVar, key, [option.worker]))
+    steps.push(
+      keyStep(option.envVar, option.keyOwner ?? option.title, key, [
+        option.worker,
+      ]),
+    )
     steps.push({
       kind: 'set-config',
       configuration: option.worker,
       path: ['api_key'],
       value: keyReference(option.envVar, key),
+      owner: option.title,
     })
   }
   steps.push({
@@ -494,6 +503,7 @@ export function judgePlan(
     configuration: JUDGE_HUB_WORKER,
     path: ['provider'],
     value: option.id,
+    owner: option.title,
   })
   steps.push({
     kind: 'check-judge',
@@ -503,59 +513,44 @@ export function judgePlan(
   return steps
 }
 
-/** One line per step, as the plan preview and the activity log show it. */
-export function describeStep(step: PlanStep): {
-  title: string
-  detail: string
-} {
+/**
+ * One short sentence per step, as the plan preview and the activity log show
+ * it. Plain words for someone exploring iii: the worker being added is named,
+ * function ids, references and configuration entries are not.
+ */
+export function describeStep(step: PlanStep): string {
   switch (step.kind) {
     case 'add-workers':
-      return {
-        title:
-          step.workers.length === 1
-            ? `Add the ${step.workers[0]} worker`
-            : `Add ${step.workers.length} workers`,
-        detail: `compose::add ${step.workers.join(' ')}`,
-      }
+      return step.workers.length === 1
+        ? `Add the ${step.workers[0]} worker`
+        : `Add ${step.workers.length} workers: ${joinNames(step.workers)}`
     case 'store-secret': {
-      const reference = keyReference(step.name, step.input)
-      const readers = step.consumers.join(', ')
-      if (step.input.mode === 'stored' || step.input.mode === 'env') {
-        return {
-          title:
-            step.input.mode === 'env'
-              ? `Let ${readers} read ${step.name} from ${step.from}`
-              : `Let ${readers} read ${step.name}`,
-          detail: `secrets::access ${step.name} → ${reference}`,
-        }
+      const envFile = step.envFile ?? DEFAULT_ENV_FILE
+      if (step.input.mode === 'stored') {
+        return `Use your ${step.owner} key already saved on this machine`
       }
-      const call = `secrets::${step.input.mode === 'import' ? 'import' : 'set'}`
+      if (step.input.mode === 'env') {
+        return `Use your ${step.owner} key from this project’s ${envFile}`
+      }
       return keyStore(step.input) === 'env'
-        ? {
-            title: `Write ${step.name} to this project’s ${step.envFile ?? DEFAULT_ENV_FILE}, from ${step.from}`,
-            detail: `${call} ${step.name} store=env → ${reference}`,
-          }
-        : {
-            title: `Store ${step.name} encrypted, from ${step.from}`,
-            detail: `${call} ${step.name} → ${reference}`,
-          }
+        ? `Save your ${step.owner} key in this project’s ${envFile}`
+        : `Store your ${step.owner} key encrypted on this machine`
     }
     case 'set-config':
-      return {
-        title: `Point ${step.configuration} at ${step.value}`,
-        detail: `${step.configuration} · ${step.path.join('.')} = ${step.value}`,
-      }
+      return step.path[step.path.length - 1] === 'api_key'
+        ? `Connect ${step.owner} with that key`
+        : `Have Judge answer with ${step.owner}`
     case 'wait-models':
-      return {
-        title: `Wait for ${step.title} models`,
-        detail: `router::models::list provider=${step.providerId}`,
-      }
+      return `Check that ${step.title} models are ready`
     case 'check-judge':
-      return {
-        title: `Ask ${step.title} for its models`,
-        detail: 'judge::models::list',
-      }
+      return `Check that ${step.title} answers`
   }
+}
+
+/** `a`, `a and b`, `a, b and c`. */
+function joinNames(names: readonly string[]): string {
+  if (names.length <= 1) return names.join('')
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
 
 /** Set `path` inside a JSON object value, creating objects on the way. */

@@ -94,7 +94,7 @@ function storeStep(
     kind: 'store-secret',
     name: 'DEEPSEEK_API_KEY',
     input,
-    from: 'this project’s .env.staging',
+    owner: 'DeepSeek',
     consumers: ['llm-router'],
     envFile: '.env.staging',
   }
@@ -108,9 +108,9 @@ describe('runStep store-secret', () => {
     )
   })
 
-  it('says who may read a variable shared as it is, not that it was stored', async () => {
+  it('shares a variable as it is, without claiming it was stored', async () => {
     const result = await runStep(storeStep({ mode: 'env' }), context)
-    expect(result.note).toBe('llm-router can read it')
+    expect(result.note).toBeUndefined()
     expect(trigger).toHaveBeenCalledWith(
       'secrets::access',
       { name: 'DEEPSEEK_API_KEY', consumers: ['llm-router'], store: 'env' },
@@ -118,20 +118,21 @@ describe('runStep store-secret', () => {
     )
   })
 
-  it('names the env file a pasted key was written to', async () => {
+  it('says a pasted key was saved, without the key or its hint', async () => {
     const result = await runStep(
       storeStep({ mode: 'paste', value: 'sk-e2e-pasted-7777', store: 'env' }),
       context,
     )
-    expect(result.note).toBe('written to .env.staging (sk-e2e…7777)')
+    expect(result.note).toBe('saved')
   })
 
-  it('keeps saying stored for the encrypted store', async () => {
+  it('says the same for the encrypted store, never the reference', async () => {
     const result = await runStep(
       storeStep({ mode: 'paste', value: 'sk-e2e-pasted-7777' }),
       context,
     )
-    expect(result.note).toBe('stored sk-e2e…7777')
+    expect(result.note).toBe('saved')
+    expect(result.note).not.toContain('secret://')
   })
 })
 
@@ -467,11 +468,13 @@ describe('runStep set-config', () => {
     configuration: 'judge',
     path: ['provider'],
     value: 'laya',
+    owner: 'Laya',
   }
 
   it('writes straight away when the entry exists, without subscribing', async () => {
     entries = [{ id: 'judge' }]
-    await expect(runStep(step, context)).resolves.toEqual({ note: 'judge' })
+    // The entry id is the engine's business, not a line in setup's log.
+    await expect(runStep(step, context)).resolves.toEqual({})
     expect(bindings).toHaveLength(0)
   })
 
@@ -486,7 +489,7 @@ describe('runStep set-config', () => {
     expect(calls('configuration::list')).toBe(2)
     entries = [{ id: 'judge' }]
     emit('configuration', { event_type: 'registered', id: 'judge' })
-    await expect(done).resolves.toEqual({ note: 'judge' })
+    await expect(done).resolves.toEqual({})
     expect(trigger).toHaveBeenCalledWith('configuration::set', {
       id: 'judge',
       value: { provider: 'laya' },
@@ -626,7 +629,7 @@ describe('runStep check-judge', () => {
       'engine::functions-available',
       functions('judge::evaluate', 'judge-laya::models::list'),
     )
-    await expect(done).resolves.toEqual({ note: 'answering · 1 model' })
+    await expect(done).resolves.toEqual({ note: 'answering' })
   })
 
   it('falls back to the default wait when the provider refuses the long one', async () => {

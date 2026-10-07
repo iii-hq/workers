@@ -119,9 +119,11 @@ describe('useOnboarding: Chromium', () => {
     const entry = current().activity.find((item) => item.group === 'browser')
     expect(entry).toMatchObject({
       status: 'done',
-      detail: 'browser::chromium::install',
-      note: 'Chromium 131.0 · /c/chrome',
+      title: 'Download Chromium',
+      note: 'Chromium is ready',
     })
+    // Where it was installed is not setup's news.
+    expect(entry?.note).not.toContain('/c/chrome')
     expect(current().chromiumProgress?.phase).toBe('downloading')
     expect(current().snapshot.browser?.found).toBe(true)
     expect(current().running).toBeNull()

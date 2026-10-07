@@ -1,9 +1,8 @@
 /**
  * What the setup wizard knows before it asks the engine anything: the
  * subscription providers a local CLI sign-in unlocks, the API-key env var
- * each key provider declares, the judge strategies, the five things the
- * harness should show a new user as early as possible, and the worker that
- * carries the guided tour once setup is done.
+ * each key provider declares, the judge strategies, and the five things the
+ * harness should show a new user as early as possible.
  *
  * Worker names are registry slugs — what `compose::add` resolves. A
  * development checkout can point any of them at a local directory through
@@ -144,6 +143,8 @@ export interface JudgeOption {
   runs: string
   /** A hosted judge needs a key; local judges download a model instead. */
   envVar?: string
+  /** Who issues that key, as the user knows them (`TypeSafe`). */
+  keyOwner?: string
   keysUrl?: string
   recommended?: boolean
 }
@@ -157,6 +158,7 @@ export const JUDGE_OPTIONS: readonly JudgeOption[] = [
       'A model trained only to make typed decisions. Fast and the most accurate option.',
     runs: 'Hosted · needs a TypeSafe API key',
     envVar: 'TYPESAFE_API_KEY',
+    keyOwner: 'TypeSafe',
     keysUrl: 'https://typesafe.ai',
     recommended: true,
   },
@@ -164,15 +166,15 @@ export const JUDGE_OPTIONS: readonly JudgeOption[] = [
     id: 'laya',
     worker: 'judge-laya',
     title: 'Laya',
-    summary: 'Small ModernBERT decision checkpoints that run on this machine.',
-    runs: 'Local · CPU is enough · downloads its checkpoints once',
+    summary: 'Small decision models that run on this machine.',
+    runs: 'Runs on this machine · CPU is enough · downloads its models once',
   },
   {
     id: 'decider',
     worker: 'judge-decider',
     title: 'Decider',
-    summary: 'A 4B decision model served by llama.cpp on this machine.',
-    runs: 'Local · a GPU is recommended · downloads a GGUF model once',
+    summary: 'A larger decision model that runs on this machine.',
+    runs: 'Runs on this machine · a GPU is recommended · downloads its model once',
   },
 ]
 
@@ -238,14 +240,6 @@ export const PILLARS: readonly Pillar[] = [
     line: 'Agents subscribe to triggers and wake the moment something happens — no polling loops.',
   },
 ]
-
-/**
- * The guided tour that follows setup: the `onboarding` worker's page walks
- * through the ADE stage by stage, with the models just connected. The Ready
- * step adds the worker when the tour is accepted, then opens its page.
- */
-export const TOUR_WORKER = 'onboarding'
-export const TOUR_PAGE = 'onboarding'
 
 /** The console configuration key that overrides worker sources (development). */
 export const WORKER_SOURCES_KEY = 'onboarding'

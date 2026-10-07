@@ -1,5 +1,5 @@
 import { Check } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Dialog,
   DialogContent,
@@ -7,15 +7,16 @@ import {
   DialogTitle,
 } from '@/components/ui/Dialog'
 import { Eyebrow } from '@/components/ui/Eyebrow'
+import { type AgentEntry, listAgents } from '@/lib/backend/directory-prompts'
 import { requestComposerFocus } from '@/lib/composer-insert'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
+import { getIiiClient } from '@/lib/iii-client'
 import {
   fetchOnboardingState,
   type OnboardingStatus,
-  readableError,
   saveOnboardingState,
 } from '@/lib/onboarding/api'
-import { type JudgeOption, TOUR_PAGE } from '@/lib/onboarding/catalog'
+import type { JudgeOption } from '@/lib/onboarding/catalog'
 import { chromiumMissing } from '@/lib/onboarding/chromium'
 import {
   browserIsAutomated,
@@ -24,14 +25,17 @@ import {
   type WizardStepId,
 } from '@/lib/onboarding/open'
 import { servesUsableModels } from '@/lib/onboarding/plan'
-import { prepareTour } from '@/lib/onboarding/tour'
-import { requestPanelOpen } from '@/lib/panel-context'
+import {
+  type ExamplePrompt,
+  fetchExamplePrompts,
+} from '@/lib/onboarding/prompts'
 import { cn } from '@/lib/utils'
 import { BrowserStep } from './BrowserStep'
+import { openExamplePrompt } from './example-prompt'
 import { JudgeStep } from './JudgeStep'
 import { ModelsStep } from './ModelsStep'
 import type { StepPosition } from './parts'
-import { ReadyStep, type TourState } from './ReadyStep'
+import { ReadyStep } from './ReadyStep'
 import { connectedModelCount, useOnboarding } from './use-onboarding'
 import { WelcomeStep } from './WelcomeStep'
 
@@ -73,9 +77,11 @@ export function stepPosition(
  * command palette's "Install Chromium", a chat error that says Chromium is
  * missing), and stays listed once shown.
  *
- * Once a model is connected, Ready offers the guided tour. Accepting adds
- * the `onboarding` worker that carries it — quietly: it is how the tour is
- * delivered, not a choice in setup — and opens its page beside the chat.
+ * Ready ends setup with Finish, and — once a model is connected — offers
+ * the example prompts the project's template declares (`onboarding.yaml`,
+ * read through `console::onboarding::prompts`): a click finishes setup and
+ * opens a new chat with the prompt waiting in the composer, its agent
+ * profile and model chosen (see `openExamplePrompt`).
  */
 export function OnboardingWizardHost() {
   const ctx = useConversationsCtxOptional()
@@ -86,15 +92,18 @@ export function OnboardingWizardHost() {
     () => new Set(['welcome']),
   )
   const [judge, setJudge] = useState<JudgeOption | null>(null)
-  const [tour, setTour] = useState<TourState>({ kind: 'idle' })
+  const [prompts, setPrompts] = useState<ExamplePrompt[] | null>(null)
+  const [agents, setAgents] = useState<AgentEntry[] | null>(null)
   const status = useRef<OnboardingStatus | null>(null)
+  const ctxRef = useRef(ctx)
+  ctxRef.current = ctx
   const refreshModels = ctx?.refreshModels
   const onboarding = useOnboarding(open, () => {
     // The composer's picker follows router events, but a provider that
     // registers between two of them would otherwise wait for the next one.
     void refreshModels?.()
   })
-  const busy = onboarding.running !== null || tour.kind === 'preparing'
+  const busy = onboarding.running !== null
   const needsBrowser = chromiumMissing(onboarding.snapshot.browser)
   const [browserListed, setBrowserListed] = useState(false)
   useEffect(() => {
@@ -204,23 +213,70 @@ export function OnboardingWizardHost() {
     ],
   )
 
-  const start = useCallback(() => {
-    setOpen(false)
-    window.requestAnimationFrame(requestComposerFocus)
-  }, [])
-
-  const startTour = useCallback(async () => {
-    setTour({ kind: 'preparing' })
-    try {
-      await prepareTour()
-    } catch (error) {
-      setTour({ kind: 'failed', error: readableError(error) })
+  // Ready reads the project's example prompts, and the agent profiles they
+  // name, each time it shows: the template's file may have changed since.
+  useEffect(() => {
+    if (!open || step !== 'ready') return
+    if (!live) {
+      setPrompts([])
       return
     }
-    setTour({ kind: 'idle' })
+    let cancelled = false
+    setPrompts(null)
+    void fetchExamplePrompts()
+      .catch(() => [])
+      .then((next) => {
+        if (!cancelled) setPrompts(next)
+      })
+    void getIiiClient()
+      .then(listAgents)
+      .catch(() => null)
+      .then((next) => {
+        if (!cancelled && next) setAgents(next)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, step, live])
+
+  const agentNames = useMemo(
+    () =>
+      new Map(
+        (agents ?? []).map((entry) => [
+          entry.id,
+          entry.name.trim() || entry.id,
+        ]),
+      ),
+    [agents],
+  )
+
+  /** Close setup for good: it is complete, whichever way Ready was left. */
+  const finish = useCallback(() => {
     setOpen(false)
-    requestPanelOpen({ pageId: TOUR_PAGE })
-  }, [])
+    if (status.current !== 'completed') record('completed')
+  }, [record])
+
+  const start = useCallback(() => {
+    finish()
+    window.requestAnimationFrame(requestComposerFocus)
+  }, [finish])
+
+  const startPrompt = useCallback(
+    async (prompt: ExamplePrompt) => {
+      finish()
+      // Profiles still loading (a quick click): ask for them once more.
+      const profiles =
+        agents ??
+        (await getIiiClient()
+          .then(listAgents)
+          .catch(() => []))
+      const api = ctxRef.current
+      if (!api) return
+      openExamplePrompt(api, prompt, profiles)
+      window.requestAnimationFrame(requestComposerFocus)
+    },
+    [agents, finish],
+  )
 
   const index = steps.findIndex((entry) => entry.id === step)
   const content = useRef<HTMLDivElement>(null)
@@ -350,9 +406,10 @@ export function OnboardingWizardHost() {
             <ReadyStep
               onboarding={onboarding}
               judge={judge}
-              tour={tour}
-              onStartTour={() => void startTour()}
-              onStart={start}
+              prompts={prompts}
+              agentNames={agentNames}
+              onPrompt={(prompt) => void startPrompt(prompt)}
+              onFinish={start}
             />
           )}
         </div>

@@ -1,19 +1,14 @@
-import { ArrowRight, Check, Compass, LoaderCircle } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { ArrowRight, Boxes, Check, MessageSquareText } from 'lucide-react'
+import { useEffect, useId, useState } from 'react'
+import { DEFAULT_AGENT_ID } from '@/components/chat/agent-defaults'
 import { Button } from '@/components/ui/Button'
+import { Skeleton } from '@/components/ui/Skeleton'
 import { Wordmark } from '@/components/ui/Wordmark'
 import type { JudgeOption } from '@/lib/onboarding/catalog'
-import { browserLabel } from '@/lib/onboarding/chromium'
 import { servesUsableModels } from '@/lib/onboarding/plan'
-import { Section, StepLayout } from './parts'
+import type { ExamplePrompt } from '@/lib/onboarding/prompts'
+import { Section, StatusChip, StepLayout } from './parts'
 import type { OnboardingController } from './use-onboarding'
-
-/** The guided tour offered once a model is connected. */
-export type TourState =
-  | { kind: 'idle' }
-  /** Getting the tour ready: adding its worker, waiting for its page. */
-  | { kind: 'preparing' }
-  | { kind: 'failed'; error: string }
 
 /** Counts up to `target` once; lands on it at once under reduced motion. */
 function useCountUp(target: number, durationMs = 900): number {
@@ -40,22 +35,41 @@ function useCountUp(target: number, durationMs = 900): number {
   return value
 }
 
+/** The name the new-chat gallery shows for an agent profile, when known. */
+function agentLabel(
+  id: string,
+  names: ReadonlyMap<string, string>,
+): string | null {
+  return names.get(id) ?? (id === DEFAULT_AGENT_ID ? 'Default' : null)
+}
+
+/**
+ * The last step: what setup connected, every worker it added (iii is
+ * composable, so each one is new behavior in the project), and the
+ * project's example prompts — one click opens a new chat with the prompt
+ * ready to send, its agent profile and its model chosen.
+ */
 export function ReadyStep({
   onboarding,
   judge,
-  tour,
-  onStartTour,
-  onStart,
+  prompts,
+  agentNames,
+  onPrompt,
+  onFinish,
 }: {
   onboarding: OnboardingController
   judge: JudgeOption | null
-  tour: TourState
-  /** Accept the tour: the wizard gets it ready, then opens it. */
-  onStartTour: () => void
+  /** The project's example prompts; `null` while they are being read. */
+  prompts: readonly ExamplePrompt[] | null
+  /** Agent profile display names by id, for each prompt's chip. */
+  agentNames: ReadonlyMap<string, string>
+  /** Close the wizard and open a new chat with this prompt in the composer. */
+  onPrompt: (prompt: ExamplePrompt) => void
   /** Close the wizard and hand the composer the focus. */
-  onStart: () => void
+  onFinish: () => void
 }) {
   const { snapshot, activity } = onboarding
+  const ids = useId()
   const connected = (snapshot.providers ?? []).filter(servesUsableModels)
   const totalModels = connected.reduce(
     (sum, provider) => sum + provider.modelCount,
@@ -73,28 +87,19 @@ export function ReadyStep({
   const chromium = activity.some(
     (entry) => entry.group === 'browser' && entry.status === 'done',
   )
-    ? { version: snapshot.browser?.version, path: snapshot.browser?.path }
+    ? { version: snapshot.browser?.version }
     : null
-  const secretRefs = connected.flatMap((provider) =>
-    provider.credentialRef ? [provider.credentialRef] : [],
-  )
-  // `secret://` (encrypted) and `env://` (this project's .env), as used.
-  const schemes = [
-    ...new Set(secretRefs.map((ref) => `${ref.split('://')[0]}://`)),
-  ]
 
   const lines: { title: string; detail?: string }[] = [
     ...connected.map((provider) => ({
       title: `${provider.title} connected`,
-      detail: `${provider.modelCount} ${provider.modelCount === 1 ? 'model' : 'models'}${provider.credentialRef ? ` · key at ${provider.credentialRef}` : ''}`,
+      detail: `${provider.modelCount} ${provider.modelCount === 1 ? 'model' : 'models'}`,
     })),
     ...(chromium
       ? [
           {
-            title: `${browserLabel(chromium.version)} is ready for agents`,
-            detail: chromium.path
-              ? `they open and check the pages they build · ${chromium.path}`
-              : 'they open and check the pages they build',
+            title: 'Chromium is ready for agents',
+            detail: 'they open and check the pages they build',
           },
         ]
       : []),
@@ -102,25 +107,14 @@ export function ReadyStep({
       ? [
           {
             title: `Judge answers with ${judge.title}`,
-            detail: 'function search, argument repair, browser decisions',
-          },
-        ]
-      : []),
-    ...(secretRefs.length > 0
-      ? [
-          {
-            title: schemes.includes('env://')
-              ? 'Your keys stay out of configuration'
-              : 'Your keys stay out of git',
-            detail: `configuration holds only ${schemes.join(' and ')} references`,
+            detail: 'the small decisions agents make along the way',
           },
         ]
       : []),
   ]
 
-  // The tour's first stage is a message to the agent: it needs a model.
-  const offerTour = connected.length > 0
-  const preparing = tour.kind === 'preparing'
+  // A prompt needs a model to answer it.
+  const offerPrompts = connected.length > 0 && prompts?.length !== 0
 
   return (
     <StepLayout
@@ -129,33 +123,10 @@ export function ReadyStep({
           <span className="hidden font-sans text-[13px] text-ink @2xl:inline">
             Reopen this from the command palette: Set up the harness.
           </span>
-          {offerTour ? (
-            <span className="ml-auto flex items-center gap-2">
-              <Button
-                variant="ghost"
-                onClick={() => onStart()}
-                disabled={preparing}
-              >
-                Skip the tour
-              </Button>
-              <Button onClick={onStartTour} disabled={preparing}>
-                {preparing ? (
-                  <LoaderCircle className="iii-ui-spin" aria-hidden />
-                ) : null}
-                {preparing
-                  ? 'Preparing the tour…'
-                  : tour.kind === 'failed'
-                    ? 'Try again'
-                    : 'Start the tour'}
-                {preparing ? null : <ArrowRight aria-hidden />}
-              </Button>
-            </span>
-          ) : (
-            <Button className="ml-auto" onClick={() => onStart()}>
-              Start building
-              <ArrowRight aria-hidden />
-            </Button>
-          )}
+          <Button className="ml-auto" onClick={() => onFinish()}>
+            Finish
+            <ArrowRight aria-hidden />
+          </Button>
         </>
       }
     >
@@ -212,55 +183,93 @@ export function ReadyStep({
       ) : null}
 
       {added.length > 0 ? (
-        <Section title={`Workers added during setup (${added.length})`}>
-          <p className="font-sans text-[13px] leading-relaxed text-ink">
-            Each one is declared in{' '}
-            <span className="font-mono">worker-compose.yaml</span>, so the
-            project starts the same way on the next{' '}
-            <span className="font-mono">iii compose --up</span>.
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            {added.map((worker) => (
-              <span
-                key={worker}
-                className="rounded-sm bg-surface px-2 py-1 font-mono text-[12px] text-ink"
-              >
-                {worker}
-              </span>
-            ))}
+        <Section title={`Workers added to your project (${added.length})`}>
+          <div className="flex gap-3 rounded-md bg-card-highlight px-4 py-3">
+            <Boxes className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden />
+            <div className="flex min-w-0 flex-col gap-2">
+              <p className="text-pretty font-sans text-[13px] leading-relaxed text-ink">
+                iii is composable: each worker adds new behavior to your
+                project. They live in{' '}
+                <span className="font-mono">worker-compose.yaml</span>, so the
+                project starts with them every time.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {added.map((worker) => (
+                  <span
+                    key={worker}
+                    className="rounded-sm bg-surface px-2 py-1 font-mono text-[12px] text-ink"
+                  >
+                    {worker}
+                  </span>
+                ))}
+              </div>
+            </div>
           </div>
         </Section>
       ) : null}
 
-      {offerTour ? (
-        <section
-          aria-label="Guided tour"
-          className="onboarding-rise flex gap-3 rounded-md bg-card-highlight px-4 py-4 [animation-delay:900ms]"
-        >
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-surface text-ink">
-            <Compass className="size-4" aria-hidden />
-          </span>
-          <span className="flex min-w-0 flex-col gap-1">
-            <h3 className="font-sans text-[14px] font-semibold text-ink">
-              Keep going with a guided tour
-            </h3>
-            <p className="text-pretty font-sans text-[13px] leading-relaxed text-ink">
-              It runs right here in the ADE, with the models you just connected,
-              one stage at a time: send your first message, then watch the agent
-              add a worker, call your backend's functions, react to a trigger
-              and trace what it did. Each stage points at the part of the ADE it
-              talks about.
-            </p>
-            {tour.kind === 'failed' ? (
-              <p
-                role="alert"
-                className="font-sans text-[13px] text-alert-strong"
-              >
-                The tour could not start: {tour.error}
-              </p>
-            ) : null}
-          </span>
-        </section>
+      {offerPrompts ? (
+        <Section title="Try an example">
+          {prompts === null ? (
+            <div
+              role="status"
+              aria-label="Loading example prompts"
+              className="grid gap-2 @2xl:grid-cols-2"
+            >
+              {[0, 1].map((key) => (
+                <Skeleton key={key} className="h-24 rounded-md" />
+              ))}
+            </div>
+          ) : (
+            <ul className="grid gap-2 @2xl:grid-cols-2">
+              {prompts.map((prompt, index) => {
+                const agent = agentLabel(prompt.agent, agentNames)
+                const described = `${ids}-prompt-${index}`
+                return (
+                  <li
+                    // biome-ignore lint/suspicious/noArrayIndexKey: the list is read whole; two prompts may share a title
+                    key={index}
+                    className="onboarding-rise flex min-w-0"
+                    style={{ animationDelay: `${900 + index * 80}ms` }}
+                  >
+                    <button
+                      type="button"
+                      aria-label={`Start a chat: ${prompt.title}`}
+                      aria-describedby={described}
+                      onClick={() => onPrompt(prompt)}
+                      className="group flex w-full min-w-0 flex-col gap-1.5 rounded-md bg-surface px-3 py-3 text-left hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus"
+                    >
+                      <span className="flex items-start gap-2">
+                        <MessageSquareText
+                          className="mt-0.5 size-4 shrink-0 text-ink"
+                          aria-hidden
+                        />
+                        <span className="min-w-0 flex-1 font-sans text-[14px] font-medium text-ink">
+                          {prompt.title}
+                        </span>
+                      </span>
+                      <span id={described} className="flex flex-col gap-1.5">
+                        {prompt.description ? (
+                          <span className="text-pretty pl-6 font-sans text-[13px] leading-relaxed text-ink">
+                            {prompt.description}
+                          </span>
+                        ) : null}
+                        {agent ? (
+                          <span className="pl-6">
+                            <StatusChip tone="neutral">{agent}</StatusChip>
+                          </span>
+                        ) : null}
+                      </span>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+          <p className="font-sans text-[13px] leading-relaxed text-ink">
+            Opens a new chat with the message ready for you to send.
+          </p>
+        </Section>
       ) : null}
     </StepLayout>
   )

@@ -43,9 +43,8 @@ export type ActivityGroup = 'models' | 'browser' | 'judge'
 export interface ActivityEntry {
   id: number
   group: ActivityGroup
+  /** One plain sentence (`describeStep`). */
   title: string
-  /** The engine operation behind it, shown in mono. */
-  detail: string
   status: 'running' | 'done' | 'failed'
   /** Live progress line while running; the outcome once finished. */
   note?: string
@@ -242,14 +241,12 @@ export function useOnboarding(
       let ok = true
       for (const step of steps) {
         const id = nextId.current++
-        const { title, detail } = describeStep(step)
         setActivity((current) => [
           ...current,
           {
             id,
             group,
-            title,
-            detail,
+            title: describeStep(step),
             status: 'running',
             workers: step.kind === 'add-workers' ? step.workers : undefined,
           },
@@ -296,8 +293,7 @@ export function useOnboarding(
         {
           id,
           group: 'browser',
-          title: 'Download Chromium for the browser worker',
-          detail: 'browser::chromium::install',
+          title: 'Download Chromium',
           status: 'running',
         },
       ])
@@ -317,12 +313,7 @@ export function useOnboarding(
       if (outcome.ok) {
         patch(id, {
           status: 'done',
-          note: [
-            outcome.version ? `Chromium ${outcome.version}` : 'Chromium',
-            outcome.path,
-          ]
-            .filter(Boolean)
-            .join(' · '),
+          note: 'Chromium is ready',
           progress: undefined,
         })
       } else {

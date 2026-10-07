@@ -5,13 +5,14 @@ import {
   JUDGE_USES,
   type JudgeOption,
 } from '@/lib/onboarding/catalog'
-import { judgePlan, type KeyInput } from '@/lib/onboarding/plan'
+import { judgePlan, judgeWorkers, type KeyInput } from '@/lib/onboarding/plan'
 import { cn } from '@/lib/utils'
 import {
   ActivityLog,
   defaultKeyInput,
   KeyField,
   keyInputReady,
+  NewWorkerNote,
   PlanPreview,
   Rows,
   Section,
@@ -182,9 +183,16 @@ export function JudgeStep({
                       <span className="text-pretty font-sans text-[13px] leading-relaxed text-ink">
                         {option.summary}
                       </span>
-                      <span className="font-mono text-[12px] text-ink">
+                      <span className="font-sans text-[13px] text-ink">
                         {option.runs}
                       </span>
+                      {done ? null : (
+                        <NewWorkerNote
+                          workers={Object.keys(
+                            judgeWorkers(option, snapshot.installed),
+                          )}
+                        />
+                      )}
                     </span>
                   </label>
                   {checked && option.envVar && !done ? (

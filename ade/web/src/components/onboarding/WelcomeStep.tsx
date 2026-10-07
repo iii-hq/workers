@@ -15,7 +15,7 @@ export const PILLAR_ICONS: Record<PillarId, LucideIcon> = {
 const SETUP = [
   'Connect a model, starting from the Claude Code, Codex or API keys already on this machine',
   'Optionally, set up Judge for the small decisions agents make',
-  'Then, if you like, take a guided tour of the ADE with everything connected',
+  'Then pick an example prompt to start your first chat',
 ]
 
 export function WelcomeStep({
@@ -80,9 +80,9 @@ export function WelcomeStep({
           ))}
         </ol>
         <p className="font-sans text-[13px] leading-relaxed text-ink">
-          Nothing is installed without your click. Every worker this setup adds,
-          and every setting it writes, is shown before it runs and logged as it
-          happens.
+          Nothing is installed without your click. iii is composable: each
+          worker adds new behavior, and every worker this setup adds is named
+          before it runs.
         </p>
       </Section>
     </StepLayout>

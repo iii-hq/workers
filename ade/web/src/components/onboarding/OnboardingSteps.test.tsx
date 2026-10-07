@@ -1,8 +1,10 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { ToolScan } from '@/lib/onboarding/plan'
+import type { ExamplePrompt } from '@/lib/onboarding/prompts'
+import { JudgeStep } from './JudgeStep'
 import { ModelsStep } from './ModelsStep'
-import { ReadyStep, type TourState } from './ReadyStep'
+import { ReadyStep } from './ReadyStep'
 import {
   type ActivityEntry,
   type MachineSnapshot,
@@ -71,7 +73,7 @@ function controller(
 const noop = () => undefined
 
 describe('ModelsStep', () => {
-  it('reports each coding agent with where its sign-in lives, never what is in it', () => {
+  it('reports each coding agent without its sign-in file or CLI details', () => {
     const html = renderToStaticMarkup(
       <ModelsStep
         onboarding={controller({ installed: new Set(['llm-router']) })}
@@ -80,14 +82,16 @@ describe('ModelsStep', () => {
       />,
     )
     expect(html).toContain('Recommended for this machine')
-    expect(html).toContain('Sign-in at')
-    expect(html).toContain('~/.claude/.credentials.json')
+    expect(html).not.toContain('Sign-in at')
+    expect(html).not.toContain('~/.claude/.credentials.json')
+    expect(html).not.toContain('~/.local/bin/claude')
+    expect(html).not.toContain('2.1.288')
     // Installed but not signed in: beside the recommendations, saying why.
     expect(html).toContain('Not signed in')
     expect(html).toContain('not a ChatGPT account')
   })
 
-  it('recommends the signed-in agent and shows the plan before anything runs', () => {
+  it('recommends the signed-in agent, says which worker it adds, and shows the plan before anything runs', () => {
     const html = renderToStaticMarkup(
       <ModelsStep
         onboarding={controller({ installed: new Set(['llm-router']) })}
@@ -98,9 +102,15 @@ describe('ModelsStep', () => {
     )
     expect(html).toContain('Step 1 of 2')
     expect(html).toContain('uses your Claude Pro or Max plan, no API key')
+    expect(html).toContain('Adds a new worker: ')
     expect(html).toContain('What happens when you continue')
     expect(html).toContain('Add the provider-claude-code worker')
-    expect(html).toContain('router::models::list provider=claude-code')
+    expect(html).toContain('Check that Claude Code models are ready')
+    expect(html).toContain('iii is composable')
+    // No function ids or versions.
+    expect(html).not.toContain('router::models::list')
+    expect(html).not.toContain('compose::add')
+    expect(html).not.toMatch(/provider-claude-code@/)
   })
 
   it('holds the choices behind a skeleton until the machine is scanned', () => {
@@ -168,8 +178,13 @@ describe('ModelsStep', () => {
     )
     expect(html).toContain('Use the key from this project&#x27;s .env')
     expect(html).toContain('sk-ant…9f2c')
-    expect(html).toContain('secret://ANTHROPIC_API_KEY')
-    expect(html).toContain('Point llm-router at secret://ANTHROPIC_API_KEY')
+    expect(html).toContain(
+      'Stored encrypted on this machine. It never lands in a file you commit.',
+    )
+    expect(html).toContain('Store your Anthropic key encrypted on this machine')
+    expect(html).toContain('Connect Anthropic with that key')
+    expect(html).not.toContain('secret://')
+    expect(html).not.toContain('llm-router')
     // llm-router reads env:// too, so the key may stay a variable instead.
     expect(html).toContain('role="radiogroup"')
     expect(html).toContain('Encrypted')
@@ -196,43 +211,59 @@ const CONNECTED: MachineSnapshot['providers'] = [
   },
 ]
 
+const PROMPTS: ExamplePrompt[] = [
+  {
+    title: 'Build a TODO app',
+    description: 'A todo list with notes',
+    agent: 'ade-worker-builder',
+    prompt: 'Build a TODO app.',
+    models: [{ provider: 'claude-code', model: 'claude-sonnet-5-5' }],
+  },
+  {
+    title: 'Explain this project',
+    agent: 'default',
+    prompt: 'Explain this project.',
+    models: [],
+  },
+]
+
 function ready(
   snapshot: Partial<MachineSnapshot>,
-  tour: TourState = { kind: 'idle' },
   activity: ActivityEntry[] = [],
+  prompts: ExamplePrompt[] | null = PROMPTS,
 ) {
   return renderToStaticMarkup(
     <ReadyStep
       onboarding={controller(snapshot, activity)}
       judge={null}
-      tour={tour}
-      onStartTour={noop}
-      onStart={noop}
+      prompts={prompts}
+      agentNames={new Map([['ade-worker-builder', 'Create an app or tool']])}
+      onPrompt={noop}
+      onFinish={noop}
     />,
   )
 }
 
 describe('ReadyStep', () => {
-  it('sums up what is connected and every worker setup added', () => {
-    const html = ready({ providers: CONNECTED }, { kind: 'idle' }, [
+  it('sums up what is connected and every worker setup added, saying iii is composable', () => {
+    const html = ready({ providers: CONNECTED }, [
       {
         id: 1,
         group: 'models',
-        title: 'Add 2 workers',
-        detail: 'compose::add secrets provider-claude-code',
+        title: 'Add 2 workers: secrets and provider-claude-code',
         status: 'done',
         workers: ['secrets', 'provider-claude-code'],
       },
     ])
     expect(html).toContain('Your harness is ready')
     expect(html).toContain('Claude Code connected')
-    expect(html).toContain('key at secret://ANTHROPIC_API_KEY')
-    expect(html).toContain('Your keys stay out of git')
-    expect(html).toContain('configuration holds only secret:// references')
-    expect(html).toContain('Workers added during setup (2)')
+    expect(html).toContain('Workers added to your project (2)')
+    expect(html).toContain('iii is composable: each worker adds new behavior')
+    expect(html).toContain('worker-compose.yaml')
+    expect(html).toContain('provider-claude-code')
   })
 
-  it('says where the keys are when one stays an environment variable', () => {
+  it('never shows key references', () => {
     const html = ready({
       providers: [
         ...(CONNECTED ?? []),
@@ -246,38 +277,60 @@ describe('ReadyStep', () => {
         },
       ],
     })
-    expect(html).toContain('key at env://OPENAI_API_KEY')
-    expect(html).toContain('Your keys stay out of configuration')
-    expect(html).toContain(
-      'configuration holds only secret:// and env:// references',
-    )
+    expect(html).toContain('OpenAI connected')
+    expect(html).toContain('4 models')
+    expect(html).not.toContain('secret://')
+    expect(html).not.toContain('env://')
   })
 
-  it('offers the guided tour in place of starter prompts, without naming its worker', () => {
+  it('offers the example prompts and Finish, not the tour', () => {
     const html = ready({ providers: CONNECTED })
-    expect(html).toContain('Keep going with a guided tour')
-    expect(html).toContain('Start the tour')
-    expect(html).toContain('Skip the tour')
-    expect(html).not.toContain('Try one of these first')
-    expect(html).not.toContain('onboarding worker')
+    expect(html).toContain('Try an example')
+    expect(html).toContain('aria-label="Start a chat: Build a TODO app"')
+    expect(html).toContain('A todo list with notes')
+    // Each card names the agent profile it runs with, as the gallery does.
+    expect(html).toContain('Create an app or tool')
+    expect(html).toContain('Default')
+    expect(html).not.toContain('ade-worker-builder')
+    expect(html).toContain('Finish')
+    expect(html).not.toContain('Start the tour')
+    expect(html).not.toContain('guided tour')
   })
 
-  it('shows the tour getting ready, and why it could not start', () => {
-    expect(ready({ providers: CONNECTED }, { kind: 'preparing' })).toContain(
-      'Preparing the tour…',
-    )
-    const failed = ready(
-      { providers: CONNECTED },
-      { kind: 'failed', error: 'compose is not running' },
-    )
-    expect(failed).toContain('The tour could not start: compose is not running')
-    expect(failed).toContain('Try again')
+  it('holds the cards behind a skeleton while the prompts are read', () => {
+    const html = ready({ providers: CONNECTED }, [], null)
+    expect(html).toContain('Loading example prompts')
+    expect(html).not.toContain('Build a TODO app')
   })
 
-  it('offers no tour without a model to run it', () => {
+  it('shows no examples section when the project declares none', () => {
+    const html = ready({ providers: CONNECTED }, [], [])
+    expect(html).not.toContain('Try an example')
+    expect(html).toContain('Finish')
+  })
+
+  it('offers no prompts without a model to answer them', () => {
     const html = ready({ providers: [] })
-    expect(html).not.toContain('Keep going with a guided tour')
-    expect(html).toContain('Start building')
+    expect(html).not.toContain('Try an example')
+    expect(html).toContain('Finish')
+  })
+})
+
+describe('JudgeStep', () => {
+  it('says which workers each choice adds, in plain words', () => {
+    const html = renderToStaticMarkup(
+      <JudgeStep
+        onboarding={controller({ installed: new Set(['secrets']) })}
+        onBack={noop}
+        onNext={noop}
+      />,
+    )
+    expect(html).toContain('Adds new workers: ')
+    expect(html).toContain('judge-typesafe')
+    expect(html).toContain('Have Judge answer with Jev by TypeSafe')
+    expect(html).not.toContain('judge::models::list')
+    expect(html).not.toContain('secret://')
+    expect(html).not.toContain('GGUF')
   })
 })
 

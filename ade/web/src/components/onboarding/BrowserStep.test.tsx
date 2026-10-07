@@ -91,21 +91,22 @@ function html(onboarding: OnboardingController): string {
 const downloadEntry = (status: ActivityEntry['status']): ActivityEntry => ({
   id: 1,
   group: 'browser',
-  title: 'Download Chromium for the browser worker',
-  detail: 'browser::chromium::install',
+  title: 'Download Chromium',
   status,
 })
 
 describe('BrowserStep', () => {
-  it('offers the download in one button, with its size and where it goes', () => {
+  it('offers the download in one button, with its size but not where it goes', () => {
     const out = html(controller())
     expect(out).toContain('Step 2 of 3 · Optional')
     expect(out).toContain('Let agents check their work in a browser')
     expect(out).toContain('This machine doesn&#x27;t have it yet.')
     expect(out).toContain('Download Chromium')
-    expect(out).toContain('About 172 MB')
-    expect(out).toContain('~/.cache/iii/browser/chrome')
+    expect(out).toContain('About 172 MB, downloaded once for this machine.')
     expect(out).toContain('leaves any Chrome you install yourself untouched')
+    // Lean, for someone exploring iii: no install folder, no build jargon.
+    expect(out).not.toContain('~/.cache/iii/browser')
+    expect(out).not.toContain('Chrome for Testing')
     expect(out).toContain('Skip')
     // The manual path is there, folded away.
     expect(out).toContain('I&#x27;d rather install it myself')
@@ -176,11 +177,13 @@ describe('BrowserStep', () => {
         activity: [downloadEntry('done')],
       }),
     )
-    expect(out).toContain('Chromium 131.0.6778.85 is ready')
-    expect(out).toContain('downloaded by setup')
+    expect(out).toContain('Chromium is ready')
+    expect(out).not.toContain('131.0.6778.85')
+    expect(out).not.toContain('downloaded by setup')
+    expect(out).not.toContain('~/.cache/iii/browser')
     expect(out).toContain('Continue')
     expect(out).not.toContain('Skip')
-    expect(out).not.toContain('Download Chromium<')
+    expect(out).not.toMatch(/<button[^>]*>Download Chromium<\/button>/)
   })
 
   it('says so when a Chromium was already there', () => {
@@ -192,7 +195,7 @@ describe('BrowserStep', () => {
       }),
     )
     expect(out).toContain('is already here')
-    expect(out).toContain('installed on this machine')
+    expect(out).not.toContain('/usr/bin/chromium')
   })
 
   it('offers only the manual path where the worker cannot download', () => {
@@ -328,12 +331,15 @@ describe('ReadyStep after a Chromium download', () => {
           activity: [downloadEntry('done')],
         })}
         judge={null}
-        tour={{ kind: 'idle' }}
-        onStartTour={noop}
-        onStart={noop}
+        prompts={[]}
+        agentNames={new Map()}
+        onPrompt={noop}
+        onFinish={noop}
       />,
     )
-    expect(out).toContain('Chromium 131.0.6778.85 is ready for agents')
+    expect(out).toContain('Chromium is ready for agents')
+    expect(out).not.toContain('131.0.6778.85')
+    expect(out).not.toContain('~/.cache/iii/browser')
   })
 
   it('says nothing about Chromium when setup did not download it', () => {
@@ -341,9 +347,10 @@ describe('ReadyStep after a Chromium download', () => {
       <ReadyStep
         onboarding={controller({ snapshot: { browser: READY } })}
         judge={null}
-        tour={{ kind: 'idle' }}
-        onStartTour={noop}
-        onStart={noop}
+        prompts={[]}
+        agentNames={new Map()}
+        onPrompt={noop}
+        onFinish={noop}
       />,
     )
     expect(out).not.toContain('Chromium')

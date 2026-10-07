@@ -308,26 +308,6 @@ export function getExtPage(id: string): RegisteredPage | undefined {
   return undefined
 }
 
-/**
- * Resolves `true` once a page with `id` is registered — at once when it
- * already is — or `false` after `timeoutMs`. A worker that just connected
- * registers its pages only when the console has loaded its script.
- */
-export function whenExtPage(id: string, timeoutMs: number): Promise<boolean> {
-  if (getExtPage(id)) return Promise.resolve(true)
-  return new Promise((resolve) => {
-    const finish = (found: boolean) => {
-      clearTimeout(timer)
-      unsubscribe()
-      resolve(found)
-    }
-    const unsubscribe = pagesStore.subscribe(() => {
-      if (getExtPage(id)) finish(true)
-    })
-    const timer = setTimeout(() => finish(false), timeoutMs)
-  })
-}
-
 function dedupeOverlays(
   overlays: readonly RegisteredOverlay[],
 ): readonly RegisteredOverlay[] {
