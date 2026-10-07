@@ -277,7 +277,7 @@ Validar status, ID da avaliação, conjunto de respostas e domínio das opções
 - Investigar se, e somente se, a triagem respondeu `needs_investigation`, em análises automáticas e manuais.
 - Diagnósticos determinísticos, `insufficient_evidence`, confidence baixa, cobertura insuficiente, pedido manual e amostra de sessões quietas não enviam a sessão à LLM por si sós. Os diagnósticos continuam no resultado.
 
-Registrar o motivo do roteamento: `[needs_investigation]` ou `[]`. Os motivos antigos (`diagnostics`, `insufficient_evidence`, `low_confidence`, `coverage_insufficient`, `audit_sample`, `manual_request`) só permanecem no contrato para que registros já gravados continuem lendo; nada os produz mais. O limiar de 0,8 sobrevive apenas como o aviso de baixa confiança de `eval::propose-validation`.
+Registrar o motivo do roteamento: `[needs_investigation]` ou `[]`. Os motivos antigos (`diagnostics`, `insufficient_evidence`, `low_confidence`, `coverage_insufficient`, `audit_sample`, `manual_request`) só permanecem no contrato para que registros já gravados continuem lendo; nada os produz mais.
 
 ## 7. Investigação com a LLM do usuário
 

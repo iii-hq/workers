@@ -21,7 +21,6 @@ fn catalog_matches_the_registered_surface() {
             "eval::cancel",
             "eval::delete",
             "eval::attach-validation",
-            "eval::propose-validation",
             "eval::start-validation",
             "eval::review",
             "eval::reviews",

@@ -8,7 +8,6 @@ import type {
   MonitorConfig,
   MonitorModel,
   MonitorState,
-  ProposeValidationResponse,
   Recurrence,
   ResolveValidationParams,
   ReproduceChange,
@@ -25,8 +24,6 @@ import type {
 const TIMEOUT_MS = 30_000
 /** `eval::attach-validation` reads two E2E executions, 60 s each, then computes the evidence. */
 const ATTACH_TIMEOUT_MS = 130_000
-/** `eval::propose-validation` lists the E2E runs (10 s) and asks Jev (70 s). */
-const PROPOSE_TIMEOUT_MS = 90_000
 /** `eval::start-validation` reads the E2E stacks (10 s) and starts two executions (30 s each). */
 const START_VALIDATION_TIMEOUT_MS = 90_000
 /** `eval::reproduce` reads the session, assembles the context and counts it before answering. */
@@ -65,7 +62,6 @@ export interface EvalApi {
     candidateExecutionId: string
     dryRun?: boolean
   }): Promise<{ link: ValidationLink; saved: boolean }>
-  proposeValidation(evaluationId: string, suggestionIndex: number): Promise<ProposeValidationResponse>
   /** `eval::review`: moves the lifecycle, registers the criterion or records the verdict; answers the stored row. */
   review(evaluationId: string, suggestionIndex: number, change: ReviewChange): Promise<SuggestionReview>
   /** `eval::reviews`: the rows somebody acted on and per-analysis counts, of one analysis or of all. */
@@ -169,13 +165,6 @@ export function createEvalApi(host: Host): EvalApi {
           dry_run: request.dryRun ?? false,
         },
         ATTACH_TIMEOUT_MS,
-      )
-    },
-    proposeValidation(evaluationId, suggestionIndex) {
-      return trigger(
-        'eval::propose-validation',
-        { evaluation_id: evaluationId, suggestion_index: suggestionIndex },
-        PROPOSE_TIMEOUT_MS,
       )
     },
     reproduce(evaluationId, suggestionIndex, params) {

@@ -6,9 +6,9 @@ use serde_json::json;
 
 use crate::contract::{
     AnalyzeSessionRequestV1, AttachValidationRequestV1, ConfigureRequestV1, EvalListRequestV1,
-    EvaluationIdRequestV1, MonitorStateRequestV1, ProposeValidationRequestV1, RecurrenceRequestV1,
-    ReproduceRequestV1, ReviewRequestV1, ReviewsRequestV1, StartValidationRequestV1, StepRequestV1,
-    SweepEventV1, WakeEventV1,
+    EvaluationIdRequestV1, MonitorStateRequestV1, RecurrenceRequestV1, ReproduceRequestV1,
+    ReviewRequestV1, ReviewsRequestV1, StartValidationRequestV1, StepRequestV1, SweepEventV1,
+    WakeEventV1,
 };
 use crate::runtime::Deps;
 
@@ -21,7 +21,6 @@ pub const RESULT_ID: &str = "eval::result";
 pub const CANCEL_ID: &str = "eval::cancel";
 pub const DELETE_ID: &str = "eval::delete";
 pub const ATTACH_VALIDATION_ID: &str = "eval::attach-validation";
-pub const PROPOSE_VALIDATION_ID: &str = "eval::propose-validation";
 pub const START_VALIDATION_ID: &str = "eval::start-validation";
 pub const REVIEW_ID: &str = "eval::review";
 pub const REVIEWS_ID: &str = "eval::reviews";
@@ -193,26 +192,6 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              e2e::dashboard::execution-get) to one suggestion of a terminal analysis. The link \
              records report availability and, when the suggestion's scenario is known, the \
              evidence computed from the runs; it is not a verdict and starts no campaign.",
-        ),
-    );
-
-    let current = deps.clone();
-    iii.register_function(
-        PROPOSE_VALIDATION_ID,
-        RegisterFunction::new_async(move |request: ProposeValidationRequestV1| {
-            let deps = current.clone();
-            async move {
-                crate::runtime::propose_validation(&deps, request)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description(
-            "Ask Jev to pick the baseline and candidate E2E executions (listed through \
-             e2e::dashboard::executions-list) that fit one suggestion's validation plan. Code \
-             pre-filters the comparable pairs and counts the runs it leaves out; Jev only \
-             chooses among them. Nothing is attached and no campaign starts; the call's Jev \
-             usage is added to the analysis. Its confidence is not proof: check the runs.",
         ),
     );
 

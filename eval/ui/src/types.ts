@@ -547,39 +547,6 @@ export interface ValidationLink {
   attached_at: number
 }
 
-/** `eval::propose-validation`: Jev's pick among the comparable E2E pairs. */
-export type ProposalOutcome = 'proposed' | 'none_fits' | 'no_comparable_pair'
-
-export interface ValidationProposal {
-  baseline_execution_id: string
-  candidate_execution_id: string
-  /** Jev's distribution over the offered pairs, not whether the pair is right. */
-  confidence: number
-  low_confidence: boolean
-  /** Computed in code: "recorded stacks identical", "recorded stack differs: …" or "… unknown". */
-  stack_note: string
-}
-
-export interface ProposalAlternative {
-  baseline_execution_id: string
-  candidate_execution_id: string
-  probability: number
-  stack_note: string
-}
-
-export interface ProposeValidationResponse {
-  outcome: ProposalOutcome
-  proposal?: ValidationProposal
-  runs_listed: number
-  runs_considered: number
-  pairs_considered: number
-  pairs_dropped: number
-  /** Runs left out, by E2E status, `other_scenario` or `no_id`. */
-  excluded: Record<string, number>
-  alternatives: ProposalAlternative[]
-  jev?: { model: string; request_id: string; stats: Stats }
-}
-
 // Review: what people decide about a suggestion (`eval::review`, `eval::reviews`, `eval::start-validation`,
 // `eval::recurrence`). Every row is kept in the `eval_suggestion` scope, apart from the analysis.
 

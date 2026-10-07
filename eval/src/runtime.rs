@@ -36,7 +36,7 @@ use crate::error::EvalError;
 use crate::events::EvalEvents;
 use crate::locks::EvalLocks;
 use crate::state::ObservationIndexV1;
-use crate::{ids, proposal, queue, review, state, validation};
+use crate::{ids, queue, review, state, validation};
 
 /// Whole-analysis budget from admission, including queue wait and collection.
 const ANALYSIS_BUDGET_MS: i64 = 30 * 60 * 1_000;
@@ -48,8 +48,6 @@ const JUDGE_BUS_TIMEOUT_MS: u64 = 70_000;
 /// Transport slack between the provider's budget and the bus timeout.
 const JUDGE_SLACK_MS: u64 = 5_000;
 const JUDGE_PROVIDER: &str = "typesafe";
-/// Detailed executions the E2E keeps, so the list holds every run that can be attached.
-const E2E_LIST_LIMIT: u32 = 100;
 /// Scenarios offered to the analyst: one page of `e2e::dashboard::tests-list`,
 /// the most the E2E returns at once.
 const E2E_SCENARIOS_LIMIT: u32 = 100;
@@ -64,9 +62,6 @@ const MAX_ACTIVE_ANALYSES: usize = 500;
 const RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 const RETENTION_MAX_TERMINAL: usize = 1_000;
 const MAINTENANCE_INTERVAL_MS: i64 = 60 * 60 * 1_000;
-/// Below this confidence, Jev's pick of an E2E pair is flagged as unsure. An
-/// operating hypothesis, not a measured accuracy bound.
-const PAIR_LOW_CONFIDENCE: f64 = 0.8;
 const WINDOW_LOOKBACK_TURNS: usize = 20;
 const TAIL_ENTRIES: usize = 12;
 /// Share of the model context the diagnostics list may take.
@@ -947,195 +942,6 @@ pub(crate) fn suggestion_at(
     })
 }
 
-/// Asks Jev which two existing E2E executions best compare the Harness
-/// without and with one suggestion's change. Code decides which runs and
-/// pairs are eligible and counts what it leaves out; Jev only chooses among
-/// them. Nothing is attached: the caller reviews the pair and attaches it.
-/// The only write is the Jev call's usage on the analysis record.
-pub async fn propose_validation(
-    deps: &Deps,
-    request: ProposeValidationRequestV1,
-) -> Result<ProposeValidationResponseV1, EvalError> {
-    let record = state::get_record(&deps.iii, &request.evaluation_id)
-        .await?
-        .ok_or_else(|| EvalError::NotFound(request.evaluation_id.clone()))?;
-    if !record.status.is_terminal() {
-        return Err(EvalError::Conflict(
-            "propose E2E runs after the analysis finishes".into(),
-        ));
-    }
-    let assets = state::get_assets(&deps.iii, &record.evaluation_id).await?;
-    let suggestion = suggestion_at(&assets, request.suggestion_index)?;
-    // No lock is held from here to the usage update: neither the E2E nor Jev
-    // may block the analysis.
-    let list: Value = call(
-        deps,
-        "e2e::dashboard::executions-list",
-        json!({ "limit": E2E_LIST_LIMIT }),
-        BUS_TIMEOUT_MS,
-    )
-    .await
-    .map_err(|error| {
-        EvalError::Dependency(format!(
-            "e2e_unavailable: the E2E service could not list executions: {error}"
-        ))
-    })?;
-    let entries = list["executions"].as_array().ok_or_else(|| {
-        EvalError::Dependency(
-            "e2e_unavailable: e2e::dashboard::executions-list returned no `executions` list".into(),
-        )
-    })?;
-    let plan_scenario = suggestion
-        .validation
-        .scenario_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|scenario| !scenario.is_empty());
-    let candidates = proposal::candidates(entries, plan_scenario);
-    let mut response = ProposeValidationResponseV1 {
-        outcome: ProposalOutcomeV1::NoComparablePair,
-        proposal: None,
-        runs_listed: entries.len() as u32,
-        runs_considered: candidates.runs_considered,
-        pairs_considered: candidates.pairs.len() as u32,
-        pairs_dropped: candidates.pairs_dropped,
-        excluded: candidates.excluded.clone(),
-        alternatives: Vec::new(),
-        jev: None,
-    };
-    if candidates.pairs.is_empty() {
-        return Ok(response);
-    }
-
-    // No analysis deadline applies: a fresh bus budget with the provider's
-    // budget ending first, as in `call_judge`.
-    let request_id = ids::proposal_request_id(&record.evaluation_id);
-    let question = proposal::question(&candidates);
-    let evaluate = EvaluateRequest {
-        options: Default::default(),
-        request_id: Some(request_id.clone()),
-        model: None,
-        timeout_ms: JUDGE_TIMEOUT_MS.min(JUDGE_BUS_TIMEOUT_MS.saturating_sub(JUDGE_SLACK_MS)),
-        expires_at_unix_ms: Some(
-            (ids::now_ms() as u64 + JUDGE_BUS_TIMEOUT_MS).saturating_sub(JUDGE_SLACK_MS),
-        ),
-        evaluations: vec![Evaluation {
-            id: proposal::EVALUATION.into(),
-            state: proposal::state(&candidates, suggestion),
-            questions: BTreeMap::from([(proposal::QUESTION.into(), question.clone())]),
-        }],
-    };
-    judge_contract::validate_request(&evaluate).map_err(|code| {
-        EvalError::Dependency(format!(
-            "jev_invalid_request: the request is malformed ({})",
-            error_code_text(code)
-        ))
-    })?;
-    let reply = send_judge(deps, evaluate, JUDGE_BUS_TIMEOUT_MS).await;
-
-    // The call is real spend: keep its usage whatever Jev answered. The lock
-    // is taken only now, never while the E2E or Jev calls run.
-    let stats = match &reply {
-        Ok(EvaluateResponse::Ok { stats, .. } | EvaluateResponse::Error { stats, .. }) => {
-            Some(stats)
-        }
-        Err(_) => None,
-    };
-    add_proposal_usage(deps, &record.evaluation_id, stats).await?;
-
-    let invalid = |why: &str| EvalError::Dependency(format!("jev_invalid_response: {why}"));
-    match reply.map_err(|(code, message)| match code {
-        "bus" => EvalError::Dependency(format!("jev_unavailable: {message}")),
-        _ => invalid(&message),
-    })? {
-        EvaluateResponse::Error {
-            code,
-            http_status,
-            provider_error,
-            ..
-        } => Err(EvalError::Dependency(format!(
-            "jev_unavailable: {}",
-            judge_error_message(&error_code_text(code), http_status, provider_error.as_ref())
-        ))),
-        EvaluateResponse::Ok {
-            model,
-            mut results,
-            stats,
-        } => {
-            let answer = results
-                .remove(proposal::EVALUATION)
-                .filter(|_| results.is_empty())
-                .map(|result| result.answers)
-                .and_then(|mut answers| {
-                    let answer = answers.remove(proposal::QUESTION);
-                    answers.is_empty().then_some(answer).flatten()
-                })
-                .ok_or_else(|| {
-                    invalid("Jev returned an unexpected set of evaluations or answers")
-                })?;
-            judge_contract::validate_answer(&question, &answer)
-                .map_err(|_| invalid("Jev returned an answer outside the question's options"))?;
-            let Answer::Choice {
-                choice,
-                confidence,
-                probabilities,
-            } = answer
-            else {
-                return Err(invalid("Jev returned an answer of the wrong type"));
-            };
-            response.jev = Some(ProposalJevV1 {
-                model,
-                request_id,
-                stats,
-            });
-            response.alternatives = candidates
-                .alternatives(&probabilities, &choice)
-                .into_iter()
-                .map(
-                    |((baseline, candidate), probability)| ProposalAlternativeV1 {
-                        baseline_execution_id: candidates.runs[baseline].id.clone(),
-                        candidate_execution_id: candidates.runs[candidate].id.clone(),
-                        probability,
-                        stack_note: candidates.stack_note((baseline, candidate)),
-                    },
-                )
-                .collect();
-            if choice == proposal::NONE {
-                response.outcome = ProposalOutcomeV1::NoneFits;
-                return Ok(response);
-            }
-            let (baseline, candidate) = candidates
-                .pair_for(&choice)
-                .ok_or_else(|| invalid("Jev chose a pair that was not offered"))?;
-            response.outcome = ProposalOutcomeV1::Proposed;
-            response.proposal = Some(ValidationProposalV1 {
-                baseline_execution_id: candidates.runs[baseline].id.clone(),
-                candidate_execution_id: candidates.runs[candidate].id.clone(),
-                confidence,
-                low_confidence: confidence < PAIR_LOW_CONFIDENCE,
-                stack_note: candidates.stack_note((baseline, candidate)),
-            });
-            Ok(response)
-        }
-    }
-}
-
-/// Adds one Jev call to the analysis's own consumption. A deleted analysis
-/// has nowhere to keep it.
-async fn add_proposal_usage(
-    deps: &Deps,
-    evaluation_id: &str,
-    stats: Option<&Stats>,
-) -> Result<(), EvalError> {
-    let _guard = deps.locks.guard(evaluation_id).await;
-    if let Some(mut record) = state::get_record(&deps.iii, evaluation_id).await? {
-        add_judge_usage(&mut record.usage, stats);
-        record.updated_at = ids::now_ms();
-        state::put_record(&deps.iii, &record).await?;
-    }
-    Ok(())
-}
-
 fn e2e_lookup_error(execution_id: &str, role: &str, error: &str) -> EvalError {
     if error.contains("execution not found") || error.contains("invalid execution id") {
         EvalError::InvalidRequest(format!(
@@ -1357,7 +1163,7 @@ fn e2e_reference(execution_id: &str, bundle: &Value) -> E2eExecutionRefV1 {
         conclusion: text(&summary["conclusion"]).or_else(|| text(&detail["conclusion"])),
         started_at: text(&summary["started_at"])
             .or_else(|| text(&detail["started_at"]))
-            .and_then(|at| proposal::parse_ms(&at)),
+            .and_then(|at| ids::parse_ms(&at)),
         reports_available: !reports.is_empty()
             && reports.iter().all(|report| report.available)
             && availability.as_deref() != Some("unavailable"),

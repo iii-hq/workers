@@ -198,7 +198,7 @@ O E2E continua, como passo opcional e recolhido ("Non-regression in E2E"), para 
 - mudanças que agem em todos os passos (system prompt inteiro, skills, orquestração), em que um único ponto de decisão não prova o efeito geral;
 - sessões que vieram do E2E, rodando o mesmo cenário (`metadata.e2e_scenario`) sem caso novo.
 
-`eval::start-validation`, `eval::attach-validation`, critério e veredito ficam como estão, dentro dessa seção. `eval::propose-validation` sai da interface: a reprodução já produz a comparação.
+`eval::start-validation`, `eval::attach-validation`, critério e veredito ficam como estão, dentro dessa seção.
 
 ## 8. Mudanças no Harness
 

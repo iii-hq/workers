@@ -11,7 +11,6 @@ pub mod functions;
 pub mod ids;
 pub mod locks;
 pub mod manifest;
-pub mod proposal;
 pub mod queue;
 pub mod reproduce;
 pub mod review;

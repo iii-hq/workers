@@ -127,8 +127,8 @@
 
 /* --- attach dialog and sheet -------------------------------------------- */
 
-/* Anchored near the top, not centred: the dialog grows downward when Jev
-   answers, so the button that was pressed stays where it was. */
+/* Anchored near the top, not centred: the dialog grows downward when the
+   lookup answers, so the button that was pressed stays where it was. */
 [data-iii-ui="eval"] .eval-ui-val-dialog {
   top: 8vh;
   translate: -50% 0;
@@ -238,181 +238,13 @@
   padding-inline: 8px;
 }
 
-/* Fill with Jev, and what it does, beside it. */
-[data-iii-ui="eval"] .eval-ui-val-fill {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-[data-iii-ui="eval"] .eval-ui-val-fill > button {
-  flex: none;
-}
-
-/* Asking: the button keeps the focus (aria-disabled), and looks busy. */
-[data-iii-ui="eval"] .eval-ui-val-fill > button[aria-disabled="true"] {
-  opacity: 0.6;
-  cursor: progress;
-}
-
-[data-iii-ui="eval"] .eval-ui-val-fill-note {
-  flex: 1 1 auto;
-  min-width: 0;
-  margin: 0;
-}
-
-/* A picker's label, what it is, and the Jev mark at the end. */
+/* A picker's label and what it is. */
 [data-iii-ui="eval"] .eval-ui-val-fieldhead {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
   column-gap: 8px;
   min-height: 20px;
-}
-
-[data-iii-ui="eval"] .eval-ui-val-jev {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  align-self: center;
-  margin-left: auto;
-  padding: 2px 8px;
-  border-radius: 9999px;
-  background: var(--color-surface);
-  color: var(--color-ink);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.4;
-}
-
-[data-iii-ui="eval"] .eval-ui-val-jev > svg {
-  width: 12px;
-  height: 12px;
-}
-
-/* A notice's detail: the sentence in ink, the counts and the stack quiet. */
-[data-iii-ui="eval"] .eval-ui-val-pds {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 2px;
-}
-
-[data-iii-ui="eval"] .eval-ui-val-pd {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--color-ink);
-}
-
-[data-iii-ui="eval"] .eval-ui-val-pd[data-quiet] {
-  font-size: 12px;
-  color: var(--color-ink-faint);
-}
-
-/* The pair was changed by hand: one quiet line where the notice was. */
-[data-iii-ui="eval"] .eval-ui-val-edited {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  min-width: 0;
-}
-
-[data-iii-ui="eval"] .eval-ui-val-edited > svg {
-  flex: none;
-  margin-top: 1px;
-  color: var(--color-ink-faint);
-}
-
-[data-iii-ui="eval"] .eval-ui-val-edited-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-/* Jev's answer: the notice, then the other pairs. */
-[data-iii-ui="eval"] .eval-ui-val-zone {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 0;
-}
-
-/* Scrolled into view when the answer arrives, above the pinned actions. */
-[data-iii-ui="eval"] .eval-ui-val-notice {
-  scroll-margin-bottom: 5.5rem;
-}
-
-[data-iii-ui="eval"] .eval-ui-val-notice:focus-visible {
-  outline: none;
-}
-
-[data-iii-ui="eval"] .eval-ui-val-sheet .eval-ui-val-notice {
-  scroll-margin-bottom: 2rem;
-}
-
-/* Jev's other pairs: a tap fills both pickers. */
-[data-iii-ui="eval"] .eval-ui-val-alts {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-[data-iii-ui="eval"] .eval-ui-val-alt-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-[data-iii-ui="eval"] .eval-ui-val-alt {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: 100%;
-  min-width: 0;
-  padding: 8px 10px;
-  border: 0;
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  color: var(--color-ink);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  overflow-wrap: anywhere;
-}
-
-[data-iii-ui="eval"] .eval-ui-val-alt:hover:not(:disabled) {
-  background: var(--color-surface-hover);
-}
-
-[data-iii-ui="eval"] .eval-ui-val-alt:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: 2px;
-}
-
-[data-iii-ui="eval"] .eval-ui-val-alt:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
-/* One run per line, named by its side: two long names that share a prefix never wrap into each other. */
-[data-iii-ui="eval"] .eval-ui-val-alt-pair {
-  display: grid;
-  grid-template-columns: 4.5rem minmax(0, 1fr);
-  gap: 8px;
-  font-size: 12.5px;
-  line-height: 1.45;
-}
-
-[data-iii-ui="eval"] .eval-ui-val-alt-who {
-  font-size: 12px;
-  color: var(--color-ink-faint);
 }
 
 /* One status line under a field: looking up, found, an error. */
@@ -472,7 +304,7 @@
   flex: 1.6;
 }
 
-/* In the dialog a long body (a notice, Jev's other pairs) scrolls under the actions, which stay in reach. */
+/* In the dialog a long body (the comparability notice) scrolls under the actions, which stay in reach. */
 [data-iii-ui="eval"] .eval-ui-val-dialog {
   padding-bottom: 0;
 }
@@ -504,12 +336,6 @@
 [data-iii-ui="eval"] .eval-ui-val-actions[data-sheet="true"] > button,
 [data-iii-ui="eval"] .eval-ui-val-actions[data-sheet="true"] > button[type="submit"] {
   flex: none;
-}
-
-/* Touch: a pair to pick is a 44 px target. */
-[data-iii-ui="eval"] .eval-ui-val-form[data-narrow] .eval-ui-val-alt {
-  min-height: 44px;
-  justify-content: center;
 }
 
 /* The run list's popup: it keeps to the room the page leaves, and a run's line
@@ -647,8 +473,7 @@
 /* --- narrow: one column ---------------------------------------------------- */
 
 @container eval-val (max-width: 30rem) {
-  [data-iii-ui="eval"] .eval-ui-val-hint,
-  [data-iii-ui="eval"] .eval-ui-val-fill {
+  [data-iii-ui="eval"] .eval-ui-val-hint {
     flex-direction: column;
     align-items: stretch;
     gap: 8px;

@@ -269,7 +269,6 @@ root. This was chosen "for now"; no other restriction is added. Leave
 | `eval::cancel` | Signals the Jev call (`judge::cancel`) and stops the investigation (`harness::stop`); never touches the observed session. |
 | `eval::delete` | Deletes a terminal analysis; the turn stays marked as analyzed until retention. |
 | `eval::attach-validation` | Links baseline and candidate E2E executions to a suggestion and computes the pair's evidence (`dry_run: true` only looks them up). |
-| `eval::propose-validation` | Asks Jev which existing E2E pair fits a suggestion; attaches nothing. |
 | `eval::start-validation` | Explicitly starts a baseline and a candidate E2E execution (Docker) of one scenario, pinned to two pushed commits. Spends model tokens. |
 | `eval::review` | `set_lifecycle`, `set_criterion` or `set_verdict` on one suggestion of a terminal analysis. |
 | `eval::reviews` | The stored review rows and, per analysis, its suggestions counted by lifecycle status. |
@@ -392,35 +391,6 @@ not report it (a count may arrive as a float), never zero. It is a reference,
 not a verdict: improvement,
 no improvement, regression or inconclusive belong to the E2E comparison and its
 criteria.
-
-### Proposing the pair with Jev
-
-`eval::propose-validation {evaluation_id, suggestion_index}` (the console's
-"Fill with Jev") reads `e2e::dashboard::executions-list` (the 100 executions
-the E2E keeps) and decides in code which ordered pairs may be offered:
-
-- only `passed` or `failed` runs; every other status, runs without the plan's
-  scenario (`other_scenario`) and entries without an id are counted in
-  `excluded`;
-- same known model and provider, and the same case: both include the plan's
-  scenario, or, when the plan names none, both ran the same scenario set;
-- identical recorded stacks are kept (a change in an uncommitted build is not
-  in the record); each pair instead carries the stack difference computed in
-  code, e.g. `recorded stack differs: harness 1.8.42·f3a49e1 → 1.8.43·00c21f5`;
-- the 60 most recent pairs (by their older run); the rest is `pairs_dropped`.
-
-Without a pair, Jev is not called (`outcome: no_comparable_pair`). Otherwise
-one `judge::evaluate` call (provider `typesafe`) gets the suggestion, the plan
-and the runs the pairs refer to, with one Choice over the pairs plus `none`.
-The answer is `proposed` (`proposal.baseline_execution_id`,
-`candidate_execution_id`, `confidence`, `low_confidence` below 0.8) or
-`none_fits`, plus up to three `alternatives` (other offered pairs with at
-least 5% of Jev's probability). Confidence describes Jev's choice among the offered pairs, not
-whether the change works: the person checks the runs and attaches them with
-`eval::attach-validation`. The call's tokens are added to the analysis's
-`usage` (also when Jev answers an error). Errors carry stable prefixes:
-`e2e_unavailable:`, `jev_unavailable:` (with the provider's explanation, such
-as an HTTP 402 billing message) and `jev_invalid_response:`.
 
 ## Review and validation
 
