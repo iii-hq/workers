@@ -76,33 +76,82 @@ pub fn make_provider_list(
 }
 
 /// The model to start with, given the provider's ordered preferences and
-/// the chat model ids its catalog slice holds right now.
+/// the chat model ids its catalog slice holds right now. Candidates are the
+/// listed ids plus every slice model in the first preference's family (the
+/// id up to its first `-`, e.g. `claude`, `gpt`, `codex/gpt`).
 ///
-/// 1. The first preference the slice holds.
-/// 2. Otherwise the slice model sharing the longest id prefix with the first
-///    preference, provided they share at least the family (the id up to its
-///    first `-`, e.g. `claude`, `gpt`, `codex/gpt`); ties go to the newest
-///    by natural (digit-aware) order.
-/// 3. Otherwise `None`: consumers keep their old behaviour.
+/// 1. Variant first. A variant is the first all-letter id segment after
+///    the family (`terra` in `gpt-6.1-terra`, `sonnet` in
+///    `claude-sonnet-5-5`); the preferences rank variants in the order they
+///    first name them. Within a ranked variant the newest version wins,
+///    listed or not, so `gpt-7-luna` never beats `gpt-5.6-terra` when
+///    `terra` is listed first.
+/// 2. Ids with no ranked variant come last: the first listed one the slice
+///    holds, else the one sharing the longest id prefix with the first
+///    preference; ties go to the newest by natural (digit-aware) order.
+/// 3. No candidate: `None`, and consumers keep their old behaviour.
 pub fn resolve_default_model(preferences: &[String], slice_ids: &[String]) -> Option<String> {
-    if let Some(found) = preferences.iter().find(|p| slice_ids.contains(p)) {
-        return Some(found.clone());
-    }
     let first = preferences.first()?;
     let family_len = first.find('-').map_or(first.len(), |i| i + 1);
+    let mut variants: Vec<&str> = Vec::new();
+    for v in preferences.iter().filter_map(|p| variant(p)) {
+        if !variants.contains(&v) {
+            variants.push(v);
+        }
+    }
+    let rank = |id: &str| {
+        variant(id)
+            .and_then(|v| variants.iter().position(|known| *known == v))
+            .unwrap_or(variants.len())
+    };
+    let listed = |id: &String| {
+        preferences
+            .iter()
+            .position(|p| p == id)
+            .unwrap_or(preferences.len())
+    };
+    // `claude-sonnet-4-6-20260115` → [4, 6]: the numbers around the variant.
+    let variant_version = |id: &str| {
+        let rest = id.split_once('-').map_or("", |(_, rest)| rest);
+        let skip = variant(id).unwrap_or_default();
+        version(
+            &rest
+                .split('-')
+                .filter(|s| *s != skip)
+                .collect::<Vec<_>>()
+                .join("-"),
+        )
+    };
     slice_ids
         .iter()
         .map(|id| (common_prefix_len(first, id), id))
-        .filter(|(shared, _)| *shared >= family_len)
+        .filter(|(shared, id)| *shared >= family_len || listed(id) < preferences.len())
         .max_by(|(a_len, a), (b_len, b)| {
-            a_len
-                .cmp(b_len)
-                .then_with(|| version(&a[*a_len..]).cmp(&version(&b[*b_len..])))
+            let by_variant = rank(b).cmp(&rank(a));
+            let within = if rank(a) < variants.len() {
+                variant_version(a).cmp(&variant_version(b))
+            } else {
+                listed(b)
+                    .cmp(&listed(a))
+                    .then_with(|| a_len.cmp(b_len))
+                    .then_with(|| version(&a[*a_len..]).cmp(&version(&b[*b_len..])))
+            };
+            by_variant
+                .then(within)
                 // the plain id over its dated snapshot or a `-mini` variant
                 .then_with(|| b.len().cmp(&a.len()))
                 .then_with(|| natural_cmp(a, b))
         })
         .map(|(_, id)| id.clone())
+}
+
+/// The model variant: the first all-letter segment after the family,
+/// `gpt-6-terra` → `terra`, `claude-sonnet-5-5` → `sonnet`. Ids with no
+/// such segment (`kimi-k3`, `glm-5.3`) have none.
+fn variant(id: &str) -> Option<&str> {
+    id.split('-')
+        .skip(1)
+        .find(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphabetic()))
 }
 
 /// The version numbers an id starts with after the shared family prefix:
@@ -168,6 +217,106 @@ mod tests {
         assert_eq!(
             resolve_default_model(&prefs, &slice).as_deref(),
             Some("gpt-6-sol")
+        );
+    }
+
+    #[test]
+    fn terra_outranks_sol_outranks_luna_then_the_newest_version_wins() {
+        let prefs: Vec<String> = ["terra", "sol", "luna"]
+            .iter()
+            .flat_map(|v| ["6.1", "6", "5.6"].map(|n| format!("codex/gpt-{n}-{v}")))
+            .collect();
+        let pick = |slice: &[&str]| resolve_default_model(&prefs, &ids(slice));
+        // The Codex catalog that picked `gpt-6-luna` before.
+        assert_eq!(
+            pick(&[
+                "codex/gpt-5.6-luna",
+                "codex/gpt-5.6-terra",
+                "codex/gpt-6-luna"
+            ])
+            .as_deref(),
+            Some("codex/gpt-5.6-terra")
+        );
+        // A newer Luna or Sol, listed or not, never beats a Terra.
+        assert_eq!(
+            pick(&["codex/gpt-7-luna", "codex/gpt-6.1-sol", "codex/gpt-5-terra"]).as_deref(),
+            Some("codex/gpt-5-terra")
+        );
+        // No Terra: Sol over Luna.
+        assert_eq!(
+            pick(&["codex/gpt-7-luna", "codex/gpt-5.6-sol"]).as_deref(),
+            Some("codex/gpt-5.6-sol")
+        );
+        // Within a variant the newest version wins, listed or not.
+        assert_eq!(
+            pick(&[
+                "codex/gpt-6.1-terra",
+                "codex/gpt-7-terra",
+                "codex/gpt-6.2-terra"
+            ])
+            .as_deref(),
+            Some("codex/gpt-7-terra")
+        );
+        // Unranked ids come after every ranked variant.
+        assert_eq!(
+            pick(&["codex/gpt-7", "codex/gpt-7-mini", "codex/gpt-5.6-luna"]).as_deref(),
+            Some("codex/gpt-5.6-luna")
+        );
+        assert_eq!(
+            pick(&["codex/gpt-7-mini", "codex/gpt-7"]).as_deref(),
+            Some("codex/gpt-7")
+        );
+    }
+
+    #[test]
+    fn sonnet_outranks_opus_fable_haiku_then_the_newest_version_wins() {
+        let prefs = ids(&[
+            "claude-sonnet-5-5",
+            "claude-opus-5-5",
+            "claude-fable-5-1",
+            "claude-haiku-4-5",
+        ]);
+        let pick = |slice: &[&str]| resolve_default_model(&prefs, &ids(slice));
+        // A newer Opus, Fable or Haiku never beats a Sonnet.
+        assert_eq!(
+            pick(&[
+                "claude-opus-6",
+                "claude-haiku-6",
+                "claude-sonnet-4-6-20260115"
+            ])
+            .as_deref(),
+            Some("claude-sonnet-4-6-20260115")
+        );
+        // No Sonnet: Opus, then Fable, then Haiku.
+        assert_eq!(
+            pick(&[
+                "claude-haiku-5-5",
+                "claude-fable-5-1",
+                "claude-opus-4-1-20250805"
+            ])
+            .as_deref(),
+            Some("claude-opus-4-1-20250805")
+        );
+        assert_eq!(
+            pick(&["claude-haiku-5-5", "claude-fable-5-1"]).as_deref(),
+            Some("claude-fable-5-1")
+        );
+        // Within a variant the newest version wins, then the plain id over
+        // its dated snapshot.
+        assert_eq!(
+            pick(&[
+                "claude-sonnet-4-6",
+                "claude-sonnet-5-5-20260901",
+                "claude-sonnet-5-5",
+                "claude-sonnet-5",
+            ])
+            .as_deref(),
+            Some("claude-sonnet-5-5")
+        );
+        // The old `claude-<version>-<variant>` naming ranks the same way.
+        assert_eq!(
+            pick(&["claude-3-opus-20240229", "claude-3-5-sonnet-20241022"]).as_deref(),
+            Some("claude-3-5-sonnet-20241022")
         );
     }
 

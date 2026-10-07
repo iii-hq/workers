@@ -35,13 +35,18 @@ pub fn declaration() -> ProviderDeclaration {
         }),
         config_schema: None, // the router's default {api_key, api_url, max_tokens}
         supports_model_listing: Some(true),
-        // Starting point for callers that name no model: the current
-        // mid-range model first, then its predecessors (router picks the
-        // first one the live catalog holds).
+        // Starting point for callers that name no model. The router ranks
+        // by variant in this order (Sonnet, then Opus, then Fable, then
+        // Haiku), then the newest version within the variant.
         default_models: Some(vec![
             "claude-sonnet-5-5".into(),
             "claude-sonnet-5".into(),
             "claude-sonnet-4-6".into(),
+            "claude-opus-5-5".into(),
+            "claude-opus-5".into(),
+            "claude-fable-5-1".into(),
+            "claude-haiku-5-5".into(),
+            "claude-haiku-4-5".into(),
         ]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
         context_overflow_hint: None,

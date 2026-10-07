@@ -52,12 +52,19 @@ pub fn declaration() -> ProviderDeclaration {
         // unless marked write-only).
         config_schema: None,
         supports_model_listing: Some(true),
-        // Starting point for callers that name no model: the current
-        // mid-range model first, then its predecessors (router picks the
-        // first one the live catalog holds).
+        // Starting point for callers that name no model. The router ranks
+        // by variant in this order (Terra, then Sol, then Luna), then the
+        // newest version within the variant.
         default_models: Some(vec![
+            "copilot/gpt-6.1-terra".into(),
+            "copilot/gpt-6-terra".into(),
+            "copilot/gpt-5.6-terra".into(),
             "copilot/gpt-6.1-sol".into(),
             "copilot/gpt-6-sol".into(),
+            "copilot/gpt-5.6-sol".into(),
+            "copilot/gpt-6.1-luna".into(),
+            "copilot/gpt-6-luna".into(),
+            "copilot/gpt-5.6-luna".into(),
         ]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
         context_overflow_hint: None,

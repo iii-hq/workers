@@ -137,8 +137,11 @@ pub struct ProviderInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_svg: Option<String>,
     /// The model a consumer should start with when nothing else names one:
-    /// the first of the provider's declared `default_models` present in its
-    /// catalog slice, else the closest same-family model, else absent (see
+    /// the newest model of the best-ranked variant its declared
+    /// `default_models` name (Terra, Sol, Luna for GPT providers; Sonnet,
+    /// Opus, Fable, Haiku for Claude providers), else the first declared id
+    /// in its catalog slice, else the closest same-family model, else absent
+    /// (see
     /// `registry::availability::resolve_default_model`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
