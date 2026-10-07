@@ -522,7 +522,7 @@ fn agents_md(run: &Run, candidates: &[Candidate]) -> Vec<String> {
 const PROMPT_VERSION: &str = "unit-locators-1";
 /// The parsers behind every unit: keep in step with `Cargo.lock`.
 const PARSER_VERSION: &str =
-    "tree-sitter-0.24.7-python-0.23.6-go-0.23.4-rust-0.23.3-typescript-0.23.2";
+    "tree-sitter-0.25.10-python-0.23.6-go-0.23.4-rust-0.24.2-typescript-0.23.2";
 const CACHE_BYTES: usize = 64 << 20;
 const CACHE_ENTRY_BYTES: usize = 1 << 20;
 /// Resident cost of an entry beyond its answers (map slot, queue key, one

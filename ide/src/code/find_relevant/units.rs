@@ -8,9 +8,9 @@
 //!
 //! Deviations: TypeScript and JavaScript units come from tree-sitter (the
 //! TSX grammar for the JavaScript family), not the TypeScript compiler,
-//! applying its rules to the equivalent nodes; the grammars are the lsp
-//! worker's 0.23 pins, not jevgrep's 0.24/0.25 builds; Python names are not NFKC
-//! normalized.
+//! applying its rules to the equivalent nodes; the Go, Python and TypeScript
+//! grammars are the lsp worker's 0.23 pins, not jevgrep's 0.24/0.25 builds;
+//! Python names are not NFKC normalized.
 
 use tree_sitter::{Node, Parser, Tree};
 
@@ -902,6 +902,21 @@ mod tests {
         let result = inspect_all("sample.rs", source);
         for name in ["inner.View.show", "foreign", "VALUE", "make"] {
             unit(&result, name);
+        }
+
+        // `raw` is an ordinary identifier after `&` (a raw borrow needs
+        // `const`/`mut`); tree-sitter-rust 0.23 rejected the whole file
+        for source in [
+            "fn f(raw: String) -> usize { g(&raw) }
+",
+            "fn f(raw: &str) -> &str { &raw[1..2] }
+",
+            "fn f(x: u8) -> *const u8 { &raw const x }
+",
+        ] {
+            let result = inspect_all("sample.rs", source);
+            assert!(!result.text, "{source}");
+            assert_eq!(names(&result), [("f", 1, 1)]);
         }
     }
 
