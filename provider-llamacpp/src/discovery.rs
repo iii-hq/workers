@@ -169,7 +169,7 @@ pub fn params_billions(id: &str) -> Option<f64> {
             while j < b.len() && (b[j].is_ascii_digit() || b[j] == '.') {
                 j += 1;
             }
-            let ends_token = j + 1 == b.len() || !b[j + 1].is_ascii_alphanumeric();
+            let ends_token = j + 1 >= b.len() || !b[j + 1].is_ascii_alphanumeric();
             if j < b.len() && b[j].eq_ignore_ascii_case(&'b') && ends_token {
                 if let Ok(n) = b[i..j].iter().collect::<String>().parse::<f64>() {
                     return Some(n);
@@ -355,6 +355,11 @@ mod tests {
         assert_eq!(params_billions("Llama-3.2-1.5B-Instruct-Q4_K_M"), Some(1.5));
         assert_eq!(params_billions("gemma-3-270m"), None);
         assert_eq!(params_billions("my-model"), None);
+        assert_eq!(
+            params_billions("model-7"),
+            None,
+            "a trailing number is not a size"
+        );
         assert_eq!(params_billions("Q8_0-8bit"), None, "8bit is not a size");
     }
 
