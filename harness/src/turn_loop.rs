@@ -566,12 +566,15 @@ async fn generate_step(
     // away is told again.
     // ponytail: judged before this step's own compaction; a notice it summarizes away is re-told next step
     let anchor = compaction_anchor(&record.session_id, &entries);
-    let window = crate::window::build(
+    let mut window = crate::window::build(
         &entries,
         anchor.window_start,
         prev_watermark.as_deref(),
         Some(&ids::assistant_entry_id(&record.turn_id, payload.step)),
     );
+    if crate::window::binds_thinking(&record.options.model) {
+        crate::window::strip_thinking_logged_before(&mut window, &entries[..anchor.record_index]);
+    }
 
     // Build every deterministic model-facing input before context assembly.
     // Everything the model is shown is append-only: the system prompt is the
@@ -3347,7 +3350,7 @@ async fn assemble_context(
         allow_prune: crate::window::binds_thinking(&record.options.model).then_some(false),
     };
 
-    let out = match context.assemble(params).await {
+    let mut out = match context.assemble(params).await {
         Ok(out) => out,
         Err(error) if is_context_overflow_error(&error) => {
             return Err(HarnessError::ContextOverflow(error));
@@ -3369,6 +3372,13 @@ async fn assemble_context(
         )));
     }
 
+    // Everything this step kept was produced before its own compaction: the
+    // same strip every later step applies (crate::window::strip_thinking_logged_before).
+    if out.applied.compacted && crate::window::binds_thinking(&record.options.model) {
+        out.messages
+            .iter_mut()
+            .for_each(AgentMessage::strip_thinking);
+    }
     if out.applied.compacted {
         if let Some(summary) = &out.applied.summary {
             let tail_entry = out
@@ -3436,6 +3446,9 @@ struct CompactionAnchor {
     window_start: usize,
     /// Size of the history the summary replaced (display only).
     summarized_head_tokens: Option<u64>,
+    /// Path index of the record whose summary is in the prompt (0 when none):
+    /// the entries before it were logged under a prefix that is gone.
+    record_index: usize,
 }
 
 /// Resolve the window from the latest compaction entry:
@@ -3490,6 +3503,7 @@ fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnc
         }
     };
     CompactionAnchor {
+        record_index: if summary.is_some() { index } else { 0 },
         summary,
         window_start,
         // The console's entry carries only `tokens_before` (the head size).
@@ -4266,7 +4280,14 @@ mod tests {
                 summary: Some("new".into()),
                 window_start: 2,
                 summarized_head_tokens: Some(7),
+                record_index: 3,
             }
+        );
+        // The summary is in the prompt even when the boundary is off the
+        // path, so thinking logged before the record is still stale.
+        assert_eq!(
+            compaction_anchor("s", &[msg("u1"), compaction("c1", "s", json!("gone"))]).record_index,
+            1
         );
         // Null boundary: everything before the entry was summarised.
         assert_eq!(

@@ -2,7 +2,7 @@
 //! every step replays exactly the prefix earlier steps sent.
 //!
 //! Claude models that bind thinking to the conversation prefix (Opus 5.5,
-//! Fable 5.1) invalidate every later thinking block when an earlier message
+//! Sonnet 5.5, Fable 5.1) invalidate every later thinking block when an earlier message
 //! changes, moves, or disappears between requests; every provider's prompt
 //! cache loses the same prefix. So nothing the harness shows the model is
 //! ephemeral:
@@ -47,14 +47,29 @@ pub fn frozen_runtime_context(entries: &[LoadedEntry]) -> Option<String> {
 }
 
 /// Models that bind each thinking block to the exact prefix it was produced
-/// under (Claude Opus 5.5, Fable 5.1; Mythos 5.1 does not run the check):
-/// rewriting earlier history — pruning aged function results included —
-/// drops their reasoning.
+/// under (Claude Opus 5.5, Sonnet 5.5, Fable 5.1; Mythos 5.1 does not run the
+/// check): rewriting earlier history — pruning aged function results
+/// included — drops their reasoning.
 // ponytail: hardcoded ids; catalog capability flag when the next binding model ships
 pub fn binds_thinking(model: &str) -> bool {
-    ["claude-opus-5-5", "claude-fable-5-1"]
+    ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]
         .iter()
         .any(|m| model.contains(m))
+}
+
+/// A compaction puts the summary in the system prompt and drops the head, so
+/// on a binding model every thinking block logged before the compaction
+/// record — the kept tail's included — was signed over a prefix that is
+/// gone: the API drops it and every block after it, on every later request.
+/// Strip those blocks (text and calls stay), the same bytes on every step,
+/// so reasoning produced after the compaction stays valid.
+pub fn strip_thinking_logged_before(window: &mut Window, before: &[LoadedEntry]) {
+    let stale: HashSet<&str> = before.iter().map(|e| e.entry_id.as_str()).collect();
+    for (id, message) in &mut window.candidate {
+        if stale.contains(id.as_str()) {
+            message.strip_thinking();
+        }
+    }
 }
 
 /// A reorder decision, persisted as a [`MESSAGE_ORDER`] entry.
@@ -653,11 +668,47 @@ mod tests {
     }
 
     #[test]
+    fn thinking_logged_before_a_compaction_record_is_stripped_and_later_thinking_kept() {
+        let thought = |text: &str| {
+            let mut a = empty_assistant("p", "m");
+            a.content = vec![
+                ContentBlock::Thinking {
+                    text: String::new(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::RedactedThinking { data: "x".into() },
+                ContentBlock::text(text),
+            ];
+            AgentMessage::Assistant(a)
+        };
+        let entries = vec![
+            msg("u1", user("hi")),
+            msg("a1", thought("kept tail")),
+            custom(
+                "c1",
+                "compaction",
+                json!({"summary": "s", "tail_start_entry_id": "u1"}),
+            ),
+            msg("a2", thought("after the summary")),
+        ];
+        let mut w = build(&entries, 0, None, None);
+        strip_thinking_logged_before(&mut w, &entries[..2]);
+        let blocks = |i: usize| match &w.candidate[i].1 {
+            AgentMessage::Assistant(a) => a.content.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(blocks(1), vec![ContentBlock::text("kept tail")]);
+        assert_eq!(blocks(2).len(), 3, "thinking signed after the record stays");
+    }
+
+    #[test]
     fn binding_models_are_matched_by_id_and_dated_or_prefixed_forms() {
         assert!(binds_thinking("claude-opus-5-5"));
         assert!(binds_thinking("claude-opus-5-5-20260901"));
         assert!(binds_thinking("anthropic.claude-fable-5-1"));
         assert!(binds_thinking("claude-code/claude-opus-5-5"));
+        assert!(binds_thinking("claude-sonnet-5-5"));
+        assert!(binds_thinking("anthropic.claude-sonnet-5-5"));
         assert!(!binds_thinking("claude-mythos-5-1"));
         assert!(!binds_thinking("claude-opus-5"));
         assert!(!binds_thinking("claude-sonnet-5"));

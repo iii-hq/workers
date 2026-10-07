@@ -139,6 +139,19 @@ impl AgentMessage {
             *content = ContentBlock::strip_files(content);
         }
     }
+
+    /// Drop an assistant message's `thinking` / `redacted_thinking` blocks,
+    /// keeping its text and calls (model-bound copy only).
+    pub fn strip_thinking(&mut self) {
+        if let AgentMessage::Assistant(m) = self {
+            m.content.retain(|b| {
+                !matches!(
+                    b,
+                    ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
+                )
+            });
+        }
+    }
 }
 
 /// An empty assistant message to stream into (deterministic-id append
@@ -156,5 +169,41 @@ pub fn empty_assistant(provider: &str, model: &str) -> AssistantMessage {
         model: model.to_string(),
         provider: provider.to_string(),
         timestamp: AgentMessage::now_ms(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_thinking_keeps_an_assistant_turns_text_and_calls_only() {
+        let call = ContentBlock::FunctionCall {
+            id: "c1".into(),
+            function_id: "shell::exec".into(),
+            arguments: serde_json::json!({}),
+        };
+        let mut reply = empty_assistant("anthropic", "claude-sonnet-5-5");
+        reply.content = vec![
+            ContentBlock::Thinking {
+                text: String::new(),
+                signature: Some("sig".into()),
+            },
+            ContentBlock::RedactedThinking { data: "x".into() },
+            ContentBlock::text("ok"),
+            call.clone(),
+        ];
+        let mut message = AgentMessage::Assistant(reply);
+        message.strip_thinking();
+        match message {
+            AgentMessage::Assistant(a) => {
+                assert_eq!(a.content, vec![ContentBlock::text("ok"), call])
+            }
+            other => panic!("{other:?}"),
+        }
+        let user = AgentMessage::user_text("hi");
+        let mut stripped = user.clone();
+        stripped.strip_thinking();
+        assert_eq!(stripped, user);
     }
 }

@@ -60,6 +60,7 @@ mod tests {
             ("claude-opus-5-5-20260901", false),
             ("anthropic.claude-fable-5-1", false),
             ("claude-code/claude-opus-5-5", false),
+            ("claude-sonnet-5-5", false),
             ("claude-mythos-5-1", true),
             ("openai::small", true),
         ] {
