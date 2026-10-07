@@ -1,6 +1,6 @@
 # pubsub
 
-> **Deprecated:** pubsub is deprecated (pubsub) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+> **Deprecated:** pubsub is deprecated (pubsub) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 >
 > This covers the `publish` function, the `subscribe` trigger type and the
 > `pubsub` configuration entry. For new code, use a worker-owned trigger type

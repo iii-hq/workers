@@ -2,7 +2,7 @@
 name: pubsub
 tags: pubsub, publish, subscribe, events, redis
 description: >-
-  DEPRECATED (removal version TBD; migration guide
+  DEPRECATED (will be removed in an upcoming release; migration guide
   https://iii.dev/docs/upgrading/migrate-from-streams). Fire-and-forget topic pub/sub: broadcast an event with `publish` and every
   matching `subscribe` trigger receives it. Use for real-time notifications
   where missed events are acceptable.
@@ -10,7 +10,7 @@ description: >-
 
 # pubsub
 
-> **Deprecated:** pubsub is deprecated (pubsub) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+> **Deprecated:** pubsub is deprecated (pubsub) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 >
 > Applies to `publish`, the `subscribe` trigger type and the `pubsub` configuration entry. Do not start new work on it: use a worker-owned trigger type for fire-and-forget fan-out, or the `queue` worker (`iii::durable::publish` + `durable:subscriber`) when every event must be processed. The worker logs rate-limited deprecation warnings (target `iii::deprecation`); topic `stream.events`, used by the engine's iii-stream bridge, is exempt.
 

@@ -52,7 +52,7 @@ const MAX_CALLER_LEN: usize = 64;
 /// The standard deprecation sentence for `entry`.
 pub fn deprecation_message(entry: &str) -> String {
     format!(
-        "{entry} is deprecated (pubsub) and will be removed in a future release (version TBD). \
+        "{entry} is deprecated (pubsub) and will be removed in an upcoming release. \
          Behavior is unchanged for now. Migration guide: {MIGRATION_GUIDE_URL}"
     )
 }
@@ -228,7 +228,7 @@ mod tests {
     fn message_is_the_standard_sentence() {
         assert_eq!(
             deprecation_message("publish"),
-            "publish is deprecated (pubsub) and will be removed in a future release (version TBD). \
+            "publish is deprecated (pubsub) and will be removed in an upcoming release. \
              Behavior is unchanged for now. Migration guide: \
              https://iii.dev/docs/upgrading/migrate-from-streams"
         );
