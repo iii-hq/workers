@@ -94,11 +94,13 @@ pub fn build_body(args: &BodyArgs, warnings: &mut Vec<String>) -> Value {
     }
     if let Some(t) = &args.thinking {
         body["thinking"] = serde_json::to_value(t).expect("serializable thinking config");
-        // Opus 5.5 / Fable 5.1 bind each thinking block to the exact prefix
-        // (system, tools, earlier messages) it was produced under; an edited
-        // prefix 400s on enforced accounts. Models without the check accept
-        // the object, so it rides on every thinking request.
-        if let Some(behavior) = args.prefix_mismatch {
+        // Opus 5.5 / Sonnet 5.5 / Fable 5.1 bind each thinking block to the
+        // exact prefix (system, tools, earlier messages) it was produced
+        // under; an edited prefix 400s on enforced accounts. Models without
+        // the check accept the object, so it rides on every adaptive request
+        // — only there: `between_tools` takes no other field and `disabled`
+        // binds nothing, so either with it is a 400.
+        if let Some(behavior) = args.prefix_mismatch.filter(|_| t.mode == "adaptive") {
             body["thinking"]["block_binding"] = json!({ "prefix_mismatch_behavior": behavior });
         }
     }
@@ -328,6 +330,21 @@ mod tests {
         let mut a = args();
         a.prefix_mismatch = Some("drop_block");
         assert!(build_body(&a, &mut Vec::new()).get("thinking").is_none());
+    }
+
+    #[test]
+    fn block_binding_never_rides_with_thinking_off() {
+        // `between_tools` (Sonnet 5.5) takes no other field and `disabled`
+        // produces no blocks to bind: either with `block_binding` is a 400.
+        let c = cfg(AuthMode::ApiKey);
+        for off in [crate::thinking::BETWEEN_TOOLS, crate::thinking::DISABLED] {
+            let mut a = args();
+            a.thinking = Some(off.clone());
+            a.prefix_mismatch = Some("drop_block");
+            let body = build_body(&a, &mut Vec::new());
+            assert_eq!(body["thinking"], json!({ "type": off.mode }));
+            assert!(betas(&build_headers(&c, &body)).is_empty(), "{body}");
+        }
     }
 
     fn betas<'a>(h: &'a [(&'static str, String)]) -> Vec<&'a str> {

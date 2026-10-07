@@ -3378,6 +3378,36 @@ async fn assemble_context(
         out.messages
             .iter_mut()
             .for_each(AgentMessage::strip_thinking);
+        // The assembled count still holds the stripped blocks; an unchanged
+        // request reuses it for the budget reservation and the snapshot, so
+        // measure what is actually sent. On failure the larger count stands
+        // (it only over-reserves).
+        let recount = context
+            .count_tokens(crate::clients::context::CountTokensParams {
+                messages: out
+                    .messages
+                    .iter()
+                    .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
+                    .collect(),
+                model_id: record.options.model.clone(),
+                provider: record.options.provider.clone(),
+                system_prompt: Some(out.system_prompt.clone()),
+                tools: inputs.tools.to_vec(),
+            })
+            .await;
+        match recount {
+            Ok(count) => {
+                out.token_count = count.tokens.saturating_add(inputs.request_overhead_tokens);
+                if let (Some(breakdown), Some(by_role)) = (out.breakdown.as_mut(), count.by_role) {
+                    breakdown.by_role = by_role;
+                }
+            }
+            Err(error) => tracing::warn!(
+                session_id = %record.session_id,
+                %error,
+                "recount after stripping pre-compaction thinking failed; keeping the assembled count"
+            ),
+        }
     }
     if out.applied.compacted {
         if let Some(summary) = &out.applied.summary {

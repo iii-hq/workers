@@ -102,6 +102,9 @@ pub struct CountTokensParams {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CountTokensOutput {
     pub tokens: u64,
+    /// The message tokens by role (system prompt and tools in no bucket).
+    #[serde(default)]
+    pub by_role: Option<ByRoleTokens>,
 }
 
 #[derive(Clone)]
