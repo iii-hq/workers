@@ -205,12 +205,16 @@ export function DeviceSignIn({
       page?.close()
       return
     }
-    void copyTextToClipboard(next.user_code)
     if (page) {
       page.opener = null
       page.location.href = next.verification_uri
     }
     watch(next)
+    // After the await the click no longer counts as a user gesture, so the
+    // browser may refuse the write. The code is on screen; point at Copy.
+    if (!(await copyTextToClipboard(next.user_code))) {
+      setMessage('Could not copy the code. Use Copy, then enter it on GitHub.')
+    }
   }
 
   const started = phase === 'waiting' || phase === 'stopped'
