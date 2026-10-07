@@ -77,6 +77,7 @@ pub trait StateAdapter: Send + Sync + 'static {
         event: &Value,
     ) -> anyhow::Result<crate::barrier::Decision>;
     async fn list(&self, scope: &str) -> anyhow::Result<Vec<StateValue>>;
+    async fn list_entries(&self, scope: &str) -> anyhow::Result<Vec<(String, StateValue)>>;
     async fn list_keys(&self, scope: &str) -> anyhow::Result<Vec<String>>;
     async fn list_groups(&self) -> anyhow::Result<Vec<String>>;
     /// Only `save_interval_ms` is hot-tunable (kv file_based); default no-op.
@@ -158,6 +159,9 @@ impl StateAdapter for KvStoreAdapter {
     }
     async fn list(&self, scope: &str) -> anyhow::Result<Vec<StateValue>> {
         Ok(self.storage.list(scope.to_string()).await)
+    }
+    async fn list_entries(&self, scope: &str) -> anyhow::Result<Vec<(String, StateValue)>> {
+        Ok(self.storage.list_entries(scope.to_string()).await)
     }
     async fn list_keys(&self, scope: &str) -> anyhow::Result<Vec<String>> {
         Ok(self.storage.list_keys(scope.to_string()).await)
@@ -920,6 +924,22 @@ impl StateAdapter for RedisAdapter {
             ));
         }
         Ok(result)
+    }
+
+    async fn list_entries(&self, scope: &str) -> anyhow::Result<Vec<(String, StateValue)>> {
+        let mut conn = self.publisher.lock().await;
+        let values = conn
+            .hgetall::<String, HashMap<String, String>>(format!("state:{scope}"))
+            .await?;
+        values
+            .into_iter()
+            .map(|(key, value)| {
+                Ok((
+                    key,
+                    StateValue::from(serde_json::from_str::<Value>(&value)?),
+                ))
+            })
+            .collect()
     }
 
     async fn list_keys(&self, scope: &str) -> anyhow::Result<Vec<String>> {

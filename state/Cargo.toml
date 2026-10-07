@@ -41,7 +41,9 @@ schemars = "0.8"
 indexmap = { version = "2", features = ["serde"] }
 rkyv = "0.8"
 redis = { version = "1", features = ["tokio-comp", "connection-manager"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+futures-util = "0.3"
+tokio-tungstenite = "0.28"
 serial_test = "3"
-uuid = { version = "1", features = ["v4"] }

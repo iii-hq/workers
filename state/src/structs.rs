@@ -100,6 +100,51 @@ pub struct StateListKeysResult {
     pub keys: Vec<String>,
 }
 
+/// Start a bounded snapshot, or continue with the preceding opaque cursor.
+/// Repeat the same limits on all pages. Identity is overwritten by the engine.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct StateListEntriesInput {
+    /// Snapshot scope; accepted length at most 1024 UTF-8 bytes.
+    #[schemars(length(max = 1024))]
+    pub scope: String,
+    /// Previous opaque continuation; omit to start a new snapshot.
+    #[schemars(length(max = 36))]
+    pub cursor: Option<String>,
+    /// Maximum entries, default 100; accepted range 1..=1000.
+    #[schemars(range(min = 1, max = 1000))]
+    pub limit: Option<usize>,
+    /// Complete serialized UTF-8 JSON response budget, default 1,000,000.
+    #[schemars(range(min = 256, max = 8000000))]
+    pub max_bytes: Option<usize>,
+    #[serde(rename = "_caller_worker_id", default)]
+    pub caller_worker_id: Option<String>,
+}
+
+/// Private opt-in only: filter captured JSON nulls before snapshot admission.
+/// The public request schema deliberately has no filter option.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct StatePrivateListEntriesInput {
+    #[serde(flatten)]
+    pub page: StateListEntriesInput,
+    /// Default false includes stored nulls. Repeat the mode on every page.
+    #[serde(default)]
+    pub non_null_only: bool,
+}
+
+/// Key/value pairs captured together; nulls included unless privately opted out.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct StateListEntriesResult {
+    pub entries: Vec<(String, StateValue)>,
+    /// Opaque single-use continuation; null exactly when done is true.
+    #[schemars(required)]
+    pub next_cursor: Option<String>,
+    pub done: bool,
+    /// Number of rows preceding this page in the immutable snapshot.
+    pub offset: usize,
+    /// Total rows in this snapshot, stable across all pages.
+    pub total: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StateEventType {
     #[serde(rename = "state:created")]

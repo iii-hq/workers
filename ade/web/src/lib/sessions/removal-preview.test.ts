@@ -51,6 +51,7 @@ describe('getRemovalPreview', () => {
       empty: true,
       hasRunningWork: false,
       hasChildren: false,
+      descendantCount: 0,
     })
     expect(getIiiClient).not.toHaveBeenCalled()
   })
@@ -62,6 +63,7 @@ describe('getRemovalPreview', () => {
       empty: true,
       hasRunningWork: false,
       hasChildren: false,
+      descendantCount: 0,
     })
     expect(trigger).toHaveBeenCalledWith(
       'harness::session-tree',
@@ -114,6 +116,7 @@ describe('getRemovalPreview', () => {
       empty: false,
       hasRunningWork: true,
       hasChildren: true,
+      descendantCount: 2,
     })
     expect(getSession).toHaveBeenCalledTimes(3)
   })
@@ -124,6 +127,7 @@ describe('getRemovalPreview', () => {
       empty: false,
       hasRunningWork: false,
       hasChildren: true,
+      descendantCount: 1,
     })
   })
 

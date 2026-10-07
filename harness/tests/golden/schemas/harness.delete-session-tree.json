@@ -2,7 +2,39 @@
   "function_id": "harness::delete-session-tree",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DeletionMode": {
+        "enum": [
+          "normal",
+          "force"
+        ],
+        "type": "string"
+      }
+    },
     "properties": {
+      "attempt": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "mode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/DeletionMode"
+          }
+        ],
+        "default": "normal"
+      },
+      "operation_id": {
+        "description": "Required together for force; identifies the normal result confirmed by the operator.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "session_id": {
         "type": "string"
       }
@@ -17,6 +49,65 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "additionalProperties": false,
     "definitions": {
+      "BlockerKind": {
+        "enum": [
+          "active_processing",
+          "unconfirmed_cancellation",
+          "unknown_completion"
+        ],
+        "type": "string"
+      },
+      "DeletionBlocker": {
+        "additionalProperties": false,
+        "description": "Safe metadata only. Never include arguments, remote error messages or URLs.",
+        "properties": {
+          "call_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "function_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/definitions/BlockerKind"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "DeletionFailureCode": {
+        "enum": [
+          "blocked",
+          "overlapping_deletion",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "DeletionMode": {
+        "enum": [
+          "normal",
+          "force"
+        ],
+        "type": "string"
+      },
       "DeletionStatus": {
         "enum": [
           "deleting",
@@ -24,6 +115,22 @@
           "failed"
         ],
         "type": "string"
+      },
+      "ExistingDeletion": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "session_id"
+        ],
+        "type": "object"
       }
     },
     "properties": {
@@ -32,6 +139,18 @@
         "format": "uint32",
         "minimum": 1.0,
         "type": "integer"
+      },
+      "blockers": {
+        "default": [],
+        "items": {
+          "$ref": "#/definitions/DeletionBlocker"
+        },
+        "type": "array"
+      },
+      "data_retained": {
+        "default": false,
+        "description": "True only when this attempt blocked before notification/cleanup/erase. Missing legacy metadata never proves retention.",
+        "type": "boolean"
       },
       "deleted_session_ids": {
         "items": {
@@ -45,14 +164,63 @@
           "null"
         ]
       },
+      "existing_deletion": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ExistingDeletion"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Navigation identity only; never authorization to retry or force."
+      },
+      "failure_code": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/DeletionFailureCode"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "force_eligible": {
+        "default": false,
+        "type": "boolean"
+      },
+      "mode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/DeletionMode"
+          }
+        ],
+        "default": "normal"
+      },
       "operation_id": {
         "type": "string"
+      },
+      "remaining_session_ids": {
+        "default": [],
+        "description": "Planned members not confirmed complete; includes unconfirmed outcomes.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "session_id": {
         "type": "string"
       },
       "status": {
         "$ref": "#/definitions/DeletionStatus"
+      },
+      "unconfirmed_session_ids": {
+        "default": [],
+        "description": "Subset of remaining: erase was attempted, but completion is not confirmed.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       }
     },
     "required": [

@@ -127,6 +127,14 @@ mod tests {
             session_id: "child2".into(),
             status: DeletionStatus::Completed,
             deleted_session_ids: vec!["grandchild1".into(), "child2".into()],
+            remaining_session_ids: vec![],
+            unconfirmed_session_ids: vec![],
+            mode: crate::functions::delete_session_tree::DeletionMode::Normal,
+            data_retained: false,
+            blockers: vec![],
+            force_eligible: false,
+            failure_code: None,
+            existing_deletion: None,
             error: None,
         };
         let config = DeletionConfig {
@@ -141,7 +149,7 @@ mod tests {
         .matches(&snapshot));
         assert_eq!(
             serde_json::to_value(snapshot).unwrap(),
-            serde_json::json!({"operation_id":"op","attempt":1,"session_id":"child2","status":"completed","deleted_session_ids":["grandchild1","child2"]})
+            serde_json::json!({"operation_id":"op","attempt":1,"session_id":"child2","status":"completed","deleted_session_ids":["grandchild1","child2"],"remaining_session_ids":[],"unconfirmed_session_ids":[],"mode":"normal","data_retained":false,"blockers":[],"force_eligible":false})
         );
         assert!(serde_json::from_value::<DeletionConfig>(Value::Null).is_err());
     }

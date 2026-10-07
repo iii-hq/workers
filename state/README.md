@@ -29,6 +29,7 @@ exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 | `state::delete` | `{ scope, key }` | the deleted value, or `null` | `state:deleted` (even when the key did not exist) |
 | `state::update` | `{ scope, key, ops }` — ordered atomic ops: `set`, `merge`, `increment`, `decrement`, `append`, `remove` | `{ old_value, new_value, errors }` | `state:created` or `state:updated` |
 | `state::list` | `{ scope }` | flat array of every value in the scope | — |
+| `state::list_entries` | `{ scope, cursor?, limit?, max_bytes? }` | `{ entries, next_cursor, done, offset, total }` — bounded immutable keyed snapshot page, including stored nulls | — |
 | `state::list_keys` | `{ scope }` | `{ keys }` — the keys stored in the scope, adapter order (additive; no builtin counterpart — added for the console state UI, whose per-item navigation `state::list`'s values-only shape cannot drive) | — |
 | `state::list_groups` | `{}` | `{ groups }` — sorted, deduplicated scope names | — |
 | `state::ui-content` | `{ path }` | `{ content, content_type }` — content function for the injected console UI (internal; see [Console UI](#console-ui)) | — |
@@ -36,6 +37,65 @@ exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 The `harness_binding` and `harness_binding_owner` scopes are reserved
 control-plane state: public functions reject direct access, omit them from
 group listings, and never emit their bookkeeping writes as state events.
+
+### Private live-witness opt-in
+
+Only `<prefix>::state::list_entries` exposes optional `non_null_only: bool`
+(default **false**). Public `state::list_entries` has no filter in its schema;
+public and default private reads still include stored nulls and charge them
+against the same caps. Harness dispatch scans explicitly set `non_null_only: true`
+on every page. No other bookkeeping/tombstone read opts in.
+
+The filter removes only **exact JSON null** from the initial atomic adapter
+capture, before row/retained-byte limits and page `offset`/`total` calculation.
+Non-null malformed/ambiguous and foreign witnesses remain in the snapshot.
+The chosen mode is bound to the cursor: changing it yields `INVALID_CURSOR`
+without consuming the valid continuation. Non-null values changed to null after
+capture remain in the snapshot; captured nulls later changed to witnesses remain
+excluded. Keys/history are never deleted or compacted. Active/non-null resource
+exhaustion still fails closed with unchanged limits. Filtered snapshots release
+the excess whole-history Vec capacity before retention. Temporary whole-scope
+capture and O(history) work remain even when almost every row is filtered out.
+
+### Keyed snapshot pagination
+
+`state::list_entries` and claimed `<prefix>::state::list_entries` use the same
+bounded pagination contract. Even the first call is bounded: `limit` defaults
+to 100 (range 1–1,000), `max_bytes` defaults to 1,000,000 (range 256–8,000,000,
+decimal UTF-8 JSON bytes). Scope names are limited to 1,024 UTF-8 bytes.
+The final response is measured with entries, escaped
+keys/values, metadata and cursor included. A single row that cannot fit fails
+with `ROW_TOO_LARGE`; it is never truncated or skipped.
+
+Start with `{ scope }`, then repeat the same scope and limits with the preceding
+`next_cursor` until `done: true` and `next_cursor: null`. `offset` counts rows
+preceding the page and `total` is stable across the snapshot. Cursors are opaque,
+random, single-use and bound to scope, accessor namespace and engine-stamped
+`_caller_worker_id` (required at runtime, not supplied by the client). Mutations
+between pages cannot change captured membership or value versions. Invalid,
+replayed, cross-boundary, expired or post-restart cursors fail `INVALID_CURSOR`;
+restart from the beginning without a cursor, never join two snapshots.
+
+Snapshots are memory-only, expire after 120 seconds without extension, and do
+not write any hidden persistent keys. One worker admits at most 16 retained
+snapshots, 64,000,000 aggregate charged bytes, 32,000,000 charged bytes per
+snapshot and 100,000 rows per snapshot. Charges use exact encoded row bytes plus
+128 bytes per row for bounded bookkeeping. `SNAPSHOT_CAPACITY` rejects exhaustion
+without evicting live cursors. Expired snapshots are pruned on the next keyed
+page request; expiry is never extended by continuation. Retained namespace/scope
+strings are limited to 1,024 bytes each, caller IDs to 256 bytes. Capture is
+serialized across accessors. KV capture
+still temporarily allocates whole-scope keys/Arc handles under a read lock;
+Redis still temporarily reads/parses one atomic whole-hash `HGETALL`. These
+adapter capture costs are not a streaming storage API or an exact heap bound.
+Only the keyed API is paginated; `list` and `list_keys` are unchanged.
+
+The Harness deletion consumer validates every page and row before destructive
+cleanup, keeping its durable deadline and target admission fences across the
+scan. Pagination/expiry/metadata failure does not grant force eligibility.
+A read-only status refresh or explicit Force confirmation can diagnose an expired
+attempt using a separate fixed scan deadline; this does not rewrite the durable
+RUN deadline. Only an accepted new attempt gets the existing new-attempt deadline.
 
 ## Console UI
 

@@ -79,6 +79,12 @@ pub async fn repair(deps: &Deps, session_id: &str) -> Result<bool, HarnessError>
 }
 
 async fn repair_locked(deps: &Deps, session_id: &str) -> Result<bool, HarnessError> {
+    if crate::functions::delete_session_tree::guard_owner(deps, session_id)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
     let cfg = deps.cfg().await;
     let session = deps.session().await;
     match crate::state::get_turn_unhydrated(&deps.iii, session_id, cfg.session_timeout_ms).await? {
@@ -102,6 +108,12 @@ async fn repair_locked(deps: &Deps, session_id: &str) -> Result<bool, HarnessErr
 /// between is seen as live and left alone.
 pub async fn reconcile(deps: &Deps, session_id: &str) -> Result<bool, HarnessError> {
     let _guard = deps.locks.guard(session_id).await;
+    if crate::functions::delete_session_tree::guard_owner(deps, session_id)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
     let session = deps.session().await;
     if session.status(session_id).await?.as_deref() != Some("working") {
         return Ok(false);
@@ -118,6 +130,12 @@ pub fn spawn_project(deps: &Deps, record: TurnRecord) {
     let deps = deps.clone();
     tokio::spawn(async move {
         let _guard = deps.locks.guard(&record.session_id).await;
+        if !matches!(
+            crate::functions::delete_session_tree::guard_owner(&deps, &record.session_id).await,
+            Ok(None)
+        ) {
+            return;
+        }
         let cfg = deps.cfg().await;
         let current = match crate::state::get_turn_unhydrated(
             &deps.iii,

@@ -616,6 +616,20 @@ impl KvStore {
             })
     }
 
+    /// One immutable keyed snapshot, not a key enumeration followed by reads.
+    pub async fn list_entries(&self, index: String) -> Vec<(String, StateValue)> {
+        self.store
+            .read()
+            .await
+            .get(&index)
+            .map_or_else(Vec::new, |scope| {
+                scope
+                    .iter()
+                    .map(|(key, value)| (key.clone(), StateValue(Arc::clone(value))))
+                    .collect()
+            })
+    }
+
     pub async fn list_keys(&self, index: String) -> Vec<String> {
         let store = self.store.read().await;
         store

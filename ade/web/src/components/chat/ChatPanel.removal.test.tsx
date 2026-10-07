@@ -3,7 +3,15 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
+import {
+  SessionTreeDeletionError,
+  type SessionTreeDeletionSnapshot,
+} from '@/lib/sessions/delete-tree'
 import type { Conversation } from '@/types/chat'
+
+vi.mock('@/lib/iii-client', () => ({
+  getIiiClient: vi.fn(() => Promise.reject(new Error('isolated test'))),
+}))
 
 const mocks = vi.hoisted(() => ({
   useConversationsCtx: vi.fn(),
@@ -32,6 +40,7 @@ vi.mock('@/components/sidebar/ConversationSidebar', () => ({
 }))
 vi.mock('./ChatView', () => ({ ChatView: () => <div>Chat</div> }))
 
+import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 import { ChatPanel } from './ChatPanel'
 
 function conversation(id: string, parentId?: string): Conversation {
@@ -71,6 +80,27 @@ function button(text: string) {
 }
 const dialog = () => document.querySelector('[role="dialog"]')
 const click = async (text: string) => act(async () => button(text).click())
+function outcomeCounts() {
+  return [
+    ...(dialog()?.querySelectorAll('[data-deletion-outcome-counts] > div') ??
+      []),
+  ]
+    .map(
+      (node) =>
+        `${node.querySelector('dt')?.textContent}: ${node.querySelector('dd')?.textContent}.`,
+    )
+    .join(' ')
+}
+async function expandOutcomes() {
+  await act(async () => {
+    const details = dialog()?.querySelector<HTMLDetailsElement>(
+      '[data-deletion-outcomes]',
+    )
+    if (!details) throw new Error('Missing outcome details')
+    details.open = true
+    details.dispatchEvent(new Event('toggle'))
+  })
+}
 const pressEscape = async () =>
   act(async () => {
     document.dispatchEvent(
@@ -93,6 +123,9 @@ const clickOutside = async () => {
 beforeEach(async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   vi.clearAllMocks()
+  vi.mocked(getIiiClient)
+    .mockReset()
+    .mockRejectedValue(new Error('isolated test'))
   mocks.target = 'child2'
   mocks.remove.mockResolvedValue(undefined)
   mocks.getRemovalPreview.mockReset().mockResolvedValue({
@@ -100,6 +133,7 @@ beforeEach(async () => {
     title: 'Selected child',
     parentId: 'parent',
     hasChildren: true,
+    descendantCount: 1,
     hasRunningWork: true,
     empty: false,
   })
@@ -142,6 +176,407 @@ afterEach(async () => {
 })
 
 describe('ChatPanel contextual delete confirmation', () => {
+  const blocked = (): SessionTreeDeletionSnapshot => ({
+    operation_id: 'op',
+    attempt: 1,
+    session_id: 'child2',
+    status: 'failed',
+    mode: 'normal',
+    deleted_session_ids: [],
+    data_retained: true,
+    unconfirmed_session_ids: [],
+    remaining_session_ids: ['child2', 'grandchild1'],
+    force_eligible: true,
+    failure_code: 'blocked',
+    blockers: [
+      {
+        kind: 'unknown_completion',
+        session_id: 'grandchild1',
+        function_id: 'browser::fetch',
+        call_id: 'call-1',
+        started_at: 1,
+      },
+    ],
+  })
+
+  it('does not resubscribe and self-refresh when a recovered eligibility snapshot changes', async () => {
+    const trigger = vi
+      .fn()
+      .mockResolvedValueOnce({ ...blocked(), force_eligible: false })
+      .mockResolvedValueOnce(blocked())
+      .mockRejectedValue(new Error('third redundant read'))
+    let refresh!: () => Promise<void>
+    vi.mocked(getIiiClient).mockResolvedValue({
+      browserId: 'test',
+      trigger,
+      on: vi.fn((_id, handler) => {
+        refresh = handler
+        return vi.fn()
+      }),
+      registerTrigger: vi.fn(() => vi.fn()),
+      addConnectionStateListener: vi.fn(() => vi.fn()),
+    } as unknown as IiiClient)
+    mocks.remove.mockRejectedValueOnce(new SessionTreeDeletionError(blocked()))
+    await click('Request removal')
+    await click('Stop and delete')
+    expect(trigger).toHaveBeenCalledTimes(1)
+    expect(dialog()?.textContent).not.toContain('Force delete…')
+    await act(async () => refresh())
+    expect(trigger).toHaveBeenCalledTimes(2)
+    expect(dialog()?.textContent).toContain('Force delete…')
+    expect(mocks.remove).toHaveBeenCalledTimes(1)
+  })
+
+  it('reviews overlap identity explicitly without retrying the parent or escalating the child', async () => {
+    mocks.target = 'parent'
+    const overlap = {
+      ...blocked(),
+      session_id: 'parent',
+      operation_id: 'parent-op',
+      failure_code: 'overlapping_deletion' as const,
+      force_eligible: false,
+      existing_deletion: { operation_id: 'child-op', session_id: 'child2' },
+    }
+    mocks.remove.mockRejectedValueOnce(new SessionTreeDeletionError(overlap))
+    mocks.getRemovalPreview.mockImplementation(async (item: Conversation) => ({
+      id: item.id,
+      title: item.title,
+      hasChildren: true,
+      descendantCount: 1,
+      hasRunningWork: item.id === 'child2',
+      empty: false,
+    }))
+    await click('Request removal')
+    await click('Delete')
+    expect(button('Retry delete').disabled).toBe(false)
+    expect(dialog()?.textContent).not.toContain('Force delete…')
+    mocks.remove.mockRejectedValueOnce(new SessionTreeDeletionError(blocked()))
+    await click('Review existing deletion')
+    expect(mocks.remove).toHaveBeenLastCalledWith('child2', {
+      signal: expect.any(AbortSignal),
+      reviewOperationId: 'child-op',
+    })
+    expect(dialog()?.textContent).toContain('Force delete…')
+    expect(mocks.remove).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['missing', 'completed'])(
+    'allows explicit normal parent Retry after child is %s',
+    async (childState) => {
+      mocks.target = 'parent'
+      const overlap: SessionTreeDeletionSnapshot = {
+        ...blocked(),
+        session_id: 'parent',
+        operation_id: 'parent-op',
+        failure_code: 'overlapping_deletion',
+        force_eligible: false,
+        existing_deletion: { operation_id: 'child-op', session_id: 'child2' },
+      }
+      const context = mocks.useConversationsCtx()
+      mocks.useConversationsCtx.mockReturnValue({
+        ...context,
+        conversations:
+          childState === 'missing'
+            ? [parent, conversation('child1', 'parent')]
+            : context.conversations,
+      })
+      await act(async () =>
+        root.render(
+          <TooltipProvider>
+            <ChatPanel />
+          </TooltipProvider>,
+        ),
+      )
+      mocks.getRemovalPreview.mockImplementation(
+        async (item: Conversation) => ({
+          id: item.id,
+          title: item.title,
+          hasChildren: true,
+          descendantCount: 1,
+          hasRunningWork: false,
+          empty: false,
+        }),
+      )
+      mocks.remove.mockRejectedValueOnce(new SessionTreeDeletionError(overlap))
+      await click('Request removal')
+      await click('Delete')
+      expect(mocks.remove).toHaveBeenLastCalledWith('parent', {
+        signal: expect.any(AbortSignal),
+        recover: true,
+      })
+      expect(button('Retry delete').disabled).toBe(false)
+      await click('Review existing deletion')
+      if (childState === 'missing') {
+        expect(dialog()?.textContent).toContain('unavailable in this workspace')
+        expect(mocks.remove).toHaveBeenCalledTimes(1)
+        mocks.remove.mockRejectedValueOnce(
+          new SessionTreeDeletionError(overlap),
+        )
+        await click('Refresh status')
+        expect(mocks.remove).toHaveBeenLastCalledWith('parent', {
+          signal: expect.any(AbortSignal),
+          reviewOperationId: 'parent-op',
+        })
+        // Read-only status still reports stale parent overlap; normal Retry remains.
+      } else {
+        expect(mocks.remove).toHaveBeenLastCalledWith('child2', {
+          signal: expect.any(AbortSignal),
+          reviewOperationId: 'child-op',
+        })
+        expect(dialog()).toBeNull()
+        await click('Request removal')
+        mocks.remove.mockRejectedValueOnce(
+          new SessionTreeDeletionError(overlap),
+        )
+        await click('Delete')
+      }
+      expect(button('Retry delete').disabled).toBe(false)
+      const before = mocks.remove.mock.calls.length
+      await click('Retry delete')
+      expect(mocks.remove).toHaveBeenCalledTimes(before + 1)
+      expect(mocks.remove).toHaveBeenLastCalledWith('parent', {
+        signal: expect.any(AbortSignal),
+      })
+      expect(mocks.remove.mock.calls.some(([, options]) => options.force)).toBe(
+        false,
+      )
+      expect(dialog()).toBeNull()
+    },
+  )
+
+  it('refreshes blocked eligibility from native lifecycle events without retrying deletion', async () => {
+    const before = blocked()
+    let refresh!: () => Promise<void>
+    const off = vi.fn()
+    const trigger = vi.fn().mockResolvedValue(before)
+    vi.mocked(getIiiClient).mockResolvedValueOnce({
+      browserId: 'test-browser',
+      on: vi.fn((_id, handler) => {
+        refresh = handler as () => Promise<void>
+        return off
+      }),
+      registerTrigger: vi.fn(() => off),
+      addConnectionStateListener: vi.fn(() => off),
+      trigger,
+    } as unknown as IiiClient)
+    mocks.remove.mockRejectedValueOnce(new SessionTreeDeletionError(before))
+    await click('Request removal')
+    await click('Stop and delete')
+    await click('Force delete…')
+    trigger.mockResolvedValueOnce({
+      ...before,
+      blockers: [],
+      force_eligible: false,
+    })
+    await act(async () => refresh())
+    expect(dialog()?.textContent).not.toContain('Force delete this chat?')
+    expect(dialog()?.textContent).not.toContain('Force delete…')
+    expect(mocks.remove).toHaveBeenCalledTimes(1)
+    expect(off).not.toHaveBeenCalled()
+    await click('Close')
+    expect(off).toHaveBeenCalled()
+  })
+
+  it('reports failed empty outcomes as unknown, never zero retained scope', async () => {
+    mocks.remove.mockRejectedValueOnce(
+      new SessionTreeDeletionError({
+        ...blocked(),
+        failure_code: 'failed',
+        force_eligible: false,
+        blockers: [],
+        remaining_session_ids: [],
+        unconfirmed_session_ids: [],
+        data_retained: false,
+      }),
+    )
+    await click('Request removal')
+    await click('Stop and delete')
+    expect(outcomeCounts()).toContain(
+      'Not deleted: unknown. Unconfirmed: unknown.',
+    )
+    expect(outcomeCounts()).not.toContain('Not deleted: 0')
+    expect(dialog()?.textContent).not.toContain('data retained')
+    expect(dialog()?.textContent).not.toContain('Force delete…')
+  })
+
+  it('labels local active processing without claiming a timeout', async () => {
+    mocks.remove.mockRejectedValueOnce(
+      new SessionTreeDeletionError({
+        ...blocked(),
+        blockers: [{ kind: 'active_processing', session_id: 'grandchild1' }],
+      }),
+    )
+    await click('Request removal')
+    await click('Stop and delete')
+    expect(dialog()?.textContent).toContain('Active processing')
+    expect(dialog()?.textContent).not.toContain('after timeout')
+  })
+
+  it('requires a distinct force confirmation, focuses Back and sends the confirmed identity once', async () => {
+    mocks.remove.mockRejectedValueOnce(new SessionTreeDeletionError(blocked()))
+    await click('Request removal')
+    await click('Stop and delete')
+    expect(dialog()?.textContent).toContain(
+      'No conversations were deleted; data retained.',
+    )
+    expect(dialog()?.textContent).not.toMatch(/pending/i)
+    expect(dialog()?.textContent).toContain('browser::fetch')
+    expect(dialog()?.textContent).toContain('Unknown completion after timeout')
+    expect(mocks.remove).toHaveBeenCalledTimes(1)
+    await click('Force delete…')
+    expect(document.activeElement).toBe(button('Back'))
+    expect(dialog()?.textContent).toContain('Force delete this chat?')
+    expect(dialog()?.textContent).toContain('External operations may continue')
+    expect(mocks.remove).toHaveBeenCalledTimes(1)
+    await click('Back')
+    expect(dialog()?.textContent).not.toContain('Force delete this chat?')
+    await click('Force delete…')
+    const pending = deferred()
+    mocks.remove.mockReturnValueOnce(pending.promise)
+    await act(async () => {
+      const confirm = button('Force delete')
+      confirm.click()
+      confirm.click()
+    })
+    expect(mocks.remove).toHaveBeenCalledTimes(2)
+    expect(mocks.remove).toHaveBeenLastCalledWith('child2', {
+      signal: expect.any(AbortSignal),
+      force: { operation_id: 'op', attempt: 1 },
+    })
+    expect(button('Force deleting…').disabled).toBe(true)
+    expect(dialog()).not.toBeNull()
+    await act(async () => pending.resolve())
+    expect(dialog()).toBeNull()
+  })
+
+  it.each(['network', 'permission', 'failed', 'missing eligibility'])(
+    'never offers force for %s failures',
+    async (failure) => {
+      const snapshot = blocked()
+      if (failure === 'failed') snapshot.failure_code = 'failed'
+      if (failure === 'missing eligibility') snapshot.force_eligible = false
+      mocks.remove.mockRejectedValueOnce(
+        ['network', 'permission'].includes(failure)
+          ? new Error(failure)
+          : new SessionTreeDeletionError(snapshot),
+      )
+      await click('Request removal')
+      await click('Stop and delete')
+      expect(dialog()?.textContent).not.toContain('Force delete…')
+    },
+  )
+
+  it('shows confirmed deleted and unconfirmed partial scope without offering force', async () => {
+    const snapshot = blocked()
+    snapshot.mode = 'force'
+    snapshot.data_retained = false
+    snapshot.unconfirmed_session_ids = undefined
+    snapshot.force_eligible = false
+    snapshot.deleted_session_ids = ['grandchild1']
+    snapshot.remaining_session_ids = ['child2']
+    mocks.remove.mockRejectedValueOnce(new SessionTreeDeletionError(snapshot))
+    await click('Request removal')
+    await click('Stop and delete')
+    await expandOutcomes()
+    expect(dialog()?.textContent).toContain('Deleted sessions: grandchild1')
+    expect(dialog()?.textContent).toContain(
+      'Deletion outcome unconfirmed: child2',
+    )
+    expect(dialog()?.textContent).not.toMatch(/retained/i)
+    expect(dialog()?.textContent).not.toContain('Force delete…')
+    await click('Retry force delete')
+    expect(mocks.remove).toHaveBeenLastCalledWith('child2', {
+      signal: expect.any(AbortSignal),
+      force: { operation_id: 'op', attempt: 1 },
+    })
+  })
+  it('distinguishes not deleted from unconfirmed ids in the new snapshot contract', async () => {
+    const snapshot = {
+      ...blocked(),
+      mode: 'force' as const,
+      data_retained: false,
+      failure_code: 'failed' as const,
+      force_eligible: false,
+      unconfirmed_session_ids: ['grandchild1'],
+    }
+    mocks.remove.mockRejectedValueOnce(new SessionTreeDeletionError(snapshot))
+    await click('Request removal')
+    await click('Stop and delete')
+    await expandOutcomes()
+    expect(dialog()?.textContent).toContain('Not deleted sessions: child2')
+    expect(dialog()?.textContent).toContain(
+      'Deletion outcome unconfirmed: grandchild1',
+    )
+    expect(outcomeCounts()).toContain(
+      'Confirmed deleted: 0. Not deleted: 1. Unconfirmed: 1.',
+    )
+    expect(dialog()?.textContent).not.toMatch(/retained/i)
+    expect(dialog()?.textContent).not.toContain('Force delete…')
+  })
+
+  it('describes a deterministic Force rejection as no change, not unknown completion', async () => {
+    mocks.remove.mockRejectedValueOnce(new SessionTreeDeletionError(blocked()))
+    await click('Request removal')
+    await click('Stop and delete')
+    await click('Force delete…')
+    mocks.remove.mockRejectedValueOnce(
+      Object.assign(new Error('stale confirmation'), {
+        code: 'invalid_request',
+      }),
+    )
+    await click('Force delete')
+    expect(dialog()?.textContent).toContain(
+      'Force delete was rejected; nothing changed.',
+    )
+    expect(dialog()?.textContent).not.toContain(
+      'The backend may have continued.',
+    )
+    expect(dialog()?.textContent).not.toMatch(/retained/i)
+  })
+
+  it('keeps network failures unknown and recovers completion only on an explicit check', async () => {
+    mocks.remove.mockRejectedValueOnce(new Error('acknowledgement lost'))
+    await click('Request removal')
+    await click('Stop and delete')
+    expect(dialog()?.textContent).toContain(
+      'Completion is not confirmed. The backend may have continued.',
+    )
+    expect(dialog()?.textContent).not.toMatch(/retained/i)
+    expect(dialog()).not.toBeNull()
+    expect(mocks.remove).toHaveBeenCalledTimes(1)
+    await click('Retry stop and delete')
+    expect(mocks.remove).toHaveBeenLastCalledWith('child2', {
+      signal: expect.any(AbortSignal),
+      recover: true,
+    })
+    expect(dialog()).toBeNull()
+  })
+
+  it('never reports retention when refreshing a known blocker fails', async () => {
+    let refresh!: () => Promise<void>
+    const trigger = vi.fn().mockRejectedValue(new Error('refresh offline'))
+    vi.mocked(getIiiClient).mockResolvedValueOnce({
+      browserId: 'test-browser',
+      on: vi.fn((_id, handler) => {
+        refresh = handler as () => Promise<void>
+        return vi.fn()
+      }),
+      registerTrigger: vi.fn(() => vi.fn()),
+      addConnectionStateListener: vi.fn(() => vi.fn()),
+      trigger,
+    } as unknown as IiiClient)
+    mocks.remove.mockRejectedValueOnce(new SessionTreeDeletionError(blocked()))
+    await click('Request removal')
+    await click('Stop and delete')
+    await act(async () => refresh())
+    expect(dialog()?.textContent).toContain(
+      'Unable to refresh deletion status. Completion is not confirmed; the backend may have continued.',
+    )
+    expect(dialog()?.textContent).not.toMatch(/retained/i)
+    expect(dialog()?.textContent).not.toContain('Force delete…')
+    expect(mocks.remove).toHaveBeenCalledTimes(1)
+  })
+
   it.each([
     [false, false, 'Delete'],
     [true, false, 'Delete'],
@@ -154,6 +589,7 @@ describe('ChatPanel contextual delete confirmation', () => {
         id: 'child2',
         title: 'Selected child',
         hasChildren,
+        descendantCount: hasChildren ? 2 : 0,
         hasRunningWork,
         empty: false,
       })
@@ -163,6 +599,8 @@ describe('ChatPanel contextual delete confirmation', () => {
         `${label} conversation?`,
       )
       expect(dialog()?.textContent?.includes('subagent')).toBe(hasChildren)
+      if (hasChildren)
+        expect(dialog()?.textContent).toContain('its 2 subagent conversations')
       expect(dialog()?.textContent?.includes('Running work')).toBe(
         hasRunningWork,
       )
@@ -301,7 +739,7 @@ describe('ChatPanel contextual delete confirmation', () => {
   it('only opens confirmation, describes descendants and surviving parent, and focuses Cancel', async () => {
     await click('Request removal')
     expect(dialog()?.textContent).toContain('Selected child')
-    expect(dialog()?.textContent).toContain('its subagent conversations')
+    expect(dialog()?.textContent).toContain('its 1 subagent conversation')
     expect(dialog()?.textContent).toContain(
       'The parent will be notified, not stopped or deleted.',
     )
@@ -336,6 +774,7 @@ describe('ChatPanel contextual delete confirmation', () => {
     expect(mocks.remove).toHaveBeenCalledTimes(1)
     expect(mocks.remove).toHaveBeenCalledWith('child2', {
       signal: expect.any(AbortSignal),
+      recover: true,
     })
     expect(button('Stopping and deleting…').disabled).toBe(true)
     expect(button('Cancel').disabled).toBe(true)

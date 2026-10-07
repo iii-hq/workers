@@ -86,9 +86,28 @@ pub(crate) struct StopOutcome {
     /// Why the stop could not be confirmed (router abort failure, unknown
     /// external pending work). The abort flag is persisted regardless.
     pub unconfirmed: Vec<String>,
+    /// Dependency/integrity failures cannot be bypassed by force deletion.
+    pub hard_failure: bool,
 }
 
 pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcome, HarnessError> {
+    stop_one_impl(deps, req, false).await
+}
+
+/// Only deletion uses a nonblocking record lock and a bounded abort RPC.
+/// A router dependency/permission error remains hard, never force eligible.
+pub(crate) async fn stop_for_deletion(
+    deps: &Deps,
+    req: StopRequest,
+) -> Result<StopOutcome, HarnessError> {
+    stop_one_impl(deps, req, true).await
+}
+
+async fn stop_one_impl(
+    deps: &Deps,
+    req: StopRequest,
+    deletion: bool,
+) -> Result<StopOutcome, HarnessError> {
     let cfg = deps.cfg().await;
 
     // Lock-free pre-read: discover the in-flight stream + spawned children and
@@ -146,6 +165,7 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
             })
             .await
         {
+            outcome.hard_failure = true;
             tracing::warn!(request_id, %error, "router::abort failed");
             outcome
                 .unconfirmed
@@ -160,7 +180,15 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
     // do — serializes this read-modify-write with the step and closes the race.
     // Re-read inside the lock so the flag is set on the freshest record rather
     // than reverting the step's other updates.
-    let _guard = deps.locks.guard(&req.session_id).await;
+    let _guard = if deletion {
+        let Some(guard) = deps.locks.try_guard(&req.session_id) else {
+            outcome.unconfirmed.push("active local processing".into());
+            return Ok(outcome);
+        };
+        guard
+    } else {
+        deps.locks.guard(&req.session_id).await
+    };
     let Some(mut record) =
         crate::state::get_turn_unhydrated(&deps.iii, &req.session_id, cfg.session_timeout_ms)
             .await?
@@ -227,6 +255,7 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
             error = %e,
             "could not enqueue a step to observe the stop; the orphan sweep will retry"
         );
+        outcome.hard_failure = true;
         // Harmless for `harness::stop` (the sweep retries); deletion cannot
         // wait for a turn that has no step to observe the abort.
         outcome
