@@ -1011,9 +1011,9 @@ pub enum WakeOutcomeV1 {
     // The day's known cost reached `daily_cost_cap_usd`; a plain comment so
     // the schema stays a flat string enum.
     CostCap,
-    // Automatic observation covers only the user's console chats (kind
-    // `user`, surface `console`); Slack and Telegram chats, E2E runs and
-    // automations are analyzed by hand.
+    // Automatic observation covers only the user's chats (kind `user`,
+    // surface `console`, `slack` or `telegram`); E2E runs, automations and
+    // scripted or sub-agent sessions are analyzed by hand.
     NotUserChat,
 }
 

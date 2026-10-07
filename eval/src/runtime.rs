@@ -717,14 +717,15 @@ pub async fn wake(deps: &Deps, event: WakeEventV1) -> Result<WakeResponseV1, Eva
     )
 }
 
-/// Automatic observation analyzes only the user's console chats: session-manager's
-/// kind `user` (its default, so a record without a kind counts), stamped
-/// `surface: console` by the console, and not an E2E run. The kind alone is not
-/// enough: E2E sessions from before the kind existed read back as `user`,
-/// scripted sessions are `user` without a surface, and the console stamps its
-/// surface on any session it rewrites, an automation's included. Everything
-/// else, and a session whose record cannot be read, is left for a manual
-/// analysis.
+/// Automatic observation analyzes only the user's chats: session-manager's
+/// kind `user` (its default, so a record without a kind counts), stamped with
+/// a chat surface (`console`, `slack` or `telegram`, written by each client on
+/// every send), and not an E2E run. The kind alone is not enough: E2E sessions
+/// from before the kind existed read back as `user`, and scripted and
+/// sub-agent sessions are `user` without a surface. The surface alone is not
+/// enough either: the console stamps `console` on any session it rewrites, an
+/// automation's included. Everything else, and a session whose record cannot
+/// be read, is left for a manual analysis.
 async fn is_user_chat(deps: &Deps, session_id: &str) -> bool {
     match call::<_, Value>(
         deps,
@@ -735,9 +736,9 @@ async fn is_user_chat(deps: &Deps, session_id: &str) -> bool {
     .await
     {
         Ok(meta) => {
-            let chat = is_console_chat(&meta["meta"]);
+            let chat = is_chat(&meta["meta"]);
             if !chat {
-                tracing::debug!(session_id, "not a console chat; left for manual analysis");
+                tracing::debug!(session_id, "not a user chat; left for manual analysis");
             }
             chat
         }
@@ -748,10 +749,13 @@ async fn is_user_chat(deps: &Deps, session_id: &str) -> bool {
     }
 }
 
-fn is_console_chat(meta: &Value) -> bool {
+fn is_chat(meta: &Value) -> bool {
     let metadata = &meta["metadata"];
     meta["kind"].as_str().unwrap_or("user") == "user"
-        && metadata["surface"] == "console"
+        && matches!(
+            metadata["surface"].as_str(),
+            Some("console" | "slack" | "telegram")
+        )
         && !metadata
             .as_object()
             .is_some_and(|keys| keys.keys().any(|key| key.starts_with("e2e_")))

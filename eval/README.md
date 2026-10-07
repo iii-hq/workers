@@ -16,16 +16,17 @@ behavior is specified in
 
 1. **Admission.** A terminal `harness::turn-completed` of a root session (or
    a manual `eval::analyze-session`) admits one analysis per session turn.
-   Automatic observation admits only the user's console chats. From
-   `session::get` the session must have kind `user` (a record without a kind
-   counts as `user`), `metadata.surface` equal to `console` (the console writes
-   it on every send) and no `metadata` key starting with `e2e_`. Everything
-   else answers `not_user_chat` and can still be analyzed by hand: E2E runs
-   (kind `e2e`, or `e2e_*` metadata on the ones recorded before the kind
-   existed), automations (sentinel investigations and the monitor's own, which
-   it opens as `automation`; the console stamps `console` on those too, so the
-   kind is what excludes them), scripted and sub-agent sessions (kind `user`
-   but no surface) and sessions whose record cannot be read. Progress events,
+   Automatic observation admits only the user's chats. From `session::get` the
+   session must have kind `user` (a record without a kind counts as `user`), a
+   chat `metadata.surface` (`console`, `slack` or `telegram`, which each client
+   writes on every send) and no `metadata` key starting with `e2e_`.
+   Everything else answers `not_user_chat` and can still be analyzed by hand:
+   E2E runs (kind `e2e`, or `e2e_*` metadata on the ones recorded before the
+   kind existed), automations (sentinel investigations and the monitor's own,
+   which it opens as `automation`; the console stamps `console` on those too,
+   so the kind is what excludes them), scripted and sub-agent sessions (kind
+   `user` but no surface) and sessions whose record cannot be read. Progress
+   events,
    descendants and the monitor's own sessions are never admitted; a
    redelivered event returns the existing analysis.
 2. **Collection.** The monitor waits until the turn is definitive and every

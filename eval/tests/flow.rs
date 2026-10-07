@@ -3879,7 +3879,7 @@ async fn a_replay_reproduces_the_signal_and_the_proposed_change_removes_it() {
 }
 
 #[tokio::test]
-async fn only_console_chats_are_analyzed_automatically_and_the_rest_by_hand() {
+async fn only_user_chats_are_analyzed_automatically_and_the_rest_by_hand() {
     // What session-manager holds for each session the monitor must not observe
     // on its own, as measured: an E2E run, a sentinel investigation and the
     // monitor's own session (both stamped `console` by the console), an E2E
@@ -3900,7 +3900,7 @@ async fn only_console_chats_are_analyzed_automatically_and_the_rest_by_hand() {
         ),
         ("user", json!({"parent_session_id": "p", "depth": 1})),
         ("user", json!({})),
-        ("user", json!({"surface": "slack"})),
+        ("user", json!({"surface": "cli"})),
     ];
     for (kind, metadata) in cases {
         let mut world = World::new();
@@ -3925,22 +3925,25 @@ async fn only_console_chats_are_analyzed_automatically_and_the_rest_by_hand() {
         assert!(!manual.reused, "{kind} {metadata}");
         assert_eq!(h.records(), 1, "{kind} {metadata}");
     }
-    // A plain console chat, with the keys the console writes.
-    let mut world = World::new();
-    world.sessions.insert(
-        ROOT.into(),
-        (
-            "user",
-            json!({"surface": "console", "model": "anthropic::m", "fs_scope": {"root": "/w"},
-                "agent_profile": {"id": "default"}}),
-        ),
-    );
-    let h = Harness::start(world).await;
-    h.configure(true).await;
-    assert_eq!(
-        h.end_turn(ROOT, TURN).await.outcome,
-        WakeOutcomeV1::Admitted
-    );
+    // A plain chat from each client, with the keys it writes.
+    for metadata in [
+        json!({"surface": "console", "model": "anthropic::m", "fs_scope": {"root": "/w"},
+            "agent_profile": {"id": "default"}}),
+        json!({"surface": "slack"}),
+        json!({"surface": "telegram"}),
+    ] {
+        let mut world = World::new();
+        world
+            .sessions
+            .insert(ROOT.into(), ("user", metadata.clone()));
+        let h = Harness::start(world).await;
+        h.configure(true).await;
+        assert_eq!(
+            h.end_turn(ROOT, TURN).await.outcome,
+            WakeOutcomeV1::Admitted,
+            "{metadata}"
+        );
+    }
 }
 
 #[tokio::test]
