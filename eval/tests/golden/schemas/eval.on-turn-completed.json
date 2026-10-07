@@ -2,7 +2,18 @@
   "function_id": "eval::on-turn-completed",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`harness::turn-completed`; extra fields are tolerated.",
     "properties": {
+      "parent": {
+        "default": null
+      },
+      "parent_session_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "session_id": {
         "default": "",
         "type": "string"
@@ -10,6 +21,18 @@
       "terminal": {
         "default": false,
         "type": "boolean"
+      },
+      "timestamp": {
+        "default": null,
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "turn_id": {
+        "default": "",
+        "type": "string"
       }
     },
     "title": "WakeEventV1",
@@ -18,13 +41,37 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "additionalProperties": false,
+    "definitions": {
+      "WakeOutcomeV1": {
+        "enum": [
+          "ignored",
+          "progress",
+          "descendant",
+          "monitor_session",
+          "disabled",
+          "stale",
+          "admitted",
+          "reused",
+          "at_capacity",
+          "cost_cap",
+          "not_user_chat"
+        ],
+        "type": "string"
+      }
+    },
     "properties": {
-      "woke": {
-        "type": "boolean"
+      "evaluation_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "outcome": {
+        "$ref": "#/definitions/WakeOutcomeV1"
       }
     },
     "required": [
-      "woke"
+      "outcome"
     ],
     "title": "WakeResponseV1",
     "type": "object"

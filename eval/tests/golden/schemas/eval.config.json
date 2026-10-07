@@ -1,0 +1,450 @@
+{
+  "function_id": "eval::config",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "check_providers": {
+        "default": false,
+        "description": "Also ask the triage provider whether it answers (`judge::models::list`).",
+        "type": "boolean"
+      }
+    },
+    "title": "MonitorStateRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "AnalysisCostStatsV1": {
+        "additionalProperties": false,
+        "description": "Cost of the completed analyses that investigated with the configured model, provider and code access (or lack of it).",
+        "properties": {
+          "count": {
+            "description": "Analyses with a known cost; `min`, `median` and `max` come from them.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "median": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "min": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "unknown": {
+            "description": "Analyses that investigated but reported no cost.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "unknown"
+        ],
+        "type": "object"
+      },
+      "CapacityRejectionV1": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "reason": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/RejectionReasonV1"
+              }
+            ],
+            "default": "at_capacity",
+            "description": "Why the turn was not admitted; rows saved before the cost cap existed read as `at_capacity`."
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "session_id",
+          "turn_id"
+        ],
+        "type": "object"
+      },
+      "MonitorConfigV1": {
+        "additionalProperties": false,
+        "properties": {
+          "code_repository": {
+            "description": "The codebase directory the investigation reads (see `ConfigureRequestV1`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "daily_cost_cap_usd": {
+            "description": "The daily cap on known investigation cost (see `ConfigureRequestV1`).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "enabled_since": {
+            "description": "When automatic observation last went from paused to on; analyses use it to bound which earlier turns they may report. Unchanged by edits that keep observation on.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "model": {
+            "$ref": "#/definitions/MonitorModelV1"
+          },
+          "revision": {
+            "description": "SHA-256 of the effective configuration; analyses keep the revision they were admitted with.",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "model",
+          "revision",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "MonitorCostV1": {
+        "additionalProperties": false,
+        "description": "The monitor's own spend. Only the investigation's LLM cost is in dollars; Jev's usage is reported in tokens on each record.",
+        "properties": {
+          "cap_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "capped": {
+            "description": "A cap is set and `today_usd`, plus the median cost of each investigation still running, reached it: automatic observation admits and investigates nothing until the next UTC day.",
+            "type": "boolean"
+          },
+          "per_analysis": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/AnalysisCostStatsV1"
+              }
+            ],
+            "description": "What one investigation has cost, from the history."
+          },
+          "since": {
+            "description": "Start (ms since the Unix epoch) of the UTC day the `today_*` values cover. The monitor has no timezone setting, so a day is a UTC day.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "today_unknown": {
+            "description": "Analyses of the day whose investigation started but reported no cost. They add nothing to `today_usd`, but their cost is unknown, not zero.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "today_usd": {
+            "description": "The known investigation cost since `since`: the larger of the day's persisted spend (deleting an analysis does not give it back) and the sum of the stored analyses' `usage.llm_cost_usd`.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "capped",
+          "per_analysis",
+          "since",
+          "today_unknown",
+          "today_usd"
+        ],
+        "type": "object"
+      },
+      "MonitorLimitsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis_budget_ms": {
+            "description": "Whole-analysis budget from admission, queue wait included.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "assets_bytes": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "investigation_code_max_total_tokens": {
+            "description": "Total-token cap of an investigation that has code access.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "investigation_code_max_turns": {
+            "description": "Generate-step cap of an investigation that has code access.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "investigation_max_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "investigation_max_total_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "investigation_max_turns": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "judge_timeout_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_active_analyses": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "model_context_bytes": {
+            "description": "Serialized JSON shown to a model (bytes, not tokens).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "queue_concurrency": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "retention_days": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "retention_max_terminal": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "analysis_budget_ms",
+          "assets_bytes",
+          "investigation_code_max_total_tokens",
+          "investigation_code_max_turns",
+          "investigation_max_output_tokens",
+          "investigation_max_total_tokens",
+          "investigation_max_turns",
+          "judge_timeout_ms",
+          "max_active_analyses",
+          "model_context_bytes",
+          "queue_concurrency",
+          "retention_days",
+          "retention_max_terminal"
+        ],
+        "type": "object"
+      },
+      "MonitorModelV1": {
+        "additionalProperties": false,
+        "description": "The Harness model the user chose for investigations. Credentials stay in the provider worker; this request never carries a key.",
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "provider_options": {
+            "additionalProperties": true,
+            "description": "Provider-native options, namespaced by the selected provider id.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "thinking_level": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ThinkingLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "model",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "RejectionReasonV1": {
+        "oneOf": [
+          {
+            "description": "The unfinished-analyses cap was reached.",
+            "enum": [
+              "at_capacity"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The day's known cost reached `daily_cost_cap_usd`.",
+            "enum": [
+              "cost_cap"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ThinkingLevel": {
+        "enum": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "type": "string"
+      },
+      "TriageAvailabilityV1": {
+        "additionalProperties": false,
+        "description": "What `judge::models::list` answered for the triage provider. The key stays in the provider; this only reports whether it answers.",
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "checked_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "code": {
+            "description": "The provider's error code (`missing_key`, `provider_unavailable`…), or `unreachable` when the hub did not answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "available",
+          "checked_at",
+          "models",
+          "provider"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "config": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/MonitorConfigV1"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "`null` until the user configures the monitor."
+      },
+      "cost": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/MonitorCostV1"
+          }
+        ],
+        "description": "What the investigations cost so far, to decide before enabling."
+      },
+      "last_rejection": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CapacityRejectionV1"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The latest turn not admitted: the monitor was at capacity or the daily cost cap was reached (`reason`)."
+      },
+      "limits": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/MonitorLimitsV1"
+          }
+        ],
+        "description": "The limits this version enforces, so the console never restates them."
+      },
+      "observer_bound": {
+        "description": "False when the `harness::turn-completed` binding was refused locally: automatic observation is unavailable even if `config.enabled` is true. The SDK does not wait for the engine's acknowledgement, so true means the binding was requested, not confirmed.",
+        "type": "boolean"
+      },
+      "observer_error": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "triage": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/TriageAvailabilityV1"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Present when the request asked to check the triage provider."
+      }
+    },
+    "required": [
+      "cost",
+      "limits",
+      "observer_bound"
+    ],
+    "title": "MonitorStateResponseV1",
+    "type": "object"
+  }
+}

@@ -1,0 +1,161 @@
+/* eval worker UI: monitor settings. Sections, rows, selectors, switches,
+   buttons and status panels are shared components; this sheet only lays out
+   the single centered column and sets machine values in mono. */
+
+[data-iii-ui="eval"] .eval-ui-settings {
+  width: 100%;
+  min-width: 0;
+  container-name: eval-settings;
+  container-type: inline-size;
+}
+
+[data-iii-ui="eval"] .eval-ui-settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 824px;
+  margin: 0 auto;
+  padding: 32px 32px 56px;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+[data-iii-ui="eval"] .eval-ui-settings-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-settings-title {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+[data-iii-ui="eval"] .eval-ui-settings-lede {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+
+[data-iii-ui="eval"] .eval-ui-settings-hint {
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* The residual-risk line under the code directory: the hint with its icon. */
+[data-iii-ui="eval"] .eval-ui-settings-risk {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+[data-iii-ui="eval"] .eval-ui-settings-risk svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--color-warn-strong);
+}
+
+/* A directory the monitor refused: the field itself says so, not only the text above it. */
+[data-iii-ui="eval"] input.eval-ui-settings-mono[aria-invalid="true"] {
+  border-color: var(--color-alert-strong);
+}
+
+/* "Optional" next to a field label. */
+[data-iii-ui="eval"] .eval-ui-settings-optional {
+  margin-left: 4px;
+  color: var(--color-ink-faint);
+  font-weight: 400;
+}
+
+/* Machine values: model ids, provider codes, limits. */
+[data-iii-ui="eval"] .eval-ui-settings-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="eval"] .eval-ui-settings-model button[aria-haspopup="listbox"],
+[data-iii-ui="eval"] .eval-ui-settings-models .iii-ui-list-item__title {
+  font-family: var(--font-mono);
+}
+
+[data-iii-ui="eval"] .eval-ui-settings-value {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* The daily cost cap: a dollar sign in front of the amount. */
+[data-iii-ui="eval"] .eval-ui-settings-money {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+[data-iii-ui="eval"] .eval-ui-settings-money > span {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  transform: translateY(-50%);
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  pointer-events: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-settings-money input {
+  padding-left: 26px;
+}
+
+[data-iii-ui="eval"] .eval-ui-settings-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-settings-footnote {
+  margin-right: auto;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+
+@container eval-settings (max-width: 40rem) {
+  [data-iii-ui="eval"] .eval-ui-settings-body {
+    padding: 24px 24px 48px;
+  }
+}
+
+/* Narrow pane: one column, full-width actions (48px from the shared
+   `data-settings-narrow-action` rule). */
+@container eval-settings (max-width: 30rem) {
+  [data-iii-ui="eval"] .eval-ui-settings-body {
+    gap: 24px;
+    padding: 16px 16px 40px;
+  }
+
+  [data-iii-ui="eval"] .eval-ui-settings-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  [data-iii-ui="eval"] .eval-ui-settings-footnote {
+    margin-right: 0;
+  }
+}
+
+@container (max-width: 30rem) {
+  [data-iii-ui="eval"] .eval-ui-settings-value {
+    text-align: left;
+  }
+}

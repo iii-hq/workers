@@ -8,6 +8,8 @@ use crate::contract::StepRequestV1;
 use crate::error::EvalError;
 
 pub const RUN_QUEUE: &str = "eval-run";
+/// Steps processed at once; waiting for a model holds no slot.
+pub const RUN_CONCURRENCY: u32 = 8;
 const DEFINE_TIMEOUT_MS: u64 = 5_000;
 const DEFINE_ATTEMPTS: u32 = 20;
 const DEFINE_RETRY_BACKOFF_MS: u64 = 250;
@@ -67,7 +69,7 @@ fn run_queue_definition() -> Value {
         "config": {
             "type": "fifo",
             "message_group_field": "evaluation_id",
-            "concurrency": 4,
+            "concurrency": RUN_CONCURRENCY,
             "max_retries": 3,
             "backoff_ms": 1_000,
             "poll_interval_ms": 100

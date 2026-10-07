@@ -12,16 +12,20 @@ fn catalog_matches_the_registered_surface() {
     assert_eq!(
         ids,
         [
-            "eval::compare-sessions",
-            "eval::start",
-            "eval::rerun",
+            "eval::configure",
+            "eval::config",
+            "eval::analyze-session",
             "eval::list",
             "eval::status",
             "eval::result",
             "eval::cancel",
             "eval::delete",
-            "eval::assert::exact",
-            "eval::assert::normalized_text",
+            "eval::attach-validation",
+            "eval::propose-validation",
+            "eval::start-validation",
+            "eval::review",
+            "eval::reviews",
+            "eval::recurrence",
             "eval::step",
             "eval::on-turn-completed",
             "eval::sweep",
@@ -53,4 +57,26 @@ fn schemas_are_typed_and_match_goldens() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn transport_requests_accept_engine_metadata_but_llm_output_stays_closed() {
+    let by_id = |id: &str| {
+        catalog()
+            .into_iter()
+            .find(|spec| spec.function_id == id)
+            .unwrap()
+    };
+    let configure = serde_json::to_value(&by_id("eval::configure").request_schema).unwrap();
+    assert_eq!(configure["additionalProperties"], false);
+    assert!(configure["properties"].get("_caller_worker_id").is_some());
+    assert!(configure["properties"].get("api_key").is_none());
+    let output =
+        serde_json::to_value(schemars::schema_for!(eval::contract::InvestigationOutputV1)).unwrap();
+    assert_eq!(output["additionalProperties"], false);
+    assert_eq!(output["properties"]["suggestions"]["maxItems"], 3);
+    assert_eq!(
+        output["definitions"]["SuggestionV1"]["additionalProperties"],
+        false
+    );
 }

@@ -4,78 +4,92 @@ use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 
-use crate::comparison::CompareSessionsRequestV1;
 use crate::contract::{
-    EvalListRequestV1, EvalRerunRequestV1, EvalStartRequestV1, EvaluationIdRequestV1,
-    EvaluatorInputV1, StepRequestV1, SweepEventV1, WakeEventV1,
+    AnalyzeSessionRequestV1, AttachValidationRequestV1, ConfigureRequestV1, EvalListRequestV1,
+    EvaluationIdRequestV1, MonitorStateRequestV1, ProposeValidationRequestV1, RecurrenceRequestV1,
+    ReviewRequestV1, ReviewsRequestV1, StartValidationRequestV1, StepRequestV1, SweepEventV1,
+    WakeEventV1,
 };
 use crate::runtime::Deps;
 
-pub const START_ID: &str = "eval::start";
+pub const CONFIGURE_ID: &str = "eval::configure";
+pub const CONFIG_ID: &str = "eval::config";
+pub const ANALYZE_SESSION_ID: &str = "eval::analyze-session";
 pub const LIST_ID: &str = "eval::list";
-pub const RERUN_ID: &str = "eval::rerun";
 pub const STATUS_ID: &str = "eval::status";
 pub const RESULT_ID: &str = "eval::result";
 pub const CANCEL_ID: &str = "eval::cancel";
 pub const DELETE_ID: &str = "eval::delete";
-pub const EXACT_ID: &str = "eval::assert::exact";
-pub const NORMALIZED_TEXT_ID: &str = "eval::assert::normalized_text";
+pub const ATTACH_VALIDATION_ID: &str = "eval::attach-validation";
+pub const PROPOSE_VALIDATION_ID: &str = "eval::propose-validation";
+pub const START_VALIDATION_ID: &str = "eval::start-validation";
+pub const REVIEW_ID: &str = "eval::review";
+pub const REVIEWS_ID: &str = "eval::reviews";
+pub const RECURRENCE_ID: &str = "eval::recurrence";
 pub const STEP_ID: &str = "eval::step";
 pub const WAKE_ID: &str = "eval::on-turn-completed";
 pub const SWEEP_ID: &str = "eval::sweep";
-pub const COMPARE_SESSIONS_ID: &str = "eval::compare-sessions";
 
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
     let current = deps.clone();
     iii.register_function(
-        COMPARE_SESSIONS_ID,
-        RegisterFunction::new_async(move |request: CompareSessionsRequestV1| {
+        CONFIGURE_ID,
+        RegisterFunction::new_async(move |request: ConfigureRequestV1| {
             let deps = current.clone();
             async move {
-                crate::comparison::compare(&deps, request)
+                crate::runtime::configure(&deps, request)
                     .await
                     .map_err(Error::from)
             }
         })
         .description(
-            "Compare 2–5 existing root sessions from live session, lifecycle, and Harness metrics. \
-             The response contains objective values and arithmetic deltas against the chosen \
-             baseline; it does not score, rank, validate equivalence, or persist a snapshot.",
+            "Choose the Harness model/provider the session monitor uses for investigations and \
+             enable or pause automatic observation. A new selection is checked against \
+             router::models::list; credentials stay in the providers and are never accepted \
+             here. An optional code_repository (an absolute directory on this host, normally \
+             the iii workers repository) lets the investigation read that code like a chat \
+             with the directory selected, and for now with every function allowed. An optional \
+             daily_cost_cap_usd pauses automatic observation for the rest of the UTC day once the \
+             known investigation cost reaches it (manual analyses are never refused). Analyses \
+             already admitted keep the configuration they started with.",
         ),
     );
 
     let current = deps.clone();
     iii.register_function(
-        START_ID,
-        RegisterFunction::new_async(move |request: EvalStartRequestV1| {
+        CONFIG_ID,
+        RegisterFunction::new_async(move |request: MonitorStateRequestV1| {
             let deps = current.clone();
             async move {
-                crate::runtime::start(&deps, request)
+                crate::runtime::monitor_state(&deps, request)
                     .await
                     .map_err(Error::from)
             }
         })
         .description(
-            "Start a durable same-model A/B evaluation. Exactly one dimension may change: \
-             `prompt` or `system_prompt`. Returns evaluation_id immediately; use eval::status, \
-             eval::result, or the eval::completed trigger instead of polling in a tight loop.",
+            "Read the monitor configuration (null until configured), whether the \
+             harness::turn-completed observation trigger was requested, the latest rejection \
+             (capacity or daily cost cap), the day's known investigation cost against the cap with \
+             what one analysis has cost, and, with check_providers, whether the Jev triage \
+             provider answers.",
         ),
     );
 
     let current = deps.clone();
     iii.register_function(
-        RERUN_ID,
-        RegisterFunction::new_async(move |request: EvalRerunRequestV1| {
+        ANALYZE_SESSION_ID,
+        RegisterFunction::new_async(move |request: AnalyzeSessionRequestV1| {
             let deps = current.clone();
             async move {
-                crate::runtime::rerun(&deps, request)
+                crate::runtime::analyze_session(&deps, request)
                     .await
                     .map_err(Error::from)
             }
         })
         .description(
-            "Repeat a terminal evaluation from its persisted request. Set reverse_order to invert \
-             the balanced A/B order. The rerun receives a new evaluation ID and fresh sessions.",
+            "Analyze the latest definitive turn of a finished root Harness session. Returns the \
+             existing analysis of that turn unless reanalyze is true; reanalysis needs the \
+             previous analysis to be terminal. Works while automatic observation is paused.",
         ),
     );
 
@@ -90,7 +104,10 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
                     .map_err(Error::from)
             }
         })
-        .description("List recent evaluations as lightweight summaries, newest first."),
+        .description(
+            "List recent monitor analyses as compact records, newest first, without evidence; \
+             observation_key keeps only the analyses of one observed turn.",
+        ),
     );
 
     let current = deps.clone();
@@ -104,7 +121,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
                     .map_err(Error::from)
             }
         })
-        .description("Read evaluation progress without loading the complete report."),
+        .description("Read one analysis record (status, counters, failure stage) or null."),
     );
 
     let current = deps.clone();
@@ -119,7 +136,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             }
         })
         .description(
-            "Read an evaluation result. The report is present only after terminal completion.",
+            "Read an analysis with its captured evidence, deterministic diagnostics, Jev triage, \
+             suggestions, the monitor's own consumption and linked E2E executions, or null. A \
+             completed analysis is not a validated improvement.",
         ),
     );
 
@@ -134,7 +153,10 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
                     .map_err(Error::from)
             }
         })
-        .description("Cancel an evaluation and its active harness turn."),
+        .description(
+            "Cancel an analysis: signals its Jev call and stops its investigation session. Never \
+             touches the observed session or the captured evidence.",
+        ),
     );
 
     let current = deps.clone();
@@ -148,27 +170,129 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
                     .map_err(Error::from)
             }
         })
-        .description("Delete a terminal evaluation report and its session indexes."),
-    );
-
-    iii.register_function(
-        EXACT_ID,
-        RegisterFunction::new_async(move |input: EvaluatorInputV1| async move {
-            crate::runtime::exact(input).map_err(Error::from)
-        })
         .description(
-            "Deep-compare output with arguments.expected; deterministic built-in evaluator.",
+            "Delete a terminal analysis and its stored previews. The turn stays marked as \
+             analyzed until retention, so it is not re-admitted automatically.",
         ),
     );
 
+    let current = deps.clone();
     iii.register_function(
-        NORMALIZED_TEXT_ID,
-        RegisterFunction::new_async(move |input: EvaluatorInputV1| async move {
-            crate::runtime::normalized_text(input).map_err(Error::from)
+        ATTACH_VALIDATION_ID,
+        RegisterFunction::new_async(move |request: AttachValidationRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::runtime::attach_validation(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
         })
         .description(
-            "Compare text after normalizing case, whitespace, and surrounding punctuation; \
-             deterministic built-in evaluator.",
+            "Link a baseline and a candidate E2E execution (read through \
+             e2e::dashboard::execution-get) to one suggestion of a terminal analysis. The link \
+             records report availability and, when the suggestion's scenario is known, the \
+             evidence computed from the runs; it is not a verdict and starts no campaign.",
+        ),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        PROPOSE_VALIDATION_ID,
+        RegisterFunction::new_async(move |request: ProposeValidationRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::runtime::propose_validation(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "Ask Jev to pick the baseline and candidate E2E executions (listed through \
+             e2e::dashboard::executions-list) that fit one suggestion's validation plan. Code \
+             pre-filters the comparable pairs and counts the runs it leaves out; Jev only \
+             chooses among them. Nothing is attached and no campaign starts; the call's Jev \
+             usage is added to the analysis. Its confidence is not proof: check the runs.",
+        ),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        START_VALIDATION_ID,
+        RegisterFunction::new_async(move |request: StartValidationRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::validation::start_validation(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "Explicitly start a baseline and a candidate E2E execution for one suggestion. Both \
+             commits (candidate_ref, and baseline_ref or the merge base with origin/main) are \
+             resolved with git in the configured code_repository and must be on a remote branch; \
+             each stack is the E2E's `harness` template with only the Harness pinned to its commit, \
+             run in Docker (runs 1-20, default 5). The criterion is registered before anything \
+             starts; the sweep attaches the pair when both finish and computes the evidence. \
+             Spends model tokens, and never runs unless called. With dry_run: true it only \
+             resolves and checks the refs, scenario and runs and answers with the resolved \
+             commits (`baseline`, `candidate`, `warnings`); it registers nothing and calls no \
+             E2E function.",
+        ),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        REVIEW_ID,
+        RegisterFunction::new_async(move |request: ReviewRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::review::review(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "Record what a person decided about a suggestion of a terminal analysis: move its \
+             lifecycle (new, accepted, in_progress, shipped, rejected, duplicate), register the \
+             criterion a validation is judged by, or record a verdict. A verdict of \
+             validated_improvement is refused unless the criterion was registered before the \
+             first attached pair or run and both sides have min_runs completed runs. The author \
+             is `by`, else the eval host's user, else the caller's identity.",
+        ),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        REVIEWS_ID,
+        RegisterFunction::new_async(move |request: ReviewsRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::review::reviews(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "List the stored suggestion reviews (lifecycle, criterion, run, evidence, verdict) \
+             and, per analysis with suggestions, how many sit at each lifecycle status.",
+        ),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        RECURRENCE_ID,
+        RegisterFunction::new_async(move |request: RecurrenceRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::review::recurrence(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "For a suggestion marked shipped with its version, how often its patterns were found \
+             per analysis on Harness versions before it against from it on. Analyses without a \
+             semantic Harness version are left out and counted.",
         ),
     );
 
@@ -183,7 +307,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
                     .map_err(Error::from)
             }
         })
-        .description("Internal durable evaluation step.")
+        .description("Internal durable analysis step.")
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
@@ -198,7 +322,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
                     .map_err(Error::from)
             }
         })
-        .description("Internal harness turn-completed wake-up.")
+        .description("Internal harness turn-completed admission and wake-up.")
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
@@ -209,7 +333,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             let deps = current.clone();
             async move { crate::runtime::sweep(&deps).await.map_err(Error::from) }
         })
-        .description("Internal recovery and timeout sweep.")
+        .description("Internal recovery, deadline and retention sweep.")
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 }
