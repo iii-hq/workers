@@ -77,12 +77,15 @@ const INVESTIGATION_CODE_MAX_TOTAL_TOKENS: u64 = 800_000;
 const SPEND_LOCK: &str = "daily-spend";
 /// The only functions an investigation with code access may call: the
 /// read-only ones its prompt names, and the contract lookup the invocation
-/// surface asks for before a first call. Not `fp::pipe`: its steps run with
-/// that worker's authority, outside this policy.
-const ANALYST_ALLOWED: [&str; 5] = [
+/// surface asks for before a first call. `session::messages` is there because
+/// analysts read the observed transcript beyond the bundle; not `fp::pipe`,
+/// which they used for that: its steps run with that worker's authority,
+/// outside this policy.
+const ANALYST_ALLOWED: [&str; 6] = [
     "coder::search",
     "coder::tree",
     "coder::read-file",
+    "session::messages",
     "github::pr::list",
     "engine::functions::info",
 ];
@@ -2895,7 +2898,8 @@ relative to your working directory and the `line_from` and `line_to` you read (1
 inclusive, at most {MAX_CODE_REFS} per suggestion); a reference to a file or lines that do not \
 exist rejects the suggestion. You may also list the open pull requests with github::pr::list \
 (read-only; repo iii-hq/workers) to see whether work already overlaps a suggestion; when one does, \
-say so in that suggestion's `limitations`."
+say so in that suggestion's `limitations`. To read more of an observed session than the evidence \
+shows, call session::messages (read-only)."
             ),
             DELIVER_CODE,
             "improvement to the Harness or another worker",

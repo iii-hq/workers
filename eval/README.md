@@ -234,18 +234,23 @@ iii trigger eval::configure --json '{
   the console shows the directory selected when the investigation session is
   opened. The policy is an explicit read-only allowlist,
   `allow: ["coder::search", "coder::tree", "coder::read-file",
-  "github::pr::list", "engine::functions::info"]`, with `deny: ["eval::*",
-  "e2e::dashboard::execution-*"]` kept as well (no new bus function: the LLM
-  uses existing ones). The first four are the functions the prompt names;
+  "session::messages", "github::pr::list", "engine::functions::info"]`, with
+  `deny: ["eval::*", "e2e::dashboard::execution-*"]` kept as well (no new bus
+  function: the LLM uses existing ones). The first five are the functions the
+  prompt names (`session::messages` reads more of an observed session than
+  the evidence shows);
   `engine::functions::info` is the contract lookup the invocation surface
   tells a model to make before a first call (without it the LLM guessed
   argument names, e.g. `start_line` for `line_from`). Everything else is
   refused by the Harness, so a transcript it reads cannot make it write a
   file, run a shell, start or message a session, start an E2E execution or
   record a review. `fp::pipe` is deliberately absent: its steps run with the
-  `fp` worker's authority, outside this policy. Without a code directory the
-  policy stays deny-all. With `approval-gate` installed all five pass without a
-  human (`iii-permissions.yaml` allows them). The step cap goes from 1 to 32
+  `fp` worker's authority, outside this policy (analysts had used it to read
+  `session::messages`, now allowed directly). Without a code directory the
+  policy stays deny-all. With `approval-gate` installed five pass without a
+  human (`iii-permissions.yaml` allows them); `session::messages` stays at
+  that file's `needs_approval` default for session reads, so each call waits
+  for a person or the deadline. The step cap goes from 1 to 32
   generate steps and the total-token cap from 200,000 to 800,000
   (`limits.investigation_code_max_turns` and
   `investigation_code_max_total_tokens`). The deadline and the

@@ -1706,7 +1706,7 @@ async fn with_a_code_directory_the_investigation_runs_in_it_and_the_directory_is
             send["options"]["functions"],
             json!({
                 "allow": ["coder::search", "coder::tree", "coder::read-file",
-                    "github::pr::list", "engine::functions::info"],
+                    "session::messages", "github::pr::list", "engine::functions::info"],
                 "deny": ["eval::*", "e2e::dashboard::execution-*"],
                 "expose": "agent_trigger"
             })
@@ -1716,6 +1716,7 @@ async fn with_a_code_directory_the_investigation_runs_in_it_and_the_directory_is
             "coder::search",
             "coder::tree",
             "coder::read-file",
+            "session::messages",
             "github::pr::list",
         ] {
             assert!(prompt.contains(id), "the prompt names {id}");
