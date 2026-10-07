@@ -277,9 +277,13 @@ layers:
   A judge repair is applied only above a fixed probability (0.8), and only if the result
   validates.
 
-Every applied repair is recorded in the entry origin (`reconciled`) and noted in the
-`function_result` ("the arguments were reconciled…"). Approvers and hooks review the repaired
-arguments. History is never rewritten.
+Every applied repair is recorded in the entry origin (`reconciled`). A repair that changes what the
+model asked for (renamed, replaced, dropped) is also noted in the `function_result` ("the
+arguments were reconciled…"), with the contract to follow. A lossless parse gets one short line
+naming the path and parsed type ("`args` (array) arrived as a JSON string and was parsed before
+dispatch; the call ran as intended."), only the first time that function and path are parsed in
+a turn (`TurnRecord::noted_parses`). `engine::functions::info` results are never appended to.
+Approvers and hooks review the repaired arguments. History is never rewritten.
 
 A call that still fails and still violates the schema gets the violations named by path in its
 error result. The target's deserialization error names no field.

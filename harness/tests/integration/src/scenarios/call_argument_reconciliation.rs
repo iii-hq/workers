@@ -1,11 +1,14 @@
 //! INT-033 — a call whose arguments carry stringified JSON the target's
 //! schema rejects (`"true"` for a boolean, `"5"` for an integer) is repaired
 //! before dispatch: the target receives the typed values, the call succeeds
-//! on the first attempt, and the result tells the model what was reconciled.
+//! on the first attempt, and the result says the values were parsed and the
+//! call ran as intended. The same repair again in the turn runs the same way
+//! and keeps its `reconciled` origin annotation, but its result carries no
+//! second notice.
 //!
 //! Deterministic regression coverage for MOT-4847 (layer A).
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::dsl::{
     ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send,
@@ -16,8 +19,8 @@ use crate::fixtures::ScenarioFixture;
 
 pub(super) fn scenario() -> ScenarioFixture {
     const ID: &str = "INT-033";
-    const MESSAGE: &str = "Look up retry once.";
-    const CALL_ID: &str = "call-1";
+    const MESSAGE: &str = "Look up retry twice.";
+    const RESULT: &str = "found 1 entry";
 
     let model = Model::scripted("fixture-model");
     let lookup = ControlledFunction::new(
@@ -34,12 +37,28 @@ pub(super) fn scenario() -> ScenarioFixture {
         },
         "required": ["query"]
     }))
-    .returns_text("found 1 entry");
+    .returns_text(RESULT);
+    let stringified = json!({ "query": "retry", "exact": "true", "limit": "5" });
+    let called = |call_id: &str| {
+        json!({ "role": "assistant", "content": [{
+            "type": "function_call",
+            "id": call_id,
+            "function_id": "{{run_id}}::lookup"
+        }]})
+    };
+    let succeeded = |call_id: &str| {
+        json!({
+            "role": "function_result",
+            "function_call_id": call_id,
+            "function_id": "{{run_id}}::lookup",
+            "is_error": false
+        })
+    };
 
     Scenario::new(
         ID,
         "call-argument-reconciliation",
-        "Stringified JSON the target's schema rejects is parsed before dispatch and the result notes the repair.",
+        "Stringified JSON the target's schema rejects is parsed before dispatch; the result notes the parse once per turn.",
         ScenarioDriver::Direct,
         model.clone(),
     )
@@ -59,9 +78,9 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .tools_exact([lookup.tool()]),
             )
             .respond(Response::function_call(
-                CALL_ID,
+                "call-1",
                 &lookup,
-                json!({ "query": "retry", "exact": "true", "limit": "5" }),
+                stringified.clone(),
                 8,
                 4,
             )),
@@ -74,17 +93,31 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_subset([
                         json!({ "role": "user" }),
-                        json!({ "role": "assistant", "content": [{
-                            "type": "function_call",
-                            "id": CALL_ID,
-                            "function_id": "{{run_id}}::lookup"
-                        }]}),
-                        json!({
-                            "role": "function_result",
-                            "function_call_id": CALL_ID,
-                            "function_id": "{{run_id}}::lookup",
-                            "is_error": false
-                        }),
+                        called("call-1"),
+                        succeeded("call-1"),
+                    ])
+                    .tools_exact([lookup.tool()]),
+            )
+            .respond(Response::function_call(
+                "call-2",
+                &lookup,
+                stringified.clone(),
+                8,
+                4,
+            )),
+    )
+    .generation(
+        Generation::new(3)
+            .expect(
+                Request::new()
+                    .turn_request()
+                    .system_prompt_sha256("{{system_prompt_sha256}}")
+                    .messages_subset([
+                        json!({ "role": "user" }),
+                        called("call-1"),
+                        succeeded("call-1"),
+                        called("call-2"),
+                        succeeded("call-2"),
                     ])
                     .tools_exact([lookup.tool()]),
             )
@@ -92,27 +125,58 @@ pub(super) fn scenario() -> ScenarioFixture {
     )
     .verify(|run| {
         run.expect_assistant_texts(["done"])?;
-        run.expect_function_calls("lookup", 1)?;
-        // The target ran once, with the typed values.
-        run.expect_call_payload(
-            "lookup",
-            json!({ "query": "retry", "exact": true, "limit": 5 }),
-        )?;
+        run.expect_function_calls("lookup", 2)?;
+        // Both calls ran once each, with the typed values.
+        let typed = json!({ "query": "retry", "exact": true, "limit": 5 });
+        for call in run.calls("lookup") {
+            anyhow::ensure!(
+                call.payload.as_ref() == Some(&typed),
+                "lookup payload {:?} != {typed}",
+                call.payload
+            );
+        }
         let function_id = format!("{}::lookup", run.run_id);
         let results = run.function_results(&function_id);
         anyhow::ensure!(
-            results.len() == 1,
-            "reconciled call has {} function results, expected 1",
+            results.len() == 2,
+            "reconciled calls have {} function results, expected 2",
             results.len()
         );
-        let text = message_text(results[0]);
+        let first = message_text(results[0]);
         anyhow::ensure!(
-            text.contains("found 1 entry") && text.contains("arguments were reconciled"),
-            "result does not carry the target output and the reconciliation note: {text}"
+            first.contains(RESULT)
+                && first.contains("`exact` (boolean)")
+                && first.contains("`limit` (integer)")
+                && first.contains("parsed before dispatch; the call ran as intended"),
+            "first result does not carry the target output and the parse note: {first}"
         );
         anyhow::ensure!(
-            text.contains("`exact` \"true\" → true") && text.contains("`limit` \"5\" → 5"),
-            "note does not name both repairs: {text}"
+            !first.contains("Send arguments") && !first.contains('→'),
+            "a lossless parse note carries an instruction or value previews: {first}"
+        );
+        let second = message_text(results[1]);
+        anyhow::ensure!(
+            second == RESULT,
+            "the repeated repair was noted again: {second}"
+        );
+        // Both results still record what was parsed on the entry origin.
+        let annotated = run
+            .transcript
+            .iter()
+            .filter(|item| {
+                item.pointer("/message/role").and_then(Value::as_str) == Some("function_result")
+                    && item.pointer("/message/function_id").and_then(Value::as_str)
+                        == Some(function_id.as_str())
+            })
+            .filter(|item| {
+                item.pointer("/origin/reconciled")
+                    .and_then(Value::as_array)
+                    .is_some_and(|changes| changes.len() == 2)
+            })
+            .count();
+        anyhow::ensure!(
+            annotated == 2,
+            "{annotated} of 2 results carry the `reconciled` origin annotation"
         );
         run.expect_no_duplicate_messages()
     })

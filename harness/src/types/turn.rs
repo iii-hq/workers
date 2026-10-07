@@ -2,7 +2,7 @@
 //! the `harness_turn` state scope, plus the per-send options and per-call
 //! checkpoints it carries (harness.md § State / § Durability & idempotency).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -408,6 +408,12 @@ pub struct TurnRecord {
     /// A success clears its entry; every new turn starts empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub failed_calls: BTreeMap<String, FailedCall>,
+    /// `(function_id, argument path)` pairs whose stringified-JSON parse
+    /// (a lossless reconciliation repair) a result already reported this
+    /// turn: a later identical repair keeps its `reconciled` origin
+    /// annotation but appends no notice. Every new turn starts empty.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub noted_parses: BTreeSet<(String, String)>,
     /// Last effective names-only skill view admitted to the transcript.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_ack: Option<SkillAck>,
@@ -493,16 +499,17 @@ impl TurnRecord {
     }
 
     /// Drop what only a running turn reads, before the terminal write: done
-    /// calls without a child, the per-turn failure counts, the steering
-    /// watermark and the stream id. Open calls stay (deletion refuses a
-    /// `Triggered` one; verbose status lists pending ids) and so do calls with
-    /// a child (status children, stop cascade). `seed_new` resets all of these
-    /// for the next turn.
+    /// calls without a child, the per-turn failure counts and reported
+    /// parses, the steering watermark and the stream id. Open calls stay
+    /// (deletion refuses a `Triggered` one; verbose status lists pending ids)
+    /// and so do calls with a child (status children, stop cascade).
+    /// `seed_new` resets all of these for the next turn.
     pub(crate) fn slim_finished(&mut self) {
         self.calls.retain(|_, c| {
             c.state != CallState::Done || c.child_session_id.is_some() || c.child_turn_id.is_some()
         });
         self.failed_calls.clear();
+        self.noted_parses.clear();
         self.watermark_entry_id = None;
         self.stream_request_id = None;
     }
@@ -592,6 +599,7 @@ pub(crate) mod tests {
             functions_acknowledged: None,
             function_contract_ledger: Default::default(),
             failed_calls: Default::default(),
+            noted_parses: Default::default(),
             skill_ack: None,
             skills_started: false,
             context_snapshot: None,
@@ -664,9 +672,19 @@ pub(crate) mod tests {
     fn failed_calls_are_omitted_when_empty_and_default_on_legacy_records() {
         let value = serde_json::to_value(record()).unwrap();
         assert!(value.get("failed_calls").is_none());
+        assert!(value.get("noted_parses").is_none());
 
         let decoded: TurnRecord = serde_json::from_value(value).unwrap();
         assert!(decoded.failed_calls.is_empty());
+        assert!(decoded.noted_parses.is_empty());
+
+        let mut noted = record();
+        noted
+            .noted_parses
+            .insert(("shell::exec".into(), "/args".into()));
+        let round_trip: TurnRecord =
+            serde_json::from_value(serde_json::to_value(&noted).unwrap()).unwrap();
+        assert_eq!(round_trip.noted_parses, noted.noted_parses);
     }
 
     #[test]
@@ -785,6 +803,8 @@ pub(crate) mod tests {
         );
         r.watermark_entry_id = Some("e_watermark".into());
         r.stream_request_id = Some("req_1".into());
+        r.noted_parses
+            .insert(("shell::exec".into(), "/args".into()));
         let children = r.spawned_children();
         let pending = r.pending_call_ids();
 
@@ -795,6 +815,7 @@ pub(crate) mod tests {
             vec!["done_child", "pending", "triggered"]
         );
         assert!(r.failed_calls.is_empty());
+        assert!(r.noted_parses.is_empty());
         assert_eq!(r.watermark_entry_id, None);
         assert_eq!(r.stream_request_id, None);
         // `harness::status` builds `children` and verbose
