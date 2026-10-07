@@ -208,10 +208,11 @@ pub struct ProviderDeclaration {
     /// the router drops anything larger or not starting with `<svg`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_svg: Option<String>,
-    /// Chat model ids the provider recommends as a starting point, most
-    /// preferred first (the current mid-range model, then its predecessors).
-    /// `router::provider::list` reports the first one the catalog slice
-    /// holds as `default_model`.
+    /// Chat model ids the provider recommends as a starting point. The order
+    /// in which the list first names each variant sets the variant rank.
+    /// `router::provider::list` reports the newest catalog model of the
+    /// best-ranked variant as `default_model` (see
+    /// `registry::availability::resolve_default_model`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_models: Option<Vec<String>>,
     /// The thinking level to use with the default model when a caller names

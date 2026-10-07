@@ -281,7 +281,7 @@
         ]
       },
       "default_models": {
-        "description": "Chat model ids the provider recommends as a starting point, most preferred first (the current mid-range model, then its predecessors). `router::provider::list` reports the first one the catalog slice holds as `default_model`.",
+        "description": "Chat model ids the provider recommends as a starting point. The order in which the list first names each variant sets the variant rank. `router::provider::list` reports the newest catalog model of the best-ranked variant as `default_model` (see `registry::availability::resolve_default_model`).",
         "items": {
           "type": "string"
         },
