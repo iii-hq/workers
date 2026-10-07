@@ -277,7 +277,7 @@ Validar status, ID da avaliação, conjunto de respostas e domínio das opções
 - Investigar se, e somente se, a triagem respondeu `needs_investigation`, em análises automáticas e manuais.
 - Diagnósticos determinísticos, `insufficient_evidence`, confidence baixa, cobertura insuficiente, pedido manual e amostra de sessões quietas não enviam a sessão à LLM por si sós. Os diagnósticos continuam no resultado.
 
-Registrar o motivo do roteamento: `[needs_investigation]` ou `[]`. Os motivos antigos (`diagnostics`, `insufficient_evidence`, `low_confidence`, `coverage_insufficient`, `audit_sample`, `manual_request`) só permanecem no contrato para que registros já gravados continuem lendo; nada os produz mais. O limiar de 0,8 sobrevive apenas como o aviso de baixa confiança de `eval::propose-validation`.
+Registrar o motivo do roteamento: `[needs_investigation]` ou `[]`. Os motivos antigos (`diagnostics`, `insufficient_evidence`, `low_confidence`, `coverage_insufficient`, `audit_sample`, `manual_request`) só permanecem no contrato para que registros já gravados continuem lendo; nada os produz mais.
 
 ## 7. Investigação com a LLM do usuário
 
@@ -287,7 +287,7 @@ Usar `harness::send` e seus tipos atuais, com:
 - `SessionInit.kind: automation` e metadata com `origin: eval_monitor`, fonte e ID da análise.
 - Modelo, provider, thinking e provider options congelados na admissão.
 - Prompt de investigação com `SystemPromptStrategy::Override`.
-- Sem `code_repository`: `FunctionPolicy::default()`, nenhuma função autorizada, de modo que a LLM não altera a tarefa nem o projeto. Com `code_repository`: `fs_scope.root` na metadata da sessão e do turno, `allow: ["*"]` e passos e tokens maiores (tabela da seção 8). Nesse modo a única barreira são as regras do prompt e o escopo do diretório: ver "Code access" e o risco residual no README.
+- Sem `code_repository`: `FunctionPolicy::default()`, nenhuma função autorizada, de modo que a LLM não altera a tarefa nem o projeto. Com `code_repository`: `fs_scope.root` na metadata da sessão e do turno, `allow` somente leitura (`coder::search`, `coder::tree`, `coder::read-file`, `github::pr::list` e `engine::functions::info`, sem `fp::pipe`), `deny` de `eval::*` e `e2e::dashboard::execution-*` mantido, e passos e tokens maiores (tabela da seção 8). Nesse modo nada escreve, executa shell nem inicia sessão; a leitura continua sem jaula além do escopo do diretório: ver "Code access" e o risco residual no README.
 - `OutputContract::Json`, com schema gerado dos tipos de resposta.
 - Sem código: uma geração. Com código: até 32 gerações (`analyst_step_cap` quando o turno as esgota sem entregar). Limites de tokens e zero retries de validação.
 
@@ -318,7 +318,7 @@ Valores iniciais propostos para implementação e teste:
 | Contexto para modelos | Até 32 KiB de JSON serializado. | Inclui fatos e prévias; limites em bytes não substituem limites em tokens do modelo. |
 | Assets da análise | Até 256 KiB por registro. | Se o snapshot necessário exceder o limite, registrar cobertura insuficiente e interromper a inferência; não descartar dados silenciosamente. |
 | Investigação sem código | `max_turns: 1`, `max_output_tokens: 16384`, `max_total_tokens: 200000`. | Respeitar também a capacidade do modelo selecionado. |
-| Investigação com código | `max_turns: 32`, `max_output_tokens: 16384`, `max_total_tokens: 800000`, `allow: ["*"]`. | Só com `code_repository`; sem restrição de funções além do prompt e de `fs_scope` (README, risco residual). Turno que esgota os passos falha com `analyst_step_cap`. |
+| Investigação com código | `max_turns: 32`, `max_output_tokens: 16384`, `max_total_tokens: 800000`, `allow` somente leitura (seção acima). | Só com `code_repository`; funções restritas à lista de leitura, sem jaula de leitura além de `fs_scope` (README, risco residual). Turno que esgota os passos falha com `analyst_step_cap`. |
 | Fila | FIFO por `evaluation_id`, concorrência 4. | Reutilizar `eval-run` e sua recuperação. |
 | Admissão | Até 100 análises não terminais. | Registrar rejeição por capacidade, sem iniciar inferência. |
 | Retenção | 30 dias, até 1000 análises terminais. | Remover primeiro as mais antigas, preservando jobs ativos. |

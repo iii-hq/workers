@@ -27,6 +27,17 @@
       "AnalysisAssetsV1": {
         "additionalProperties": false,
         "properties": {
+          "capture": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TurnCaptureV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The observed turn's record, copied when the evidence was captured: what a reproduction rebuilds the request from."
+          },
           "evaluation_id": {
             "type": "string"
           },
@@ -461,6 +472,34 @@
             "type": "object"
           }
         ]
+      },
+      "ChangeEditV1": {
+        "additionalProperties": false,
+        "description": "One edit of what the model saw. `target` is an entry id of the conversation before the decision point, or `system_prompt`. An edit either replaces `find` with `replace` in the target's text or removes the entry.",
+        "properties": {
+          "find": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remove": {
+            "type": "boolean"
+          },
+          "replace": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "type": "object"
       },
       "CodeRefV1": {
         "additionalProperties": false,
@@ -1417,6 +1456,76 @@
         ],
         "type": "object"
       },
+      "FidelityLevelV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "approximate"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The provider counts the rebuilt request like the original, up to a fixed per-request overhead measured at the turn's first step.",
+            "enum": [
+              "exact"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "FidelityV1": {
+        "additionalProperties": false,
+        "description": "How faithfully the request at the decision point was rebuilt.",
+        "properties": {
+          "counted_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "estimator": {
+            "description": "`provider` when the provider counted, else the estimator's name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "level": {
+            "$ref": "#/definitions/FidelityLevelV1"
+          },
+          "off_ratio": {
+            "description": "The unexplained difference over the recorded tokens.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "reasons": {
+            "default": [],
+            "description": "Why the rebuild is approximate; empty when exact.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "recorded_tokens": {
+            "description": "Input tokens of the original step: input + cache read + cache write.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "level"
+        ],
+        "type": "object"
+      },
       "InvestigationV1": {
         "additionalProperties": false,
         "description": "The investigation and its own consumption, kept apart from the observed task's metrics.",
@@ -1802,6 +1911,310 @@
           "index",
           "reasons",
           "title"
+        ],
+        "type": "object"
+      },
+      "ReplyCallV1": {
+        "additionalProperties": false,
+        "description": "One function call of a reply.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payload": {
+            "description": "The payload as JSON text, cut at 600 characters.",
+            "type": "string"
+          },
+          "target": {
+            "description": "The function called (through `agent_trigger` or directly).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "payload",
+          "target"
+        ],
+        "type": "object"
+      },
+      "ReplyUsageV1": {
+        "additionalProperties": false,
+        "properties": {
+          "cache_read_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ReplyV1": {
+        "additionalProperties": false,
+        "description": "One reply at the decision point: a sample, or the original step read the same way.",
+        "properties": {
+          "calls": {
+            "items": {
+              "$ref": "#/definitions/ReplyCallV1"
+            },
+            "type": "array"
+          },
+          "duration_ms": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "index": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "signal": {
+            "description": "Whether the signal shows in this reply; null when Jev answered unclear, the reply failed or it was not classified yet.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "thinking": {
+            "description": "The opening of the reply's reasoning and of its text, 400 characters each.",
+            "type": "string"
+          },
+          "usage": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ReplyUsageV1"
+              }
+            ],
+            "default": {}
+          }
+        },
+        "required": [
+          "calls",
+          "index",
+          "text",
+          "thinking"
+        ],
+        "type": "object"
+      },
+      "ReproductionChangeKindV1": {
+        "oneOf": [
+          {
+            "description": "The context as the model saw it.",
+            "enum": [
+              "none"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The suggestion's own `check.change`.",
+            "enum": [
+              "proposed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Edits a person wrote.",
+            "enum": [
+              "custom"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ReproductionStateV1": {
+        "enum": [
+          "running",
+          "completed",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "ReproductionV1": {
+        "additionalProperties": false,
+        "description": "A replay of the decision point: N replies sampled from the rebuilt request, with or without a change. No function ever runs.",
+        "properties": {
+          "by": {
+            "type": "string"
+          },
+          "change": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/ChangeEditV1"
+            },
+            "type": "array"
+          },
+          "change_kind": {
+            "$ref": "#/definitions/ReproductionChangeKindV1"
+          },
+          "check": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/SuggestionCheckV1"
+              }
+            ],
+            "description": "The decision point and signal this replay used."
+          },
+          "cost_unknown_samples": {
+            "default": 0,
+            "description": "Samples without a reported cost, failed ones included (the provider may have billed a request that never answered): unknown, not in `cost_usd`, and never estimated.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "cost_usd": {
+            "description": "Known cost of the samples; null while no reply reported one. Only a lower bound while `cost_unknown_samples` is above zero. Jev's calls are in tokens below, never priced.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fidelity": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/FidelityV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "judge_input_tokens": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "judge_output_tokens": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "original": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ReplyV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The original reply at the decision point, read the same way."
+          },
+          "phase": {
+            "description": "`sampling` or `classifying` while running.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested": {
+            "description": "Replies asked for, extensions included.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "samples": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/ReplyV1"
+            },
+            "type": "array"
+          },
+          "started_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/definitions/ReproductionStateV1"
+          },
+          "updated_at": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by",
+          "change_kind",
+          "check",
+          "id",
+          "model",
+          "requested",
+          "started_at",
+          "state",
+          "updated_at"
         ],
         "type": "object"
       },
@@ -2311,6 +2724,47 @@
         ],
         "type": "object"
       },
+      "SignalRuleV1": {
+        "oneOf": [
+          {
+            "description": "The reply asks `engine::functions::info` only for contracts an earlier result in the context already supplied.",
+            "enum": [
+              "contract_rediscovery"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The reply repeats the last call that failed: same target, equal payload.",
+            "enum": [
+              "repeated_error_call"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "SignalV1": {
+        "additionalProperties": false,
+        "description": "How to recognize the behavior in one reply: exactly one of a rule computed in code or a yes/no question Jev answers about the reply.",
+        "properties": {
+          "question": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SignalRuleV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
       "SignalVerdictV1": {
         "enum": [
           "likely_expected",
@@ -2412,6 +2866,13 @@
               "$ref": "#/definitions/DiagnosticV1"
             },
             "type": "array"
+          },
+          "e2e_scenario": {
+            "description": "The harness-e2e scenario the observed session ran, when it came from the E2E (`metadata.e2e_scenario`).",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "excluded_probes": {
             "description": "Protocol probes that failed as expected and were not reported.",
@@ -2564,6 +3025,32 @@
         ],
         "type": "object"
       },
+      "SuggestionCheckV1": {
+        "additionalProperties": false,
+        "description": "How a suggestion is checked at the step where its behavior happened.",
+        "properties": {
+          "change": {
+            "default": [],
+            "description": "The proposed change as edits of what the model saw before that step; empty when it cannot be expressed as text.",
+            "items": {
+              "$ref": "#/definitions/ChangeEditV1"
+            },
+            "type": "array"
+          },
+          "decision_point": {
+            "description": "The assistant entry where the behavior happened (`…_<step>_assistant`), one of the suggestion's `evidence` entries.",
+            "type": "string"
+          },
+          "signal": {
+            "$ref": "#/definitions/SignalV1"
+          }
+        },
+        "required": [
+          "decision_point",
+          "signal"
+        ],
+        "type": "object"
+      },
       "SuggestionReviewV1": {
         "additionalProperties": false,
         "description": "Everything people decided about one suggestion, in the `eval_suggestion` state scope. The title, component and patterns are copied from the suggestion so the row outlives the analysis's retention.",
@@ -2609,6 +3096,13 @@
             "description": "`<rule_id>:<target>` of the diagnostics the suggestion's evidence cites: what a validation counts and a release is judged by.",
             "items": {
               "type": "string"
+            },
+            "type": "array"
+          },
+          "reproductions": {
+            "description": "Replays of the decision point, oldest first: the base and the tested changes.",
+            "items": {
+              "$ref": "#/definitions/ReproductionV1"
             },
             "type": "array"
           },
@@ -2661,6 +3155,17 @@
       "SuggestionV1": {
         "additionalProperties": false,
         "properties": {
+          "check": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SuggestionCheckV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to reproduce the behavior at the step where it happened, and the proposed change as edits of what the model saw there."
+          },
           "code_refs": {
             "default": [],
             "description": "Code the suggestion rests on, as read in the code directory; only with code access. At most 8; each is checked against the directory.",
@@ -2801,6 +3306,46 @@
           "provider",
           "request_id",
           "stats"
+        ],
+        "type": "object"
+      },
+      "TurnCaptureV1": {
+        "additionalProperties": false,
+        "description": "The observed turn's record as the Harness stored it, which keeps only a session's latest turn.",
+        "properties": {
+          "hook_guidance_tokens": {
+            "default": 0,
+            "description": "Tokens `pre_generate` hooks added at the turn's last step: above zero, the system prompt the model saw is not stored anywhere.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "options": {
+            "description": "The Harness's `TurnOptions`, unmodified."
+          },
+          "prompt_surface_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "record": {
+            "description": "The whole `TurnRecord` as read when the evidence was captured (it repeats `options`): what a later fork of the session needs, since the Harness overwrites it with the next turn. Absent when it would have taken the assets over their size limit (`record_omitted` says so) and on analyses made before it was kept."
+          },
+          "record_omitted": {
+            "description": "Why `record` was not kept.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "options",
+          "turn_id"
         ],
         "type": "object"
       },

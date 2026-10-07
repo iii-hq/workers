@@ -188,11 +188,21 @@ describe('daily cost cap', () => {
   })
 
   it('shows how much of it today has used, and where the day ends on this machine', () => {
-    const cost = { ...COST, since: new Date(2026, 9, 3, 21, 0).getTime() - 86_400_000, today_usd: 0.91 }
+    const cost = {
+      ...COST,
+      since: new Date(2026, 9, 3, 21, 0).getTime() - 86_400_000,
+      today_usd: 0.91,
+      today_capture_usd: 0.91,
+    }
     expect(capProgress(cost, 5)).toBe('$0.91 of $5.00 reported today.')
+    expect(capProgress({ ...cost, today_usd: 4.31, today_replay_usd: 3.4 }, 5)).toBe(
+      '$0.91 of $5.00 reported today. Not counted: replays $3.40.',
+    )
     expect(capProgress(cost, undefined)).toBe('Empty means no cap.')
     expect(capHelp(cost.since)).toContain('The day is UTC: it ends at 21:00 on this machine.')
-    expect(capHelp(cost.since)).toContain("Analyses you start by hand still run. Unknown costs aren't counted.")
+    expect(capHelp(cost.since)).toContain(
+      "Analyses you start by hand still run. Unknown costs aren't counted, and neither are replays.",
+    )
   })
 
   it('says in the notice what a save did to it', () => {

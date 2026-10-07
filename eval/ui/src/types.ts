@@ -134,16 +134,22 @@ export interface AnalysisCostStats {
   unknown: number
 }
 
-/** The monitor's own spend, in dollars of investigation LLM cost (Jev's usage is in tokens on each record). */
+/** The monitor's own spend, in dollars of investigation and replay LLM cost (Jev's usage is in tokens on each record). */
 export interface MonitorCost {
   /** Start (ms since the Unix epoch) of the UTC day the `today_*` values cover. */
   since: number
-  /** Sum of the known `llm_cost_usd` of the analyses created since `since`. */
+  /** Everything known to be spent: `today_capture_usd` + `today_replay_usd`. The cap does not compare it. */
   today_usd: number
-  /** Analyses of the day whose investigation reported no cost: they add nothing to `today_usd`, yet cost is unknown. */
+  /** What the analyses spent (the larger of the persisted spend and the sum of their `llm_cost_usd`): the only bucket the cap compares. */
+  today_capture_usd: number
+  /** What `eval::reproduce` samples spent: reported, never capped. */
+  today_replay_usd: number
+  /** Replay samples of the day without a cost, failed ones included: they add nothing to `today_replay_usd`, yet cost is unknown. */
+  today_replay_unknown: number
+  /** Analyses of the day whose investigation reported no cost: they add nothing to `today_capture_usd`, yet cost is unknown. */
   today_unknown: number
   cap_usd?: number
-  /** A cap is set and `today_usd` reached it: automatic observation admits nothing until the next UTC day. */
+  /** A cap is set and `today_capture_usd` reached it: automatic observation admits nothing until the next UTC day. */
   capped: boolean
   per_analysis: AnalysisCostStats
 }
@@ -358,6 +364,8 @@ export interface Snapshot {
   source_result_error?: string
   observed_model?: string
   observed_provider?: string
+  /** The harness-e2e scenario the observed session ran, when it came from the E2E. */
+  e2e_scenario?: string
   window_turn_ids: string[]
   sessions: SessionEvidence[]
   metrics_scope: 'session_tree'
@@ -442,6 +450,8 @@ export interface Suggestion {
   code_refs: CodeRef[]
   limitations: string
   validation: ValidationPlan
+  /** How to replay the step where the behavior happened; absent on older analyses. */
+  check?: SuggestionCheck
 }
 
 export interface RejectedSuggestion {
@@ -541,39 +551,6 @@ export interface ValidationLink {
   candidate: E2eExecution
   comparability: { comparable: boolean; checks: ComparabilityCheck[] }
   attached_at: number
-}
-
-/** `eval::propose-validation`: Jev's pick among the comparable E2E pairs. */
-export type ProposalOutcome = 'proposed' | 'none_fits' | 'no_comparable_pair'
-
-export interface ValidationProposal {
-  baseline_execution_id: string
-  candidate_execution_id: string
-  /** Jev's distribution over the offered pairs, not whether the pair is right. */
-  confidence: number
-  low_confidence: boolean
-  /** Computed in code: "recorded stacks identical", "recorded stack differs: …" or "… unknown". */
-  stack_note: string
-}
-
-export interface ProposalAlternative {
-  baseline_execution_id: string
-  candidate_execution_id: string
-  probability: number
-  stack_note: string
-}
-
-export interface ProposeValidationResponse {
-  outcome: ProposalOutcome
-  proposal?: ValidationProposal
-  runs_listed: number
-  runs_considered: number
-  pairs_considered: number
-  pairs_dropped: number
-  /** Runs left out, by E2E status, `other_scenario` or `no_id`. */
-  excluded: Record<string, number>
-  alternatives: ProposalAlternative[]
-  jev?: { model: string; request_id: string; stats: Stats }
 }
 
 // Review: what people decide about a suggestion (`eval::review`, `eval::reviews`, `eval::start-validation`,
@@ -723,6 +700,8 @@ export interface SuggestionReview {
   first_run_at?: number
   evidence?: Evidence
   verdict?: Verdict
+  /** Replays of the decision point, oldest first. */
+  reproductions?: Reproduction[]
 }
 
 /**
@@ -859,6 +838,8 @@ export interface AnalysisAssets {
   triage_failure?: TriageFailure
   investigation?: Investigation
   validations: ValidationLink[]
+  /** The observed turn's options, copied when the evidence was captured. */
+  capture?: { turn_id: string; hook_guidance_tokens: number }
 }
 
 export interface AnalysisResult {
@@ -899,4 +880,116 @@ export interface E2eCatalogScenario {
   id: string
   title: string
   summary: string
+}
+
+// ---------------------------------------------------------------------------
+// Reproduction at the decision point (`eval::reproduce`)
+// ---------------------------------------------------------------------------
+
+export type SignalRule = 'contract_rediscovery' | 'repeated_error_call'
+
+/** How to recognize the behavior in one reply: exactly one of a rule computed in code or a yes/no question. */
+export interface Signal {
+  rule?: SignalRule
+  question?: string
+}
+
+/** An edit of what the model saw: `target` is an entry id or `system_prompt`. */
+export interface ChangeEdit {
+  target: string
+  find?: string
+  replace?: string
+  remove?: boolean
+}
+
+export interface SuggestionCheck {
+  /** The assistant entry where the behavior happened. */
+  decision_point: string
+  signal: Signal
+  /** The proposed change as edits of what the model saw; empty when it is not text the model reads. */
+  change: ChangeEdit[]
+}
+
+export type ReproductionState = 'running' | 'completed' | 'failed'
+export type ReproductionChangeKind = 'none' | 'proposed' | 'custom'
+
+export interface Fidelity {
+  level: 'exact' | 'approximate'
+  recorded_tokens?: number
+  counted_tokens?: number
+  estimator?: string
+  off_ratio?: number
+  reasons: string[]
+}
+
+export interface ReplyCall {
+  target: string
+  description?: string
+  /** JSON text, cut at 600 characters. */
+  payload: string
+}
+
+export interface ReplyUsage {
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_tokens?: number
+  cache_write_tokens?: number
+  cost_usd?: number
+}
+
+/** One reply at the decision point: a sample, or the original step read the same way. */
+export interface Reply {
+  index: number
+  /** Absent when unclear, failed or not classified yet. */
+  signal?: boolean
+  calls: ReplyCall[]
+  thinking: string
+  text: string
+  usage: ReplyUsage
+  duration_ms: number
+  error?: string
+}
+
+export interface Reproduction {
+  id: string
+  change_kind: ReproductionChangeKind
+  change: ChangeEdit[]
+  check: SuggestionCheck
+  model: string
+  provider?: string
+  requested: number
+  state: ReproductionState
+  /** `sampling` or `classifying` while running. */
+  phase?: string
+  samples: Reply[]
+  original?: Reply
+  fidelity?: Fidelity
+  /** Known cost of the samples; only a lower bound while `cost_unknown_samples` is above zero. */
+  cost_usd?: number
+  /** Samples without a reported cost, failed ones included: unknown, not in `cost_usd`. */
+  cost_unknown_samples: number
+  judge_input_tokens: number
+  judge_output_tokens: number
+  by: string
+  started_at: number
+  updated_at: number
+  finished_at?: number
+  error?: string
+}
+
+export type ReproduceChange = { kind: 'none' } | { kind: 'proposed' } | { kind: 'custom'; edits: ChangeEdit[] }
+
+export interface ReproducePreview {
+  fidelity: Fidelity
+  original: Reply
+  model: string
+  provider?: string
+  step_cost_usd?: number
+  samples: number
+}
+
+export interface ReproduceResponse {
+  preview?: ReproducePreview
+  reproduction_id?: string
+  review?: SuggestionReview
 }

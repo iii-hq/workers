@@ -99,6 +99,7 @@ pub async fn row_for(
         first_run_at: None,
         evidence: None,
         verdict: None,
+        reproductions: Vec::new(),
     })
 }
 

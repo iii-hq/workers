@@ -136,6 +136,8 @@ Referências inexistentes devem invalidar a sugestão. Um plano E2E precisa perm
 
 ## 7. Integração com o E2E
 
+> O caminho principal de validação passou a ser a reprodução no ponto de decisão, descrita em [VALIDATION.md](VALIDATION.md). Esta seção vale para a etapa opcional de não regressão no E2E.
+
 ### 7.1 Caminho da observação à prova
 
 1. O monitor registra um comportamento e uma sugestão com evidências.

@@ -6,7 +6,7 @@ import { type E2eRun, e2eRuns } from './e2e-runs'
 
 export type RunList = { phase: 'loading' } | { phase: 'ready'; runs: E2eRun[] } | { phase: 'failed' }
 
-export function useRunList(api: EvalApi): { list: RunList; reload: () => void; fail: () => void } {
+export function useRunList(api: EvalApi): { list: RunList; reload: () => void } {
   const [list, setList] = useState<RunList>({ phase: 'loading' })
   const latest = useRef(0)
   const alive = useRef(true)
@@ -28,8 +28,6 @@ export function useRunList(api: EvalApi): { list: RunList; reload: () => void; f
       .catch(() => settle({ phase: 'failed' }))
   }, [api])
 
-  const fail = useCallback(() => setList({ phase: 'failed' }), [])
-
   useEffect(reload, [reload])
-  return { list, reload, fail }
+  return { list, reload }
 }

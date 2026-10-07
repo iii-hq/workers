@@ -36,7 +36,7 @@ use crate::error::EvalError;
 use crate::events::EvalEvents;
 use crate::locks::EvalLocks;
 use crate::state::ObservationIndexV1;
-use crate::{ids, proposal, queue, review, state, validation};
+use crate::{ids, queue, review, state, validation};
 
 /// Whole-analysis budget from admission, including queue wait and collection.
 const ANALYSIS_BUDGET_MS: i64 = 30 * 60 * 1_000;
@@ -48,8 +48,6 @@ const JUDGE_BUS_TIMEOUT_MS: u64 = 70_000;
 /// Transport slack between the provider's budget and the bus timeout.
 const JUDGE_SLACK_MS: u64 = 5_000;
 const JUDGE_PROVIDER: &str = "typesafe";
-/// Detailed executions the E2E keeps, so the list holds every run that can be attached.
-const E2E_LIST_LIMIT: u32 = 100;
 /// Scenarios offered to the analyst: one page of `e2e::dashboard::tests-list`,
 /// the most the E2E returns at once.
 const E2E_SCENARIOS_LIMIT: u32 = 100;
@@ -64,9 +62,6 @@ const MAX_ACTIVE_ANALYSES: usize = 500;
 const RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 const RETENTION_MAX_TERMINAL: usize = 1_000;
 const MAINTENANCE_INTERVAL_MS: i64 = 60 * 60 * 1_000;
-/// Below this confidence, Jev's pick of an E2E pair is flagged as unsure. An
-/// operating hypothesis, not a measured accuracy bound.
-const PAIR_LOW_CONFIDENCE: f64 = 0.8;
 const WINDOW_LOOKBACK_TURNS: usize = 20;
 const TAIL_ENTRIES: usize = 12;
 /// Share of the model context the diagnostics list may take.
@@ -80,9 +75,22 @@ const INVESTIGATION_CODE_MAX_TURNS: u32 = 32;
 const INVESTIGATION_CODE_MAX_TOTAL_TOKENS: u64 = 800_000;
 /// Serializes the day's spend, and the check of the cap against it.
 const SPEND_LOCK: &str = "daily-spend";
-/// What an investigation with code access can never call, whatever a
-/// transcript it reads says: starting E2E executions spends model money and
-/// needs a person.
+/// The only functions an investigation with code access may call: the
+/// read-only ones its prompt names, and the contract lookup the invocation
+/// surface asks for before a first call. `session::messages` is there because
+/// analysts read the observed transcript beyond the bundle; not `fp::pipe`,
+/// which they used for that: its steps run with that worker's authority,
+/// outside this policy.
+const ANALYST_ALLOWED: [&str; 6] = [
+    "coder::search",
+    "coder::tree",
+    "coder::read-file",
+    "session::messages",
+    "github::pr::list",
+    "engine::functions::info",
+];
+/// Denied as well, though nothing above reaches them: starting E2E executions
+/// spends model money and needs a person.
 const ANALYST_DENIED: [&str; 2] = ["eval::*", "e2e::dashboard::execution-*"];
 const MONITOR_ORIGIN: &str = "eval_monitor";
 const TRIAGE_EVALUATION: &str = "session";
@@ -102,7 +110,7 @@ impl InFlight {
         self.lock().remove(id);
     }
 
-    fn contains(&self, id: &str) -> bool {
+    pub(crate) fn contains(&self, id: &str) -> bool {
         self.lock().contains(id)
     }
 
@@ -713,9 +721,14 @@ pub async fn wake(deps: &Deps, event: WakeEventV1) -> Result<WakeResponseV1, Eva
 }
 
 /// Automatic observation analyzes only the user's chats: session-manager's
-/// kind `user` (its default, so a record without a kind counts). E2E runs,
-/// automations (the monitor's own sessions included) and sessions whose kind
-/// cannot be read are left for a manual analysis.
+/// kind `user` (its default, so a record without a kind counts), stamped with
+/// a chat surface (`console`, `slack` or `telegram`, written by each client on
+/// every send), and not an E2E run. The kind alone is not enough: E2E sessions
+/// from before the kind existed read back as `user`, and scripted and
+/// sub-agent sessions are `user` without a surface. The surface alone is not
+/// enough either: the console stamps `console` on any session it rewrites, an
+/// automation's included. Everything else, and a session whose record cannot
+/// be read, is left for a manual analysis.
 async fn is_user_chat(deps: &Deps, session_id: &str) -> bool {
     match call::<_, Value>(
         deps,
@@ -726,21 +739,29 @@ async fn is_user_chat(deps: &Deps, session_id: &str) -> bool {
     .await
     {
         Ok(meta) => {
-            let kind = meta["meta"]["kind"].as_str().unwrap_or("user");
-            if kind != "user" {
-                tracing::debug!(
-                    session_id,
-                    kind,
-                    "not a user chat; left for manual analysis"
-                );
+            let chat = is_chat(&meta["meta"]);
+            if !chat {
+                tracing::debug!(session_id, "not a user chat; left for manual analysis");
             }
-            kind == "user"
+            chat
         }
         Err(error) => {
-            tracing::warn!(session_id, %error, "session kind unreadable; not analyzed automatically");
+            tracing::warn!(session_id, %error, "session record unreadable; not analyzed automatically");
             false
         }
     }
+}
+
+fn is_chat(meta: &Value) -> bool {
+    let metadata = &meta["metadata"];
+    meta["kind"].as_str().unwrap_or("user") == "user"
+        && matches!(
+            metadata["surface"].as_str(),
+            Some("console" | "slack" | "telegram")
+        )
+        && !metadata
+            .as_object()
+            .is_some_and(|keys| keys.keys().any(|key| key.starts_with("e2e_")))
 }
 
 // ---------------------------------------------------------------------------
@@ -945,195 +966,6 @@ pub(crate) fn suggestion_at(
             suggestions.len()
         ))
     })
-}
-
-/// Asks Jev which two existing E2E executions best compare the Harness
-/// without and with one suggestion's change. Code decides which runs and
-/// pairs are eligible and counts what it leaves out; Jev only chooses among
-/// them. Nothing is attached: the caller reviews the pair and attaches it.
-/// The only write is the Jev call's usage on the analysis record.
-pub async fn propose_validation(
-    deps: &Deps,
-    request: ProposeValidationRequestV1,
-) -> Result<ProposeValidationResponseV1, EvalError> {
-    let record = state::get_record(&deps.iii, &request.evaluation_id)
-        .await?
-        .ok_or_else(|| EvalError::NotFound(request.evaluation_id.clone()))?;
-    if !record.status.is_terminal() {
-        return Err(EvalError::Conflict(
-            "propose E2E runs after the analysis finishes".into(),
-        ));
-    }
-    let assets = state::get_assets(&deps.iii, &record.evaluation_id).await?;
-    let suggestion = suggestion_at(&assets, request.suggestion_index)?;
-    // No lock is held from here to the usage update: neither the E2E nor Jev
-    // may block the analysis.
-    let list: Value = call(
-        deps,
-        "e2e::dashboard::executions-list",
-        json!({ "limit": E2E_LIST_LIMIT }),
-        BUS_TIMEOUT_MS,
-    )
-    .await
-    .map_err(|error| {
-        EvalError::Dependency(format!(
-            "e2e_unavailable: the E2E service could not list executions: {error}"
-        ))
-    })?;
-    let entries = list["executions"].as_array().ok_or_else(|| {
-        EvalError::Dependency(
-            "e2e_unavailable: e2e::dashboard::executions-list returned no `executions` list".into(),
-        )
-    })?;
-    let plan_scenario = suggestion
-        .validation
-        .scenario_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|scenario| !scenario.is_empty());
-    let candidates = proposal::candidates(entries, plan_scenario);
-    let mut response = ProposeValidationResponseV1 {
-        outcome: ProposalOutcomeV1::NoComparablePair,
-        proposal: None,
-        runs_listed: entries.len() as u32,
-        runs_considered: candidates.runs_considered,
-        pairs_considered: candidates.pairs.len() as u32,
-        pairs_dropped: candidates.pairs_dropped,
-        excluded: candidates.excluded.clone(),
-        alternatives: Vec::new(),
-        jev: None,
-    };
-    if candidates.pairs.is_empty() {
-        return Ok(response);
-    }
-
-    // No analysis deadline applies: a fresh bus budget with the provider's
-    // budget ending first, as in `call_judge`.
-    let request_id = ids::proposal_request_id(&record.evaluation_id);
-    let question = proposal::question(&candidates);
-    let evaluate = EvaluateRequest {
-        options: Default::default(),
-        request_id: Some(request_id.clone()),
-        model: None,
-        timeout_ms: JUDGE_TIMEOUT_MS.min(JUDGE_BUS_TIMEOUT_MS.saturating_sub(JUDGE_SLACK_MS)),
-        expires_at_unix_ms: Some(
-            (ids::now_ms() as u64 + JUDGE_BUS_TIMEOUT_MS).saturating_sub(JUDGE_SLACK_MS),
-        ),
-        evaluations: vec![Evaluation {
-            id: proposal::EVALUATION.into(),
-            state: proposal::state(&candidates, suggestion),
-            questions: BTreeMap::from([(proposal::QUESTION.into(), question.clone())]),
-        }],
-    };
-    judge_contract::validate_request(&evaluate).map_err(|code| {
-        EvalError::Dependency(format!(
-            "jev_invalid_request: the request is malformed ({})",
-            error_code_text(code)
-        ))
-    })?;
-    let reply = send_judge(deps, evaluate, JUDGE_BUS_TIMEOUT_MS).await;
-
-    // The call is real spend: keep its usage whatever Jev answered. The lock
-    // is taken only now, never while the E2E or Jev calls run.
-    let stats = match &reply {
-        Ok(EvaluateResponse::Ok { stats, .. } | EvaluateResponse::Error { stats, .. }) => {
-            Some(stats)
-        }
-        Err(_) => None,
-    };
-    add_proposal_usage(deps, &record.evaluation_id, stats).await?;
-
-    let invalid = |why: &str| EvalError::Dependency(format!("jev_invalid_response: {why}"));
-    match reply.map_err(|(code, message)| match code {
-        "bus" => EvalError::Dependency(format!("jev_unavailable: {message}")),
-        _ => invalid(&message),
-    })? {
-        EvaluateResponse::Error {
-            code,
-            http_status,
-            provider_error,
-            ..
-        } => Err(EvalError::Dependency(format!(
-            "jev_unavailable: {}",
-            judge_error_message(&error_code_text(code), http_status, provider_error.as_ref())
-        ))),
-        EvaluateResponse::Ok {
-            model,
-            mut results,
-            stats,
-        } => {
-            let answer = results
-                .remove(proposal::EVALUATION)
-                .filter(|_| results.is_empty())
-                .map(|result| result.answers)
-                .and_then(|mut answers| {
-                    let answer = answers.remove(proposal::QUESTION);
-                    answers.is_empty().then_some(answer).flatten()
-                })
-                .ok_or_else(|| {
-                    invalid("Jev returned an unexpected set of evaluations or answers")
-                })?;
-            judge_contract::validate_answer(&question, &answer)
-                .map_err(|_| invalid("Jev returned an answer outside the question's options"))?;
-            let Answer::Choice {
-                choice,
-                confidence,
-                probabilities,
-            } = answer
-            else {
-                return Err(invalid("Jev returned an answer of the wrong type"));
-            };
-            response.jev = Some(ProposalJevV1 {
-                model,
-                request_id,
-                stats,
-            });
-            response.alternatives = candidates
-                .alternatives(&probabilities, &choice)
-                .into_iter()
-                .map(
-                    |((baseline, candidate), probability)| ProposalAlternativeV1 {
-                        baseline_execution_id: candidates.runs[baseline].id.clone(),
-                        candidate_execution_id: candidates.runs[candidate].id.clone(),
-                        probability,
-                        stack_note: candidates.stack_note((baseline, candidate)),
-                    },
-                )
-                .collect();
-            if choice == proposal::NONE {
-                response.outcome = ProposalOutcomeV1::NoneFits;
-                return Ok(response);
-            }
-            let (baseline, candidate) = candidates
-                .pair_for(&choice)
-                .ok_or_else(|| invalid("Jev chose a pair that was not offered"))?;
-            response.outcome = ProposalOutcomeV1::Proposed;
-            response.proposal = Some(ValidationProposalV1 {
-                baseline_execution_id: candidates.runs[baseline].id.clone(),
-                candidate_execution_id: candidates.runs[candidate].id.clone(),
-                confidence,
-                low_confidence: confidence < PAIR_LOW_CONFIDENCE,
-                stack_note: candidates.stack_note((baseline, candidate)),
-            });
-            Ok(response)
-        }
-    }
-}
-
-/// Adds one Jev call to the analysis's own consumption. A deleted analysis
-/// has nowhere to keep it.
-async fn add_proposal_usage(
-    deps: &Deps,
-    evaluation_id: &str,
-    stats: Option<&Stats>,
-) -> Result<(), EvalError> {
-    let _guard = deps.locks.guard(evaluation_id).await;
-    if let Some(mut record) = state::get_record(&deps.iii, evaluation_id).await? {
-        add_judge_usage(&mut record.usage, stats);
-        record.updated_at = ids::now_ms();
-        state::put_record(&deps.iii, &record).await?;
-    }
-    Ok(())
 }
 
 fn e2e_lookup_error(execution_id: &str, role: &str, error: &str) -> EvalError {
@@ -1357,7 +1189,7 @@ fn e2e_reference(execution_id: &str, bundle: &Value) -> E2eExecutionRefV1 {
         conclusion: text(&summary["conclusion"]).or_else(|| text(&detail["conclusion"])),
         started_at: text(&summary["started_at"])
             .or_else(|| text(&detail["started_at"]))
-            .and_then(|at| proposal::parse_ms(&at)),
+            .and_then(|at| ids::parse_ms(&at)),
         reports_available: !reports.is_empty()
             && reports.iter().all(|report| report.available)
             && availability.as_deref() != Some("unavailable"),
@@ -1393,6 +1225,7 @@ fn e2e_reference(execution_id: &str, bundle: &Value) -> E2eExecutionRefV1 {
 /// the E2E.
 pub async fn sweep(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
     let response = resume_analyses(deps).await?;
+    crate::reproduce::expire_interrupted(deps).await;
     // Last: waiting on the E2E never delays the monitor's own recovery.
     validation::advance_runs(deps).await;
     Ok(response)
@@ -1788,7 +1621,24 @@ async fn collect_stage(
             record.coverage = Some(snapshot.coverage.level);
             record.source_title = snapshot.source_title.clone();
             assets.snapshot = Some(*snapshot);
-            let size = serde_json::to_vec(&assets)?.len();
+            // Best effort: the Harness keeps only a session's latest turn, so
+            // a reproduction (or a fork) later needs this copy of the observed one.
+            assets.capture =
+                crate::reproduce::capture_turn(deps, &record.session_id, &record.turn_id).await;
+            let mut size = serde_json::to_vec(&assets)?.len();
+            // The whole record is the first thing to give way: what a
+            // reproduction reads stays, and the capture says why.
+            if let Some(capture) = assets
+                .capture
+                .as_mut()
+                .filter(|capture| size > ASSETS_BYTES && capture.record.is_some())
+            {
+                capture.record = None;
+                capture.record_omitted = Some(format!(
+                    "the whole turn record would have made the assets {size} bytes, above the {ASSETS_BYTES}-byte limit"
+                ));
+                size = serde_json::to_vec(&assets)?.len();
+            }
             if size > ASSETS_BYTES {
                 if let Some(snapshot) = assets.snapshot.as_mut() {
                     for session in &mut snapshot.sessions {
@@ -2015,6 +1865,10 @@ async fn collect(deps: &Deps, record: &AnalysisRecordV1) -> Result<Collected, Co
             .map(|error| bounded_text(error)),
         observed_model: observed.as_ref().map(|(model, _)| model.clone()),
         observed_provider: observed.map(|(_, provider)| provider),
+        e2e_scenario: meta["meta"]["metadata"]["e2e_scenario"]
+            .as_str()
+            .filter(|scenario| !scenario.trim().is_empty())
+            .map(str::to_string),
         window_turn_ids: window.clone(),
         sessions: tree
             .sessions
@@ -2684,7 +2538,7 @@ async fn set_llm_usage(
     usage.llm_output_tokens = metrics.totals.output_tokens;
     usage.llm_cost_usd = metrics.totals.cost_usd;
     if let Some(cost) = metrics.totals.cost_usd.filter(|cost| *cost > before) {
-        add_spend(deps, cost - before).await;
+        add_spend(deps, Spend::Capture(cost - before)).await;
     }
 }
 
@@ -2703,7 +2557,7 @@ async fn cost_summary(
     ))
 }
 
-/// The cap when the day's cost, with the running investigations, has reached it.
+/// The cap when the day's capture cost, with the running investigations, has reached it.
 async fn capped_at(deps: &Deps) -> Result<Option<f64>, EvalError> {
     let Some(config) = state::get_config(&deps.iii).await? else {
         return Ok(None);
@@ -2713,24 +2567,39 @@ async fn capped_at(deps: &Deps) -> Result<Option<f64>, EvalError> {
     Ok(cost.cap_usd.filter(|_| cost.capped))
 }
 
+/// A cost to add to the day's spend, by bucket.
+pub(crate) enum Spend {
+    /// What an analysis spends: the investigation (Jev's triage is in tokens).
+    /// The only bucket the daily cap compares.
+    Capture(f64),
+    /// `eval::reproduce`: the known cost of samples, and how many had none (a
+    /// failed one included). Added as each sample is saved. Reported next to
+    /// the capture spend, never capped, so a manual replay cannot stop
+    /// automatic observation.
+    Replay { usd: f64, unknown: u32 },
+}
+
 /// Adds to the day's spend. Bookkeeping that cannot fail an analysis: the
 /// stored analyses still sum to a floor, so an error is logged.
-async fn add_spend(deps: &Deps, usd: f64) {
+pub(crate) async fn add_spend(deps: &Deps, spend: Spend) {
     let _guard = deps.locks.guard(SPEND_LOCK).await;
     let since = cost::day_start(ids::now_ms());
     let written = async {
-        let today = state::get_spend(&deps.iii)
+        let mut today = state::get_spend(&deps.iii)
             .await?
             .filter(|spent| spent.since == since)
-            .map_or(0.0, |spent| spent.usd);
-        state::put_spend(
-            &deps.iii,
-            &state::DailySpendV1 {
+            .unwrap_or(state::DailySpendV1 {
                 since,
-                usd: today + usd,
-            },
-        )
-        .await
+                ..Default::default()
+            });
+        match spend {
+            Spend::Capture(usd) => today.usd += usd,
+            Spend::Replay { usd, unknown } => {
+                today.replay_usd += usd;
+                today.replay_unknown += unknown;
+            }
+        }
+        state::put_spend(&deps.iii, &today).await
     }
     .await;
     if let Err(error) = written {
@@ -2847,7 +2716,7 @@ async fn call_judge(
 /// Sends one request to the hub, routed to the TypeSafe provider. Errors are
 /// `(code, message)` with the code `invalid_request`, `bus` (the hub did not
 /// answer in time) or `invalid_response`.
-async fn send_judge(
+pub(crate) async fn send_judge(
     deps: &Deps,
     request: EvaluateRequest,
     bus_timeout_ms: u64,
@@ -2959,13 +2828,25 @@ explanation, never stated as a proven cause; correlated events do not prove caus
 or in a deterministic diagnostic; never cite anything else;\n\
 - name a plausible Harness component without inventing file paths or line numbers;\n\
 - propose a concrete change to {change} and its expected effect, with conditions;\n\
-- carry a `validation` plan someone can run without you: `scenario_id` of an existing \
-harness-e2e scenario (for example tool_contract_recovery) or null when a new case is needed; \
-`reproduction` on a fixed case; task-correctness `invariants` checked by an independent \
-evaluator; one `primary_metric` for effort; the `expectation` for baseline versus candidate; and \
+- carry a `check` that lets a person replay the step where the behavior happened, before \
+anyone writes code: `decision_point` is the assistant entry (`…_<step>_assistant`) whose reply \
+shows the behavior, and it must also be one of this suggestion's `evidence` entries; `signal` \
+says how to recognize the behavior in one reply: {\"rule\": \"contract_rediscovery\"} when the \
+reply asks engine::functions::info for contracts already in context, {\"rule\": \
+\"repeated_error_call\"} when it repeats the last failed call with the same payload, otherwise \
+{\"question\": \"...\"}, one yes/no question about a single reply; `change` writes the proposed \
+change as edits of what the model saw before that step: {\"target\": <entry id>, \"find\": <text \
+copied character for character from that entry>, \"replace\": <new text>}, {\"target\": <entry \
+id>, \"remove\": true} (a notice, for example) or {\"target\": \"system_prompt\", \"find\": ..., \
+\"replace\": ...}; leave `change` empty when the change is not text the model reads;\n\
+- carry a `validation` plan for a later E2E non-regression check, which someone can run without \
+you: `scenario_id` of an existing harness-e2e scenario (for example tool_contract_recovery) or \
+null when none applies (the `check` is the main reproduction: never ask for a new harness-e2e \
+case); `reproduction`; task-correctness `invariants` checked by an independent evaluator; one \
+`primary_metric` for effort; the `expectation` for baseline versus candidate; and \
 `non_regression_controls` (for example a control where a contract really changes and recovery \
 must still work);\n\
-- state `limitations`: missing evidence, alternative explanations, the need for a new scenario.\n\n\
+- state `limitations`: missing evidence and alternative explanations.\n\n\
 {scenarios}For each deterministic diagnostic you can judge, add one `signal_assessments` item with its exact \
 `fingerprint`, a `verdict` (`likely_expected` when the evidence shows a legitimate reason, \
 `worth_changing` when it points to a Harness improvement, `unclear` otherwise) and a one- or \
@@ -3017,7 +2898,8 @@ relative to your working directory and the `line_from` and `line_to` you read (1
 inclusive, at most {MAX_CODE_REFS} per suggestion); a reference to a file or lines that do not \
 exist rejects the suggestion. You may also list the open pull requests with github::pr::list \
 (read-only; repo iii-hq/workers) to see whether work already overlaps a suggestion; when one does, \
-say so in that suggestion's `limitations`."
+say so in that suggestion's `limitations`. To read more of an observed session than the evidence \
+shows, call session::messages (read-only)."
             ),
             DELIVER_CODE,
             "improvement to the Harness or another worker",
@@ -3105,10 +2987,8 @@ fn investigation_request(
         metadata[FS_SCOPE_KEY] = json!({ FS_SCOPE_ROOT_KEY: root });
     }
     // Without a directory: deny all, the analyst can read nothing and change
-    // nothing. With one, every function is allowed except the ones that spend
-    // or record on a person's behalf (the monitor's own and the E2E's
-    // executions), which only a person's click may start; the prompt and the
-    // scope guard the rest (see the README).
+    // nothing. With one, it may call only the read-only functions the prompt
+    // names (see the README), because it reads untrusted transcripts.
     let (functions, max_turns, max_total_tokens) = match code_root {
         None => (
             FunctionPolicy::default(),
@@ -3117,7 +2997,7 @@ fn investigation_request(
         ),
         Some(_) => (
             FunctionPolicy {
-                allow: vec!["*".into()],
+                allow: ANALYST_ALLOWED.iter().map(|id| id.to_string()).collect(),
                 deny: ANALYST_DENIED.iter().map(|id| id.to_string()).collect(),
                 ..FunctionPolicy::default()
             },
@@ -3550,7 +3430,7 @@ pub fn validate_suggestions(
     }
     let mut kept = Vec::new();
     let mut rejected = Vec::new();
-    for (index, suggestion) in output.suggestions.into_iter().enumerate() {
+    for (index, mut suggestion) in output.suggestions.into_iter().enumerate() {
         let mut reasons = Vec::new();
         if index >= MAX_SUGGESTIONS {
             reasons.push(format!("exceeds the {MAX_SUGGESTIONS}-suggestion limit"));
@@ -3596,6 +3476,34 @@ pub fn validate_suggestions(
         }
         reasons.extend(code::validate_refs(code_root, &suggestion.code_refs));
         if reasons.is_empty() {
+            // A malformed check costs the replay, not the suggestion.
+            if let Some(check) = &suggestion.check {
+                let problem = crate::reproduce::validate_check(check)
+                    .err()
+                    .map(|e| e.to_string())
+                    .or_else(|| {
+                        (!suggestion
+                            .evidence
+                            .iter()
+                            .any(|entry| entry.entry_id == check.decision_point))
+                        .then(|| {
+                            format!(
+                                "{} is not among the suggestion's evidence",
+                                check.decision_point
+                            )
+                        })
+                    });
+                if let Some(problem) = problem {
+                    suggestion.check = None;
+                    suggestion
+                        .limitations
+                        .push_str(&format!(" (The replay check was dropped: {problem}.)"));
+                }
+            }
+            // A session that came from the E2E already names its scenario.
+            if let Some(scenario) = &snapshot.e2e_scenario {
+                suggestion.validation.scenario_id = Some(scenario.clone());
+            }
             kept.push(suggestion);
         } else {
             rejected.push(RejectedSuggestionV1 {

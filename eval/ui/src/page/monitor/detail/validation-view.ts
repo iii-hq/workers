@@ -361,3 +361,18 @@ export function scenarioTables(
 export function hasMeasures(link: ValidationLink): boolean {
   return [link.baseline, link.candidate].some((run) => run.scenarios.length > 0)
 }
+
+/** The plan's one line above the pickers: what to pick, from `validation.scenario_id`. `code` spans are backticked. */
+export function planHint(scenarioId: string | null): string {
+  return scenarioId
+    ? `Run \`${scenarioId}\` twice with the same model: the baseline on the current Harness, the candidate with this change.`
+    : 'This plan needs a new E2E case. Pick two runs of the same scenarios and model: the baseline without this change, the candidate with it.'
+}
+
+/** The E2E service listed no executions at all. */
+export function noRunsNotice(scenarioId: string | null): { headline: string; detail: string } {
+  return {
+    headline: 'No E2E runs yet',
+    detail: `The E2E service has no executions to attach. Run ${scenarioId ?? 'the case'} twice there, baseline first, then come back.`,
+  }
+}

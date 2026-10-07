@@ -2,6 +2,7 @@
 @import './src/styles/settings.css';
 @import './src/styles/detail.css';
 @import './src/styles/validation.css';
+@import './src/styles/replay.css';
 
 /* eval worker UI. Every rule lives in src/styles/*.css, scoped to
    [data-iii-ui="eval"]; controls, fields, badges and status panels come from

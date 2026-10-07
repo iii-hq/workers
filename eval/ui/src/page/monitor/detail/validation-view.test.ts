@@ -10,6 +10,8 @@ import {
   hasMeasures,
   latestLink,
   mismatches,
+  noRunsNotice,
+  planHint,
   reportProblem,
   scenarioTables,
   signalRow,
@@ -258,5 +260,14 @@ describe('measures per scenario', () => {
     expect(scenarioTables(link(bare, bare), {})).toEqual([])
     expect(hasMeasures(link(bare, bare))).toBe(false)
     expect(hasMeasures(link())).toBe(true)
+  })
+})
+
+describe('copy', () => {
+  it('builds the plan hint from the scenario', () => {
+    expect(planHint('tool_contract_recovery')).toMatch(/^Run `tool_contract_recovery` twice with the same model/)
+    expect(planHint(null)).toMatch(/^This plan needs a new E2E case/)
+    expect(noRunsNotice('s1').detail).toContain('Run s1 twice there')
+    expect(noRunsNotice(null).detail).toContain('Run the case twice there')
   })
 })

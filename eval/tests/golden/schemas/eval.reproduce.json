@@ -1,81 +1,160 @@
 {
-  "function_id": "eval::start-validation",
+  "function_id": "eval::reproduce",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
     "definitions": {
-      "CriterionInputV1": {
+      "ChangeEditV1": {
         "additionalProperties": false,
-        "description": "What a person commits to before the results exist.",
+        "description": "One edit of what the model saw. `target` is an entry id of the conversation before the decision point, or `system_prompt`. An edit either replaces `find` with `replace` in the target's text or removes the entry.",
         "properties": {
-          "direction": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/DirectionV1"
-              }
-            ],
-            "description": "The change that counts as an effect, wanted when the candidate moves the baseline mean in this direction."
-          },
-          "metric": {
-            "$ref": "#/definitions/CriterionMetricV1"
-          },
-          "min_effect": {
-            "description": "The smallest change of the baseline mean that counts, as an absolute difference in the metric's own unit: signals per run, USD, seconds, calls or tokens; percentage points (0-100) for `pass_rate`. Above 0.",
-            "format": "double",
-            "type": "number"
-          },
-          "min_runs": {
-            "description": "Completed runs each side needs for a verdict of improvement (1-20).",
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "pattern": {
-            "description": "`signal_per_run` only: one of the row's `patterns`.",
+          "find": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "remove": {
+            "type": "boolean"
+          },
+          "replace": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target": {
+            "type": "string"
           }
         },
         "required": [
-          "direction",
-          "metric",
-          "min_effect",
-          "min_runs"
+          "target"
         ],
         "type": "object"
       },
-      "CriterionMetricV1": {
-        "description": "What a validation measures. Every metric but `signal_per_run` is the mean over the runs of the scenario the infrastructure did not break (`pass_rate` is the share that passed, an unfinished run counting as not passed; `duration` is the wall time in milliseconds).",
+      "ReproduceChangeV1": {
+        "description": "What a reproduction changes in the request.",
         "oneOf": [
           {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "none"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "proposed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "edits": {
+                "items": {
+                  "$ref": "#/definitions/ChangeEditV1"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "enum": [
+                  "custom"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "edits",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SignalRuleV1": {
+        "oneOf": [
+          {
+            "description": "The reply asks `engine::functions::info` only for contracts an earlier result in the context already supplied.",
             "enum": [
-              "pass_rate",
-              "cost_usd",
-              "duration",
-              "tokens",
-              "function_calls"
+              "contract_rediscovery"
             ],
             "type": "string"
           },
           {
-            "description": "Occurrences of one of the suggestion's patterns per run, counted by the deterministic detectors over each run's transcript.",
+            "description": "The reply repeats the last call that failed: same target, equal payload.",
             "enum": [
-              "signal_per_run"
+              "repeated_error_call"
             ],
             "type": "string"
           }
         ]
       },
-      "DirectionV1": {
-        "enum": [
-          "decrease",
-          "increase"
+      "SignalV1": {
+        "additionalProperties": false,
+        "description": "How to recognize the behavior in one reply: exactly one of a rule computed in code or a yes/no question Jev answers about the reply.",
+        "properties": {
+          "question": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SignalRuleV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "SuggestionCheckV1": {
+        "additionalProperties": false,
+        "description": "How a suggestion is checked at the step where its behavior happened.",
+        "properties": {
+          "change": {
+            "default": [],
+            "description": "The proposed change as edits of what the model saw before that step; empty when it cannot be expressed as text.",
+            "items": {
+              "$ref": "#/definitions/ChangeEditV1"
+            },
+            "type": "array"
+          },
+          "decision_point": {
+            "description": "The assistant entry where the behavior happened (`…_<step>_assistant`), one of the suggestion's `evidence` entries.",
+            "type": "string"
+          },
+          "signal": {
+            "$ref": "#/definitions/SignalV1"
+          }
+        },
+        "required": [
+          "decision_point",
+          "signal"
         ],
-        "type": "string"
+        "type": "object"
       }
     },
-    "description": "`eval::start-validation`: builds a baseline and a candidate stack from the E2E's `harness` template pinned to two pushed commits and starts both executions in Docker. Spends model tokens, so it only ever runs on an explicit request. With `dry_run` it only resolves and checks the refs.",
+    "description": "`eval::reproduce`.",
     "properties": {
       "_caller_worker_id": {
         "default": null,
@@ -85,69 +164,60 @@
           "null"
         ]
       },
-      "baseline_ref": {
-        "default": null,
-        "description": "Defaults to the merge base of the candidate and `origin/main`.",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
       "by": {
         "default": null,
-        "description": "The author: this name wins over the host's user and the caller's identity.",
         "type": [
           "string",
           "null"
         ]
       },
-      "candidate_ref": {
-        "description": "A ref of `code_repository` (a branch, a tag or a commit) that is on a remote branch.",
-        "type": "string"
+      "change": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/ReproduceChangeV1"
+          }
+        ],
+        "default": {
+          "kind": "none"
+        }
       },
-      "criterion": {
+      "check": {
         "anyOf": [
           {
-            "$ref": "#/definitions/CriterionInputV1"
+            "$ref": "#/definitions/SuggestionCheckV1"
           },
           {
             "type": "null"
           }
         ],
         "default": null,
-        "description": "Registered first, before any execution starts. Required unless `dry_run`, which only checks it against `runs` when present."
+        "description": "The decision point and signal, for a suggestion without a `check` (an older analysis) or to override it."
       },
       "dry_run": {
         "default": false,
-        "description": "Resolve and check the refs, the scenario and the runs exactly as a start does, and answer with the commits they resolve to. Registers nothing, calls no E2E function and spends nothing.",
+        "description": "Rebuild the request and check its fidelity without sampling: nothing is spent or stored.",
         "type": "boolean"
       },
       "evaluation_id": {
         "type": "string"
       },
-      "model": {
-        "default": "",
-        "description": "Required unless `dry_run`.",
-        "type": "string"
-      },
-      "provider": {
-        "default": "",
-        "description": "Required unless `dry_run`.",
-        "type": "string"
-      },
-      "runs": {
+      "extend": {
         "default": null,
-        "description": "Runs of the scenario for each side; defaults to 5 (1-20).",
+        "description": "Add replies to this earlier reproduction of the suggestion, with its change; with `samples: 0`, only finish what a failure left undone.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "samples": {
+        "default": null,
+        "description": "Replies to sample, 1–50; default 20.",
         "format": "uint32",
         "minimum": 0.0,
         "type": [
           "integer",
           "null"
         ]
-      },
-      "scenario_id": {
-        "description": "The harness-e2e scenario to run.",
-        "type": "string"
       },
       "suggestion_index": {
         "format": "uint",
@@ -156,24 +226,15 @@
       }
     },
     "required": [
-      "candidate_ref",
       "evaluation_id",
-      "scenario_id",
       "suggestion_index"
     ],
-    "title": "StartValidationRequestV1",
+    "title": "ReproduceRequestV1",
     "type": "object"
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "anyOf": [
-      {
-        "$ref": "#/definitions/SuggestionReviewV1"
-      },
-      {
-        "$ref": "#/definitions/ValidationResolutionV1"
-      }
-    ],
+    "additionalProperties": false,
     "definitions": {
       "ChangeEditV1": {
         "additionalProperties": false,
@@ -713,6 +774,47 @@
         ],
         "type": "object"
       },
+      "ReproducePreviewV1": {
+        "additionalProperties": false,
+        "description": "What a dry run reports before anything is spent.",
+        "properties": {
+          "fidelity": {
+            "$ref": "#/definitions/FidelityV1"
+          },
+          "model": {
+            "type": "string"
+          },
+          "original": {
+            "$ref": "#/definitions/ReplyV1"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "samples": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "step_cost_usd": {
+            "description": "What the original step cost; null when the provider reported nothing.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "fidelity",
+          "model",
+          "original",
+          "samples"
+        ],
+        "type": "object"
+      },
       "ReproductionChangeKindV1": {
         "oneOf": [
           {
@@ -886,30 +988,6 @@
           "started_at",
           "state",
           "updated_at"
-        ],
-        "type": "object"
-      },
-      "ResolvedCommitV1": {
-        "additionalProperties": false,
-        "description": "One side of a validation, resolved to the commit the E2E would build.",
-        "properties": {
-          "branch": {
-            "description": "A remote branch that holds the commit, as `git branch -r` names it (`origin/feat`); the one named like the ref when several do.",
-            "type": "string"
-          },
-          "commit": {
-            "description": "The full commit.",
-            "type": "string"
-          },
-          "short": {
-            "description": "The first 12 characters of `commit`.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "branch",
-          "commit",
-          "short"
         ],
         "type": "object"
       },
@@ -1113,31 +1191,6 @@
           }
         ]
       },
-      "ValidationResolutionV1": {
-        "additionalProperties": false,
-        "description": "What `eval::start-validation` answers to a `dry_run`: the commits both refs resolve to, every start check passed.",
-        "properties": {
-          "baseline": {
-            "$ref": "#/definitions/ResolvedCommitV1"
-          },
-          "candidate": {
-            "$ref": "#/definitions/ResolvedCommitV1"
-          },
-          "warnings": {
-            "description": "What a start would go ahead with but a person should know.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "baseline",
-          "candidate",
-          "warnings"
-        ],
-        "type": "object"
-      },
       "ValidationRunStateV1": {
         "oneOf": [
           {
@@ -1295,7 +1348,35 @@
         "type": "object"
       }
     },
-    "description": "The suggestion's row once the executions started, or, for a `dry_run`, the resolution.",
-    "title": "StartValidationResponseV1"
+    "properties": {
+      "preview": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ReproducePreviewV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "reproduction_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "review": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/SuggestionReviewV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "title": "ReproduceResponseV1",
+    "type": "object"
   }
 }

@@ -453,14 +453,21 @@ export function lastWeekLine(records: readonly AnalysisRecord[], now: number, co
   return `${complete ? '' : 'at least '}${parts.join(' · ')}`
 }
 
-/** Under the cap field: how much of it today's reported cost is, or that an empty field means no cap. */
+/** `replays $2.40 + 3 not reported`: the day's replay spend, which the cap does not count; `null` when there is none. */
+export function replayLine(cost: MonitorCost): string | null {
+  const known = cost.today_replay_usd > 0 ? formatCostShort(cost.today_replay_usd) : undefined
+  const unknown = cost.today_replay_unknown > 0 ? `${cost.today_replay_unknown} not reported` : undefined
+  return known || unknown ? `replays ${[known, unknown].filter(Boolean).join(' + ')}` : null
+}
+
+/** Under the cap field: how much of it today's reported analysis cost is, or that an empty field means no cap. */
 export function capProgress(cost: MonitorCost, cap: number | undefined): string {
-  return cap === undefined
-    ? 'Empty means no cap.'
-    : `${formatCostShort(cost.today_usd)} of ${formatCostShort(cap)} reported today.`
+  if (cap === undefined) return 'Empty means no cap.'
+  const replays = replayLine(cost)
+  return `${formatCostShort(cost.today_capture_usd)} of ${formatCostShort(cap)} reported today.${replays ? ` Not counted: ${replays}.` : ''}`
 }
 
 /** The cap's rule. The monitor's day is a UTC day, so it says where that day ends on this machine. */
 export function capHelp(since: number): string {
-  return `When today's reported monitor cost reaches this amount, the monitor stops starting analyses on its own until the day ends. The day is UTC: it ends at ${clock(since + DAY_MS)} on this machine. Analyses you start by hand still run. Unknown costs aren't counted.`
+  return `When today's reported analysis cost reaches this amount, the monitor stops starting analyses on its own until the day ends. The day is UTC: it ends at ${clock(since + DAY_MS)} on this machine. Analyses you start by hand still run. Unknown costs aren't counted, and neither are replays.`
 }

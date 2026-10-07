@@ -8,11 +8,13 @@ import type {
   MonitorConfig,
   MonitorModel,
   MonitorState,
-  ProposeValidationResponse,
   Recurrence,
   ResolveValidationParams,
+  ReproduceChange,
+  ReproduceResponse,
   ReviewChange,
   ReviewsResponse,
+  SuggestionCheck,
   StartValidationParams,
   SuggestionReview,
   ValidationLink,
@@ -22,10 +24,10 @@ import type {
 const TIMEOUT_MS = 30_000
 /** `eval::attach-validation` reads two E2E executions, 60 s each, then computes the evidence. */
 const ATTACH_TIMEOUT_MS = 130_000
-/** `eval::propose-validation` lists the E2E runs (10 s) and asks Jev (70 s). */
-const PROPOSE_TIMEOUT_MS = 90_000
 /** `eval::start-validation` reads the E2E stacks (10 s) and starts two executions (30 s each). */
 const START_VALIDATION_TIMEOUT_MS = 90_000
+/** `eval::reproduce` reads the session, assembles the context and counts it before answering. */
+const REPRODUCE_TIMEOUT_MS = 120_000
 /** Catalog rows per `e2e::dashboard::tests-list` page (the most the E2E returns), and pages read at most. */
 const SCENARIO_PAGE_LIMIT = 100
 const SCENARIO_MAX_PAGES = 10
@@ -60,7 +62,6 @@ export interface EvalApi {
     candidateExecutionId: string
     dryRun?: boolean
   }): Promise<{ link: ValidationLink; saved: boolean }>
-  proposeValidation(evaluationId: string, suggestionIndex: number): Promise<ProposeValidationResponse>
   /** `eval::review`: moves the lifecycle, registers the criterion or records the verdict; answers the stored row. */
   review(evaluationId: string, suggestionIndex: number, change: ReviewChange): Promise<SuggestionReview>
   /** `eval::reviews`: the rows somebody acted on and per-analysis counts, of one analysis or of all. */
@@ -85,6 +86,21 @@ export interface EvalApi {
   ): Promise<ValidationResolution>
   /** `eval::recurrence`: the suggestion's patterns before and from the Harness version that shipped it. */
   recurrence(evaluationId: string, suggestionIndex: number): Promise<Recurrence>
+  /**
+   * `eval::reproduce`: replays the decision point of a suggestion. Spends model tokens, except with `dryRun`, which
+   * only rebuilds the request and checks its fidelity.
+   */
+  reproduce(
+    evaluationId: string,
+    suggestionIndex: number,
+    params: {
+      change?: ReproduceChange
+      samples?: number
+      extend?: string
+      check?: SuggestionCheck
+      dryRun?: boolean
+    },
+  ): Promise<ReproduceResponse>
   /** The E2E's retained executions, raw (`e2e::dashboard::executions-list`). */
   /** The E2E's detailed executions (the newest 100), or only those named: one row is a few KB, the list over a MB. */
   e2eExecutions(ids?: string[]): Promise<unknown>
@@ -151,11 +167,19 @@ export function createEvalApi(host: Host): EvalApi {
         ATTACH_TIMEOUT_MS,
       )
     },
-    proposeValidation(evaluationId, suggestionIndex) {
+    reproduce(evaluationId, suggestionIndex, params) {
       return trigger(
-        'eval::propose-validation',
-        { evaluation_id: evaluationId, suggestion_index: suggestionIndex },
-        PROPOSE_TIMEOUT_MS,
+        'eval::reproduce',
+        {
+          evaluation_id: evaluationId,
+          suggestion_index: suggestionIndex,
+          ...(params.change ? { change: params.change } : {}),
+          ...(params.samples === undefined ? {} : { samples: params.samples }),
+          ...(params.extend ? { extend: params.extend } : {}),
+          ...(params.check ? { check: params.check } : {}),
+          ...(params.dryRun ? { dry_run: true } : {}),
+        },
+        REPRODUCE_TIMEOUT_MS,
       )
     },
     review(evaluationId, suggestionIndex, change) {

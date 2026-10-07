@@ -1,6 +1,5 @@
 // "Attach E2E runs to S1": link a baseline and a candidate E2E execution to a
-// suggestion. The user picks both runs from the E2E service's list, or asks
-// Jev to fill them (it only proposes; the user checks, edits, attaches). The
+// suggestion. The user picks both runs from the E2E service's list. The
 // dialog looks the pair up (a dry run of `eval::attach-validation`), shows what
 // the E2E service holds and whether the runs are comparable, and only then
 // saves. It never grades the runs or starts a campaign.
@@ -16,16 +15,24 @@ import {
   uiClasses,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { Check, CircleAlert, LoaderCircle, Minus, RefreshCw, TriangleAlert } from 'lucide-react'
+import {
+  Check,
+  CircleAlert,
+  ExternalLink,
+  Info,
+  LoaderCircle,
+  Minus,
+  Plug,
+  RefreshCw,
+  TriangleAlert,
+} from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { EvalApi } from '../../../api'
 import type { E2eExecution, ValidationLink } from '../../../types'
-import { type E2eRun, runGroups, runName, withPicked } from './e2e-runs'
-import { FillRow, JevNotices, NoRunsPanel, PlanHint, RunsDownPanel } from './JevParts'
-import { type JevPair, needsNewCase } from './jev-fill'
+import { type E2eRun, runGroups, withPicked } from './e2e-runs'
+import { Inline } from './marks'
 import { RunPicker } from './RunPicker'
 import { usePhoneViewport } from './review-parts'
-import { useJevFill } from './use-jev-fill'
 import { useRunList } from './use-run-list'
 import {
   classifyAttachFailure,
@@ -39,7 +46,7 @@ import {
   type Side,
 } from './validation-lookup'
 import { CheckList, HarnessLine, Mismatches } from './validation-parts'
-import { foundSummary, mismatches } from './validation-view'
+import { foundSummary, mismatches, noRunsNotice, planHint } from './validation-view'
 
 function Line({
   tone,
@@ -57,6 +64,71 @@ function Line({
       {icon}
       <span>{children}</span>
     </span>
+  )
+}
+
+/** The plan's line above the pickers, with the way out to the E2E page. */
+function PlanHint({
+  scenarioId,
+  promoted,
+  disabled,
+  narrow,
+  onOpenE2e,
+}: {
+  scenarioId: string | null
+  /** Running the case in E2E is the next step: Open E2E is a button, not a quiet link. */
+  promoted: boolean
+  /** Leaving the dialog is refused while a save is in flight. */
+  disabled: boolean
+  narrow: boolean
+  /** Hidden when the console cannot open the E2E page. */
+  onOpenE2e: (() => void) | undefined
+}) {
+  return (
+    <div className="eval-ui-val-hint">
+      <p className="eval-ui-val-hint-text">
+        <Inline text={planHint(scenarioId)} />
+      </p>
+      {onOpenE2e ? (
+        <Button
+          type="button"
+          variant={promoted ? 'pill' : 'ghost'}
+          size={narrow ? 'lg' : 'sm'}
+          disabled={disabled}
+          onClick={onOpenE2e}
+        >
+          Open E2E
+          <ExternalLink className={uiClasses.icon} aria-hidden />
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
+/** The E2E service holds no runs at all. */
+function NoRunsPanel({ scenarioId }: { scenarioId: string | null }) {
+  const notice = noRunsNotice(scenarioId)
+  return (
+    <StatusPanel
+      variant="info"
+      role="status"
+      icon={<Info className={uiClasses.icon} aria-hidden />}
+      headline={notice.headline}
+      detail={notice.detail}
+    />
+  )
+}
+
+/** The run list did not load; Try again is the dialog's primary action. */
+function RunsDownPanel() {
+  return (
+    <StatusPanel
+      variant="warn"
+      role="alert"
+      icon={<Plug className={uiClasses.icon} aria-hidden />}
+      headline="E2E service unavailable"
+      detail="The run list needs the E2E worker, and it isn't answering. There is nothing to choose from, and nothing was saved."
+    />
   )
 }
 
@@ -125,29 +197,9 @@ function AttachForm({
     }
   }, [])
 
-  const { list, reload, fail } = useRunList(api)
+  const { list, reload } = useRunList(api)
   const runs = list.phase === 'ready' ? list.runs : []
   const runById = (id: string) => runs.find((run) => run.id === id)
-  const putPair = useCallback((pair: JevPair) => {
-    setBaseline(pair.baseline)
-    setCandidate(pair.candidate)
-    setAttachError(null)
-  }, [])
-  // Jev gave no pair: the pickers that still held its earlier one are emptied.
-  const clearJev = useCallback((marked: Record<Side, boolean>) => {
-    if (marked.baseline) setBaseline('')
-    if (marked.candidate) setCandidate('')
-    setAttachError(null)
-  }, [])
-  const jev = useJevFill({
-    api,
-    evaluationId,
-    suggestionIndex,
-    onPair: putPair,
-    onClear: clearJev,
-    onE2eDown: fail,
-  })
-  const asking = jev.fill.kind === 'asking'
 
   const ids = idState(baseline, candidate)
   const key = lookupKey(baseline, candidate)
@@ -213,20 +265,18 @@ function AttachForm({
     }
   }
 
-  // A new pick invalidates the last save error and the lookup; Jev's marks follow the ids the pickers now hold.
+  // A new pick invalidates the last save error and the lookup.
   const pick = (side: Side, next: string) => {
     if (next === (side === 'baseline' ? baseline : candidate)) return
     ;(side === 'baseline' ? setBaseline : setCandidate)(next)
     setAttachError(null)
-    jev.picked({ baseline: side === 'baseline' ? next : baseline, candidate: side === 'candidate' ? next : candidate })
   }
 
   const listFailed = list.phase === 'failed'
   const noRuns = list.phase === 'ready' && runs.length === 0
   const action = primaryAction(view, ids, listFailed)
-  // Jev's answer replaces both pickers: no save of the pair on screen while it is on its way.
   const submit = () => {
-    if (saving || asking || !action.enabled) return
+    if (saving || !action.enabled) return
     if (action.kind === 'retry') {
       if (listFailed) reload()
       else start(true)
@@ -322,15 +372,13 @@ function AttachForm({
                 ? 'No runs to choose from'
                 : 'Choose a run…'
         }
-        disabled={saving || asking || listFailed || noRuns}
+        disabled={saving || listFailed || noRuns}
         invalid={status.invalid}
-        jev={jev.fill.kind === 'proposed' && jev.fill.marks[side]}
         status={status.status}
       />
     )
   }
 
-  const noPair = jev.fill.kind === 'none_fits' || jev.fill.kind === 'no_comparable_pair'
   const cancelButton = (
     <Button
       type="button"
@@ -347,7 +395,7 @@ function AttachForm({
       type="submit"
       variant={action.kind === 'attach_anyway' ? 'pill' : 'primary'}
       size={narrow ? 'lg' : 'sm'}
-      disabled={saving || asking || !action.enabled}
+      disabled={saving || !action.enabled}
       aria-busy={saving || undefined}
     >
       {saving ? (
@@ -381,17 +429,10 @@ function AttachForm({
       <div className="eval-ui-val-fields">
         <PlanHint
           scenarioId={scenarioId}
-          promoted={noPair || noRuns || listFailed || needsNewCase(jev.fill, scenarioId)}
+          promoted={noRuns || listFailed}
           disabled={saving}
           narrow={narrow}
           onOpenE2e={onOpenE2e}
-        />
-        <FillRow
-          asking={asking}
-          replaces={baseline !== '' || candidate !== ''}
-          disabled={saving || list.phase !== 'ready' || noRuns}
-          narrow={narrow}
-          onFill={jev.ask}
         />
 
         {picker('baseline', 'Baseline execution', 'Harness without the change', baselineField)}
@@ -417,16 +458,6 @@ function AttachForm({
             detail={failure.message}
           />
         ) : null}
-        <JevNotices
-          fill={jev.fill}
-          scenarioId={scenarioId}
-          nameOf={(id) => {
-            const run = runById(id)
-            return run ? runName(run) : id
-          }}
-          disabled={saving}
-          onChoose={jev.choose}
-        />
 
         {link ? <Comparability link={link} /> : null}
         {showChecks && !link ? (

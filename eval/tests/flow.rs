@@ -22,7 +22,6 @@ use harness::types::event::StopReason;
 use harness::types::message::{
     empty_assistant, AgentMessage, FunctionResultMessage, FunctionResultRoleTag,
 };
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::{json, Value};
 
@@ -39,16 +38,15 @@ enum JudgeMode {
     Malformed,
     /// Hold the answer until `judge::cancel`, then answer `cancelled`.
     HoldUntilCancel,
-    /// Answer an E2E pairing question with this option key.
-    Pick(&'static str, f64),
     /// TypeSafe's HTTP 402 (no credits), with the provider's explanation.
     Billing,
 }
 
 struct World {
     state: BTreeMap<(String, String), Value>,
-    /// session-manager kinds by session id; absent means `user`.
-    kinds: HashMap<String, &'static str>,
+    /// session-manager `(kind, metadata)` by session id; absent means a
+    /// console chat.
+    sessions: HashMap<String, (&'static str, Value)>,
     steps: VecDeque<Value>,
     calls: Vec<(String, Value)>,
     status: HashMap<String, Value>,
@@ -69,6 +67,11 @@ struct World {
     extra_frames: Vec<Value>,
     /// The cost every `harness::metrics` call reports; `None` is unknown.
     cost_usd: Option<f64>,
+    /// The cost every `router::complete` reply reports; `None` is unknown.
+    sample_cost_usd: Option<f64>,
+    /// Every `router::complete` call fails, as when the bus gives up on a
+    /// provider that may still bill.
+    samples_fail: bool,
     /// What `engine::workers::list` answers; `None` is an engine without it.
     workers: Option<Value>,
     /// What `e2e::dashboard::tests-list` answers; `None` is a down E2E.
@@ -113,6 +116,8 @@ impl World {
             held_judge: None,
             extra_frames: Vec::new(),
             cost_usd: None,
+            sample_cost_usd: Some(0.001),
+            samples_fail: false,
             workers: None,
             tests_list: None,
             stacks: None,
@@ -120,7 +125,7 @@ impl World {
             unanswered_start: None,
             starts: 0,
             executions_down: false,
-            kinds: HashMap::new(),
+            sessions: HashMap::new(),
         };
         world
             .status
@@ -211,10 +216,15 @@ impl World {
                 })
                 .unwrap()
             }
-            "session::get" => json!({"meta": {"session_id": data["session_id"],
-                "title": "Schedule the follow-up", "metadata": {},
-                "kind": self.kinds.get(data["session_id"].as_str().unwrap_or_default())
-                    .copied().unwrap_or("user")}}),
+            "session::get" => {
+                let (kind, metadata) = self
+                    .sessions
+                    .get(data["session_id"].as_str().unwrap_or_default())
+                    .cloned()
+                    .unwrap_or(("user", json!({"surface": "console"})));
+                json!({"meta": {"session_id": data["session_id"],
+                    "title": "Schedule the follow-up", "metadata": metadata, "kind": kind}})
+            }
             "judge::models::list" => json!({"status": "ok",
                 "models": [{"name": "jev-test-1", "description": "", "release_date": ""}],
                 "stats": {"attempts": 1, "requests": 1, "questions": 0, "input_tokens": 0,
@@ -240,7 +250,6 @@ impl World {
                               "output_tokens": 0, "elapsed_ms": 1, "usage_complete": false}
                 }),
                 JudgeMode::Malformed => json!({"status": "ok", "model": "jev-test", "results": {}}),
-                JudgeMode::Pick(choice, confidence) => judge_pick(data, choice, confidence),
                 JudgeMode::Billing => json!({
                     "status": "error", "code": "http", "http_status": 402,
                     "provider_error": {"detail": {"error_type": "billing_error",
@@ -380,6 +389,38 @@ impl World {
                     None => return Some(Err("execution not found".into())),
                 }
             }
+            // Context assembly that changes nothing, and a provider count.
+            "context::assemble" => json!({
+                "system_prompt": data["system_prompt"], "messages": data["messages"],
+                "token_count": 100, "usable": 100_000, "effective_max_output_tokens": 1_000,
+                "applied": {}
+            }),
+            "router::count_tokens" => json!({"tokens": 100, "estimator": "provider",
+                "model": data["model"], "provider": "p"}),
+            // A model that re-reads the contract only while the registry
+            // notice is in its context.
+            "router::complete" => {
+                if self.samples_fail {
+                    return Some(Err("the provider never answered".into()));
+                }
+                let notice = data["messages"].to_string().contains("registry changed");
+                let mut reply = empty_assistant("p", "task-model");
+                reply.content = if notice {
+                    vec![ContentBlock::FunctionCall {
+                        id: "c3".into(),
+                        function_id: "agent_trigger".into(),
+                        arguments: json!({"function": INFO, "description": "re-read",
+                            "payload": {"function_id": "crm::profile"}}),
+                    }]
+                } else {
+                    vec![ContentBlock::text("Scheduled once; receipt R-1.")]
+                };
+                let mut usage = json!({"input": 12, "output": 4});
+                if let Some(cost) = self.sample_cost_usd {
+                    usage["cost_usd"] = json!(cost);
+                }
+                json!({"message": reply, "provider": "p", "model": "task-model", "usage": usage})
+            }
             other => return Some(Err(format!("unexpected call to {other}"))),
         }))
     }
@@ -417,28 +458,6 @@ fn judge_ok(choice: &str, confidence: f64) -> Value {
         }},
         "stats": {"attempts": 1, "requests": 1, "questions": 1, "input_tokens": 410,
                   "output_tokens": 3, "elapsed_ms": 25, "usage_complete": true}
-    })
-}
-
-/// A pairing answer over exactly the options the request offered.
-fn judge_pick(request: &Value, choice: &str, confidence: f64) -> Value {
-    let criteria = request["evaluations"][0]["questions"]["pair"]["criteria"]
-        .as_object()
-        .expect("a Choice question with criteria");
-    let rest = (1.0 - confidence) / (criteria.len() as f64 - 1.0);
-    let probabilities: BTreeMap<_, _> = criteria
-        .keys()
-        .map(|key| (key.as_str(), if key == choice { confidence } else { rest }))
-        .collect();
-    json!({
-        "status": "ok", "model": "jev-test-1",
-        "results": {"pairing": {
-            "answers": {"pair": {"type": "choice", "choice": choice,
-                "probabilities": probabilities, "confidence": confidence}},
-            "usage": {"input_tokens": 520, "output_tokens": 4}
-        }},
-        "stats": {"attempts": 1, "requests": 1, "questions": 1, "input_tokens": 520,
-                  "output_tokens": 4, "elapsed_ms": 30, "usage_complete": true}
     })
 }
 
@@ -1517,59 +1536,12 @@ async fn capacity_rejections_and_provider_checks_are_reported() {
     assert!(!h.world().calls_to("judge::models::list").is_empty());
 }
 
-/// One `executions-list` entry as the E2E returns it: an array stack with the
-/// Harness build, or the object-shaped stack of a source run.
-fn e2e_run(
-    id: &str,
-    label: &str,
-    status: &str,
-    started_at: &str,
-    harness: Option<(&str, &str)>,
-    scenarios: &[&str],
-) -> Value {
-    let stack = match harness {
-        Some((version, commit)) => json!([
-            {"name": "ade", "observed": "1.9.48", "commit": "d0b6c00", "dirty": false},
-            {"name": "harness", "observed": version, "commit": commit, "dirty": false,
-             "source": "path"}]),
-        None => json!({"lock_digest": null, "mode": "source", "versions": null}),
-    };
-    json!({"id": id, "label": label, "status": status, "started_at": started_at,
-        "completed_at": started_at, "stack": stack,
-        "parameters": {"model": "deepseek-flash", "provider": "deepseek",
-                       "scenarios": scenarios}})
-}
-
 const SCENARIO: &str = "tool_contract_recovery";
 
-/// Six executions: three results of the plan's scenario (`exec-twin` failed
-/// its task, a valid result, and records the same stack as `exec-cand`), plus
-/// one incomplete, one technically failed and one on another scenario.
-fn e2e_executions() -> Value {
-    json!({"executions": [
-        e2e_run("exec-tech", "crashed run", "technical_failed", "2026-10-02T12:00:00Z",
-            Some(("1.8.43", "00c21f5")), &[SCENARIO]),
-        e2e_run("exec-cand", "after the change", "passed", "2026-10-02T10:00:00.123456789+00:00",
-            Some(("1.8.43", "00c21f5")), &[SCENARIO]),
-        e2e_run("exec-twin", "repeat of the change", "failed", "2026-10-02T11:00:00Z",
-            Some(("1.8.43", "00c21f5")), &[SCENARIO]),
-        e2e_run("exec-base", "before the change", "passed", "2026-10-01T10:00:00Z",
-            Some(("1.8.42", "f3a49e1")), &[SCENARIO]),
-        e2e_run("exec-wip", "still going", "incomplete", "2026-10-02T13:00:00Z", None, &[SCENARIO]),
-        e2e_run("exec-timer", "timer only", "passed", "2026-10-02T09:00:00Z",
-            Some(("1.8.42", "f3a49e1")), &["timer_wake"]),
-    ], "total": 6})
-}
-
 /// An analysis that finished with one suggestion whose plan names `SCENARIO`.
-async fn analyzed_with_suggestion(world: World) -> (Harness, String) {
-    analyzed_with_scenario(world, Some(SCENARIO)).await
-}
-
-/// The same, with the plan's scenario given (`None`: a new case is needed).
-async fn analyzed_with_scenario(mut world: World, scenario: Option<&str>) -> (Harness, String) {
+async fn analyzed_with_suggestion(mut world: World) -> (Harness, String) {
     let mut planned = suggestion(&format!("e_{TURN}_c2"));
-    planned["validation"]["scenario_id"] = json!(scenario);
+    planned["validation"]["scenario_id"] = json!(SCENARIO);
     world.analyst_result = json!({"suggestions": [planned]});
     let h = Harness::start(world).await;
     h.configure(true).await;
@@ -1582,490 +1554,6 @@ async fn analyzed_with_scenario(mut world: World, scenario: Option<&str>) -> (Ha
     let record = h.result(&evaluation_id).await.record;
     assert_eq!(record.counters.suggestions, 1, "{:?}", record.failure);
     (h, evaluation_id)
-}
-
-async fn propose(
-    h: &Harness,
-    evaluation_id: &str,
-    suggestion_index: usize,
-) -> Result<ProposeValidationResponseV1, EvalError> {
-    runtime::propose_validation(
-        &h.deps,
-        serde_json::from_value(
-            json!({"evaluation_id": evaluation_id, "suggestion_index": suggestion_index}),
-        )
-        .unwrap(),
-    )
-    .await
-}
-
-#[tokio::test]
-async fn jev_proposes_a_comparable_pair_without_attaching_it() {
-    let mut world = World::new();
-    world.executions_list = Some(e2e_executions());
-    let (h, evaluation_id) = analyzed_with_suggestion(world).await;
-    let before = h.result(&evaluation_id).await.record.usage;
-    assert_eq!((before.judge_calls, before.judge_input_tokens), (1, 410));
-    h.world().judge = JudgeMode::Pick("R1_R2", 0.93);
-
-    let response = propose(&h, &evaluation_id, 0).await.unwrap();
-    assert_eq!(response.outcome, ProposalOutcomeV1::Proposed);
-    assert_eq!(
-        response.proposal,
-        Some(ValidationProposalV1 {
-            baseline_execution_id: "exec-base".into(),
-            candidate_execution_id: "exec-cand".into(),
-            confidence: 0.93,
-            low_confidence: false,
-            stack_note: "recorded stack differs: harness 1.8.42·f3a49e1 → 1.8.43·00c21f5".into(),
-        })
-    );
-    assert_eq!(
-        (
-            response.runs_listed,
-            response.runs_considered,
-            response.pairs_considered
-        ),
-        (6, 3, 6),
-        "base, cand and twin make six ordered pairs; the twin's identical stack drops none"
-    );
-    assert_eq!(response.pairs_dropped, 0);
-    assert_eq!(
-        response.excluded,
-        BTreeMap::from([
-            ("technical_failed".to_string(), 1),
-            ("incomplete".to_string(), 1),
-            ("other_scenario".to_string(), 1),
-        ])
-    );
-    let jev = response.jev.as_ref().unwrap();
-    assert_eq!(jev.model, "jev-test-1");
-    assert_eq!(jev.stats.input_tokens, 520);
-    let shown = serde_json::to_value(&response).unwrap();
-    assert_eq!(shown["proposal"]["baseline_execution_id"], "exec-base");
-    assert_eq!(shown["outcome"], "proposed");
-
-    {
-        let world = h.world();
-        assert_eq!(
-            world.calls_to("e2e::dashboard::executions-list"),
-            [json!({"limit": 100})]
-        );
-        let judge_calls = world.calls_to("judge::evaluate");
-        assert_eq!(judge_calls.len(), 2, "the triage call and this one");
-        let payload = &judge_calls[1];
-        assert_eq!(payload["provider"], "typesafe");
-        assert_eq!(payload["timeout_ms"], 60_000);
-        assert!(payload["expires_at_unix_ms"].is_u64());
-        assert!(payload["model"].is_null());
-        assert_eq!(payload["request_id"], jev.request_id);
-        assert!(jev
-            .request_id
-            .starts_with(&format!("{evaluation_id}-propose-")));
-        let evaluation = &payload["evaluations"][0];
-        assert_eq!(evaluation["id"], "pairing");
-        let question = &evaluation["questions"]["pair"];
-        assert_eq!(question["type"], "choice");
-        let keys: Vec<_> = question["criteria"].as_object().unwrap().keys().collect();
-        assert_eq!(
-            keys,
-            ["R1_R2", "R1_R3", "R2_R1", "R2_R3", "R3_R1", "R3_R2", "none"]
-        );
-        // Each criterion carries both labels and the recorded stack difference.
-        assert_eq!(
-            question["criteria"]["R1_R2"],
-            "Baseline R1 (before the change) runs the Harness without this change and candidate \
-             R2 (after the change) runs it with the change; recorded stack differs: harness \
-             1.8.42·f3a49e1 → 1.8.43·00c21f5"
-        );
-        assert_eq!(
-            question["criteria"]["R2_R3"],
-            "Baseline R2 (after the change) runs the Harness without this change and candidate \
-             R3 (repeat of the change) runs it with the change; recorded stacks identical"
-        );
-        // Runs are numbered oldest first; Jev sees builds and times, not ids.
-        let state = &evaluation["state"];
-        assert_eq!(state["plan"]["scenario_id"], SCENARIO);
-        let runs = state["runs"].as_object().unwrap();
-        assert_eq!(runs.len(), 3);
-        assert_eq!(runs["R1"]["label"], "before the change");
-        assert_eq!(runs["R1"]["harness"], "1.8.42·f3a49e1");
-        assert_eq!(runs["R1"]["status"], "passed");
-        assert_eq!(runs["R1"]["started_at"], "2026-10-01T10:00:00Z");
-        assert_eq!(
-            runs["R2"]["started_at"],
-            "2026-10-02T10:00:00.123456789+00:00"
-        );
-        assert_eq!(runs["R3"]["status"], "failed");
-        assert!(!state.to_string().contains("exec-"), "no execution ids");
-        assert!(world.calls_to("e2e::dashboard::execution-get").is_empty());
-    }
-
-    // Read-only apart from the spend: the Jev call is on the record, and
-    // nothing is attached.
-    let EvalResultResponseV1 { record, assets, .. } = h.result(&evaluation_id).await;
-    assert_eq!(record.usage.judge_calls, 2);
-    assert_eq!(record.usage.judge_input_tokens, 410 + 520);
-    assert_eq!(record.usage.judge_output_tokens, 3 + 4);
-    assert!(record.usage.judge_usage_complete);
-    assert!(record.updated_at > before_updated(&before, &record));
-    assert!(assets.validations.is_empty());
-    assert_eq!(record.counters.validations, 0);
-
-    // Low confidence is flagged, and each click is its own Jev request.
-    h.world().judge = JudgeMode::Pick("R2_R1", 0.55);
-    let second = propose(&h, &evaluation_id, 0).await.unwrap();
-    let proposal = second.proposal.unwrap();
-    assert_eq!(
-        (
-            proposal.baseline_execution_id.as_str(),
-            proposal.candidate_execution_id.as_str()
-        ),
-        ("exec-cand", "exec-base")
-    );
-    assert!(proposal.low_confidence);
-    assert_ne!(second.jev.unwrap().request_id, jev.request_id);
-    assert_eq!(h.result(&evaluation_id).await.record.usage.judge_calls, 3);
-}
-
-/// `updated_at` only has to move; the usage struct is unrelated, so compare
-/// against the time the analysis completed.
-fn before_updated(_usage: &MonitorUsageV1, record: &AnalysisRecordV1) -> i64 {
-    record.completed_at.unwrap()
-}
-
-#[tokio::test]
-async fn jev_may_find_no_pair_that_fits() {
-    let mut world = World::new();
-    world.executions_list = Some(e2e_executions());
-    let (h, evaluation_id) = analyzed_with_suggestion(world).await;
-    h.world().judge = JudgeMode::Pick("none", 0.88);
-    let response = propose(&h, &evaluation_id, 0).await.unwrap();
-    assert_eq!(response.outcome, ProposalOutcomeV1::NoneFits);
-    assert!(response.proposal.is_none());
-    assert_eq!(response.pairs_considered, 6);
-    assert_eq!(response.jev.as_ref().unwrap().stats.input_tokens, 520);
-    assert!(serde_json::to_value(&response)
-        .unwrap()
-        .get("proposal")
-        .is_none());
-    assert_eq!(
-        h.result(&evaluation_id).await.record.usage.judge_calls,
-        2,
-        "the answer was paid for"
-    );
-}
-
-#[tokio::test]
-async fn without_a_comparable_pair_jev_is_not_asked() {
-    let mut world = World::new();
-    // Three results that never share model and provider, plus runs that
-    // cannot be a result.
-    let run = |id: &str, model: &str, provider: &str, started: &str| {
-        let mut run = e2e_run(
-            id,
-            id,
-            "passed",
-            started,
-            Some(("1.8.43", "00c21f5")),
-            &[SCENARIO],
-        );
-        run["parameters"]["model"] = json!(model);
-        run["parameters"]["provider"] = json!(provider);
-        run
-    };
-    world.executions_list = Some(json!({"executions": [
-        run("exec-a", "deepseek-flash", "deepseek", "2026-10-02T10:00:00Z"),
-        run("exec-opus", "claude-opus-5-5", "anthropic", "2026-10-02T11:00:00Z"),
-        run("exec-proxied", "deepseek-flash", "openai", "2026-10-02T12:00:00Z"),
-        e2e_run("exec-wip", "wip", "incomplete", "2026-10-02T13:00:00Z", None, &[SCENARIO]),
-        e2e_run("exec-infra", "infra", "infra_failed", "2026-10-02T13:30:00Z", None, &[SCENARIO]),
-        e2e_run("exec-cancelled", "cancelled", "cancelled", "2026-10-02T13:40:00Z", None, &[SCENARIO]),
-    ]}));
-    let (h, evaluation_id) = analyzed_with_suggestion(world).await;
-    let usage = h.result(&evaluation_id).await.record.usage;
-
-    let response = propose(&h, &evaluation_id, 0).await.unwrap();
-    assert_eq!(response.outcome, ProposalOutcomeV1::NoComparablePair);
-    assert!(response.proposal.is_none() && response.jev.is_none());
-    assert_eq!(
-        (
-            response.runs_listed,
-            response.runs_considered,
-            response.pairs_considered,
-            response.pairs_dropped
-        ),
-        (6, 3, 0, 0)
-    );
-    assert_eq!(
-        response.excluded,
-        BTreeMap::from([
-            ("incomplete".to_string(), 1),
-            ("infra_failed".to_string(), 1),
-            ("cancelled".to_string(), 1),
-        ]),
-        "unusable runs are counted by status, not hidden"
-    );
-    assert_eq!(
-        h.world().calls_to("judge::evaluate").len(),
-        1,
-        "only the triage call: no pair, no Jev call"
-    );
-    assert_eq!(h.result(&evaluation_id).await.record.usage, usage);
-}
-
-/// Genuine A/B pairs often record identical stacks (the change lived in a
-/// build the stack record does not capture), and plans that name no
-/// scenario ask for the same scenario set, in any order.
-#[tokio::test]
-async fn without_a_plan_scenario_pairs_need_the_same_suite_and_identical_stacks_stay() {
-    let mut world = World::new();
-    let suite = [SCENARIO, "timer_wake"];
-    world.executions_list = Some(json!({"executions": [
-        e2e_run("exec-a", "A: SEM #1292", "passed", "2026-10-02T10:00:00Z",
-            Some(("1.8.42", "f3a49e1")), &suite),
-        e2e_run("exec-b", "B: COM #1292", "passed", "2026-10-02T11:00:00Z",
-            Some(("1.8.42", "f3a49e1")), &[suite[1], suite[0]]),
-        e2e_run("exec-source", "older source run", "passed", "2026-10-01T09:00:00Z",
-            None, &suite),
-        e2e_run("exec-single", "single case", "passed", "2026-10-02T12:00:00Z",
-            Some(("1.8.42", "f3a49e1")), &[SCENARIO]),
-    ]}));
-    let (h, evaluation_id) = analyzed_with_scenario(world, None).await;
-    h.world().judge = JudgeMode::Pick("R2_R3", 0.9);
-
-    let response = propose(&h, &evaluation_id, 0).await.unwrap();
-    assert_eq!(response.outcome, ProposalOutcomeV1::Proposed);
-    let proposal = response.proposal.unwrap();
-    assert_eq!(
-        (
-            proposal.baseline_execution_id.as_str(),
-            proposal.candidate_execution_id.as_str()
-        ),
-        ("exec-a", "exec-b")
-    );
-    assert_eq!(
-        (response.runs_considered, response.pairs_considered),
-        (4, 6),
-        "the single-case run joins no pair"
-    );
-    assert!(response.excluded.is_empty());
-    let calls = h.world().calls_to("judge::evaluate");
-    let evaluation = &calls[1]["evaluations"][0];
-    assert_eq!(evaluation["state"]["plan"]["scenario_id"], Value::Null);
-    let runs = evaluation["state"]["runs"].as_object().unwrap();
-    assert_eq!(runs.len(), 3, "only the runs a kept pair refers to");
-    assert!(!evaluation["state"].to_string().contains("single case"));
-    assert_eq!(
-        runs["R1"]["harness"], "unknown",
-        "an object-shaped stack is unknown"
-    );
-    let criteria = &evaluation["questions"]["pair"]["criteria"];
-    assert_eq!(
-        criteria["R2_R3"],
-        "Baseline R2 (A: SEM #1292) runs the Harness without this change and candidate R3 \
-         (B: COM #1292) runs it with the change; recorded stacks identical"
-    );
-    assert_eq!(
-        criteria["R1_R3"],
-        "Baseline R1 (older source run) runs the Harness without this change and candidate R3 \
-         (B: COM #1292) runs it with the change; recorded stack unknown"
-    );
-}
-
-/// 12 results of the case make 132 ordered pairs; the 60 most recent (by the
-/// older run of each pair) are offered and the rest is reported.
-#[tokio::test]
-async fn pairs_are_capped_and_the_dropped_ones_are_reported() {
-    let mut world = World::new();
-    world.executions_list = Some(json!({"executions": (0..12)
-        .map(|index| e2e_run(&format!("exec-{index:02}"), &format!("run {index}"), "passed",
-            &format!("2026-10-02T10:{index:02}:00Z"), Some(("1.8.43", "00c21f5")), &[SCENARIO]))
-        .collect::<Vec<_>>()}));
-    let (h, evaluation_id) = analyzed_with_suggestion(world).await;
-    h.world().judge = JudgeMode::Pick("none", 0.9);
-
-    let response = propose(&h, &evaluation_id, 0).await.unwrap();
-    assert_eq!(response.outcome, ProposalOutcomeV1::NoneFits);
-    assert_eq!(
-        (
-            response.runs_considered,
-            response.pairs_considered,
-            response.pairs_dropped
-        ),
-        (12, 60, 72)
-    );
-    let calls = h.world().calls_to("judge::evaluate");
-    let evaluation = &calls[1]["evaluations"][0];
-    let criteria = evaluation["questions"]["pair"]["criteria"]
-        .as_object()
-        .unwrap();
-    assert_eq!(criteria.len(), 61, "60 pairs and none");
-    let runs = evaluation["state"]["runs"].as_object().unwrap();
-    assert_eq!(
-        runs.len(),
-        9,
-        "the three oldest runs belong to no kept pair"
-    );
-    assert!(!evaluation["state"].to_string().contains("run 2"));
-}
-
-#[tokio::test]
-async fn jev_failures_surface_with_the_providers_explanation_and_keep_their_usage() {
-    let mut world = World::new();
-    world.executions_list = Some(e2e_executions());
-    let (h, evaluation_id) = analyzed_with_suggestion(world).await;
-    let message = |result: Result<ProposeValidationResponseV1, EvalError>| match result {
-        Err(EvalError::Dependency(message)) => message,
-        other => panic!("expected a dependency error, got {other:?}"),
-    };
-
-    h.world().judge = JudgeMode::Billing;
-    let billing = message(propose(&h, &evaluation_id, 0).await);
-    assert!(billing.starts_with("jev_unavailable: "), "{billing}");
-    assert!(billing.contains("HTTP 402"), "{billing}");
-    assert!(
-        billing.contains("Your organization has no available TypeSafe API credits."),
-        "{billing}"
-    );
-    let usage = h.result(&evaluation_id).await.record.usage;
-    assert_eq!(usage.judge_calls, 2, "an error that answered still counts");
-    assert_eq!(usage.judge_input_tokens, 410);
-    assert!(
-        !usage.judge_usage_complete,
-        "the failure's usage is incomplete"
-    );
-
-    // A reply the contract cannot parse has no stats: counted, usage unknown.
-    h.world().judge = JudgeMode::Malformed;
-    let malformed = message(propose(&h, &evaluation_id, 0).await);
-    assert!(
-        malformed.starts_with("jev_invalid_response: "),
-        "{malformed}"
-    );
-    assert_eq!(h.result(&evaluation_id).await.record.usage.judge_calls, 3);
-
-    // An answer outside the offered options is rejected, never trusted.
-    h.world().judge = JudgeMode::Pick("R9_R9", 0.9);
-    let outside = message(propose(&h, &evaluation_id, 0).await);
-    assert!(outside.starts_with("jev_invalid_response: "), "{outside}");
-    let usage = h.result(&evaluation_id).await.record.usage;
-    assert_eq!(usage.judge_calls, 4);
-    assert_eq!(usage.judge_input_tokens, 410 + 520, "its stats are kept");
-    assert!(
-        !usage.judge_usage_complete,
-        "one incomplete call keeps it incomplete"
-    );
-}
-
-#[tokio::test]
-async fn the_analysis_lock_is_free_while_jev_answers_and_a_cancelled_call_is_counted() {
-    let mut world = World::new();
-    world.executions_list = Some(e2e_executions());
-    let (h, evaluation_id) = analyzed_with_suggestion(world).await;
-    h.world().judge = JudgeMode::HoldUntilCancel;
-    let deps = h.deps.clone();
-    let id = evaluation_id.clone();
-    let proposing = tokio::spawn(async move {
-        runtime::propose_validation(
-            &deps,
-            serde_json::from_value(json!({"evaluation_id": id, "suggestion_index": 0})).unwrap(),
-        )
-        .await
-    });
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while h.world().held_judge.is_none() {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("Jev call in flight");
-
-    // An action that needs the analysis lock is not blocked by the held call.
-    let attach = runtime::attach_validation(
-        &h.deps,
-        serde_json::from_value(
-            json!({"evaluation_id": evaluation_id, "suggestion_index": 0,
-            "baseline_execution_id": "exec-x", "candidate_execution_id": "exec-y"}),
-        )
-        .unwrap(),
-    );
-    let attached = tokio::time::timeout(Duration::from_secs(2), attach)
-        .await
-        .expect("the lock is free while Jev answers");
-    assert!(attached.is_err(), "these executions do not exist");
-
-    // The provider answers `cancelled` with its stats: still real spend.
-    h.iii
-        .trigger(TriggerRequest {
-            function_id: "judge::cancel".into(),
-            payload: json!({"request_id": "any"}),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await
-        .unwrap();
-    let outcome = tokio::time::timeout(Duration::from_secs(5), proposing)
-        .await
-        .expect("the proposal returns")
-        .unwrap();
-    match outcome {
-        Err(EvalError::Dependency(message)) => {
-            assert!(message.starts_with("jev_unavailable: "), "{message}");
-            assert!(message.contains("cancelled"), "{message}");
-        }
-        other => panic!("expected jev_unavailable, got {other:?}"),
-    }
-    let usage = h.result(&evaluation_id).await.record.usage;
-    assert_eq!(usage.judge_calls, 2);
-    assert!(!usage.judge_usage_complete);
-}
-
-#[tokio::test]
-async fn an_unavailable_e2e_is_reported_before_jev_is_asked() {
-    let (h, evaluation_id) = analyzed_with_suggestion(World::new()).await;
-    let usage = h.result(&evaluation_id).await.record.usage;
-    match propose(&h, &evaluation_id, 0).await {
-        Err(EvalError::Dependency(message)) => {
-            assert!(message.starts_with("e2e_unavailable: "), "{message}");
-            assert!(message.contains("executions-list"), "{message}");
-        }
-        other => panic!("expected e2e_unavailable, got {other:?}"),
-    }
-    assert_eq!(h.world().calls_to("judge::evaluate").len(), 1);
-    assert_eq!(h.result(&evaluation_id).await.record.usage, usage);
-
-    // A reply that is not an execution list is the same failure.
-    h.world().executions_list = Some(json!({"error": "starting"}));
-    assert!(matches!(
-        propose(&h, &evaluation_id, 0).await,
-        Err(EvalError::Dependency(message)) if message.starts_with("e2e_unavailable: ")
-    ));
-}
-
-#[tokio::test]
-async fn proposals_follow_the_attach_preconditions() {
-    let mut world = World::new();
-    world.executions_list = Some(e2e_executions());
-    let (h, evaluation_id) = analyzed_with_suggestion(world).await;
-    assert!(matches!(
-        propose(&h, "eval_missing", 0).await,
-        Err(EvalError::NotFound(_))
-    ));
-    assert!(matches!(
-        propose(&h, &evaluation_id, 1).await,
-        Err(EvalError::InvalidRequest(message)) if message.contains("does not exist")
-    ));
-    // An analysis that has not finished has no suggestions to validate.
-    let pending = h.end_turn(ROOT, "t_next").await.evaluation_id.unwrap();
-    assert!(matches!(
-        propose(&h, &pending, 0).await,
-        Err(EvalError::Conflict(_))
-    ));
-    assert!(h
-        .world()
-        .calls_to("e2e::dashboard::executions-list")
-        .is_empty());
 }
 
 /// A directory that exists on this host and holds real files: this crate.
@@ -2210,12 +1698,29 @@ async fn with_a_code_directory_the_investigation_runs_in_it_and_the_directory_is
         assert_eq!(send["session"]["metadata"]["fs_scope"], scope);
         assert_eq!(send["options"]["metadata"]["fs_scope"], scope);
         assert_eq!(send["session"]["metadata"]["origin"], "eval_monitor");
-        assert_eq!(send["options"]["functions"]["allow"], json!(["*"]));
-        // Only a person starts an E2E execution or records a review.
+        // It reads untrusted transcripts: only the read-only functions its
+        // prompt names (and the contract lookup), nothing that writes, runs a
+        // shell or starts a session. Only a person starts an E2E execution or
+        // records a review, so those stay denied as well.
         assert_eq!(
-            send["options"]["functions"]["deny"],
-            json!(["eval::*", "e2e::dashboard::execution-*"])
+            send["options"]["functions"],
+            json!({
+                "allow": ["coder::search", "coder::tree", "coder::read-file",
+                    "session::messages", "github::pr::list", "engine::functions::info"],
+                "deny": ["eval::*", "e2e::dashboard::execution-*"],
+                "expose": "agent_trigger"
+            })
         );
+        let prompt = send["options"]["system_prompt"].as_str().unwrap();
+        for id in [
+            "coder::search",
+            "coder::tree",
+            "coder::read-file",
+            "session::messages",
+            "github::pr::list",
+        ] {
+            assert!(prompt.contains(id), "the prompt names {id}");
+        }
         let limits = runtime::limits();
         assert_eq!(
             send["options"]["max_turns"],
@@ -2326,8 +1831,11 @@ async fn without_a_code_directory_the_investigation_is_unchanged_and_code_refs_a
     let send = &sends[0];
     assert!(send["session"]["metadata"].get("fs_scope").is_none());
     assert!(send["options"]["metadata"].get("fs_scope").is_none());
-    assert_eq!(send["options"]["functions"]["allow"], json!([]));
-    assert_eq!(send["options"]["functions"]["deny"], json!([]));
+    // Deny all: the analyst can call nothing.
+    assert_eq!(
+        send["options"]["functions"],
+        json!({"allow": [], "deny": [], "expose": "agent_trigger"})
+    );
     assert_eq!(send["options"]["max_turns"], 1);
     assert_eq!(send["options"]["max_total_tokens"], 200_000);
     let prompt = send["options"]["system_prompt"].as_str().unwrap();
@@ -4223,17 +3731,191 @@ async fn the_sweep_fails_runs_that_cannot_finish_and_retries_the_ones_the_e2e_dr
     assert_eq!(run_state().await.state, ValidationRunStateV1::Failed);
 }
 
+// ---------------------------------------------------------------------------
+// Reproduction at the decision point
+// ---------------------------------------------------------------------------
+
+async fn reproduce(h: &Harness, request: Value) -> Result<ReproduceResponseV1, EvalError> {
+    eval::reproduce::reproduce(&h.deps, serde_json::from_value(request).unwrap()).await
+}
+
+/// Waits for the reproduction's background task.
+async fn settled(h: &Harness, evaluation_id: &str, id: &str) -> ReproductionV1 {
+    for _ in 0..200 {
+        let current = row(h, evaluation_id)
+            .await
+            .reproductions
+            .into_iter()
+            .find(|reproduction| reproduction.id == id)
+            .unwrap();
+        if current.state != ReproductionStateV1::Running {
+            return current;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the reproduction never finished");
+}
+
+/// The Harness's turn record of `turn_id`, with fields beyond the options.
+fn turn_record(turn_id: &str) -> Value {
+    json!({"turn_id": turn_id, "session_id": ROOT, "status": "completed", "step": 7,
+        "turn_count": 3, "options": {"model": "task-model", "provider": "p",
+            "system_prompt": "You are an agent.", "functions": {"expose": "agent_trigger"}},
+        "function_contract_ledger": {"crm::profile": {"generation": 4}},
+        "context_snapshot": {"prompt_surface_digest": "sha256:x",
+            "categories": {"hook_guidance": 0}}})
+}
+
+/// An analysis whose suggestion has a replayable decision point, made while
+/// the Harness holds `record` as the session's latest turn.
+async fn replayable(mut world: World, record: Value) -> (Harness, String) {
+    let decision = format!("e_{TURN}_1_assistant");
+    let mut planned = suggestion(&decision);
+    planned["check"] = json!({
+        "decision_point": decision,
+        "signal": {"rule": "contract_rediscovery"},
+        "change": [{"target": format!("e_{TURN}_1_notice_0"), "remove": true}]
+    });
+    world.analyst_result = json!({"suggestions": [planned]});
+    world
+        .state
+        .insert((state::HARNESS_TURN_SCOPE.into(), ROOT.into()), record);
+    let h = Harness::start(world).await;
+    h.configure(true).await;
+    let evaluation_id = h.end_turn(ROOT, TURN).await.evaluation_id.unwrap();
+    h.drain().await;
+    let analyst = h.result(&evaluation_id).await.record.analyst.unwrap();
+    h.end_turn(&analyst.session_id, analyst.turn_id.as_deref().unwrap())
+        .await;
+    h.drain().await;
+    (h, evaluation_id)
+}
+
+#[tokio::test]
+async fn a_replay_reproduces_the_signal_and_the_proposed_change_removes_it() {
+    let (h, evaluation_id) = replayable(World::new(), turn_record(TURN)).await;
+    let result = h.result(&evaluation_id).await;
+    assert_eq!(result.assets.capture.as_ref().unwrap().turn_id, TURN);
+    let suggestion = &result.assets.investigation.as_ref().unwrap().suggestions[0];
+    assert!(suggestion.check.is_some(), "{}", suggestion.limitations);
+
+    // Nothing is spent or stored by a dry run.
+    let preview = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "dry_run": true}),
+    )
+    .await
+    .unwrap()
+    .preview
+    .unwrap();
+    assert_eq!(preview.original.signal, Some(true));
+    assert_eq!(preview.original.calls[0].target, INFO);
+    assert!(h.world().calls_to("router::complete").is_empty());
+
+    // The base: the model saw the notice and re-reads the contract.
+    let base = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 3, "by": "ana"}),
+    )
+    .await
+    .unwrap()
+    .reproduction_id
+    .unwrap();
+    let base = settled(&h, &evaluation_id, &base).await;
+    assert_eq!(
+        base.state,
+        ReproductionStateV1::Completed,
+        "{:?}",
+        base.error
+    );
+    assert_eq!(base.samples.len(), 3);
+    assert!(base.samples.iter().all(|reply| reply.signal == Some(true)));
+    assert!((base.cost_usd.unwrap() - 0.003).abs() < 1e-9);
+    assert!(base.fidelity.is_some());
+
+    // The proposed change removes the notice: no reply re-reads it.
+    let change = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 3,
+            "change": {"kind": "proposed"}, "by": "ana"}),
+    )
+    .await
+    .unwrap()
+    .reproduction_id
+    .unwrap();
+    let change = settled(&h, &evaluation_id, &change).await;
+    assert_eq!(change.change_kind, ReproductionChangeKindV1::Proposed);
+    assert!(change
+        .samples
+        .iter()
+        .all(|reply| reply.signal == Some(false)));
+    // Sampling never ran a function.
+    assert!(h.world().calls_to(INFO).is_empty());
+
+    // More replies join the same reproduction.
+    reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 2,
+            "extend": change.id, "by": "ana"}),
+    )
+    .await
+    .unwrap();
+    let extended = settled(&h, &evaluation_id, &change.id).await;
+    assert_eq!(extended.samples.len(), 5);
+
+    // A change whose text is not where it says is refused before spending.
+    let calls = h.world().calls_to("router::complete").len();
+    let refused = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "by": "ana",
+            "change": {"kind": "custom", "edits": [{"target": format!("e_{TURN}_c1"),
+                "find": "not in the result", "replace": "x"}]}}),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(EvalError::InvalidRequest(_))),
+        "{refused:?}"
+    );
+    assert_eq!(h.world().calls_to("router::complete").len(), calls);
+}
+
 #[tokio::test]
 async fn only_user_chats_are_analyzed_automatically_and_the_rest_by_hand() {
-    for kind in ["e2e", "automation"] {
+    // What session-manager holds for each session the monitor must not observe
+    // on its own, as measured: an E2E run, a sentinel investigation and the
+    // monitor's own session (both stamped `console` by the console), an E2E
+    // from before the kind existed, and a scripted session with no surface.
+    let cases = [
+        ("e2e", json!({"e2e_run_id": "r1", "e2e_scenario": "kanban"})),
+        (
+            "automation",
+            json!({"sentinel": true, "sentinel_group_id": "grp_1", "surface": "console"}),
+        ),
+        (
+            "automation",
+            json!({"origin": "eval_monitor", "source_session_id": "s", "surface": "console"}),
+        ),
+        (
+            "user",
+            json!({"e2e_run_id": "r1", "e2e_execution_kind": "harness_turn", "surface": "console"}),
+        ),
+        ("user", json!({"parent_session_id": "p", "depth": 1})),
+        ("user", json!({})),
+        ("user", json!({"surface": "cli"})),
+    ];
+    for (kind, metadata) in cases {
         let mut world = World::new();
-        world.kinds.insert(ROOT.into(), kind);
+        world.sessions.insert(ROOT.into(), (kind, metadata.clone()));
         let h = Harness::start(world).await;
         h.configure(true).await;
         let skipped = h.end_turn(ROOT, TURN).await;
-        assert_eq!(skipped.outcome, WakeOutcomeV1::NotUserChat, "{kind}");
+        assert_eq!(
+            skipped.outcome,
+            WakeOutcomeV1::NotUserChat,
+            "{kind} {metadata}"
+        );
         assert!(skipped.evaluation_id.is_none());
-        assert_eq!(h.records(), 0, "{kind}: nothing admitted");
+        assert_eq!(h.records(), 0, "{kind} {metadata}: nothing admitted");
         // A manual analysis still covers it.
         let manual = runtime::analyze_session(
             &h.deps,
@@ -4241,13 +3923,169 @@ async fn only_user_chats_are_analyzed_automatically_and_the_rest_by_hand() {
         )
         .await
         .unwrap();
-        assert!(!manual.reused, "{kind}");
-        assert_eq!(h.records(), 1, "{kind}");
+        assert!(!manual.reused, "{kind} {metadata}");
+        assert_eq!(h.records(), 1, "{kind} {metadata}");
     }
-    let h = Harness::start(World::new()).await;
-    h.configure(true).await;
+    // A plain chat from each client, with the keys it writes.
+    for metadata in [
+        json!({"surface": "console", "model": "anthropic::m", "fs_scope": {"root": "/w"},
+            "agent_profile": {"id": "default"}}),
+        json!({"surface": "slack"}),
+        json!({"surface": "telegram"}),
+    ] {
+        let mut world = World::new();
+        world
+            .sessions
+            .insert(ROOT.into(), ("user", metadata.clone()));
+        let h = Harness::start(world).await;
+        h.configure(true).await;
+        assert_eq!(
+            h.end_turn(ROOT, TURN).await.outcome,
+            WakeOutcomeV1::Admitted,
+            "{metadata}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn replay_spend_is_reported_but_never_caps_automatic_observation() {
+    let (h, evaluation_id) = replayable(World::new(), turn_record(TURN)).await;
+    // A cap each of the three samples (0.001) would pass together.
+    configure_capped(&h, json!(0.002)).await.unwrap();
+    let id = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 3, "by": "ana"}),
+    )
+    .await
+    .unwrap()
+    .reproduction_id
+    .unwrap();
+    let replay = settled(&h, &evaluation_id, &id).await;
     assert_eq!(
-        h.end_turn(ROOT, TURN).await.outcome,
-        WakeOutcomeV1::Admitted
+        replay.state,
+        ReproductionStateV1::Completed,
+        "{:?}",
+        replay.error
     );
+
+    let cost = cost_block(&h).await;
+    assert!((cost.today_replay_usd - 0.003).abs() < 1e-9, "{cost:?}");
+    assert!((cost.today_usd - 0.003).abs() < 1e-9, "{cost:?}");
+    // The analysis reported no cost: unknown, so the capture bucket is empty
+    // and says so, instead of the replay filling it.
+    assert_eq!(
+        (
+            cost.today_capture_usd,
+            cost.today_unknown,
+            cost.today_replay_unknown
+        ),
+        (0.0, 1, 0)
+    );
+    assert_eq!((cost.cap_usd, cost.capped), (Some(0.002), false));
+    assert_eq!(
+        h.end_turn(ROOT, "t_after_replay").await.outcome,
+        WakeOutcomeV1::Admitted,
+        "replays spent more than the cap, and observation went on"
+    );
+
+    // What an analysis spends still counts against the cap.
+    h.world().cost_usd = Some(0.06);
+    let reanalysis = reanalyze(&h).await;
+    investigated(&h, &reanalysis).await;
+    let cost = cost_block(&h).await;
+    assert_eq!((cost.today_capture_usd, cost.capped), (0.06, true));
+    assert!((cost.today_replay_usd - 0.003).abs() < 1e-9, "{cost:?}");
+    assert!((cost.today_usd - 0.063).abs() < 1e-9, "{cost:?}");
+    assert_eq!(
+        h.end_turn(ROOT, "t_after_capture").await.outcome,
+        WakeOutcomeV1::CostCap
+    );
+}
+
+#[tokio::test]
+async fn a_replay_sample_without_a_cost_stays_unknown() {
+    let mut world = World::new();
+    world.sample_cost_usd = None;
+    let (h, evaluation_id) = replayable(world, turn_record(TURN)).await;
+    let id = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 3, "by": "ana"}),
+    )
+    .await
+    .unwrap()
+    .reproduction_id
+    .unwrap();
+    let replay = settled(&h, &evaluation_id, &id).await;
+    assert_eq!(replay.samples.len(), 3);
+    assert_eq!((replay.cost_usd, replay.cost_unknown_samples), (None, 3));
+    let cost = cost_block(&h).await;
+    assert_eq!(
+        (cost.today_replay_usd, cost.today_replay_unknown),
+        (0.0, 3),
+        "unknown, not a free replay"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_replay_sample_is_unknown_not_free() {
+    let mut world = World::new();
+    world.samples_fail = true;
+    let (h, evaluation_id) = replayable(world, turn_record(TURN)).await;
+    let id = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 3, "by": "ana"}),
+    )
+    .await
+    .unwrap()
+    .reproduction_id
+    .unwrap();
+    let replay = settled(&h, &evaluation_id, &id).await;
+    assert_eq!(replay.state, ReproductionStateV1::Failed);
+    assert_eq!((replay.cost_usd, replay.cost_unknown_samples), (None, 3));
+    let cost = cost_block(&h).await;
+    assert_eq!(
+        (cost.today_replay_usd, cost.today_replay_unknown),
+        (0.0, 3),
+        "the provider may have billed what the bus gave up on"
+    );
+}
+
+#[tokio::test]
+async fn the_capture_is_the_analyzed_turns_whole_record_even_after_another_turn_ran() {
+    let (h, evaluation_id) = replayable(World::new(), turn_record(TURN)).await;
+    // The Harness keeps only a session's latest turn: the next one replaces it.
+    h.world().state.insert(
+        (state::HARNESS_TURN_SCOPE.into(), ROOT.into()),
+        turn_record("t_next"),
+    );
+    let capture = h.result(&evaluation_id).await.assets.capture.unwrap();
+    assert_eq!(capture.record, Some(turn_record(TURN)));
+    assert_eq!(capture.record_omitted, None);
+    // What a reproduction reads is still there, from the copy.
+    assert_eq!(capture.options, turn_record(TURN)["options"]);
+    let preview = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "dry_run": true}),
+    )
+    .await
+    .unwrap()
+    .preview
+    .unwrap();
+    assert_eq!(preview.original.signal, Some(true));
+}
+
+#[tokio::test]
+async fn a_turn_record_too_big_for_the_assets_is_left_out_and_says_why() {
+    let mut record = turn_record(TURN);
+    // Outside the options: the part a reproduction reads stays small.
+    record["result"] = json!("x".repeat(2 * 1024 * 1024));
+    let (h, evaluation_id) = replayable(World::new(), record).await;
+    let result = h.result(&evaluation_id).await;
+    assert_eq!(result.record.status, EvalStatusV1::Completed);
+    let capture = result.assets.capture.unwrap();
+    assert_eq!(capture.record, None);
+    let why = capture.record_omitted.unwrap();
+    assert!(why.contains("2097152-byte limit"), "{why}");
+    assert_eq!(capture.options, turn_record(TURN)["options"]);
+    assert_eq!(capture.turn_id, TURN);
 }

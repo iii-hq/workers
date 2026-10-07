@@ -1,8 +1,6 @@
 // The E2E runs the attach dialog offers, read from
 // `e2e::dashboard::executions-list`. Only what the picker shows is kept: the
 // list answers with full summaries (stack, metrics, progress) per run.
-// Fields are read like `eval::propose-validation` reads them, so a pair Jev
-// proposes is grouped the same way here.
 import type { SelectorGroup } from '@iii-dev/console-ui'
 
 export interface E2eRun {
@@ -62,7 +60,7 @@ export function e2eRuns(response: unknown): E2eRun[] {
   return list((response as Json | null)?.executions).flatMap((run) => parseRun(run) ?? [])
 }
 
-/** The same case as `eval::propose-validation` pairs: model, provider and scenarios. */
+/** The same case: model, provider and scenarios. */
 export function sameCase(a: E2eRun, b: E2eRun): boolean {
   return (
     !!a.model &&
@@ -107,7 +105,7 @@ export function runDescription(run: E2eRun, scenarioId: string | null, now = Dat
     .join(' · ')
 }
 
-export function runName(run: E2eRun): string {
+function runName(run: E2eRun): string {
   return run.label === 'Unnamed run' ? `Unnamed run · ${run.id.slice(0, 13)}` : run.label
 }
 
@@ -168,7 +166,7 @@ export function runGroups(
   return groups
 }
 
-/** A picked id the list does not hold (a pair Jev proposed from a list read a moment later) still shows, by its id. */
+/** A picked id the list does not hold (the list was read again after the pick) still shows, by its id. */
 export function withPicked(groups: SelectorGroup[], id: string): SelectorGroup[] {
   if (!id || groups.some((group) => group.options.some((option) => option.value === id))) return groups
   return [...groups, { label: '', options: [{ value: id, label: id }] }]

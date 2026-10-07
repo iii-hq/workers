@@ -72,7 +72,28 @@ session through the same CAS. The loop runs as durable enqueued
 steps so a crash or restart resumes mid-turn (see
 [Durability & idempotency](#durability--idempotency)). Every `session::append` /
 `session::update-message` the loop issues carries `origin: { turn_id }`, so session events are
-attributable to a turn. One `harness::turn` step does:
+attributable to a turn. The assistant entry of every generate step (not only the first of a turn)
+also carries, after any hook annotations (a hook cannot overwrite them):
+
+- `build` — the commit the running Harness binary was built from: 40-hex, `<sha>-dirty` for a
+  local build with uncommitted changes under `harness/` or the crates and packages it compiles in
+  (`crates/judge-contract`, `crates/console-ui`, `crates/worker-paths`, `packages/console-ui`),
+  `unknown` when the build had no git checkout (`GIT_SHA` in the build environment overrides all
+  of these). Strip `-dirty` before treating it as a commit.
+- `req` — a fingerprint of the request handed to `router::chat`, after hooks and context
+  assembly: `{ system_sha, tools_sha, messages_sha, n }`, the lowercase sha256 hex of the compact
+  JSON (object keys sorted) of the system prompt (`null` when absent), the tools array and the
+  messages array (as the router receives them, file blocks stripped), and `n` the message count.
+  Equal digests mean an identical system prompt, tools and messages; `thinking_level`,
+  `response_format`, `max_output_tokens` and `provider_options` are not covered, so a reader that
+  needs the same request must compare them separately.
+
+Both are written when the step opens its entry. `session::update-message` echoes `origin` on the
+`message-updated` event but never rewrites the stored one, so a step redelivered after a restart
+keeps the `build` and `req` of the attempt that opened it, not of the one that produced the
+answer.
+
+One `harness::turn` step does:
 
 1. Mark working: `session::set-status working` and emit
    [`harness::turn_started`](#trigger-types-emitted) (first step of a turn), then run the

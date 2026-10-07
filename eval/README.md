@@ -7,7 +7,7 @@ The monitor is **inactive until configured**. It observes, analyzes and
 suggests; it never edits code, opens PRs or changes the observed session, and
 starts E2E executions only when a person calls `eval::start-validation` (with a
 code directory configured, the investigating LLM
-is only *told* to stay read-only: see [Code access](#code-access)). The
+may only call read-only functions: see [Code access](#code-access)). The
 behavior is specified in
 [SPECIFICATION.md](SPECIFICATION.md) and the technical plan in
 [IMPLEMENTATION.md](IMPLEMENTATION.md).
@@ -16,13 +16,19 @@ behavior is specified in
 
 1. **Admission.** A terminal `harness::turn-completed` of a root session (or
    a manual `eval::analyze-session`) admits one analysis per session turn.
-   Automatic observation admits only the user's chats: session-manager's kind
-   `user` (`session::get`; a record without a kind counts as `user`). E2E runs,
-   automations (the monitor opens its investigations as `automation`) and
-   sessions whose kind cannot be read answer `not_user_chat` and can still be
-   analyzed by hand. Progress events, descendants and the monitor's own
-   sessions are never admitted; a redelivered event returns the existing
-   analysis.
+   Automatic observation admits only the user's chats. From `session::get` the
+   session must have kind `user` (a record without a kind counts as `user`), a
+   chat `metadata.surface` (`console`, `slack` or `telegram`, which each client
+   writes on every send) and no `metadata` key starting with `e2e_`.
+   Everything else answers `not_user_chat` and can still be analyzed by hand:
+   E2E runs (kind `e2e`, or `e2e_*` metadata on the ones recorded before the
+   kind existed), automations (sentinel investigations and the monitor's own,
+   which it opens as `automation`; the console stamps `console` on those too,
+   so the kind is what excludes them), scripted and sub-agent sessions (kind
+   `user` but no surface) and sessions whose record cannot be read. Progress
+   events,
+   descendants and the monitor's own sessions are never admitted; a
+   redelivered event returns the existing analysis.
 2. **Collection.** The monitor waits until the turn is definitive and every
    descendant has finished (`harness::metrics.complete`), then reads every
    transcript page with `include_custom: true`, failing on malformed pages
@@ -142,22 +148,40 @@ directory and its `config_revision`.
 
 ## Cost
 
-Only the investigation's LLM cost is in dollars (`usage.llm_cost_usd`, from
-`harness::metrics`, and known only once the investigation ends); Jev's usage is
-reported in tokens. A missing cost is unknown, never zero.
+Only LLM cost is in dollars: the investigation's (`usage.llm_cost_usd`, from
+`harness::metrics`, and known only once the investigation ends) and the
+`eval::reproduce` samples' (`cost_usd` of each reply). Jev's usage, in a
+triage or in classifying a replay's replies, is reported in tokens and never
+priced. A missing cost is unknown, never zero, and is never estimated: a
+replay sample without a cost, one that failed included (the provider may still
+bill a request the bus gave up on), adds nothing to the sums, is counted in the
+reproduction's `cost_unknown_samples` (which makes its `cost_usd` a lower
+bound) and in the day's `today_replay_unknown`. Each sample is added to the day
+as it is saved, so a run that stops partway has already counted what it kept.
+
+The day's spend has two buckets. **Capture** is what an analysis spends (the
+investigation; Jev's triage is in tokens). **Replay** is what `eval::reproduce`
+spends. Only capture is compared with the daily cap, so a manual replay never
+stops automatic observation. The spend persisted before the buckets (one total)
+counts as capture for its day.
 
 `eval::config` returns a `cost` block to decide before enabling:
 
-- `today_usd` and `today_unknown`: the known investigation cost since `since`
+- `today_capture_usd` and `today_unknown`: the known capture cost since `since`
   (the start of the current **UTC** day: the monitor has no timezone setting),
   and how many analyses of the day started an investigation but reported no cost
   (they add nothing to the sum; their cost is unknown). The cost is added to a
-  persisted daily spend as each investigation reports it, and `today_usd` is the
-  larger of that and the stored analyses' sum, so deleting analyses (or
-  retention) does not give the budget back.
+  persisted daily spend as each investigation reports it, and
+  `today_capture_usd` is the larger of that and the stored analyses' sum, so
+  deleting analyses (or retention) does not give the budget back.
+- `today_replay_usd` and `today_replay_unknown`: the replay bucket, the known
+  cost of the day's `eval::reproduce` samples and how many had no cost
+  (failed samples included). Reported, never capped.
+- `today_usd`: both buckets together, everything known to be spent. **The cap
+  does not compare it.**
 - `cap_usd` and `capped`: the optional `daily_cost_cap_usd` and whether
-  `today_usd`, plus the median cost of each investigation still running,
-  reached it.
+  `today_capture_usd`, plus the median cost of each investigation still
+  running, reached it.
 - `per_analysis`: `count`, `min`, `median` and `max` of the known cost of the
   completed analyses that investigated with the configured model, provider and
   code access (or without it), and `unknown`, how many of those reported no
@@ -165,7 +189,7 @@ reported in tokens. A missing cost is unknown, never zero.
 
 `daily_cost_cap_usd` (a number above 0; absent means no cap, and then the
 configuration revision is what it was) pauses **automatic** observation for the
-rest of the UTC day once `today_usd` reaches it: the turn is not admitted,
+rest of the UTC day once `today_capture_usd` reaches it: the turn is not admitted,
 `eval::on-turn-completed` answers `cost_cap`, and `eval::config`'s
 `last_rejection` records the turn with `reason: cost_cap` (`at_capacity` for the
 unfinished-analyses cap). A manual `eval::analyze-session` is never refused by
@@ -208,13 +232,25 @@ iii trigger eval::configure --json '{
   and in `options.metadata`, exactly what the ADE chat sends for a selected
   directory: the Harness scopes every `coder::*` and `shell::*` call to it and
   the console shows the directory selected when the investigation session is
-  opened. The policy is `allow: ["*"]` with `deny: ["eval::*",
-  "e2e::dashboard::execution-*"]`, so a transcript it reads can never make it
-  start an E2E execution or record a review (no new bus function: the LLM uses the
-  existing functions, and the prompt points it at `coder::search`,
-  `coder::tree` and `coder::read-file`, which stacks with `approval-gate`
-  allow without a human; the shell stays callable but a held call would stall
-  the investigation until its deadline), the step cap goes from 1 to 32
+  opened. The policy is an explicit read-only allowlist,
+  `allow: ["coder::search", "coder::tree", "coder::read-file",
+  "session::messages", "github::pr::list", "engine::functions::info"]`, with
+  `deny: ["eval::*", "e2e::dashboard::execution-*"]` kept as well (no new bus
+  function: the LLM uses existing ones). The first five are the functions the
+  prompt names (`session::messages` reads more of an observed session than
+  the evidence shows);
+  `engine::functions::info` is the contract lookup the invocation surface
+  tells a model to make before a first call (without it the LLM guessed
+  argument names, e.g. `start_line` for `line_from`). Everything else is
+  refused by the Harness, so a transcript it reads cannot make it write a
+  file, run a shell, start or message a session, start an E2E execution or
+  record a review. `fp::pipe` is deliberately absent: its steps run with the
+  `fp` worker's authority, outside this policy (analysts had used it to read
+  `session::messages`, now allowed directly). Without a code directory the
+  policy stays deny-all. With `approval-gate` installed five pass without a
+  human (`iii-permissions.yaml` allows them); `session::messages` stays at
+  that file's `needs_approval` default for session reads, so each call waits
+  for a person or the deadline. The step cap goes from 1 to 32
   generate steps and the total-token cap from 200,000 to 800,000
   (`limits.investigation_code_max_turns` and
   `investigation_code_max_total_tokens`). The deadline and the
@@ -248,13 +284,14 @@ iii trigger eval::configure --json '{
 - Tool calls and tokens of the investigation are the session's own metrics
   (`harness::metrics`), counted as before.
 
-**Residual risk.** With the function restriction lifted the investigating LLM
-may call *any* function, including ones that change files, start or message
-sessions or call `eval::*`, while it reads untrusted transcripts. The guards
-are the prompt rules and the `fs_scope` root; in this environment the `ide`
-worker runs `coder::*` unjailed, so absolute paths are not contained by the
-root. This was chosen "for now"; no other restriction is added. Leave
-`code_repository` unset to keep the investigation read-nothing.
+**Residual risk.** The investigating LLM can no longer change anything or
+start anything, but it still reads untrusted transcripts and can read the
+workspace. The `fs_scope` root does not jail the reads: in this environment the
+`ide` worker runs `coder::*` unjailed, so `coder::read-file` and `coder::search`
+accept absolute paths outside the root. What a hostile transcript can still
+achieve is steering what the LLM reads and what its suggestions say, so read a
+suggestion's `code_refs` and text as the output of an LLM that read untrusted
+input. Leave `code_repository` unset to keep the investigation read-nothing.
 
 ### Public functions
 
@@ -269,11 +306,11 @@ root. This was chosen "for now"; no other restriction is added. Leave
 | `eval::cancel` | Signals the Jev call (`judge::cancel`) and stops the investigation (`harness::stop`); never touches the observed session. |
 | `eval::delete` | Deletes a terminal analysis; the turn stays marked as analyzed until retention. |
 | `eval::attach-validation` | Links baseline and candidate E2E executions to a suggestion and computes the pair's evidence (`dry_run: true` only looks them up). |
-| `eval::propose-validation` | Asks Jev which existing E2E pair fits a suggestion; attaches nothing. |
 | `eval::start-validation` | Explicitly starts a baseline and a candidate E2E execution (Docker) of one scenario, pinned to two pushed commits. Spends model tokens. |
 | `eval::review` | `set_lifecycle`, `set_criterion` or `set_verdict` on one suggestion of a terminal analysis. |
 | `eval::reviews` | The stored review rows and, per analysis, its suggestions counted by lifecycle status. |
 | `eval::recurrence` | For a suggestion shipped in a version, how often its patterns appeared per analysis before and from that version. |
+| `eval::reproduce` | Replays a suggestion's decision point: rebuilds the request the model received at that step (optionally edited), samples the next reply N times without running any function and reads the signal in each. `dry_run` only rebuilds and checks fidelity. See [VALIDATION.md](VALIDATION.md). |
 | `eval::completed` (trigger) | `{evaluation_id, status, timestamp}` when an analysis ends. |
 
 Internal: `eval::step` (queue `eval-run`, FIFO per analysis, concurrency 8),
@@ -308,9 +345,9 @@ console never restates them:
 | Bus calls for collection | 10 s each, within the budget |
 | Jev | 60 s provider timeout, 70 s bus timeout |
 | Model context | 192 KiB of serialized JSON (about 50k tokens); diagnostics take at most 64 KiB |
-| Assets per analysis | 2 MiB; above it the analysis fails with `coverage_insufficient` before any model call |
+| Assets per analysis | 2 MiB; above it the analysis fails with `coverage_insufficient` before any model call. The turn record kept in `assets.capture.record` is the first thing left out to stay under it |
 | Investigation | 1 turn, 16,384 output tokens, 200,000 total tokens (the model's own caps still apply) |
-| Investigation with a code directory | 32 generate steps, 16,384 output tokens, 800,000 total tokens, every function allowed but `eval::*` and `e2e::dashboard::execution-*` (`investigation_code_max_turns`, `investigation_code_max_total_tokens`) |
+| Investigation with a code directory | 32 generate steps, 16,384 output tokens, 800,000 total tokens, only the five read-only functions of the Code access allowlist (`investigation_code_max_turns`, `investigation_code_max_total_tokens`) |
 | Queue | `eval-run`, FIFO per analysis, 8 steps at once |
 | Unfinished analyses | 500 |
 | Retention | 30 days and 1,000 terminal analyses |
@@ -337,6 +374,40 @@ fails analyses past their deadline.
   state worker can lose the last writes; there is no exactly-once guarantee
   under storage loss.
 - Locks are per process: run a single `eval` instance.
+- Persisted records reject fields they do not know, so state written by a newer
+  `eval` (a capture's `record`, a reproduction's `cost_unknown_samples`) cannot
+  be read back by an older one. Rolling back is not supported once new analyses
+  or replays exist.
+
+## Validation by replay
+
+The first check of a suggestion is a replay of the step where its behavior
+happened ([VALIDATION.md](VALIDATION.md)). Each suggestion carries a `check`:
+the `decision_point` (an assistant entry of its evidence), the `signal` (a rule,
+`contract_rediscovery` or `repeated_error_call`, or a yes/no `question` Jev
+answers per reply) and the proposed `change` as edits of what the model saw.
+Older suggestions have none; `eval::reproduce` then takes `check` in the request.
+
+`eval::reproduce` rebuilds the request the Harness sent at that step: the
+window from the durable log (`harness::window::build`, notices included), the
+frozen runtime context, the turn's system prompt and skills baseline (copied
+into the analysis as `assets.capture`, because the Harness keeps only a
+session's latest turn record), the `agent_trigger` tool and `context::assemble`.
+`assets.capture.record` also keeps the Harness's whole turn record as read (a
+later fork of the session needs it, and the next turn replaces it); when it
+would take the assets over their limit it is left out and
+`assets.capture.record_omitted` says why, while the options and digest above
+stay.
+It counts the result with `router::count_tokens` (the context manager's estimate
+when the provider has no counter) against the recorded usage: `exact` when the
+difference equals the fixed overhead measured at the turn's first step,
+`approximate` otherwise, with the reasons. It then samples `router::complete`
+(one warm-up call, then four at a time), never runs a function, reads each
+reply's signal and stores everything in the suggestion's review row
+(`reproductions[]`). `extend` adds replies; `samples: 0` finishes one that
+failed. A restart marks running replays `failed` (interrupted). Not supported
+yet: native function exposure, output contracts, and windows the context
+manager would prune or compact.
 
 ## E2E validation
 
@@ -366,35 +437,6 @@ not report it (a count may arrive as a float), never zero. It is a reference,
 not a verdict: improvement,
 no improvement, regression or inconclusive belong to the E2E comparison and its
 criteria.
-
-### Proposing the pair with Jev
-
-`eval::propose-validation {evaluation_id, suggestion_index}` (the console's
-"Fill with Jev") reads `e2e::dashboard::executions-list` (the 100 executions
-the E2E keeps) and decides in code which ordered pairs may be offered:
-
-- only `passed` or `failed` runs; every other status, runs without the plan's
-  scenario (`other_scenario`) and entries without an id are counted in
-  `excluded`;
-- same known model and provider, and the same case: both include the plan's
-  scenario, or, when the plan names none, both ran the same scenario set;
-- identical recorded stacks are kept (a change in an uncommitted build is not
-  in the record); each pair instead carries the stack difference computed in
-  code, e.g. `recorded stack differs: harness 1.8.42·f3a49e1 → 1.8.43·00c21f5`;
-- the 60 most recent pairs (by their older run); the rest is `pairs_dropped`.
-
-Without a pair, Jev is not called (`outcome: no_comparable_pair`). Otherwise
-one `judge::evaluate` call (provider `typesafe`) gets the suggestion, the plan
-and the runs the pairs refer to, with one Choice over the pairs plus `none`.
-The answer is `proposed` (`proposal.baseline_execution_id`,
-`candidate_execution_id`, `confidence`, `low_confidence` below 0.8) or
-`none_fits`, plus up to three `alternatives` (other offered pairs with at
-least 5% of Jev's probability). Confidence describes Jev's choice among the offered pairs, not
-whether the change works: the person checks the runs and attaches them with
-`eval::attach-validation`. The call's tokens are added to the analysis's
-`usage` (also when Jev answers an error). Errors carry stable prefixes:
-`e2e_unavailable:`, `jev_unavailable:` (with the provider's explanation, such
-as an HTTP 402 billing message) and `jev_invalid_response:`.
 
 ## Review and validation
 

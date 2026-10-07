@@ -142,18 +142,28 @@ pub struct MonitorCostV1 {
     /// Start (ms since the Unix epoch) of the UTC day the `today_*` values
     /// cover. The monitor has no timezone setting, so a day is a UTC day.
     pub since: i64,
-    /// The known investigation cost since `since`: the larger of the day's
-    /// persisted spend (deleting an analysis does not give it back) and the sum
-    /// of the stored analyses' `usage.llm_cost_usd`.
+    /// Everything the monitor is known to have spent since `since`:
+    /// `today_capture_usd` + `today_replay_usd`. The cap does not compare this.
     pub today_usd: f64,
+    /// The capture bucket, the only one the cap compares: the larger of the
+    /// day's persisted capture spend (deleting an analysis does not give it
+    /// back) and the sum of the stored analyses' `usage.llm_cost_usd`. A day
+    /// persisted before the buckets counts entirely as capture.
+    pub today_capture_usd: f64,
+    /// The replay bucket: the known cost of the day's `eval::reproduce`
+    /// samples. Never capped.
+    pub today_replay_usd: f64,
+    /// Replay samples of the day without a cost, failed ones included. They
+    /// add nothing to `today_replay_usd`, but their cost is unknown, not zero.
+    pub today_replay_unknown: u32,
     /// Analyses of the day whose investigation started but reported no cost.
-    /// They add nothing to `today_usd`, but their cost is unknown, not zero.
+    /// They add nothing to `today_capture_usd`, but their cost is unknown, not zero.
     pub today_unknown: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap_usd: Option<f64>,
-    /// A cap is set and `today_usd`, plus the median cost of each investigation
-    /// still running, reached it: automatic observation admits and investigates
-    /// nothing until the next UTC day.
+    /// A cap is set and `today_capture_usd`, plus the median cost of each
+    /// investigation still running, reached it: automatic observation admits
+    /// and investigates nothing until the next UTC day.
     pub capped: bool,
     /// What one investigation has cost, from the history.
     pub per_analysis: AnalysisCostStatsV1,
@@ -534,6 +544,10 @@ pub struct SnapshotV1 {
     pub observed_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_provider: Option<String>,
+    /// The harness-e2e scenario the observed session ran, when it came from
+    /// the E2E (`metadata.e2e_scenario`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2e_scenario: Option<String>,
     /// The observed turn plus earlier root turns no analysis covered yet.
     pub window_turn_ids: Vec<String>,
     pub sessions: Vec<SessionEvidenceV1>,
@@ -628,6 +642,10 @@ pub struct SuggestionV1 {
     pub code_refs: Vec<CodeRefV1>,
     pub limitations: String,
     pub validation: ValidationPlanV1,
+    /// How to reproduce the behavior at the step where it happened, and the
+    /// proposed change as edits of what the model saw there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<SuggestionCheckV1>,
 }
 
 /// The only shape the investigating LLM may return; an empty list is a
@@ -843,6 +861,10 @@ pub struct AnalysisAssetsV1 {
     pub investigation: Option<InvestigationV1>,
     #[serde(default)]
     pub validations: Vec<ValidationLinkV1>,
+    /// The observed turn's record, copied when the evidence was captured:
+    /// what a reproduction rebuilds the request from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<TurnCaptureV1>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -944,92 +966,6 @@ pub struct AttachValidationResponseV1 {
     pub saved: bool,
 }
 
-/// Asks Jev to pick, among the existing E2E executions, the baseline and the
-/// candidate that fit one suggestion's validation plan. Nothing is attached.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct ProposeValidationRequestV1 {
-    pub evaluation_id: String,
-    pub suggestion_index: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ProposalOutcomeV1 {
-    /// Jev chose a pair; `proposal` holds it.
-    Proposed,
-    /// Jev judged that no listed pair compares the Harness without and with
-    /// the change.
-    NoneFits,
-    /// Code found no pair of runs of the same case, so Jev was not asked.
-    NoComparablePair,
-}
-
-/// Jev's pick. `confidence` describes Jev's distribution over the offered
-/// pairs, not the probability that the pair is right: check the runs.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ValidationProposalV1 {
-    pub baseline_execution_id: String,
-    pub candidate_execution_id: String,
-    pub confidence: f64,
-    /// `confidence` is below the monitor's low-confidence threshold.
-    pub low_confidence: bool,
-    /// The recorded stack difference computed in code, as Jev saw it:
-    /// "recorded stacks identical", "recorded stack differs: ..." or
-    /// "recorded stack unknown".
-    pub stack_note: String,
-}
-
-/// Another offered pair Jev found likely; `probability` is Jev's share for
-/// it among the offered options.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ProposalAlternativeV1 {
-    pub baseline_execution_id: String,
-    pub candidate_execution_id: String,
-    pub probability: f64,
-    pub stack_note: String,
-}
-
-/// The model that answered and what the call consumed; the usage is also
-/// added to the analysis record.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ProposalJevV1 {
-    pub model: String,
-    pub request_id: String,
-    pub stats: Stats,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ProposeValidationResponseV1 {
-    pub outcome: ProposalOutcomeV1,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proposal: Option<ValidationProposalV1>,
-    /// Executions the E2E returned (its 100 detailed executions at most).
-    pub runs_listed: u32,
-    /// Eligible runs the pairs were built from: `passed` or `failed`, and
-    /// including the plan's scenario when it names one.
-    pub runs_considered: u32,
-    /// Ordered (baseline, candidate) pairs offered to Jev: the most recent
-    /// comparable ones, at most 60.
-    pub pairs_considered: u32,
-    /// Comparable pairs left out because older pairs were kept instead.
-    pub pairs_dropped: u32,
-    /// Runs left out, by reason: the E2E status for runs that are not
-    /// `passed` or `failed` (`incomplete`, `technical_failed`, ...),
-    /// `other_scenario` and `no_id`.
-    pub excluded: BTreeMap<String, u32>,
-    /// Up to three other offered pairs with at least 5% of Jev's
-    /// probability, most likely first; empty when Jev was not asked.
-    #[serde(default)]
-    pub alternatives: Vec<ProposalAlternativeV1>,
-    /// Absent when Jev was not asked.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub jev: Option<ProposalJevV1>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StepRequestV1 {
     pub evaluation_id: String,
@@ -1075,8 +1011,9 @@ pub enum WakeOutcomeV1 {
     // The day's known cost reached `daily_cost_cap_usd`; a plain comment so
     // the schema stays a flat string enum.
     CostCap,
-    // Automatic observation covers only the user's chats (session kind
-    // `user`); E2E runs and automations are analyzed by hand.
+    // Automatic observation covers only the user's chats (kind `user`,
+    // surface `console`, `slack` or `telegram`); E2E runs, automations and
+    // scripted or sub-agent sessions are analyzed by hand.
     NotUserChat,
 }
 
@@ -1383,6 +1320,10 @@ pub struct SuggestionReviewV1 {
     pub evidence: Option<EvidenceV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<VerdictV1>,
+    /// Replays of the decision point, oldest first: the base and the tested
+    /// changes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reproductions: Vec<ReproductionV1>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1596,6 +1537,302 @@ pub struct RecurrenceResponseV1 {
     /// Analyses left out because they carry no (or no semantic) Harness
     /// version.
     pub without_version: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Reproduction at the decision point
+// ---------------------------------------------------------------------------
+
+/// How a suggestion is checked at the step where its behavior happened.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SuggestionCheckV1 {
+    /// The assistant entry where the behavior happened (`…_<step>_assistant`),
+    /// one of the suggestion's `evidence` entries.
+    pub decision_point: String,
+    pub signal: SignalV1,
+    /// The proposed change as edits of what the model saw before that step;
+    /// empty when it cannot be expressed as text.
+    #[serde(default)]
+    pub change: Vec<ChangeEditV1>,
+}
+
+/// How to recognize the behavior in one reply: exactly one of a rule computed
+/// in code or a yes/no question Jev answers about the reply.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SignalV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<SignalRuleV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalRuleV1 {
+    /// The reply asks `engine::functions::info` only for contracts an earlier
+    /// result in the context already supplied.
+    ContractRediscovery,
+    /// The reply repeats the last call that failed: same target, equal payload.
+    RepeatedErrorCall,
+}
+
+/// One edit of what the model saw. `target` is an entry id of the
+/// conversation before the decision point, or `system_prompt`. An edit either
+/// replaces `find` with `replace` in the target's text or removes the entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChangeEditV1 {
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub find: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remove: bool,
+}
+
+/// The observed turn's record as the Harness stored it, which keeps only a
+/// session's latest turn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TurnCaptureV1 {
+    pub turn_id: String,
+    /// The Harness's `TurnOptions`, unmodified.
+    pub options: Value,
+    /// The whole `TurnRecord` as read when the evidence was captured (it
+    /// repeats `options`): what a later fork of the session needs, since the
+    /// Harness overwrites it with the next turn. Absent when it would have
+    /// taken the assets over their size limit (`record_omitted` says so) and
+    /// on analyses made before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<Value>,
+    /// Why `record` was not kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_omitted: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_surface_digest: Option<String>,
+    /// Tokens `pre_generate` hooks added at the turn's last step: above zero,
+    /// the system prompt the model saw is not stored anywhere.
+    #[serde(default)]
+    pub hook_guidance_tokens: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReproductionStateV1 {
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReproductionChangeKindV1 {
+    /// The context as the model saw it.
+    None,
+    /// The suggestion's own `check.change`.
+    Proposed,
+    /// Edits a person wrote.
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FidelityLevelV1 {
+    /// The provider counts the rebuilt request like the original, up to a
+    /// fixed per-request overhead measured at the turn's first step.
+    Exact,
+    Approximate,
+}
+
+/// How faithfully the request at the decision point was rebuilt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FidelityV1 {
+    pub level: FidelityLevelV1,
+    /// Input tokens of the original step: input + cache read + cache write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counted_tokens: Option<u64>,
+    /// `provider` when the provider counted, else the estimator's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimator: Option<String>,
+    /// The unexplained difference over the recorded tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub off_ratio: Option<f64>,
+    /// Why the rebuild is approximate; empty when exact.
+    #[serde(default)]
+    pub reasons: Vec<String>,
+}
+
+/// One function call of a reply.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReplyCallV1 {
+    /// The function called (through `agent_trigger` or directly).
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The payload as JSON text, cut at 600 characters.
+    pub payload: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReplyUsageV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+}
+
+/// One reply at the decision point: a sample, or the original step read the
+/// same way.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReplyV1 {
+    pub index: u32,
+    /// Whether the signal shows in this reply; null when Jev answered
+    /// unclear, the reply failed or it was not classified yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<bool>,
+    pub calls: Vec<ReplyCallV1>,
+    /// The opening of the reply's reasoning and of its text, 400 characters each.
+    pub thinking: String,
+    pub text: String,
+    #[serde(default)]
+    pub usage: ReplyUsageV1,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// A replay of the decision point: N replies sampled from the rebuilt
+/// request, with or without a change. No function ever runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReproductionV1 {
+    pub id: String,
+    pub change_kind: ReproductionChangeKindV1,
+    #[serde(default)]
+    pub change: Vec<ChangeEditV1>,
+    /// The decision point and signal this replay used.
+    pub check: SuggestionCheckV1,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Replies asked for, extensions included.
+    pub requested: u32,
+    pub state: ReproductionStateV1,
+    /// `sampling` or `classifying` while running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub samples: Vec<ReplyV1>,
+    /// The original reply at the decision point, read the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original: Option<ReplyV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fidelity: Option<FidelityV1>,
+    /// Known cost of the samples; null while no reply reported one. Only a
+    /// lower bound while `cost_unknown_samples` is above zero. Jev's calls are
+    /// in tokens below, never priced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// Samples without a reported cost, failed ones included (the provider
+    /// may have billed a request that never answered): unknown, not in
+    /// `cost_usd`, and never estimated.
+    #[serde(default)]
+    pub cost_unknown_samples: u32,
+    #[serde(default)]
+    pub judge_input_tokens: u64,
+    #[serde(default)]
+    pub judge_output_tokens: u64,
+    pub by: String,
+    pub started_at: i64,
+    pub updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// What a reproduction changes in the request.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReproduceChangeV1 {
+    #[default]
+    None,
+    Proposed,
+    Custom {
+        edits: Vec<ChangeEditV1>,
+    },
+}
+
+/// `eval::reproduce`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReproduceRequestV1 {
+    pub evaluation_id: String,
+    pub suggestion_index: usize,
+    #[serde(default)]
+    pub change: ReproduceChangeV1,
+    /// Replies to sample, 1–50; default 20.
+    #[serde(default)]
+    pub samples: Option<u32>,
+    /// Add replies to this earlier reproduction of the suggestion, with its
+    /// change; with `samples: 0`, only finish what a failure left undone.
+    #[serde(default)]
+    pub extend: Option<String>,
+    /// The decision point and signal, for a suggestion without a `check` (an
+    /// older analysis) or to override it.
+    #[serde(default)]
+    pub check: Option<SuggestionCheckV1>,
+    /// Rebuild the request and check its fidelity without sampling: nothing
+    /// is spent or stored.
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub by: Option<String>,
+    /// Stamped by the engine on every invocation; callers omit it.
+    #[serde(rename = "_caller_worker_id", default)]
+    pub caller_worker_id: Option<String>,
+}
+
+/// What a dry run reports before anything is spent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReproducePreviewV1 {
+    pub fidelity: FidelityV1,
+    pub original: ReplyV1,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// What the original step cost; null when the provider reported nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_cost_usd: Option<f64>,
+    pub samples: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReproduceResponseV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<ReproducePreviewV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reproduction_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<SuggestionReviewV1>,
 }
 
 #[cfg(test)]

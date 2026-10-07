@@ -299,7 +299,7 @@ function StatusCard({
           {cap ? (
             <>
               <dt>Cap</dt>
-              <dd title="The cap counts a UTC day.">
+              <dd title="The cap counts a UTC day, and the cost of analyses only: replays are shown, not counted.">
                 <Parts text={cap} />
               </dd>
             </>

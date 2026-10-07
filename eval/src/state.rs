@@ -23,6 +23,8 @@ pub const ASSETS_SCOPE: &str = "eval_analysis_assets";
 /// What people decided about each suggestion, keyed
 /// `<evaluation_id>:<suggestion_index>`; outlives the analysis's retention.
 pub const REVIEW_SCOPE: &str = "eval_suggestion";
+/// The Harness's own turn records, keyed by session: only the latest turn.
+pub const HARNESS_TURN_SCOPE: &str = "harness_turn";
 const DISPATCH_TIMEOUT_MS: u64 = 10_000;
 
 /// Marks one observed session turn as admitted. It outlives a deleted
@@ -55,12 +57,23 @@ pub async fn put_last_rejection(
     set(iii, CONFIG_SCOPE, LAST_REJECTION_KEY, rejection).await
 }
 
-/// What the investigations cost on the UTC day starting at `since`, kept apart
-/// from the analyses: deleting one, or retention, must not give the budget back.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// What the monitor spent on the UTC day starting at `since`, kept apart from
+/// the analyses: deleting one, or retention, must not give the budget back.
+/// Two buckets: `usd` is the capture spend, the only one the daily cap
+/// compares; the replay spend is reported next to it, never capped.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DailySpendV1 {
     pub since: i64,
+    /// Capture: what an analysis spends. The key predates the buckets, when it
+    /// held everything, so a day stored then counts as capture (conservative).
     pub usd: f64,
+    /// Replay: the known cost of `eval::reproduce` samples.
+    #[serde(default)]
+    pub replay_usd: f64,
+    /// Replay samples without a cost, failed ones included: unknown, not in
+    /// `replay_usd`.
+    #[serde(default)]
+    pub replay_unknown: u32,
 }
 
 pub async fn get_spend(iii: &IIIClient) -> Result<Option<DailySpendV1>, EvalError> {
@@ -123,6 +136,14 @@ pub async fn put_assets(iii: &IIIClient, assets: &AnalysisAssetsV1) -> Result<()
 
 fn review_key(evaluation_id: &str, suggestion_index: usize) -> String {
     format!("{evaluation_id}:{suggestion_index}")
+}
+
+/// The Harness's record of a session's latest turn, as stored.
+pub async fn get_turn_record(
+    iii: &IIIClient,
+    session_id: &str,
+) -> Result<Option<Value>, EvalError> {
+    get(iii, HARNESS_TURN_SCOPE, session_id).await
 }
 
 pub async fn get_review(

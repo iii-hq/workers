@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::contract::{
     AnalyzeSessionRequestV1, AttachValidationRequestV1, ConfigureRequestV1, EvalListRequestV1,
-    EvaluationIdRequestV1, MonitorStateRequestV1, ProposeValidationRequestV1, RecurrenceRequestV1,
+    EvaluationIdRequestV1, MonitorStateRequestV1, RecurrenceRequestV1, ReproduceRequestV1,
     ReviewRequestV1, ReviewsRequestV1, StartValidationRequestV1, StepRequestV1, SweepEventV1,
     WakeEventV1,
 };
@@ -21,11 +21,11 @@ pub const RESULT_ID: &str = "eval::result";
 pub const CANCEL_ID: &str = "eval::cancel";
 pub const DELETE_ID: &str = "eval::delete";
 pub const ATTACH_VALIDATION_ID: &str = "eval::attach-validation";
-pub const PROPOSE_VALIDATION_ID: &str = "eval::propose-validation";
 pub const START_VALIDATION_ID: &str = "eval::start-validation";
 pub const REVIEW_ID: &str = "eval::review";
 pub const REVIEWS_ID: &str = "eval::reviews";
 pub const RECURRENCE_ID: &str = "eval::recurrence";
+pub const REPRODUCE_ID: &str = "eval::reproduce";
 pub const STEP_ID: &str = "eval::step";
 pub const WAKE_ID: &str = "eval::on-turn-completed";
 pub const SWEEP_ID: &str = "eval::sweep";
@@ -48,10 +48,12 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              router::models::list; credentials stay in the providers and are never accepted \
              here. An optional code_repository (an absolute directory on this host, normally \
              the iii workers repository) lets the investigation read that code like a chat \
-             with the directory selected, and for now with every function allowed. An optional \
-             daily_cost_cap_usd pauses automatic observation for the rest of the UTC day once the \
-             known investigation cost reaches it (manual analyses are never refused). Analyses \
-             already admitted keep the configuration they started with.",
+             with the directory selected, with only read-only functions allowed (coder::search, \
+             coder::tree, coder::read-file, github::pr::list and engine::functions::info). An \
+             optional daily_cost_cap_usd pauses automatic observation for the rest of the UTC \
+             day once the known investigation cost reaches it (manual analyses are never \
+             refused, and replay spend is reported but not counted). Analyses already admitted \
+             keep the configuration they started with.",
         ),
     );
 
@@ -197,26 +199,6 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let current = deps.clone();
     iii.register_function(
-        PROPOSE_VALIDATION_ID,
-        RegisterFunction::new_async(move |request: ProposeValidationRequestV1| {
-            let deps = current.clone();
-            async move {
-                crate::runtime::propose_validation(&deps, request)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description(
-            "Ask Jev to pick the baseline and candidate E2E executions (listed through \
-             e2e::dashboard::executions-list) that fit one suggestion's validation plan. Code \
-             pre-filters the comparable pairs and counts the runs it leaves out; Jev only \
-             chooses among them. Nothing is attached and no campaign starts; the call's Jev \
-             usage is added to the analysis. Its confidence is not proof: check the runs.",
-        ),
-    );
-
-    let current = deps.clone();
-    iii.register_function(
         START_VALIDATION_ID,
         RegisterFunction::new_async(move |request: StartValidationRequestV1| {
             let deps = current.clone();
@@ -293,6 +275,28 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             "For a suggestion marked shipped with its version, how often its patterns were found \
              per analysis on Harness versions before it against from it on. Analyses without a \
              semantic Harness version are left out and counted.",
+        ),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        REPRODUCE_ID,
+        RegisterFunction::new_async(move |request: ReproduceRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::reproduce::reproduce(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "Replay the decision point of a suggestion: rebuild the request the model received at \
+             that step of the observed turn (optionally with edits that stand for the proposed \
+             change), sample the next reply N times (default 20) without running any function, \
+             and read the suggestion's signal in each reply. Spends model tokens; with dry_run it \
+             only rebuilds the request, checks its fidelity against the recorded usage and \
+             reports the original reply. extend adds replies to an earlier reproduction, or with \
+             samples 0 finishes one that failed. Results land in eval::result reviews.",
         ),
     );
 
