@@ -1010,7 +1010,9 @@ jobs:
   # those workers built from the PR head. It warns and never gates: the job
   # turns red when the stack did not pass, and no branch rule waits for it.
   # The verdict is read from the run's summary, not its conclusion. A newer
-  # push cancels this job, which cancels the run it started.
+  # push cancels this job, which cancels the run it started. Branches under
+  # `eval/` are written by the eval worker's fixer: the run executes the PR
+  # head with provider keys, so it is left to a person to start by hand there.
   # ──────────────────────────────────────────────────────────────
   harness-e2e:
     name: harness e2e (pr suite)
@@ -1018,6 +1020,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
+      && !startsWith(github.head_ref, 'eval/')
       && needs.discover.outputs.changed_workers != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 60
