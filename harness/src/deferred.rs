@@ -330,7 +330,10 @@ pub async fn resolve(
                 arguments,
                 filesystem_root.as_deref(),
                 &trusted_roots,
-                deps.filesystem_boundary(&function_id).await,
+                crate::filesystem_scope::release_boundary(
+                    checkpoint.held_arguments.as_ref(),
+                    deps.filesystem_boundary(&function_id).await,
+                ),
             );
             if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
                 cp.state = CallState::Triggered;

@@ -1510,6 +1510,57 @@ async fn late_external_result_while_tombstoned_lets_the_retry_delete_the_subtree
     );
 }
 
+/// A hook-held scoped call released after `filesystem_boundary` widened to
+/// `configured_roots` still runs under the `workspace` boundary its holder
+/// reviewed (MOT-5167).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_call_keeps_the_boundary_its_holder_reviewed() {
+    let stack = Stack::new("completed").await;
+    *stack.deps.config.write().await = Arc::new(WorkerConfig {
+        session_timeout_ms: 2_000,
+        filesystem_boundary: harness::filesystem_scope::BoundaryMode::ConfiguredRoots,
+        ..WorkerConfig::default()
+    });
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut turn = store.state("harness_turn", "child1");
+        turn["status"] = json!("awaiting_functions");
+        turn["options"]["metadata"] = json!({"fs_scope": {"root": "/w"}});
+        turn["calls"] = json!({"held-1": {
+            "state": "pending",
+            "function_id": "shell::exec",
+            // Not bound: the release resumes an empty chain.
+            "held_by": "gone::gate",
+            "held_arguments": {
+                "command": "ls",
+                "fs_scope": {"root": "/w", "grants": [], "boundary": "workspace"}
+            }
+        }});
+        store.put("harness_turn", "child1", turn);
+    }
+    let resolved = harness::functions::function_resolve::handle(
+        &stack.deps,
+        serde_json::from_value(json!({
+            "session_id": "child1",
+            "turn_id": "t_child1",
+            "function_call_id": "held-1",
+            "action": "execute"
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(resolved.resolved);
+    let store = stack.store.lock().unwrap();
+    let (_, payload) = store
+        .calls
+        .iter()
+        .find(|(f, _)| f == "shell::exec")
+        .expect("the released call is dispatched");
+    assert_eq!(payload["fs_scope"]["root"], "/w", "{payload}");
+    assert_eq!(payload["fs_scope"]["boundary"], "workspace", "{payload}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordinary_stop_persists_abort_on_router_failure_but_deletion_fails_closed() {
     for code in ["test_error", "function_not_found"] {

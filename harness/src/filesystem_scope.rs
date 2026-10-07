@@ -62,6 +62,21 @@ pub fn effective_boundary(mode: BoundaryMode, detected: FilesystemBoundary) -> F
     }
 }
 
+/// The boundary a released hook-held call runs under: the stricter of the
+/// one stamped on the arguments the holding hook reviewed and the current
+/// one, so a boundary change while the call is held can never widen it.
+pub fn release_boundary(
+    held_arguments: Option<&Value>,
+    current: FilesystemBoundary,
+) -> FilesystemBoundary {
+    let reviewed = held_arguments.and_then(|a| a.get(FS_SCOPE_FIELD)?.get("boundary")?.as_str());
+    if reviewed == Some(FilesystemBoundary::Workspace.as_str()) {
+        FilesystemBoundary::Workspace
+    } else {
+        current
+    }
+}
+
 /// True when `function_id` names a filesystem-scoped worker call whose paths
 /// must be constrained by the harness-owned scope.
 fn is_scoped_function(function_id: &str) -> bool {
@@ -308,5 +323,27 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn a_released_call_never_runs_wider_than_the_boundary_it_was_reviewed_under() {
+        use FilesystemBoundary::*;
+        let held = |boundary: &str| json!({ "command": "ls", "fs_scope": { "root": "/w", "grants": [], "boundary": boundary } });
+        // Held under workspace, released after the config flipped.
+        assert_eq!(
+            release_boundary(Some(&held("workspace")), ConfiguredRoots),
+            Workspace
+        );
+        // A boundary tightened while the call was held applies.
+        assert_eq!(
+            release_boundary(Some(&held("configured_roots")), Workspace),
+            Workspace
+        );
+        assert_eq!(
+            release_boundary(Some(&held("configured_roots")), ConfiguredRoots),
+            ConfiguredRoots
+        );
+        // Held before arguments carried a boundary: the current one.
+        assert_eq!(release_boundary(None, ConfiguredRoots), ConfiguredRoots);
     }
 }

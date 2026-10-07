@@ -971,9 +971,12 @@ fn inherit_filesystem_scope(parent: Option<&TurnRecord>) -> Option<Value> {
 /// wins; absent, the parent's scope is inherited unchanged. With
 /// `confine_to` (the parent's root and grants under a `workspace` boundary)
 /// the explicit root must resolve inside one of them, so a spawn cannot hand
-/// its child a root the parent could not write. Without it the value is not
-/// validated against any jail: the shell worker's roots and the approval gate
-/// on `harness::spawn` remain the security boundary.
+/// its child a root the parent could not write. That holds at spawn time
+/// only: the parent can later swap the root for a symlink inside its own
+/// root (out of scope in the MOT-5167 spec; a per-call fix belongs in the
+/// ide). Without `confine_to` the value is not validated against any jail:
+/// the shell worker's roots and the approval gate on `harness::spawn` remain
+/// the security boundary.
 fn child_filesystem_scope(
     explicit_root: Option<&str>,
     parent: Option<&TurnRecord>,
@@ -988,15 +991,7 @@ fn child_filesystem_scope(
         )));
     }
     if let Some(allowed) = confine_to {
-        // Symlinks resolve the way the shell worker resolves them; a path
-        // that does not exist is taken as written, unless `..` could climb out.
-        let resolve = |path: &str| {
-            let p = std::path::Path::new(path);
-            std::fs::canonicalize(p).ok().or_else(|| {
-                (!p.components().any(|c| c == std::path::Component::ParentDir))
-                    .then(|| p.to_path_buf())
-            })
-        };
+        let resolve = |path: &str| resolve_confined(std::path::Path::new(path));
         let inside = resolve(root).is_some_and(|child| {
             allowed
                 .iter()
@@ -1013,6 +1008,27 @@ fn child_filesystem_scope(
         }
     }
     Ok(Some(fs_scope_metadata(root)))
+}
+
+/// Where `path` leads, symlinks resolved the way the shell worker resolves
+/// them: its longest existing ancestor canonicalized, then the part that does
+/// not exist yet as written. `None` when that part could lead elsewhere once
+/// created — a `..`, or an entry that exists but does not resolve (a dangling
+/// symlink).
+fn resolve_confined(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let (mut cur, mut missing) = (path, Vec::new());
+    loop {
+        if let Ok(resolved) = std::fs::canonicalize(cur) {
+            return Some(missing.iter().rev().fold(resolved, |p, n| p.join(n)));
+        }
+        match std::fs::symlink_metadata(cur) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return None,
+        }
+        // `file_name` is None for a trailing `..`.
+        missing.push(cur.file_name()?);
+        cur = cur.parent()?;
+    }
 }
 
 /// The session a spawned child copies its filesystem grants from: the live
@@ -1495,6 +1511,46 @@ mod tests {
         let allowed = [root.to_string_lossy().into_owned()];
         let link = root.join("link").to_string_lossy().into_owned();
         assert!(child_filesystem_scope(Some(&link), None, Some(&allowed)).is_err());
+    }
+
+    #[test]
+    fn a_missing_confined_root_is_judged_by_its_existing_ancestor() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, out) = (dir.path().join("root"), dir.path().join("out"));
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        std::os::unix::fs::symlink(&out, root.join("link")).unwrap();
+        std::os::unix::fs::symlink(out.join("future"), root.join("dangling")).unwrap();
+        let allowed = [root.to_string_lossy().into_owned()];
+        let scope = |p: std::path::PathBuf| {
+            child_filesystem_scope(Some(&p.to_string_lossy()), None, Some(&allowed))
+        };
+        assert!(scope(root.join("real/future/wt")).is_ok());
+        // Created later, each of these would lead outside the root.
+        for escape in [
+            root.join("link/future"),
+            root.join("dangling"),
+            root.join("dangling/wt"),
+            root.join("real/future/../../../out"),
+        ] {
+            assert!(scope(escape.clone()).is_err(), "{escape:?}");
+        }
+    }
+
+    /// A model-chosen root can hold ~2000 missing components under PATH_MAX:
+    /// resolving it must not take a stack frame per component.
+    #[test]
+    fn a_deep_missing_root_resolves_in_constant_stack() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let deep = base.join("a/".repeat(1500));
+        let resolved = std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(move || resolve_confined(&deep))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(resolved, Some(base.join("a/".repeat(1500))));
     }
 
     #[test]
