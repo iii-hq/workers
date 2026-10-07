@@ -7,7 +7,7 @@ The monitor is **inactive until configured**. It observes, analyzes and
 suggests; it never edits code, opens PRs or changes the observed session, and
 starts E2E executions only when a person calls `eval::start-validation` (with a
 code directory configured, the investigating LLM
-is only *told* to stay read-only: see [Code access](#code-access)). The
+may only call read-only functions: see [Code access](#code-access)). The
 behavior is specified in
 [SPECIFICATION.md](SPECIFICATION.md) and the technical plan in
 [IMPLEMENTATION.md](IMPLEMENTATION.md).
@@ -229,13 +229,22 @@ iii trigger eval::configure --json '{
   and in `options.metadata`, exactly what the ADE chat sends for a selected
   directory: the Harness scopes every `coder::*` and `shell::*` call to it and
   the console shows the directory selected when the investigation session is
-  opened. The policy is `allow: ["*"]` with `deny: ["eval::*",
-  "e2e::dashboard::execution-*"]`, so a transcript it reads can never make it
-  start an E2E execution or record a review (no new bus function: the LLM uses the
-  existing functions, and the prompt points it at `coder::search`,
-  `coder::tree` and `coder::read-file`, which stacks with `approval-gate`
-  allow without a human; the shell stays callable but a held call would stall
-  the investigation until its deadline), the step cap goes from 1 to 32
+  opened. The policy is an explicit read-only allowlist,
+  `allow: ["coder::search", "coder::tree", "coder::read-file",
+  "github::pr::list", "engine::functions::info"]`, with `deny: ["eval::*",
+  "e2e::dashboard::execution-*"]` kept as well (no new bus function: the LLM
+  uses existing ones). The first four are the functions the prompt names;
+  `engine::functions::info` is the contract lookup the invocation surface
+  tells a model to make before a first call (without it the LLM guessed
+  argument names, e.g. `start_line` for `line_from`). Everything else is
+  refused by the Harness, so a transcript it reads cannot make it write a
+  file, run a shell, start or message a session, start an E2E execution or
+  record a review. `fp::pipe` is deliberately absent: its steps run with the
+  `fp` worker's authority, outside this policy. Without a code directory the
+  policy stays deny-all. With `approval-gate` installed the coder functions
+  and `engine::functions::info` pass without a human (`iii-permissions.yaml`
+  allows them); `github::pr::list` is not listed there, so a held call would
+  stall the investigation until its deadline. The step cap goes from 1 to 32
   generate steps and the total-token cap from 200,000 to 800,000
   (`limits.investigation_code_max_turns` and
   `investigation_code_max_total_tokens`). The deadline and the
@@ -269,13 +278,14 @@ iii trigger eval::configure --json '{
 - Tool calls and tokens of the investigation are the session's own metrics
   (`harness::metrics`), counted as before.
 
-**Residual risk.** With the function restriction lifted the investigating LLM
-may call *any* function, including ones that change files, start or message
-sessions or call `eval::*`, while it reads untrusted transcripts. The guards
-are the prompt rules and the `fs_scope` root; in this environment the `ide`
-worker runs `coder::*` unjailed, so absolute paths are not contained by the
-root. This was chosen "for now"; no other restriction is added. Leave
-`code_repository` unset to keep the investigation read-nothing.
+**Residual risk.** The investigating LLM can no longer change anything or
+start anything, but it still reads untrusted transcripts and can read the
+workspace. The `fs_scope` root does not jail the reads: in this environment the
+`ide` worker runs `coder::*` unjailed, so `coder::read-file` and `coder::search`
+accept absolute paths outside the root. What a hostile transcript can still
+achieve is steering what the LLM reads and what its suggestions say, so read a
+suggestion's `code_refs` and text as the output of an LLM that read untrusted
+input. Leave `code_repository` unset to keep the investigation read-nothing.
 
 ### Public functions
 

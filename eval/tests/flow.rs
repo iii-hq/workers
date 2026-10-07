@@ -1691,12 +1691,28 @@ async fn with_a_code_directory_the_investigation_runs_in_it_and_the_directory_is
         assert_eq!(send["session"]["metadata"]["fs_scope"], scope);
         assert_eq!(send["options"]["metadata"]["fs_scope"], scope);
         assert_eq!(send["session"]["metadata"]["origin"], "eval_monitor");
-        assert_eq!(send["options"]["functions"]["allow"], json!(["*"]));
-        // Only a person starts an E2E execution or records a review.
+        // It reads untrusted transcripts: only the read-only functions its
+        // prompt names (and the contract lookup), nothing that writes, runs a
+        // shell or starts a session. Only a person starts an E2E execution or
+        // records a review, so those stay denied as well.
         assert_eq!(
-            send["options"]["functions"]["deny"],
-            json!(["eval::*", "e2e::dashboard::execution-*"])
+            send["options"]["functions"],
+            json!({
+                "allow": ["coder::search", "coder::tree", "coder::read-file",
+                    "github::pr::list", "engine::functions::info"],
+                "deny": ["eval::*", "e2e::dashboard::execution-*"],
+                "expose": "agent_trigger"
+            })
         );
+        let prompt = send["options"]["system_prompt"].as_str().unwrap();
+        for id in [
+            "coder::search",
+            "coder::tree",
+            "coder::read-file",
+            "github::pr::list",
+        ] {
+            assert!(prompt.contains(id), "the prompt names {id}");
+        }
         let limits = runtime::limits();
         assert_eq!(
             send["options"]["max_turns"],
@@ -1807,8 +1823,11 @@ async fn without_a_code_directory_the_investigation_is_unchanged_and_code_refs_a
     let send = &sends[0];
     assert!(send["session"]["metadata"].get("fs_scope").is_none());
     assert!(send["options"]["metadata"].get("fs_scope").is_none());
-    assert_eq!(send["options"]["functions"]["allow"], json!([]));
-    assert_eq!(send["options"]["functions"]["deny"], json!([]));
+    // Deny all: the analyst can call nothing.
+    assert_eq!(
+        send["options"]["functions"],
+        json!({"allow": [], "deny": [], "expose": "agent_trigger"})
+    );
     assert_eq!(send["options"]["max_turns"], 1);
     assert_eq!(send["options"]["max_total_tokens"], 200_000);
     let prompt = send["options"]["system_prompt"].as_str().unwrap();

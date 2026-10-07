@@ -75,9 +75,19 @@ const INVESTIGATION_CODE_MAX_TURNS: u32 = 32;
 const INVESTIGATION_CODE_MAX_TOTAL_TOKENS: u64 = 800_000;
 /// Serializes the day's spend, and the check of the cap against it.
 const SPEND_LOCK: &str = "daily-spend";
-/// What an investigation with code access can never call, whatever a
-/// transcript it reads says: starting E2E executions spends model money and
-/// needs a person.
+/// The only functions an investigation with code access may call: the
+/// read-only ones its prompt names, and the contract lookup the invocation
+/// surface asks for before a first call. Not `fp::pipe`: its steps run with
+/// that worker's authority, outside this policy.
+const ANALYST_ALLOWED: [&str; 5] = [
+    "coder::search",
+    "coder::tree",
+    "coder::read-file",
+    "github::pr::list",
+    "engine::functions::info",
+];
+/// Denied as well, though nothing above reaches them: starting E2E executions
+/// spends model money and needs a person.
 const ANALYST_DENIED: [&str; 2] = ["eval::*", "e2e::dashboard::execution-*"];
 const MONITOR_ORIGIN: &str = "eval_monitor";
 const TRIAGE_EVALUATION: &str = "session";
@@ -2968,10 +2978,8 @@ fn investigation_request(
         metadata[FS_SCOPE_KEY] = json!({ FS_SCOPE_ROOT_KEY: root });
     }
     // Without a directory: deny all, the analyst can read nothing and change
-    // nothing. With one, every function is allowed except the ones that spend
-    // or record on a person's behalf (the monitor's own and the E2E's
-    // executions), which only a person's click may start; the prompt and the
-    // scope guard the rest (see the README).
+    // nothing. With one, it may call only the read-only functions the prompt
+    // names (see the README), because it reads untrusted transcripts.
     let (functions, max_turns, max_total_tokens) = match code_root {
         None => (
             FunctionPolicy::default(),
@@ -2980,7 +2988,7 @@ fn investigation_request(
         ),
         Some(_) => (
             FunctionPolicy {
-                allow: vec!["*".into()],
+                allow: ANALYST_ALLOWED.iter().map(|id| id.to_string()).collect(),
                 deny: ANALYST_DENIED.iter().map(|id| id.to_string()).collect(),
                 ..FunctionPolicy::default()
             },
