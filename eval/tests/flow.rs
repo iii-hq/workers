@@ -3953,3 +3953,43 @@ async fn a_replay_sample_without_a_cost_stays_unknown() {
         "unknown, not a free replay"
     );
 }
+
+#[tokio::test]
+async fn the_capture_is_the_analyzed_turns_whole_record_even_after_another_turn_ran() {
+    let (h, evaluation_id) = replayable(World::new(), turn_record(TURN)).await;
+    // The Harness keeps only a session's latest turn: the next one replaces it.
+    h.world().state.insert(
+        (state::HARNESS_TURN_SCOPE.into(), ROOT.into()),
+        turn_record("t_next"),
+    );
+    let capture = h.result(&evaluation_id).await.assets.capture.unwrap();
+    assert_eq!(capture.record, Some(turn_record(TURN)));
+    assert_eq!(capture.record_omitted, None);
+    // What a reproduction reads is still there, from the copy.
+    assert_eq!(capture.options, turn_record(TURN)["options"]);
+    let preview = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "dry_run": true}),
+    )
+    .await
+    .unwrap()
+    .preview
+    .unwrap();
+    assert_eq!(preview.original.signal, Some(true));
+}
+
+#[tokio::test]
+async fn a_turn_record_too_big_for_the_assets_is_left_out_and_says_why() {
+    let mut record = turn_record(TURN);
+    // Outside the options: the part a reproduction reads stays small.
+    record["result"] = json!("x".repeat(2 * 1024 * 1024));
+    let (h, evaluation_id) = replayable(World::new(), record).await;
+    let result = h.result(&evaluation_id).await;
+    assert_eq!(result.record.status, EvalStatusV1::Completed);
+    let capture = result.assets.capture.unwrap();
+    assert_eq!(capture.record, None);
+    let why = capture.record_omitted.unwrap();
+    assert!(why.contains("2097152-byte limit"), "{why}");
+    assert_eq!(capture.options, turn_record(TURN)["options"]);
+    assert_eq!(capture.turn_id, TURN);
+}

@@ -324,7 +324,7 @@ console never restates them:
 | Bus calls for collection | 10 s each, within the budget |
 | Jev | 60 s provider timeout, 70 s bus timeout |
 | Model context | 192 KiB of serialized JSON (about 50k tokens); diagnostics take at most 64 KiB |
-| Assets per analysis | 2 MiB; above it the analysis fails with `coverage_insufficient` before any model call |
+| Assets per analysis | 2 MiB; above it the analysis fails with `coverage_insufficient` before any model call. The turn record kept in `assets.capture.record` is the first thing left out to stay under it |
 | Investigation | 1 turn, 16,384 output tokens, 200,000 total tokens (the model's own caps still apply) |
 | Investigation with a code directory | 32 generate steps, 16,384 output tokens, 800,000 total tokens, every function allowed but `eval::*` and `e2e::dashboard::execution-*` (`investigation_code_max_turns`, `investigation_code_max_total_tokens`) |
 | Queue | `eval-run`, FIFO per analysis, 8 steps at once |
@@ -368,6 +368,11 @@ window from the durable log (`harness::window::build`, notices included), the
 frozen runtime context, the turn's system prompt and skills baseline (copied
 into the analysis as `assets.capture`, because the Harness keeps only a
 session's latest turn record), the `agent_trigger` tool and `context::assemble`.
+`assets.capture.record` also keeps the Harness's whole turn record as read (a
+later fork of the session needs it, and the next turn replaces it); when it
+would take the assets over their limit it is left out and
+`assets.capture.record_omitted` says why, while the options and digest above
+stay.
 It counts the result with `router::count_tokens` (the context manager's estimate
 when the provider has no counter) against the recorded usage: `exact` when the
 difference equals the fixed overhead measured at the turn's first step,

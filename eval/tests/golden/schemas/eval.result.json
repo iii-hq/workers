@@ -36,7 +36,7 @@
                 "type": "null"
               }
             ],
-            "description": "The observed turn's options, copied when the evidence was captured: what a reproduction rebuilds the request from."
+            "description": "The observed turn's record, copied when the evidence was captured: what a reproduction rebuilds the request from."
           },
           "evaluation_id": {
             "type": "string"
@@ -3311,7 +3311,7 @@
       },
       "TurnCaptureV1": {
         "additionalProperties": false,
-        "description": "The observed turn's options as the Harness stored them in its turn record, which keeps only a session's latest turn.",
+        "description": "The observed turn's record as the Harness stored it, which keeps only a session's latest turn.",
         "properties": {
           "hook_guidance_tokens": {
             "default": 0,
@@ -3324,6 +3324,16 @@
             "description": "The Harness's `TurnOptions`, unmodified."
           },
           "prompt_surface_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "record": {
+            "description": "The whole `TurnRecord` as read when the evidence was captured (it repeats `options`): what a later fork of the session needs, since the Harness overwrites it with the next turn. Absent when it would have taken the assets over their size limit (`record_omitted` says so) and on analyses made before it was kept."
+          },
+          "record_omitted": {
+            "description": "Why `record` was not kept.",
             "type": [
               "string",
               "null"

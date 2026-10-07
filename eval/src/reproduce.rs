@@ -334,8 +334,9 @@ fn validate_edit(edit: &ChangeEditV1) -> Result<(), EvalError> {
 // Capture
 // ---------------------------------------------------------------------------
 
-/// The observed turn's options from the Harness's turn record, when it still
-/// holds that turn (it keeps only a session's latest one).
+/// The observed turn's record from the Harness, when it still holds that turn
+/// (it keeps only a session's latest one): the options and digest a
+/// reproduction reads, and the whole record as read.
 pub(crate) async fn capture_turn(
     deps: &Deps,
     session_id: &str,
@@ -346,15 +347,21 @@ pub(crate) async fn capture_turn(
         return None;
     }
     let snapshot = &record["context_snapshot"];
-    Some(TurnCaptureV1 {
+    let capture = TurnCaptureV1 {
         turn_id: turn_id.into(),
         options: record["options"].clone(),
+        record: None,
+        record_omitted: None,
         prompt_surface_digest: snapshot["prompt_surface_digest"]
             .as_str()
             .map(str::to_string),
         hook_guidance_tokens: snapshot["categories"]["hook_guidance"]
             .as_u64()
             .unwrap_or(0),
+    };
+    Some(TurnCaptureV1 {
+        record: Some(record),
+        ..capture
     })
 }
 

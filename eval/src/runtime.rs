@@ -1596,10 +1596,23 @@ async fn collect_stage(
             record.source_title = snapshot.source_title.clone();
             assets.snapshot = Some(*snapshot);
             // Best effort: the Harness keeps only a session's latest turn, so
-            // a reproduction later needs this copy of the observed one.
+            // a reproduction (or a fork) later needs this copy of the observed one.
             assets.capture =
                 crate::reproduce::capture_turn(deps, &record.session_id, &record.turn_id).await;
-            let size = serde_json::to_vec(&assets)?.len();
+            let mut size = serde_json::to_vec(&assets)?.len();
+            // The whole record is the first thing to give way: what a
+            // reproduction reads stays, and the capture says why.
+            if let Some(capture) = assets
+                .capture
+                .as_mut()
+                .filter(|capture| size > ASSETS_BYTES && capture.record.is_some())
+            {
+                capture.record = None;
+                capture.record_omitted = Some(format!(
+                    "the whole turn record would have made the assets {size} bytes, above the {ASSETS_BYTES}-byte limit"
+                ));
+                size = serde_json::to_vec(&assets)?.len();
+            }
             if size > ASSETS_BYTES {
                 if let Some(snapshot) = assets.snapshot.as_mut() {
                     for session in &mut snapshot.sessions {

@@ -861,7 +861,7 @@ pub struct AnalysisAssetsV1 {
     pub investigation: Option<InvestigationV1>,
     #[serde(default)]
     pub validations: Vec<ValidationLinkV1>,
-    /// The observed turn's options, copied when the evidence was captured:
+    /// The observed turn's record, copied when the evidence was captured:
     /// what a reproduction rebuilds the request from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture: Option<TurnCaptureV1>,
@@ -1592,14 +1592,24 @@ pub struct ChangeEditV1 {
     pub remove: bool,
 }
 
-/// The observed turn's options as the Harness stored them in its turn record,
-/// which keeps only a session's latest turn.
+/// The observed turn's record as the Harness stored it, which keeps only a
+/// session's latest turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TurnCaptureV1 {
     pub turn_id: String,
     /// The Harness's `TurnOptions`, unmodified.
     pub options: Value,
+    /// The whole `TurnRecord` as read when the evidence was captured (it
+    /// repeats `options`): what a later fork of the session needs, since the
+    /// Harness overwrites it with the next turn. Absent when it would have
+    /// taken the assets over their size limit (`record_omitted` says so) and
+    /// on analyses made before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<Value>,
+    /// Why `record` was not kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_omitted: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_surface_digest: Option<String>,
     /// Tokens `pre_generate` hooks added at the turn's last step: above zero,
