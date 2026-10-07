@@ -744,7 +744,7 @@ async fn generate_step(
     let (
         gen_system_prompt,
         gen_annotations,
-        mut gen_messages,
+        gen_messages,
         new_notices,
         generation_input_tokens,
         generation_max_output_tokens,
@@ -1034,14 +1034,16 @@ async fn generate_step(
     trigger::retain_visible_contract_sources(&mut record.function_contract_ledger, &gen_messages);
 
     // The router client strips file blocks again (hook appends are not covered
-    // by assembly); do it first so the fingerprint is of what it sends.
-    crate::clients::router::strip_file_blocks(&mut gen_messages);
+    // by assembly): fingerprint a stripped copy so it is of what it sends,
+    // without changing what the rest of the step sees.
+    let mut sent_messages = gen_messages.clone();
+    crate::clients::router::strip_file_blocks(&mut sent_messages);
     let assistant_origin = generate_origin(
         &record.turn_id,
         &gen_annotations,
         gen_system_prompt.as_deref(),
         &tools,
-        &gen_messages,
+        &sent_messages,
     );
 
     // Generate: append an empty assistant under a deterministic id, stream
