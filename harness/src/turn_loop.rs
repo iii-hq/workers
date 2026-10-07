@@ -3372,12 +3372,7 @@ async fn assemble_context(
         )));
     }
 
-    // Everything this step kept was produced before its own compaction: the
-    // same strip every later step applies (crate::window::strip_thinking_logged_before).
-    if out.applied.compacted && crate::window::binds_thinking(&record.options.model) {
-        out.messages
-            .iter_mut()
-            .for_each(AgentMessage::strip_thinking);
+    if strip_compacted_thinking(&mut out, &record.options.model) {
         // The assembled count still holds the stripped blocks; an unchanged
         // request reuses it for the budget reservation and the snapshot, so
         // measure what is actually sent. On failure the larger count stands
@@ -3464,6 +3459,23 @@ async fn assemble_context(
         breakdown: out.breakdown,
         pruned: out.applied.pruned,
     })
+}
+
+/// Everything a compacting step kept was produced before its own compaction:
+/// on a binding model strip its thinking, the same strip every later step
+/// applies (crate::window::strip_thinking_logged_before). True when it
+/// stripped, so the caller re-counts.
+fn strip_compacted_thinking(
+    out: &mut crate::clients::context::AssembleOutput,
+    model: &str,
+) -> bool {
+    if !(out.applied.compacted && crate::window::binds_thinking(model)) {
+        return false;
+    }
+    out.messages
+        .iter_mut()
+        .for_each(AgentMessage::strip_thinking);
+    true
 }
 
 /// The latest `compaction` custom entry on the path, resolved to where the
@@ -4361,6 +4373,51 @@ mod tests {
             ),
             CompactionAnchor::default()
         );
+    }
+
+    #[test]
+    fn a_compacting_step_strips_kept_thinking_only_on_binding_models() {
+        use serde_json::json;
+        let assembled = |compacted: bool| -> crate::clients::context::AssembleOutput {
+            serde_json::from_value(json!({
+                "messages": [
+                    { "role": "user", "content": [{ "type": "text", "text": "go" }], "timestamp": 1 },
+                    { "role": "assistant", "content": [
+                        { "type": "thinking", "text": "", "signature": "sig" },
+                        { "type": "redacted_thinking", "data": "x" },
+                        { "type": "function_call", "id": "c1", "function_id": "shell::exec", "arguments": {} }
+                    ], "stop_reason": "function_call", "model": "m", "provider": "p", "timestamp": 2 }
+                ],
+                "token_count": 10, "usable": 100, "effective_max_output_tokens": 10,
+                "applied": { "compacted": compacted, "summary": "s" }
+            }))
+            .unwrap()
+        };
+        let thinking = |out: &crate::clients::context::AssembleOutput| {
+            out.messages.iter().any(|m| match m {
+                AgentMessage::Assistant(a) => a.content.iter().any(|b| {
+                    matches!(
+                        b,
+                        ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
+                    )
+                }),
+                _ => false,
+            })
+        };
+        let mut out = assembled(true);
+        assert!(super::strip_compacted_thinking(
+            &mut out,
+            "claude-sonnet-5-5"
+        ));
+        assert!(!thinking(&out), "stale thinking would reach the request");
+        for (compacted, model) in [(false, "claude-opus-5-5"), (true, "claude-sonnet-4-6")] {
+            let mut out = assembled(compacted);
+            assert!(!super::strip_compacted_thinking(&mut out, model));
+            assert!(
+                thinking(&out),
+                "{model} compacted={compacted} keeps its thinking"
+            );
+        }
     }
 
     #[test]
