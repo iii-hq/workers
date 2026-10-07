@@ -5,22 +5,39 @@ use std::path::{Path, PathBuf};
 
 /// The git dir a commit in `root` writes to: the common dir of a linked
 /// worktree, or the `.git` directory of the repository enclosing `root`.
+///
+/// A confined exec can rewrite a `.git` inside its root, so nothing it names
+/// is taken on its word: a symlinked `.git` grants nothing, and a `.git` file
+/// counts only as git's `gitdir: <common>/worktrees/<id>` whose back-pointer
+/// (`<id>/gitdir`) names this file. Forging that takes a write inside the
+/// common dir it would grant. Anything else (a submodule too) is `None`.
 pub fn repo_git_dir(root: &Path) -> Option<PathBuf> {
     for dir in root.ancestors() {
         let dot_git = dir.join(".git");
-        if dot_git.is_dir() {
+        let Ok(meta) = std::fs::symlink_metadata(&dot_git) else {
+            continue;
+        };
+        if meta.is_dir() {
             return dot_git.canonicalize().ok();
         }
-        if dot_git.is_file() {
-            // A linked worktree (or submodule): `gitdir: <path>`, and the
-            // worktree's gitdir names the shared repo in `commondir`.
-            let text = std::fs::read_to_string(&dot_git).ok()?;
-            let gitdir = dir.join(text.strip_prefix("gitdir:")?.trim());
-            let common = std::fs::read_to_string(gitdir.join("commondir"))
-                .map(|c| gitdir.join(c.trim()))
-                .unwrap_or(gitdir);
-            return common.canonicalize().ok();
+        if !meta.is_file() {
+            return None;
         }
+        let text = std::fs::read_to_string(&dot_git).ok()?;
+        let gitdir = dir
+            .join(text.strip_prefix("gitdir:")?.trim())
+            .canonicalize()
+            .ok()?;
+        let back = std::fs::read_to_string(gitdir.join("gitdir")).ok()?;
+        if gitdir.join(back.trim()).canonicalize().ok()? != dot_git.canonicalize().ok()? {
+            return None;
+        }
+        let worktrees = gitdir.parent()?;
+        let common = worktrees.parent()?;
+        let is_git_dir = worktrees.file_name()? == "worktrees"
+            && common.join("HEAD").is_file()
+            && common.join("objects").is_dir();
+        return is_git_dir.then(|| common.to_path_buf());
     }
     None
 }
@@ -266,25 +283,118 @@ pub(crate) mod landlock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    /// `main` with one commit and a linked worktree `wt`, made by git itself.
+    fn linked_worktree() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q"]);
+        git(&main, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        git(&main, &["worktree", "add", "-q", "../wt"]);
+        std::fs::create_dir_all(tmp.path().join("wt/sub")).unwrap();
+        let main_git = main.join(".git").canonicalize().unwrap();
+        (tmp, main_git)
+    }
 
     #[test]
     fn git_dir_of_a_linked_worktree_is_the_common_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let main_git = tmp.path().join("main/.git");
-        let wt_git = main_git.join("worktrees/wt");
-        std::fs::create_dir_all(&wt_git).unwrap();
-        std::fs::write(wt_git.join("commondir"), "../..\n").unwrap();
-        std::fs::create_dir_all(tmp.path().join("wt/sub")).unwrap();
+        let (tmp, main_git) = linked_worktree();
+        assert_eq!(repo_git_dir(&tmp.path().join("wt/sub")), Some(main_git));
+    }
+
+    /// `git worktree add --relative-paths` (git >= 2.48) writes both links
+    /// relative: `.git` to its own dir, the back-pointer to the admin dir.
+    /// Written by hand here so an older git still runs the case.
+    #[test]
+    fn git_dir_of_a_relative_path_worktree_is_the_common_dir() {
+        let (tmp, main_git) = linked_worktree();
         std::fs::write(
             tmp.path().join("wt/.git"),
-            format!("gitdir: {}\n", wt_git.display()),
+            "gitdir: ../main/.git/worktrees/wt\n",
         )
         .unwrap();
-        assert_eq!(
-            repo_git_dir(&tmp.path().join("wt/sub")),
-            Some(main_git.canonicalize().unwrap())
-        );
+        std::fs::write(
+            main_git.join("worktrees/wt/gitdir"),
+            "../../../../wt/.git\n",
+        )
+        .unwrap();
+        assert_eq!(repo_git_dir(&tmp.path().join("wt/sub")), Some(main_git));
+    }
+
+    /// A confined exec can rewrite `.git` inside its root; what it names
+    /// must not become writable unless git's own records confirm it.
+    #[test]
+    fn a_forged_dot_git_grants_nothing() {
+        let (tmp, main_git) = linked_worktree();
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("objects")).unwrap();
+        std::fs::write(elsewhere.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let root = tmp.path().join("r");
+        std::fs::create_dir_all(&root).unwrap();
+        let dot_git = root.join(".git");
+        let forge = |text: String| std::fs::write(&dot_git, text).unwrap();
+        let link = |target: &Path| {
+            let _ = std::fs::remove_file(&dot_git);
+            std::os::unix::fs::symlink(target, &dot_git).unwrap();
+        };
+
+        // A `.git` file naming an arbitrary dir.
+        forge(format!("gitdir: {}\n", elsewhere.display()));
+        assert_eq!(repo_git_dir(&root), None);
+        // A real admin dir whose back-pointer names another worktree.
+        forge(format!(
+            "gitdir: {}\n",
+            main_git.join("worktrees/wt").display()
+        ));
+        assert_eq!(repo_git_dir(&root), None);
+        // Symlinks to a foreign dir or to another worktree's `.git` file.
+        link(&elsewhere);
+        assert_eq!(repo_git_dir(&root), None);
+        link(&tmp.path().join("wt/.git"));
+        assert_eq!(repo_git_dir(&root), None);
+
+        // An admin dir forged inside the (writable) common dir, with a
+        // back-pointer to this root and `commondir` naming another repo:
+        // only the dir the forger already wrote in comes back.
+        let fake = main_git.join("worktrees/fake");
+        std::fs::create_dir_all(&fake).unwrap();
+        std::fs::write(fake.join("gitdir"), format!("{}\n", dot_git.display())).unwrap();
+        std::fs::write(fake.join("commondir"), format!("{}\n", elsewhere.display())).unwrap();
+        std::fs::remove_file(&dot_git).unwrap();
+        forge(format!("gitdir: {}\n", fake.display()));
+        assert_eq!(repo_git_dir(&root), Some(main_git));
+
+        // A pair forged wholly inside a root, so its back-pointer matches:
+        // the parent of the root is not a git dir's `worktrees`, whether the
+        // root merely sits in a git-looking dir or is named `worktrees`.
+        let self_pointing = |root: &Path| {
+            std::fs::create_dir_all(root.join("id")).unwrap();
+            let dot_git = root.join(".git");
+            std::fs::write(&dot_git, format!("gitdir: {}\n", root.join("id").display())).unwrap();
+            std::fs::write(root.join("id/gitdir"), format!("{}\n", dot_git.display())).unwrap();
+            repo_git_dir(root)
+        };
+        let looks_like_git = tmp.path().join("p");
+        std::fs::create_dir_all(looks_like_git.join("objects")).unwrap();
+        std::fs::write(looks_like_git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert_eq!(self_pointing(&looks_like_git.join("r")), None);
+        assert_eq!(self_pointing(&tmp.path().join("q/worktrees")), None);
     }
 
     #[test]
