@@ -33,12 +33,24 @@ use crate::code::path::PathResolver;
 // schemars rename keeps the published schema's name.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self")]
-#[schemars(rename = "SearchInput", example = "example_search_input")]
+#[schemars(
+    rename = "SearchInput",
+    example = "example_search_input",
+    example = "example_search_regex"
+)]
 pub struct SearchInput {
-    /// Pattern to search for. Treated as a regex when `regex: true`,
-    /// otherwise as a literal substring. May be empty only when
-    /// `search_content` is false: a path-only search with no query lists
-    /// every path (with `fuzzy_paths`, shallow and short paths first).
+    /// Text to find: a literal substring, or a regex with `regex: true`.
+    /// Always send it; `""` is allowed only when `search_content` is false,
+    /// and lists every path (with `fuzzy_paths`, shallow and short paths
+    /// first).
+    // Optional in the published schema only (serde still requires `query` or
+    // `pattern`): a required `query` lets the harness judge rename `pattern`
+    // before dispatch, skipping the pre-pass and its `regex: true`. Trade-off:
+    // with nothing required the judge renames no key to `query` and the
+    // harness adds no diagnosis; any other misnamed key reaches the ide and
+    // fails with "missing field `query`".
+    // `skip_serializing_if` keeps `"default": ""` out of the schema.
+    #[schemars(default, skip_serializing_if = "String::is_empty")]
     pub query: String,
     /// Folder or file to search (default `.`); a file searches just that file.
     /// It only narrows the walk: globs are NOT relative to it, they match paths
@@ -66,8 +78,9 @@ pub struct SearchInput {
     /// truncated for the match snippet.
     #[serde(default)]
     pub max_line_bytes: Option<u32>,
-    /// Lines of context before each content match (max 10, C210 above);
-    /// truncated to max_line_bytes and counted in the budget. Default 0.
+    /// Lines of context before each content match (max 10; more is clamped
+    /// to 10); truncated to max_line_bytes and counted in the budget.
+    /// Default 0.
     #[serde(default)]
     pub context_lines_before: Option<u32>,
     /// Lines of context after each content match; same rules as
@@ -104,25 +117,40 @@ pub struct SearchInput {
     #[serde(default)]
     #[schemars(skip)]
     pub fs_scope: Option<crate::fs::FsScope>,
+    /// Set by deserialization when `pattern` stood in for `query`; the
+    /// handler returns it as the result's `notice`. Never read from the wire.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub notice: Option<String>,
 }
 
-/// `{ pattern }` without `query` (the rg/grep name) gets the fix named back
-/// instead of serde's bare "missing field `query`"; `pattern` is not an
-/// alias, the published schema keeps one name.
+/// `pattern` (the rg/grep name) stands in for an absent `query`. Both values
+/// seen in sessions were regexes, so `regex` defaults to true unless sent;
+/// `{query, pattern}` keeps `query`, and a non-string `pattern` is dropped
+/// (serde then names the missing `query`). The published schema keeps one
+/// name; the result's `notice` says what ran.
 impl<'de> Deserialize<'de> for SearchInput {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        if value.get("query").is_none() && value.get("pattern").is_some() {
-            return Err(serde::de::Error::custom(
-                CoderError::BadInput(
-                    "coder::search takes `query`, not `pattern`: send \
-                     {\"query\": \"...\"}, plus \"regex\": true for a regex."
-                        .into(),
-                )
-                .to_wire_string(),
-            ));
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        let mut notice = None;
+        if let Some(obj) = value.as_object_mut().filter(|o| !o.contains_key("query")) {
+            if let Some(pattern) = obj.remove("pattern").filter(serde_json::Value::is_string) {
+                obj.insert("query".into(), pattern);
+                let regex = if obj.contains_key("regex") {
+                    ""
+                } else {
+                    obj.insert("regex".into(), true.into());
+                    " with `regex: true`"
+                };
+                notice = Some(format!(
+                    "`pattern` was read as `query`{regex}; send `query` (and \
+                     `regex: true` for a regex)."
+                ));
+            }
         }
-        SearchInput::deserialize(value).map_err(serde::de::Error::custom)
+        let mut input = SearchInput::deserialize(value).map_err(serde::de::Error::custom)?;
+        input.notice = notice;
+        Ok(input)
     }
 }
 
@@ -143,6 +171,16 @@ fn example_search_input() -> serde_json::Value {
         "context_lines_before": 2,
         "context_lines_after": 2,
         "search_content": true,
+        "search_paths": false
+    })
+}
+
+/// Regex form: `query` is a regex only with `regex: true`.
+fn example_search_regex() -> serde_json::Value {
+    serde_json::json!({
+        "query": "registerTrigger|registerFunction",
+        "regex": true,
+        "path": "src",
         "search_paths": false
     })
 }
@@ -198,6 +236,10 @@ pub struct SearchOutput {
     /// `search_response_budget_bytes` byte budget. When true, refine the
     /// query or add include_globs rather than paginate.
     pub truncated: bool,
+    /// Set when the request was adjusted to run (a field read under its
+    /// canonical name, or a value clamped); send the canonical form.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 pub async fn handle(
@@ -205,11 +247,21 @@ pub async fn handle(
     cfg: Arc<CoderConfig>,
     req: SearchInput,
 ) -> Result<SearchOutput, String> {
+    // A refusal of a request read from `pattern` (bad regex, empty query)
+    // carries the notice too: the caller never sent `query` or `regex`.
+    let alias = req.notice.clone();
     // Offload the synchronous recursive content/path scan to a blocking thread
     // so a large search can't stall the shared runtime (shell::exec/jobs/reload).
-    tokio::task::spawn_blocking(move || inner(&resolver, &cfg, req).map_err(err_to_string))
-        .await
-        .map_err(|e| format!("search task join failed: {e}"))?
+    tokio::task::spawn_blocking(move || {
+        inner(&resolver, &cfg, req).map_err(|e| {
+            err_to_string(match (e, alias) {
+                (CoderError::BadInput(m), Some(n)) => CoderError::BadInput(format!("{m} ({n})")),
+                (e, _) => e,
+            })
+        })
+    })
+    .await
+    .map_err(|e| format!("search task join failed: {e}"))?
 }
 
 fn inner(
@@ -229,8 +281,14 @@ fn inner(
     let max_line_bytes = req
         .max_line_bytes
         .unwrap_or(cfg.search_default_max_line_bytes) as usize;
-    let ctx_before = validate_context_lines("context_lines_before", req.context_lines_before)?;
-    let ctx_after = validate_context_lines("context_lines_after", req.context_lines_after)?;
+    let mut notices: Vec<String> = req.notice.into_iter().collect();
+    let ctx_before = clamp_context_lines(
+        "context_lines_before",
+        req.context_lines_before,
+        &mut notices,
+    );
+    let ctx_after =
+        clamp_context_lines("context_lines_after", req.context_lines_after, &mut notices);
 
     // Use `resolve` rather than `require_writable` so a search rooted at
     // a folder that *contains* non-accessible children still works; the
@@ -515,6 +573,7 @@ fn inner(
         content_matches,
         path_matches,
         truncated,
+        notice: (!notices.is_empty()).then(|| notices.join(" ")),
     })
 }
 
@@ -836,18 +895,17 @@ pub(crate) fn fuzzy_path_score(query: &FuzzyQuery, rel: &str) -> Option<i32> {
 /// Larger windows belong to `coder::read-file` line windows, not search.
 const CONTEXT_LINES_CAP: u32 = 10;
 
-/// Validate one context-lines knob against [`CONTEXT_LINES_CAP`].
-/// `None` means 0 (no context).
-fn validate_context_lines(field: &str, value: Option<u32>) -> Result<usize, CoderError> {
+/// Clamp one context-lines knob to [`CONTEXT_LINES_CAP`], noting a clamp
+/// (without the caller's value: one notice text per field). `None` means 0.
+fn clamp_context_lines(field: &str, value: Option<u32>, notices: &mut Vec<String>) -> usize {
     let v = value.unwrap_or(0);
     if v > CONTEXT_LINES_CAP {
-        return Err(CoderError::BadInput(format!(
-            "{field} is {v} but the maximum is {CONTEXT_LINES_CAP}. \
-             Re-call with {field} <= {CONTEXT_LINES_CAP}; for a wider view \
-             read the file with coder::read-file line_from/line_to."
-        )));
+        notices.push(format!(
+            "{field} above {CONTEXT_LINES_CAP} was clamped to {CONTEXT_LINES_CAP}; \
+             for a wider view read the file with coder::read-file line_from/line_to."
+        ));
     }
-    Ok(v as usize)
+    v.min(CONTEXT_LINES_CAP) as usize
 }
 
 /// Per-line truncation to `max_line_bytes` — one rule for the matched
@@ -1060,6 +1118,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1109,6 +1168,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1157,6 +1217,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1209,6 +1270,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1243,6 +1305,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1278,6 +1341,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1319,6 +1383,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1365,6 +1430,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1397,6 +1463,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1432,6 +1499,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1464,6 +1532,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1496,6 +1565,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1529,6 +1599,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1566,6 +1637,7 @@ mod tests {
             fuzzy_paths: false,
             include_hidden: true,
             fs_scope: None,
+            notice: None,
         }
     }
 
@@ -1657,39 +1729,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_lines_over_cap_rejected_c210() {
+    async fn context_lines_over_cap_clamped_with_notice() {
         let (tmp, r, c) = setup();
-        write(&tmp, "a.txt", "needle\n");
-        let err = handle(
+        let body: String = (1..=31)
+            .map(|i| {
+                if i == 16 {
+                    "needle\n".into()
+                } else {
+                    format!("l{i}\n")
+                }
+            })
+            .collect();
+        write(&tmp, "a.txt", &body);
+        let out = handle(
             r.clone(),
             c.clone(),
             SearchInput {
                 context_lines_before: Some(11),
-                ..base_input("needle")
-            },
-        )
-        .await
-        .unwrap_err();
-        assert!(err.contains("C210"), "got: {err}");
-        assert!(
-            err.contains("11") && err.contains("10"),
-            "must name the actual value and the cap: {err}"
-        );
-        let err = handle(
-            r,
-            c,
-            SearchInput {
                 context_lines_after: Some(99),
                 ..base_input("needle")
             },
         )
         .await
-        .unwrap_err();
-        assert!(err.contains("C210"), "got: {err}");
-        assert!(
-            err.contains("99") && err.contains("10"),
-            "must name the actual value and the cap: {err}"
+        .unwrap();
+        let m = &out.content_matches[0];
+        assert_eq!(m.before.as_ref().map(Vec::len), Some(10));
+        assert_eq!(m.after.as_ref().map(Vec::len), Some(10));
+        assert_eq!(
+            out.notice.as_deref(),
+            Some(
+                "context_lines_before above 10 was clamped to 10; for a wider view read \
+                 the file with coder::read-file line_from/line_to. context_lines_after \
+                 above 10 was clamped to 10; for a wider view read the file with \
+                 coder::read-file line_from/line_to."
+            )
         );
+        // At the cap: no clamp, no notice, and none on the wire.
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                context_lines_before: Some(10),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.notice.is_none());
+        assert!(serde_json::to_value(&out).unwrap().get("notice").is_none());
     }
 
     #[tokio::test]
@@ -2680,32 +2767,148 @@ mod tests {
     // `pattern` sent in place of `query`.
     // ------------------------------------------------------------------
 
+    fn input(v: serde_json::Value) -> SearchInput {
+        serde_json::from_value(v).unwrap()
+    }
+
     #[test]
-    fn pattern_without_query_names_the_fix() {
-        let err = serde_json::from_value::<SearchInput>(serde_json::json!({
+    fn pattern_stands_in_for_query_as_a_regex() {
+        let req = input(serde_json::json!({
             "path": "src",
             "pattern": "registerTrigger|subscribe"
-        }))
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("\"code\":\"C210\""), "got: {err}");
-        assert!(
-            err.contains("coder::search takes `query`, not `pattern`"),
-            "got: {err}"
+        }));
+        assert_eq!(req.query, "registerTrigger|subscribe");
+        assert!(req.regex);
+        assert_eq!(req.path, "src");
+        assert_eq!(
+            req.notice.as_deref(),
+            Some(
+                "`pattern` was read as `query` with `regex: true`; send `query` (and \
+                 `regex: true` for a regex)."
+            )
         );
     }
 
     #[test]
-    fn query_alone_and_other_bad_input_keep_their_behaviour() {
-        let ok: SearchInput =
-            serde_json::from_value(serde_json::json!({ "query": "needle" })).unwrap();
+    fn pattern_keeps_an_explicit_regex_and_the_other_fields() {
+        let req = input(serde_json::json!({
+            "pattern": "a.b", "regex": false, "search_content": false
+        }));
+        assert_eq!(req.query, "a.b");
+        assert!(!req.regex);
+        assert!(!req.search_content);
+        assert_eq!(
+            req.notice.as_deref(),
+            Some("`pattern` was read as `query`; send `query` (and `regex: true` for a regex).")
+        );
+    }
+
+    #[test]
+    fn query_wins_and_other_bad_input_keeps_its_errors() {
+        let ok = input(serde_json::json!({ "query": "needle" }));
         assert_eq!((ok.query.as_str(), ok.path.as_str()), ("needle", "."));
-        let both: SearchInput =
-            serde_json::from_value(serde_json::json!({ "query": "a", "pattern": "b" })).unwrap();
+        assert!(ok.notice.is_none());
+        let both = input(serde_json::json!({ "query": "a", "pattern": "b" }));
         assert_eq!(both.query, "a");
-        let err = serde_json::from_value::<SearchInput>(serde_json::json!({ "path": "src" }))
-            .unwrap_err()
-            .to_string();
-        assert_eq!(err, "missing field `query`");
+        assert!(!both.regex && both.notice.is_none());
+        for bad in [
+            serde_json::json!({ "path": "src" }),
+            serde_json::json!({ "pattern": 42 }),
+            serde_json::json!({ "pattern": ["a"] }),
+        ] {
+            let err = serde_json::from_value::<SearchInput>(bad)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err, "missing field `query`");
+        }
+        // `notice` is never read from the wire.
+        let forged = input(serde_json::json!({ "query": "a", "notice": "x" }));
+        assert!(forged.notice.is_none());
+    }
+
+    #[tokio::test]
+    async fn pattern_search_runs_as_regex_and_returns_the_notice() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "registerTrigger(x)\n");
+        write(&tmp, "b.txt", "subscribe()\n");
+        let out = handle(
+            r.clone(),
+            c.clone(),
+            input(serde_json::json!({
+                "pattern": "registerTrigger|subscribe", "search_paths": false
+            })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 2);
+        let wire = serde_json::to_value(&out).unwrap();
+        assert!(wire["notice"]
+            .as_str()
+            .unwrap()
+            .starts_with("`pattern` was read as `query` with `regex: true`"));
+        // Path-only: the regex runs against paths, notice still set.
+        let out = handle(
+            r.clone(),
+            c.clone(),
+            input(serde_json::json!({ "pattern": "a\\.txt|b\\.txt", "search_content": false })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.path_matches.len(), 2);
+        assert!(out.notice.is_some());
+        // Notices combine: the alias first, then a clamp.
+        let out = handle(
+            r.clone(),
+            c.clone(),
+            input(serde_json::json!({
+                "pattern": "subscribe", "search_paths": false, "context_lines_after": 11
+            })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out.notice.as_deref(),
+            Some(
+                "`pattern` was read as `query` with `regex: true`; send `query` (and \
+                 `regex: true` for a regex). context_lines_after above 10 was clamped to \
+                 10; for a wider view read the file with coder::read-file line_from/line_to."
+            )
+        );
+        // A refusal of what `pattern` became says how it was read.
+        let err = handle(
+            r.clone(),
+            c.clone(),
+            input(serde_json::json!({ "pattern": "foo(" })),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.contains("bad regex")
+                && err.contains("(`pattern` was read as `query` with `regex: true`;"),
+            "got: {err}"
+        );
+        // An empty `pattern` is an empty `query`: refused for content search.
+        let err = handle(r, c, input(serde_json::json!({ "pattern": "" })))
+            .await
+            .unwrap_err();
+        assert!(err.contains("query must not be empty"), "got: {err}");
+    }
+
+    #[test]
+    fn query_is_not_required_in_the_published_schema() {
+        // A required `query` makes the harness judge rename `pattern` to
+        // `query` before dispatch (harness reconcile.rs `questions`), which
+        // skips the pre-pass and its `regex: true`: the regex then runs as a
+        // literal and silently finds nothing.
+        let schema = serde_json::to_value(schemars::schema_for!(SearchInput)).unwrap();
+        let required = schema["required"].as_array();
+        assert!(
+            !required.is_some_and(|r| r.contains(&"query".into())),
+            "{schema}"
+        );
+        assert!(
+            schema["properties"]["query"].get("default").is_none(),
+            "{schema}"
+        );
     }
 }

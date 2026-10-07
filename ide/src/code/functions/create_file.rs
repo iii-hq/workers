@@ -516,6 +516,29 @@ mod tests {
         .to_string();
         assert!(err.contains("coder::create-file takes"), "got: {err}");
         assert!(err.contains("\"files\""), "got: {err}");
+
+        // Per-entry errors end with the canonical shape, not the caller's path.
+        for (v, at) in [
+            (
+                serde_json::json!({ "files": [{ "path": "a.txt", "text": "hi" }] }),
+                "`files[0]`",
+            ),
+            (
+                serde_json::json!({ "path": "a.txt", "contents": "hi" }),
+                "file entry",
+            ),
+        ] {
+            let err = serde_json::from_value::<CreateFileInput>(v)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                err,
+                format!(
+                    "coder::create-file: invalid {at}: missing field `content`. \
+                     Each `files` entry is {{ \"path\", \"content\", ... }}."
+                )
+            );
+        }
     }
 
     fn setup() -> (tempfile::TempDir, Arc<PathResolver>, Arc<CoderConfig>) {

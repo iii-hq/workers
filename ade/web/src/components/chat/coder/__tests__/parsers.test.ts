@@ -18,6 +18,7 @@ import {
   listFolderResponseSchema,
   moveFileRequestSchema,
   moveFileResponseSchema,
+  patternAsQuery,
   readFileRequestSchema,
   readFileResponseSchema,
   safeParseRequest,
@@ -631,6 +632,33 @@ describe('searchRequestSchema', () => {
 
   it('rejects a request without query', () => {
     expect(safeParseRequest(searchRequestSchema, { path: 'src' })).toBeNull()
+  })
+
+  it('reads `pattern` as a regex `query` when `query` is absent, like the worker', () => {
+    const r = safeParseRequest(searchRequestSchema, {
+      path: 'src',
+      pattern: 'registerTrigger|subscribe',
+    })
+    expect(r?.query).toBe('registerTrigger|subscribe')
+    expect(r?.regex).toBe(true)
+    expect(r?.path).toBe('src')
+  })
+
+  it('keeps an explicit regex, prefers `query`, and leaves other shapes alone', () => {
+    const literal = safeParseRequest(searchRequestSchema, {
+      pattern: 'a.b',
+      regex: false,
+    })
+    expect(literal?.regex).toBe(false)
+    const both = safeParseRequest(searchRequestSchema, {
+      query: 'a',
+      pattern: 'b',
+    })
+    expect(both?.query).toBe('a')
+    expect(both?.regex).toBeUndefined()
+    const bad = { pattern: 42 }
+    expect(patternAsQuery(bad)).toBe(bad)
+    expect(safeParseRequest(searchRequestSchema, bad)).toBeNull()
   })
 })
 

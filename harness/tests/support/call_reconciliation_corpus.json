@@ -13,6 +13,12 @@
      "query": "fn handle",
      "search_content": true,
      "search_paths": false
+    },
+    {
+     "path": "src",
+     "query": "registerTrigger|registerFunction",
+     "regex": true,
+     "search_paths": false
     }
    ],
    "properties": {
@@ -28,7 +34,7 @@
     },
     "context_lines_before": {
      "default": null,
-     "description": "Lines of context before each content match (max 10, C210 above); truncated to max_line_bytes and counted in the budget. Default 0.",
+     "description": "Lines of context before each content match (max 10; more is clamped to 10); truncated to max_line_bytes and counted in the budget. Default 0.",
      "format": "uint32",
      "minimum": 0.0,
      "type": [
@@ -38,7 +44,7 @@
     },
     "exclude_globs": {
      "default": [],
-     "description": "Glob patterns (same relative-to-root matching) that exclude paths.",
+     "description": "Glob patterns (relative to the session root, like include_globs) that exclude paths.",
      "items": {
       "type": "string"
      },
@@ -55,7 +61,7 @@
     },
     "include_globs": {
      "default": [],
-     "description": "Root-relative glob patterns paths must match; empty = everything.",
+     "description": "Glob patterns paths must match, relative to the SESSION ROOT, never to `path`: with path `ade`, write `ade/README.md` or `**/README.md`, not `README.md`. Empty = everything.",
      "items": {
       "type": "string"
      },
@@ -63,7 +69,7 @@
     },
     "include_hidden": {
      "default": true,
-     "description": "Walk dot-files and dot-folders (`.github`, `.env`, …); default true. `false` leaves them out, the way an editor's quick open does.",
+     "description": "Walk dot-files and dot-folders (`.github`, `.env`, …); default true. `false` leaves them out, the way an editor's quick open does. A `path` that names a dot-file or dot-folder is still searched: naming it is explicit intent.",
      "type": "boolean"
     },
     "max_line_bytes": {
@@ -88,11 +94,11 @@
     },
     "path": {
      "default": ".",
-     "description": "Folder to search (default `.`); globs match relative to its root, result paths are absolute.",
+     "description": "Folder or file to search (default `.`); a file searches just that file. It only narrows the walk: globs are NOT relative to it, they match paths relative to the session root (or to the configured root that contains them; see coder::info). Result paths are absolute.",
      "type": "string"
     },
     "query": {
-     "description": "Pattern to search for. Treated as a regex when `regex: true`, otherwise as a literal substring. May be empty only when `search_content` is false: a path-only search with no query lists every path (with `fuzzy_paths`, shallow and short paths first).",
+     "description": "Text to find: a literal substring, or a regex with `regex: true`. Always send it; `\"\"` is allowed only when `search_content` is false, and lists every path (with `fuzzy_paths`, shallow and short paths first).",
      "type": "string"
     },
     "regex": {
@@ -120,9 +126,6 @@
      "type": "boolean"
     }
    },
-   "required": [
-    "query"
-   ],
    "title": "SearchInput",
    "type": "object"
   },
@@ -1230,6 +1233,29 @@
     "path": "/tmp/agents-demo-calc/calc.py"
    },
    "description": "Minimaal aanpassen van numerieke validatie"
+  },
+  {
+   "function_id": "coder::search",
+   "stringified": false,
+   "error": "coder::search: remote error (invocation_failed): serialization error: missing field `query`",
+   "arguments": {
+    "path": "/repo/x",
+    "pattern": "registerTrigger|subscribe"
+   },
+   "description": "",
+   "asks": []
+  },
+  {
+   "function_id": "coder::search",
+   "stringified": false,
+   "error": "",
+   "arguments": {
+    "path": "/repo/x",
+    "query": "registerTrigger",
+    "pattern": "subscribe"
+   },
+   "description": "",
+   "asks": []
   }
  ]
 }

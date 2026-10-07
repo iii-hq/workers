@@ -14,6 +14,12 @@
         "query": "fn handle",
         "search_content": true,
         "search_paths": false
+      },
+      {
+        "path": "src",
+        "query": "registerTrigger|registerFunction",
+        "regex": true,
+        "search_paths": false
       }
     ],
     "properties": {
@@ -29,7 +35,7 @@
       },
       "context_lines_before": {
         "default": null,
-        "description": "Lines of context before each content match (max 10, C210 above); truncated to max_line_bytes and counted in the budget. Default 0.",
+        "description": "Lines of context before each content match (max 10; more is clamped to 10); truncated to max_line_bytes and counted in the budget. Default 0.",
         "format": "uint32",
         "minimum": 0.0,
         "type": [
@@ -93,7 +99,7 @@
         "type": "string"
       },
       "query": {
-        "description": "Pattern to search for. Treated as a regex when `regex: true`, otherwise as a literal substring. May be empty only when `search_content` is false: a path-only search with no query lists every path (with `fuzzy_paths`, shallow and short paths first).",
+        "description": "Text to find: a literal substring, or a regex with `regex: true`. Always send it; `\"\"` is allowed only when `search_content` is false, and lists every path (with `fuzzy_paths`, shallow and short paths first).",
         "type": "string"
       },
       "regex": {
@@ -121,9 +127,6 @@
         "type": "boolean"
       }
     },
-    "required": [
-      "query"
-    ],
     "title": "SearchInput",
     "type": "object"
   },
@@ -214,6 +217,13 @@
           "$ref": "#/definitions/ContentMatch"
         },
         "type": "array"
+      },
+      "notice": {
+        "description": "Set when the request was adjusted to run (a field read under its canonical name, or a value clamped); send the canonical form.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "path_matches": {
         "items": {

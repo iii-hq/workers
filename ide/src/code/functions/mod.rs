@@ -35,12 +35,21 @@ use crate::code::state::CodeCells;
 /// bounced with a raw serde "missing field `files`". Accept it as a
 /// one-entry batch; anything else gets the contract named back. The
 /// published schema stays the canonical batch shape (goldens pin it).
-/// `fields` names the entry's required keys for that message.
+/// `fields` names the entry's required keys for that message, and every
+/// per-entry error ends with that canonical shape — never the caller's
+/// values, so one error class stays one sentinel group.
 pub(crate) fn files_batch_or_single<T: serde::de::DeserializeOwned>(
     mut value: serde_json::Value,
     function_id: &str,
     fields: &str,
 ) -> Result<(Vec<T>, Option<crate::fs::FsScope>), String> {
+    let entry_err = |at: &str, e: serde_json::Error| {
+        let e = e.to_string();
+        format!(
+            "{function_id}: invalid {at}: {}. Each `files` entry is {{ {fields}, ... }}.",
+            e.trim_end_matches('.')
+        )
+    };
     let fs_scope = match value.get("fs_scope") {
         Some(v) => serde_json::from_value(v.clone())
             .map_err(|e| format!("{function_id}: invalid `fs_scope`: {e}"))?,
@@ -60,15 +69,13 @@ pub(crate) fn files_batch_or_single<T: serde::de::DeserializeOwned>(
             .into_iter()
             .enumerate()
             .map(|(i, entry)| {
-                serde_json::from_value(entry)
-                    .map_err(|e| format!("{function_id}: invalid `files[{i}]`: {e}"))
+                serde_json::from_value(entry).map_err(|e| entry_err(&format!("`files[{i}]`"), e))
             })
             .collect::<Result<_, _>>()?;
         return Ok((files, fs_scope));
     }
     if value.get("path").is_some() {
-        let spec: T = serde_json::from_value(value)
-            .map_err(|e| format!("{function_id}: invalid file entry: {e}"))?;
+        let spec: T = serde_json::from_value(value).map_err(|e| entry_err("file entry", e))?;
         return Ok((vec![spec], fs_scope));
     }
     Err(format!(
@@ -123,6 +130,7 @@ const UPDATE_FILE_ID: &str = "coder::update-file";
 const UPDATE_FILE_DESC: &str =
     "Edit one or more files: batched line ops (1-based, inclusive, applied \
      bottom-up), then regex replace ops; each file commits atomically. \
+     To rewrite a whole file use coder::create-file with overwrite: true. \
      To replace a large region use two short anchors joined by .*? with \
      dot_matches_newline: true instead of quoting it. Paths: relative to \
      the primary root or absolute inside an allowed root (see coder::info).";

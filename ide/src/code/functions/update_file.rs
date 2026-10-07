@@ -66,18 +66,41 @@ pub struct UpdateFileSpec {
 }
 
 /// Hand-rolled so a missing `op` tag can be inferred per op (see
-/// [`parse_op`]); the published schema keeps `op` required.
+/// [`parse_op`]); the published schema keeps `op` required. An entry of only
+/// `path` + `content` (plus create-file's own keys) is a whole-file write: the
+/// error points at coder::create-file with `overwrite: true`. Any other key
+/// beside `content` (`to_line`, `line_from`, an op's keys, ...) marks a partial
+/// edit, which keeps the plain error: never steer an edit to an overwrite.
 impl<'de> Deserialize<'de> for UpdateFileSpec {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         struct Raw {
             path: String,
-            ops: Vec<serde_json::Value>,
+            ops: Option<Vec<serde_json::Value>>,
+            content: Option<serde::de::IgnoredAny>,
+            #[serde(flatten)]
+            rest: std::collections::BTreeMap<String, serde::de::IgnoredAny>,
         }
         let raw = Raw::deserialize(deserializer)?;
+        let Some(ops) = raw.ops else {
+            let whole_file = raw.content.is_some()
+                && raw.rest.keys().all(|k| {
+                    matches!(
+                        k.as_str(),
+                        "fs_scope" | "overwrite" | "expected_revision" | "mode" | "parents"
+                    )
+                });
+            return Err(if whole_file {
+                serde::de::Error::custom(
+                    "missing field `ops`; to rewrite a whole file use coder::create-file \
+                     with `overwrite: true`",
+                )
+            } else {
+                serde::de::Error::missing_field("ops")
+            });
+        };
         let mut inferred_ops = Vec::new();
-        let ops = raw
-            .ops
+        let ops = ops
             .into_iter()
             .enumerate()
             .map(|(i, v)| parse_op(i, v, &mut inferred_ops))
@@ -1564,6 +1587,19 @@ mod tests {
         assert!(err.contains("`files[1]`: ops[0]: missing `op`"), "{err}");
         // No caller path in the text: one error class stays one sentinel group.
         assert!(!err.contains("b.rs"), "{err}");
+        // The canonical entry shape closes every per-entry error, once.
+        assert!(
+            err.ends_with(r#"separate entries. Each `files` entry is { "path", "ops", ... }."#),
+            "{err}"
+        );
+        // Corpus case 20: an entry with no `path` anywhere.
+        let err = input_err(serde_json::json!({
+            "files": [{ "ops": [{ "op": "remove", "from_line": 1, "to_line": 1 }] }]
+        }));
+        assert_eq!(
+            err,
+            r#"coder::update-file: invalid `files[0]`: missing field `path`. Each `files` entry is { "path", "ops", ... }."#
+        );
         let err = input_err(serde_json::json!({ "files": "[{\"path\":\"a.rs\"}]" }));
         assert!(
             err.ends_with("`files` must be an array, got string"),
@@ -1571,6 +1607,62 @@ mod tests {
         );
         let err = input_err(serde_json::json!({ "file": "a.rs", "ops": [] }));
         assert!(err.contains(r#"flat as { "path", "ops" }"#), "{err}");
+    }
+
+    /// Corpus case 24: `{ path, content }` meant as a whole-file rewrite is
+    /// pointed at create-file + overwrite, flat or batched, never converted.
+    #[test]
+    fn content_without_ops_points_to_create_file_overwrite() {
+        let input_err = |v: serde_json::Value| {
+            serde_json::from_value::<UpdateFileInput>(v)
+                .unwrap_err()
+                .to_string()
+        };
+        let hint = "missing field `ops`; to rewrite a whole file use coder::create-file \
+                    with `overwrite: true`. Each `files` entry is { \"path\", \"ops\", ... }.";
+        let err = input_err(serde_json::json!({ "path": "a.rs", "content": "x" }));
+        assert_eq!(
+            err,
+            format!("coder::update-file: invalid file entry: {hint}")
+        );
+        // create-file's own keys beside `content` still read as a whole-file write.
+        for v in [
+            serde_json::json!({ "files": [{ "path": "a.rs", "content": "x" }] }),
+            serde_json::json!({ "files": [{ "path": "a.rs", "content": "x", "overwrite": true }] }),
+            serde_json::json!({
+                "files": [{ "path": "a.rs", "content": "x", "expected_revision": "r1" }]
+            }),
+        ] {
+            assert_eq!(
+                input_err(v),
+                format!("coder::update-file: invalid `files[0]`: {hint}")
+            );
+        }
+        // Without `content`, or with any edit key beside it, the plain serde
+        // text stays: a partial edit must not be steered to an overwrite.
+        for v in [
+            serde_json::json!({ "path": "a.rs" }),
+            serde_json::json!({ "path": "a.rs", "op": "insert", "content": "x" }),
+            serde_json::json!({ "path": "a.rs", "at_line": 3, "content": "x" }),
+            serde_json::json!({ "path": "a.rs", "from_line": 1, "to_line": 2, "content": "x" }),
+            serde_json::json!({ "path": "a.rs", "to_line": 2, "content": "x" }),
+            serde_json::json!({ "path": "a.rs", "line_from": 3, "line_to": 4, "content": "x" }),
+            serde_json::json!({
+                "path": "a.rs", "content": "x", "pattern": "a", "replacement": "b"
+            }),
+        ] {
+            assert_eq!(
+                input_err(v),
+                r#"coder::update-file: invalid file entry: missing field `ops`. Each `files` entry is { "path", "ops", ... }."#
+            );
+        }
+        // `ops` present: `content` is ignored, as before.
+        let spec: UpdateFileSpec = serde_json::from_value(serde_json::json!({
+            "path": "a.rs", "content": "x",
+            "ops": [{ "op": "remove", "from_line": 1, "to_line": 1 }]
+        }))
+        .unwrap();
+        assert_eq!(spec.ops.len(), 1);
     }
 
     #[test]

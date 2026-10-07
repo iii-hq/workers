@@ -415,24 +415,37 @@ export type ReadFileResponse = z.infer<typeof readFileResponseSchema>
 
 /* ---------------- search ---------------- */
 
-export const searchRequestSchema = z.object({
-  /** Regex when `regex: true`, else literal substring. */
-  query: z.string(),
-  regex: z.boolean().optional(),
-  ignore_case: z.boolean().optional(),
-  /** Folder scoping the walk; default "." = primary root. */
-  path: z.string().optional(),
-  include_globs: z.array(z.string()).optional(),
-  exclude_globs: z.array(z.string()).optional(),
-  use_default_excludes: z.boolean().optional(),
-  search_content: z.boolean().optional(),
-  search_paths: z.boolean().optional(),
-  /** Max 10 — larger → C210. */
-  context_lines_before: z.number().nullish(),
-  context_lines_after: z.number().nullish(),
-  max_matches: z.number().nullish(),
-  max_line_bytes: z.number().nullish(),
-})
+/** The worker reads a string `pattern` as `query` when `query` is absent,
+ *  with `regex` defaulting to true unless sent (`search.rs`); do the same so
+ *  the card shows the search that ran. Anything else is left as is. */
+export function patternAsQuery(raw: unknown): unknown {
+  if (raw === null || typeof raw !== 'object' || 'query' in raw) return raw
+  const { pattern, ...rest } = raw as Record<string, unknown>
+  if (typeof pattern !== 'string') return raw
+  return { regex: true, ...rest, query: pattern }
+}
+
+export const searchRequestSchema = z.preprocess(
+  patternAsQuery,
+  z.object({
+    /** Regex when `regex: true`, else literal substring. */
+    query: z.string(),
+    regex: z.boolean().optional(),
+    ignore_case: z.boolean().optional(),
+    /** Folder scoping the walk; default "." = primary root. */
+    path: z.string().optional(),
+    include_globs: z.array(z.string()).optional(),
+    exclude_globs: z.array(z.string()).optional(),
+    use_default_excludes: z.boolean().optional(),
+    search_content: z.boolean().optional(),
+    search_paths: z.boolean().optional(),
+    /** Max 10 — the worker clamps larger values (result `notice`). */
+    context_lines_before: z.number().nullish(),
+    context_lines_after: z.number().nullish(),
+    max_matches: z.number().nullish(),
+    max_line_bytes: z.number().nullish(),
+  }),
+)
 export type SearchRequest = z.infer<typeof searchRequestSchema>
 
 /** `search.rs::ContentMatch` — one per matching LINE (first match only). */
