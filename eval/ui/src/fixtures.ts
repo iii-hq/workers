@@ -20,6 +20,9 @@ export const LIMITS: MonitorLimits = {
 export const COST: MonitorCost = {
   since: 1_759_449_600_000,
   today_usd: 0,
+  today_capture_usd: 0,
+  today_replay_usd: 0,
+  today_replay_unknown: 0,
   today_unknown: 0,
   capped: false,
   per_analysis: { count: 0, unknown: 0 },

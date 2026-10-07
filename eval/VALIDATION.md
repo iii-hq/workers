@@ -189,7 +189,7 @@ Calculadas em código:
 
 - **Estimativa:** custo gravado no passo do ponto de decisão × N.
 - **Custo real:** a soma do `usage` das amostras, mais as chamadas do Jev quando o sinal é uma pergunta.
-- Tudo entra no consumo do monitor, separado das métricas da tarefa observada. A reprodução é manual, sempre disparada por uma pessoa: o limite diário (`daily_cost_cap_usd`) é mostrado mas não bloqueia, como nas outras ações manuais.
+- Tudo entra no consumo do monitor, separado das métricas da tarefa observada, no balde `replay` (`today_replay_usd`); o balde `capture` é o das análises. A reprodução é manual, sempre disparada por uma pessoa: o limite diário (`daily_cost_cap_usd`) compara só o balde `capture`, então uma reprodução nunca trava a observação automática. Amostra sem custo reportado fica desconhecida (`cost_unknown_samples`), nunca zero; as chamadas do Jev ficam em tokens.
 
 ## 7. Onde o E2E entra
 

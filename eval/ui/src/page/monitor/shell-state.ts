@@ -25,7 +25,7 @@ import type {
 } from '../../types'
 import { failureCode, failureHeadline } from './detail/notices'
 import { formatCostShort, investigationCaps, parseSizes, plural, shortId } from './detail/present'
-import { MIN_ESTIMATE, modelWithLevel, tokenCap, triageHint } from './settings-model'
+import { MIN_ESTIMATE, modelWithLevel, replayLine, tokenCap, triageHint } from './settings-model'
 import { ago, clock, dayClock, span, spanRange } from './time'
 
 export { clock }
@@ -225,14 +225,18 @@ const DAY_MS = 24 * 60 * 60 * 1000
 
 /** Under "Paused for today": why nothing new starts, and what still does. */
 export function cappedNote(cost: MonitorCost): string {
-  return `Cost cap ${formatCostShort(cost.cap_usd)} reached (${formatCostShort(cost.today_usd)} reported). Manual analyses still run. New ones resume at ${clock(cost.since + DAY_MS)}.`
+  return `Cost cap ${formatCostShort(cost.cap_usd)} reached (${formatCostShort(cost.today_capture_usd)} reported). Manual analyses still run. New ones resume at ${clock(cost.since + DAY_MS)}.`
 }
 
-/** The status card's Cap row: `$0.91 of $5.00 · 2 unknown`; `null` while no cap is set. */
+/**
+ * The status card's Cap row: `$0.91 of $5.00 · 2 unknown · replays $2.40`; `null` while no cap is set. The cap
+ * compares the analyses' cost; the replays' is shown beside it, not counted.
+ */
 export function capRow(cost: MonitorCost): string | null {
   if (cost.cap_usd === undefined) return null
   const unknown = cost.today_unknown > 0 ? ` · ${cost.today_unknown} unknown` : ''
-  return `${formatCostShort(cost.today_usd)} of ${formatCostShort(cost.cap_usd)}${unknown}`
+  const replays = replayLine(cost)
+  return `${formatCostShort(cost.today_capture_usd)} of ${formatCostShort(cost.cap_usd)}${unknown}${replays ? ` · ${replays}` : ''}`
 }
 
 /**

@@ -876,8 +876,15 @@
             ],
             "description": "The decision point and signal this replay used."
           },
+          "cost_unknown_samples": {
+            "default": 0,
+            "description": "Samples that answered without reporting a cost: unknown, not in `cost_usd`, and never estimated.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "cost_usd": {
-            "description": "Known cost of the samples; null while no reply reported one.",
+            "description": "Known cost of the samples; null while no reply reported one. Only a lower bound while `cost_unknown_samples` is above zero. Jev's calls are in tokens below, never priced.",
             "format": "double",
             "type": [
               "number",

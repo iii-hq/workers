@@ -142,22 +142,38 @@ directory and its `config_revision`.
 
 ## Cost
 
-Only the investigation's LLM cost is in dollars (`usage.llm_cost_usd`, from
-`harness::metrics`, and known only once the investigation ends); Jev's usage is
-reported in tokens. A missing cost is unknown, never zero.
+Only LLM cost is in dollars: the investigation's (`usage.llm_cost_usd`, from
+`harness::metrics`, and known only once the investigation ends) and the
+`eval::reproduce` samples' (`cost_usd` of each reply). Jev's usage, in a
+triage or in classifying a replay's replies, is reported in tokens and never
+priced. A missing cost is unknown, never zero, and is never estimated: a
+replay sample that answered without a cost adds nothing to the sums, is counted
+in the reproduction's `cost_unknown_samples` (which makes its `cost_usd` a lower
+bound) and in the day's `today_replay_unknown`.
+
+The day's spend has two buckets. **Capture** is what an analysis spends (the
+investigation; Jev's triage is in tokens). **Replay** is what `eval::reproduce`
+spends. Only capture is compared with the daily cap, so a manual replay never
+stops automatic observation. The spend persisted before the buckets (one total)
+counts as capture for its day.
 
 `eval::config` returns a `cost` block to decide before enabling:
 
-- `today_usd` and `today_unknown`: the known investigation cost since `since`
+- `today_capture_usd` and `today_unknown`: the known capture cost since `since`
   (the start of the current **UTC** day: the monitor has no timezone setting),
   and how many analyses of the day started an investigation but reported no cost
   (they add nothing to the sum; their cost is unknown). The cost is added to a
-  persisted daily spend as each investigation reports it, and `today_usd` is the
-  larger of that and the stored analyses' sum, so deleting analyses (or
-  retention) does not give the budget back.
+  persisted daily spend as each investigation reports it, and
+  `today_capture_usd` is the larger of that and the stored analyses' sum, so
+  deleting analyses (or retention) does not give the budget back.
+- `today_replay_usd` and `today_replay_unknown`: the replay bucket, the known
+  cost of the day's `eval::reproduce` samples and how many replied without a
+  cost. Reported, never capped.
+- `today_usd`: both buckets together, everything known to be spent. **The cap
+  does not compare it.**
 - `cap_usd` and `capped`: the optional `daily_cost_cap_usd` and whether
-  `today_usd`, plus the median cost of each investigation still running,
-  reached it.
+  `today_capture_usd`, plus the median cost of each investigation still
+  running, reached it.
 - `per_analysis`: `count`, `min`, `median` and `max` of the known cost of the
   completed analyses that investigated with the configured model, provider and
   code access (or without it), and `unknown`, how many of those reported no
@@ -165,7 +181,7 @@ reported in tokens. A missing cost is unknown, never zero.
 
 `daily_cost_cap_usd` (a number above 0; absent means no cap, and then the
 configuration revision is what it was) pauses **automatic** observation for the
-rest of the UTC day once `today_usd` reaches it: the turn is not admitted,
+rest of the UTC day once `today_capture_usd` reaches it: the turn is not admitted,
 `eval::on-turn-completed` answers `cost_cap`, and `eval::config`'s
 `last_rejection` records the turn with `reason: cost_cap` (`at_capacity` for the
 unfinished-analyses cap). A manual `eval::analyze-session` is never refused by

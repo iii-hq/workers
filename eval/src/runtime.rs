@@ -2499,7 +2499,7 @@ async fn set_llm_usage(
     usage.llm_output_tokens = metrics.totals.output_tokens;
     usage.llm_cost_usd = metrics.totals.cost_usd;
     if let Some(cost) = metrics.totals.cost_usd.filter(|cost| *cost > before) {
-        add_spend(deps, cost - before).await;
+        add_spend(deps, Spend::Capture(cost - before)).await;
     }
 }
 
@@ -2518,7 +2518,7 @@ async fn cost_summary(
     ))
 }
 
-/// The cap when the day's cost, with the running investigations, has reached it.
+/// The cap when the day's capture cost, with the running investigations, has reached it.
 async fn capped_at(deps: &Deps) -> Result<Option<f64>, EvalError> {
     let Some(config) = state::get_config(&deps.iii).await? else {
         return Ok(None);
@@ -2528,24 +2528,38 @@ async fn capped_at(deps: &Deps) -> Result<Option<f64>, EvalError> {
     Ok(cost.cap_usd.filter(|_| cost.capped))
 }
 
+/// A cost to add to the day's spend, by bucket.
+pub(crate) enum Spend {
+    /// What an analysis spends: the investigation (Jev's triage is in tokens).
+    /// The only bucket the daily cap compares.
+    Capture(f64),
+    /// `eval::reproduce`: the known cost of the samples, and how many replies
+    /// came back without one. Reported next to the capture spend, never capped,
+    /// so a manual replay cannot stop automatic observation.
+    Replay { usd: f64, unknown: u32 },
+}
+
 /// Adds to the day's spend. Bookkeeping that cannot fail an analysis: the
 /// stored analyses still sum to a floor, so an error is logged.
-pub(crate) async fn add_spend(deps: &Deps, usd: f64) {
+pub(crate) async fn add_spend(deps: &Deps, spend: Spend) {
     let _guard = deps.locks.guard(SPEND_LOCK).await;
     let since = cost::day_start(ids::now_ms());
     let written = async {
-        let today = state::get_spend(&deps.iii)
+        let mut today = state::get_spend(&deps.iii)
             .await?
             .filter(|spent| spent.since == since)
-            .map_or(0.0, |spent| spent.usd);
-        state::put_spend(
-            &deps.iii,
-            &state::DailySpendV1 {
+            .unwrap_or(state::DailySpendV1 {
                 since,
-                usd: today + usd,
-            },
-        )
-        .await
+                ..Default::default()
+            });
+        match spend {
+            Spend::Capture(usd) => today.usd += usd,
+            Spend::Replay { usd, unknown } => {
+                today.replay_usd += usd;
+                today.replay_unknown += unknown;
+            }
+        }
+        state::put_spend(&deps.iii, &today).await
     }
     .await;
     if let Err(error) = written {

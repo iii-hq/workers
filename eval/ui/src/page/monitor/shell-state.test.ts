@@ -107,7 +107,7 @@ describe('cardState', () => {
   })
 
   it('pauses for the day once the cost cap is reached, unless the monitor is paused or unavailable anyway', () => {
-    const capped = { ...COST, cap_usd: 5, today_usd: 5.03, capped: true }
+    const capped = { ...COST, cap_usd: 5, today_usd: 5.03, today_capture_usd: 5.03, capped: true }
     expect(cardState(monitor({ cost: capped }))).toBe('capped')
     expect(cardState(monitor({ cost: { ...capped, capped: false } }))).toBe('observing')
     const paused = { ...monitor().config!, enabled: false }
@@ -121,7 +121,9 @@ describe('the daily cost cap on the card', () => {
     ...COST,
     since: new Date(2026, 9, 3, 21, 0).getTime() - 86_400_000,
     cap_usd: 5,
-    today_usd: 5.03,
+    today_usd: 8.43,
+    today_capture_usd: 5.03,
+    today_replay_usd: 3.4,
     capped: true,
   }
 
@@ -132,9 +134,19 @@ describe('the daily cost cap on the card', () => {
   })
 
   it('shows the Cap row only when a cap is set, and counts the unknown apart', () => {
-    expect(capRow({ ...cost, today_usd: 0.91, today_unknown: 2, capped: false })).toBe('$0.91 of $5.00 · 2 unknown')
-    expect(capRow({ ...cost, today_usd: 0.91, capped: false })).toBe('$0.91 of $5.00')
+    const quiet = { ...cost, today_usd: 0.91, today_capture_usd: 0.91, today_replay_usd: 0, capped: false }
+    expect(capRow({ ...quiet, today_unknown: 2 })).toBe('$0.91 of $5.00 · 2 unknown')
+    expect(capRow(quiet)).toBe('$0.91 of $5.00')
     expect(capRow({ ...COST })).toBeNull()
+  })
+
+  it('compares the analyses to the cap and shows the replays beside it, not in it', () => {
+    expect(capRow(cost)).toBe('$5.03 of $5.00 · replays $3.40')
+    expect(capRow({ ...cost, today_replay_unknown: 2 })).toBe('$5.03 of $5.00 · replays $3.40 + 2 not reported')
+    // Replays that reported nothing are unknown, not a $0.00 line.
+    expect(capRow({ ...cost, today_replay_usd: 0, today_replay_unknown: 2 })).toBe(
+      '$5.03 of $5.00 · replays 2 not reported',
+    )
   })
 
   it('names the last session turned away by the cap, from today only', () => {

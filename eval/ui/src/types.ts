@@ -134,16 +134,22 @@ export interface AnalysisCostStats {
   unknown: number
 }
 
-/** The monitor's own spend, in dollars of investigation LLM cost (Jev's usage is in tokens on each record). */
+/** The monitor's own spend, in dollars of investigation and replay LLM cost (Jev's usage is in tokens on each record). */
 export interface MonitorCost {
   /** Start (ms since the Unix epoch) of the UTC day the `today_*` values cover. */
   since: number
-  /** Sum of the known `llm_cost_usd` of the analyses created since `since`. */
+  /** Everything known to be spent: `today_capture_usd` + `today_replay_usd`. The cap does not compare it. */
   today_usd: number
-  /** Analyses of the day whose investigation reported no cost: they add nothing to `today_usd`, yet cost is unknown. */
+  /** What the analyses spent (the larger of the persisted spend and the sum of their `llm_cost_usd`): the only bucket the cap compares. */
+  today_capture_usd: number
+  /** What `eval::reproduce` samples spent: reported, never capped. */
+  today_replay_usd: number
+  /** Replay samples of the day that reported no cost: they add nothing to `today_replay_usd`, yet cost is unknown. */
+  today_replay_unknown: number
+  /** Analyses of the day whose investigation reported no cost: they add nothing to `today_capture_usd`, yet cost is unknown. */
   today_unknown: number
   cap_usd?: number
-  /** A cap is set and `today_usd` reached it: automatic observation admits nothing until the next UTC day. */
+  /** A cap is set and `today_capture_usd` reached it: automatic observation admits nothing until the next UTC day. */
   capped: boolean
   per_analysis: AnalysisCostStats
 }

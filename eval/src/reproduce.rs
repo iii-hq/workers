@@ -20,7 +20,7 @@ use tokio::task::JoinSet;
 
 use crate::contract::*;
 use crate::error::EvalError;
-use crate::runtime::{add_spend, call, send_judge, suggestion_at, Deps};
+use crate::runtime::{add_spend, call, send_judge, suggestion_at, Deps, Spend};
 use crate::{diagnostics, ids, review, state};
 
 const DEFAULT_SAMPLES: u32 = 20;
@@ -151,6 +151,7 @@ pub async fn reproduce(
         original: Some(original),
         fidelity: None,
         cost_usd: None,
+        cost_unknown_samples: 0,
         judge_input_tokens: 0,
         judge_output_tokens: 0,
         by,
@@ -949,7 +950,8 @@ async fn run(
         .filter(|i| !done.contains(i))
         .collect();
     let session = format!("eval-reproduce-{id}");
-    let mut spent = 0.0;
+    // The run's known cost, and the replies that came back without one.
+    let (mut spent, mut unknown) = (0.0, 0);
     let mut queue = missing.into_iter();
     // The first reply alone warms the provider's prompt cache for the rest.
     if let Some(first) = queue.next() {
@@ -963,7 +965,7 @@ async fn run(
             &context,
         )
         .await;
-        spent += reply.usage.cost_usd.unwrap_or(0.0);
+        tally(&reply, &mut spent, &mut unknown);
         store(deps, evaluation_id, index, id, reply).await?;
     }
     let mut running = JoinSet::new();
@@ -988,11 +990,18 @@ async fn run(
         };
         let reply = joined
             .map_err(|error| EvalError::State(format!("a sample did not finish: {error}")))?;
-        spent += reply.usage.cost_usd.unwrap_or(0.0);
+        tally(&reply, &mut spent, &mut unknown);
         store(deps, evaluation_id, index, id, reply).await?;
     }
-    if spent > 0.0 {
-        add_spend(deps, spent).await;
+    if spent > 0.0 || unknown > 0 {
+        add_spend(
+            deps,
+            Spend::Replay {
+                usd: spent,
+                unknown,
+            },
+        )
+        .await;
     }
 
     let current = reproduction(deps, evaluation_id, index, id).await?;
@@ -1086,6 +1095,16 @@ async fn reproduction(
         .ok_or_else(|| EvalError::NotFound(format!("reproduction {id}")))
 }
 
+/// Adds a reply's cost to the run's known total. One that answered without a
+/// cost is counted apart, never as zero; a failed reply has nothing to price.
+fn tally(reply: &ReplyV1, spent: &mut f64, unknown: &mut u32) {
+    match reply.usage.cost_usd {
+        Some(cost) => *spent += cost,
+        None if reply.error.is_none() => *unknown += 1,
+        None => {}
+    }
+}
+
 async fn store(
     deps: &Deps,
     evaluation_id: &str,
@@ -1094,8 +1113,10 @@ async fn store(
     reply: ReplyV1,
 ) -> Result<(), EvalError> {
     update(deps, evaluation_id, index, id, |reproduction| {
-        if let Some(cost) = reply.usage.cost_usd {
-            reproduction.cost_usd = Some(reproduction.cost_usd.unwrap_or(0.0) + cost);
+        match reply.usage.cost_usd {
+            Some(cost) => reproduction.cost_usd = Some(reproduction.cost_usd.unwrap_or(0.0) + cost),
+            None if reply.error.is_none() => reproduction.cost_unknown_samples += 1,
+            None => {}
         }
         reproduction
             .samples

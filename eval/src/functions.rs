@@ -50,7 +50,8 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              the iii workers repository) lets the investigation read that code like a chat \
              with the directory selected, and for now with every function allowed. An optional \
              daily_cost_cap_usd pauses automatic observation for the rest of the UTC day once the \
-             known investigation cost reaches it (manual analyses are never refused). Analyses \
+             known investigation cost reaches it (manual analyses are never refused, and replay \
+             spend is reported but not counted). Analyses \
              already admitted keep the configuration they started with.",
         ),
     );

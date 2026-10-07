@@ -142,18 +142,28 @@ pub struct MonitorCostV1 {
     /// Start (ms since the Unix epoch) of the UTC day the `today_*` values
     /// cover. The monitor has no timezone setting, so a day is a UTC day.
     pub since: i64,
-    /// The known investigation cost since `since`: the larger of the day's
-    /// persisted spend (deleting an analysis does not give it back) and the sum
-    /// of the stored analyses' `usage.llm_cost_usd`.
+    /// Everything the monitor is known to have spent since `since`:
+    /// `today_capture_usd` + `today_replay_usd`. The cap does not compare this.
     pub today_usd: f64,
+    /// The capture bucket, the only one the cap compares: the larger of the
+    /// day's persisted capture spend (deleting an analysis does not give it
+    /// back) and the sum of the stored analyses' `usage.llm_cost_usd`. A day
+    /// persisted before the buckets counts entirely as capture.
+    pub today_capture_usd: f64,
+    /// The replay bucket: the known cost of the day's `eval::reproduce`
+    /// samples. Never capped.
+    pub today_replay_usd: f64,
+    /// Replay samples of the day that came back without a cost. They add
+    /// nothing to `today_replay_usd`, but their cost is unknown, not zero.
+    pub today_replay_unknown: u32,
     /// Analyses of the day whose investigation started but reported no cost.
-    /// They add nothing to `today_usd`, but their cost is unknown, not zero.
+    /// They add nothing to `today_capture_usd`, but their cost is unknown, not zero.
     pub today_unknown: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap_usd: Option<f64>,
-    /// A cap is set and `today_usd`, plus the median cost of each investigation
-    /// still running, reached it: automatic observation admits and investigates
-    /// nothing until the next UTC day.
+    /// A cap is set and `today_capture_usd`, plus the median cost of each
+    /// investigation still running, reached it: automatic observation admits
+    /// and investigates nothing until the next UTC day.
     pub capped: bool,
     /// What one investigation has cost, from the history.
     pub per_analysis: AnalysisCostStatsV1,
@@ -1723,9 +1733,15 @@ pub struct ReproductionV1 {
     pub original: Option<ReplyV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fidelity: Option<FidelityV1>,
-    /// Known cost of the samples; null while no reply reported one.
+    /// Known cost of the samples; null while no reply reported one. Only a
+    /// lower bound while `cost_unknown_samples` is above zero. Jev's calls are
+    /// in tokens below, never priced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// Samples that answered without reporting a cost: unknown, not in
+    /// `cost_usd`, and never estimated.
+    #[serde(default)]
+    pub cost_unknown_samples: u32,
     #[serde(default)]
     pub judge_input_tokens: u64,
     #[serde(default)]
