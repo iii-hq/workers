@@ -151,7 +151,10 @@ pub struct CoderConfig {
     /// Judge calls `coder::find-relevant` keeps in flight, shared by every
     /// ask of this worker (1..=64). Keep it below the judge provider's own
     /// limit (judge-typesafe `concurrency`, default 4) so other judge callers
-    /// (harness reconcile, directory search) keep a free slot.
+    /// (harness reconcile, directory search) keep a free slot. That headroom
+    /// only exists on a parallel provider: a serial local one (judge-clef)
+    /// runs one pass at a time, so those calls wait behind an ask's passes
+    /// at any slot count. A new count applies to asks started after it.
     #[serde(default = "default_find_relevant_judge_slots")]
     #[schemars(range(min = 1, max = 64))]
     pub find_relevant_judge_slots: u32,

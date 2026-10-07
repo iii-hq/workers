@@ -86,8 +86,8 @@ pub struct Run {
     pub state_cap: usize,
     /// Twice a known window, for requests jevgrep does not cap.
     pub window_cap: usize,
-    /// Answer-cache namespace (the judge provider, `""` for the hub's
-    /// default); `None` bypasses the cache.
+    /// Answer-cache namespace (the judge provider and its listed models);
+    /// `None` bypasses the cache.
     pub cache: Option<String>,
     /// Judge calls this ask schedules at once (the worker's slot count).
     pub slots: usize,
@@ -116,8 +116,9 @@ impl Run {
     }
 
     /// One judge call under the ask deadline, counted in the stats. A
-    /// missed deadline or a rejected request is an issue and an outage
-    /// halts the ask; `TooLarge` is left to the caller, which may split.
+    /// missed deadline, a call the judge timed out or failed, or a rejected
+    /// request is an issue and an outage halts the ask; `TooLarge` is left
+    /// to the caller, which may split.
     pub async fn call(&self, request: Evaluation) -> Result<Scores, JudgeError> {
         let cache_key = self
             .cache
@@ -178,7 +179,18 @@ impl Run {
                 return Ok(scores);
             }
             Err(JudgeError::TooLarge) => {}
-            Err(JudgeError::Deadline) => *state.issues.entry("deadline".into()).or_default() += 1,
+            Err(JudgeError::Deadline) => {
+                // Before the ask's deadline the judge gave up on this call.
+                let kind = if Instant::now() < self.deadline {
+                    "judge_call_timeout"
+                } else {
+                    "deadline"
+                };
+                *state.issues.entry(kind.into()).or_default() += 1
+            }
+            Err(JudgeError::Invalid) => {
+                *state.issues.entry("invalid_response".into()).or_default() += 1
+            }
             Err(JudgeError::Rejected(_)) => {
                 *state.issues.entry("invalid_request".into()).or_default() += 1
             }

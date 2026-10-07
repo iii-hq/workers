@@ -871,7 +871,7 @@ mod tests {
         assert_eq!(asked, [4, 2, 1, 1, 2, 1, 1]);
         let issues = issues(&run);
         assert_eq!(issues.get("request-size"), Some(&1));
-        assert_eq!(issues.get("deadline"), Some(&1));
+        assert_eq!(issues.get("judge_call_timeout"), Some(&1));
         // f2 (line 19) and f3 (line 28) are still selected
         assert_eq!(ranges(&selected), [(16, 22), (25, 31)]);
     }

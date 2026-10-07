@@ -254,11 +254,16 @@ error.
 |---|---|
 | `complete` | Every admitted branch was explored. |
 | `incomplete` | Partial coverage: the deadline hit, the judge token budget ran out, a request failed or was too large, or a walk limit was reached. `issues` counts each kind and `reason` names a stop; narrow `path` and retry. |
-| `unavailable` | No judge answered (not deployed, no key, paused after a recent outage, or a context window under 8192 tokens). Use `coder::search`. |
+| `unavailable` | No judge answered (not deployed, no key, paused after a recent outage, or a context window under 8192 tokens). Use `coder::search`. With reason `judge model loading; retry shortly`, a local judge is still loading its model: retry the ask in a minute. |
 
-- **Budget.** `timeout_ms` (default 120000, max 280000, below the harness's
-  300 s dispatch timeout) bounds the whole ask; each judge call gets at most
-  20 s of it. Excerpts share a 128 KiB source budget, and the whole result
+- **Budget.** `timeout_ms` (default 240000, max 280000, below the harness's
+  300 s dispatch timeout) bounds the whole ask; each judge call may use
+  whatever is left of it, since a serial local judge queues calls behind
+  each other. A call the judge times out or fails (`invalid_response`)
+  before then is skipped and counted under its own key in `issues`
+  (`judge_call_timeout`, `invalid_response`); it pauses nothing. The model
+  listing that opens an ask waits up to 60 s (at most half of `timeout_ms`)
+  for a local judge to load its model. Excerpts share a 128 KiB source budget, and the whole result
   stays under the harness's 256 KiB result cap as the harness counts it
   (the JSON plus the JSON again as text, so escaping counts twice). The
   file list takes up to half of that cap, leads up to half of the rest, and
@@ -284,7 +289,10 @@ error.
   ask, every session). `judge-typesafe` serves `concurrency` requests at a
   time (default 4); keep the slots one or more below it so the harness and
   `iii-directory` judge calls stay responsive, and raise both together to
-  speed up asks. An outage pauses calls to that provider for 30 s.
+  speed up asks. That headroom only exists on a parallel provider: a serial
+  local judge (`judge-clef`) runs one pass at a time, so those short calls
+  wait behind an ask's passes at any slot count. A new slot count applies to
+  asks started after it. An outage pauses calls to that provider for 30 s.
 - **What leaves the host.** Paths relative to `path`, never the host
   layout. The walk skips `non_accessible_globs`, `fs.denylist_paths`,
   gitignored entries, hidden entries below `path` (any dot-name, even one

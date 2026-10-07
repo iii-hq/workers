@@ -3,10 +3,11 @@
 //! call itself is the availability probe. An outage (not registered, no
 //! provider or key, transport, a reply that is not a valid answer) pauses
 //! judge calls for [`PAUSE_MS`] so an ask without a judge costs one quick
-//! refusal, not a timeout per call. A missed deadline, an oversized request
-//! or a request the judge rejects is about that call, never the judge, so it
-//! pauses nothing (the directory's rule, `iii-directory/src/functions/
-//! search_judge.rs`).
+//! refusal, not a timeout per call. A missed deadline, an oversized request,
+//! a request the judge rejects or an evaluation it failed (`invalid_response`,
+//! e.g. a local model's failed forward) is about that call, never the judge,
+//! so it pauses nothing (the directory's rule, `iii-directory/src/functions/
+//! search_judge.rs`, except `invalid_response`).
 //!
 //! Each call goes to the calling session's provider (the `iii.judge.provider`
 //! baggage the harness stamps per turn), and the pause is per provider, so
@@ -26,20 +27,23 @@ use tokio::sync::Semaphore;
 
 /// After an outage, skip the judge for this long (the directory's policy).
 pub const PAUSE_MS: i64 = 30_000;
-/// Per-call judge deadline; the ask's own deadline caps it further.
-pub const CALL_TIMEOUT_MS: u64 = 20_000;
-/// Model listing budget (the directory's `read_limits`).
-const MODELS_TIMEOUT_MS: u64 = 2_000;
+/// Most a model listing waits for a local model to load; half the ask's
+/// time left caps it further. A loaded or hosted provider lists at once.
+const MODELS_TIMEOUT_MS: u64 = 60_000;
 
 /// Default worker-wide judge calls in flight (`code.find_relevant_judge_slots`):
 /// judge-typesafe's default `concurrency` is 4, and 3 leaves one for the
 /// harness reconcile (2 s, pauses the judge on a deadline) and directory
-/// search (3 s). Raise both together.
+/// search (3 s). Raise both together. The headroom only exists on a parallel
+/// provider: a serial local one (judge-clef) runs one pass at a time, so
+/// those short calls wait behind an ask's passes at any slot count.
 pub const DEFAULT_SLOTS: usize = 3;
 pub const MAX_SLOTS: usize = 64;
-/// The worker's slot pool and its size; a new size replaces the pool.
-// ponytail: asks already waiting keep the old pool, so a resize briefly
-// allows old + new in flight; resize in place if that overlap matters.
+/// The worker's slot pool and its size; a new size replaces the pool and
+/// each ask keeps the pool it started with.
+// ponytail: asks started under the old size keep its pool while they run,
+// so a resize allows old + new in flight until they end; resize in place
+// if that overlap matters.
 static SLOTS: Mutex<Option<(usize, Arc<Semaphore>)>> = Mutex::new(None);
 
 fn slots(count: usize) -> Arc<Semaphore> {
@@ -72,6 +76,8 @@ pub enum JudgeError {
     Unavailable(String),
     /// `deadline`, `attempt_timeout`, `cancelled` or our own wait ran out.
     Deadline,
+    /// `invalid_response`: the judge failed this one evaluation.
+    Invalid,
     /// `payload_too_large`: the request was too big for this judge.
     TooLarge,
     /// `invalid_request`: this worker's bug, not an outage.
@@ -85,6 +91,7 @@ impl std::fmt::Display for JudgeError {
         match self {
             Self::Unavailable(reason) => write!(f, "judge unavailable: {reason}"),
             Self::Deadline => f.write_str("judge deadline exceeded"),
+            Self::Invalid => f.write_str("judge failed the evaluation"),
             Self::TooLarge => f.write_str("judge request too large"),
             Self::Rejected(reason) => write!(f, "judge rejected the request: {reason}"),
             Self::Paused => write!(f, "judge unavailable: {PAUSED}"),
@@ -149,33 +156,34 @@ fn pause(provider: &str, now: i64) {
     }
 }
 
-/// Production [`Evaluator`] over the bus, bound to one provider and the
-/// configured slot count.
+/// Production [`Evaluator`] over the bus for one ask, bound to one provider
+/// and the worker's slot pool at the configured count.
 pub fn evaluator(iii: IIIClient, provider: Option<String>, slot_count: usize) -> Evaluator {
+    let pool = slots(slot_count);
     Arc::new(move |evaluation, deadline| {
         let iii = iii.clone();
         let provider = provider.clone();
-        Box::pin(async move {
-            evaluate(&iii, evaluation, deadline, provider.as_deref(), slot_count).await
-        })
+        let pool = pool.clone();
+        Box::pin(
+            async move { evaluate(&iii, evaluation, deadline, provider.as_deref(), &pool).await },
+        )
     })
 }
 
-/// Ask one evaluation of `provider` (`None` = the hub's default). Waiting
-/// for a worker-wide slot does not eat into the call's own timeout; the ask
-/// deadline bounds both.
+/// Ask one evaluation of `provider` (`None` = the hub's default) once a
+/// slot of `pool` frees up. The call gets whatever is left of the ask
+/// deadline: a serial local judge queues it behind other passes.
 pub async fn evaluate(
     iii: &IIIClient,
     evaluation: Evaluation,
     deadline: Instant,
     provider: Option<&str>,
-    slot_count: usize,
+    pool: &Semaphore,
 ) -> Result<(Scores, u64), JudgeError> {
     let key = provider.unwrap_or_default();
     if paused(key, now_ms()) {
         return Err(JudgeError::Paused);
     }
-    let pool = slots(slot_count);
     let _slot = tokio::time::timeout_at(deadline.into(), pool.acquire())
         .await
         .map_err(|_| JudgeError::Deadline)?
@@ -184,13 +192,12 @@ pub async fn evaluate(
     if paused(key, now_ms()) {
         return Err(JudgeError::Paused);
     }
-    let remaining = deadline
+    let timeout_ms = deadline
         .saturating_duration_since(Instant::now())
         .as_millis() as u64;
-    if remaining == 0 {
+    if timeout_ms == 0 {
         return Err(JudgeError::Deadline);
     }
-    let timeout_ms = remaining.min(CALL_TIMEOUT_MS);
     let id = evaluation.id.clone();
     let keys: Vec<String> = evaluation.questions.keys().cloned().collect();
     let request = EvaluateRequest {
@@ -241,6 +248,7 @@ pub async fn evaluate(
 fn code_error(code: &str) -> JudgeError {
     match code {
         "deadline" | "attempt_timeout" | "cancelled" => JudgeError::Deadline,
+        "invalid_response" => JudgeError::Invalid,
         "payload_too_large" => JudgeError::TooLarge,
         "invalid_request" => JudgeError::Rejected(code.into()),
         other => JudgeError::Unavailable(other.chars().take(64).collect()),
@@ -285,19 +293,30 @@ fn classify(
     Ok((scores, reply["stats"]["input_tokens"].as_u64().unwrap_or(0)))
 }
 
-/// The provider's smallest advertised context window in tokens: `None` when
-/// the hub is absent or advertises none (typesafe cards carry none).
-/// A listing that times out means a local provider is still loading. It
-/// never runs past the ask's `deadline`.
+/// What a provider's model listing tells an ask.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Listing {
+    /// The smallest advertised context window in tokens, if any card
+    /// advertises one (typesafe cards carry none).
+    pub window: Option<u64>,
+    /// The listed model names; `None` when the hub is absent or the
+    /// listing failed.
+    pub models: Option<Vec<String>>,
+}
+
+/// The provider's model listing. A listing that times out means a local
+/// provider is still loading: it waits up to [`MODELS_TIMEOUT_MS`] or
+/// half the time left before the ask's `deadline`, whichever is less.
 pub async fn window(
     iii: &IIIClient,
     provider: Option<&str>,
     deadline: Instant,
-) -> Result<Option<u64>, JudgeError> {
+) -> Result<Listing, JudgeError> {
     let budget = MODELS_TIMEOUT_MS.min(
         deadline
             .saturating_duration_since(Instant::now())
-            .as_millis() as u64,
+            .as_millis() as u64
+            / 2,
     );
     let mut payload = serde_json::json!({ "timeout_ms": budget });
     if let Some(provider) = provider {
@@ -315,16 +334,23 @@ pub async fn window(
     window_from(reply)
 }
 
-fn window_from(reply: Result<Value, iii_sdk::Error>) -> Result<Option<u64>, JudgeError> {
+fn window_from(reply: Result<Value, iii_sdk::Error>) -> Result<Listing, JudgeError> {
     match reply {
-        Err(iii_sdk::Error::Timeout) => {
-            Err(JudgeError::Unavailable("judge provider not ready".into()))
-        }
-        Err(_) => Ok(None),
-        Ok(reply) if reply["status"] == "ok" => Ok(smallest(&reply, "context_window")),
-        Ok(_) => Ok(None),
+        Err(iii_sdk::Error::Timeout) => Err(JudgeError::Unavailable(LOADING.into())),
+        Ok(reply) if reply["status"] == "ok" => Ok(Listing {
+            window: smallest(&reply, "context_window"),
+            models: reply["models"].as_array().map(|cards| {
+                cards
+                    .iter()
+                    .filter_map(|card| Some(card.get("name")?.as_str()?.to_owned()))
+                    .collect()
+            }),
+        }),
+        _ => Ok(Listing::default()),
     }
 }
+
+const LOADING: &str = "judge model loading; retry shortly";
 
 /// The smallest `field` among a model listing's cards, if any card
 /// advertises one.
@@ -376,7 +402,6 @@ mod tests {
             "missing_key",
             "http",
             "transport",
-            "invalid_response",
             "something_new",
         ] {
             let error = code(c).unwrap_err();
@@ -386,6 +411,10 @@ mod tests {
         for c in ["deadline", "attempt_timeout", "cancelled"] {
             assert_eq!(code(c).unwrap_err(), JudgeError::Deadline, "{c}");
         }
+        // a local model's failed forward is about that call
+        let invalid = code("invalid_response").unwrap_err();
+        assert_eq!(invalid, JudgeError::Invalid);
+        assert!(!invalid.pauses());
         assert_eq!(code("payload_too_large").unwrap_err(), JudgeError::TooLarge);
         let rejected = code("invalid_request").unwrap_err();
         assert_eq!(rejected, JudgeError::Rejected("invalid_request".into()));
@@ -459,27 +488,43 @@ mod tests {
     }
 
     #[test]
-    fn window_reads_the_smallest_card_and_a_slow_listing_is_not_ready() {
+    fn the_listing_reads_the_smallest_window_and_the_models_and_a_slow_one_is_loading() {
         let listing = json!({"status": "ok", "models": [
             {"name": "a", "context_window": 32768}, {"name": "b", "context_window": 8192},
             {"name": "c"}]});
         assert_eq!(smallest(&listing, "context_window"), Some(8192));
-        assert_eq!(window_from(Ok(listing)), Ok(Some(8192)));
+        assert_eq!(
+            window_from(Ok(listing)),
+            Ok(Listing {
+                window: Some(8192),
+                models: Some(keys(&["a", "b", "c"])),
+            })
+        );
         assert_eq!(
             window_from(Ok(json!({"status": "ok", "models": [{"name": "t"}]}))),
-            Ok(None)
+            Ok(Listing {
+                window: None,
+                models: Some(keys(&["t"])),
+            })
         );
+        // no hub, or a listing that failed: no window and no models
         assert_eq!(
             window_from(Err(iii_sdk::Error::Remote {
                 code: "function_not_found".into(),
                 message: String::new(),
                 stacktrace: None,
             })),
-            Ok(None)
+            Ok(Listing::default())
+        );
+        assert_eq!(
+            window_from(Ok(json!({"status": "error", "code": "missing_key"}))),
+            Ok(Listing::default())
         );
         assert_eq!(
             window_from(Err(iii_sdk::Error::Timeout)),
-            Err(JudgeError::Unavailable("judge provider not ready".into()))
+            Err(JudgeError::Unavailable(
+                "judge model loading; retry shortly".into()
+            ))
         );
     }
 
@@ -494,6 +539,22 @@ mod tests {
         assert_eq!(slots(0).available_permits(), 1);
         assert_eq!(slots(1000).available_permits(), MAX_SLOTS);
         slots(DEFAULT_SLOTS);
+    }
+
+    #[tokio::test]
+    async fn a_call_waits_for_a_slot_of_its_asks_pool() {
+        let iii = IIIClient::new("ws://127.0.0.1:1");
+        let pool = Semaphore::new(1);
+        let _held = pool.acquire().await.unwrap();
+        let evaluation = Evaluation {
+            id: "e".into(),
+            state: json!({}),
+            questions: BTreeMap::new(),
+        };
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let outcome = evaluate(&iii, evaluation, deadline, Some("slot-test"), &pool).await;
+        assert_eq!(outcome, Err(JudgeError::Deadline));
+        assert!(!paused("slot-test", now_ms()));
     }
 
     #[test]

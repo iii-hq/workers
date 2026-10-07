@@ -28,7 +28,7 @@
         "type": "string"
       },
       "timeout_ms": {
-        "default": 120000,
+        "default": 240000,
         "description": "Deadline for the whole ask in ms; work left at the deadline makes the result `incomplete`.",
         "format": "uint64",
         "maximum": 280000.0,

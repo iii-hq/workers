@@ -53,6 +53,8 @@ function rolesLabel(roles: readonly string[]): string {
 const ISSUE_LABELS: Record<string, string> = {
   token_budget: 'judge token budget spent',
   deadline: 'deadline',
+  judge_call_timeout: 'judge calls timed out',
+  invalid_response: 'failed judge evaluations',
   resource_limit: 'size limit',
   provider: 'judge errors',
   'request-size': 'oversized requests',

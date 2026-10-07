@@ -107,7 +107,12 @@ async fn ask_with(
         fx.resolver.clone(),
         fx.cfg.clone(),
         req,
-        move |_| async move { Ok(window) },
+        move |_| async move {
+            Ok(Listing {
+                window,
+                models: None,
+            })
+        },
         evaluate,
         None,
     )
@@ -386,6 +391,63 @@ async fn the_deadline_returns_partial_results_as_incomplete() {
     assert_eq!(paths(&fx, &out), ["needle.rs"]);
 }
 
+/// The judge fails every request that mentions `marker` with `error` and
+/// scores the rest by [`keyword`].
+fn failing_on(log: &Log, marker: &'static str, error: JudgeError) -> Evaluator {
+    judge(log, move |ev| {
+        if ev.state.to_string().contains(marker) {
+            return Err(error.clone());
+        }
+        keyword(ev)
+    })
+}
+
+#[tokio::test]
+async fn a_call_the_judge_timed_out_is_its_own_issue_and_the_ask_goes_on() {
+    // the later file sits a round below, in a request of its own
+    let fx = fixture(
+        &[
+            ("needle.rs", b"needle"),
+            ("needle_dir/sub/later.rs", b"needle failing"),
+        ],
+        |_, _| {},
+    );
+    let log = Log::default();
+    let out = ask(&fx, None, failing_on(&log, "failing", JudgeError::Deadline)).await;
+    assert_eq!(out.status, Status::Incomplete);
+    assert_eq!(out.reason, None);
+    assert!(
+        out.issues.contains_key("judge_call_timeout"),
+        "{:?}",
+        out.issues
+    );
+    assert!(!out.issues.contains_key("deadline"), "{:?}", out.issues);
+    assert_eq!(paths(&fx, &out), ["needle.rs"]);
+}
+
+#[tokio::test]
+async fn an_evaluation_the_judge_failed_is_skipped_without_stopping_the_ask() {
+    // the later file sits a round below, in a request of its own
+    let fx = fixture(
+        &[
+            ("needle.rs", b"needle"),
+            ("needle_dir/sub/later.rs", b"needle failing"),
+        ],
+        |_, _| {},
+    );
+    let log = Log::default();
+    let out = ask(&fx, None, failing_on(&log, "failing", JudgeError::Invalid)).await;
+    assert_eq!(out.status, Status::Incomplete);
+    assert_eq!(out.reason, None);
+    assert!(
+        out.issues.contains_key("invalid_response"),
+        "{:?}",
+        out.issues
+    );
+    assert!(!out.issues.contains_key("provider"), "{:?}", out.issues);
+    assert_eq!(paths(&fx, &out), ["needle.rs"]);
+}
+
 #[tokio::test]
 async fn a_small_window_is_unavailable_without_a_call() {
     let fx = fixture(&[("needle.rs", b"needle")], |_, _| {});
@@ -417,7 +479,7 @@ async fn bad_input_is_c210() {
             fx.resolver.clone(),
             fx.cfg.clone(),
             req,
-            |_| async { Ok(None) },
+            |_| async { Ok(Listing::default()) },
             judge(&log, keyword),
             None,
         )
@@ -639,7 +701,7 @@ async fn git_metadata_is_never_a_walk_root() {
                 path: path.into(),
                 ..input("q", 120_000)
             },
-            |_| async { Ok(None) },
+            |_| async { Ok(Listing::default()) },
             judge(&log, keyword),
             None,
         )
@@ -732,14 +794,14 @@ async fn a_judge_not_ready_is_unavailable_without_a_call() {
         fx.resolver.clone(),
         fx.cfg.clone(),
         input("needle", 120_000),
-        |_| async { Err(JudgeError::Unavailable("judge provider not ready".into())) },
+        |_| async { Err(JudgeError::Unavailable("judge model loading".into())) },
         judge(&log, keyword),
         None,
     )
     .await
     .unwrap();
     assert_eq!(out.status, Status::Unavailable);
-    assert_eq!(out.reason.as_deref(), Some("judge provider not ready"));
+    assert_eq!(out.reason.as_deref(), Some("judge model loading"));
     assert!(log.lock().unwrap().is_empty());
 }
 
@@ -922,7 +984,7 @@ async fn a_reply_missing_an_answer_is_an_invalid_response() {
 }
 
 #[tokio::test]
-async fn answers_are_reused_across_asks_in_one_namespace() {
+async fn answers_are_reused_across_asks_of_one_provider_and_model() {
     let fx = fixture(&[("needle.rs", TWO_FUNCTIONS)], |_, _| {});
     // `fail` rejects the file assessment, which must not be cached
     let judge_for = |log: &Log, fail: bool| {
@@ -933,17 +995,24 @@ async fn answers_are_reused_across_asks_in_one_namespace() {
             by_declaration(ev, |name| if name == "needle" { 0.9 } else { 0.1 })
         })
     };
-    let namespace = format!("test-{}", std::process::id());
-    let ask_cached = |log: &Log, fail: bool| {
+    let provider = format!("test-{}", std::process::id());
+    let ask_listing = |log: &Log, fail: bool, models: Option<&[&str]>| {
+        let models = models.map(|names| names.iter().map(|n| n.to_string()).collect());
         run(
             fx.resolver.clone(),
             fx.cfg.clone(),
             input("where is the needle?", 120_000),
-            |_| async { Ok(None) },
+            |_| async {
+                Ok(Listing {
+                    window: None,
+                    models,
+                })
+            },
             judge_for(log, fail),
-            Some(namespace.clone()),
+            Some(provider.clone()),
         )
     };
+    let ask_cached = |log: &Log, fail: bool| ask_listing(log, fail, Some(&["m"]));
     let logs = [Log::default(), Log::default(), Log::default()];
     let first = ask_cached(&logs[0], true).await.unwrap();
     let second = ask_cached(&logs[1], false).await.unwrap();
@@ -962,6 +1031,14 @@ async fn answers_are_reused_across_asks_in_one_namespace() {
     assert!(logs[2].lock().unwrap().is_empty());
     assert_eq!(texts(&first.files[0]), texts(&third.files[0]));
     assert_eq!(third.status, Status::Complete);
+
+    // another model behind the provider, or a listing that failed, asks
+    // the judge again
+    for models in [Some(&["m2"][..]), None] {
+        let out = ask_listing(&Log::default(), false, models).await.unwrap();
+        assert_eq!(out.stats.cache_hits, 0, "{models:?}");
+        assert_eq!(out.stats.judge_calls, first.stats.judge_calls, "{models:?}");
+    }
 }
 
 #[test]

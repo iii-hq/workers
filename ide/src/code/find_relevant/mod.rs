@@ -39,7 +39,7 @@ use sha2::{Digest, Sha256};
 
 use crate::code::config::CoderConfig;
 use crate::code::error::{err_to_string, CoderError};
-use crate::code::judge::{self, Evaluator, JudgeError, Scores};
+use crate::code::judge::{self, Evaluator, JudgeError, Listing, Scores};
 use crate::code::path::PathResolver;
 use navigate::{Candidate, Run, Stop};
 
@@ -87,7 +87,7 @@ fn default_path() -> String {
 }
 
 fn default_timeout_ms() -> u64 {
-    120_000
+    240_000
 }
 
 fn example_find_relevant_input() -> serde_json::Value {
@@ -206,29 +206,29 @@ pub async fn handle(
     let provider = judge::session_provider();
     let slots = cfg.find_relevant_judge_slots as usize;
     let evaluate = judge::evaluator(iii.clone(), provider.clone(), slots);
-    let cache = Some(provider.clone().unwrap_or_default());
+    let listed = provider.clone();
     run(
         resolver,
         cfg,
         req,
-        |deadline| async move { judge::window(&iii, provider.as_deref(), deadline).await },
+        |deadline| async move { judge::window(&iii, listed.as_deref(), deadline).await },
         evaluate,
-        cache,
+        provider,
     )
     .await
     .map_err(err_to_string)
 }
 
-/// One ask over any judge: `window` runs once with the ask deadline, after
-/// the input is validated; `evaluate` answers every request the answer
-/// cache (namespace `cache`, `None` = bypass) cannot.
-pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
+/// One ask over any judge: `window` lists `provider`'s models (`None` = the
+/// hub's default) once with the ask deadline, after the input is validated;
+/// `evaluate` answers every request the answer cache cannot.
+pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
     resolver: Arc<PathResolver>,
     cfg: Arc<CoderConfig>,
     req: FindRelevantInput,
     window: impl FnOnce(Instant) -> W,
     evaluate: Evaluator,
-    cache: Option<String>,
+    provider: Option<String>,
 ) -> Result<FindRelevantOutput, CoderError> {
     let started = Instant::now();
     if req.query.trim().is_empty() {
@@ -273,13 +273,23 @@ pub async fn run<W: Future<Output = Result<Option<u64>, JudgeError>>>(
             ..Stats::default()
         },
     };
-    let window = match window(deadline).await {
+    let listing = match window(deadline).await {
         Err(error) => return Ok(logged(unavailable(error.reason()))),
-        Ok(Some(tokens)) if tokens < MIN_WINDOW_TOKENS => {
+        Ok(Listing {
+            window: Some(tokens),
+            ..
+        }) if tokens < MIN_WINDOW_TOKENS => {
             return Ok(logged(unavailable("judge window too small".into())))
         }
-        Ok(window) => window,
+        Ok(listing) => listing,
     };
+    let window = listing.window;
+    // Answers are kept per provider and listed models, so a switched hub
+    // default or model never serves old ones; a failed listing bypasses.
+    let cache = listing.models.map(|models| {
+        serde_json::json!({ "provider": provider.unwrap_or_default(), "models": models })
+            .to_string()
+    });
     // A known window caps every request at twice its tokens.
     let cap = |jevgrep: usize| window.map_or(jevgrep, |tokens| jevgrep.min(2 * tokens as usize));
 
@@ -595,12 +605,9 @@ impl AnswerCache {
 
 /// cache.ts `key`: sha256 of `[1, namespace, state, questions]`; `None`
 /// (bypass the cache) if the request cannot be serialized.
-// ponytail: the key names the session's provider but not the hub's model,
-// nor, for `""`, the hub's default provider; a swap of either serves old
-// answers until restart. Resolve both in `judge::window` if swaps happen.
-fn cache_key(provider: &str, request: &Evaluation) -> Option<[u8; 32]> {
+fn cache_key(judge: &str, request: &Evaluation) -> Option<[u8; 32]> {
     let namespace = serde_json::json!({
-        "provider": provider,
+        "judge": judge,
         "promptVersion": PROMPT_VERSION,
         "parserVersion": PARSER_VERSION,
     });

@@ -182,7 +182,8 @@ again. Set `path` to the folder of the component the question is about
 and the judge bills per token, so a whole-repo ask on a large repository
 takes minutes and stops at the judge token budget (reason `token_budget`).
 `incomplete` means partial coverage (narrow `path` and retry);
-`unavailable` means no judge answered (fall back to `coder::search`). The
+`unavailable` means no judge answered (fall back to `coder::search`; with
+reason `judge model loading; retry shortly`, retry the ask in a minute). The
 query, root-relative paths and file text go to the session's judge
 provider, which may be hosted; protected, ignored and secret-looking files
 never do, nor hidden entries below `path` (so never point `path` at a

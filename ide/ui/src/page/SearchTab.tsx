@@ -46,7 +46,7 @@ const DEBOUNCE_MS = 220
 const ROW_HEIGHT = 22
 const MIN_AUTO_QUERY = 2
 /** The worker's deadline for one ask; it answers `incomplete` when it runs out. */
-const ASK_TIMEOUT_MS = 120_000
+const ASK_TIMEOUT_MS = 240_000
 /** Nothing to highlight: the judge's rows carry no literal hit. */
 const NO_HIGHLIGHT = { query: '', regex: false, ignoreCase: true, wholeWord: false }
 
