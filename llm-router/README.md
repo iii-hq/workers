@@ -341,7 +341,9 @@ It is resolved at read time against the provider's current catalog slice:
    `claude-sonnet-5-5`), ranked in the order `default_models` first names
    it. Within a ranked variant the newest version in the slice wins,
    listed or not, so a newer Luna never beats a Terra when Terra is listed
-   first;
+   first. A model with a ranked variant counts even outside the first
+   preference's family, as long as it has the same `vendor/` prefix, so
+   Copilot ranks GPT and Claude models in one list;
 2. ids with no ranked variant come last: the first id in the declared
    `default_models` the slice holds, else the slice model sharing the
    longest id prefix with the first preference, as long as they share the

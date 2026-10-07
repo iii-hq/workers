@@ -77,8 +77,10 @@ pub fn make_provider_list(
 
 /// The model to start with, given the provider's ordered preferences and
 /// the chat model ids its catalog slice holds right now. Candidates are the
-/// listed ids plus every slice model in the first preference's family (the
-/// id up to its first `-`, e.g. `claude`, `gpt`, `codex/gpt`).
+/// listed ids, every slice model in the first preference's family (the id
+/// up to its first `-`, e.g. `claude`, `gpt`, `codex/gpt`), and every slice
+/// model with a ranked variant and the same `vendor/` prefix, so one
+/// provider can rank GPT and Claude models in one list.
 ///
 /// 1. Variant first. A variant is the first all-letter id segment after
 ///    the family (`terra` in `gpt-6.1-terra`, `sonnet` in
@@ -93,6 +95,9 @@ pub fn make_provider_list(
 pub fn resolve_default_model(preferences: &[String], slice_ids: &[String]) -> Option<String> {
     let first = preferences.first()?;
     let family_len = first.find('-').map_or(first.len(), |i| i + 1);
+    // `copilot/` in `copilot/gpt-6.1-terra`: a ranked variant from another
+    // family still needs it.
+    let vendor = &first[..first[..family_len].rfind('/').map_or(0, |i| i + 1)];
     let mut variants: Vec<&str> = Vec::new();
     for v in preferences.iter().filter_map(|p| variant(p)) {
         if !variants.contains(&v) {
@@ -125,7 +130,11 @@ pub fn resolve_default_model(preferences: &[String], slice_ids: &[String]) -> Op
     slice_ids
         .iter()
         .map(|id| (common_prefix_len(first, id), id))
-        .filter(|(shared, id)| *shared >= family_len || listed(id) < preferences.len())
+        .filter(|(shared, id)| {
+            *shared >= family_len
+                || listed(id) < preferences.len()
+                || (id.starts_with(vendor) && rank(id) < variants.len())
+        })
         .max_by(|(a_len, a), (b_len, b)| {
             let by_variant = rank(b).cmp(&rank(a));
             let within = if rank(a) < variants.len() {
@@ -317,6 +326,46 @@ mod tests {
         assert_eq!(
             pick(&["claude-3-opus-20240229", "claude-3-5-sonnet-20241022"]).as_deref(),
             Some("claude-3-5-sonnet-20241022")
+        );
+    }
+
+    #[test]
+    fn one_list_ranks_gpt_then_claude_variants() {
+        // Copilot serves both families: GPT variants first, then Claude.
+        let prefs = ids(&[
+            "copilot/gpt-6.1-terra",
+            "copilot/gpt-6.1-sol",
+            "copilot/gpt-6.1-luna",
+            "copilot/claude-sonnet-5.5",
+            "copilot/claude-opus-5.5",
+            "copilot/claude-fable-5.1",
+            "copilot/claude-haiku-5.5",
+        ]);
+        let pick = |slice: &[&str]| resolve_default_model(&prefs, &ids(slice));
+        assert_eq!(
+            pick(&["copilot/claude-sonnet-5.5", "copilot/gpt-5-luna"]).as_deref(),
+            Some("copilot/gpt-5-luna")
+        );
+        // No ranked GPT: unlisted Claude versions rank by variant, then version.
+        assert_eq!(
+            pick(&[
+                "copilot/gpt-4.1",
+                "copilot/claude-haiku-4.5",
+                "copilot/claude-opus-4.5",
+                "copilot/claude-sonnet-4.5",
+                "copilot/claude-sonnet-4.6",
+            ])
+            .as_deref(),
+            Some("copilot/claude-sonnet-4.6")
+        );
+        assert_eq!(
+            pick(&[
+                "copilot/gpt-4.1",
+                "copilot/claude-haiku-4.5",
+                "copilot/claude-opus-4.5"
+            ])
+            .as_deref(),
+            Some("copilot/claude-opus-4.5")
         );
     }
 
