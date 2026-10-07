@@ -244,12 +244,20 @@ export const test = base.extend<FixtureValues>({
         if (child.exitCode === null && child.signalCode === null) {
           child.kill('SIGTERM')
         }
-        let exited = await Promise.race([exit, delay(30_000).then(() => null)])
+        // Let the runner finish its 30s evidence collection and 15s teardown.
+        const exited = await Promise.race([
+          exit,
+          delay(60_000).then(() => null),
+        ])
         if (!exited) {
           child.kill('SIGKILL')
-          exited = await exit
+          await exit
         }
         await attachLogs()
+        if (!exited)
+          throw new Error(
+            'harness-integration did not finish shutdown within 60s',
+          )
         const result = JSON.parse(
           await readFile(ready.result_path, 'utf8'),
         ) as PlaygroundResult
