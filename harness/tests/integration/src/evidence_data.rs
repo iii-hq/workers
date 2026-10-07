@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
+use crate::canonical::{canonical_json, sha256_of_bytes};
 use crate::types::trace::{strip_engine_fields, TraceEvidenceV1, TraceSpanV1, TraceSummaryV1};
 
 /// Everything a scenario's `verify` function may inspect.
@@ -277,6 +278,59 @@ impl RunEvidence {
         Ok(())
     }
 
+    /// Every assistant entry of the root session carries, as `origin.req`, the
+    /// fingerprint (sha256 of the canonical `system_prompt`, `tools` and
+    /// `messages`, plus the message count) of the router request that produced
+    /// it, and names its `build`. The request is the raw one the scripted
+    /// router received, so a transformation between the stamp and the call
+    /// shows here.
+    pub fn expect_request_fingerprints(&self) -> anyhow::Result<()> {
+        let sha = |value: &Value| sha256_of_bytes(canonical_json(value).as_bytes());
+        let mut checked = 0;
+        let requests = self
+            .router_evidence
+            .get("calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|call| call["outcome"] == "matched")
+            .filter_map(|call| call.get("request"))
+            .filter(|request| request["session_id"] == self.session_id.as_str());
+        for request in requests {
+            let id = request["request_id"].as_str().unwrap_or_default();
+            let (turn_id, step) = id
+                .rsplit_once(':')
+                .ok_or_else(|| anyhow::anyhow!("request_id {id:?} is not <turn_id>:<step>"))?;
+            let entry_id = format!("e_{turn_id}_{step}_assistant");
+            let origin = self
+                .transcript
+                .iter()
+                .find(|item| item["entry_id"] == entry_id.as_str())
+                .map(|item| &item["origin"])
+                .ok_or_else(|| anyhow::anyhow!("no assistant entry {entry_id} for {id}"))?;
+            let req = json!({
+                "system_sha": sha(&request["system_prompt"]),
+                "tools_sha": sha(&request["tools"]),
+                "messages_sha": sha(&request["messages"]),
+                "n": request["messages"].as_array().map_or(0, Vec::len),
+            });
+            anyhow::ensure!(
+                origin["req"] == req,
+                "{entry_id}: origin.req {} is not the fingerprint of the request sent for {id}: {req}",
+                origin["req"]
+            );
+            anyhow::ensure!(
+                origin["build"]
+                    .as_str()
+                    .is_some_and(|build| !build.is_empty()),
+                "{entry_id}: origin.build is missing"
+            );
+            checked += 1;
+        }
+        anyhow::ensure!(checked > 0, "no router request to fingerprint");
+        Ok(())
+    }
+
     /// The raw router requests of every step-0 generation (`request_id` ends in
     /// `:0`): each turn's opening call, across sessions, in arrival order.
     pub fn step_zero_requests(&self) -> Vec<Value> {
@@ -500,5 +554,43 @@ mod tests {
                 ("t_a:3".to_string(), "messages[2] changed".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn request_fingerprints_must_match_the_request_the_router_received() {
+        // sha256 of `null`, of `[]` and of the compact canonical messages: the
+        // vectors the harness's own unit test pins on the writing side.
+        const NULL: &str = "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
+        const EMPTY: &str = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945";
+        const MESSAGES: &str = "4e79873118cd9be7a1f0308b9cd772950c5410c74ca3fe1ba2626cba009a9237";
+        let mut evidence = base_evidence();
+        evidence.router_evidence = json!({ "calls": [
+            { "outcome": "matched", "request": {
+                "request_id": "t1:0", "session_id": "session-1", "tools": [],
+                "messages": [{ "role": "user", "content": "hi" }]
+            } },
+            // Another session's request and an unmatched call have no entry here.
+            { "outcome": "matched", "request": {
+                "request_id": "c1:0", "session_id": "child", "tools": [], "messages": []
+            } },
+            { "outcome": "unexpected_call", "request": {
+                "request_id": "t1:9", "session_id": "session-1", "tools": [], "messages": []
+            } },
+        ] });
+        let entry = |messages_sha: &str| {
+            json!({ "entry_id": "e_t1_0_assistant", "origin": { "build": "abc", "req": {
+                "system_sha": NULL, "tools_sha": EMPTY, "messages_sha": messages_sha, "n": 1
+            } } })
+        };
+
+        evidence.transcript = vec![entry(MESSAGES)];
+        evidence.expect_request_fingerprints().unwrap();
+
+        evidence.transcript = vec![entry(EMPTY)];
+        let error = evidence.expect_request_fingerprints().unwrap_err();
+        assert!(error.to_string().contains("e_t1_0_assistant"), "{error}");
+
+        evidence.transcript = Vec::new();
+        assert!(evidence.expect_request_fingerprints().is_err());
     }
 }

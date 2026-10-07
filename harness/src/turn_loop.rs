@@ -233,8 +233,12 @@ fn origin_with(turn_id: &str, annotations: &serde_json::Map<String, Value>) -> V
 /// Harness build that ran it (`build`, see build.rs) and fingerprinting the
 /// request it sent (`req`): sha256 hex of the compact JSON (object keys sorted)
 /// of the system prompt, the tools and the messages exactly as handed to the
-/// router, plus the message count. Stamped after the hook annotations so a hook
-/// cannot overwrite them.
+/// router, plus the message count (not `thinking_level`, `response_format`,
+/// `max_output_tokens` or `provider_options`). Stamped after the hook
+/// annotations so a hook cannot overwrite them. Written when the step opens
+/// its entry: `session::update-message` never rewrites a stored `origin`, so a
+/// step redelivered after a restart keeps the stamp of the attempt that
+/// opened it.
 fn generate_origin(
     turn_id: &str,
     annotations: &serde_json::Map<String, Value>,
@@ -740,7 +744,7 @@ async fn generate_step(
     let (
         gen_system_prompt,
         gen_annotations,
-        gen_messages,
+        mut gen_messages,
         new_notices,
         generation_input_tokens,
         generation_max_output_tokens,
@@ -1029,6 +1033,9 @@ async fn generate_step(
     // repair. Persisted pruning happens with the normal pre-generation write.
     trigger::retain_visible_contract_sources(&mut record.function_contract_ledger, &gen_messages);
 
+    // The router client strips file blocks again (hook appends are not covered
+    // by assembly); do it first so the fingerprint is of what it sends.
+    crate::clients::router::strip_file_blocks(&mut gen_messages);
     let assistant_origin = generate_origin(
         &record.turn_id,
         &gen_annotations,
@@ -4167,6 +4174,23 @@ mod tests {
         assert_eq!(origin["build"], env!("GIT_SHA"));
         assert!(origin["req"].is_object());
         assert_eq!(origin["memory"], "bank");
+    }
+
+    #[test]
+    fn the_request_fingerprint_is_the_sha256_of_the_canonical_json() {
+        // The integration runner pins the same vectors when it checks a stamped
+        // entry against the request the router received.
+        let messages = [serde_json::json!({ "role": "user", "content": "hi" })];
+        let origin = super::generate_origin("t1", &serde_json::Map::new(), None, &[], &messages);
+        assert_eq!(
+            origin["req"],
+            serde_json::json!({
+                "system_sha": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+                "tools_sha": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "messages_sha": "4e79873118cd9be7a1f0308b9cd772950c5410c74ca3fe1ba2626cba009a9237",
+                "n": 1,
+            })
+        );
     }
 
     fn valid_ask() -> serde_json::Value {
