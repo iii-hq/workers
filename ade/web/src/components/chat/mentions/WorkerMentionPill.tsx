@@ -67,7 +67,7 @@ export function WorkerMentionPill({
           : undefined
 
   const pillClass = cn(
-    'inline-flex max-w-[24rem] items-center gap-1 px-1.5 h-[20px] -mt-[2px] rounded-xs align-middle text-[13px] text-ink select-none transition-colors',
+    'inline-flex min-w-0 max-w-[24rem] items-center gap-1 overflow-hidden px-1.5 h-[20px] -mt-[2px] rounded-xs align-middle text-[13px] text-ink select-none transition-colors',
     selected ? 'bg-surface-selected' : 'bg-surface',
     (pillRef || clickable) && 'cursor-pointer',
     clickable &&

@@ -4,9 +4,10 @@
  * testable without an editor.
  *
  * - **Global** (`@text`): the providers whose name matches ("sources" —
- *   picking one drills into it), then the functions & files list as it
- *   always was, then one group per provider with its best few items and a
- *   "more in <provider>" row that drills in carrying the text.
+ *   picking one drills into it), then — from two characters on — one group
+ *   per provider with its best few items and a "more <label>" row that
+ *   drills in carrying the text, then the functions & files list as it
+ *   always was.
  * - **Scoped** (`@kanban:text`): that provider's items only.
  */
 
@@ -134,20 +135,8 @@ export function buildGlobalMenu({
       row: { kind: 'provider', provider },
     })
   }
-  for (const candidate of catalog) {
-    entries.push({
-      key: catalogKey(candidate),
-      section: CATALOG,
-      row: { kind: 'candidate', candidate },
-    })
-  }
-  if (catalogRemaining > 0) {
-    entries.push({
-      key: 'more',
-      section: CATALOG,
-      row: { kind: 'more', remaining: catalogRemaining },
-    })
-  }
+  // Worker groups come before functions & files: ten file hits would
+  // otherwise push them out of the menu's view.
   if (query.trim().length >= PROVIDER_MIN_QUERY) {
     for (const provider of providers) {
       const items = results.get(provider.name)?.items ?? []
@@ -164,6 +153,20 @@ export function buildGlobalMenu({
         })
       }
     }
+  }
+  for (const candidate of catalog) {
+    entries.push({
+      key: catalogKey(candidate),
+      section: CATALOG,
+      row: { kind: 'candidate', candidate },
+    })
+  }
+  if (catalogRemaining > 0) {
+    entries.push({
+      key: 'more',
+      section: CATALOG,
+      row: { kind: 'more', remaining: catalogRemaining },
+    })
   }
   return entries
 }

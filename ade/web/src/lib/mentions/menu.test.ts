@@ -93,18 +93,22 @@ describe('buildGlobalMenu', () => {
     results: results({}),
   }
 
-  it('lists matching sources first, then the catalog, then provider groups', () => {
+  it('lists matching sources, then provider groups, then the catalog', () => {
     const entries = buildGlobalMenu({
       ...base,
       query: 'kan',
+      catalogRemaining: 3,
       results: results({ kanban: items(2), session: items(1, 's') }),
     })
+    // Worker groups sit above functions & files so a long file list never
+    // pushes them out of the menu's view.
     expect(entries.map((e) => `${e.section.key}/${e.row.kind}`)).toEqual([
       'sources/provider',
-      'catalog/candidate',
       'provider:kanban/entity',
       'provider:kanban/entity',
       'provider:session/entity',
+      'catalog/candidate',
+      'catalog/more',
     ])
   })
 
