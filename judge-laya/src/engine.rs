@@ -1,7 +1,8 @@
 //! laya's checkpoint in llama.cpp (crates/llama-native): the encoder and the
-//! decision head in one graph, which scores every token for each question
-//! type (choice, score, noul); a row's option scores are its question type's
-//! column at its `[MASK]` markers. It runs on llama-runtime's `Runtime`: one
+//! decision head in one graph. Every token carries its row's question type as
+//! a decision order, so the head runs once per pass (not once per type); a
+//! row's option scores are its question type's column at its `[MASK]`
+//! markers. It runs on llama-runtime's `Runtime`: one
 //! thread owns the model and a context sized for a full pass (embeddings, no
 //! pooling, no KV cache) and runs the passes in arrival order.
 use anyhow::{ensure, Result};
@@ -42,6 +43,10 @@ impl Default for Options {
 /// One row: its token ids, the positions of its `[MASK]` markers and its
 /// question type (`encode::QType`, the score column).
 pub type Row = (Vec<u32>, Vec<usize>, u32);
+
+/// The `llama_decision_order` of a question type's tokens, by `encode::QType`
+/// (choice, score, noul): the head reads each token's type from it.
+const ORDERS: [u8; 3] = [2, 3, 1];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stop {
@@ -127,9 +132,10 @@ fn scores(
     let mut batch = Batch::default();
     let mut starts = Vec::with_capacity(rows.len());
     let mut start = 0;
-    for (seq, (ids, _, _)) in rows.iter().enumerate() {
+    for (seq, (ids, _, qtype)) in rows.iter().enumerate() {
+        let order = *ORDERS.get(*qtype as usize).ok_or(Stop::Failed)?;
         for (pos, &id) in ids.iter().enumerate() {
-            batch.add(id as i32, pos as i32, seq as i32, true);
+            batch.add_ordered(id as i32, pos as i32, seq as i32, true, order);
         }
         starts.push(start);
         start += ids.len();

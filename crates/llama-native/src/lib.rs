@@ -78,6 +78,7 @@ extern "C" {
         pos: *const i32,
         seq: *const i32,
         output: *const i8,
+        orders: *const u8,
         n_tokens: i32,
     ) -> i32;
     // llama.h
@@ -394,16 +395,26 @@ pub struct Batch {
     pos: Vec<i32>,
     seq: Vec<i32>,
     output: Vec<i8>,
+    orders: Vec<u8>,
 }
 
 impl Batch {
     /// `token` at position `pos` of sequence `seq`. `output` keeps its logits
     /// (or embeddings) for reading at this row's index in the batch.
     pub fn add(&mut self, token: i32, pos: i32, seq: i32, output: bool) {
+        self.add_ordered(token, pos, seq, output, 0);
+    }
+
+    /// [`Self::add`] with the token's `llama_decision_order` (as in
+    /// [`Model::decide`]). A laya decision head reads each token's question
+    /// type from it (1 noul, 2 choice, 3 score on every token of a row) and
+    /// runs once instead of once per type.
+    pub fn add_ordered(&mut self, token: i32, pos: i32, seq: i32, output: bool, order: u8) {
         self.tokens.push(token);
         self.pos.push(pos);
         self.seq.push(seq);
         self.output.push(i8::from(output));
+        self.orders.push(order);
     }
 }
 
@@ -450,7 +461,13 @@ impl Context<'_> {
     }
 
     fn process(&mut self, batch: &Batch, encode: bool) -> Result<()> {
-        // SAFETY: the four vectors hold one entry per token.
+        // Only llama_batch_ext carries orders: a batch without any takes llama_batch.
+        let orders = if batch.orders.iter().any(|&order| order != 0) {
+            batch.orders.as_ptr()
+        } else {
+            ptr::null()
+        };
+        // SAFETY: the five vectors hold one entry per token.
         let status = unsafe {
             ln_process(
                 self.raw.as_ptr(),
@@ -459,6 +476,7 @@ impl Context<'_> {
                 batch.pos.as_ptr(),
                 batch.seq.as_ptr(),
                 batch.output.as_ptr(),
+                orders,
                 i32::try_from(batch.tokens.len())?,
             )
         };

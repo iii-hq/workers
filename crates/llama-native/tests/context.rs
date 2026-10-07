@@ -271,6 +271,31 @@ fn encodes_rows_to_token_embeddings() {
         drift < 1e-3 * scale,
         "rows drift by {drift} (scale {scale})"
     );
+    // With each row's question type as a decision order (native/
+    // llama-laya-head-per-type.patch) the head runs once: every column holds
+    // the score of the row's own type, as the per-type head computed it.
+    let mut typed = Batch::default();
+    for (seq, (ids, order)) in [(&a, 2u8), (&b, 1)].into_iter().enumerate() {
+        for (pos, &id) in ids.iter().enumerate() {
+            typed.add_ordered(id, pos as i32, seq as i32, true, order);
+        }
+    }
+    ctx.encode(&typed).unwrap();
+    let once = rows(&ctx, a.len() + b.len());
+    for (i, (row, per_type)) in once.iter().zip(&encoded).enumerate() {
+        // choice is column 0, noul column 2
+        let column = if i < a.len() { 0 } else { 2 };
+        assert!(row.iter().all(|&v| v == row[0]), "row {i}: {row:?}");
+        assert!(
+            (row[0] - per_type[column]).abs() < 1e-4,
+            "row {i}: {} vs {}",
+            row[0],
+            per_type[column]
+        );
+    }
+    let mut bad = Batch::default();
+    bad.add_ordered(a[0], 0, 0, true, 5);
+    assert!(ctx.encode(&bad).is_err());
     // Past n_ubatch an encode is refused (llama.cpp would abort).
     let mut long = Batch::default();
     for pos in 0..65 {

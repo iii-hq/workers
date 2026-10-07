@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <memory>
 #include <string>
 #include <strings.h>
 #include <vector>
@@ -100,13 +101,18 @@ extern "C" llama_context * ln_context_new(llama_model * model, uint32_t n_ctx, u
 // on: no tokens, more than n_batch (n_ubatch when the pass is one micro-batch:
 // an encode, or a context without memory or causal attention), an encode on a
 // context with memory (llama.cpp's encoder graph gets no memory context), a
-// sequence outside [0, n_seq_max) or a negative position. -1006 when the pass
+// sequence outside [0, n_seq_max) or a negative position, or (with orders)
+// a token the batch refuses or an order past LLAMA_DECISION_ORDER_OPTION.
+// orders, when not null, gives each token's llama_decision_order (llama-ext.h,
+// which only llama_batch_ext carries): a laya decision head reads its question
+// type from it (native/llama-laya-head-per-type.patch). -1006 when the pass
 // throws (e.g. a Vulkan allocation), else llama.cpp's own code: 0 done, 1 no
 // memory slot, 2 aborted, -1 a batch it refuses (a token outside the
 // vocabulary, positions that do not continue their sequence), -2/-3 compute
 // failures.
 extern "C" int32_t ln_process(llama_context * ctx, bool encode, const int32_t * tokens, const int32_t * pos,
-                              const int32_t * seq, const int8_t * output, int32_t n_tokens) {
+                              const int32_t * seq, const int8_t * output, const uint8_t * orders,
+                              int32_t n_tokens) {
     const bool one_ubatch = encode || !llama_get_memory(ctx) || !llama_get_causal_attn(ctx);
     if ((encode && llama_get_memory(ctx)) || n_tokens < 1 ||
         (uint32_t) n_tokens > (one_ubatch ? llama_n_ubatch(ctx) : llama_n_batch(ctx))) {
@@ -121,6 +127,20 @@ extern "C" int32_t ln_process(llama_context * ctx, bool encode, const int32_t * 
                 return -1001;
             }
             seq_id[i] = const_cast<llama_seq_id *>(&seq[i]);
+        }
+        if (orders) {
+            std::unique_ptr<llama_batch_ext, decltype(&llama_batch_ext_free)> batch(llama_batch_ext_init(ctx),
+                                                                                    llama_batch_ext_free);
+            for (int32_t i = 0; i < n_tokens; i++) {
+                const llama_pos p = pos[i];
+                if (orders[i] > LLAMA_DECISION_ORDER_OPTION || llama_batch_ext_add_token(batch.get(), seq[i], tokens[i]) != i ||
+                    !llama_batch_ext_set_pos(batch.get(), i, &p) ||
+                    !llama_batch_ext_set_output_embd(batch.get(), i, output[i] != 0) ||
+                    (orders[i] && !llama_batch_ext_set_decision_order(batch.get(), i, (llama_decision_order) orders[i]))) {
+                    return -1001;
+                }
+            }
+            return llama_process(ctx, encode ? LLAMA_PROCESS_TYPE_ENCODE : LLAMA_PROCESS_TYPE_DECODE, batch.get());
         }
         const llama_batch batch = {
             n_tokens, const_cast<llama_token *>(tokens), nullptr, const_cast<llama_pos *>(pos),

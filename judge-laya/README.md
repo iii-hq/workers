@@ -48,8 +48,10 @@ keys; it leaves out only that converter's names, classifier pooling, chat
 template and llama.cpp tokenizer settings, and names pooling none and the
 vocabulary's end of text as EOS, so llama.cpp loads it without warnings
 (`tests/gguf.rs` checks the tiny checkpoint against the converter's output).
-The graph scores every token for each question type; the worker reads its
-question's column at the `[MASK]` markers (no pooling). Matrices stay f16:
+Every token carries its question's type as a decision order, so the head runs
+once per pass (a patch to llama.cpp, whose graph otherwise runs it once per
+question type); the worker reads its question's column at the `[MASK]`
+markers (no pooling). Matrices stay f16:
 Q8_0 moved laya's calibrated probabilities by up to 0.04 and flipped one
 fixture answer at 512 tokens.
 
@@ -99,9 +101,10 @@ Measured on an i9-14900K and an RX 6900 XT (`laya`, warm medians): on Vulkan
 one 43-token question answers in 17 ms, four questions over a ticket in 37 ms,
 one full 512-token row in 47 ms and 16 of them (one 8192-token pass) in
 0.67 s, 2–5x faster than when the decision head ran in candle on the CPU. On
-the CPU (8 threads) the same requests take 0.08 s, 0.47 s, 0.8 s and 15 s:
-the graph runs the head for all three question types, up to 16% slower than
-the candle head was. Rows that fill the window cost more; laya's
+the CPU (8 threads) nine questions over three states (2.2k tokens) take 2.8 s
+and ten over one long state (ten 512-token rows) 7.1 s, 11–20% less than when
+the graph ran the head once per question type (17–29% on
+`laya-multilingual`). Rows that fill the window cost more; laya's
 bidirectional encoder reads state and question together, so nothing is shared
 between questions (no prefix reuse). Keep `timeout_ms` honest for a big state
 with a hundred questions, or route such callers to a hosted provider.
