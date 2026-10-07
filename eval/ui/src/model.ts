@@ -344,6 +344,8 @@ export interface BriefInput {
   status?: string
   /** The registered success criterion, as a sentence. */
   criterion?: string
+  /** What the replay at the decision point showed, as a sentence. */
+  replay?: string
   /** The directory the investigation read code in. */
   codeRoot?: string
 }
@@ -387,8 +389,9 @@ export function briefMarkdown(input: BriefInput): string {
       entries.length > 0 ? [`${entries.join(', ')} (open ${input.analysisId} for the entries)`] : [],
     ),
     ...section('Limitations', [suggestion.limitations]),
-    ...section('Prove it in E2E', [
-      `Scenario: ${validation.scenario_id ?? 'new case needed'}`,
+    ...section('Replay at the decision point', input.replay ? [input.replay] : []),
+    ...section('Non-regression in E2E', [
+      `Scenario: ${validation.scenario_id ?? 'none named'}`,
       ...(input.criterion ? [`Criterion: ${input.criterion}`] : []),
       `Primary metric: ${validation.primary_metric}`,
       `Expectation: ${validation.expectation}`,

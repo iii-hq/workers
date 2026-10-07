@@ -5,14 +5,14 @@ use crate::contract::{
     AttachValidationResponseV1, ConfigureRequestV1, EvalCancelResponseV1, EvalDeleteResponseV1,
     EvalListRequestV1, EvalListResponseV1, EvalResultResponseV1, EvaluationIdRequestV1,
     MonitorConfigV1, MonitorStateRequestV1, MonitorStateResponseV1, ProposeValidationRequestV1,
-    ProposeValidationResponseV1, RecurrenceRequestV1, RecurrenceResponseV1, ReviewRequestV1,
-    ReviewsRequestV1, ReviewsResponseV1, StartValidationRequestV1, StartValidationResponseV1,
-    StepRequestV1, StepResponseV1, SuggestionReviewV1, SweepEventV1, SweepResponseV1, WakeEventV1,
-    WakeResponseV1,
+    ProposeValidationResponseV1, RecurrenceRequestV1, RecurrenceResponseV1, ReproduceRequestV1,
+    ReproduceResponseV1, ReviewRequestV1, ReviewsRequestV1, ReviewsResponseV1,
+    StartValidationRequestV1, StartValidationResponseV1, StepRequestV1, StepResponseV1,
+    SuggestionReviewV1, SweepEventV1, SweepResponseV1, WakeEventV1, WakeResponseV1,
 };
 use crate::functions::{
     ANALYZE_SESSION_ID, ATTACH_VALIDATION_ID, CANCEL_ID, CONFIGURE_ID, CONFIG_ID, DELETE_ID,
-    LIST_ID, PROPOSE_VALIDATION_ID, RECURRENCE_ID, RESULT_ID, REVIEWS_ID, REVIEW_ID,
+    LIST_ID, PROPOSE_VALIDATION_ID, RECURRENCE_ID, REPRODUCE_ID, RESULT_ID, REVIEWS_ID, REVIEW_ID,
     START_VALIDATION_ID, STATUS_ID, STEP_ID, SWEEP_ID, WAKE_ID,
 };
 
@@ -52,6 +52,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ReviewRequestV1, SuggestionReviewV1>(REVIEW_ID),
         spec::<ReviewsRequestV1, ReviewsResponseV1>(REVIEWS_ID),
         spec::<RecurrenceRequestV1, RecurrenceResponseV1>(RECURRENCE_ID),
+        spec::<ReproduceRequestV1, ReproduceResponseV1>(REPRODUCE_ID),
         spec::<StepRequestV1, StepResponseV1>(STEP_ID),
         spec::<WakeEventV1, WakeResponseV1>(WAKE_ID),
         spec::<SweepEventV1, SweepResponseV1>(SWEEP_ID),

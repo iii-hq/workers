@@ -7,8 +7,8 @@ use serde_json::json;
 use crate::contract::{
     AnalyzeSessionRequestV1, AttachValidationRequestV1, ConfigureRequestV1, EvalListRequestV1,
     EvaluationIdRequestV1, MonitorStateRequestV1, ProposeValidationRequestV1, RecurrenceRequestV1,
-    ReviewRequestV1, ReviewsRequestV1, StartValidationRequestV1, StepRequestV1, SweepEventV1,
-    WakeEventV1,
+    ReproduceRequestV1, ReviewRequestV1, ReviewsRequestV1, StartValidationRequestV1, StepRequestV1,
+    SweepEventV1, WakeEventV1,
 };
 use crate::runtime::Deps;
 
@@ -26,6 +26,7 @@ pub const START_VALIDATION_ID: &str = "eval::start-validation";
 pub const REVIEW_ID: &str = "eval::review";
 pub const REVIEWS_ID: &str = "eval::reviews";
 pub const RECURRENCE_ID: &str = "eval::recurrence";
+pub const REPRODUCE_ID: &str = "eval::reproduce";
 pub const STEP_ID: &str = "eval::step";
 pub const WAKE_ID: &str = "eval::on-turn-completed";
 pub const SWEEP_ID: &str = "eval::sweep";
@@ -293,6 +294,28 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             "For a suggestion marked shipped with its version, how often its patterns were found \
              per analysis on Harness versions before it against from it on. Analyses without a \
              semantic Harness version are left out and counted.",
+        ),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        REPRODUCE_ID,
+        RegisterFunction::new_async(move |request: ReproduceRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::reproduce::reproduce(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "Replay the decision point of a suggestion: rebuild the request the model received at \
+             that step of the observed turn (optionally with edits that stand for the proposed \
+             change), sample the next reply N times (default 20) without running any function, \
+             and read the suggestion's signal in each reply. Spends model tokens; with dry_run it \
+             only rebuilds the request, checks its fidelity against the recorded usage and \
+             reports the original reply. extend adds replies to an earlier reproduction, or with \
+             samples 0 finishes one that failed. Results land in eval::result reviews.",
         ),
     );
 

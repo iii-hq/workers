@@ -202,7 +202,10 @@ function DetailBody({
   const [comparing, setComparing] = useState<string | null>(null)
   // The clock and the poll belong to an analysis that is running; a hidden
   // browser tab pauses both.
-  const watching = running
+  // A replay of a suggestion runs after the analysis ended: its progress is polled too.
+  const replaying =
+    result?.reviews.some((row) => row.reproductions?.some((reproduction) => reproduction.state === 'running')) ?? false
+  const watching = running || replaying
   useEffect(() => {
     if (!watching) return
     setNow(Date.now())

@@ -102,7 +102,7 @@ impl InFlight {
         self.lock().remove(id);
     }
 
-    fn contains(&self, id: &str) -> bool {
+    pub(crate) fn contains(&self, id: &str) -> bool {
         self.lock().contains(id)
     }
 
@@ -1393,6 +1393,7 @@ fn e2e_reference(execution_id: &str, bundle: &Value) -> E2eExecutionRefV1 {
 /// the E2E.
 pub async fn sweep(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
     let response = resume_analyses(deps).await?;
+    crate::reproduce::expire_interrupted(deps).await;
     // Last: waiting on the E2E never delays the monitor's own recovery.
     validation::advance_runs(deps).await;
     Ok(response)
@@ -1788,6 +1789,10 @@ async fn collect_stage(
             record.coverage = Some(snapshot.coverage.level);
             record.source_title = snapshot.source_title.clone();
             assets.snapshot = Some(*snapshot);
+            // Best effort: the Harness keeps only a session's latest turn, so
+            // a reproduction later needs this copy of the observed one.
+            assets.capture =
+                crate::reproduce::capture_turn(deps, &record.session_id, &record.turn_id).await;
             let size = serde_json::to_vec(&assets)?.len();
             if size > ASSETS_BYTES {
                 if let Some(snapshot) = assets.snapshot.as_mut() {
@@ -2015,6 +2020,10 @@ async fn collect(deps: &Deps, record: &AnalysisRecordV1) -> Result<Collected, Co
             .map(|error| bounded_text(error)),
         observed_model: observed.as_ref().map(|(model, _)| model.clone()),
         observed_provider: observed.map(|(_, provider)| provider),
+        e2e_scenario: meta["meta"]["metadata"]["e2e_scenario"]
+            .as_str()
+            .filter(|scenario| !scenario.trim().is_empty())
+            .map(str::to_string),
         window_turn_ids: window.clone(),
         sessions: tree
             .sessions
@@ -2715,7 +2724,7 @@ async fn capped_at(deps: &Deps) -> Result<Option<f64>, EvalError> {
 
 /// Adds to the day's spend. Bookkeeping that cannot fail an analysis: the
 /// stored analyses still sum to a floor, so an error is logged.
-async fn add_spend(deps: &Deps, usd: f64) {
+pub(crate) async fn add_spend(deps: &Deps, usd: f64) {
     let _guard = deps.locks.guard(SPEND_LOCK).await;
     let since = cost::day_start(ids::now_ms());
     let written = async {
@@ -2847,7 +2856,7 @@ async fn call_judge(
 /// Sends one request to the hub, routed to the TypeSafe provider. Errors are
 /// `(code, message)` with the code `invalid_request`, `bus` (the hub did not
 /// answer in time) or `invalid_response`.
-async fn send_judge(
+pub(crate) async fn send_judge(
     deps: &Deps,
     request: EvaluateRequest,
     bus_timeout_ms: u64,
@@ -2959,13 +2968,25 @@ explanation, never stated as a proven cause; correlated events do not prove caus
 or in a deterministic diagnostic; never cite anything else;\n\
 - name a plausible Harness component without inventing file paths or line numbers;\n\
 - propose a concrete change to {change} and its expected effect, with conditions;\n\
-- carry a `validation` plan someone can run without you: `scenario_id` of an existing \
-harness-e2e scenario (for example tool_contract_recovery) or null when a new case is needed; \
-`reproduction` on a fixed case; task-correctness `invariants` checked by an independent \
-evaluator; one `primary_metric` for effort; the `expectation` for baseline versus candidate; and \
+- carry a `check` that lets a person replay the step where the behavior happened, before \
+anyone writes code: `decision_point` is the assistant entry (`…_<step>_assistant`) whose reply \
+shows the behavior, and it must also be one of this suggestion's `evidence` entries; `signal` \
+says how to recognize the behavior in one reply: {\"rule\": \"contract_rediscovery\"} when the \
+reply asks engine::functions::info for contracts already in context, {\"rule\": \
+\"repeated_error_call\"} when it repeats the last failed call with the same payload, otherwise \
+{\"question\": \"...\"}, one yes/no question about a single reply; `change` writes the proposed \
+change as edits of what the model saw before that step: {\"target\": <entry id>, \"find\": <text \
+copied character for character from that entry>, \"replace\": <new text>}, {\"target\": <entry \
+id>, \"remove\": true} (a notice, for example) or {\"target\": \"system_prompt\", \"find\": ..., \
+\"replace\": ...}; leave `change` empty when the change is not text the model reads;\n\
+- carry a `validation` plan for a later E2E non-regression check, which someone can run without \
+you: `scenario_id` of an existing harness-e2e scenario (for example tool_contract_recovery) or \
+null when none applies (the `check` is the main reproduction: never ask for a new harness-e2e \
+case); `reproduction`; task-correctness `invariants` checked by an independent evaluator; one \
+`primary_metric` for effort; the `expectation` for baseline versus candidate; and \
 `non_regression_controls` (for example a control where a contract really changes and recovery \
 must still work);\n\
-- state `limitations`: missing evidence, alternative explanations, the need for a new scenario.\n\n\
+- state `limitations`: missing evidence and alternative explanations.\n\n\
 {scenarios}For each deterministic diagnostic you can judge, add one `signal_assessments` item with its exact \
 `fingerprint`, a `verdict` (`likely_expected` when the evidence shows a legitimate reason, \
 `worth_changing` when it points to a Harness improvement, `unclear` otherwise) and a one- or \
@@ -3550,7 +3571,7 @@ pub fn validate_suggestions(
     }
     let mut kept = Vec::new();
     let mut rejected = Vec::new();
-    for (index, suggestion) in output.suggestions.into_iter().enumerate() {
+    for (index, mut suggestion) in output.suggestions.into_iter().enumerate() {
         let mut reasons = Vec::new();
         if index >= MAX_SUGGESTIONS {
             reasons.push(format!("exceeds the {MAX_SUGGESTIONS}-suggestion limit"));
@@ -3596,6 +3617,34 @@ pub fn validate_suggestions(
         }
         reasons.extend(code::validate_refs(code_root, &suggestion.code_refs));
         if reasons.is_empty() {
+            // A malformed check costs the replay, not the suggestion.
+            if let Some(check) = &suggestion.check {
+                let problem = crate::reproduce::validate_check(check)
+                    .err()
+                    .map(|e| e.to_string())
+                    .or_else(|| {
+                        (!suggestion
+                            .evidence
+                            .iter()
+                            .any(|entry| entry.entry_id == check.decision_point))
+                        .then(|| {
+                            format!(
+                                "{} is not among the suggestion's evidence",
+                                check.decision_point
+                            )
+                        })
+                    });
+                if let Some(problem) = problem {
+                    suggestion.check = None;
+                    suggestion
+                        .limitations
+                        .push_str(&format!(" (The replay check was dropped: {problem}.)"));
+                }
+            }
+            // A session that came from the E2E already names its scenario.
+            if let Some(scenario) = &snapshot.e2e_scenario {
+                suggestion.validation.scenario_id = Some(scenario.clone());
+            }
             kept.push(suggestion);
         } else {
             rejected.push(RejectedSuggestionV1 {

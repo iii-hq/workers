@@ -274,6 +274,7 @@ root. This was chosen "for now"; no other restriction is added. Leave
 | `eval::review` | `set_lifecycle`, `set_criterion` or `set_verdict` on one suggestion of a terminal analysis. |
 | `eval::reviews` | The stored review rows and, per analysis, its suggestions counted by lifecycle status. |
 | `eval::recurrence` | For a suggestion shipped in a version, how often its patterns appeared per analysis before and from that version. |
+| `eval::reproduce` | Replays a suggestion's decision point: rebuilds the request the model received at that step (optionally edited), samples the next reply N times without running any function and reads the signal in each. `dry_run` only rebuilds and checks fidelity. See [VALIDATION.md](VALIDATION.md). |
 | `eval::completed` (trigger) | `{evaluation_id, status, timestamp}` when an analysis ends. |
 
 Internal: `eval::step` (queue `eval-run`, FIFO per analysis, concurrency 8),
@@ -337,6 +338,31 @@ fails analyses past their deadline.
   state worker can lose the last writes; there is no exactly-once guarantee
   under storage loss.
 - Locks are per process: run a single `eval` instance.
+
+## Validation by replay
+
+The first check of a suggestion is a replay of the step where its behavior
+happened ([VALIDATION.md](VALIDATION.md)). Each suggestion carries a `check`:
+the `decision_point` (an assistant entry of its evidence), the `signal` (a rule,
+`contract_rediscovery` or `repeated_error_call`, or a yes/no `question` Jev
+answers per reply) and the proposed `change` as edits of what the model saw.
+Older suggestions have none; `eval::reproduce` then takes `check` in the request.
+
+`eval::reproduce` rebuilds the request the Harness sent at that step: the
+window from the durable log (`harness::window::build`, notices included), the
+frozen runtime context, the turn's system prompt and skills baseline (copied
+into the analysis as `assets.capture`, because the Harness keeps only a
+session's latest turn record), the `agent_trigger` tool and `context::assemble`.
+It counts the result with `router::count_tokens` (the context manager's estimate
+when the provider has no counter) against the recorded usage: `exact` when the
+difference equals the fixed overhead measured at the turn's first step,
+`approximate` otherwise, with the reasons. It then samples `router::complete`
+(one warm-up call, then four at a time), never runs a function, reads each
+reply's signal and stores everything in the suggestion's review row
+(`reproductions[]`). `extend` adds replies; `samples: 0` finishes one that
+failed. A restart marks running replays `failed` (interrupted). Not supported
+yet: native function exposure, output contracts, and windows the context
+manager would prune or compact.
 
 ## E2E validation
 

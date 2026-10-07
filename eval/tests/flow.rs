@@ -380,6 +380,32 @@ impl World {
                     None => return Some(Err("execution not found".into())),
                 }
             }
+            // Context assembly that changes nothing, and a provider count.
+            "context::assemble" => json!({
+                "system_prompt": data["system_prompt"], "messages": data["messages"],
+                "token_count": 100, "usable": 100_000, "effective_max_output_tokens": 1_000,
+                "applied": {}
+            }),
+            "router::count_tokens" => json!({"tokens": 100, "estimator": "provider",
+                "model": data["model"], "provider": "p"}),
+            // A model that re-reads the contract only while the registry
+            // notice is in its context.
+            "router::complete" => {
+                let notice = data["messages"].to_string().contains("registry changed");
+                let mut reply = empty_assistant("p", "task-model");
+                reply.content = if notice {
+                    vec![ContentBlock::FunctionCall {
+                        id: "c3".into(),
+                        function_id: "agent_trigger".into(),
+                        arguments: json!({"function": INFO, "description": "re-read",
+                            "payload": {"function_id": "crm::profile"}}),
+                    }]
+                } else {
+                    vec![ContentBlock::text("Scheduled once; receipt R-1.")]
+                };
+                json!({"message": reply, "provider": "p", "model": "task-model",
+                    "usage": {"input": 12, "output": 4, "cost_usd": 0.001}})
+            }
             other => return Some(Err(format!("unexpected call to {other}"))),
         }))
     }
@@ -4221,6 +4247,142 @@ async fn the_sweep_fails_runs_that_cannot_finish_and_retries_the_ones_the_e2e_dr
     .unwrap();
     runtime::sweep(&h.deps).await.unwrap();
     assert_eq!(run_state().await.state, ValidationRunStateV1::Failed);
+}
+
+// ---------------------------------------------------------------------------
+// Reproduction at the decision point
+// ---------------------------------------------------------------------------
+
+async fn reproduce(h: &Harness, request: Value) -> Result<ReproduceResponseV1, EvalError> {
+    eval::reproduce::reproduce(&h.deps, serde_json::from_value(request).unwrap()).await
+}
+
+/// Waits for the reproduction's background task.
+async fn settled(h: &Harness, evaluation_id: &str, id: &str) -> ReproductionV1 {
+    for _ in 0..200 {
+        let current = row(h, evaluation_id)
+            .await
+            .reproductions
+            .into_iter()
+            .find(|reproduction| reproduction.id == id)
+            .unwrap();
+        if current.state != ReproductionStateV1::Running {
+            return current;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the reproduction never finished");
+}
+
+#[tokio::test]
+async fn a_replay_reproduces_the_signal_and_the_proposed_change_removes_it() {
+    let mut world = World::new();
+    let decision = format!("e_{TURN}_1_assistant");
+    let mut planned = suggestion(&decision);
+    planned["check"] = json!({
+        "decision_point": decision,
+        "signal": {"rule": "contract_rediscovery"},
+        "change": [{"target": format!("e_{TURN}_1_notice_0"), "remove": true}]
+    });
+    world.analyst_result = json!({"suggestions": [planned]});
+    world.state.insert(
+        (state::HARNESS_TURN_SCOPE.into(), ROOT.into()),
+        json!({"turn_id": TURN, "options": {"model": "task-model", "provider": "p",
+            "system_prompt": "You are an agent.", "functions": {"expose": "agent_trigger"}},
+            "context_snapshot": {"prompt_surface_digest": "sha256:x",
+                "categories": {"hook_guidance": 0}}}),
+    );
+    let h = Harness::start(world).await;
+    h.configure(true).await;
+    let evaluation_id = h.end_turn(ROOT, TURN).await.evaluation_id.unwrap();
+    h.drain().await;
+    let analyst = h.result(&evaluation_id).await.record.analyst.unwrap();
+    h.end_turn(&analyst.session_id, analyst.turn_id.as_deref().unwrap())
+        .await;
+    h.drain().await;
+    let result = h.result(&evaluation_id).await;
+    assert_eq!(result.assets.capture.as_ref().unwrap().turn_id, TURN);
+    let suggestion = &result.assets.investigation.as_ref().unwrap().suggestions[0];
+    assert!(suggestion.check.is_some(), "{}", suggestion.limitations);
+
+    // Nothing is spent or stored by a dry run.
+    let preview = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "dry_run": true}),
+    )
+    .await
+    .unwrap()
+    .preview
+    .unwrap();
+    assert_eq!(preview.original.signal, Some(true));
+    assert_eq!(preview.original.calls[0].target, INFO);
+    assert!(h.world().calls_to("router::complete").is_empty());
+
+    // The base: the model saw the notice and re-reads the contract.
+    let base = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 3, "by": "ana"}),
+    )
+    .await
+    .unwrap()
+    .reproduction_id
+    .unwrap();
+    let base = settled(&h, &evaluation_id, &base).await;
+    assert_eq!(
+        base.state,
+        ReproductionStateV1::Completed,
+        "{:?}",
+        base.error
+    );
+    assert_eq!(base.samples.len(), 3);
+    assert!(base.samples.iter().all(|reply| reply.signal == Some(true)));
+    assert!((base.cost_usd.unwrap() - 0.003).abs() < 1e-9);
+    assert!(base.fidelity.is_some());
+
+    // The proposed change removes the notice: no reply re-reads it.
+    let change = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 3,
+            "change": {"kind": "proposed"}, "by": "ana"}),
+    )
+    .await
+    .unwrap()
+    .reproduction_id
+    .unwrap();
+    let change = settled(&h, &evaluation_id, &change).await;
+    assert_eq!(change.change_kind, ReproductionChangeKindV1::Proposed);
+    assert!(change
+        .samples
+        .iter()
+        .all(|reply| reply.signal == Some(false)));
+    // Sampling never ran a function.
+    assert!(h.world().calls_to(INFO).is_empty());
+
+    // More replies join the same reproduction.
+    reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 2,
+            "extend": change.id, "by": "ana"}),
+    )
+    .await
+    .unwrap();
+    let extended = settled(&h, &evaluation_id, &change.id).await;
+    assert_eq!(extended.samples.len(), 5);
+
+    // A change whose text is not where it says is refused before spending.
+    let calls = h.world().calls_to("router::complete").len();
+    let refused = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "by": "ana",
+            "change": {"kind": "custom", "edits": [{"target": format!("e_{TURN}_c1"),
+                "find": "not in the result", "replace": "x"}]}}),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(EvalError::InvalidRequest(_))),
+        "{refused:?}"
+    );
+    assert_eq!(h.world().calls_to("router::complete").len(), calls);
 }
 
 #[tokio::test]

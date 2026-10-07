@@ -358,6 +358,8 @@ export interface Snapshot {
   source_result_error?: string
   observed_model?: string
   observed_provider?: string
+  /** The harness-e2e scenario the observed session ran, when it came from the E2E. */
+  e2e_scenario?: string
   window_turn_ids: string[]
   sessions: SessionEvidence[]
   metrics_scope: 'session_tree'
@@ -442,6 +444,8 @@ export interface Suggestion {
   code_refs: CodeRef[]
   limitations: string
   validation: ValidationPlan
+  /** How to replay the step where the behavior happened; absent on older analyses. */
+  check?: SuggestionCheck
 }
 
 export interface RejectedSuggestion {
@@ -723,6 +727,8 @@ export interface SuggestionReview {
   first_run_at?: number
   evidence?: Evidence
   verdict?: Verdict
+  /** Replays of the decision point, oldest first. */
+  reproductions?: Reproduction[]
 }
 
 /**
@@ -859,6 +865,8 @@ export interface AnalysisAssets {
   triage_failure?: TriageFailure
   investigation?: Investigation
   validations: ValidationLink[]
+  /** The observed turn's options, copied when the evidence was captured. */
+  capture?: { turn_id: string; hook_guidance_tokens: number }
 }
 
 export interface AnalysisResult {
@@ -899,4 +907,113 @@ export interface E2eCatalogScenario {
   id: string
   title: string
   summary: string
+}
+
+// ---------------------------------------------------------------------------
+// Reproduction at the decision point (`eval::reproduce`)
+// ---------------------------------------------------------------------------
+
+export type SignalRule = 'contract_rediscovery' | 'repeated_error_call'
+
+/** How to recognize the behavior in one reply: exactly one of a rule computed in code or a yes/no question. */
+export interface Signal {
+  rule?: SignalRule
+  question?: string
+}
+
+/** An edit of what the model saw: `target` is an entry id or `system_prompt`. */
+export interface ChangeEdit {
+  target: string
+  find?: string
+  replace?: string
+  remove?: boolean
+}
+
+export interface SuggestionCheck {
+  /** The assistant entry where the behavior happened. */
+  decision_point: string
+  signal: Signal
+  /** The proposed change as edits of what the model saw; empty when it is not text the model reads. */
+  change: ChangeEdit[]
+}
+
+export type ReproductionState = 'running' | 'completed' | 'failed'
+export type ReproductionChangeKind = 'none' | 'proposed' | 'custom'
+
+export interface Fidelity {
+  level: 'exact' | 'approximate'
+  recorded_tokens?: number
+  counted_tokens?: number
+  estimator?: string
+  off_ratio?: number
+  reasons: string[]
+}
+
+export interface ReplyCall {
+  target: string
+  description?: string
+  /** JSON text, cut at 600 characters. */
+  payload: string
+}
+
+export interface ReplyUsage {
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_tokens?: number
+  cache_write_tokens?: number
+  cost_usd?: number
+}
+
+/** One reply at the decision point: a sample, or the original step read the same way. */
+export interface Reply {
+  index: number
+  /** Absent when unclear, failed or not classified yet. */
+  signal?: boolean
+  calls: ReplyCall[]
+  thinking: string
+  text: string
+  usage: ReplyUsage
+  duration_ms: number
+  error?: string
+}
+
+export interface Reproduction {
+  id: string
+  change_kind: ReproductionChangeKind
+  change: ChangeEdit[]
+  check: SuggestionCheck
+  model: string
+  provider?: string
+  requested: number
+  state: ReproductionState
+  /** `sampling` or `classifying` while running. */
+  phase?: string
+  samples: Reply[]
+  original?: Reply
+  fidelity?: Fidelity
+  cost_usd?: number
+  judge_input_tokens: number
+  judge_output_tokens: number
+  by: string
+  started_at: number
+  updated_at: number
+  finished_at?: number
+  error?: string
+}
+
+export type ReproduceChange = { kind: 'none' } | { kind: 'proposed' } | { kind: 'custom'; edits: ChangeEdit[] }
+
+export interface ReproducePreview {
+  fidelity: Fidelity
+  original: Reply
+  model: string
+  provider?: string
+  step_cost_usd?: number
+  samples: number
+}
+
+export interface ReproduceResponse {
+  preview?: ReproducePreview
+  reproduction_id?: string
+  review?: SuggestionReview
 }

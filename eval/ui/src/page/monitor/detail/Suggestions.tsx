@@ -1,12 +1,12 @@
-// What the analyst proposes: up to three suggestions, each with its E2E plan,
-// plus the proposals the monitor rejected. A suggestion carries what people
-// decided about it: where it stands (the status badge), the criterion it is
-// judged by, the E2E validation they started or attached, and their verdict.
-// The monitor proposes and counts; it never moves a suggestion by itself.
+// What the analyst proposes: up to three suggestions, plus the proposals the
+// monitor rejected. A suggestion is validated first by replaying the step where
+// its behavior happened (the Validation section); the E2E plan, its criterion,
+// runs and verdict stay behind "Non-regression in E2E". A suggestion carries
+// what people decided about it: where it stands (the status badge). The
+// monitor proposes and counts; it never moves a suggestion by itself.
 import {
   Button,
   Card,
-  CardHighlight,
   Chip,
   DropdownMenu,
   DropdownMenuContent,
@@ -59,6 +59,8 @@ import {
   plural,
 } from './present'
 import { RecurrencePanel } from './Recurrence'
+import { ReplaySection } from './Replay'
+import { evidenceLine, standing } from './reproduction-model'
 import { CopyBriefButton, DraftButton, DraftNote } from './ReviewBrief'
 import { CriterionBlock } from './ReviewCriterion'
 import { LifecycleMenu } from './ReviewStatus'
@@ -147,14 +149,14 @@ function PlanHead({ plan, heading }: { plan: ValidationPlan; heading: boolean })
   return (
     <>
       {heading ? (
-        <h4 className="eval-ui-ad-plan-title">E2E plan</h4>
+        <h4 className="eval-ui-ad-plan-title">Non-regression in E2E</h4>
       ) : (
-        <span className="eval-ui-ad-plan-title">E2E plan</span>
+        <span className="eval-ui-ad-plan-title">Non-regression in E2E</span>
       )}
       {plan.scenario_id ? (
         <Chip className="eval-ui-ad-mono-chip">{plan.scenario_id}</Chip>
       ) : (
-        <Pill tone="warn">New scenario needed</Pill>
+        <span className="eval-ui-ad-mono-quiet">no scenario named</span>
       )}
     </>
   )
@@ -264,6 +266,7 @@ function SuggestionCard({
     suggestion,
     status: statusSentence(review.lifecycle),
     criterion: criterionSentence(review.criterion),
+    replay: evidenceLine(standing(suggestion.check, review.reproductions)),
     codeRoot,
   })
   const draft = () => {
@@ -277,6 +280,8 @@ function SuggestionCard({
   const showProgress =
     run !== undefined &&
     (running || (run.state === 'failed' && !links.some((link) => link.attached_at >= run.started_at)))
+  // The E2E section opens by itself once E2E work exists for the suggestion.
+  const e2eActive = Boolean(run || links.length > 0 || review.criterion || review.verdict)
 
   const attach = terminal ? (
     <Button variant="ghost" size={size} onClick={() => setAttachOpen(true)}>
@@ -366,7 +371,6 @@ function SuggestionCard({
       <h3 id={titleId} className="eval-ui-ad-card-title">
         {suggestion.title}
       </h3>
-      {narrow ? validate : null}
       <span className="eval-ui-sr-only" aria-live="polite">
         {copied}
       </span>
@@ -428,65 +432,72 @@ function SuggestionCard({
           <Inline text={suggestion.limitations} />
         </Field>
       </dl>
-      {narrow ? (
-        <Disclosure
-          className="eval-ui-ad-plan-disclosure"
-          summary={(open) => (
-            <>
-              <PlanHead plan={suggestion.validation} heading={false} />
-              {open ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
-            </>
-          )}
-        >
-          <div className="eval-ui-ad-plan-body">
-            <PlanBody plan={suggestion.validation} />
-          </div>
-        </Disclosure>
-      ) : (
-        <CardHighlight className="eval-ui-ad-plan">
-          <div className="eval-ui-ad-plan-head">
-            <PlanHead plan={suggestion.validation} heading />
-            <div className="eval-ui-ad-card-actions">
-              <CopyPlan title={suggestion.title} plan={suggestion.validation} narrow={narrow} />
-              {attach}
-              {validate}
-            </div>
-          </div>
-          <PlanBody plan={suggestion.validation} />
-        </CardHighlight>
-      )}
-      <CriterionBlock
-        api={api}
-        evaluationId={evaluationId}
-        review={review}
-        links={validations}
-        planScenario={suggestion.validation.scenario_id}
-        narrow={narrow}
-        onSaved={saved}
-        onError={setError}
-      />
-      {showProgress && run ? (
-        <ValidationProgress
+      {terminal ? (
+        <ReplaySection
           api={api}
           evaluationId={evaluationId}
           index={index}
-          run={run}
-          readingPattern={review.criterion?.pattern?.split(':')[0]}
+          suggestion={suggestion}
+          review={review}
+          snapshot={snapshot}
           narrow={narrow}
-          onSettled={onReviewed}
-          onStartAgain={() => setStartOpen(true)}
-          onAttachOther={() => setAttachOpen(true)}
-          onOpenE2e={onOpenE2e}
+          onSaved={saved}
+          onReviewed={onReviewed}
+          onValidateInE2e={() => setStartOpen(true)}
         />
       ) : null}
-      <ValidationPanel
-        links={linksOf(review, validations)}
-        review={review}
-        plan={suggestion.validation}
-        narrow={narrow}
-        onVerdict={() => setVerdictOpen(true)}
-        onOpenE2e={onOpenE2e}
-      />
+      {/* The E2E path: for changes that act on every step, and for steps a replay cannot rebuild. */}
+      <Disclosure
+        className="eval-ui-ad-plan-disclosure"
+        defaultOpen={e2eActive}
+        summary={(open) => (
+          <>
+            <PlanHead plan={suggestion.validation} heading={false} />
+            {open ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
+          </>
+        )}
+      >
+        <div className="eval-ui-ad-plan-body eval-ui-ad-plan">
+          <div className="eval-ui-ad-card-actions">
+            <CopyPlan title={suggestion.title} plan={suggestion.validation} narrow={narrow} />
+            {attach}
+            {validate}
+          </div>
+          <PlanBody plan={suggestion.validation} />
+        </div>
+        <CriterionBlock
+          api={api}
+          evaluationId={evaluationId}
+          review={review}
+          links={validations}
+          planScenario={suggestion.validation.scenario_id}
+          narrow={narrow}
+          onSaved={saved}
+          onError={setError}
+        />
+        {showProgress && run ? (
+          <ValidationProgress
+            api={api}
+            evaluationId={evaluationId}
+            index={index}
+            run={run}
+            readingPattern={review.criterion?.pattern?.split(':')[0]}
+            narrow={narrow}
+            onSettled={onReviewed}
+            onStartAgain={() => setStartOpen(true)}
+            onAttachOther={() => setAttachOpen(true)}
+            onOpenE2e={onOpenE2e}
+          />
+        ) : null}
+        <ValidationPanel
+          links={linksOf(review, validations)}
+          review={review}
+          plan={suggestion.validation}
+          narrow={narrow}
+          onVerdict={() => setVerdictOpen(true)}
+          onOpenE2e={onOpenE2e}
+        />
+      </Disclosure>
       {review.lifecycle.status === 'shipped' ? (
         <RecurrencePanel
           api={api}

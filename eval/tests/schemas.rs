@@ -26,6 +26,7 @@ fn catalog_matches_the_registered_surface() {
             "eval::review",
             "eval::reviews",
             "eval::recurrence",
+            "eval::reproduce",
             "eval::step",
             "eval::on-turn-completed",
             "eval::sweep",

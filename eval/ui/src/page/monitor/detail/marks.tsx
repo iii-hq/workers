@@ -81,17 +81,19 @@ export function Inline({ text }: { text: string }) {
   )
 }
 
-/** A closed-by-default disclosure row over the shared collapsible card. */
+/** A disclosure row over the shared collapsible card, closed unless `defaultOpen`. */
 export function Disclosure({
   summary,
   children,
   className,
+  defaultOpen = false,
 }: {
   summary: (open: boolean) => ReactNode
   children: ReactNode
   className?: string
+  defaultOpen?: boolean
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultOpen)
   return (
     <CollapsibleCard open={open} onOpenChange={setOpen} className={`eval-ui-ad-disclosure ${className ?? ''}`.trim()}>
       <CollapsibleCardTrigger className="eval-ui-ad-disclosure-trigger">{summary(open)}</CollapsibleCardTrigger>

@@ -13,6 +13,7 @@ pub mod locks;
 pub mod manifest;
 pub mod proposal;
 pub mod queue;
+pub mod reproduce;
 pub mod review;
 pub mod runtime;
 pub mod state;

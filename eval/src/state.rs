@@ -23,6 +23,8 @@ pub const ASSETS_SCOPE: &str = "eval_analysis_assets";
 /// What people decided about each suggestion, keyed
 /// `<evaluation_id>:<suggestion_index>`; outlives the analysis's retention.
 pub const REVIEW_SCOPE: &str = "eval_suggestion";
+/// The Harness's own turn records, keyed by session: only the latest turn.
+pub const HARNESS_TURN_SCOPE: &str = "harness_turn";
 const DISPATCH_TIMEOUT_MS: u64 = 10_000;
 
 /// Marks one observed session turn as admitted. It outlives a deleted
@@ -123,6 +125,14 @@ pub async fn put_assets(iii: &IIIClient, assets: &AnalysisAssetsV1) -> Result<()
 
 fn review_key(evaluation_id: &str, suggestion_index: usize) -> String {
     format!("{evaluation_id}:{suggestion_index}")
+}
+
+/// The Harness's record of a session's latest turn, as stored.
+pub async fn get_turn_record(
+    iii: &IIIClient,
+    session_id: &str,
+) -> Result<Option<Value>, EvalError> {
+    get(iii, HARNESS_TURN_SCOPE, session_id).await
 }
 
 pub async fn get_review(

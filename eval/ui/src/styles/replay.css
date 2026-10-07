@@ -1,0 +1,305 @@
+/* Validation by replay: the section of a suggestion card that replays the
+   decision point, the "Test change" dialog and the base-versus-change table.
+   Pills, buttons, fields and notices are shared components; this sheet only
+   lays them out. Machine values (calls, payloads) are mono, words are sans. */
+
+[data-iii-ui="eval"] .eval-ui-rp {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: var(--color-card-highlight);
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-head .eval-ui-ad-plan-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-quiet {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-sentence {
+  margin: 0;
+  color: var(--color-ink);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-fidelity {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-reasons {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-actions > .eval-ui-rp-quiet {
+  margin-right: auto;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-actions[data-stacked] {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-actions[data-stacked] > .eval-ui-rp-quiet {
+  margin-right: 0;
+}
+
+/* --- progress ------------------------------------------------------------ */
+
+[data-iii-ui="eval"] .eval-ui-rp-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-ink);
+  font-size: 13px;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-progress progress {
+  flex: 1 1 120px;
+  height: 4px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  accent-color: var(--color-accent);
+  appearance: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-progress progress::-webkit-progress-bar {
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-progress progress::-webkit-progress-value {
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-progress progress::-moz-progress-bar {
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+}
+
+/* --- replies ------------------------------------------------------------- */
+
+[data-iii-ui="eval"] .eval-ui-rp-replies {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-reply {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-panel);
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-reply-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-thinking,
+[data-iii-ui="eval"] .eval-ui-rp-text {
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-text {
+  color: var(--color-ink);
+}
+
+/* A reply is read at a glance: three lines of reasoning, three of payload. */
+[data-iii-ui="eval"] .eval-ui-rp-thinking,
+[data-iii-ui="eval"] .eval-ui-rp-payload {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-error {
+  margin: 0;
+  color: var(--color-alert-strong);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-calls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-calls li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-target {
+  min-width: 0;
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-quiet code {
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-cost {
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-payload {
+  min-width: 0;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+/* --- comparison ---------------------------------------------------------- */
+
+[data-iii-ui="eval"] .eval-ui-rp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-table th,
+[data-iii-ui="eval"] .eval-ui-rp-table td {
+  padding: 6px 8px;
+  text-align: left;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-table thead th {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-table tbody th {
+  color: var(--color-ink-faint);
+  font-weight: 500;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-table td {
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-table tbody tr:nth-child(odd) {
+  background: var(--color-panel);
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-side {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  color: var(--color-warn-strong);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-side svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* --- setup and dialog ---------------------------------------------------- */
+
+[data-iii-ui="eval"] .eval-ui-rp-setup,
+[data-iii-ui="eval"] .eval-ui-rp-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-proposed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-proposed p {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+
+[data-iii-ui="eval"] .eval-ui-rp-dialog .eval-ui-rv-textarea {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* The dialog is portalled out of the pane: its own width decides the layout. */
+@container eval-detail (max-width: 560px) {
+  [data-iii-ui="eval"] .eval-ui-rp {
+    padding: 12px;
+  }
+
+  [data-iii-ui="eval"] .eval-ui-rp-table th,
+  [data-iii-ui="eval"] .eval-ui-rp-table td {
+    padding: 6px 4px;
+  }
+}

@@ -1,18 +1,235 @@
 {
-  "function_id": "eval::reviews",
+  "function_id": "eval::reproduce",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "ChangeEditV1": {
+        "additionalProperties": false,
+        "description": "One edit of what the model saw. `target` is an entry id of the conversation before the decision point, or `system_prompt`. An edit either replaces `find` with `replace` in the target's text or removes the entry.",
+        "properties": {
+          "find": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remove": {
+            "type": "boolean"
+          },
+          "replace": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "type": "object"
+      },
+      "ReproduceChangeV1": {
+        "description": "What a reproduction changes in the request.",
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "none"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "proposed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "edits": {
+                "items": {
+                  "$ref": "#/definitions/ChangeEditV1"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "enum": [
+                  "custom"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "edits",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SignalRuleV1": {
+        "oneOf": [
+          {
+            "description": "The reply asks `engine::functions::info` only for contracts an earlier result in the context already supplied.",
+            "enum": [
+              "contract_rediscovery"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The reply repeats the last call that failed: same target, equal payload.",
+            "enum": [
+              "repeated_error_call"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "SignalV1": {
+        "additionalProperties": false,
+        "description": "How to recognize the behavior in one reply: exactly one of a rule computed in code or a yes/no question Jev answers about the reply.",
+        "properties": {
+          "question": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SignalRuleV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "SuggestionCheckV1": {
+        "additionalProperties": false,
+        "description": "How a suggestion is checked at the step where its behavior happened.",
+        "properties": {
+          "change": {
+            "default": [],
+            "description": "The proposed change as edits of what the model saw before that step; empty when it cannot be expressed as text.",
+            "items": {
+              "$ref": "#/definitions/ChangeEditV1"
+            },
+            "type": "array"
+          },
+          "decision_point": {
+            "description": "The assistant entry where the behavior happened (`…_<step>_assistant`), one of the suggestion's `evidence` entries.",
+            "type": "string"
+          },
+          "signal": {
+            "$ref": "#/definitions/SignalV1"
+          }
+        },
+        "required": [
+          "decision_point",
+          "signal"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "`eval::reproduce`.",
     "properties": {
-      "evaluation_id": {
+      "_caller_worker_id": {
         "default": null,
-        "description": "Only this analysis; absent means every analysis.",
+        "description": "Stamped by the engine on every invocation; callers omit it.",
         "type": [
           "string",
           "null"
         ]
+      },
+      "by": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "change": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/ReproduceChangeV1"
+          }
+        ],
+        "default": {
+          "kind": "none"
+        }
+      },
+      "check": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/SuggestionCheckV1"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The decision point and signal, for a suggestion without a `check` (an older analysis) or to override it."
+      },
+      "dry_run": {
+        "default": false,
+        "description": "Rebuild the request and check its fidelity without sampling: nothing is spent or stored.",
+        "type": "boolean"
+      },
+      "evaluation_id": {
+        "type": "string"
+      },
+      "extend": {
+        "default": null,
+        "description": "Add replies to this earlier reproduction of the suggestion, with its change; with `samples: 0`, only finish what a failure left undone.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "samples": {
+        "default": null,
+        "description": "Replies to sample, 1–50; default 20.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "suggestion_index": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
       }
     },
-    "title": "ReviewsRequestV1",
+    "required": [
+      "evaluation_id",
+      "suggestion_index"
+    ],
+    "title": "ReproduceRequestV1",
     "type": "object"
   },
   "response_schema": {
@@ -557,6 +774,47 @@
         ],
         "type": "object"
       },
+      "ReproducePreviewV1": {
+        "additionalProperties": false,
+        "description": "What a dry run reports before anything is spent.",
+        "properties": {
+          "fidelity": {
+            "$ref": "#/definitions/FidelityV1"
+          },
+          "model": {
+            "type": "string"
+          },
+          "original": {
+            "$ref": "#/definitions/ReplyV1"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "samples": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "step_cost_usd": {
+            "description": "What the original step cost; null when the provider reported nothing.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "fidelity",
+          "model",
+          "original",
+          "samples"
+        ],
+        "type": "object"
+      },
       "ReproductionChangeKindV1": {
         "oneOf": [
           {
@@ -723,61 +981,6 @@
           "started_at",
           "state",
           "updated_at"
-        ],
-        "type": "object"
-      },
-      "ReviewSummaryV1": {
-        "additionalProperties": false,
-        "description": "Suggestions of one analysis by lifecycle status; a suggestion nobody acted on counts as `new`.",
-        "properties": {
-          "accepted": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "duplicate": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "evaluation_id": {
-            "type": "string"
-          },
-          "in_progress": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "new": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "rejected": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "shipped": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "suggestions": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "accepted",
-          "duplicate",
-          "evaluation_id",
-          "in_progress",
-          "new",
-          "rejected",
-          "shipped",
-          "suggestions"
         ],
         "type": "object"
       },
@@ -1139,26 +1342,34 @@
       }
     },
     "properties": {
-      "reviews": {
-        "description": "The stored rows: suggestions somebody acted on or validated.",
-        "items": {
-          "$ref": "#/definitions/SuggestionReviewV1"
-        },
-        "type": "array"
+      "preview": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ReproducePreviewV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
       },
-      "summaries": {
-        "description": "One per analysis that has suggestions, newest first.",
-        "items": {
-          "$ref": "#/definitions/ReviewSummaryV1"
-        },
-        "type": "array"
+      "reproduction_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "review": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/SuggestionReviewV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
       }
     },
-    "required": [
-      "reviews",
-      "summaries"
-    ],
-    "title": "ReviewsResponseV1",
+    "title": "ReproduceResponseV1",
     "type": "object"
   }
 }
