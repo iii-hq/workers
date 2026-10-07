@@ -61,6 +61,8 @@ export function ModelsStep({
   const [drafts, setDrafts] = useState<ReadonlyMap<string, Draft>>(new Map())
   const [showMore, setShowMore] = useState(true)
   const [connected, setConnected] = useState(false)
+  /** Device providers signed in here: only those can be selected. */
+  const [signedIn, setSignedIn] = useState<ReadonlySet<string>>(new Set())
 
   useEffect(() => {
     const controller = new AbortController()
@@ -144,7 +146,10 @@ export function ModelsStep({
   const renderChoice = (choice: ProviderChoice) => {
     const draft = draftFor(choice)
     const version = versions.get(choice.worker)
-    const disabled = busy || !usable(choice)
+    const disabled =
+      busy ||
+      !usable(choice) ||
+      (choice.kind === 'device' && !signedIn.has(choice.providerId))
     const tool = choice.kind === 'subscription' ? choice.tool : null
     return (
       <div key={choice.providerId} className="flex flex-col">
@@ -154,20 +159,15 @@ export function ModelsStep({
             !usable(choice) && 'opacity-60',
           )}
         >
-          {choice.kind === 'device' ? (
-            // Signs in on its own below, not through Connect.
-            <span className="mt-1.5 size-4 shrink-0" aria-hidden />
-          ) : (
-            <Checkbox
-              aria-label={`Connect ${choice.title}`}
-              checked={draft.selected}
-              disabled={disabled}
-              onChange={(event) =>
-                update(choice, { selected: event.currentTarget.checked })
-              }
-              className="mt-1.5"
-            />
-          )}
+          <Checkbox
+            aria-label={`Connect ${choice.title}`}
+            checked={draft.selected}
+            disabled={disabled}
+            onChange={(event) =>
+              update(choice, { selected: event.currentTarget.checked })
+            }
+            className="mt-1.5"
+          />
           <ProviderIcon
             label={choice.title}
             className="mt-1.5 size-4 text-ink"
@@ -202,7 +202,11 @@ export function ModelsStep({
             <DeviceSignIn
               provider={choice.provider}
               installed={choice.installed}
-              onConnected={() =>
+              onConnected={() => {
+                setSignedIn((current) =>
+                  new Set(current).add(choice.providerId),
+                )
+                update(choice, { selected: true })
                 void run('models', [
                   {
                     kind: 'wait-models',
@@ -210,7 +214,7 @@ export function ModelsStep({
                     title: choice.title,
                   },
                 ])
-              }
+              }}
             />
           </div>
         ) : null}
