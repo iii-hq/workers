@@ -1,4 +1,4 @@
-import { Card, Chip, Markdown, Table, TableBody, TableCell, TableFrame, TableHead, TableHeader, TableRow, TableViewport, type FunctionTriggerMessage, type Host, type TriggerActivityMessage } from '@iii-dev/console-ui'
+import { Card, Chip, Markdown, Table, TableBody, TableCell, TableFrame, TableHead, TableHeader, TableRow, TableViewport, type FunctionTriggerMessage, type Host, type MentionRendererProps, type MentionRendererRegistration, type TriggerActivityMessage } from '@iii-dev/console-ui'
 import { formatRelative, unwrapEnvelope } from '@iii-dev/console-ui/format'
 import { ChevronRight, MessageCircle } from 'lucide-react'
 import { TICKET_PAGE_ID, priorityTone, type Ticket, type TicketSummary } from './shared'
@@ -84,15 +84,18 @@ function TicketCard({
   host,
   ticket,
   verb,
+  commentCount,
 }: {
   host: Host
   ticket: Ticket
   verb?: string
+  /** For a projection that counts comments instead of carrying them. */
+  commentCount?: number
 }) {
   const open = () => host.panels?.open({ pageId: TICKET_PAGE_ID, context: { id: ticket.key } })
   const interactive = Boolean(host.panels?.open)
   const deleted = Boolean(ticket.deleted_at)
-  const comments = ticket.comments?.length ?? 0
+  const comments = commentCount ?? ticket.comments?.length ?? 0
   return (
     <Card
       aria-label={interactive ? `${ticket.key}: ${ticket.title}` : undefined}
@@ -209,6 +212,25 @@ export function createTicketRenderer(host: Host) {
       return null
     },
     redactRaw: (value: unknown) => value,
+  }
+}
+
+/**
+ * The preview of a `@kanban(id="…")` chat mention: the same card a ticket
+ * function result shows, drawn from the mention view's `data` (the board
+ * projection plus a description excerpt, see `kanban/src/mentions.rs`).
+ */
+export function createTicketMentionRenderer(host: Host): MentionRendererRegistration {
+  return {
+    provider: 'kanban',
+    Preview: ({ view }: MentionRendererProps) => {
+      const data = view.data as (Partial<Ticket> & { comment_count?: number }) | undefined
+      const ticket = asTicket(data ? { ...data, comments: [], activity: [] } : null)
+      // Not a ticket projection (an older backend): the console's generic
+      // card takes over when a preview throws.
+      if (!ticket) throw new Error('kanban mention without ticket data')
+      return <TicketCard host={host} ticket={ticket} commentCount={data?.comment_count} />
+    },
   }
 }
 
