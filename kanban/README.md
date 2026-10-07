@@ -16,6 +16,7 @@ build and review work as tickets on this board.
 - [Configuration](#configuration)
 - [Custom trigger types](#custom-trigger-types)
 - [Console pages](#console-pages)
+- [Chat mentions](#chat-mentions)
 - [Agent profiles](#agent-profiles)
 - [Skills](#skills)
 - [Development](#development)
@@ -176,6 +177,20 @@ settings form edits the configuration above. Chat renders `kanban::*`
 results as ticket cards and `kanban:*` trigger activity with the ticket and
 comment it carried. Command palette rows: New ticket, Refresh board, Refresh
 ticket, Edit description, Write a comment, Back to the board.
+
+## Chat mentions
+
+Tickets can be mentioned in a chat as `@kanban(id="<uuid>")`. In the
+console composer, type `@kanban`, press Tab and search by key (`KAN-12`,
+`12`) or title words; the ticket shows as a pill, and hovering it shows its
+ticket card. Agents get the ticket's one-line summary with the message and
+read the whole ticket through `kanban::ticket::get`.
+
+Two internal functions provide this (see
+[`crates/mention-contract`](../crates/mention-contract/README.md)):
+`kanban::mention::search` (live tickets ranked by key, then title, then
+description and labels) and `kanban::mention::get` (the view, including a
+soft-deleted ticket marked as such), which declares the provider.
 
 ## Agent profiles
 

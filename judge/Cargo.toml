@@ -14,6 +14,8 @@ console-ui = ["dep:iii-console-ui"]
 
 [dependencies]
 judge-contract = { path = "../crates/judge-contract" }
+# `@<name>(id=…)` chat mentions: provider descriptor, views, token grammar.
+mention-contract = { path = "../crates/mention-contract" }
 iii-sdk = "=0.23.0"
 iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui", optional = true }

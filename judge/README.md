@@ -96,6 +96,15 @@ accepts request ids up to 512 bytes; the hub needs no change. See
 [Configuration](reference.md#configuration) and
 [Cancellation](reference.md#cancellation).
 
+## Chat mentions
+
+Because the harness always runs the judge, the judge also delivers chat
+mentions to agents: a user's `@kanban(id="…")` (or any worker-defined
+mention) reaches the agent with a one-line summary of the item and a
+pre-verified call for its full details, and agents learn which mention names
+they may write in replies. See [Chat mentions](reference.md#chat-mentions);
+`JUDGE_MENTIONS=false` turns it off.
+
 The hub holds no credentials; its configuration entry (`judge`, or
 `III_CONFIG_NAME`) carries only the default provider and `preload_all`. For the full API,
 read [reference.md](reference.md); for the provider's build, configuration and

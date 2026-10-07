@@ -10,6 +10,10 @@ rules:
   # ticket screen (see skills/kanban-tickets.md). Agents move tickets.
   - '!kanban::ticket::delete'
   - '!kanban::ticket::restore'
+  # The chat mention provider is console plumbing; agents read a mentioned
+  # ticket through kanban::ticket::get (the provider's declared details).
+  - '!kanban::mention::search'
+  - '!kanban::mention::get'
   # Reads and the ticket working loop are safe to allow by default.
   - kanban::config::info
   - kanban::board::get

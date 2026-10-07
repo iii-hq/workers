@@ -1,5 +1,5 @@
 import type { MenuOption } from '@lexical/react/LexicalTypeaheadMenuPlugin'
-import { type ReactNode, useLayoutEffect, useRef } from 'react'
+import { Fragment, type ReactNode, useLayoutEffect, useRef } from 'react'
 import { Eyebrow } from '@/components/ui/Eyebrow'
 import { cn } from '@/lib/utils'
 
@@ -38,6 +38,18 @@ interface FlipMenuProps<T extends MenuOption> {
   getOptionKey: (option: T) => string
   /** Inner row content (glyph + labels); the row shell is shared. */
   renderOption: (option: T) => ReactNode
+  /**
+   * Groups: a header row is drawn above each option whose section differs
+   * from the previous one. Keyboard order stays the flat option order.
+   */
+  getOptionSection?: (option: T) => MenuSection | null
+}
+
+export interface MenuSection {
+  key: string
+  label: string
+  /** A glyph before the label (a provider's icon). */
+  icon?: ReactNode
 }
 
 const GAP = 8
@@ -54,6 +66,7 @@ export function FlipMenu<T extends MenuOption>({
   setHighlightedIndex,
   getOptionKey,
   renderOption,
+  getOptionSection,
 }: FlipMenuProps<T>) {
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -127,25 +140,43 @@ export function FlipMenu<T extends MenuOption>({
       <div role="listbox" className="min-h-0 overflow-y-auto py-1">
         {options.map((opt, i) => {
           const active = i === selectedIndex
+          const section = getOptionSection?.(opt) ?? null
+          const previous =
+            i > 0 ? (getOptionSection?.(options[i - 1]) ?? null) : null
+          const header =
+            section && section.key !== previous?.key ? (
+              <div
+                role="presentation"
+                className={cn(
+                  'mx-1 flex items-center gap-1.5 px-2 py-1 font-sans text-[11px] font-medium text-ink-ghost',
+                  i > 0 && 'mt-1 border-t border-rule-2',
+                )}
+              >
+                {section.icon}
+                <span className="truncate">{section.label}</span>
+              </div>
+            ) : null
           return (
-            <div
-              key={getOptionKey(opt)}
-              role="option"
-              tabIndex={-1}
-              aria-selected={active}
-              ref={(el) => opt.setRefElement(el)}
-              onMouseEnter={() => setHighlightedIndex(i)}
-              onMouseDown={(e) => {
-                e.preventDefault()
-                selectOptionAndCleanUp(opt)
-              }}
-              className={cn(
-                'mx-1 flex h-7 cursor-pointer items-center gap-2 rounded-sm px-2 transition-colors',
-                active ? 'bg-surface-selected' : 'hover:bg-surface-hover',
-              )}
-            >
-              {renderOption(opt)}
-            </div>
+            <Fragment key={getOptionKey(opt)}>
+              {header}
+              <div
+                role="option"
+                tabIndex={-1}
+                aria-selected={active}
+                ref={(el) => opt.setRefElement(el)}
+                onMouseEnter={() => setHighlightedIndex(i)}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  selectOptionAndCleanUp(opt)
+                }}
+                className={cn(
+                  'mx-1 flex h-7 cursor-pointer items-center gap-2 rounded-sm px-2 transition-colors',
+                  active ? 'bg-surface-selected' : 'hover:bg-surface-hover',
+                )}
+              >
+                {renderOption(opt)}
+              </div>
+            </Fragment>
           )
         })}
       </div>

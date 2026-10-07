@@ -47,6 +47,7 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { getIiiClient } from '@/lib/iii-client'
+import { useTraceFocusRequest } from '@/lib/trace-focus'
 import { requestChatMessageFocus } from '@/lib/trace-links'
 import { startTraceActivityFeed } from '@/lib/traces-activity'
 import { cn } from '@/lib/utils'
@@ -747,6 +748,13 @@ export function TracesV2({
   // pane. Once only, and never over a deep link or a trace the operator
   // already chose — after that the surface is theirs.
   const sessionSeedRef = useRef(false)
+  // "Show this trace" from elsewhere in the tab (a `@trace` mention): it
+  // wins over the session seed, now and on every later request.
+  useTraceFocusRequest((traceId) => {
+    sessionSeedRef.current = true
+    initialAppliedRef.current = true
+    if (traceId !== selectedTraceIdRef.current) selectTrace(traceId)
+  })
   useEffect(() => {
     if (sessionSeedRef.current || initialTraceId || !activeSessionId) return
     const turns = turnTracesFor(allSpans, activeSessionId)

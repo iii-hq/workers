@@ -1,5 +1,10 @@
 import type { Element, Root, RootContent, Text } from 'hast'
-import { type ComponentPropsWithoutRef, type ReactNode, useId, useState } from 'react'
+import {
+  type ComponentPropsWithoutRef,
+  type ReactNode,
+  useId,
+  useState,
+} from 'react'
 import ReactMarkdown, {
   type Components,
   defaultUrlTransform,
@@ -8,6 +13,7 @@ import remarkGfm from 'remark-gfm'
 import { FileMentionPill } from '@/components/chat/lexical/FileMentionNode'
 import { FunctionMentionPill } from '@/components/chat/lexical/FunctionMentionNode'
 import { SlashCommandPill } from '@/components/chat/lexical/SlashCommandNode'
+import { WorkerMentionPill } from '@/components/chat/mentions/WorkerMentionPill'
 import {
   MermaidDiagram,
   MermaidStreamingContext,
@@ -29,7 +35,11 @@ import {
   parseFileMentionInner,
 } from '@/lib/file-mention-token'
 import { useOpenMessageFile } from '@/lib/file-navigation'
-import { markdownFileLinkError, parseMarkdownFileLink } from '@/lib/markdown-file-link'
+import {
+  markdownFileLinkError,
+  parseMarkdownFileLink,
+} from '@/lib/markdown-file-link'
+import { findMentions } from '@/lib/mentions/token'
 import { SKILL_PREFIX, SKILL_TOKEN_SOURCE } from '@/lib/slash-commands'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
@@ -106,7 +116,14 @@ function codeLanguage(node: Element): string | undefined {
     .toLowerCase()
 }
 
-function splitMention(value: string): Array<Text | Element> {
+interface MentionSpan {
+  index: number
+  length: number
+  element: Element
+}
+
+/* Built-in mentions: `@fn(<id>)`, `#file(<path>)`, `/skill:<id>`. */
+function builtinMentionSpans(value: string): MentionSpan[] {
   if (
     !value.includes('@fn(') &&
     !value.includes('#file(') &&
@@ -114,15 +131,10 @@ function splitMention(value: string): Array<Text | Element> {
   ) {
     return []
   }
-  const out: Array<Text | Element> = []
-  let last = 0
+  const spans: MentionSpan[] = []
   /* matchAll iterates with stateless semantics on a /g regex, so we don't
      have to babysit MENTION_RE.lastIndex between calls. */
   for (const m of value.matchAll(MENTION_RE)) {
-    const index = m.index ?? 0
-    if (index > last) {
-      out.push({ type: 'text', value: value.slice(last, index) })
-    }
     /* Group 1 = `@fn` id, group 2 = `#file` path, group 3 = skill id (the
        alternation makes exactly one of them defined per match). */
     const className =
@@ -131,15 +143,56 @@ function splitMention(value: string): Array<Text | Element> {
         : m[2] !== undefined
           ? 'file-mention'
           : 'skill-mention'
-    out.push({
+    spans.push({
+      index: m.index ?? 0,
+      length: m[0].length,
+      element: {
+        type: 'element',
+        tagName: 'span',
+        properties: { className: [className] },
+        children: [{ type: 'text', value: m[1] ?? m[2] ?? m[3] }],
+      },
+    })
+  }
+  return spans
+}
+
+/* Worker-defined mentions: `@<provider>(id="<id>")`. Markdown has already
+   applied its backslash escapes by now, so an id holding a quote or a
+   backslash (never the case for the uuids and keys providers use) does not
+   render as a pill here; the composer and the agent read the raw text. */
+function workerMentionSpans(value: string): MentionSpan[] {
+  return findMentions(value).map((m) => ({
+    index: m.index,
+    length: m.token.length,
+    element: {
       type: 'element',
       tagName: 'span',
-      properties: { className: [className] },
-      children: [{ type: 'text', value: m[1] ?? m[2] ?? m[3] }],
-    })
-    last = index + m[0].length
+      properties: {
+        className: ['worker-mention'],
+        dataMentionName: m.name,
+        dataMentionId: m.id,
+      },
+      children: [{ type: 'text', value: m.token }],
+    },
+  }))
+}
+
+function splitMention(value: string): Array<Text | Element> {
+  const spans = [...builtinMentionSpans(value), ...workerMentionSpans(value)]
+  if (spans.length === 0) return []
+  spans.sort((a, b) => a.index - b.index)
+  const out: Array<Text | Element> = []
+  let last = 0
+  for (const span of spans) {
+    // Overlapping matches cannot both be pills; the earlier one wins.
+    if (span.index < last) continue
+    if (span.index > last) {
+      out.push({ type: 'text', value: value.slice(last, span.index) })
+    }
+    out.push(span.element)
+    last = span.index + span.length
   }
-  if (out.length === 0) return []
   if (last < value.length) {
     out.push({ type: 'text', value: value.slice(last) })
   }
@@ -179,19 +232,36 @@ function FileReferenceButton({
             if (problem) throw new Error(problem)
             if (reference) await openFile?.(reference)
           } catch (cause) {
-            setError(cause instanceof Error ? cause.message : 'Could not open this file. Try again.')
+            setError(
+              cause instanceof Error
+                ? cause.message
+                : 'Could not open this file. Try again.',
+            )
           }
         }}
       >
         {children}
       </button>
-      {error ? <span id={id} role="alert" className="ml-2 break-words text-[12px] text-alert">{error}</span> : null}
+      {error ? (
+        <span
+          id={id}
+          role="alert"
+          className="ml-2 break-words text-[12px] text-alert"
+        >
+          {error}
+        </span>
+      ) : null}
     </>
   )
 }
 
 /** Route local file destinations to the originating chat's IDE; preserve ordinary web links. */
-function MarkdownLink({ href, className, children, title }: ComponentPropsWithoutRef<'a'>) {
+function MarkdownLink({
+  href,
+  className,
+  children,
+  title,
+}: ComponentPropsWithoutRef<'a'>) {
   const openFile = useOpenMessageFile()
   const ref = href ? parseMarkdownFileLink(href) : null
   const problem = href ? markdownFileLinkError(href) : null
@@ -200,15 +270,29 @@ function MarkdownLink({ href, className, children, title }: ComponentPropsWithou
       <FileReferenceButton
         reference={ref}
         problem={problem}
-        className={cn(linkClassName, 'cursor-pointer text-left break-words focus-visible:outline-2 focus-visible:outline-rule-focus', className)}
-        title={ref ? `open ${ref.path}${ref.range ? `:${ref.range.from}-${ref.range.to}` : ''} in the IDE (current file on disk)` : (problem ?? '')}
+        className={cn(
+          linkClassName,
+          'cursor-pointer text-left break-words focus-visible:outline-2 focus-visible:outline-rule-focus',
+          className,
+        )}
+        title={
+          ref
+            ? `open ${ref.path}${ref.range ? `:${ref.range.from}-${ref.range.to}` : ''} in the IDE (current file on disk)`
+            : (problem ?? '')
+        }
       >
         {children}
       </FileReferenceButton>
     )
   }
   return (
-    <a href={href} className={cn(linkClassName, className)} title={title} target="_blank" rel="noopener noreferrer">
+    <a
+      href={href}
+      className={cn(linkClassName, className)}
+      title={title}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
       {children}
     </a>
   )
@@ -393,6 +477,14 @@ const components: Components = {
   span: ({ className, children, ...rest }) => {
     const cls = typeof className === 'string' ? className : ''
     const classes = cls.split(/\s+/)
+    if (classes.includes('worker-mention')) {
+      const data = rest as Record<string, unknown>
+      const name = data['data-mention-name']
+      const id = data['data-mention-id']
+      if (typeof name === 'string' && typeof id === 'string') {
+        return <WorkerMentionPill name={name} id={id} openOnClick />
+      }
+    }
     if (
       classes.includes('fn-mention') ||
       classes.includes('file-mention') ||
@@ -454,7 +546,8 @@ export function Markdown({
       <div className={cn('text-ink', className)}>
         <ReactMarkdown
           urlTransform={(url, key) =>
-            key === 'href' && (parseMarkdownFileLink(url) || markdownFileLinkError(url))
+            key === 'href' &&
+            (parseMarkdownFileLink(url) || markdownFileLinkError(url))
               ? url
               : defaultUrlTransform(url)
           }

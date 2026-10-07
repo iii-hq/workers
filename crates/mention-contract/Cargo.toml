@@ -1,0 +1,14 @@
+[workspace]
+
+[package]
+name = "mention-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Worker-defined chat mentions: the provider descriptor carried in function metadata, the search/get wire types, and the @<name>(id=\"…\") token grammar"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"

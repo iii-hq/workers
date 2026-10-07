@@ -33,6 +33,7 @@
  */
 
 import { attachedFileLabel, parseAttachedFileHeader } from '@/lib/file-mentions'
+import { isProvidersNote, parseMentionsNote } from '@/lib/mentions/notes'
 import { parseSkillUpdate } from '@/lib/skill-update'
 import { parseSlashBlockHeader, slashChip } from '@/lib/slash-commands'
 import type {
@@ -99,8 +100,16 @@ function customSegments(
   }
 }
 
-/** One quiet line ("Note to the model — <kind>"); the note itself sits in
- * the collapsed technical details, like a failed turn's raw reason. */
+/** A reader's name for a note: the wrapper tag a hook put around it
+ * (`<memory …>` → "memory"), else the harness's kind. */
+function noteLabel(text: string, kind: unknown): string {
+  const tag = text.trimStart().match(/^<([a-z][a-z0-9_-]*)[\s>]/i)?.[1]
+  const raw = tag ?? (typeof kind === 'string' ? kind.trim() : '')
+  return raw.replace(/[-_]+/g, ' ')
+}
+
+/** One quiet activity row ("Note to the model · <label>") with the note
+ * behind its disclosure; the judge's mention notes read as the mentions. */
 function modelNotice(
   entryId: string,
   data: unknown,
@@ -111,18 +120,26 @@ function modelNotice(
   // Under the console's broad policy any worker restart fires it: noise to
   // the person reading the chat. The model still gets the note.
   if (d.kind === 'registry-changed') return []
-  const kind =
-    typeof d.kind === 'string' && d.kind.trim()
-      ? d.kind.trim().replace(/[-_]+/g, ' ')
-      : ''
+  // The list of mention names an agent may write: bookkeeping, every session.
+  if (isProvidersNote(d.text)) return []
+  const mentions = parseMentionsNote(d.text)
+  const label = mentions ? 'mentions' : noteLabel(d.text, d.kind)
   return [
     {
       id: entryId,
       role: 'system',
-      kind: 'notice',
+      kind: 'model-note',
       tone: 'info',
-      content: kind ? `Note to the model — ${kind}` : 'Note to the model',
-      technicalDetails: { detail: d.text },
+      content: mentions
+        ? 'Mentions resolved for the model'
+        : label
+          ? `Note to the model — ${label}`
+          : 'Note to the model',
+      note: {
+        label,
+        text: d.text,
+        ...(mentions ? { mentions } : {}),
+      },
       createdAt: timestamp,
     },
   ]

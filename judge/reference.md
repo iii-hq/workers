@@ -15,6 +15,7 @@ builds, credentials and local tests live with each provider, for example
 - [Handle results and failures](#handle-results-and-failures)
 - [List models](#list-models)
 - [Cancellation](#cancellation)
+- [Chat mentions](#chat-mentions)
 - [Limits and compatibility](#limits-and-compatibility)
 - [Provider compatibility notes](#provider-compatibility-notes)
 
@@ -404,6 +405,53 @@ same `provider` the call was started with; another provider answers
 `cancelled: false`. With multiple hub or provider replicas, evaluation/listing
 and cancellation need routing affinity to the same processes: the registry is
 local to the provider process.
+
+## Chat mentions
+
+The harness always runs this worker, so the judge is where agents learn
+about worker-defined chat mentions — `@<name>(id="<id>")` tokens for a
+ticket, a session, a trace… declared by their workers (see
+[`crates/mention-contract`](../crates/mention-contract/README.md)).
+
+`judge::mentions::pre-generate` (internal) is bound to
+`harness::hook::pre-generate` with `on_error: fail_open`, so a provider
+that is down never blocks a turn. On each generation it may append:
+
+- `<mention_providers>`: the installed providers (`- @<name> — <label>:
+  <description>`), the names an agent may write in a reply. Appended once per
+  session and again only when the set of providers changes.
+- `<mentions>`: for every mention a user wrote that no earlier block
+  resolved (at most 10, newest first; text attached as `<attached-file>` or
+  `<skill>` and markdown code are skipped), the provider's one-line summary
+  and, when the session may call it, the provider's `details` function with
+  its exact payload, marked pre-verified:
+
+  ```text
+  <mentions>
+  …
+  - @kanban(id="6ac4…") — Kanban ticket KAN-12 "Fix login redirect" · status: In progress · priority: high
+    details: kanban::ticket::get {"id":"6ac4…"}
+  - @trace(id="ab12") — not found: the trace worker knows no such id
+  </mentions>
+  ```
+
+The harness persists both blocks and replays them in place, so the hook reads
+its own earlier blocks and never repeats one; a block is capped at about 600
+tokens. Each get call has 1.5 s.
+
+`judge::mentions::resolve` does the same resolution for any caller:
+
+```bash
+iii trigger judge::mentions::resolve --json '{"text":"see @kanban(id=\"KAN-12\")"}'
+```
+
+It returns `{ mentions: [{ token, name, id, status, label?, summary?,
+details?: { function_id, payload }, error? }] }` with `status` one of
+`resolved`, `not_found`, `unknown_provider` and `error`; `details` always
+carries the provider's canonical id.
+
+Start the worker with `JUDGE_MENTIONS=false` (or `--mentions false`) to leave
+both functions and the hook out.
 
 ## Limits and compatibility
 

@@ -45,6 +45,7 @@ import type {
   WorkingDirScope,
 } from '@/types/chat'
 import { CopyMessageButton } from './CopyMessageButton'
+import { ModelNoteMarker } from './ModelNoteMarker'
 import { splitNotice } from './system-notice-copy'
 import {
   TimelineActivityDisclosure,
@@ -69,6 +70,9 @@ import {
  * - `turn-failure` — a turn the provider or iii could not finish: the
  *   diagnosis card, which leads with WHO has to act (a chip and one plain
  *   sentence) before what happened and what to do.
+ * - `model-note` — text the harness or a hook showed the model: the
+ *   quietest activity row, what it said behind the disclosure (see
+ *   `ModelNoteMarker`).
  * - everything else — a one-line operational status on the StatusPanel
  *   recipe (tinted fill, small icon, headline + detail). No stripe, no
  *   outline, no caps transform.
@@ -82,6 +86,9 @@ export function SystemNotice({ message }: { message: SystemMessage }) {
   }
   if (message.kind === 'turn-failure') {
     return <TurnFailureCard message={message} />
+  }
+  if (message.kind === 'model-note' && message.note) {
+    return <ModelNoteMarker message={message} note={message.note} />
   }
   return <InlineNotice message={message} />
 }

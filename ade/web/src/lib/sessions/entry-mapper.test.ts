@@ -900,7 +900,7 @@ describe('entrySegments', () => {
     })
   })
 
-  it('renders a model_notice as a quiet notice with the text collapsed', () => {
+  it('renders a model_notice as a quiet note row with the text behind it', () => {
     const live = entrySegments({
       entry_id: 'e_t1_notice_0',
       custom: {
@@ -928,11 +928,12 @@ describe('entrySegments', () => {
       expect(notice).toMatchObject({
         id: 'e_t1_notice_0',
         role: 'system',
-        kind: 'notice',
+        kind: 'model-note',
         tone: 'info',
         content: 'Note to the model — preloaded stale',
-        technicalDetails: {
-          detail: 'fs::read no longer matches its preloaded contract.',
+        note: {
+          label: 'preloaded stale',
+          text: 'fs::read no longer matches its preloaded contract.',
         },
       })
     }
@@ -948,6 +949,72 @@ describe('entrySegments', () => {
         custom: { custom_type: 'model_notice', data: {} },
       }),
     ).toEqual([])
+  })
+
+  it('names a hook note by its wrapper tag', () => {
+    const [memory] = entrySegments({
+      entry_id: 'e-m',
+      custom: {
+        custom_type: 'model_notice',
+        data: { text: '<memory bank="m">likes tea</memory>', kind: 'hook' },
+      },
+    })
+    expect(memory).toMatchObject({
+      kind: 'model-note',
+      content: 'Note to the model — memory',
+      note: { label: 'memory' },
+    })
+  })
+
+  it('hides the mention index and reads a mentions note as its mentions', () => {
+    expect(
+      entrySegments({
+        entry_id: 'e-p',
+        custom: {
+          custom_type: 'model_notice',
+          data: {
+            kind: 'hook',
+            text: '<mention_providers>\nItems you can reference…\n- @kanban — Tickets\n</mention_providers>',
+          },
+        },
+      }),
+    ).toEqual([])
+
+    const text = [
+      '<mentions>',
+      "Items the user's message references, resolved by the workers that own them.",
+      '- @session(id="s_1") — Chat session "hello" (s_1) · status: done',
+      '  details: session::get {"session_id":"s_1"}',
+      '- @kanban(id="gone") — not found: the kanban worker knows no such id',
+      '</mentions>',
+    ].join('\n')
+    const [note] = entrySegments({
+      entry_id: 'e-n',
+      custom: { custom_type: 'model_notice', data: { kind: 'hook', text } },
+    })
+    expect(note).toMatchObject({
+      kind: 'model-note',
+      content: 'Mentions resolved for the model',
+      note: {
+        label: 'mentions',
+        text,
+        mentions: [
+          {
+            name: 'session',
+            id: 's_1',
+            status: 'resolved',
+            summary: 'Chat session "hello" (s_1) · status: done',
+            details: 'session::get {"session_id":"s_1"}',
+          },
+          {
+            name: 'kanban',
+            id: 'gone',
+            status: 'not-found',
+            summary: 'not found: the kanban worker knows no such id',
+          },
+        ],
+      },
+    })
   })
 
   it('hides the registry-changed model_notice from the chat', () => {

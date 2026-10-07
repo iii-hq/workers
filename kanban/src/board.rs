@@ -198,6 +198,73 @@ pub fn list_tickets<'a>(board: &'a Board, filter: &TicketFilter) -> Vec<&'a Tick
     rows
 }
 
+/// How well a ticket matches a search query; lower is better, `None` is no
+/// match. Keys win (`KAN-12`, `kan-1`, `12`, `#12`), then the title (whole
+/// prefix, every query word starting a title word, substring), then the
+/// description and labels.
+fn search_tier(ticket: &Ticket, query: &str) -> Option<u8> {
+    let key = ticket.key.to_lowercase();
+    let number = key.rsplit_once('-').map(|(_, number)| number).unwrap_or("");
+    let digits = query.strip_prefix('#').unwrap_or(query);
+    let is_number = !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
+    if key == query || (is_number && number == digits) {
+        return Some(0);
+    }
+    if key.starts_with(query) || (is_number && number.starts_with(digits)) {
+        return Some(1);
+    }
+    let title = ticket.title.to_lowercase();
+    if title.starts_with(query) {
+        return Some(2);
+    }
+    let words: Vec<&str> = title
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    let mut terms = query.split_whitespace().peekable();
+    if terms.peek().is_some() && terms.all(|term| words.iter().any(|word| word.starts_with(term))) {
+        return Some(3);
+    }
+    if title.contains(query) {
+        return Some(4);
+    }
+    let in_labels = ticket
+        .labels
+        .iter()
+        .any(|label| label.to_lowercase().contains(query));
+    if in_labels || ticket.description.to_lowercase().contains(query) {
+        return Some(5);
+    }
+    None
+}
+
+/// Live tickets matching `query` (case-insensitive), best first, the most
+/// recently updated first within a tier. An empty query lists the most
+/// recently updated tickets.
+pub fn search_tickets<'a>(board: &'a Board, query: &str, limit: usize) -> Vec<&'a Ticket> {
+    let query = query.trim().to_lowercase();
+    let mut hits: Vec<(u8, &Ticket)> = board
+        .tickets
+        .values()
+        .filter(|ticket| ticket.deleted_at.is_none())
+        .filter_map(|ticket| {
+            if query.is_empty() {
+                Some((0, ticket))
+            } else {
+                search_tier(ticket, &query).map(|tier| (tier, ticket))
+            }
+        })
+        .collect();
+    hits.sort_by(|(a_tier, a), (b_tier, b)| {
+        a_tier
+            .cmp(b_tier)
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+            .then_with(|| a.key.cmp(&b.key))
+    });
+    hits.truncate(limit);
+    hits.into_iter().map(|(_, ticket)| ticket).collect()
+}
+
 /// Next free position at the bottom of a column, ignoring `except`.
 fn next_order(board: &Board, status: &str, except: Option<&str>) -> u64 {
     board

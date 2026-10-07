@@ -1,0 +1,121 @@
+{
+  "function_id": "session::mention::search",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "MentionSearchContext": {
+        "description": "The chat a search was asked from.",
+        "properties": {
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "working_dir": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "description": "Input of a provider's search function.",
+    "properties": {
+      "context": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/MentionSearchContext"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Where the search was asked from, for providers that rank by it."
+      },
+      "limit": {
+        "description": "Maximum rows (default 8, at most 50).",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "query": {
+        "default": "",
+        "description": "What the user typed after `@<name>:`. Empty asks for the most relevant recent items.",
+        "type": "string"
+      }
+    },
+    "title": "MentionSearchRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "MentionItem": {
+        "description": "One search row.",
+        "properties": {
+          "color": {
+            "description": "Overrides the provider's color for this row.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "description": "One line after the label (\"in progress · high\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hint": {
+            "description": "A short human handle shown before the label (\"KAN-12\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "icon": {
+            "description": "Overrides the provider's icon for this row.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "The id written into the token; stable for the item's lifetime.",
+            "type": "string"
+          },
+          "label": {
+            "description": "The item's name (\"Fix login redirect\").",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Output of a provider's search function, best match first.",
+    "properties": {
+      "items": {
+        "items": {
+          "$ref": "#/definitions/MentionItem"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "items"
+    ],
+    "title": "MentionSearchResponse",
+    "type": "object"
+  }
+}

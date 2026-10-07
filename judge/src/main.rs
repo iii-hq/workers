@@ -18,6 +18,10 @@ struct Cli {
     /// boot; the stored value (Console Settings → Workers → judge) wins afterwards.
     #[arg(long, env = "JUDGE_PROVIDER", default_value = DEFAULT_PROVIDER)]
     provider: String,
+    /// Resolve `@<name>(id=…)` chat mentions for agents (the
+    /// `judge::mentions::*` functions and their harness pre-generate hook).
+    #[arg(long, env = "JUDGE_MENTIONS", default_value_t = true, action = clap::ArgAction::Set)]
+    mentions: bool,
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -59,6 +63,10 @@ async fn main() -> anyhow::Result<()> {
             .map_err(anyhow::Error::msg)?,
     );
     register(&iii, config.clone());
+    if cli.mentions {
+        judge::mentions::register(&iii);
+        judge::mentions::bind(&iii);
+    }
     #[cfg(feature = "console-ui")]
     judge::ui::register(&iii);
     configuration::register_config_trigger(&iii, config)?

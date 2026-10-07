@@ -1,0 +1,80 @@
+/* Mention identity tints: the theme-aware glyph tokens (index.css), never
+   raw hex — the same palette sub-agent chips use. `.mention-tone` colors
+   text/icons; `.mention-chip` also tints a background with it. */
+.mention-tone,
+.mention-chip {
+  --mention-tone: var(--color-ink-faint);
+}
+
+.mention-tone[data-color="blue"],
+.mention-chip[data-color="blue"] {
+  --mention-tone: var(--color-glyph-blue);
+}
+
+.mention-tone[data-color="purple"],
+.mention-chip[data-color="purple"] {
+  --mention-tone: var(--color-glyph-purple);
+}
+
+.mention-tone[data-color="teal"],
+.mention-chip[data-color="teal"] {
+  --mention-tone: var(--color-glyph-teal);
+}
+
+.mention-tone[data-color="green"],
+.mention-chip[data-color="green"] {
+  --mention-tone: var(--color-glyph-green);
+}
+
+.mention-tone[data-color="amber"],
+.mention-chip[data-color="amber"] {
+  --mention-tone: var(--color-glyph-amber);
+}
+
+.mention-tone[data-color="rose"],
+.mention-chip[data-color="rose"] {
+  --mention-tone: var(--color-glyph-rose);
+}
+
+.mention-tone {
+  color: var(--mention-tone);
+}
+
+.mention-chip {
+  background-color: color-mix(
+    in oklab,
+    var(--mention-tone) 11%,
+    var(--color-panel)
+  );
+  color: var(--mention-tone);
+}
+
+/* The preview card's left rule carries the item's color, like an unfurl. */
+.mention-card {
+  --mention-tone: var(--color-rule);
+  border-left: 3px solid var(--mention-tone);
+}
+
+.mention-card[data-color="blue"] {
+  --mention-tone: var(--color-glyph-blue);
+}
+
+.mention-card[data-color="purple"] {
+  --mention-tone: var(--color-glyph-purple);
+}
+
+.mention-card[data-color="teal"] {
+  --mention-tone: var(--color-glyph-teal);
+}
+
+.mention-card[data-color="green"] {
+  --mention-tone: var(--color-glyph-green);
+}
+
+.mention-card[data-color="amber"] {
+  --mention-tone: var(--color-glyph-amber);
+}
+
+.mention-card[data-color="rose"] {
+  --mention-tone: var(--color-glyph-rose);
+}

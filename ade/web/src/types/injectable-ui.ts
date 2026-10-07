@@ -559,6 +559,60 @@ export interface OverlayRegistration {
   render: React.ComponentType
 }
 
+/** One labelled value of a mention preview card. */
+export interface MentionField {
+  label: string
+  value: string
+  /** `neutral` | `info` | `success` | `warning` | `danger`. */
+  tone?: string
+}
+
+/** What clicking a mention opens: a page, a chat session or an http(s) URL. */
+export type MentionOpen =
+  | { page: string; context?: JsonValue }
+  | { session: string }
+  | { url: string }
+
+/**
+ * What a worker's mention get function answers for one id — see
+ * `crates/mention-contract` (`MentionView`).
+ */
+export interface MentionView {
+  id: string
+  label: string
+  hint?: string
+  description?: string
+  icon?: string
+  color?: string
+  fields?: MentionField[]
+  open?: MentionOpen
+  /** One line for an agent. */
+  summary?: string
+  /** The worker's domain object (what its own preview renders from). */
+  data?: unknown
+  updated_at?: string
+}
+
+export interface MentionRendererProps {
+  /** The provider's token name, e.g. `kanban`. */
+  provider: string
+  view: MentionView
+  /** Open the mention's target, as clicking its pill does. */
+  open(): void
+}
+
+/**
+ * A worker's own drawing of its mentions. The console's generic card
+ * (icon, label, description, fields) is used whenever this is absent or
+ * throws.
+ */
+export interface MentionRendererRegistration {
+  /** Token name the renderer draws: `@<provider>(id="…")`. */
+  provider: string
+  /** Replaces the preview card the pill shows on hover (about 22rem wide). */
+  Preview: React.ComponentType<MentionRendererProps>
+}
+
 /**
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
@@ -629,6 +683,14 @@ export interface Host {
       providerId: string,
       component: React.ComponentType<ProviderConfigFormProps>,
     ): () => void
+  }
+  /**
+   * Chat mentions (`@<provider>(id="…")`). Providers are declared by the
+   * worker's backend (function metadata); this slot only lets a worker draw
+   * its own preview. Absent on older consoles; feature-detect.
+   */
+  mentions?: {
+    registerRenderer(renderer: MentionRendererRegistration): () => void
   }
   chat: {
     /** Open a new, editable human chat draft without sending or creating a session. */

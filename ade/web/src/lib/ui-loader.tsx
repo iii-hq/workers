@@ -36,6 +36,7 @@ import {
   registerExtComposerAction,
   registerExtComposerControl,
   registerExtConfigForm,
+  registerExtMentionRenderer,
   registerExtOverlay,
   registerExtPage,
   registerExtProviderConfigForm,
@@ -314,6 +315,27 @@ function makeHost(
                 <Form {...props} />
               </ScopedExtension>
             ),
+          }),
+        )
+      },
+    },
+    mentions: {
+      registerRenderer(renderer) {
+        if (
+          !renderer ||
+          typeof renderer.provider !== 'string' ||
+          !renderer.Preview
+        ) {
+          throw new Error(
+            'mentions.registerRenderer: provider and Preview are required',
+          )
+        }
+        return track(
+          registerExtMentionRenderer({
+            provider: renderer.provider,
+            Preview: renderer.Preview,
+            scope,
+            path,
           }),
         )
       },

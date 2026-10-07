@@ -1,4 +1,5 @@
-//! The 21 `session::*` functions.
+//! The 23 `session::*` functions (21 session operations plus the two
+//! `session::mention::*` chat mention provider functions).
 //!
 //! Each `<verb>.rs` holds the request/response types (serde +
 //! `schemars::JsonSchema`, so the SDK emits request/response schemas)
@@ -19,6 +20,7 @@ pub mod get_attachment;
 pub mod get_message;
 pub mod list;
 pub mod list_attachments;
+pub mod mention;
 pub mod messages;
 pub mod messages_range;
 pub mod messages_tail;
@@ -80,6 +82,29 @@ fn register<Req, Resp, F, Fut>(
     F: Fn(Arc<Deps>, Req) -> Fut + Send + Sync + Clone + 'static,
     Fut: Future<Output = Result<Resp, SessionError>> + Send + 'static,
 {
+    let metadata = if internal {
+        json!({ "internal": true, "trace_hidden": true })
+    } else {
+        json!({ "trace_hidden": true })
+    };
+    register_with_metadata(iii, state, id, description, metadata, handler);
+}
+
+/// [`register`] with explicit registration metadata (the mention provider's
+/// get function carries its descriptor there).
+fn register_with_metadata<Req, Resp, F, Fut>(
+    iii: &Arc<IIIClient>,
+    state: &AppState,
+    id: &str,
+    description: &str,
+    metadata: serde_json::Value,
+    handler: F,
+) where
+    Req: DeserializeOwned + JsonSchema + Send + 'static,
+    Resp: Serialize + JsonSchema + Send + 'static,
+    F: Fn(Arc<Deps>, Req) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = Result<Resp, SessionError>> + Send + 'static,
+{
     let state = state.clone();
     let reg = RegisterFunction::new_async(move |req: Req| {
         let state = state.clone();
@@ -95,12 +120,8 @@ fn register<Req, Resp, F, Fut>(
             handler(deps, req).await.map_err(Error::from)
         }
     })
-    .description(description);
-    let reg = if internal {
-        reg.metadata(json!({ "internal": true, "trace_hidden": true }))
-    } else {
-        reg.metadata(json!({ "trace_hidden": true }))
-    };
+    .description(description)
+    .metadata(metadata);
     iii.register_function(id, reg);
 }
 
@@ -272,6 +293,24 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         "Delete one stored attachment no transcript entry references (e.g. a chip removed from the composer); also drops it from the draft. Event-silent.",
         true,
         |d, r| async move { delete_attachment::handle(&d, r).await },
+    );
+    // The chat mention provider: plumbing for the console's `@session:` menu
+    // and pills, so internal (agents read sessions through session::get).
+    register(
+        iii,
+        state,
+        mention::SEARCH_FN,
+        "Search sessions for the chat @session mention menu, by title words or session id; best match first.",
+        true,
+        |d, r| async move { mention::search(&d, r).await },
+    );
+    register_with_metadata(
+        iii,
+        state,
+        mention::GET_FN,
+        "Resolve a @session(id=…) chat mention to its pill, preview card and agent summary; null for an unknown id. Declares the session mention provider.",
+        mention::provider().metadata(),
+        |d, r| async move { mention::get(&d, r).await },
     );
 
     tracing::info!("all session::* functions registered");

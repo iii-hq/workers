@@ -274,6 +274,17 @@ impl SessionService {
             .map(|meta| GetResponse { meta }))
     }
 
+    /// One session's metadata record (`None` when unknown).
+    pub async fn get_meta(&self, session_id: &str) -> Result<Option<SessionMeta>, SessionError> {
+        Ok(self.store.get_meta(session_id).await?)
+    }
+
+    /// Every session's metadata record, unfiltered and unordered — the
+    /// candidate set `session::mention::search` ranks.
+    pub async fn all_metas(&self) -> Result<Vec<SessionMeta>, SessionError> {
+        Ok(self.store.list_metas().await?)
+    }
+
     pub async fn list(&self, req: ListRequest) -> ServiceResult<ListResponse> {
         let order = req.order.unwrap_or_default();
         let limit = self.clamp_limit(req.limit).await;

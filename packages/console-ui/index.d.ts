@@ -509,6 +509,53 @@ export interface OverlayRegistration {
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
  */
+/** One labelled value of a mention preview card. */
+export interface MentionField {
+  label: string
+  value: string
+  /** `neutral` | `info` | `success` | `warning` | `danger`. */
+  tone?: string
+}
+
+/** What clicking a mention opens: a page, a chat session or an http(s) URL. */
+export type MentionOpen =
+  | { page: string; context?: JsonValue }
+  | { session: string }
+  | { url: string }
+
+/** What a worker's mention get function answers for one id. */
+export interface MentionView {
+  id: string
+  label: string
+  hint?: string
+  description?: string
+  icon?: string
+  color?: string
+  fields?: MentionField[]
+  open?: MentionOpen
+  summary?: string
+  /** The worker's domain object — what its own preview renders from. */
+  data?: unknown
+  updated_at?: string
+}
+
+export interface MentionRendererProps {
+  /** The provider's token name, e.g. `kanban`. */
+  provider: string
+  view: MentionView
+  /** Open the mention's target, as clicking its pill does. */
+  open(): void
+}
+
+/**
+ * A worker's own drawing of its mentions: the preview card a pill shows on
+ * hover (about 22rem wide). The generic card covers the rest.
+ */
+export interface MentionRendererRegistration {
+  provider: string
+  Preview: React.ComponentType<MentionRendererProps>
+}
+
 export interface Host {
   iii: ExtensionIii
   /** The curated component record — same components as the named exports below. */
@@ -596,6 +643,15 @@ export interface Host {
   /** Optional on consoles that predate provider-specific configuration UI. */
   providerConfigForms?: {
     register(providerId: string, component: React.ComponentType<ProviderConfigFormProps>): () => void
+  }
+  /**
+   * Chat mentions (`@<provider>(id="…")`). The provider itself is declared by
+   * the worker's backend (`metadata.mention` on its get function, see
+   * `crates/mention-contract`); this slot only draws its preview. Optional:
+   * absent on consoles that predate worker mentions.
+   */
+  mentions?: {
+    registerRenderer(renderer: MentionRendererRegistration): () => void
   }
   /**
    * Optional: absent on consoles that predate session chips. Feature-detect

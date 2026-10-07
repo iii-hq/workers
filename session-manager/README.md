@@ -101,6 +101,14 @@ function's registered schema — see `iii worker info session-manager`.
 e.g. which memory bank fed a generate), so consumers can render
 provenance without a second lookup.
 
+Sessions can be mentioned in a chat as `@session(id="<session_id>")`
+(see [`crates/mention-contract`](../crates/mention-contract/README.md)).
+Two internal functions provide it: `session::mention::search` ranks
+sessions by title words or id (top-level chats before sub-agents, e2e
+sessions and the asking session left out) and `session::mention::get`
+returns the pill, preview card and agent summary — never the parked
+draft — and declares the provider, whose details call is `session::get`.
+
 ## Custom trigger types
 
 Six trigger types cover every mutation. Each binding's `config` filters

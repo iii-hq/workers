@@ -170,6 +170,20 @@ fn fn_pill_syntax() {
     assert!(out.contains("@fn(engine::functions::info)"));
 }
 
+/// Worker mentions: the token shape, the two blocks the judge's mention hook
+/// appends (`judge/src/mentions/render.rs` writes exactly these tags), that
+/// their details calls count as pre-verified, and the no-hook fallback.
+#[test]
+fn worker_mention_syntax() {
+    let out = default_prompt();
+    assert!(out.contains("`@<name>(id=\"<id>\")` in a message is a mention"));
+    assert!(out.contains("A `<mentions>` block"));
+    assert!(out.contains("pre-verified with its exact id and payload"));
+    assert!(out.contains("A `<mention_providers>` block lists the names"));
+    assert!(out.contains("never a guessed one"));
+    assert!(out.contains("With no `<mentions>` block, find the owning worker's get-by-id"));
+}
+
 #[test]
 fn runtime_model() {
     let out = default_prompt();

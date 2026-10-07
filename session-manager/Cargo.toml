@@ -17,6 +17,8 @@ path = "src/lib.rs"
 [dependencies]
 iii-sdk = "0.23"
 iii-worker-paths = { path = "../crates/worker-paths" }
+# Chat mention provider descriptor + search/get wire types (`@session(id=…)`).
+mention-contract = { path = "../crates/mention-contract" }
 # `run_with_baggage` for call-site span hiding (`iii.tag.hidden` on the
 # session-event fan-out — see src/events.rs `IiiDeliverer`).
 iii-helpers = "0.23"

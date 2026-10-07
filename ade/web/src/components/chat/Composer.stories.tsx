@@ -4,6 +4,8 @@ import { useState } from 'react'
 import { fn } from 'storybook/test'
 import type { FileHit } from '@/lib/file-search'
 import { STATIC_FUNCTIONS } from '@/lib/functions'
+import { fixtureMentionRuntime } from '@/lib/mentions/fixtures'
+import { setMentionRuntime } from '@/lib/mentions/runtime'
 import type {
   Attachment,
   ModelId,
@@ -307,5 +309,32 @@ export const Streaming: Story = {
   name: 'disabled (streaming)',
   render: () => (
     <ComposerHarness initialModel="openai::gpt-5-mini" isStreaming />
+  ),
+}
+
+/** Installs the static mention runtime before the composer first renders. */
+function WithFixtureMentions({ children }: { children: React.ReactNode }) {
+  useState(() => setMentionRuntime(fixtureMentionRuntime))
+  return <>{children}</>
+}
+
+// Worker mentions against a static runtime (kanban, session, trace): type
+// `@kan` and press Tab, or `@login` to see one group per provider.
+export const WorkerMentions: Story = {
+  name: 'worker mentions (@kanban, @session, @trace)',
+  render: () => (
+    <WithFixtureMentions>
+      <ComposerHarness
+        initialContent={() => {
+          const paragraph = $createParagraphNode()
+          paragraph.append(
+            $createTextNode(
+              'why does @kanban(id="6ac4f6df-ec84-83e9-b480-4b54b9931ce0") fail in @trace(id="4bf92f3577b34da6a3ce929d0e0e4736")? ',
+            ),
+          )
+          $getRoot().append(paragraph)
+        }}
+      />
+    </WithFixtureMentions>
   ),
 }

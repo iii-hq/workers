@@ -81,8 +81,14 @@ function renderMessage(message: Message): string {
               ? ' (working directory)'
               : message.kind === 'skills'
                 ? ' (skill index)'
-                : ''
-      return `## System${tone}${kind}\n${message.content || '_(empty)_'}`
+                : message.kind === 'model-note'
+                  ? ' (note to the model)'
+                  : ''
+      const note = message.note?.text.trim()
+      const body = note
+        ? `${message.content}\n\n\`\`\`text\n${note}\n\`\`\``
+        : message.content || '_(empty)_'
+      return `## System${tone}${kind}\n${body}`
     }
   }
 }

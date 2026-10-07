@@ -35,6 +35,7 @@ import type { FileMentionRef } from '@/lib/file-mention-token'
 import type { FileSearchFn } from '@/lib/file-search'
 import type { FunctionEntry } from '@/lib/functions'
 import { formatBinding, shortcutPlatform } from '@/lib/keybindings/bindings'
+import type { MentionSearchContext } from '@/lib/mentions/types'
 import { cn } from '@/lib/utils'
 import type {
   Attachment,
@@ -288,6 +289,11 @@ interface ComposerProps {
    */
   searchFiles?: FileSearchFn
   /**
+   * Where worker mention searches (`@kanban:…`) are asked from: this chat's
+   * session and folder.
+   */
+  mentionContext?: MentionSearchContext
+  /**
    * Open a mentioned file where it can be read (the shell explorer, on the
    * referenced lines) when its pill is clicked. Absent = clicking a pill
    * only selects it.
@@ -356,6 +362,7 @@ export function Composer({
   projectControls,
   functionEntries,
   searchFiles,
+  mentionContext,
   onOpenFileMention,
   queuedForEdit,
   onEditQueued,
@@ -755,6 +762,7 @@ export function Composer({
             initialContent={resolvedInitialContent}
             functionEntries={functionEntries}
             searchFiles={searchFiles}
+            mentionContext={mentionContext}
             onOpenFileMention={onOpenFileMention}
             menuFrameRef={card}
             onHistoryNav={onEditQueued ? handleHistoryNav : undefined}

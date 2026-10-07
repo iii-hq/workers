@@ -144,6 +144,23 @@ Use **Import conversations** in the chat sidebar to discover, preview, and selec
 
 Deploy the matching ADE and Harness changes so a session with imported history and no prior turn requires its initial ADE model and working directory. Sessions that explicitly carry `read_only: true` remain protected.
 
+### Mentions
+
+Workers define what a chat can mention (see
+[`crates/mention-contract`](../crates/mention-contract/README.md)). In the
+composer, `@` lists the providers beside functions and files, and from two
+characters on searches every provider, one group each; Tab (or Enter) on a
+provider scopes the menu to `@<provider>:` and its own search. A picked item
+is inserted as `@<provider>(id="…")` and shows as a pill with its icon and
+name, in the composer and in sent messages; hovering a pill shows the item's
+preview card — the generic one, or the worker's own
+(`host.mentions.registerRenderer`) — and clicking it opens the item. What
+the agent was told about the mentions shows as a quiet "Context for the
+agent" row in the turn. The console itself provides `@trace`:
+`console::mentions::trace::search` / `console::mentions::trace::get` wrap
+`engine::traces::list`, and a trace pill opens the traces screen on that
+trace.
+
 ### Traces
 
 Full-fledged OpenTelemetry explorer over `engine::traces::*` and `engine::logs::list`. Lives in [`web/src/pages/TracesV2/`](web/src/pages/TracesV2).
@@ -331,7 +348,9 @@ redaction for normalized registration/fired/retirement activities, with host
 fallbacks for every slot), and
 `host.configForms` (provide the deliberate form body for one configuration id
 inside global Settings; dirty/save/reset and schema validation stay
-host-owned). There is no generic schema-generated form fallback. A
+host-owned), and `host.mentions` (draw the hover preview of the worker's own
+`@<provider>(id=…)` chat mentions; the generic card covers a renderer that
+is absent or throws). There is no generic schema-generated form fallback. A
 configuration form can opt into `{ layout: 'full' }` to receive the entire
 available editor width and height; contained layout remains the default.
 Renders are fenced by an ErrorBoundary and scoped under

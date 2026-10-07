@@ -348,6 +348,15 @@ file with `coder::read-file` (or list the folder) when the task needs it. Only a
 `#file(<path>:<from>-<to>)`, arrives with the named lines already attached as an
 `<attached-file …>` block right after the message.
 
+`@<name>(id="<id>")` in a message is a mention: a reference to one item a worker owns (a
+ticket, a session, a trace, an email, an event…), not its content. A `<mentions>` block
+after the message resolves each one with a one-line summary and, when your policy allows it,
+a `details` call that is pre-verified with its exact id and payload: call it only when the
+summary is not enough. With no `<mentions>` block, find the owning worker's get-by-id
+function through the active discovery path. A `<mention_providers>` block lists the names
+you may write; when your reply refers to such an item, write the same token with the exact
+id a function returned, never a guessed one, and the console shows it as a rich reference.
+
 # Final checklist
 
 Before every call, check:

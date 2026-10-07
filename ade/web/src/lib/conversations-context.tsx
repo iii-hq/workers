@@ -38,6 +38,7 @@ import { getDefaultBackend } from '@/lib/backend'
 import { hasWorkingConversation } from '@/lib/chat-activity'
 import { requestComposerFocus } from '@/lib/composer-insert'
 import type { IiiClient } from '@/lib/iii-client'
+import { setMentionSessionOpener } from '@/lib/mentions/open-session'
 import {
   type ProviderListEntry,
   preferredStartingModel,
@@ -277,6 +278,8 @@ export function ConversationsProvider({
   const openConversation = useCallback((sessionId: string) => {
     conversationAdapterRef.current?.selectConversation(sessionId)
   }, [])
+  // A `@session(id=…)` pill anywhere in the tab opens its chat through this.
+  useEffect(() => setMentionSessionOpener(openConversation), [openConversation])
 
   const value: ConversationsContextValue = {
     ...api,

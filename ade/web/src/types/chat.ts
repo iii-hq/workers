@@ -323,6 +323,7 @@ export interface SystemMessage extends BaseMessage {
     | 'turn-failure'
     | 'working-dir'
     | 'skills'
+    | 'model-note'
   /** User-facing remediation supplied by a structured lifecycle record. */
   nextActions?: string[]
   /** Diagnostic context kept behind a collapsed disclosure. */
@@ -333,6 +334,8 @@ export interface SystemMessage extends BaseMessage {
   scope?: WorkingDirScope
   /** The skill index behind a `kind: 'skills'` marker. */
   skills?: SkillCatalogUpdate
+  /** What the model was shown, behind a `kind: 'model-note'` row. */
+  note?: ModelNote
   /**
    * Live-only fallback for a durable transcript entry with the same id.
    * It may fill a delivery gap, but must never replace the transcript-backed
@@ -379,6 +382,25 @@ export interface WorkingDirScope {
   path: string | null
   previousPath?: string | null
   cause: 'selected' | 'recovered' | 'unavailable'
+}
+
+/**
+ * Text the harness or a hook showed the model mid-turn (a `model_notice`
+ * entry). `label` names it for a reader ("memory", "preloaded stale");
+ * `mentions` is set for the judge's `<mentions>` block, parsed.
+ */
+export interface ModelNote {
+  label: string
+  text: string
+  mentions?: ModelNoteMention[]
+}
+
+export interface ModelNoteMention {
+  name: string
+  id: string
+  status: 'resolved' | 'not-found' | 'unknown-provider' | 'error'
+  summary: string
+  details?: string
 }
 
 /** One row of the skill index the harness handed the model. */
