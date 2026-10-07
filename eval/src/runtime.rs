@@ -2565,9 +2565,10 @@ pub(crate) enum Spend {
     /// What an analysis spends: the investigation (Jev's triage is in tokens).
     /// The only bucket the daily cap compares.
     Capture(f64),
-    /// `eval::reproduce`: the known cost of the samples, and how many replies
-    /// came back without one. Reported next to the capture spend, never capped,
-    /// so a manual replay cannot stop automatic observation.
+    /// `eval::reproduce`: the known cost of samples, and how many had none (a
+    /// failed one included). Added as each sample is saved. Reported next to
+    /// the capture spend, never capped, so a manual replay cannot stop
+    /// automatic observation.
     Replay { usd: f64, unknown: u32 },
 }
 

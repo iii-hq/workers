@@ -5,6 +5,7 @@ import {
   estimateCost,
   fisherTwoSided,
   moreSamplesNeeded,
+  reproductionCost,
   reproductionSentence,
   standing,
   stepLabel,
@@ -44,6 +45,7 @@ function reproduction(
     state,
     samples: replies,
     original: reply(0, true, ['coder::search'], '{"path":"ade"}'),
+    cost_unknown_samples: 0,
     judge_input_tokens: 0,
     judge_output_tokens: 0,
     by: 'ana',
@@ -121,5 +123,15 @@ describe('where the suggestion stands', () => {
     expect(stepLabel('e_t_4c79_4_assistant')).toBe('step 4')
     expect(estimateCost(0.05, 20)).toBeCloseTo(1)
     expect(estimateCost(undefined, 20)).toBeUndefined()
+  })
+})
+
+describe('what a reproduction cost', () => {
+  it('names the samples that reported no cost instead of counting them as free', () => {
+    const base = reproduction('none', [])
+    expect(reproductionCost({ ...base, cost_usd: 0.1 })).toBe('$0.10')
+    expect(reproductionCost({ ...base, cost_usd: 0.1, cost_unknown_samples: 10 })).toBe('$0.10 + 10 not reported')
+    expect(reproductionCost({ ...base, cost_unknown_samples: 20 })).toBe('20 not reported')
+    expect(reproductionCost(base)).toBe('not reported')
   })
 })

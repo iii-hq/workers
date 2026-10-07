@@ -144,7 +144,7 @@ export interface MonitorCost {
   today_capture_usd: number
   /** What `eval::reproduce` samples spent: reported, never capped. */
   today_replay_usd: number
-  /** Replay samples of the day that reported no cost: they add nothing to `today_replay_usd`, yet cost is unknown. */
+  /** Replay samples of the day without a cost, failed ones included: they add nothing to `today_replay_usd`, yet cost is unknown. */
   today_replay_unknown: number
   /** Analyses of the day whose investigation reported no cost: they add nothing to `today_capture_usd`, yet cost is unknown. */
   today_unknown: number
@@ -964,7 +964,10 @@ export interface Reproduction {
   samples: Reply[]
   original?: Reply
   fidelity?: Fidelity
+  /** Known cost of the samples; only a lower bound while `cost_unknown_samples` is above zero. */
   cost_usd?: number
+  /** Samples without a reported cost, failed ones included: unknown, not in `cost_usd`. */
+  cost_unknown_samples: number
   judge_input_tokens: number
   judge_output_tokens: number
   by: string

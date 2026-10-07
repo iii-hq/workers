@@ -34,6 +34,7 @@ import {
   MAX_SAMPLES,
   MORE_SAMPLES,
   percent,
+  reproductionCost,
   reproductionSentence,
   signalLabel,
   type Standing,
@@ -421,8 +422,8 @@ function ComparisonTable({ base, change }: { base: Reproduction; change: Reprodu
           </tr>
           <tr>
             <th scope="row">Cost</th>
-            <td>{formatCostShort(base.cost_usd)}</td>
-            <td>{formatCostShort(change.cost_usd)}</td>
+            <td>{reproductionCost(base)}</td>
+            <td>{reproductionCost(change)}</td>
           </tr>
         </tbody>
       </table>
@@ -631,7 +632,7 @@ export function ReplaySection({
           <p className="eval-ui-rp-sentence">
             {reproductionSentence(current.base)}
             {current.stage === 'not_reproduced' ? ' This suggestion is probably not worth it.' : ''}{' '}
-            <span className="eval-ui-rp-cost">{formatCostShort(current.base.cost_usd)}</span>
+            <span className="eval-ui-rp-cost">{reproductionCost(current.base)}</span>
           </p>
           {current.base.fidelity ? <FidelityLine fidelity={current.base.fidelity} /> : null}
           <ActionSummary reproduction={current.base} />

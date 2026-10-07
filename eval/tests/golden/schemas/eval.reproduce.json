@@ -875,7 +875,7 @@
           },
           "cost_unknown_samples": {
             "default": 0,
-            "description": "Samples that answered without reporting a cost: unknown, not in `cost_usd`, and never estimated.",
+            "description": "Samples without a reported cost, failed ones included (the provider may have billed a request that never answered): unknown, not in `cost_usd`, and never estimated.",
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"

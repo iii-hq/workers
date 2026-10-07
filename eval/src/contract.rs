@@ -153,8 +153,8 @@ pub struct MonitorCostV1 {
     /// The replay bucket: the known cost of the day's `eval::reproduce`
     /// samples. Never capped.
     pub today_replay_usd: f64,
-    /// Replay samples of the day that came back without a cost. They add
-    /// nothing to `today_replay_usd`, but their cost is unknown, not zero.
+    /// Replay samples of the day without a cost, failed ones included. They
+    /// add nothing to `today_replay_usd`, but their cost is unknown, not zero.
     pub today_replay_unknown: u32,
     /// Analyses of the day whose investigation started but reported no cost.
     /// They add nothing to `today_capture_usd`, but their cost is unknown, not zero.
@@ -1011,8 +1011,9 @@ pub enum WakeOutcomeV1 {
     // The day's known cost reached `daily_cost_cap_usd`; a plain comment so
     // the schema stays a flat string enum.
     CostCap,
-    // Automatic observation covers only the user's chats (session kind
-    // `user`); E2E runs and automations are analyzed by hand.
+    // Automatic observation covers only the user's console chats (kind
+    // `user`, surface `console`); Slack and Telegram chats, E2E runs and
+    // automations are analyzed by hand.
     NotUserChat,
 }
 
@@ -1748,7 +1749,8 @@ pub struct ReproductionV1 {
     /// in tokens below, never priced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
-    /// Samples that answered without reporting a cost: unknown, not in
+    /// Samples without a reported cost, failed ones included (the provider
+    /// may have billed a request that never answered): unknown, not in
     /// `cost_usd`, and never estimated.
     #[serde(default)]
     pub cost_unknown_samples: u32,

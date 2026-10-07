@@ -48,11 +48,12 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              router::models::list; credentials stay in the providers and are never accepted \
              here. An optional code_repository (an absolute directory on this host, normally \
              the iii workers repository) lets the investigation read that code like a chat \
-             with the directory selected, and for now with every function allowed. An optional \
-             daily_cost_cap_usd pauses automatic observation for the rest of the UTC day once the \
-             known investigation cost reaches it (manual analyses are never refused, and replay \
-             spend is reported but not counted). Analyses \
-             already admitted keep the configuration they started with.",
+             with the directory selected, with only read-only functions allowed (coder::search, \
+             coder::tree, coder::read-file, github::pr::list and engine::functions::info). An \
+             optional daily_cost_cap_usd pauses automatic observation for the rest of the UTC \
+             day once the known investigation cost reaches it (manual analyses are never \
+             refused, and replay spend is reported but not counted). Analyses already admitted \
+             keep the configuration they started with.",
         ),
     );
 

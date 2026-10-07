@@ -152,9 +152,11 @@ Only LLM cost is in dollars: the investigation's (`usage.llm_cost_usd`, from
 `eval::reproduce` samples' (`cost_usd` of each reply). Jev's usage, in a
 triage or in classifying a replay's replies, is reported in tokens and never
 priced. A missing cost is unknown, never zero, and is never estimated: a
-replay sample that answered without a cost adds nothing to the sums, is counted
-in the reproduction's `cost_unknown_samples` (which makes its `cost_usd` a lower
-bound) and in the day's `today_replay_unknown`.
+replay sample without a cost, one that failed included (the provider may still
+bill a request the bus gave up on), adds nothing to the sums, is counted in the
+reproduction's `cost_unknown_samples` (which makes its `cost_usd` a lower
+bound) and in the day's `today_replay_unknown`. Each sample is added to the day
+as it is saved, so a run that stops partway has already counted what it kept.
 
 The day's spend has two buckets. **Capture** is what an analysis spends (the
 investigation; Jev's triage is in tokens). **Replay** is what `eval::reproduce`
@@ -172,8 +174,8 @@ counts as capture for its day.
   `today_capture_usd` is the larger of that and the stored analyses' sum, so
   deleting analyses (or retention) does not give the budget back.
 - `today_replay_usd` and `today_replay_unknown`: the replay bucket, the known
-  cost of the day's `eval::reproduce` samples and how many replied without a
-  cost. Reported, never capped.
+  cost of the day's `eval::reproduce` samples and how many had no cost
+  (failed samples included). Reported, never capped.
 - `today_usd`: both buckets together, everything known to be spent. **The cap
   does not compare it.**
 - `cap_usd` and `capped`: the optional `daily_cost_cap_usd` and whether
@@ -241,10 +243,8 @@ iii trigger eval::configure --json '{
   file, run a shell, start or message a session, start an E2E execution or
   record a review. `fp::pipe` is deliberately absent: its steps run with the
   `fp` worker's authority, outside this policy. Without a code directory the
-  policy stays deny-all. With `approval-gate` installed the coder functions
-  and `engine::functions::info` pass without a human (`iii-permissions.yaml`
-  allows them); `github::pr::list` is not listed there, so a held call would
-  stall the investigation until its deadline. The step cap goes from 1 to 32
+  policy stays deny-all. With `approval-gate` installed all five pass without a
+  human (`iii-permissions.yaml` allows them). The step cap goes from 1 to 32
   generate steps and the total-token cap from 200,000 to 800,000
   (`limits.investigation_code_max_turns` and
   `investigation_code_max_total_tokens`). The deadline and the
@@ -341,7 +341,7 @@ console never restates them:
 | Model context | 192 KiB of serialized JSON (about 50k tokens); diagnostics take at most 64 KiB |
 | Assets per analysis | 2 MiB; above it the analysis fails with `coverage_insufficient` before any model call. The turn record kept in `assets.capture.record` is the first thing left out to stay under it |
 | Investigation | 1 turn, 16,384 output tokens, 200,000 total tokens (the model's own caps still apply) |
-| Investigation with a code directory | 32 generate steps, 16,384 output tokens, 800,000 total tokens, every function allowed but `eval::*` and `e2e::dashboard::execution-*` (`investigation_code_max_turns`, `investigation_code_max_total_tokens`) |
+| Investigation with a code directory | 32 generate steps, 16,384 output tokens, 800,000 total tokens, only the five read-only functions of the Code access allowlist (`investigation_code_max_turns`, `investigation_code_max_total_tokens`) |
 | Queue | `eval-run`, FIFO per analysis, 8 steps at once |
 | Unfinished analyses | 500 |
 | Retention | 30 days and 1,000 terminal analyses |
@@ -368,6 +368,10 @@ fails analyses past their deadline.
   state worker can lose the last writes; there is no exactly-once guarantee
   under storage loss.
 - Locks are per process: run a single `eval` instance.
+- Persisted records reject fields they do not know, so state written by a newer
+  `eval` (a capture's `record`, a reproduction's `cost_unknown_samples`) cannot
+  be read back by an older one. Rolling back is not supported once new analyses
+  or replays exist.
 
 ## Validation by replay
 

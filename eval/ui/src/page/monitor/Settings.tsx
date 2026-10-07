@@ -542,7 +542,7 @@ export function MonitorSettings({
               id="eval-settings-observe"
               field="enabled"
               label="Analyze your chats automatically"
-              description={`Your finished chats (sessions of kind user): completed, failed and cancelled, with their descendants. E2E runs and automations, the monitor's own included, are left for Analyze a session. Pausing stops new analyses; analyses already running continue until you cancel them.${editing && catalogFailed ? " Saving this doesn't need the model list." : ''}`}
+              description={`Your finished console chats: completed, failed and cancelled, with their descendants. Slack and Telegram chats, E2E runs and automations (the monitor's own included) are left for Analyze a session. Pausing stops new analyses; analyses already running continue until you cancel them.${editing && catalogFailed ? " Saving this doesn't need the model list." : ''}`}
               layout="inline"
               controlSize="fit"
               renderControl={(controlProps) => (

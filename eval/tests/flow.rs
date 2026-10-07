@@ -69,6 +69,9 @@ struct World {
     cost_usd: Option<f64>,
     /// The cost every `router::complete` reply reports; `None` is unknown.
     sample_cost_usd: Option<f64>,
+    /// Every `router::complete` call fails, as when the bus gives up on a
+    /// provider that may still bill.
+    samples_fail: bool,
     /// What `engine::workers::list` answers; `None` is an engine without it.
     workers: Option<Value>,
     /// What `e2e::dashboard::tests-list` answers; `None` is a down E2E.
@@ -114,6 +117,7 @@ impl World {
             extra_frames: Vec::new(),
             cost_usd: None,
             sample_cost_usd: Some(0.001),
+            samples_fail: false,
             workers: None,
             tests_list: None,
             stacks: None,
@@ -396,6 +400,9 @@ impl World {
             // A model that re-reads the contract only while the registry
             // notice is in its context.
             "router::complete" => {
+                if self.samples_fail {
+                    return Some(Err("the provider never answered".into()));
+                }
                 let notice = data["messages"].to_string().contains("registry changed");
                 let mut reply = empty_assistant("p", "task-model");
                 reply.content = if notice {
@@ -4012,6 +4019,30 @@ async fn a_replay_sample_without_a_cost_stays_unknown() {
         (cost.today_replay_usd, cost.today_replay_unknown),
         (0.0, 3),
         "unknown, not a free replay"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_replay_sample_is_unknown_not_free() {
+    let mut world = World::new();
+    world.samples_fail = true;
+    let (h, evaluation_id) = replayable(world, turn_record(TURN)).await;
+    let id = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 3, "by": "ana"}),
+    )
+    .await
+    .unwrap()
+    .reproduction_id
+    .unwrap();
+    let replay = settled(&h, &evaluation_id, &id).await;
+    assert_eq!(replay.state, ReproductionStateV1::Failed);
+    assert_eq!((replay.cost_usd, replay.cost_unknown_samples), (None, 3));
+    let cost = cost_block(&h).await;
+    assert_eq!(
+        (cost.today_replay_usd, cost.today_replay_unknown),
+        (0.0, 3),
+        "the provider may have billed what the bus gave up on"
     );
 }
 

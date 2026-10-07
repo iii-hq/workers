@@ -3,6 +3,7 @@
 // step of the flow the suggestion is at. Pure functions, so the card and the
 // tests read the same numbers.
 import type { Reply, Reproduction, SuggestionCheck } from '../../../types'
+import { formatCostShort } from './present'
 
 export const DEFAULT_SAMPLES = 20
 export const MORE_SAMPLES = 30
@@ -281,6 +282,13 @@ export function stepLabel(entryId: string): string {
 export function estimateCost(stepCostUsd: number | undefined, samples: number): number | undefined {
   if (stepCostUsd === undefined || !Number.isFinite(stepCostUsd)) return undefined
   return stepCostUsd * samples
+}
+
+/** `$0.10 + 10 not reported`: what a reproduction cost, with the samples that reported no cost named, never as zero. */
+export function reproductionCost(reproduction: Reproduction): string {
+  const { cost_usd: usd, cost_unknown_samples: unknown } = reproduction
+  if (unknown === 0) return formatCostShort(usd)
+  return [usd === undefined ? undefined : formatCostShort(usd), `${unknown} not reported`].filter(Boolean).join(' + ')
 }
 
 export function signalLabel(check: SuggestionCheck): string {

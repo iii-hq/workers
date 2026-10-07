@@ -173,7 +173,7 @@
             "type": "number"
           },
           "today_replay_unknown": {
-            "description": "Replay samples of the day that came back without a cost. They add nothing to `today_replay_usd`, but their cost is unknown, not zero.",
+            "description": "Replay samples of the day without a cost, failed ones included. They add nothing to `today_replay_usd`, but their cost is unknown, not zero.",
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"

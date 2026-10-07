@@ -70,7 +70,8 @@ pub struct DailySpendV1 {
     /// Replay: the known cost of `eval::reproduce` samples.
     #[serde(default)]
     pub replay_usd: f64,
-    /// Replay samples that came back without a cost: unknown, not in `replay_usd`.
+    /// Replay samples without a cost, failed ones included: unknown, not in
+    /// `replay_usd`.
     #[serde(default)]
     pub replay_unknown: u32,
 }
