@@ -1,8 +1,8 @@
 //! INT-033 — a call whose arguments carry stringified JSON the target's
 //! schema rejects (`"true"` for a boolean, `"5"` for an integer) is repaired
 //! before dispatch: the target receives the typed values, the call succeeds
-//! on the first attempt, and the result says the values were parsed and the
-//! call ran as intended. The same repair again in the turn runs the same way
+//! on the first attempt, and the result names the parsed paths and types.
+//! The same repair again in the turn runs the same way
 //! and keeps its `reconciled` origin annotation, but its result carries no
 //! second notice.
 //!
@@ -147,11 +147,12 @@ pub(super) fn scenario() -> ScenarioFixture {
             first.contains(RESULT)
                 && first.contains("`exact` (boolean)")
                 && first.contains("`limit` (integer)")
-                && first.contains("parsed before dispatch; the call ran as intended"),
+                && first.contains("parsed before dispatch."),
             "first result does not carry the target output and the parse note: {first}"
         );
         anyhow::ensure!(
-            !first.contains("Send arguments") && !first.contains('→'),
+            !first.contains("Send arguments") && !first.contains('→')
+                && !first.contains("call ran"),
             "a lossless parse note carries an instruction or value previews: {first}"
         );
         let second = message_text(results[1]);

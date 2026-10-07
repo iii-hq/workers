@@ -281,7 +281,7 @@ Every applied repair is recorded in the entry origin (`reconciled`). A repair th
 model asked for (renamed, replaced, dropped) is also noted in the `function_result` ("the
 arguments were reconciled…"), with the contract to follow. A lossless parse gets one short line
 naming the path and parsed type ("`args` (array) arrived as a JSON string and was parsed before
-dispatch; the call ran as intended."), only the first time that function and path are parsed in
+dispatch."), only the first time that function and path are parsed in
 a turn (`TurnRecord::noted_parses`). `engine::functions::info` results are never appended to.
 Approvers and hooks review the repaired arguments. History is never rewritten.
 

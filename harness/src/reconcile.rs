@@ -6,8 +6,8 @@
 //! the schema rejects that is a string holding JSON of another type
 //! (`"true"`, `"[\"a\"]"`, `"{\"name\":…}"`) is parsed in place. That repair
 //! is lossless — the model wrote the right value in the wrong JSON encoding —
-//! so it needs no judgement, and its result note only says the call ran as
-//! intended, once per function and path in a turn. The validator is the
+//! so it needs no judgement, and its result note only names what was parsed,
+//! once per function and path in a turn. The validator is the
 //! schema oracle: a parse is kept only when the violation at that path
 //! disappears, so `$ref`, `anyOf` and `Option<T>` shapes need no hand
 //! resolution.
@@ -835,9 +835,9 @@ fn diagnosis(
 /// - a call with a repair that changed what the model asked for (renamed,
 ///   replaced, dropped) lists every repair, with the contract to follow;
 /// - otherwise lossless parses get one short line naming the paths not yet
-///   reported this turn, and nothing once all were: the call ran as
-///   intended, and repeating the notice does not change what a model that
-///   stringifies arrays sends.
+///   reported this turn, and nothing once all were: the parse lost nothing
+///   (the result itself says whether the call ran), and repeating the notice
+///   does not change what a model that stringifies arrays sends.
 ///
 /// Every parsed path is recorded in `noted`. Empty when nothing is left to
 /// say.
@@ -907,7 +907,7 @@ fn parsed_note(parsed: &[&Change]) -> Option<String> {
         "arrived as JSON strings and were"
     };
     Some(format!(
-        "[harness] {} {arrived} parsed before dispatch; the call ran as intended.",
+        "[harness] {} {arrived} parsed before dispatch.",
         paths.join(", ")
     ))
 }
@@ -1499,7 +1499,7 @@ mod tests {
         assert_eq!(
             first,
             "[harness] `args` (array) arrived as a JSON string and was parsed before \
-             dispatch; the call ran as intended."
+             dispatch."
         );
         // The same repair again this turn: nothing more to say.
         assert_eq!(note(&args, "shell::exec", &mut noted), "");
@@ -1515,7 +1515,7 @@ mod tests {
         assert_eq!(
             text,
             "[harness] `timeout_ms` (integer), `env` (object) arrived as JSON strings and were \
-             parsed before dispatch; the call ran as intended."
+             parsed before dispatch."
         );
         // A new turn starts with an empty set and notes again.
         assert_eq!(note(&args, "shell::exec", &mut NotedParses::new()), first);
