@@ -41,7 +41,7 @@ pub fn declaration() -> ProviderDeclaration {
         // registration and periodically while the worker is running.
         supports_model_listing: Some(true),
         // Starting point for callers that name no model. The router ranks
-        // by variant in this order (Terra, then Sol, then Luna), then the
+        // by variant in this order (Terra, then Sol, then Astra, then Luna), then the
         // newest version within the variant.
         default_models: Some(vec![
             "codex/gpt-6.1-terra".into(),
@@ -50,6 +50,9 @@ pub fn declaration() -> ProviderDeclaration {
             "codex/gpt-6.1-sol".into(),
             "codex/gpt-6-sol".into(),
             "codex/gpt-5.6-sol".into(),
+            "codex/gpt-6.1-astra".into(),
+            "codex/gpt-6-astra".into(),
+            "codex/gpt-5.6-astra".into(),
             "codex/gpt-6.1-luna".into(),
             "codex/gpt-6-luna".into(),
             "codex/gpt-5.6-luna".into(),

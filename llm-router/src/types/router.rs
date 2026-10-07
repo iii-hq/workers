@@ -138,8 +138,8 @@ pub struct ProviderInfo {
     pub icon_svg: Option<String>,
     /// The model a consumer should start with when nothing else names one:
     /// the newest model of the best-ranked variant its declared
-    /// `default_models` name (Terra, Sol, Luna for GPT providers; Sonnet,
-    /// Opus, Fable, Haiku for Claude providers), else the first declared id
+    /// `default_models` name (Terra, Sol, Astra, Luna for GPT providers;
+    /// Sonnet, Opus, Fable, Haiku for Claude providers), else the first declared id
     /// in its catalog slice, else the closest same-family model, else absent
     /// (see
     /// `registry::availability::resolve_default_model`).

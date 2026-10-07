@@ -230,8 +230,8 @@ mod tests {
     }
 
     #[test]
-    fn terra_outranks_sol_outranks_luna_then_the_newest_version_wins() {
-        let prefs: Vec<String> = ["terra", "sol", "luna"]
+    fn terra_outranks_sol_outranks_astra_outranks_luna_then_the_newest_version_wins() {
+        let prefs: Vec<String> = ["terra", "sol", "astra", "luna"]
             .iter()
             .flat_map(|v| ["6.1", "6", "5.6"].map(|n| format!("codex/gpt-{n}-{v}")))
             .collect();
@@ -251,10 +251,25 @@ mod tests {
             pick(&["codex/gpt-7-luna", "codex/gpt-6.1-sol", "codex/gpt-5-terra"]).as_deref(),
             Some("codex/gpt-5-terra")
         );
-        // No Terra: Sol over Luna.
+        // No Terra: Sol over Astra and Luna.
         assert_eq!(
-            pick(&["codex/gpt-7-luna", "codex/gpt-5.6-sol"]).as_deref(),
+            pick(&[
+                "codex/gpt-7-luna",
+                "codex/gpt-6.1-astra",
+                "codex/gpt-5.6-sol"
+            ])
+            .as_deref(),
             Some("codex/gpt-5.6-sol")
+        );
+        // No Terra or Sol: Astra over a newer Luna.
+        assert_eq!(
+            pick(&[
+                "codex/gpt-7-luna",
+                "codex/gpt-6-astra",
+                "codex/gpt-5.6-luna"
+            ])
+            .as_deref(),
+            Some("codex/gpt-6-astra")
         );
         // Within a variant the newest version wins, listed or not.
         assert_eq!(

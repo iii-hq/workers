@@ -53,8 +53,9 @@ pub fn declaration() -> ProviderDeclaration {
         config_schema: None,
         supports_model_listing: Some(true),
         // Starting point for callers that name no model. The router ranks
-        // by variant in this order (GPT Terra, Sol, Luna, then Claude Sonnet,
-        // Opus, Fable, Haiku), then the newest version within the variant.
+        // by variant in this order (GPT Terra, Sol, Astra, Luna, then Claude
+        // Sonnet, Opus, Fable, Haiku), then the newest version within the
+        // variant.
         default_models: Some(vec![
             "copilot/gpt-6.1-terra".into(),
             "copilot/gpt-6-terra".into(),
@@ -62,6 +63,9 @@ pub fn declaration() -> ProviderDeclaration {
             "copilot/gpt-6.1-sol".into(),
             "copilot/gpt-6-sol".into(),
             "copilot/gpt-5.6-sol".into(),
+            "copilot/gpt-6.1-astra".into(),
+            "copilot/gpt-6-astra".into(),
+            "copilot/gpt-5.6-astra".into(),
             "copilot/gpt-6.1-luna".into(),
             "copilot/gpt-6-luna".into(),
             "copilot/gpt-5.6-luna".into(),
