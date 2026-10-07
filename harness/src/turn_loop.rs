@@ -11,6 +11,7 @@ use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, TriggerAction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::clients::router::{ChatError, ChatParams, StreamSink};
 use crate::clients::{LoadedEntry, SessionClient};
@@ -226,6 +227,38 @@ fn origin_with(turn_id: &str, annotations: &serde_json::Map<String, Value>) -> V
         obj.insert(k.clone(), v.clone());
     }
     Value::Object(obj)
+}
+
+/// `origin_with` for the assistant entry of a generate step, also naming the
+/// Harness build that ran it (`build`, see build.rs) and fingerprinting the
+/// request it sent (`req`): sha256 hex of the compact JSON (object keys sorted)
+/// of the system prompt, the tools and the messages exactly as handed to the
+/// router, plus the message count. Stamped after the hook annotations so a hook
+/// cannot overwrite them.
+fn generate_origin(
+    turn_id: &str,
+    annotations: &serde_json::Map<String, Value>,
+    system_prompt: Option<&str>,
+    tools: &[AgentFunction],
+    messages: &[Value],
+) -> Value {
+    let mut origin = origin_with(turn_id, annotations);
+    origin["build"] = json!(env!("GIT_SHA"));
+    origin["req"] = json!({
+        "system_sha": json_sha(&system_prompt),
+        "tools_sha": json_sha(&serde_json::to_value(tools).unwrap_or(Value::Null)),
+        "messages_sha": json_sha(messages),
+        "n": messages.len(),
+    });
+    origin
+}
+
+fn json_sha<T: Serialize + ?Sized>(value: &T) -> String {
+    let mut hasher = Sha256::new();
+    // Streams the JSON into the hasher (no copy of a multi-MB transcript).
+    // Infallible here: only strings and `Value`s, and a hasher never errors.
+    let _ = serde_json::to_writer(&mut hasher, value);
+    format!("{:x}", hasher.finalize())
 }
 
 /// Whether the running step must finalise as cancelled after generation.
@@ -996,7 +1029,13 @@ async fn generate_step(
     // repair. Persisted pruning happens with the normal pre-generation write.
     trigger::retain_visible_contract_sources(&mut record.function_contract_ledger, &gen_messages);
 
-    let assistant_origin = origin_with(&record.turn_id, &gen_annotations);
+    let assistant_origin = generate_origin(
+        &record.turn_id,
+        &gen_annotations,
+        gen_system_prompt.as_deref(),
+        &tools,
+        &gen_messages,
+    );
 
     // Generate: append an empty assistant under a deterministic id, stream
     // deltas into it, then write the final message.
@@ -4066,6 +4105,70 @@ impl Clone for SessionStreamSink {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_assistant_step_carries_its_build_and_a_fingerprint_of_the_request() {
+        let tools = vec![super::AgentFunction {
+            name: "agent_trigger".into(),
+            description: "Call a function".into(),
+            parameters: serde_json::json!({ "type": "object" }),
+            label: None,
+            execution_mode: None,
+        }];
+        let messages = vec![serde_json::json!({ "role": "user", "content": "hi" })];
+        let annotations = serde_json::Map::new();
+        let origin =
+            |system: &str, tools: &[super::AgentFunction], messages: &[serde_json::Value]| {
+                super::generate_origin("t1", &annotations, Some(system), tools, messages)
+            };
+
+        let base = origin("be brief", &tools, &messages);
+        assert_eq!(base["turn_id"], "t1");
+        assert_eq!(base["build"], env!("GIT_SHA"));
+        assert!(!env!("GIT_SHA").is_empty());
+        assert_eq!(base["req"]["n"], 1);
+        for key in ["system_sha", "tools_sha", "messages_sha"] {
+            let sha = base["req"][key].as_str().unwrap();
+            assert!(
+                sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{key}: {sha}"
+            );
+        }
+
+        // Same request, same fingerprint; a different system prompt moves
+        // only its own digest.
+        assert_eq!(base["req"], origin("be brief", &tools, &messages)["req"]);
+        let changed = origin("be verbose", &tools, &messages);
+        assert_ne!(base["req"]["system_sha"], changed["req"]["system_sha"]);
+        for key in ["tools_sha", "messages_sha", "n"] {
+            assert_eq!(base["req"][key], changed["req"][key], "{key}");
+        }
+        let more = [messages[0].clone(), messages[0].clone()];
+        let longer = origin("be brief", &tools, &more);
+        assert_ne!(base["req"]["messages_sha"], longer["req"]["messages_sha"]);
+        assert_eq!(longer["req"]["n"], 2);
+        assert_ne!(
+            base["req"]["tools_sha"],
+            origin("be brief", &[], &messages)["req"]["tools_sha"]
+        );
+    }
+
+    #[test]
+    fn the_request_fingerprint_ignores_key_order_and_resists_hook_annotations() {
+        let forward = serde_json::json!({ "a": 1, "b": { "c": 2, "d": 3 } });
+        let reversed: serde_json::Value =
+            serde_json::from_str(r#"{ "b": { "d": 3, "c": 2 }, "a": 1 }"#).unwrap();
+        assert_eq!(super::json_sha(&forward), super::json_sha(&reversed));
+
+        let mut annotations = serde_json::Map::new();
+        annotations.insert("build".into(), "forged".into());
+        annotations.insert("req".into(), "forged".into());
+        annotations.insert("memory".into(), "bank".into());
+        let origin = super::generate_origin("t1", &annotations, None, &[], &[forward]);
+        assert_eq!(origin["build"], env!("GIT_SHA"));
+        assert!(origin["req"].is_object());
+        assert_eq!(origin["memory"], "bank");
+    }
+
     fn valid_ask() -> serde_json::Value {
         serde_json::json!({ "questions": [ {
             "header": "Approach",
