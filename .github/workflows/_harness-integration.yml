@@ -49,7 +49,15 @@ jobs:
         with:
           toolchain: 1.97.1
 
+      # The integration crate links the harness (for its response-language
+      # detector); these tests never serve the harness UI, so a stub bundle
+      # stands in for it and no Node/pnpm is needed here.
+      - name: Stub the embedded harness UI
+        run: mkdir -p harness/ui/dist && touch harness/ui/dist/page.js harness/ui/dist/styles.css
+
       - name: Integration crate unit tests
+        env:
+          SKIP_UI_BUILD: "1"
         run: cargo test --locked --manifest-path harness/Cargo.toml -p harness-integration
 
       - name: Validate integration scenarios
