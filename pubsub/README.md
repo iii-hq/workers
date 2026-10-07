@@ -1,5 +1,17 @@
 # pubsub
 
+> **Deprecated:** pubsub is deprecated (pubsub) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+>
+> This covers the `publish` function, the `subscribe` trigger type and the
+> `pubsub` configuration entry. For new code, use a worker-owned trigger type
+> for fire-and-forget fan-out, or the `queue` worker (`iii::durable::publish` +
+> `durable:subscriber`) when delivery must not be lost. While deprecated, this
+> worker logs a warning (target `iii::deprecation`) once at startup, on
+> `publish` calls and on `subscribe` registrations (not per delivered event),
+> at most once every 10 minutes per entry point and caller. Payloads and topic
+> names are never logged. Traffic on topic `stream.events` (the engine's
+> internal iii-stream bridge) does not warn.
+
 Topic-based publish/subscribe messaging. Registers the `subscribe` trigger
 type and the `publish` service function. This standalone worker replaces the
 legacy built-in pub/sub service. Any function bound to a `subscribe` trigger on a topic receives

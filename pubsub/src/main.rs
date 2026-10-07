@@ -95,6 +95,9 @@ async fn main() -> Result<()> {
         adapter = %boot.config.read().await.effective_adapter_name(),
         "iii-pubsub ready"
     );
+    // Once per process; configuration reloads hot-swap the adapter without
+    // re-running this.
+    iii_pubsub::deprecation::warn_worker_startup();
 
     configuration::register_config_trigger(
         &iii,
