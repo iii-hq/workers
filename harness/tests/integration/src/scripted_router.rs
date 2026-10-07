@@ -451,8 +451,11 @@ async fn wait_for_gate_state(
 }
 
 /// Drop the harness's advisory messages from the MATCHED view of a request:
-/// iii-directory's `<discovery_assist>` hint and the harness registry-changed
-/// notice. Both first ride as tail user messages whose presence
+/// iii-directory's `<discovery_assist>` hint, the harness registry-changed
+/// notice, and its skills-changed notice (the directory's boot reconcile
+/// downloads worker skills from the registry whenever the network answers,
+/// firing `directory::skills::on-change` mid-session). All first ride as
+/// tail user messages whose presence
 /// depends on the booted stack (inject_hint config, worker count, per-turn
 /// gates, registration timing while the stack settles), so no fixture can pin
 /// them deterministically — exactly as before, when they were unpinned
@@ -472,6 +475,12 @@ fn without_advisory_tail_messages(input: &Value) -> Value {
 /// starts with "NOTE:" is never filtered.
 const RUNTIME_CONTEXT_NOTICE: &str = "NOTE: the session context changed since the system prompt was written. It now reads as follows and replaces the session context there:\n";
 
+/// The harness's skills-changed notices (skills.rs `SyncPlan::Append`),
+/// matched whole for the same reason.
+const SKILLS_CHANGED_NOTICE: &str = "The available skills have changed. This list supersedes the previous\navailable skills list.\n";
+const SKILLS_REMOVED_NOTICE: &str =
+    "Skill guidance is no longer available. Do not use any previously listed skill.";
+
 /// True for the hint / registry / runtime-context notice user messages the
 /// harness appends to a generation. They are persisted as `model_notice`
 /// entries and replayed where they were first sent, so every later request
@@ -489,6 +498,8 @@ pub fn is_advisory_message(message: &Value) -> bool {
                 text.starts_with("<discovery_assist")
                     || text.starts_with("NOTE: the function registry changed")
                     || text.starts_with(RUNTIME_CONTEXT_NOTICE)
+                    || text.starts_with(SKILLS_CHANGED_NOTICE)
+                    || text == SKILLS_REMOVED_NOTICE
             })
 }
 
@@ -890,6 +901,9 @@ mod tests {
                 "text": "<discovery_assist functions_generation=3>\nBefore calling..." }] },
             { "role": "user", "content": [{ "type": "text",
                 "text": "NOTE: the function registry changed during this conversation. ..." }] },
+            { "role": "user", "content": [{ "type": "text",
+                "text": format!("{SKILLS_CHANGED_NOTICE}<available_skills>\n</available_skills>") }] },
+            { "role": "user", "content": [{ "type": "text", "text": SKILLS_REMOVED_NOTICE }] },
             // A user message merely QUOTING an advisory mid-text stays.
             { "role": "user", "content": [{ "type": "text",
                 "text": "what does NOTE: the function registry changed mean?" }] },
@@ -901,11 +915,11 @@ mod tests {
             .iter()
             .map(|m| m["content"][0]["text"].as_str().unwrap())
             .collect();
-        // Both advisories are stripped; real user messages stay.
+        // Every advisory is stripped; real user messages stay.
         assert_eq!(texts.len(), 2);
         assert!(texts[0].starts_with("do the task"));
         assert!(texts[1].starts_with("what does NOTE:"));
         // The raw input is untouched (call evidence keeps advisories).
-        assert_eq!(input["messages"].as_array().unwrap().len(), 4);
+        assert_eq!(input["messages"].as_array().unwrap().len(), 6);
     }
 }

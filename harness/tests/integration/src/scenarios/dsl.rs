@@ -7,7 +7,7 @@
 use serde_json::{json, Value};
 
 use super::{ScenarioDriver, VerifyFn};
-use crate::expand::ALLOWED_FUNCTIONS_MARKER;
+use crate::expand::{ALLOWED_FUNCTIONS_MARKER, RESPONSE_LANGUAGE_MARKER};
 use crate::fixtures::{ScenarioFixture, ScenarioIntervention};
 use crate::types::frames::{
     AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, ErrorKind, ErrorShape,
@@ -1596,7 +1596,10 @@ fn system_prompt(allowed_functions: &[String]) -> String {
             ALLOWED_FUNCTIONS_MARKER
         )
     };
-    format!("{base}\n\nYour session id is {{{{session_id}}}}.\n{policy}")
+    // The response-language line sits between the session id and the policy,
+    // exactly where the harness's runtime context puts it (the working
+    // directory, between them in production, is off in this stack).
+    format!("{base}\n\nYour session id is {{{{session_id}}}}.\n{RESPONSE_LANGUAGE_MARKER}{policy}")
 }
 
 #[cfg(test)]

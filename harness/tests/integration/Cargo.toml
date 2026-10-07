@@ -13,6 +13,9 @@ name = "harness_integration"
 path = "src/lib.rs"
 
 [dependencies]
+# The subject's own response-language detector: the expected system prompt
+# names the language the harness pins from the scenario's message.
+harness = { path = "../.." }
 iii-sdk = "0.23"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net", "io-util"] }
 serde = { version = "1", features = ["derive"] }
