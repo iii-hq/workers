@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
-use judge_contract::{Answer, EvaluateRequest, Evaluation};
+use judge_contract::{Answer, EvaluateRequest, Evaluation, RequestOptions};
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
@@ -33,6 +33,14 @@ pub const PAUSE_MS: i64 = 30_000;
 /// time left caps it further ([`listing_budget_ms`]). A loaded or hosted
 /// provider lists at once.
 const MODELS_TIMEOUT_MS: u64 = 60_000;
+/// Most one evaluation waits, as the listing: under any sane provider
+/// `max_timeout_ms` (300 s by default), which rejects a longer call, and
+/// still three times the old 20 s for a serial local judge's queue.
+const CALL_TIMEOUT_MS: u64 = 60_000;
+/// Most one HTTP attempt of a hosted judge (judge-typesafe) waits, so a
+/// stalled connection is retried instead of holding a slot for the whole
+/// call; local judges ignore it.
+const ATTEMPT_TIMEOUT_MS: u64 = 20_000;
 
 /// Default worker-wide judge calls in flight (`code.find_relevant_judge_slots`):
 /// judge-typesafe's default `concurrency` is 4, and 3 leaves one for the
@@ -175,8 +183,9 @@ pub fn evaluator(iii: IIIClient, provider: Option<String>, pool: Arc<Semaphore>)
 }
 
 /// Ask one evaluation of `provider` (`None` = the hub's default) once a
-/// slot of `pool` frees up. The call gets whatever is left of the ask
-/// deadline: a serial local judge queues it behind other passes.
+/// slot of `pool` frees up. The call gets what is left of the ask deadline
+/// up to [`CALL_TIMEOUT_MS`]: a serial local judge queues it behind other
+/// passes.
 pub async fn evaluate(
     iii: &IIIClient,
     evaluation: Evaluation,
@@ -199,14 +208,7 @@ pub async fn evaluate(
     let timeout_ms = call_timeout_ms(deadline).ok_or(JudgeError::Deadline)?;
     let id = evaluation.id.clone();
     let keys: Vec<String> = evaluation.questions.keys().cloned().collect();
-    let request = EvaluateRequest {
-        options: Default::default(),
-        request_id: None,
-        model: None,
-        timeout_ms,
-        expires_at_unix_ms: None,
-        evaluations: vec![evaluation],
-    };
+    let request = evaluate_request(evaluation, timeout_ms);
     if judge_contract::validate_request(&request).is_err() {
         tracing::warn!("coder::find-relevant built a request that fails the judge contract");
         return Err(JudgeError::Rejected(
@@ -242,13 +244,26 @@ pub async fn evaluate(
     result
 }
 
-/// The ms left before `deadline`, all of which one call may wait; `None`
-/// once it passed.
+fn evaluate_request(evaluation: Evaluation, timeout_ms: u64) -> EvaluateRequest {
+    EvaluateRequest {
+        options: RequestOptions {
+            attempt_timeout_ms: Some(ATTEMPT_TIMEOUT_MS),
+        },
+        request_id: None,
+        model: None,
+        timeout_ms,
+        expires_at_unix_ms: None,
+        evaluations: vec![evaluation],
+    }
+}
+
+/// The ms one call may wait: those left before `deadline`, at most
+/// [`CALL_TIMEOUT_MS`]; `None` once it passed.
 fn call_timeout_ms(deadline: Instant) -> Option<u64> {
     let left = deadline
         .saturating_duration_since(Instant::now())
         .as_millis() as u64;
-    (left > 0).then_some(left)
+    (left > 0).then_some(left.min(CALL_TIMEOUT_MS))
 }
 
 /// Hub error codes, read as plain strings so a code added by a later judge
@@ -566,10 +581,28 @@ mod tests {
     }
 
     #[test]
-    fn a_call_may_wait_all_the_time_left_of_its_ask() {
-        let left = call_timeout_ms(Instant::now() + Duration::from_secs(200)).unwrap();
-        assert!((199_000..=200_000).contains(&left), "{left}");
+    fn a_call_waits_the_time_left_of_its_ask_up_to_a_minute() {
+        assert_eq!(
+            call_timeout_ms(Instant::now() + Duration::from_secs(200)),
+            Some(CALL_TIMEOUT_MS)
+        );
+        let left = call_timeout_ms(Instant::now() + Duration::from_secs(30)).unwrap();
+        assert!((29_000..=30_000).contains(&left), "{left}");
         assert_eq!(call_timeout_ms(Instant::now()), None);
+    }
+
+    #[test]
+    fn each_hosted_attempt_is_bounded_apart_from_the_call() {
+        let evaluation = Evaluation {
+            id: "e".into(),
+            state: json!({}),
+            questions: BTreeMap::new(),
+        };
+        let request = evaluate_request(evaluation, CALL_TIMEOUT_MS);
+        assert_eq!(request.options.attempt_timeout_ms, Some(ATTEMPT_TIMEOUT_MS));
+        assert_eq!(request.timeout_ms, CALL_TIMEOUT_MS);
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(wire["options"]["attempt_timeout_ms"], ATTEMPT_TIMEOUT_MS);
     }
 
     #[test]

@@ -472,9 +472,11 @@ impl Source {
     }
 }
 
-/// retrieve.ts `selectEvidence`'s first pass over every candidate.
+/// retrieve.ts `selectEvidence`'s first pass over every candidate, best
+/// first so a deadline leaves the weakest without evidence (jevgrep goes in
+/// admission order).
 pub async fn select_evidence(run: &Arc<Run>) -> HashMap<String, Selected> {
-    run.parallel(run.admitted(), select_file)
+    run.parallel(run.sorted_candidates(), select_file)
         .await
         .into_iter()
         .filter_map(|(path, file)| Some((path, file?)))

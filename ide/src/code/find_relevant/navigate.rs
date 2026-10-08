@@ -6,10 +6,11 @@
 //! (297-417) and `parallel` (450-464).
 //!
 //! Deviations: concurrency is the worker-wide judge slots, not 32 stage
-//! workers; one ask deadline bounds every call; an outage stops the walk
-//! (jevgrep keeps asking a failing provider); the level reads the snapshot
-//! it previews instead of re-reading before chunking; answers are cached in
-//! memory only ([`super::AnswerCache`]).
+//! workers; one ask deadline bounds every call and discovery leaves 40% of
+//! it to the later passes; an outage, or a judge failing every call, stops
+//! the walk (jevgrep keeps asking a failing provider); the level reads the
+//! snapshot it previews instead of re-reading before chunking; answers are
+//! cached in memory only ([`super::AnswerCache`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -33,6 +34,13 @@ pub const MAX_REQUEST_BYTES: usize = 38_000;
 const CHUNK_BYTES: usize = 12_000;
 /// Admission threshold for directories and files (strict).
 pub const ADMIT: f64 = 0.5;
+/// Share (in percent) of the time left at its start that discovery may use
+/// before it starts no new level, keeping the rest for evidence and
+/// assessment of what it admitted.
+const DISCOVERY_SHARE: u32 = 60;
+/// Straight `invalid_response` failures, with no call answered, that make
+/// the judge unavailable for the ask.
+const INVALID_STOP: u64 = 3;
 
 /// Why an ask stopped scheduling judge work.
 #[derive(Debug, Clone, PartialEq)]
@@ -116,8 +124,10 @@ impl Run {
 
     /// One judge call under the ask deadline, counted in the stats. A
     /// missed deadline, a call the judge timed out or failed, or a rejected
-    /// request is an issue and an outage halts the ask; `TooLarge` is left
-    /// to the caller, which may split.
+    /// request is an issue and an outage halts the ask; so does a judge
+    /// whose first [`INVALID_STOP`] replies all failed. `TooLarge`, also
+    /// for a reply that used the whole window, is left to the caller, which
+    /// may split.
     pub async fn call(&self, request: Evaluation) -> Result<Scores, JudgeError> {
         let cache_key = self
             .cache
@@ -172,6 +182,11 @@ impl Run {
                     *state.issues.entry("token_budget".into()).or_default() += 1;
                 }
                 drop(state);
+                // A judge that cuts the state to fit its window (judge-clef)
+                // reports exactly the window: the answer missed the tail.
+                if self.window.is_some_and(|window| tokens >= window) {
+                    return Err(JudgeError::TooLarge);
+                }
                 if let Some(key) = cache_key {
                     super::remember(key, &scores);
                 }
@@ -188,7 +203,15 @@ impl Run {
                 *state.issues.entry(kind.into()).or_default() += 1
             }
             Err(JudgeError::Invalid) => {
-                *state.issues.entry("invalid_response".into()).or_default() += 1
+                let failed = state.issues.entry("invalid_response".into()).or_default();
+                *failed += 1;
+                // ponytail: a judge failing every call is broken, not unlucky;
+                // stop the ask (no pause, so other asks still try it).
+                if *failed >= INVALID_STOP && *failed == state.judge_calls {
+                    state
+                        .stop
+                        .get_or_insert(Stop::Unavailable("invalid_response".into()));
+                }
             }
             Err(JudgeError::Rejected(_)) => {
                 *state.issues.entry("invalid_request".into()).or_default() += 1
@@ -321,12 +344,18 @@ impl Run {
 
     /// retrieve.ts `discover`: breadth-first from `seeds`, two levels per
     /// round. Admitted directories seed the next round; files above the
-    /// threshold become candidates, keeping their best score.
+    /// threshold become candidates, keeping their best score. No round
+    /// starts past [`DISCOVERY_SHARE`] of the time left (jevgrep keeps
+    /// discovering until its deadline).
     pub async fn discover(self: &Arc<Self>, seeds: Vec<String>) {
+        let started = Instant::now();
+        let reserve =
+            started + self.deadline.saturating_duration_since(started) * DISCOVERY_SHARE / 100;
         let mut directories = seeds;
         while !directories.is_empty()
             && !self.stopped()
             && self.state().entries_seen < walk::MAX_ENTRIES
+            && Instant::now() < reserve
         {
             let level = std::mem::take(&mut directories);
             let run = self.clone();
@@ -369,7 +398,8 @@ impl Run {
                 }
             }
         }
-        // As in jevgrep, directories left unexplored at a stop count too.
+        // As in jevgrep, directories left unexplored at a stop (or, here,
+        // past the discovery share) count too.
         if !directories.is_empty() {
             self.issue("resource_limit");
         }

@@ -1970,3 +1970,160 @@ async fn a_test_file_shows_all_its_selection_after_a_token_budget_stop() {
     assert_eq!(out.files[0].roles, ["test"]);
     assert!(texts(&out.files[0]).contains("fn needle_b"));
 }
+
+#[tokio::test]
+async fn a_reply_that_filled_the_window_is_too_large_and_never_cached() {
+    let fx = fixture(&[("needle.rs", b"fn needle() {}\n")], |_, _| {});
+    // judge-clef cuts the state to fit and bills exactly its window
+    let window = 16_384;
+    let truncating: Evaluator = Arc::new(move |ev, _deadline| {
+        let outcome = keyword(&prompts::decoded(ev)).map(|scores| (scores, window));
+        Box::pin(async move { outcome })
+    });
+    let provider = format!("window-{}", std::process::id());
+    for _ in 0..2 {
+        let out = run(
+            fx.resolver.clone(),
+            fx.cfg.clone(),
+            input("where is the needle?", 120_000),
+            |_| async move {
+                Ok(Listing {
+                    window: Some(window),
+                    models: Some(vec!["m".into()]),
+                })
+            },
+            truncating.clone(),
+            Some(provider.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.stats.cache_hits, 0);
+        assert_eq!(out.stats.judge_calls, 1);
+        assert_eq!(out.stats.input_tokens, window);
+        assert_eq!(out.issues.get("request_size"), Some(&1));
+        assert_eq!(out.reason.as_deref(), Some("request_size"));
+        assert!(out.files.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_judge_failing_every_call_is_unavailable_after_three() {
+    let body: String = (0..1_000)
+        .map(|j| format!("let v{j:04} = {j};\n"))
+        .collect();
+    let files: Vec<(String, &[u8])> = (0..10)
+        .map(|i| (format!("f{i}.rs"), body.as_bytes()))
+        .collect();
+    let files: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), *b)).collect();
+    let fx = fixture(&files, |_, cfg| cfg.find_relevant_judge_slots = 1);
+    let log = Log::default();
+    let out = ask(&fx, None, judge(&log, |_| Err(JudgeError::Invalid))).await;
+    assert_eq!(out.status, Status::Unavailable);
+    assert_eq!(out.reason.as_deref(), Some("invalid_response"));
+    assert_eq!(
+        out.hint.as_deref(),
+        Some("No judge answered: use coder::search.")
+    );
+    assert_eq!(out.stats.judge_calls, 3);
+    assert_eq!(out.issues.get("invalid_response"), Some(&3));
+    assert!(!out.issues.contains_key("provider"), "{:?}", out.issues);
+}
+
+#[tokio::test]
+async fn evidence_and_assessment_start_with_the_best_scored_file() {
+    // b.rs is admitted first, x/y.rs scores higher
+    let fx = fixture(
+        &[("b.rs", TWO_FUNCTIONS), ("x/y.rs", TWO_FUNCTIONS)],
+        |_, cfg| cfg.find_relevant_judge_slots = 1,
+    );
+    let log = Log::default();
+    let out = ask(
+        &fx,
+        None,
+        judge(&log, |ev| {
+            if ev.state["items"].is_array() {
+                return Ok(per_item(ev, |item| {
+                    if item["path"] == "x/y.rs" {
+                        0.9
+                    } else {
+                        0.6
+                    }
+                }));
+            }
+            by_declaration(ev, |_| 0.9)
+        }),
+    )
+    .await;
+    assert_eq!(paths(&fx, &out), ["x/y.rs", "b.rs"]);
+    let first = |question: &str| {
+        sent(&log)
+            .into_iter()
+            .find(|ev| ev["questions"].get(question).is_some())
+            .map(|ev| ev["state"]["path"].clone())
+    };
+    assert_eq!(first("priority"), Some(Value::from("x/y.rs")));
+    assert_eq!(first("scope000"), Some(Value::from("x/y.rs")));
+}
+
+#[tokio::test]
+async fn discovery_keeps_time_for_evidence_on_a_slow_judge() {
+    // a second round would explore needle_dir/sub
+    let fx = fixture(
+        &[
+            ("needle.rs", TWO_FUNCTIONS),
+            ("needle_dir/sub/deeper/needle_later.rs", TWO_FUNCTIONS),
+        ],
+        |_, _| {},
+    );
+    let slow: Evaluator = Arc::new(|ev, _deadline| {
+        let ev = prompts::decoded(ev);
+        Box::pin(async move {
+            if ev.state["items"].is_array() {
+                tokio::time::sleep(Duration::from_millis(2_000)).await;
+            }
+            by_declaration(&ev, |_| 0.9).map(|scores| (scores, 1))
+        })
+    });
+    let out = ask_with(&fx, input("where is the needle?", 3_000), None, slow).await;
+    // the first round ends past 60% of the time: no second one
+    assert_eq!(paths(&fx, &out), ["needle.rs"]);
+    assert!(!out.files[0].excerpts.is_empty());
+    assert!(
+        out.issues.contains_key("resource_limit"),
+        "{:?}",
+        out.issues
+    );
+    assert!(!out.issues.contains_key("deadline"), "{:?}", out.issues);
+}
+
+#[tokio::test]
+async fn an_identical_ask_while_one_runs_shares_its_walk() {
+    let fx = fixture(&[("needle.rs", TWO_FUNCTIONS)], |_, _| {});
+    let calls = Arc::new(AtomicUsize::new(0));
+    let slow = || -> Evaluator {
+        let calls = calls.clone();
+        Arc::new(move |ev, _deadline| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let ev = prompts::decoded(ev);
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                by_declaration(&ev, |_| 0.9).map(|scores| (scores, 1))
+            })
+        })
+    };
+    let (first, second) = tokio::join!(ask(&fx, None, slow()), ask(&fx, None, slow()));
+    let walk = calls.swap(0, Ordering::SeqCst);
+    assert!(walk > 0);
+    assert_eq!(paths(&fx, &first), ["needle.rs"]);
+    assert_eq!(paths(&fx, &second), paths(&fx, &first));
+    assert_eq!(second.stats.judge_calls, first.stats.judge_calls);
+    // once it ended, the same ask walks again
+    ask(&fx, None, slow()).await;
+    assert_eq!(calls.swap(0, Ordering::SeqCst), walk);
+    // another timeout is another ask
+    tokio::join!(
+        ask(&fx, None, slow()),
+        ask_with(&fx, input("where is the needle?", 60_000), None, slow())
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2 * walk);
+}

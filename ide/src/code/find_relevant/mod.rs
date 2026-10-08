@@ -301,6 +301,36 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
     }
     let project = project_folder(&resolver, req.fs_scope.as_ref(), &walk_root, &req.path)?;
     let exclude = crate::code::functions::search::build_globset(&req.exclude_globs)?;
+    // An identical ask already running (a caller retrying one it gave up
+    // on, which cannot be cancelled) answers this one too, instead of a
+    // second walk queuing behind it on a serial judge.
+    let key = format!(
+        "{:?}",
+        (
+            &req.query,
+            &walk_root,
+            &project.base,
+            &project.agents_base,
+            &req.exclude_globs,
+            req.timeout_ms / 1000,
+            &provider,
+        )
+    );
+    let flight = match board(key) {
+        Ok(flight) => flight,
+        Err(mut answer) => {
+            let landed = answer
+                .wait_for(Option::is_some)
+                .await
+                .ok()
+                .and_then(|output| output.clone());
+            match landed {
+                Some(output) => return Ok(output),
+                // The leading ask was dropped: walk alone.
+                None => Flight(None),
+            }
+        }
+    };
 
     let unavailable = |reason: String| FindRelevantOutput {
         status: Status::Unavailable,
@@ -315,12 +345,12 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
         },
     };
     let listing = match window(deadline).await {
-        Err(error) => return Ok(finish(unavailable(error.reason()))),
+        Err(error) => return Ok(flight.land(finish(unavailable(error.reason())))),
         Ok(Listing {
             window: Some(tokens),
             ..
         }) if tokens < MIN_WINDOW_TOKENS => {
-            return Ok(finish(unavailable("judge window too small".into())))
+            return Ok(flight.land(finish(unavailable("judge window too small".into()))))
         }
         Ok(listing) => listing,
     };
@@ -445,7 +475,7 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
     let source = usize::try_from(cfg.max_output_bytes)
         .map_or(MAX_SOURCE_BYTES, |max| max.min(MAX_SOURCE_BYTES));
     spend_budget(&mut output, source, MAX_RESULT_BYTES);
-    Ok(finish(output))
+    Ok(flight.land(finish(output)))
 }
 
 /// Issue kinds that leave coverage partial, the most telling first: an ask
@@ -917,6 +947,53 @@ fn remember(key: [u8; 32], scores: &Scores) {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .put(key, scores);
+}
+
+/// The output an ask lands for those that joined it, once it has one.
+type Landed = Option<FindRelevantOutput>;
+type Answer = tokio::sync::watch::Receiver<Landed>;
+// ponytail: at most MAX_IN_FLIGHT distinct asks are joinable at once; past
+// that an ask walks alone. Raise it if many distinct asks overlap.
+const MAX_IN_FLIGHT: usize = 32;
+static IN_FLIGHT: Lazy<Mutex<HashMap<String, Answer>>> = Lazy::new(Default::default);
+
+/// The ask leading its key in [`IN_FLIGHT`] (`None`: walking alone): it
+/// [`Flight::land`]s its output for the asks that joined it and leaves the
+/// map when dropped, landed or not.
+struct Flight(Option<(String, tokio::sync::watch::Sender<Landed>)>);
+
+impl Flight {
+    fn land(&self, output: FindRelevantOutput) -> FindRelevantOutput {
+        if let Some((_, answer)) = &self.0 {
+            answer.send_replace(Some(output.clone()));
+        }
+        output
+    }
+}
+
+impl Drop for Flight {
+    fn drop(&mut self) {
+        if let Some((key, _)) = &self.0 {
+            IN_FLIGHT
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(key);
+        }
+    }
+}
+
+/// Lead the ask for `key`, or the answer of the identical one running.
+fn board(key: String) -> Result<Flight, Answer> {
+    let mut flights = IN_FLIGHT.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(answer) = flights.get(&key) {
+        return Err(answer.clone());
+    }
+    if flights.len() >= MAX_IN_FLIGHT {
+        return Ok(Flight(None));
+    }
+    let (answer, landed) = tokio::sync::watch::channel(None);
+    flights.insert(key.clone(), landed);
+    Ok(Flight(Some((key, answer))))
 }
 
 /// Adds the [`hint`] and logs one line per ask; never the query or any

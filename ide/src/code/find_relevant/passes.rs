@@ -72,10 +72,10 @@ impl Assessment {
     }
 }
 
-/// One file-assessment request per candidate, reusing its discovery
-/// preview; a failed request leaves the file unassessed.
+/// One file-assessment request per candidate, best first, reusing its
+/// discovery preview; a failed request leaves the file unassessed.
 pub async fn assess_files(run: &Arc<Run>) -> HashMap<String, Assessment> {
-    run.parallel(run.admitted(), |run, candidate| async move {
+    run.parallel(run.sorted_candidates(), |run, candidate| async move {
         let preview = run.state().previews.get(&candidate.path).cloned()?;
         let request = prompts::file_assessment(&run.query, &candidate.path, &preview);
         if !prompts::fits(&request, usize::MAX, run.window) {
