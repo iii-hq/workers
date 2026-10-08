@@ -252,9 +252,9 @@ error.
 
 | `status` | Meaning |
 |---|---|
-| `complete` | Every admitted branch was explored. With no files, nothing under `path` looked relevant: widen `path` or use `coder::search`. |
+| `complete` | Every admitted branch was explored. With no files, either nothing under `path` was eligible for the judge (empty, or only hidden, ignored or `exclude_globs`-matched files: check `exclude_globs`) or nothing looked relevant (widen `path` or use `coder::search`); `hint` says which. |
 | `incomplete` | Partial coverage: the deadline hit, the judge token budget ran out, a request failed or was too large, or a walk limit was reached. The answer may be in files not listed: verify with `coder::search`. `reason` names the stop, else the leading issue kind; `issues` counts each kind (below). |
-| `unavailable` | No judge answered (not deployed, no key, paused after a recent outage, or a context window under 8192 tokens). Use `coder::search`. With reason `judge listing timed out; retry shortly`, the judge did not list its models in time (a local judge may still be loading its model): retry the ask in a minute. |
+| `unavailable` | No judge answered, or it failed before any file was admitted (not deployed, no key, reason `paused` after a recent failure). Use `coder::search`. With reason `listing_timeout`, the judge did not list its models in time (a local judge may still be loading its model): retry the ask in a minute. With reason `window_too_small`, its context window is under 8192 tokens: pick a session judge with a larger one. |
 
 A result that is incomplete, unavailable or complete with no files also
 carries `hint`, the next step in one sentence. `issues` kinds, in the order
@@ -262,10 +262,12 @@ that picks `reason` when the ask did not stop:
 
 | Kind | Meaning | Next step |
 |---|---|---|
-| `deadline`, `judge_call_timeout` | The ask's deadline passed, or the judge timed out a call. | Narrow `path` or raise `timeout_ms`. |
+| `deadline` | The ask's deadline passed. | Narrow `path` or raise `timeout_ms` (at most 280000). |
 | `token_budget` | The judge token budget ran out. | Narrow `path`. |
-| `request_size` | A file or batch too large for one judge request. | Narrow `path`; read that file directly. |
-| `resource_limit`, `source_inspection_limit` | A walk, file-size or output limit cut coverage. | Narrow `path`. |
+| `judge_call_timeout` | The judge cut a call short. | Narrow `path` or retry later. |
+| `request_size` | A file or declaration too large for one judge request was skipped. | Read the listed files that have no excerpts directly. |
+| `resource_limit` | A walk, file-size or output limit cut coverage. | Narrow `path`. |
+| `source_inspection_limit` | A file too large to parse was skipped. | Read the listed files that have no excerpts directly. |
 | `invalid_response`, `invalid_request`, `provider` | The judge failed calls. | Retry later or use `coder::search`. |
 | `changed` | A file changed during the ask. | Retry the ask. |
 | `unreadable`, `local_call_context` | A file or folder could not be read, or the Python call context failed. | Verify with `coder::search`. |

@@ -50,6 +50,8 @@ pub const MIN_TIMEOUT_MS: u64 = 1_000;
 pub const MAX_TIMEOUT_MS: u64 = 280_000;
 /// Smallest judge context window (tokens) whose states fit untruncated.
 pub const MIN_WINDOW_TOKENS: u64 = 8_192;
+/// The `reason` of an ask whose judge advertises a smaller window.
+pub const WINDOW_TOO_SMALL: &str = "window_too_small";
 /// Excerpt bytes one result carries at most; a lower
 /// `code.max_output_bytes` (`coder::read-file`'s ceiling) lowers it.
 pub const MAX_SOURCE_BYTES: usize = 131_072;
@@ -107,7 +109,7 @@ fn example_find_relevant_input() -> serde_json::Value {
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     /// Every admitted branch was explored; with no files, nothing under
-    /// `path` looked relevant (widen `path` or use coder::search).
+    /// `path` was eligible or looked relevant (`hint` says which).
     Complete,
     /// Partial coverage (deadline, judge token budget, a failed or
     /// oversized request, a resource limit): the answer may be in files
@@ -193,7 +195,8 @@ pub struct Stats {
 pub struct FindRelevantOutput {
     pub status: Status,
     /// Why the result is not complete: the stop (`deadline`,
-    /// `token_budget`, the judge's failure) or else the leading kind in
+    /// `token_budget`, the judge's failure: `paused`, `listing_timeout`,
+    /// `window_too_small` or the judge's code) or else the leading kind in
     /// `issues`.
     pub reason: Option<String>,
     /// What to do next, when the result is partial, empty or unavailable.
@@ -204,11 +207,15 @@ pub struct FindRelevantOutput {
     /// AGENTS.md files from the project folder down to `path`, and above
     /// returned files.
     pub agents_md: Vec<String>,
-    /// Coverage issues by kind, with counts: `deadline`, `token_budget`,
-    /// `judge_call_timeout`, `request_size`, `resource_limit`,
-    /// `source_inspection_limit` (narrow `path` or raise `timeout_ms`);
-    /// `invalid_response`, `invalid_request`, `provider` (judge failures:
-    /// retry later); `changed` (a file changed during the ask: retry);
+    /// Coverage issues by kind, with counts: `deadline` (narrow `path` or
+    /// raise `timeout_ms`); `token_budget` (narrow `path`);
+    /// `judge_call_timeout` (the judge cut a call short: narrow `path` or
+    /// retry later); `request_size` (a file or declaration too large for
+    /// the judge: read listed files without excerpts directly);
+    /// `resource_limit` (narrow `path`); `source_inspection_limit` (as
+    /// `request_size`); `invalid_response`, `invalid_request`, `provider`
+    /// (judge failures: retry later); `changed` (a file changed during the
+    /// ask: retry);
     /// `unreadable`, `local_call_context`. `agents_md_incomplete` (the
     /// `agents_md` list may miss one) alone leaves the result complete.
     pub issues: BTreeMap<String, u64>,
@@ -345,12 +352,12 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
         },
     };
     let listing = match window(deadline).await {
-        Err(error) => return Ok(flight.land(finish(unavailable(error.reason())))),
+        Err(error) => return Ok(flight.land(finish(unavailable(error.reason()), req.timeout_ms))),
         Ok(Listing {
             window: Some(tokens),
             ..
         }) if tokens < MIN_WINDOW_TOKENS => {
-            return Ok(flight.land(finish(unavailable("judge window too small".into()))))
+            return Ok(flight.land(finish(unavailable(WINDOW_TOO_SMALL.into()), req.timeout_ms)))
         }
         Ok(listing) => listing,
     };
@@ -452,10 +459,8 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
         Some(Stop::Unavailable(reason)) => (Status::Incomplete, Some(reason)),
         Some(Stop::Deadline) => (Status::Incomplete, Some("deadline".into())),
         Some(Stop::Budget) => (Status::Incomplete, Some("token_budget".into())),
-        None => match GAPS.iter().find(|kind| state.issues.contains_key(**kind)) {
-            Some(kind) => (Status::Incomplete, Some(kind.to_string())),
-            None => (Status::Complete, None),
-        },
+        // The leading gap is picked once the output cap had its say.
+        None => (Status::Complete, None),
     };
     let mut output = FindRelevantOutput {
         status,
@@ -475,7 +480,20 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
     let source = usize::try_from(cfg.max_output_bytes)
         .map_or(MAX_SOURCE_BYTES, |max| max.min(MAX_SOURCE_BYTES));
     spend_budget(&mut output, source, MAX_RESULT_BYTES);
-    Ok(flight.land(finish(output)))
+    mark_gap(&mut output);
+    Ok(flight.land(finish(output, req.timeout_ms)))
+}
+
+/// An ask that did not stop but left a [`GAPS`] kind is incomplete, with
+/// the first one present as its `reason`.
+fn mark_gap(output: &mut FindRelevantOutput) {
+    if output.status != Status::Complete {
+        return;
+    }
+    if let Some(kind) = GAPS.iter().find(|kind| output.issues.contains_key(**kind)) {
+        output.status = Status::Incomplete;
+        output.reason = Some(kind.to_string());
+    }
 }
 
 /// Issue kinds that leave coverage partial, the most telling first: an ask
@@ -496,11 +514,27 @@ const GAPS: [&str; 12] = [
     "local_call_context",
 ];
 
-/// The next step for the agent reading `output`; `None` for a complete
-/// result with files.
-fn hint(output: &FindRelevantOutput) -> Option<String> {
+/// The next step for the agent reading `output` of an ask given
+/// `timeout_ms`; `None` for a complete result with files.
+fn hint(output: &FindRelevantOutput, timeout_ms: u64) -> Option<String> {
     let reason = output.reason.as_deref().unwrap_or_default();
+    // Replies that carried no answer; a pause refusal is counted here but
+    // not in `judge_calls`, which only errs toward "No judge answered".
+    let failed: u64 = ["provider", "invalid_response", "invalid_request"]
+        .iter()
+        .filter_map(|kind| output.issues.get(*kind))
+        .sum();
+    let answered = output.stats.judge_calls > failed || output.stats.cache_hits > 0;
     let hint = match output.status {
+        Status::Complete
+            if output.files.is_empty()
+                && output.stats.judge_calls + output.stats.cache_hits == 0 =>
+        {
+            "Nothing under path was eligible for the judge (it is empty, or holds only \
+             hidden, ignored or exclude_globs-matched files): check exclude_globs or \
+             path, or use coder::search."
+                .to_string()
+        }
         Status::Complete if output.files.is_empty() => {
             "Nothing under path looked relevant to the judge: widen path, or use \
              coder::search for exact names."
@@ -517,14 +551,30 @@ fn hint(output: &FindRelevantOutput) -> Option<String> {
              coder::search, or retry the ask after that.",
             judge::PAUSE_MS / 1000
         ),
+        Status::Unavailable if reason == WINDOW_TOO_SMALL => format!(
+            "The judge's context window is under {MIN_WINDOW_TOKENS} tokens: pick a \
+             session judge with a larger window, or use coder::search."
+        ),
+        Status::Unavailable if answered => format!(
+            "The judge failed ({reason}) before any file was admitted: use \
+             coder::search, or retry the ask later."
+        ),
         Status::Unavailable => "No judge answered: use coder::search.".to_string(),
         Status::Incomplete => {
             let next = match reason {
-                "deadline" | "judge_call_timeout" => {
-                    " Narrow path, or retry with a larger timeout_ms."
+                "deadline" if timeout_ms < MAX_TIMEOUT_MS => {
+                    &format!(" Narrow path, or retry with timeout_ms up to {MAX_TIMEOUT_MS}.")
                 }
-                "token_budget" | "request_size" | "resource_limit" | "source_inspection_limit" => {
+                "deadline" | "token_budget" | "resource_limit" => {
                     " Narrow path for fuller coverage."
+                }
+                // The judge's own limit, which a larger timeout_ms leaves.
+                "judge_call_timeout" => {
+                    " The judge cut a call short: narrow path, or retry the ask later."
+                }
+                "request_size" | "source_inspection_limit" => {
+                    " A file or declaration too large for the judge was skipped: read the \
+                     listed files that have no excerpts directly."
                 }
                 "changed" => " Retry the ask once the files stop changing.",
                 "unreadable" | "local_call_context" => "",
@@ -798,10 +848,6 @@ fn spend_budget(output: &mut FindRelevantOutput, mut source: usize, result: usiz
     }
     if trimmed {
         *output.issues.entry("resource_limit".into()).or_default() += 1;
-        if output.status == Status::Complete {
-            output.status = Status::Incomplete;
-            output.reason = Some("resource_limit".into());
-        }
     }
 }
 
@@ -998,8 +1044,8 @@ fn board(key: String) -> Result<Flight, Answer> {
 
 /// Adds the [`hint`] and logs one line per ask; never the query or any
 /// path.
-fn finish(mut output: FindRelevantOutput) -> FindRelevantOutput {
-    output.hint = hint(&output);
+fn finish(mut output: FindRelevantOutput, timeout_ms: u64) -> FindRelevantOutput {
+    output.hint = hint(&output, timeout_ms);
     tracing::info!(
         status = ?output.status,
         reason = output.reason.as_deref().unwrap_or(""),

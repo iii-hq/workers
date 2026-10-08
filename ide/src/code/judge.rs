@@ -107,7 +107,7 @@ impl std::fmt::Display for JudgeError {
             Self::Invalid => f.write_str("judge failed the evaluation"),
             Self::TooLarge => f.write_str("judge request too large"),
             Self::Rejected(reason) => write!(f, "judge rejected the request: {reason}"),
-            Self::Paused => write!(f, "judge unavailable: {PAUSED}"),
+            Self::Paused => f.write_str("judge unavailable: paused after a recent failure"),
         }
     }
 }
@@ -128,7 +128,8 @@ impl JudgeError {
     }
 }
 
-pub const PAUSED: &str = "paused after a recent failure";
+/// The `reason` of a call refused during a pause after a recent failure.
+pub const PAUSED: &str = "paused";
 
 /// The calling session's judge provider from the handler's OTel baggage,
 /// when set and well-formed; `None` routes to the hub's default. Read it in
@@ -387,7 +388,8 @@ fn window_from(reply: Result<Value, iii_sdk::Error>) -> Result<Listing, JudgeErr
     }
 }
 
-pub const LISTING_TIMEOUT: &str = "judge listing timed out; retry shortly";
+/// The `reason` of a listing the judge did not answer in time.
+pub const LISTING_TIMEOUT: &str = "listing_timeout";
 
 /// The smallest `field` among a model listing's cards, if any card
 /// advertises one.
@@ -560,9 +562,7 @@ mod tests {
             Ok(Listing::default())
         );
         // a bus timeout or the provider's own deadline: loading or stalled
-        let timed_out = Err(JudgeError::Unavailable(
-            "judge listing timed out; retry shortly".into(),
-        ));
+        let timed_out = Err(JudgeError::Unavailable("listing_timeout".into()));
         assert_eq!(window_from(Err(iii_sdk::Error::Timeout)), timed_out);
         for code in ["deadline", "attempt_timeout"] {
             assert_eq!(

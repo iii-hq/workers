@@ -209,8 +209,8 @@ const FIND_RELEVANT_DESC: &str =
      Read the returned files before searching again, and follow `hint` \
      when present. incomplete = partial coverage: the answer may be in \
      files not listed, so verify with coder::search (reason and issues say \
-     why); complete with no files = nothing under path looked relevant, \
-     widen path or use coder::search; unavailable = no judge, use \
+     why); complete with no files = nothing under path was eligible or \
+     looked relevant (hint says which); unavailable = no judge, use \
      coder::search (or retry when the listing timed out). Sends the query, root-relative paths and file text to \
      the session's judge provider, which may be hosted: never protected, \
      ignored, hidden, .git or secret-named files, nor the text of binary or \

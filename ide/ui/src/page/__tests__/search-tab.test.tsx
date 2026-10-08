@@ -272,14 +272,14 @@ describe('the Search tab in ask mode', () => {
     asks[0](
       answer({
         status: 'unavailable',
-        reason: 'judge listing timed out; retry shortly',
+        reason: 'listing_timeout',
         hint: 'The judge did not list its models in time (a local judge may still be loading its model): retry the ask in a minute, or use coder::search now.',
         files: [],
       }),
     )
     await settle()
     expect(tab.page()).toContain(
-      'Judge unavailable (judge listing timed out; retry shortly) — use text search, or ask again later.',
+      'Judge unavailable (the judge did not list its models in time) — use text search, or ask again later.',
     )
     expect(tab.page()).not.toContain('coder::search')
   })

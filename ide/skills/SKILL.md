@@ -184,11 +184,13 @@ takes minutes and stops at the judge token budget (reason `token_budget`).
 Follow `hint` when the result carries one. `incomplete` means partial
 coverage: the answer may be in files not listed, so verify with
 `coder::search` before trusting the list (`reason` says why: narrow `path`
-for a budget or size limit, retry after `changed`). `complete` with no
-files means nothing under `path` looked relevant: widen `path` or use
-`coder::search`. `unavailable` means no judge answered (fall back to
-`coder::search`; with reason `judge listing timed out; retry shortly`,
-retry the ask in a minute). The
+for a budget or walk limit, read listed files without excerpts directly
+after `request_size`, retry after `changed`). `complete` with no files
+means nothing under `path` was eligible (check `exclude_globs`) or looked
+relevant (widen `path` or use `coder::search`). `unavailable` means no
+judge answered (fall back to `coder::search`; with reason
+`listing_timeout`, retry the ask in a minute; with `window_too_small`,
+pick a session judge with a larger window). The
 query, root-relative paths and file text go to the session's judge
 provider, which may be hosted; protected, ignored, hidden and
 secret-looking files never do, and a hidden, secret-named or gitignored

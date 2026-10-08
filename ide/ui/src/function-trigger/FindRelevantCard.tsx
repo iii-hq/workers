@@ -5,6 +5,7 @@ import {
   formatElapsed,
   namedLeads,
   previewLines,
+  reasonLabel,
   type RelevantRow,
   type RelevantSummary,
 } from './find-relevant'
@@ -276,10 +277,10 @@ export function FindRelevantCard({
       {summary.status === 'unavailable' ? (
         <Note tone="unavailable">
           {summary.hint ? (
-            `${summary.hint}${summary.reason ? ` Reason: ${summary.reason}.` : ''}`
+            `${summary.hint}${summary.reason ? ` Reason: ${reasonLabel(summary.reason)}.` : ''}`
           ) : (
             <>
-              {summary.reason ? `No judge answered (${summary.reason}). ` : 'No judge answered. '}
+              {summary.reason ? `No judge answered (${reasonLabel(summary.reason)}). ` : 'No judge answered. '}
               Text search with <code>coder::search</code> still works.
             </>
           )}

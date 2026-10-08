@@ -26,6 +26,7 @@ import {
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import type { Host } from '@iii-dev/console-ui'
+import { reasonLabel } from '../function-trigger/find-relevant'
 import { coderFindRelevant, coderSearch } from './coder'
 import { FileTypeIcon } from './file-type-icon'
 import {
@@ -96,7 +97,7 @@ function askKey(query: string, includeGlob: string, excludeGlob: string): string
 /** The Search view's own words for an ask's answer; the worker's `hint`
     is written for agents (wire fields, `coder::search`). */
 export function askNotice(status: 'complete' | 'incomplete' | 'unavailable', reason?: string | null): string {
-  const why = reason ? ` (${reason})` : ''
+  const why = reason ? ` (${reasonLabel(reason)})` : ''
   if (status === 'unavailable') return `Judge unavailable${why} — use text search, or ask again later.`
   if (status === 'incomplete')
     return `Partial results${why} — the answer may be in files not listed. Narrow the folder, or check with text search.`

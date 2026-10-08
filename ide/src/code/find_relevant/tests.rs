@@ -455,6 +455,11 @@ async fn the_deadline_returns_partial_results_as_incomplete() {
         .as_ref()
         .unwrap()
         .starts_with("Coverage is partial (deadline)"));
+    assert!(out
+        .hint
+        .as_ref()
+        .unwrap()
+        .ends_with("retry with timeout_ms up to 280000."));
     assert!(out.issues.contains_key("deadline"));
     assert_eq!(paths(&fx, &out), ["needle.rs"]);
 }
@@ -487,7 +492,8 @@ async fn a_call_the_judge_timed_out_is_its_own_issue_and_the_ask_goes_on() {
     let hint = out.hint.as_deref().unwrap();
     assert!(hint.contains("files not listed"), "{hint}");
     assert!(hint.contains("coder::search"), "{hint}");
-    assert!(hint.contains("larger timeout_ms"), "{hint}");
+    assert!(hint.contains("judge cut a call short"), "{hint}");
+    assert!(!hint.contains("timeout_ms"), "{hint}");
     assert!(
         out.issues.contains_key("judge_call_timeout"),
         "{:?}",
@@ -527,7 +533,10 @@ async fn a_small_window_is_unavailable_without_a_call() {
     let log = Log::default();
     let out = ask(&fx, Some(512), judge(&log, keyword)).await;
     assert_eq!(out.status, Status::Unavailable);
-    assert_eq!(out.reason.as_deref(), Some("judge window too small"));
+    assert_eq!(out.reason.as_deref(), Some(WINDOW_TOO_SMALL));
+    let hint = out.hint.unwrap();
+    assert!(hint.contains("under 8192 tokens"), "{hint}");
+    assert!(hint.contains("larger window"), "{hint}");
     assert_eq!(out.stats.judge_calls, 0);
     assert!(log.lock().unwrap().is_empty());
 }
@@ -698,6 +707,7 @@ fn a_result_stays_under_the_harness_cap_whatever_it_escapes() {
     // top files keep their leads and some source
     let mut many = output(400);
     spend_budget(&mut many, MAX_SOURCE_BYTES, MAX_RESULT_BYTES);
+    mark_gap(&mut many);
     assert!(harness_bytes(&many) < 262_144);
     assert!(many.files.len() < 400);
     assert_eq!(many.files[0].leads.len(), 50);
@@ -705,6 +715,15 @@ fn a_result_stays_under_the_harness_cap_whatever_it_escapes() {
     assert_eq!(many.status, Status::Incomplete);
     assert_eq!(many.reason.as_deref(), Some("resource_limit"));
     assert_eq!(many.issues.get("resource_limit"), Some(&1));
+    // the cap's cut outranks a gap the walk left (GAPS order)
+    let mut changed = FindRelevantOutput {
+        issues: BTreeMap::from([("changed".into(), 1)]),
+        ..output(400)
+    };
+    spend_budget(&mut changed, MAX_SOURCE_BYTES, MAX_RESULT_BYTES);
+    mark_gap(&mut changed);
+    assert_eq!(changed.status, Status::Incomplete);
+    assert_eq!(changed.reason.as_deref(), Some("resource_limit"));
 
     // live shape (122 files, ~1300 leads): every path stays, the tail loses
     // its leads, and the top files still show source
@@ -1319,6 +1338,79 @@ async fn a_complete_result_without_files_hints_to_widen_the_path() {
     let hint = out.hint.unwrap();
     assert!(hint.contains("widen path"), "{hint}");
     assert!(hint.contains("coder::search"), "{hint}");
+
+    // nothing the judge could be asked about: no call, no cached answer
+    let log = Log::default();
+    let req = FindRelevantInput {
+        exclude_globs: vec!["**".into()],
+        ..input("where is the needle?", 120_000)
+    };
+    let out = ask_with(&fx, req, None, judge(&log, keyword)).await;
+    assert_eq!(out.status, Status::Complete);
+    assert!(log.lock().unwrap().is_empty());
+    let hint = out.hint.unwrap();
+    assert!(hint.contains("was eligible for the judge"), "{hint}");
+    assert!(hint.contains("check exclude_globs"), "{hint}");
+}
+
+#[tokio::test]
+async fn a_judge_failing_after_it_answered_is_not_reported_absent() {
+    // the first call admits only folders; the next one fails
+    let fx = fixture(&[("a/b/needle.rs", b"needle")], |_, _| {});
+    let calls = AtomicUsize::new(0);
+    let out = ask(
+        &fx,
+        None,
+        judge(&Log::default(), move |ev| {
+            if calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Err(JudgeError::Unavailable("transport".into()));
+            }
+            Ok(per_item(ev, |item| {
+                if item["path"].as_str().unwrap().ends_with(".rs") {
+                    0.1
+                } else {
+                    0.9
+                }
+            }))
+        }),
+    )
+    .await;
+    assert_eq!(out.status, Status::Unavailable);
+    assert_eq!(out.stats.judge_calls, 2);
+    assert_eq!(
+        out.hint.as_deref(),
+        Some(
+            "The judge failed (transport) before any file was admitted: use \
+             coder::search, or retry the ask later."
+        )
+    );
+}
+
+#[test]
+fn size_and_deadline_hints_give_advice_the_agent_can_follow() {
+    let incomplete = |reason: &str| FindRelevantOutput {
+        status: Status::Incomplete,
+        reason: Some(reason.into()),
+        hint: None,
+        files: Vec::new(),
+        agents_md: Vec::new(),
+        issues: BTreeMap::new(),
+        stats: Stats::default(),
+    };
+    // at the maximum, a larger timeout_ms would be refused (C210)
+    let at_max = hint(&incomplete("deadline"), MAX_TIMEOUT_MS).unwrap();
+    assert!(
+        at_max.ends_with(" Narrow path for fuller coverage."),
+        "{at_max}"
+    );
+    for reason in ["request_size", "source_inspection_limit"] {
+        let hint = hint(&incomplete(reason), MAX_TIMEOUT_MS).unwrap();
+        assert!(
+            hint.contains("too large for the judge was skipped"),
+            "{hint}"
+        );
+        assert!(!hint.contains("Narrow path"), "{hint}");
+    }
 }
 
 #[cfg(unix)]

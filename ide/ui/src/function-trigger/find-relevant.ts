@@ -84,6 +84,18 @@ export interface RelevantSummary {
   cacheHits: number
 }
 
+/** The judge-failure `reason` keys in a reader's words; any other reason
+    (an issue kind, the judge's own code) shows as sent. */
+const REASON_LABELS: Record<string, string> = {
+  paused: 'paused after a recent failure',
+  listing_timeout: 'the judge did not list its models in time',
+  window_too_small: "the judge's context window is too small",
+}
+
+export function reasonLabel(reason: string): string {
+  return REASON_LABELS[reason] ?? reason
+}
+
 export function isFindRelevantResponse(output: unknown): boolean {
   return responseSchema.safeParse(output).success
 }

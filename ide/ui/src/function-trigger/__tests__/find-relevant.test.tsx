@@ -143,17 +143,17 @@ describe('FindRelevantCard', () => {
     const unavailable = summarizeFindRelevant(input, {
       ...output,
       status: 'unavailable',
-      reason: 'judge window too small',
+      reason: 'window_too_small',
       files: [],
     })!
     const html = renderToStaticMarkup(<FindRelevantCard summary={unavailable} running={false} />)
     expect(html).toContain('Judge unavailable')
-    expect(html).toContain('No judge answered (judge window too small)')
+    expect(html).toContain("No judge answered (the judge&#x27;s context window is too small)")
   })
 
   it("says each note once: the worker's hint (as hint() words it) with the issue counts", () => {
     const hint =
-      'Coverage is partial (judge_call_timeout): the answer may be in files not listed, so verify with coder::search before relying on this list. Narrow path, or retry with a larger timeout_ms.'
+      'Coverage is partial (judge_call_timeout): the answer may be in files not listed, so verify with coder::search before relying on this list. The judge cut a call short: narrow path, or retry the ask later.'
     const timedOut = summarizeFindRelevant(input, {
       ...output,
       status: 'incomplete',
@@ -182,7 +182,7 @@ describe('FindRelevantCard', () => {
     const loading = summarizeFindRelevant(input, {
       ...output,
       status: 'unavailable',
-      reason: 'judge listing timed out; retry shortly',
+      reason: 'listing_timeout',
       hint: 'The judge did not list its models in time (a local judge may still be loading its model): retry the ask in a minute, or use coder::search now.',
       files: [],
     })!
