@@ -252,9 +252,27 @@ error.
 
 | `status` | Meaning |
 |---|---|
-| `complete` | Every admitted branch was explored. |
-| `incomplete` | Partial coverage: the deadline hit, the judge token budget ran out, a request failed or was too large, or a walk limit was reached. `issues` counts each kind and `reason` names a stop; narrow `path` and retry. |
+| `complete` | Every admitted branch was explored. With no files, nothing under `path` looked relevant: widen `path` or use `coder::search`. |
+| `incomplete` | Partial coverage: the deadline hit, the judge token budget ran out, a request failed or was too large, or a walk limit was reached. The answer may be in files not listed: verify with `coder::search`. `reason` names the stop, else the leading issue kind; `issues` counts each kind (below). |
 | `unavailable` | No judge answered (not deployed, no key, paused after a recent outage, or a context window under 8192 tokens). Use `coder::search`. With reason `judge model loading; retry shortly`, a local judge is still loading its model: retry the ask in a minute. |
+
+A result that is incomplete, unavailable or complete with no files also
+carries `hint`, the next step in one sentence. `issues` kinds, in the order
+that picks `reason` when the ask did not stop:
+
+| Kind | Meaning | Next step |
+|---|---|---|
+| `deadline`, `judge_call_timeout` | The ask's deadline passed, or the judge timed out a call. | Narrow `path` or raise `timeout_ms`. |
+| `token_budget` | The judge token budget ran out. | Narrow `path`. |
+| `request_size` | A file or batch too large for one judge request. | Narrow `path`; read that file directly. |
+| `resource_limit`, `source_inspection_limit` | A walk, file-size or output limit cut coverage. | Narrow `path`. |
+| `invalid_response`, `invalid_request`, `provider` | The judge failed calls. | Retry later or use `coder::search`. |
+| `changed` | A file changed during the ask. | Retry the ask. |
+| `unreadable`, `local_call_context` | A file or folder could not be read, or the Python call context failed. | Verify with `coder::search`. |
+| `agents_md_incomplete` | The `agents_md` list may miss one. Alone it leaves the result `complete`. | Look for `AGENTS.md` with `coder::list-folder`. |
+
+A `path` that does not exist fails with `C211`, which names up to five
+eligible folders beside it, closest name first.
 
 - **Budget.** `timeout_ms` (default 240000, max 280000, below the harness's
   300 s dispatch timeout) bounds the whole ask; each judge call may use
@@ -263,9 +281,10 @@ error.
   before then is skipped and counted under its own key in `issues`
   (`judge_call_timeout`, `invalid_response`); it pauses nothing. The model
   listing that opens an ask waits up to 60 s (at most half of `timeout_ms`)
-  for a local judge to load its model. Excerpts share a 128 KiB source budget, and the whole result
-  stays under the harness's 256 KiB result cap as the harness counts it
-  (the JSON plus the JSON again as text, so escaping counts twice). The
+  for a local judge to load its model. Excerpts share a source budget of
+  `code.max_output_bytes` (at most 128 KiB), and the whole result stays
+  under the harness's 256 KiB result cap as the harness counts it (the
+  JSON plus the JSON again as text, so escaping counts twice). The
   file list takes up to half of that cap, leads up to half of the rest, and
   excerpts the remainder, best files first; a file whose excerpts did not
   fit sets `source_omitted`. Files or leads cut from the tail count a

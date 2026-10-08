@@ -50,7 +50,8 @@ pub const MIN_TIMEOUT_MS: u64 = 1_000;
 pub const MAX_TIMEOUT_MS: u64 = 280_000;
 /// Smallest judge context window (tokens) whose states fit untruncated.
 pub const MIN_WINDOW_TOKENS: u64 = 8_192;
-/// Excerpt bytes one result carries (`coder::read-file`'s ceiling).
+/// Excerpt bytes one result carries at most; a lower
+/// `code.max_output_bytes` (`coder::read-file`'s ceiling) lowers it.
 pub const MAX_SOURCE_BYTES: usize = 131_072;
 /// A result's size as the harness counts it ([`result_bytes`]) stays under
 /// this: harness/src/config.rs `default_max_result_bytes` (262_144), past
@@ -65,7 +66,9 @@ pub struct FindRelevantInput {
     /// Behavioural question in natural language: how, why or where
     /// something works (1..=4000 bytes).
     pub query: String,
-    /// Folder to search (default `.`); result paths are absolute.
+    /// Folder of the component the question is about (default `.`, the
+    /// whole root: on a large repo that ends `incomplete` with reason
+    /// `token_budget`); result paths are absolute.
     #[serde(default = "default_path")]
     pub path: String,
     /// Globs (not gitignore lines) to leave out, relative to the session
@@ -103,13 +106,14 @@ fn example_find_relevant_input() -> serde_json::Value {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
-    /// Every admitted branch was explored.
+    /// Every admitted branch was explored; with no files, nothing under
+    /// `path` looked relevant (widen `path` or use coder::search).
     Complete,
     /// Partial coverage (deadline, judge token budget, a failed or
-    /// oversized request, a resource limit): see `reason` and `issues`;
-    /// narrow `path` and retry.
+    /// oversized request, a resource limit): the answer may be in files
+    /// not listed. `reason` names the main gap and `hint` the next step.
     Incomplete,
-    /// No judge answered; use coder::search.
+    /// No judge answered; use coder::search, or retry when `hint` says so.
     Unavailable,
 }
 
@@ -166,7 +170,8 @@ pub struct RelevantFile {
     /// Estimated roles: implementation, caller, test, fixture, helper.
     pub roles: Vec<String>,
     pub excerpts: Vec<Excerpt>,
-    /// Declarations worth reading whose source is not shown.
+    /// Locations of the declarations worth reading (score above 0.25),
+    /// including those `excerpts` shows.
     pub leads: Vec<Lead>,
     /// Possible local calls from the shown source (not runtime-verified).
     pub call_leads: Vec<CallLead>,
@@ -187,14 +192,25 @@ pub struct Stats {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct FindRelevantOutput {
     pub status: Status,
-    /// Why the result is not complete.
+    /// Why the result is not complete: the stop (`deadline`,
+    /// `token_budget`, the judge's failure) or else the leading kind in
+    /// `issues`.
     pub reason: Option<String>,
+    /// What to do next, when the result is partial, empty or unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
     /// Best first.
     pub files: Vec<RelevantFile>,
     /// AGENTS.md files from the project folder down to `path`, and above
     /// returned files.
     pub agents_md: Vec<String>,
-    /// Coverage issues by kind.
+    /// Coverage issues by kind, with counts: `deadline`, `token_budget`,
+    /// `judge_call_timeout`, `request_size`, `resource_limit`,
+    /// `source_inspection_limit` (narrow `path` or raise `timeout_ms`);
+    /// `invalid_response`, `invalid_request`, `provider` (judge failures:
+    /// retry later); `changed` (a file changed during the ask: retry);
+    /// `unreadable`, `local_call_context`. `agents_md_incomplete` (the
+    /// `agents_md` list may miss one) alone leaves the result complete.
     pub issues: BTreeMap<String, u64>,
     pub stats: Stats,
 }
@@ -236,31 +252,50 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
 ) -> Result<FindRelevantOutput, CoderError> {
     let started = Instant::now();
     if req.query.trim().is_empty() {
-        return Err(CoderError::BadInput("query must not be empty".into()));
+        return Err(CoderError::BadInput(
+            "query must not be empty; retry with the behavioural question in plain words, \
+             e.g. \"where does the harness stamp the filesystem scope on coder calls?\""
+                .into(),
+        ));
     }
     if req.query.len() > MAX_QUERY_BYTES {
         return Err(CoderError::BadInput(format!(
-            "query is {} bytes; at most {MAX_QUERY_BYTES}",
+            "query is {} bytes; at most {MAX_QUERY_BYTES}: retry with the question \
+             alone, and use coder::search for long literal text",
             req.query.len()
         )));
     }
     if !(MIN_TIMEOUT_MS..=MAX_TIMEOUT_MS).contains(&req.timeout_ms) {
         return Err(CoderError::BadInput(format!(
-            "timeout_ms must be within {MIN_TIMEOUT_MS}..={MAX_TIMEOUT_MS}"
+            "timeout_ms is {}; it must be within {MIN_TIMEOUT_MS}..={MAX_TIMEOUT_MS}: \
+             retry with a value in that range, or omit it for the default {}",
+            req.timeout_ms,
+            default_timeout_ms()
         )));
     }
     let deadline = started + Duration::from_millis(req.timeout_ms);
-    let walk_root = resolver.resolve_scope(req.fs_scope.as_ref(), &req.path)?;
+    let walk_root = resolver
+        .resolve_scope(req.fs_scope.as_ref(), &req.path)
+        .map_err(|e| with_nearby_folders(&resolver, &cfg, &req, e))?;
     if walk::in_git_dir(&walk_root) {
         return Err(CoderError::BadInput(format!(
-            "path is inside a .git directory, which is never searched: {}",
+            "path is inside a .git directory, which is never searched: {}; retry with \
+             the work tree folder above it",
             req.path
         )));
     }
-    let md = std::fs::metadata(&walk_root).map_err(|e| CoderError::io_for_path(e, &req.path))?;
+    let md = std::fs::metadata(&walk_root).map_err(|e| {
+        with_nearby_folders(&resolver, &cfg, &req, CoderError::io_for_path(e, &req.path))
+    })?;
     if !md.is_dir() {
+        let parent = Path::new(&req.path)
+            .parent()
+            .map(|p| p.display().to_string())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| ".".into());
         return Err(CoderError::BadInput(format!(
-            "not a directory: {}",
+            "not a directory: {}; find-relevant searches a folder: retry with path \
+             \"{parent}\", or read the file with coder::read-file",
             req.path
         )));
     }
@@ -314,6 +349,7 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
     let unavailable = |reason: String| FindRelevantOutput {
         status: Status::Unavailable,
         reason: Some(reason),
+        hint: None,
         files: Vec::new(),
         agents_md: Vec::new(),
         issues: BTreeMap::new(),
@@ -323,12 +359,12 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
         },
     };
     let listing = match window(deadline).await {
-        Err(error) => return Ok(logged(unavailable(error.reason()))),
+        Err(error) => return Ok(finish(unavailable(error.reason()))),
         Ok(Listing {
             window: Some(tokens),
             ..
         }) if tokens < MIN_WINDOW_TOKENS => {
-            return Ok(logged(unavailable("judge window too small".into())))
+            return Ok(finish(unavailable("judge window too small".into())))
         }
         Ok(listing) => listing,
     };
@@ -417,12 +453,15 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
         Some(Stop::Unavailable(reason)) => (Status::Incomplete, Some(reason)),
         Some(Stop::Deadline) => (Status::Incomplete, Some("deadline".into())),
         Some(Stop::Budget) => (Status::Incomplete, Some("token_budget".into())),
-        None if state.issues.is_empty() => (Status::Complete, None),
-        None => (Status::Incomplete, None),
+        None => match GAPS.iter().find(|kind| state.issues.contains_key(**kind)) {
+            Some(kind) => (Status::Incomplete, Some(kind.to_string())),
+            None => (Status::Complete, None),
+        },
     };
     let mut output = FindRelevantOutput {
         status,
         reason,
+        hint: None,
         files,
         agents_md,
         issues: state.issues,
@@ -434,8 +473,136 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
             elapsed_ms: started.elapsed().as_millis() as u64,
         },
     };
-    spend_budget(&mut output, MAX_SOURCE_BYTES, MAX_RESULT_BYTES);
-    Ok(logged(output))
+    let source = usize::try_from(cfg.max_output_bytes)
+        .map_or(MAX_SOURCE_BYTES, |max| max.min(MAX_SOURCE_BYTES));
+    spend_budget(&mut output, source, MAX_RESULT_BYTES);
+    Ok(finish(output))
+}
+
+/// Issue kinds that leave coverage partial, the most telling first: an ask
+/// that did not stop reports the first one present as its `reason`. A new
+/// issue kind belongs here unless coverage stays whole without it.
+const GAPS: [&str; 12] = [
+    "deadline",
+    "token_budget",
+    "judge_call_timeout",
+    "request_size",
+    "resource_limit",
+    "source_inspection_limit",
+    "invalid_response",
+    "invalid_request",
+    "provider",
+    "changed",
+    "unreadable",
+    "local_call_context",
+];
+
+/// The next step for the agent reading `output`; `None` for a complete
+/// result with files.
+fn hint(output: &FindRelevantOutput) -> Option<String> {
+    let reason = output.reason.as_deref().unwrap_or_default();
+    let hint = match output.status {
+        Status::Complete if output.files.is_empty() => {
+            "Nothing under path looked relevant to the judge: widen path, or use \
+             coder::search for exact names."
+                .to_string()
+        }
+        Status::Complete => return None,
+        Status::Unavailable if reason == judge::LOADING => {
+            "The judge is still loading its model: retry the ask in a minute, or use \
+             coder::search now."
+                .to_string()
+        }
+        Status::Unavailable if reason == judge::PAUSED => format!(
+            "The judge failed moments ago and is paused for up to {} s: use \
+             coder::search, or retry the ask after that.",
+            judge::PAUSE_MS / 1000
+        ),
+        Status::Unavailable => "No judge answered: use coder::search.".to_string(),
+        Status::Incomplete => {
+            let next = match reason {
+                "deadline" | "judge_call_timeout" => {
+                    " Narrow path, or retry with a larger timeout_ms."
+                }
+                "token_budget" | "request_size" | "resource_limit" | "source_inspection_limit" => {
+                    " Narrow path for fuller coverage."
+                }
+                "changed" => " Retry the ask once the files stop changing.",
+                "unreadable" | "local_call_context" => "",
+                // A judge failure: `invalid_*`, `provider` or its reason.
+                _ => " Retry the ask later.",
+            };
+            format!(
+                "Coverage is partial ({reason}): the answer may be in files not listed, so \
+                 verify with coder::search before relying on this list.{next}"
+            )
+        }
+    };
+    Some(hint)
+}
+
+/// A C211 for `req.path` that also names up to five eligible folders
+/// beside it (the walk's own gates: never hidden, ignored or protected),
+/// closest name first; any other error unchanged. The same whether the
+/// path is missing or denied (REDACTION INVARIANT). Blocking.
+fn with_nearby_folders(
+    resolver: &Arc<PathResolver>,
+    cfg: &CoderConfig,
+    req: &FindRelevantInput,
+    error: CoderError,
+) -> CoderError {
+    let wire = Path::new(&req.path);
+    let (CoderError::NotFoundOrDenied(_), Some(name), Some(parent)) =
+        (&error, wire.file_name(), wire.parent())
+    else {
+        return error;
+    };
+    let listed = match parent.to_string_lossy() {
+        p if p.is_empty() => ".".to_string(),
+        p => p.into_owned(),
+    };
+    let Ok(dir) = resolver.resolve_scope(req.fs_scope.as_ref(), &listed) else {
+        return error;
+    };
+    let name = name.to_string_lossy().to_lowercase();
+    let mut near: Vec<(usize, String)> =
+        walk::Tree::new(resolver, &dir, None, &dir, cfg.max_read_bytes)
+            .list_path(&dir, walk::MAX_ENTRIES)
+            .entries
+            .into_iter()
+            .filter(|entry| entry.is_dir)
+            .map(|entry| (edit_distance(&name, &entry.name.to_lowercase()), entry.name))
+            .collect();
+    // Stable: name order within a distance.
+    near.sort_by_key(|(distance, _)| *distance);
+    let near: Vec<String> = near
+        .into_iter()
+        .take(5)
+        .map(|(_, folder)| parent.join(folder).display().to_string())
+        .collect();
+    if near.is_empty() {
+        error
+    } else {
+        CoderError::not_found_or_denied_near(&req.path, &near)
+    }
+}
+
+/// Levenshtein distance in chars.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (above + 1)
+                .min(row[j] + 1)
+                .min(diagonal + usize::from(ca != *cb));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
 }
 
 /// render.ts: `priority ?? score` first, then score, then path.
@@ -531,6 +698,7 @@ fn spend_budget(output: &mut FindRelevantOutput, mut source: usize, result: usiz
         *output.issues.entry("resource_limit".into()).or_default() += 1;
         if output.status == Status::Complete {
             output.status = Status::Incomplete;
+            output.reason = Some("resource_limit".into());
         }
     }
 }
@@ -679,8 +847,10 @@ fn remember(key: [u8; 32], scores: &Scores) {
         .put(key, scores);
 }
 
-/// One line per ask; never the query or any path.
-fn logged(output: FindRelevantOutput) -> FindRelevantOutput {
+/// Adds the [`hint`] and logs one line per ask; never the query or any
+/// path.
+fn finish(mut output: FindRelevantOutput) -> FindRelevantOutput {
+    output.hint = hint(&output);
     tracing::info!(
         status = ?output.status,
         reason = output.reason.as_deref().unwrap_or(""),

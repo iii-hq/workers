@@ -115,7 +115,7 @@ impl JudgeError {
     }
 }
 
-const PAUSED: &str = "paused after a recent failure";
+pub const PAUSED: &str = "paused after a recent failure";
 
 /// The calling session's judge provider from the handler's OTel baggage,
 /// when set and well-formed; `None` routes to the hub's default. Read it in
@@ -350,7 +350,7 @@ fn window_from(reply: Result<Value, iii_sdk::Error>) -> Result<Listing, JudgeErr
     }
 }
 
-const LOADING: &str = "judge model loading; retry shortly";
+pub const LOADING: &str = "judge model loading; retry shortly";
 
 /// The smallest `field` among a model listing's cards, if any card
 /// advertises one.

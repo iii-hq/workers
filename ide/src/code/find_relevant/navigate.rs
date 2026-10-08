@@ -276,7 +276,7 @@ impl Run {
         let (mut batches, oversize) =
             plan_batches(&self.query, items, MAX_REQUEST_BYTES, self.window);
         for _ in 0..oversize {
-            self.issue("request-size");
+            self.issue("request_size");
         }
         let mut results = Vec::new();
         let mut running = JoinSet::new();
@@ -312,7 +312,7 @@ impl Run {
                     batches.push_back(first);
                     batches.push_back(second);
                 }
-                Err(JudgeError::TooLarge) => self.issue("request-size"),
+                Err(JudgeError::TooLarge) => self.issue("request_size"),
                 Err(_) => {} // recorded by `call`
             }
         }

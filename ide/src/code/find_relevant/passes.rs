@@ -79,13 +79,13 @@ pub async fn assess_files(run: &Arc<Run>) -> HashMap<String, Assessment> {
         let preview = run.state().previews.get(&candidate.path).cloned()?;
         let request = prompts::file_assessment(&run.query, &candidate.path, &preview);
         if !prompts::fits(&request, usize::MAX, run.window) {
-            run.issue("request-size");
+            run.issue("request_size");
             return None;
         }
         match run.call(request).await {
             Ok(scores) => Some((candidate.path, Assessment::from_scores(&scores))),
             Err(JudgeError::TooLarge) => {
-                run.issue("request-size");
+                run.issue("request_size");
                 None
             }
             Err(_) => None, // recorded by `call`
@@ -105,9 +105,10 @@ pub async fn present(
     files: &mut HashMap<String, Selected>,
     assessments: &HashMap<String, Assessment>,
 ) {
-    // retrieve.ts runs these passes in `parallel`, which starts nothing
-    // once the ask stopped.
-    if run.stopped() {
+    // Local only, so a token budget or judge outage stop still runs them;
+    // retrieve.ts runs them in `parallel`, which starts nothing once the
+    // ask stopped, and past the deadline so does this.
+    if Instant::now() >= run.deadline && run.stopped() {
         return;
     }
     let tested = |path: &str| {
@@ -147,7 +148,7 @@ pub async fn present(
                     Ok(()) => file = widened,
                     // Optional structural context never discards selected
                     // evidence.
-                    Err(_) => reader.issue("local-call-context"),
+                    Err(_) => reader.issue("local_call_context"),
                 }
                 Some((candidate.path, file))
             })
@@ -155,7 +156,7 @@ pub async fn present(
     })
     .await
     else {
-        run.issue("local-call-context");
+        run.issue("local_call_context");
         return;
     };
     files.extend(read);

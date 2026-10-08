@@ -57,7 +57,11 @@ const ISSUE_LABELS: Record<string, string> = {
   invalid_response: 'failed judge evaluations',
   resource_limit: 'size limit',
   provider: 'judge errors',
-  'request-size': 'oversized requests',
+  request_size: 'oversized requests',
+  invalid_request: 'rejected judge requests',
+  source_inspection_limit: 'files too large to inspect',
+  local_call_context: 'call context skipped',
+  agents_md_incomplete: 'AGENTS.md list partial',
   changed: 'files changed meanwhile',
   unreadable: 'unreadable files or folders',
 }

@@ -181,9 +181,14 @@ again. Set `path` to the folder of the component the question is about
 (`judge/src`, not the repository root): every level is a judge round trip
 and the judge bills per token, so a whole-repo ask on a large repository
 takes minutes and stops at the judge token budget (reason `token_budget`).
-`incomplete` means partial coverage (narrow `path` and retry);
-`unavailable` means no judge answered (fall back to `coder::search`; with
-reason `judge model loading; retry shortly`, retry the ask in a minute). The
+Follow `hint` when the result carries one. `incomplete` means partial
+coverage: the answer may be in files not listed, so verify with
+`coder::search` before trusting the list (`reason` says why: narrow `path`
+for a budget or size limit, retry after `changed`). `complete` with no
+files means nothing under `path` looked relevant: widen `path` or use
+`coder::search`. `unavailable` means no judge answered (fall back to
+`coder::search`; with reason `judge model loading; retry shortly`, retry
+the ask in a minute). The
 query, root-relative paths and file text go to the session's judge
 provider, which may be hosted; protected, ignored, hidden and
 secret-looking files never do, and a hidden or gitignored `path` is refused

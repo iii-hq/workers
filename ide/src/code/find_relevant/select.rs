@@ -555,7 +555,7 @@ pub async fn select_file(run: Arc<Run>, candidate: Candidate) -> (String, Option
             // deadline stops the loop through `run.stopped()`.
             Err(error) => {
                 if matches!(error, JudgeError::TooLarge) {
-                    run.issue("request-size");
+                    run.issue("request_size");
                 }
                 index += 1;
                 continue;
@@ -901,7 +901,7 @@ mod tests {
             .collect();
         assert_eq!(asked, [4, 2, 1, 1, 2, 1, 1]);
         let issues = issues(&run);
-        assert_eq!(issues.get("request-size"), Some(&1));
+        assert_eq!(issues.get("request_size"), Some(&1));
         assert_eq!(issues.get("judge_call_timeout"), Some(&1));
         // f2 (line 19) and f3 (line 28) are still selected
         assert_eq!(ranges(&selected), [(16, 22), (25, 31)]);

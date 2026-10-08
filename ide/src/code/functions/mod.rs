@@ -206,9 +206,12 @@ const FIND_RELEVANT_DESC: &str =
      Set path to the folder of the component the question is about (e.g. \
      judge/src): time and judge cost grow with the folder, and a \
      repository-root ask on a large repo hits the judge token budget. \
-     Read the returned files before searching again. incomplete = partial \
-     coverage (see reason and issues; narrow path); unavailable = no judge, \
-     use coder::search. Sends the query, root-relative paths and file text to \
+     Read the returned files before searching again, and follow `hint` \
+     when present. incomplete = partial coverage: the answer may be in \
+     files not listed, so verify with coder::search (reason and issues say \
+     why); complete with no files = nothing under path looked relevant, \
+     widen path or use coder::search; unavailable = no judge, use \
+     coder::search (or retry when the model is loading). Sends the query, root-relative paths and file text to \
      the session's judge provider, which may be hosted: never protected, \
      ignored, hidden, .git or secret-named files, nor the text of binary or \
      secret-key files. A path that is hidden, gitignored or outside a \

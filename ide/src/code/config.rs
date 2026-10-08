@@ -128,7 +128,8 @@ pub struct CoderConfig {
     /// fails with a C218 that reports the file's size and line count and
     /// names the recovery paths (window, stat probe, or per-call
     /// `max_output_bytes` raise, clamped to `max_read_bytes`). Windowed
-    /// reads and batch mode are NOT governed by this key.
+    /// reads and batch mode are NOT governed by this key. It also caps
+    /// `coder::find-relevant`'s excerpt bytes per result (at most 128 KiB).
     #[serde(default = "default_max_output_bytes")]
     pub max_output_bytes: u64,
 

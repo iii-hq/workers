@@ -140,6 +140,7 @@ async fn an_irrelevant_branch_is_never_sent() {
     let log = Log::default();
     let out = ask(&fx, None, judge(&log, keyword)).await;
     assert_eq!(out.status, Status::Complete);
+    assert_eq!(out.hint, None);
     assert_eq!(paths(&fx, &out), ["src/core/needle.rs"]);
     // two navigation levels, then one evidence call and one assessment
     // for the file
@@ -327,11 +328,11 @@ async fn a_batch_the_judge_finds_too_large_is_split_until_it_fits() {
     // assessment per file
     assert_eq!(out.stats.judge_calls, 7 + 6 + 6);
 
-    // a single item the judge refuses is a request-size issue
+    // a single item the judge refuses is a request_size issue
     let log = Log::default();
     let out = ask(&fx, None, judge(&log, |_| Err(JudgeError::TooLarge))).await;
     assert_eq!(out.status, Status::Incomplete);
-    assert_eq!(out.issues.get("request-size"), Some(&6));
+    assert_eq!(out.issues.get("request_size"), Some(&6));
     assert!(out.files.is_empty());
 }
 
@@ -377,6 +378,10 @@ async fn a_judge_down_on_the_first_call_is_unavailable() {
     .await;
     assert_eq!(out.status, Status::Unavailable);
     assert_eq!(out.reason.as_deref(), Some("not registered"));
+    assert_eq!(
+        out.hint.as_deref(),
+        Some("No judge answered: use coder::search.")
+    );
     assert_eq!(out.stats.judge_calls, 1);
     assert!(out.files.is_empty());
 }
@@ -405,6 +410,11 @@ async fn the_deadline_returns_partial_results_as_incomplete() {
     assert!(started.elapsed() < Duration::from_secs(5));
     assert_eq!(out.status, Status::Incomplete);
     assert_eq!(out.reason.as_deref(), Some("deadline"));
+    assert!(out
+        .hint
+        .as_ref()
+        .unwrap()
+        .starts_with("Coverage is partial (deadline)"));
     assert!(out.issues.contains_key("deadline"));
     assert_eq!(paths(&fx, &out), ["needle.rs"]);
 }
@@ -433,7 +443,11 @@ async fn a_call_the_judge_timed_out_is_its_own_issue_and_the_ask_goes_on() {
     let log = Log::default();
     let out = ask(&fx, None, failing_on(&log, "failing", JudgeError::Deadline)).await;
     assert_eq!(out.status, Status::Incomplete);
-    assert_eq!(out.reason, None);
+    assert_eq!(out.reason.as_deref(), Some("judge_call_timeout"));
+    let hint = out.hint.as_deref().unwrap();
+    assert!(hint.contains("files not listed"), "{hint}");
+    assert!(hint.contains("coder::search"), "{hint}");
+    assert!(hint.contains("larger timeout_ms"), "{hint}");
     assert!(
         out.issues.contains_key("judge_call_timeout"),
         "{:?}",
@@ -456,7 +470,8 @@ async fn an_evaluation_the_judge_failed_is_skipped_without_stopping_the_ask() {
     let log = Log::default();
     let out = ask(&fx, None, failing_on(&log, "failing", JudgeError::Invalid)).await;
     assert_eq!(out.status, Status::Incomplete);
-    assert_eq!(out.reason, None);
+    assert_eq!(out.reason.as_deref(), Some("invalid_response"));
+    assert!(out.hint.as_ref().unwrap().ends_with("Retry the ask later."));
     assert!(
         out.issues.contains_key("invalid_response"),
         "{:?}",
@@ -479,18 +494,28 @@ async fn a_small_window_is_unavailable_without_a_call() {
 
 #[tokio::test]
 async fn bad_input_is_c210() {
-    let fx = fixture(&[("f.rs", b"x")], |_, _| {});
+    let fx = fixture(&[("f.rs", b"x"), ("sub/g.rs", b"x")], |_, _| {});
     let log = Log::default();
     for (req, message) in [
-        (input(" ", 120_000), "query must not be empty"),
-        (input(&"q".repeat(4001), 120_000), "at most 4000"),
-        (input("q", 999), "timeout_ms"),
+        (input(" ", 120_000), "query must not be empty; retry with"),
+        (input(&"q".repeat(4001), 120_000), "at most 4000: retry"),
+        (
+            input("q", 300_000),
+            "timeout_ms is 300000; it must be within 1000..=280000: retry",
+        ),
         (
             FindRelevantInput {
                 path: "f.rs".into(),
                 ..input("q", 120_000)
             },
-            "not a directory: f.rs",
+            "not a directory: f.rs; find-relevant searches a folder: retry with path \".\"",
+        ),
+        (
+            FindRelevantInput {
+                path: "sub/g.rs".into(),
+                ..input("q", 120_000)
+            },
+            "retry with path \"sub\", or read the file with coder::read-file",
         ),
     ] {
         let error = run(
@@ -519,26 +544,20 @@ async fn excerpts_past_the_output_budget_are_omitted_but_keep_their_leads() {
     let source: String = (0..10)
         .map(|i| format!("fn needle_{i:04}() -> u32 {{\n{filler}    {i}\n}}\n"))
         .collect();
-    let fx = fixture(
-        &[
-            ("a_needle.rs", source.as_bytes()),
-            ("b_needle.rs", source.as_bytes()),
-            ("c_needle.rs", source.as_bytes()),
-        ],
-        |_, _| {},
-    );
-    let out = ask(
-        &fx,
-        None,
-        judge(&Log::default(), |ev| {
-            if ev.state.get("items").is_some() {
-                keyword(ev)
-            } else {
-                Ok(ev.questions.keys().map(|k| (k.clone(), 0.9)).collect())
-            }
-        }),
-    )
-    .await;
+    let files = [
+        ("a_needle.rs", source.as_bytes()),
+        ("b_needle.rs", source.as_bytes()),
+        ("c_needle.rs", source.as_bytes()),
+    ];
+    let answer = |ev: &Evaluation| {
+        if ev.state.get("items").is_some() {
+            keyword(ev)
+        } else {
+            Ok(ev.questions.keys().map(|k| (k.clone(), 0.9)).collect())
+        }
+    };
+    let fx = fixture(&files, |_, _| {});
+    let out = ask(&fx, None, judge(&Log::default(), answer)).await;
     assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
     assert_eq!(
         paths(&fx, &out),
@@ -555,6 +574,12 @@ async fn excerpts_past_the_output_budget_are_omitted_but_keep_their_leads() {
     assert_eq!(omitted, [false, false, true]);
     assert_eq!(out.files[2].leads.len(), out.files[0].leads.len());
     assert_eq!(out.files[2].leads[0].name, "needle_0000");
+
+    // a lower `code.max_output_bytes` lowers the source budget: one fits
+    let low = fixture(&files, |_, cfg| cfg.max_output_bytes = 60_000);
+    let out = ask(&low, None, judge(&Log::default(), answer)).await;
+    let omitted: Vec<bool> = out.files.iter().map(|f| f.source_omitted).collect();
+    assert_eq!(omitted, [false, true, true]);
 }
 
 /// What harness/src/trigger.rs `cap_result` measures against its 262_144
@@ -605,6 +630,7 @@ fn a_result_stays_under_the_harness_cap_whatever_it_escapes() {
     let output = |files: usize| FindRelevantOutput {
         status: Status::Complete,
         reason: None,
+        hint: None,
         files: (0..files).map(file).collect(),
         agents_md: vec!["/r/AGENTS.md".into()],
         issues: BTreeMap::new(),
@@ -637,6 +663,7 @@ fn a_result_stays_under_the_harness_cap_whatever_it_escapes() {
     assert_eq!(many.files[0].leads.len(), 50);
     assert!(!many.files[0].excerpts.is_empty());
     assert_eq!(many.status, Status::Incomplete);
+    assert_eq!(many.reason.as_deref(), Some("resource_limit"));
     assert_eq!(many.issues.get("resource_limit"), Some(&1));
 
     // live shape (122 files, ~1300 leads): every path stays, the tail loses
@@ -932,7 +959,7 @@ async fn a_preview_too_big_for_the_window_is_scored_in_chunks_keeping_the_best()
     assert_eq!(out.status, Status::Incomplete);
     assert_eq!(
         out.issues,
-        BTreeMap::from([("request-size".to_string(), 1)])
+        BTreeMap::from([("request_size".to_string(), 1)])
     );
     assert_eq!(paths(&fx, &out), ["big.txt"]);
     assert_eq!(out.files[0].score, 0.9);
@@ -1025,15 +1052,128 @@ async fn a_judge_not_ready_is_unavailable_without_a_call() {
         fx.resolver.clone(),
         fx.cfg.clone(),
         input("needle", 120_000),
-        |_| async { Err(JudgeError::Unavailable("judge model loading".into())) },
+        |_| async { Err(JudgeError::Unavailable(judge::LOADING.into())) },
         judge(&log, keyword),
         None,
     )
     .await
     .unwrap();
     assert_eq!(out.status, Status::Unavailable);
-    assert_eq!(out.reason.as_deref(), Some("judge model loading"));
+    assert_eq!(out.reason.as_deref(), Some(judge::LOADING));
+    assert!(out.hint.unwrap().contains("retry the ask in a minute"));
     assert!(log.lock().unwrap().is_empty());
+
+    // a paused judge: fall back now, retry after the pause
+    let out = ask(&fx, None, judge(&log, |_| Err(JudgeError::Paused))).await;
+    assert_eq!(out.status, Status::Unavailable);
+    assert_eq!(out.reason.as_deref(), Some(judge::PAUSED));
+    let hint = out.hint.unwrap();
+    assert!(hint.contains("paused for up to 30 s"), "{hint}");
+    assert!(hint.contains("use coder::search"), "{hint}");
+}
+
+#[tokio::test]
+async fn a_complete_result_without_files_hints_to_widen_the_path() {
+    let fx = fixture(
+        &[(
+            "src/other.rs",
+            b"fn other() {}
+",
+        )],
+        |_, _| {},
+    );
+    let out = ask(&fx, None, judge(&Log::default(), keyword)).await;
+    assert_eq!(out.status, Status::Complete);
+    assert!(out.files.is_empty());
+    let hint = out.hint.unwrap();
+    assert!(hint.contains("widen path"), "{hint}");
+    assert!(hint.contains("coder::search"), "{hint}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unlistable_folder_above_the_path_only_marks_agents_md() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = fixture(&[("outer/src/needle.rs", b"fn needle() {}\n")], |_, _| {});
+    let outer = fx.root.join("outer");
+    // traversable, not listable
+    std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o111)).unwrap();
+    let listable = std::fs::read_dir(&outer).is_ok(); // root ignores modes
+    let out = ask_with(&fx, at("outer/src"), None, judge(&Log::default(), keyword)).await;
+    std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if listable {
+        return;
+    }
+    assert_eq!(out.issues.get("agents_md_incomplete"), Some(&1));
+    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
+    assert_eq!((&out.reason, &out.hint), (&None, &None));
+    assert_eq!(paths(&fx, &out), ["outer/src/needle.rs"]);
+}
+
+#[tokio::test]
+async fn a_missing_path_names_the_closest_eligible_folders_beside_it() {
+    let fx = fixture(
+        &[
+            (".git/HEAD", b"ref: refs/heads/main\n"),
+            (".gitignore", b"judge-ignored/\n"),
+            ("judge/a.rs", b"x"),
+            ("judge-clef/src/a.rs", b"x"),
+            ("judge-typesafe/a.rs", b"x"),
+            ("judge-denied/a.rs", b"x"),
+            ("judge-ignored/a.rs", b"x"),
+            (".judge-hub/a.rs", b"x"),
+            ("harness/a.rs", b"x"),
+            ("ide/a.rs", b"x"),
+            ("console/a.rs", b"x"),
+            ("judge-hub.rs", b"x"),
+        ],
+        |root, cfg| cfg.denylist_paths = vec![root.join("judge-denied")],
+    );
+    let refusal = |path: &'static str| {
+        let fx = &fx;
+        async move {
+            run(
+                fx.resolver.clone(),
+                fx.cfg.clone(),
+                at(path),
+                |_| async { Ok(Listing::default()) },
+                judge(&Log::default(), keyword),
+                None,
+            )
+            .await
+            .unwrap_err()
+        }
+    };
+    let error = refusal("judge-hub").await;
+    assert_eq!(error.code(), "C211");
+    assert_eq!(
+        error.message(),
+        "judge-hub: not found or not accessible. Verify the path with coder::list-folder \
+         or coder::tree. Folders beside it, closest name first: judge, judge-clef, \
+         ide, harness, judge-typesafe."
+    );
+    // a denied folder reads like a missing one: same list, never itself
+    let denied = refusal("judge-denied").await;
+    let missing = refusal("judge-dented").await;
+    assert_eq!(denied.code(), "C211");
+    assert_eq!(
+        denied.message().replace("judge-denied", "X"),
+        missing.message().replace("judge-dented", "X")
+    );
+    assert!(!missing.message().contains("judge-denied"));
+    assert!(!missing.message().contains("judge-ignored"));
+    // a nested path names folders under its parent; none, none named
+    let nested = refusal("judge-clef/sr").await;
+    assert!(
+        nested.message().ends_with("first: judge-clef/src."),
+        "{}",
+        nested.message()
+    );
+    let bare = refusal("judge/sub").await;
+    assert_eq!(
+        bare.message(),
+        CoderError::not_found_or_denied("judge/sub").message()
+    );
 }
 
 #[cfg(unix)]
@@ -1483,4 +1623,34 @@ async fn a_spent_judge_token_budget_stops_the_ask_as_incomplete() {
         "{:?}",
         paths(&unlimited, &out)
     );
+}
+
+#[tokio::test]
+async fn a_test_file_shows_all_its_selection_after_a_token_budget_stop() {
+    let source = b"fn needle_a() {}\n\n\n\n\n\n\n\n\nfn needle_b() {}\n";
+    // navigation and the assessment spend 14 of 15 tokens; the evidence
+    // call lands last and spends the budget before the presentation
+    let fx = fixture(&[("t_needle.rs", source)], |_, cfg| {
+        cfg.find_relevant_judge_token_budget = 15;
+    });
+    let out = ask(
+        &fx,
+        None,
+        judge(&Log::default(), |ev| {
+            if !ev.questions.contains_key("priority") {
+                // needle_b is selected (0.6) but not presented (≤ 0.7)
+                return by_declaration(ev, |name| if name == "needle_a" { 0.9 } else { 0.6 });
+            }
+            Ok(ev
+                .questions
+                .keys()
+                .map(|id| (id.clone(), if id == "test" { 0.9 } else { 0.1 }))
+                .collect())
+        }),
+    )
+    .await;
+    assert_eq!(out.reason.as_deref(), Some("token_budget"));
+    assert_eq!(out.stats.judge_calls, 3);
+    assert_eq!(out.files[0].roles, ["test"]);
+    assert!(texts(&out.files[0]).contains("fn needle_b"));
 }

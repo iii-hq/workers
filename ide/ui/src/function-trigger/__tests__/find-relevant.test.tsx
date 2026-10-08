@@ -118,6 +118,15 @@ describe('FindRelevantCard', () => {
     expect(renderToStaticMarkup(<FindRelevantCard summary={partial} running={false} />)).toContain(
       'Partial result (deadline ×2)',
     )
+    const oversized = summarizeFindRelevant(input, {
+      ...output,
+      status: 'incomplete',
+      reason: 'request_size',
+      issues: { request_size: 1, source_inspection_limit: 1 },
+    })!
+    expect(renderToStaticMarkup(<FindRelevantCard summary={oversized} running={false} />)).toContain(
+      'Partial result (oversized requests, files too large to inspect)',
+    )
     const budget = summarizeFindRelevant(input, {
       ...output,
       status: 'incomplete',
