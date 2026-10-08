@@ -855,6 +855,7 @@ dependencies = [
  "iii-console-ui",
  "iii-sdk",
  "judge-contract",
+ "judge-openai",
  "judge-typesafe",
  "mention-contract",
  "opentelemetry",
@@ -876,6 +877,25 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "judge-openai"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "iii-config-client",
+ "iii-sdk",
+ "judge-contract",
+ "judge-provider",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
