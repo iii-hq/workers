@@ -384,6 +384,39 @@ describe('OpenAiConfigForm catalog', () => {
     expect(container.querySelector('[data-chip="warning"]')).toBeNull()
     expect(container.querySelector('[data-chip="neutral"]')?.textContent).toBe('Checking the worker…')
   })
+
+  it('checks the worker again once its own entry is saved', async () => {
+    vi.useFakeTimers()
+    try {
+      const handlers = new Map<string, (event: { id?: unknown }) => void>()
+      const registerTrigger = vi.fn(() => vi.fn())
+      const iii = Object.assign(engine({ status: 'error', code: 'missing_key' }), {
+        browserId: 'b1',
+        registerTrigger,
+        on: (id: string, handler: (event: { id?: unknown }) => void) => {
+          handlers.set(id, handler)
+          return () => handlers.delete(id)
+        },
+      })
+      const { container } = await mount({}, iii)
+      expect(registerTrigger).toHaveBeenCalledWith(expect.objectContaining({ type: 'configuration', config: {} }))
+      const [notify] = handlers.values()
+      iii.trigger.mockResolvedValue(catalog)
+      await act(async () => {
+        notify({ id: 'other-entry' })
+        await vi.runAllTimersAsync()
+      })
+      expect(iii.trigger).toHaveBeenCalledTimes(1)
+      await act(async () => {
+        notify({ id: 'judge-openai' })
+        await vi.runAllTimersAsync()
+      })
+      expect(iii.trigger).toHaveBeenCalledTimes(2)
+      expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('Key accepted · 1 models')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('OpenAI configuration deep links', () => {
