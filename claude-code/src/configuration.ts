@@ -3,9 +3,9 @@
  * seed installed as `initial_value` on first registration; the live value is
  * authoritative thereafter and hot-reloads on `configuration:updated`.
  *
- * Stream names (`events_stream` / `raw_events_stream`) are read once at boot to
- * build the emitters — a change to those needs a restart, like the path-jail
- * workers refuse a topology change. Every other field hot-reloads.
+ * Every field hot-reloads. The event feeds are fixed trigger types
+ * (`claude::agent-event`, `claude::raw-event`), not configuration; the former
+ * `events_stream` / `raw_events_stream` keys are accepted and ignored.
  */
 
 import type { IIIClient } from 'iii-sdk';
@@ -37,7 +37,7 @@ export async function registerClaudeConfig(iii: IIIClient, seed: Config): Promis
     id: CONFIG_ID,
     name: 'Claude Code',
     description:
-      'Claude Code worker: per-turn defaults (model, permission mode, max turns, working directory, system-prompt append, allowed/disallowed tools), the agent::events / claude::events stream names, the approval-gate toggle, the claude CLI path, whether to inject the iii runtime context, and the terminal block — the binary, argv, workspace, and install/setup toggles for the console terminal page, which runs on the shell worker’s host, not this one.',
+      'Claude Code worker: per-turn defaults (model, permission mode, max turns, working directory, system-prompt append, allowed/disallowed tools), the approval-gate toggle, the claude CLI path, whether to inject the iii runtime context, and the terminal block — the binary, argv, workspace, and install/setup toggles for the console terminal page, which runs on the shell worker’s host, not this one.',
     schema: runtimeJsonSchema(),
     metadata: { ui_form: DEFAULT_CONFIG_ID },
     initial_value: toRuntime(seed),

@@ -14,13 +14,9 @@ defaults:
 # Requires the harness worker; leave false for standalone use.
 approval_gate: false
 
-# Stream AgentEvent frames here, grouped by session_id. The console and
-# acp worker both read this stream.
-events_stream: agent::events
-
-# Raw Claude Code messages (exact Agent SDK shapes: system/init, assistant,
-# user, result, stream_event) mirrored verbatim here, grouped by session_id.
-raw_events_stream: claude::events
+# Event feeds are not configured here: AgentEvent frames are published on the
+# claude::agent-event trigger type and raw Claude Code messages on
+# claude::raw-event (bind either with { session_id }). See README "Event feeds".
 
 # Append the iii runtime context to the system prompt: teaches the agent
 # live discovery against the engine catalog through the iii CLI

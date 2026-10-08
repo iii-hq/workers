@@ -1,6 +1,6 @@
 # claude-code
 
-Claude Code as an iii worker: the Claude Code API exposed as functions and streams on the iii bus, nothing else. The worker spawns the same `claude` binary the user runs in their terminal, with the same login, the same filesystem, and the same tools (file edits, shell, web). `claude::run` executes one headless turn and returns the result; the raw Claude Code messages mirror verbatim onto the `claude::events` stream, and a translated AgentEvent view lands on `agent::events`, so the iii console, the acp worker, and any sibling worker observe a Claude Code run exactly like a native harness turn. The worker also registers `run::start_and_wait`, the same entrypoint the console and the acp worker drive, so both run Claude Code with no changes.
+Claude Code as an iii worker: the Claude Code API exposed as functions and trigger types on the iii bus, nothing else. The worker spawns the same `claude` binary the user runs in their terminal, with the same login, the same filesystem, and the same tools (file edits, shell, web). `claude::run` executes one headless turn and returns the result; the raw Claude Code messages are published verbatim on the `claude::raw-event` trigger type, and a translated AgentEvent view on `claude::agent-event`, so the iii console, the acp worker, and any sibling worker observe a Claude Code run exactly like a native harness turn. The worker also registers `run::start_and_wait`, the same entrypoint the console and the acp worker drive, so both run Claude Code with no changes.
 
 The same worker also runs Claude Code as a **terminal on the console**: `claude::terminal::*` installs the CLI on the terminal host, equips a workspace with the iii skills, and opens Claude in a `shell::pty` session on its own page — always Claude, never a shell. Both halves report onto one events stream, so a headless turn and a typed turn look the same in the console. Whether they also share one login depends on where each half runs: from a local checkout both are host processes and read the same `~/.claude`, while a worker installed from the registry runs the headless half in a microVM that cannot (see [Logging in](#logging-in)). Its sibling [`pi`](https://github.com/iii-hq/workers/tree/main/pi) is the same shape for the pi agent.
 
@@ -86,16 +86,16 @@ A turn from the CLI and the session record it leaves behind:
 
 Call `claude::run` again with the returned `session_id` to continue the same conversation: the worker maps iii session ids to Claude Code session ids in engine state and resumes automatically.
 
-Two ids come back from every run. `session_id` is the iii session id: the key for `claude::status`, `claude::stop`, resume, and the stream group. `claude_session_id` is Claude Code's internal session id (what the worker passes to the CLI's resume under the hood) — returned for reference, not a lookup key.
+Two ids come back from every run. `session_id` is the iii session id: the key for `claude::status`, `claude::stop`, resume, and the `session_id` an event-feed binding filters on. `claude_session_id` is Claude Code's internal session id (what the worker passes to the CLI's resume under the hood) — returned for reference, not a lookup key.
 
-Long turns: use `claude::start` to return immediately, then watch `agent::events` (group_id = your session_id) for `message_complete`, `function_execution_start/end`, and `turn_end` frames. `claude::stop` interrupts a live run, `claude::status` reads a point-in-time view, `claude::sessions::list` enumerates past sessions.
+Long turns: use `claude::start` to return immediately, then bind `claude::agent-event` with `{ session_id }` (see [Event feeds](#event-feeds)) for `message_complete`, `function_execution_start/end`, and `turn_end` frames. `claude::stop` interrupts a live run, `claude::status` reads a point-in-time view, `claude::sessions::list` enumerates past sessions.
 
 ## Functions
 
 | Function | Purpose |
 | --- | --- |
 | `claude::run` | Run one turn, wait, return the final result |
-| `claude::start` | Fire-and-forget turn; progress arrives on `agent::events` |
+| `claude::start` | Fire-and-forget turn; progress arrives on `claude::agent-event` |
 | `claude::task` | Delegate one task as a SUB-AGENT: fire it from a trigger, get the session id back at once, pass `parent_session_id` to nest it under the session that delegated it, and read the outcome from `agent_tasks/<session id>` in state — which is what an orchestrator binds a `state` trigger to and is woken by |
 | `claude::stop` | Interrupt a live run |
 | `claude::status` | Session state, live flag, usage, cost |
@@ -124,7 +124,60 @@ The named fields above cover the common path; everything else the Agent SDK acce
 }
 ```
 
-And the full output side is available raw: every message Claude Code emits (`system/init`, `assistant`, `user`, `result`, and `stream_event` token deltas when `includePartialMessages` is set) is mirrored verbatim onto the `claude::events` stream, group_id = session_id. Consumers that want the exact Claude Code wire format read `claude::events`; consumers that want harness-shaped frames read `agent::events`. Same turn, two views.
+And the full output side is available raw: every message Claude Code emits (`system/init`, `assistant`, `user`, `result`, and `stream_event` token deltas when `includePartialMessages` is set) is published verbatim on the `claude::raw-event` trigger type. Consumers that want the exact Claude Code wire format bind `claude::raw-event`; consumers that want harness-shaped frames bind `claude::agent-event`. Same turn, two views.
+
+## Event feeds
+
+The worker owns two trigger types and publishes every turn on them (headless
+runs, `claude::task` sub-agents, `run::start_and_wait`, and the console
+terminal):
+
+| Trigger type | `event` carries |
+| --- | --- |
+| `claude::agent-event` | translated AgentEvent frames (`message_complete`, `function_execution_start/end`, `turn_end`, `agent_end`) |
+| `claude::raw-event` | every Claude Code message verbatim (`system/init`, `assistant`, `user`, `result`, `stream_event`) |
+
+Bind a function to one session with the config `{ session_id, metadata? }`
+(`session_id` required, non-empty, up to 512 characters; `metadata` is an
+optional object handed to your function and wins over the binding's own
+metadata; any other key rejects the binding). Each trigger type accepts up to
+256 bindings.
+
+```ts
+iii.registerTrigger({
+  type: 'claude::agent-event',
+  function_id: 'my::on-claude-event',
+  config: { session_id },
+});
+```
+
+Your function receives one call per frame, fire-and-forget:
+
+```jsonc
+{
+  "session_id": "sess_...",
+  "event_id": "sess_...-<epoch>-00000007", // dedup key
+  "seq": 7,              // contiguous per (trigger type, session_id, epoch), from 0
+  "epoch": "<uuid>",     // changes when the worker restarts; seq restarts at 0
+  "source": "claude",
+  "event": { "type": "message_complete", "message": { } }
+}
+```
+
+Deliveries are not guaranteed to arrive in order: order by `(epoch, seq)` and
+drop duplicates by `event_id`. The two feeds number their frames
+independently. The feeds are ephemeral: nothing is stored or replayed, and a
+function bound after a frame was published never sees it. The durable history
+is the session record (`claude::status`, `claude::sessions::list`), the
+turn's return value, and the session-manager transcript (`session::messages`)
+the console renders. A consumer that fails or disappears never fails the turn.
+
+These replace the former iii-stream feeds `agent::events` and
+`claude::events`; the worker no longer needs iii-stream (see the guide
+"Migrate from iii-stream and pubsub"). The acp worker binds
+`claude::agent-event` for the brain `claude::run`; when it drives
+`run::start_and_wait` instead, start it with
+`--events-trigger-type claude::agent-event`.
 
 ## The agent on the bus
 
@@ -169,13 +222,14 @@ A **claude** page appears in the console nav; opening it starts a session. The
 first run installs the CLI and the skills, so it takes a minute. Answer the
 login prompt in the terminal, then ask Claude to build something on the engine
 — the workspace notes and the installed iii skills teach it how to register
-functions and triggers. Every prompt and tool call it runs is streamed onto
-`agent::events`, exactly like a `claude::run` turn.
+functions and triggers. Every prompt and tool call it runs is published on
+`claude::agent-event`, exactly like a `claude::run` turn.
 
 ```bash
 iii trigger claude::terminal::describe   # what a session runs, and where
 iii trigger shell::pty::sessions         # what is actually running
-iii trigger stream::list stream_name=agent::events
+iii trigger claude::status session_id=<session id>   # the session record
+iii trigger session::messages session_id=<session id> # the persisted transcript
 ```
 
 The page keeps a per-tab lease, so a reload or a pane move reattaches to the
@@ -309,7 +363,7 @@ and this worker still reaches them over the bus — but three things change:
   The worker probes for it and reports the answer as `activity_bridge` on
   `claude::terminal::describe` (empty = the hooks are installed but mute, and
   `detail` says so). That is the first thing to check if a terminal works
-  while `agent::events` stays empty.
+  while nothing arrives on `claude::agent-event`.
 
 For a terminal host with no one at the keyboard, the same two options apply:
 `claude setup-token` once (needs a browser once, returns a long-lived
@@ -328,8 +382,6 @@ defaults:
   cwd: ""                      # default working directory for runs
 
 approval_gate: false           # route tool permissions through policy::check_permissions
-events_stream: agent::events   # translated AgentEvent frames
-raw_events_stream: claude::events  # verbatim Claude Code messages
 claude_executable: ""          # path to the claude CLI; empty = SDK default resolution
 
 terminal:                      # the console terminal page — a DIFFERENT host: shell's
@@ -343,6 +395,10 @@ terminal:                      # the console terminal page — a DIFFERENT host:
 Settings live in the `configuration` worker under the **Claude Code** entry —
 edit them in the Console's global Settings modal; they hot-reload, and a change to the
 `terminal` block re-runs the workspace preparation for the next session.
+
+The event feeds are fixed trigger types, not settings. The former
+`events_stream` / `raw_events_stream` keys are ignored; a stored
+configuration that still carries them keeps loading.
 
 With `approval_gate: true` and the harness worker installed, every Claude Code tool call is checked against `policy::check_permissions` before it executes, fail-closed when the gate is unreachable, so the same YAML permission rules and console approval flow that govern native harness turns govern Claude Code.
 
@@ -376,12 +432,12 @@ those keys rather than in one covering span; a headless turn gets both.
 | Claude Code | iii |
 | --- | --- |
 | SDK `query()` turn | `claude::run` invocation |
-| every SDK message, verbatim | `claude::events` stream frame |
-| assistant message | `message_complete` frame on `agent::events` |
+| every SDK message, verbatim | `claude::raw-event` delivery |
+| assistant message | `message_complete` frame on `claude::agent-event` |
 | tool_use / tool_result | `function_execution_start` / `function_execution_end` frames |
 | final result | `turn_end` + `agent_end` frames, function return value |
 | session resume | engine state scope `claude_sessions`, keyed by iii session_id |
 | permission prompt | `canUseTool` -> `policy::check_permissions` (optional) |
 | extra capability | another iii worker on the bus (`shell`, `database`, `storage`, ...) |
 | interactive CLI session | `shell::pty` session on the injected **claude** console page |
-| terminal hook event | `claude::terminal::activity` -> the same `agent::events` frames |
+| terminal hook event | `claude::terminal::activity` -> the same `claude::agent-event` frames |

@@ -26,7 +26,7 @@ export type Prepared = {
   /**
    * The `iii` CLI on the terminal host, which is how the hooks reach the bus.
    * Empty means the hooks are installed but mute: the terminal works and
-   * nothing reaches `agent::events`. Worth knowing, because it is what breaks
+   * nothing reaches `claude::agent-event`. Worth knowing, because it is what breaks
    * first if the worker that owns the terminal moves into a guest of its own.
    */
   bridge: string;
@@ -69,7 +69,7 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
       }
       if (!bridge) {
         const mute =
-          'the `iii` CLI is not on the terminal host, so the activity hooks cannot reach the bus: the terminal works, but no turn will reach agent::events';
+          'the `iii` CLI is not on the terminal host, so the activity hooks cannot reach the bus: the terminal works, but no turn will reach claude::agent-event';
         console.warn(`claude-code: ${mute}`);
         detail = detail ? `${detail}; ${mute}` : mute;
       }

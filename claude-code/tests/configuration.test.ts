@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { loadConfig, runtimeJsonSchema, toRuntime } from '../src/config.js';
+import { loadConfig, RuntimeConfigSchema, runtimeJsonSchema, toRuntime } from '../src/config.js';
 import { fetchRuntime, registerClaudeConfig } from '../src/configuration.js';
 import { fakeIii } from './_helpers/fake-iii.js';
 
@@ -9,14 +9,36 @@ describe('configuration worker integration', () => {
     expect(schema.properties).toBeDefined();
     expect(schema.properties).not.toHaveProperty('engine_url');
     expect(schema.properties).toHaveProperty('defaults');
-    expect(schema.properties).toHaveProperty('raw_events_stream');
+    expect(schema.properties).toHaveProperty('iii_context');
+  });
+
+  it('keeps the removed stream-name keys only as deprecated, ignored properties', () => {
+    // The published schema is closed (additionalProperties: false), so a stored
+    // configuration that still carries them must keep validating.
+    const schema = runtimeJsonSchema() as {
+      additionalProperties?: unknown;
+      required?: string[];
+      properties: Record<string, { deprecated?: boolean; description?: string }>;
+    };
+    expect(schema.additionalProperties).toBe(false);
+    for (const key of ['events_stream', 'raw_events_stream']) {
+      expect(schema.properties[key]?.deprecated).toBe(true);
+      expect(schema.properties[key]?.description).toMatch(/^Deprecated, ignored/);
+      expect(schema.required ?? []).not.toContain(key);
+    }
+    const stored = RuntimeConfigSchema.parse({
+      events_stream: 'agent::events',
+      raw_events_stream: 'claude::events',
+    });
+    expect(stored.iii_context).toBe(true);
   });
 
   it('toRuntime drops engine_url, keeps the rest', async () => {
     const cfg = await loadConfig('/nonexistent/config.yaml');
     const rt = toRuntime(cfg) as Record<string, unknown>;
     expect(rt).not.toHaveProperty('engine_url');
-    expect(rt.raw_events_stream).toBe('claude::events');
+    expect(rt).not.toHaveProperty('raw_events_stream');
+    expect(rt).not.toHaveProperty('events_stream');
     expect(rt.iii_context).toBe(true);
   });
 
