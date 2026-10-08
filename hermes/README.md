@@ -1,6 +1,6 @@
 # hermes
 
-Hermes agent as an iii worker: the Hermes agent on the iii bus as functions, streams, and a trigger. `hermes::run` runs one headless Hermes turn carrying the iii runtime context, so the agent discovers and drives the whole engine live. `hermes::send` delivers to any of Hermes's 27+ messaging platforms (Telegram, Discord, Slack, WhatsApp, Teams, …). Inbound platform messages and webhook events land on the worker's HTTP sink and republish so any iii worker can react. The result: iii gains omnichannel reach wired to its entire function registry, with an iii-aware agent in between.
+Hermes agent as an iii worker: the Hermes agent on the iii bus as functions and trigger types. `hermes::run` runs one headless Hermes turn carrying the iii runtime context, so the agent discovers and drives the whole engine live. `hermes::send` delivers to any of Hermes's 27+ messaging platforms (Telegram, Discord, Slack, WhatsApp, Teams, …). Inbound platform messages and webhook events land on the worker's HTTP sink and republish on the `hermes::raw-event` trigger type so any iii worker can react. The result: iii gains omnichannel reach wired to its entire function registry, with an iii-aware agent in between.
 
 ## Install
 
@@ -21,7 +21,9 @@ Container worker (`deploy: image`) — the image bundles the Hermes CLI (Python 
 | `hermes::stop` | Interrupt a live run |
 | `run::start_and_wait` | Alias for `hermes::run` under the shared agent entrypoint |
 
-Trigger sink (HTTP): `hermes::inbound` — the Hermes gateway delivers inbound platform/webhook events here; the worker republishes them for other workers to react to.
+Trigger sink (HTTP): `hermes::inbound` — the Hermes gateway delivers inbound platform/webhook events here; the worker republishes them on `hermes::raw-event` for other workers to react to.
+
+Trigger types: `hermes::agent-event` (normalized turn frames) and `hermes::raw-event` (raw Hermes frames and inbound deliveries); see [Event feeds](#event-feeds).
 
 ## Quickstart
 
@@ -37,7 +39,7 @@ iii trigger hermes::sessions::list
 iii trigger hermes::run --help
 ```
 
-`hermes::run` returns `{session_id, result, usage, total_cost_usd, cost_source}`. Hermes records per-turn token counts (input / output / cache / reasoning) and cost in its own SQLite session store; `hermes -z` does not print them, so the worker reads the latest session row back after the turn and surfaces it on the result envelope, the session record, and the `agent_end` frame on `agent::events`.
+`hermes::run` returns `{session_id, result, usage, total_cost_usd, cost_source}`. Hermes records per-turn token counts (input / output / cache / reasoning) and cost in its own SQLite session store; `hermes -z` does not print them, so the worker reads the latest session row back after the turn and surfaces it on the result envelope, the session record, and the `agent_end` frame on `hermes::agent-event`.
 
 `iii trigger hermes::run --help` and `hermes::send --help` print the published request schemas as parameter tables:
 
@@ -66,7 +68,7 @@ A real turn over the bus (`pong`) and a live discovery turn where Hermes enumera
 The unique value over the other agent workers: Hermes is iii's gateway to 27+ chat platforms.
 
 ```text
-27 platforms ─▶ Hermes gateway ─▶ hermes::inbound (http) ─▶ republished
+27 platforms ─▶ Hermes gateway ─▶ hermes::inbound (http) ─▶ hermes::raw-event
                                                                     │ iii worker reacts,
                                                                     │ drives the bus
                                                                     ▼
@@ -84,12 +86,44 @@ defaults:
   model: ""                 # HERMES_INFERENCE_MODEL value; empty = Hermes default
   cwd: ""
 
-events_stream: agent::events       # translated AgentEvent frames
-raw_events_stream: hermes::events   # raw Hermes run output
 iii_context: true                   # prepend the iii runtime context on a fresh session
 hermes_executable: ""               # path to the hermes CLI; empty = resolve on PATH
 inbound_api_path: /hermes/inbound   # http path the gateway delivers inbound events to
 ```
+
+The event feeds have fixed trigger type ids (`hermes::agent-event`, `hermes::raw-event`), so there is nothing to configure for them. The former `events_stream` / `raw_events_stream` keys are ignored if an older config still carries them.
+
+## Event feeds
+
+The worker owns two trigger types. Bind a function to either one for a single session; frames of other sessions never reach it.
+
+| Trigger type | Frames |
+| --- | --- |
+| `hermes::agent-event` | Normalized AgentEvent frames: `turn_end`, then `agent_end` (final message, plus `usage` / `total_cost_usd` when Hermes recorded them) |
+| `hermes::raw-event` | Raw Hermes frames: `{type: "result", text, is_error}` per turn, and `{type: "inbound", body}` per gateway delivery (session = the delivery's `session_id`, else `chat_id`, else a fresh uuid) |
+
+Binding config (validated; an unknown key, a missing / empty / over-512-character `session_id` or a non-object `metadata` rejects the binding; at most 256 bindings per trigger type):
+
+```json
+{ "session_id": "sess-1", "metadata": { "optional": "echoed to the handler" } }
+```
+
+Each matching binding gets one fire-and-forget call with:
+
+```json
+{
+  "session_id": "sess-1",
+  "event_id": "sess-1-<epoch>-00000001",
+  "seq": 1,
+  "epoch": "<uuid>",
+  "source": "hermes",
+  "event": { "type": "agent_end", "messages": [] }
+}
+```
+
+`seq` counts from 0 per feed and session within one `epoch` (a new worker process starts a new epoch); order by `(epoch, seq)` and dedup by `event_id`, since deliveries may run concurrently. The binding's namespace is preserved, and `metadata` from the config (else the binding's) is forwarded. A failing consumer never fails the turn.
+
+The feeds are ephemeral: frames are neither stored nor replayed, and a consumer bound late never sees earlier frames. History lives in the session records (`hermes::status`, `hermes::sessions::list`) and the turn result `hermes::run` returns. These trigger types replace the former iii-stream feeds `agent::events` and `hermes::events` (see the guide "Migrate from iii-stream and pubsub").
 
 ## Scope
 
@@ -99,8 +133,8 @@ Exposes the agent loop, omnichannel send, and inbound events — not Hermes's du
 
 Live-verified against a running engine with the Hermes CLI and an Anthropic key: the agent loop (`hermes::run` / `start` / `status` / `sessions::list`), real turns (`pong`), live iii discovery (the agent runs `iii trigger engine::workers::list` itself), and session continuity (`--resume`) all work end to end. Two parts remain to finalize against a live messaging gateway:
 
-- **Events granularity** — Hermes one-shot (`hermes -z`) prints only the final response text, so `agent::events` carries `turn_end` + `agent_end` (the final message), not per-tool frames. A richer event stream depends on a Hermes mode that emits one.
-- **Inbound trigger contract** — `hermes::inbound` republishes raw deliveries today and binds via `http`; the exact gateway payload is mapped onto a dedicated `hermes::message` trigger type once verified against a running gateway.
+- **Events granularity** — Hermes one-shot (`hermes -z`) prints only the final response text, so `hermes::agent-event` carries `turn_end` + `agent_end` (the final message), not per-tool frames. A richer event feed depends on a Hermes mode that emits one.
+- **Inbound trigger contract** — `hermes::inbound` republishes raw deliveries on `hermes::raw-event` today and binds via `http`; the exact gateway payload is mapped onto a dedicated `hermes::message` trigger type once verified against a running gateway.
 
 ## Tool profile
 

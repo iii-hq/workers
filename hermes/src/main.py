@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 from iii import InitOptions, register_worker
 
+from .agent_feed import create_feeds
 from .handlers import create_handlers
 from .hooks import use_api
 
@@ -21,12 +22,15 @@ DEFAULTS: dict[str, Any] = {
     # can run the iii CLI for discovery), file, and code_execution. Set tools
     # to "" to fall back to the full Hermes default.
     "defaults": {"model": "", "cwd": "", "tools": "terminal,file,code_execution,web"},
-    "events_stream": "agent::events",
-    "raw_events_stream": "hermes::events",
     "iii_context": True,
     "hermes_executable": "",
     "inbound_api_path": "/hermes/inbound",
 }
+
+# Stream names of the removed iii-stream feeds. Configs written before the
+# owned trigger types (`hermes::agent-event` / `hermes::raw-event`) may still
+# carry them; they load fine and are dropped.
+LEGACY_CONFIG_KEYS = ("events_stream", "raw_events_stream")
 
 RUN_REQUEST_FORMAT = {
     "type": "object",
@@ -113,7 +117,7 @@ def load_config() -> dict[str, Any]:
         raw = yaml.safe_load(path.read_text()) or {}
     except FileNotFoundError:
         raw = {}
-    cfg.update({k: v for k, v in raw.items() if k != "defaults"})
+    cfg.update({k: v for k, v in raw.items() if k != "defaults" and k not in LEGACY_CONFIG_KEYS})
     cfg["defaults"].update(raw.get("defaults") or {})
     return cfg
 
@@ -135,7 +139,9 @@ def main() -> None:
     )
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("hermes")
-    handlers = create_handlers(iii, load_config, logger)
+    # Owned event feeds (replace the iii-stream `agent::events` / `hermes::events`).
+    feeds = create_feeds(iii)
+    handlers = create_handlers(iii, load_config, logger, feeds)
 
     iii.register_function(
         "hermes::run",
@@ -152,8 +158,9 @@ def main() -> None:
         "hermes::start",
         handlers["start"],
         description=(
-            "Start a Hermes turn and return immediately; watch agent::events "
-            "(group_id = session_id) for the result. Returns {session_id, started}."
+            "Start a Hermes turn and return immediately; bind hermes::agent-event with "
+            "{ session_id } for the turn_end / agent_end frames, or poll hermes::status. "
+            "Returns {session_id, started}."
         ),
         request_format=RUN_REQUEST_FORMAT,
         response_format=START_RESPONSE_FORMAT,

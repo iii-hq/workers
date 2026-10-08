@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from src import handlers as handlers_mod
-from src.handlers import _emit, create_handlers
+from src.agent_feed import AGENT_EVENT_TYPE, RAW_EVENT_TYPE
+from src.handlers import create_handlers
 from tests._helpers.fake_iii import FakeIii, FakeLogger, base_cfg
 
 
@@ -94,51 +95,54 @@ def test_stop_reports_not_interruptible(monkeypatch):
 
 def test_inbound_republishes_delivery(monkeypatch):
     fake, _, h = _make(monkeypatch)
+    fake.bind(RAW_EVENT_TYPE, "chat-7")
     req = SimpleNamespace(body={"session_id": "chat-7", "text": "hello"})
     resp = asyncio.run(h["inbound"](req, FakeLogger()))
     assert resp.model_dump(by_alias=True)["statusCode"] == 200
-    frames = fake.stream_frames("hermes::events")
-    assert frames[0]["group_id"] == "chat-7"
-    assert frames[0]["data"] == {"type": "inbound", "body": {"session_id": "chat-7", "text": "hello"}}
+    frames = fake.feed_frames(RAW_EVENT_TYPE)
+    assert frames[0]["session_id"] == "chat-7"
+    assert frames[0]["seq"] == 0
+    assert frames[0]["event"] == {"type": "inbound", "body": {"session_id": "chat-7", "text": "hello"}}
+    # inbound deliveries never touch the normalized feed
+    assert fake.feed_frames(AGENT_EVENT_TYPE) == []
 
 
-def test_inbound_derives_group_from_chat_id(monkeypatch):
+def test_inbound_derives_session_from_chat_id(monkeypatch):
     fake, _, h = _make(monkeypatch)
+    fake.bind(RAW_EVENT_TYPE, "tg-42")
     req = SimpleNamespace(body={"chat_id": "tg-42", "text": "hi"})
     asyncio.run(h["inbound"](req, FakeLogger()))
-    assert fake.stream_frames("hermes::events")[0]["group_id"] == "tg-42"
+    assert fake.feed_frames(RAW_EVENT_TYPE)[0]["session_id"] == "tg-42"
 
 
-def test_inbound_synthesizes_group_when_missing(monkeypatch):
+def test_inbound_synthesizes_session_when_missing(monkeypatch):
     fake, _, h = _make(monkeypatch)
+    monkeypatch.setattr(handlers_mod.uuid, "uuid4", lambda: "synth-1")
+    fake.bind(RAW_EVENT_TYPE, "synth-1")
     req = SimpleNamespace(body={"text": "hi"})
     asyncio.run(h["inbound"](req, FakeLogger()))
-    gid = fake.stream_frames("hermes::events")[0]["group_id"]
-    assert isinstance(gid, str) and len(gid) > 0
+    assert fake.feed_frames(RAW_EVENT_TYPE)[0]["session_id"] == "synth-1"
 
 
 def test_inbound_handles_empty_body(monkeypatch):
     fake, _, h = _make(monkeypatch)
+    monkeypatch.setattr(handlers_mod.uuid, "uuid4", lambda: "synth-2")
+    fake.bind(RAW_EVENT_TYPE, "synth-2")
     req = SimpleNamespace(body=None)
     resp = asyncio.run(h["inbound"](req, FakeLogger()))
     assert resp.model_dump(by_alias=True)["statusCode"] == 200
-    assert fake.stream_frames("hermes::events")[0]["data"]["body"] == {}
+    assert fake.feed_events(RAW_EVENT_TYPE)[0]["body"] == {}
 
 
-def test_emit_writes_stream_set_frame():
-    fake = FakeIii()
-    asyncio.run(_emit(fake, "agent::events", "s1", {"type": "agent_end"}))
-    frames = fake.stream_frames("agent::events")
-    assert frames[0]["group_id"] == "s1"
-    assert frames[0]["data"] == {"type": "agent_end"}
+def test_inbound_without_binding_makes_no_call(monkeypatch):
+    fake, _, h = _make(monkeypatch)
+    asyncio.run(h["inbound"](SimpleNamespace(body={"session_id": "chat-7"}), FakeLogger()))
+    assert fake.calls == []
 
 
-def test_emit_item_ids_monotonic_per_session():
-    fake = FakeIii()
-    for _ in range(3):
-        asyncio.run(_emit(fake, "agent::events", "s1", {"type": "x"}))
-    ids = [f["item_id"] for f in fake.stream_frames("agent::events")]
-    assert len(set(ids)) == 3 and ids == sorted(ids)
+def test_create_handlers_registers_both_feeds(monkeypatch):
+    fake, _, _ = _make(monkeypatch)
+    assert set(fake.trigger_types) == {AGENT_EVENT_TYPE, RAW_EVENT_TYPE}
 
 
 def test_create_handlers_exposes_full_surface(monkeypatch):
