@@ -41,6 +41,7 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { TokenIcon } from '../page/agent-fields'
+import { frontmatterBody } from '../page/frontmatter'
 import {
   type Choices,
   collisionHeadline,
@@ -559,7 +560,7 @@ export function SkillPreview({
           </Field>
         </dl>
       ) : null}
-      <MarkdownPreview markdown={content} className="dir-ui-preview dir-ui-kit-md" />
+      <MarkdownPreview markdown={frontmatterBody(content)} className="dir-ui-preview dir-ui-kit-md" />
     </div>
   )
 }

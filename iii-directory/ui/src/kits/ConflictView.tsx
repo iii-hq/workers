@@ -112,7 +112,8 @@ export function ConflictView({
       <div className="dir-ui-kit-conflict-choice">
         <SegmentedControl<Decision>
           variant="radio"
-          value={decision ?? 'merged'}
+          // No decision yet: nothing is selected (not even the merge).
+          value={(decision ?? '') as Decision}
           onChange={(d) => (d === 'merged' ? onChoose('merged', current) : onChoose(d))}
           options={file.options.map((d) => ({ value: d, label: decisionLabel(d, file), icon: false }))}
           className="dir-ui-kit-radio"

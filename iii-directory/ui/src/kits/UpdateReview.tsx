@@ -260,7 +260,7 @@ function stateFor(item: ChangeItem, plan: Plan, choices: Choices): { label: stri
 }
 
 function itemLabel(item: ChangeItem): string {
-  if (item.type === 'permissions') return 'what it grants'
+  if (item.type === 'permissions') return 'grants'
   if (item.type === 'worker') return item.worker.name
   return item.file.kind === 'agent' ? item.file.id : skillLabel(item.file)
 }

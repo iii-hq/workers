@@ -156,7 +156,7 @@ export function KitsView({
             <div className="dir-ui-kit-side-actions">
               {listing ? (
                 <span className="dir-ui-count" aria-live="polite">
-                  {listing.kits.length} installed
+                  {listing.kits.length} kit{listing.kits.length === 1 ? '' : 's'}
                   {listing.pending.length ? ` · ${listing.pending.length} to review` : ''}
                 </span>
               ) : (
