@@ -189,13 +189,13 @@ If you only need the new value inside the same function that wrote it, call
 
 ### How to bind
 
-1. Register a handler: `registerFunction('stream::on-change', handler)`.
+1. Register a handler: `registerFunction('consumer::on-my-worker-change', handler)`.
 2. Register the trigger:
 
 ```typescript
 iii.registerTrigger({
   type: 'my-worker',
-  function_id: 'stream::on-change',
+  function_id: 'consumer::on-my-worker-change',
   config: {
     // optional filters — see get function info on the trigger type
   },
