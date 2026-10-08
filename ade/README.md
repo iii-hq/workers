@@ -170,7 +170,7 @@ Full-fledged OpenTelemetry explorer over `engine::traces::*` and `engine::logs::
 - **Rich filtering** — status, time presets, min/max duration, arbitrary attribute key/value pairs, debounced free-text search, saved views
 - **Group by** — server-side aggregation with lazy per-group member expansion
 - **Span detail tabs** — info, attributes, events, errors, OTel logs, context (baggage), links
-- **Live streaming** — spans append over iii streams (`iii:devtools:*`) instead of polling; one seed read, then append
+- **Live updates** — the engine's coalesced `trace` trigger (trace ids only) drives a re-read of the touched traces; one seed read, then notify-then-query, no polling and no stream worker
 
 ### Worktrees
 

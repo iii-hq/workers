@@ -16,7 +16,6 @@ Required environment:
 Optional environment:
   NAMESPACED_PROVIDER_FIXTURE_ROOT
   NAMESPACED_PROVIDER_ENGINE_PORT
-  NAMESPACED_PROVIDER_STREAM_PORT
   NAMESPACED_PROVIDER_CONSOLE_PORT
   NAMESPACED_PROVIDER_SPA_PORT
   NAMESPACED_PROVIDER_CONFIGURATION_ID
@@ -128,7 +127,7 @@ try:
     queue_bin = required("QUEUE_BIN")
     harness_bin = required("HARNESS_BIN")
     console_binary = required("CONSOLE_BIN")
-    for reservation_name in ("ENGINE", "STREAM", "CONSOLE", "SPA"):
+    for reservation_name in ("ENGINE", "CONSOLE", "SPA"):
         environment_name = f"NAMESPACED_PROVIDER_{reservation_name}_PORT"
         reservations[reservation_name.lower()] = reserve_loopback_port(
             environment_name,
@@ -141,11 +140,9 @@ except BaseException:
     raise
 all_reservations = tuple(reservations.values())
 engine_port = reservations["engine"].port
-stream_port = reservations["stream"].port
 console_port = reservations["console"].port
 spa_port = reservations["spa"].port
 engine_url = f"ws://127.0.0.1:{engine_port}"
-stream_url = f"ws://127.0.0.1:{stream_port}"
 backend_url = f"http://127.0.0.1:{console_port}"
 console_url = f"http://127.0.0.1:{spa_port}"
 web_dir = Path(os.environ.get("WEB_DIR", str(HERE.parent))).resolve()
@@ -172,21 +169,6 @@ provider_id = os.environ.get("NAMESPACED_PROVIDER_PROVIDER_ID", "openai-codex")
     encoding="utf-8",
 )
 config_path = ROOT / "config" / f"{configuration_id}.yaml"
-(ROOT / "config" / "iii-stream.yaml").write_text(
-    "\n".join(
-        [
-            "id: iii-stream",
-            "name: Stream",
-            "description: namespaced stream fixture",
-            "value:",
-            "  auth_function: null",
-            "  host: 127.0.0.1",
-            f"  port: {stream_port}",
-            "",
-        ]
-    ),
-    encoding="utf-8",
-)
 (ROOT / "config" / "default-ade.yaml").write_text(
     "\n".join(
         [
@@ -243,10 +225,6 @@ engine_config.write_text(
                             "config": {"directory": str(ROOT / "config")},
                         }
                     },
-                },
-                {
-                    "name": "iii-stream",
-                    "config": {"host": "127.0.0.1", "port": stream_port},
                 },
             ]
         },
@@ -494,10 +472,9 @@ try:
     engine = spawn(
         "engine",
         [engine_binary, "--no-update-check", "--config", str(engine_config)],
-        release=(reservations["engine"], reservations["stream"]),
+        release=(reservations["engine"],),
     )
     wait_tcp(engine_url, "engine", engine, reservations["engine"])
-    wait_tcp(stream_url, "stream", engine, reservations["stream"])
     spawn("state", [state_bin, "--url", engine_url, "--config", str(state_seed)])
     spawn(
         "router",
@@ -557,7 +534,6 @@ try:
                 "engine_url": engine_url,
                 "console_url": console_url,
                 "console_backend_url": backend_url,
-                "stream_url": f"ws://127.0.0.1:{stream_port}",
                 "configuration_id": configuration_id,
                 "provider_id": provider_id,
                 "root": str(ROOT),

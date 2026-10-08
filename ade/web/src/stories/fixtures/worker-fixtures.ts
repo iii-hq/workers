@@ -44,7 +44,6 @@ export const workerListDone = base(
       { name: 'iii-directory', pid: 19052, running: true, version: '0.5.2' },
       { name: 'iii-queue', pid: null, running: true, version: '0.11.6' },
       { name: 'iii-state', pid: null, running: true, version: '0.11.6' },
-      { name: 'iii-stream', pid: null, running: true, version: '0.11.6' },
       { name: 'iii-http', pid: null, running: false, version: '0.11.6' },
     ],
   }),
@@ -182,8 +181,8 @@ export const workerStartDone = base(
 export const workerStartNoPid = base(
   'worker-start-no-pid',
   'worker::start',
-  { name: 'iii-stream' },
-  { name: 'iii-stream', pid: null, port: null },
+  { name: 'iii-observability' },
+  { name: 'iii-observability', pid: null, port: null },
 )
 
 /* ---------------- worker::stop ---------------- */
@@ -268,7 +267,7 @@ export const workerRemoveAll = base(
   'worker-remove-all',
   'worker::remove',
   { all: true, yes: true },
-  { removed: ['pdfkit', 'iii-stream', 'todo-app'] },
+  { removed: ['pdfkit', 'iii-http', 'todo-app'] },
 )
 
 export const workerRemoveNothing = base(
@@ -283,11 +282,11 @@ export const workerRemoveNothing = base(
 export const workerUpdateDone = base(
   'worker-update',
   'worker::update',
-  { names: ['pdfkit', 'iii-stream'] },
+  { names: ['pdfkit', 'iii-http'] },
   wrapHarness({
     updated: [
       { name: 'pdfkit', from_version: '1.0.0', to_version: '1.1.0' },
-      { name: 'iii-stream', from_version: '0.11.6', to_version: '0.12.0' },
+      { name: 'iii-http', from_version: '0.11.6', to_version: '0.12.0' },
     ],
   }),
 )
@@ -305,7 +304,7 @@ export const workerClearDone = base(
   'worker-clear',
   'worker::clear',
   { all: true, yes: true },
-  wrapHarness({ cleared: ['pdfkit', 'iii-stream'] }),
+  wrapHarness({ cleared: ['pdfkit', 'iii-http'] }),
 )
 
 /* ---------------- error fixture ---------------- */
