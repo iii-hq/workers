@@ -10,19 +10,19 @@ use tokio::sync::watch;
 type CallKey = (String, String);
 
 #[derive(Default)]
-pub(crate) struct CancellationRegistry {
+pub struct CancellationRegistry {
     calls: Mutex<HashMap<CallKey, watch::Sender<bool>>>,
 }
 
 /// The sole owner of a registration. Cancellation signals but does not remove
 /// it, so its ID cannot be reused until the call actually finishes or is dropped.
-pub(crate) struct CallGuard {
+pub struct CallGuard {
     registration: Option<(Arc<CancellationRegistry>, CallKey)>,
     signal: Option<watch::Receiver<bool>>,
 }
 
 impl CancellationRegistry {
-    pub(crate) fn start(
+    pub fn start(
         self: &Arc<Self>,
         caller: Option<&str>,
         id: Option<&str>,
@@ -48,7 +48,7 @@ impl CancellationRegistry {
         }
     }
 
-    pub(crate) fn cancel(&self, caller: Option<&str>, id: &str) -> Result<bool, ErrorCode> {
+    pub fn cancel(&self, caller: Option<&str>, id: &str) -> Result<bool, ErrorCode> {
         let key = call_key(caller, id)?;
         let calls = self.calls.lock().expect("cancellation registry lock");
         let Some(signal) = calls.get(&key) else {
@@ -60,7 +60,7 @@ impl CancellationRegistry {
 }
 
 impl CallGuard {
-    pub(crate) async fn cancelled(&mut self) {
+    pub async fn cancelled(&mut self) {
         if let Some(signal) = &mut self.signal {
             // wait_for checks the current value before sleeping. A cancellation
             // sent before the first poll (or between select! calls) stays set.

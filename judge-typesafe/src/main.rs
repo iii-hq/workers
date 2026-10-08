@@ -47,7 +47,11 @@ async fn main() -> anyhow::Result<()> {
             .map_err(anyhow::Error::msg)?,
     );
     let secrets = register(&iii, config.clone(), client);
-    judge_typesafe::secrets::register_secret_trigger(&iii, secrets);
+    judge_provider::secrets::register_secret_trigger(
+        &iii,
+        secrets,
+        judge_typesafe::SECRET_CHANGED_ID,
+    );
     #[cfg(feature = "console-ui")]
     register::register_console_ui(&iii);
     configuration::register_config_trigger(&iii, config)?

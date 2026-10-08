@@ -2,7 +2,8 @@
 //! (`secrets::resolve`) at call time, never sent upstream as a key. Resolved values stay
 //! in memory, are re-read after a TTL or when `secrets::changed` names them, are wiped
 //! when replaced, and are never logged. A reference that does not resolve is an error
-//! with an actionable reason: it never falls back to TYPESAFE_API_KEY.
+//! with an actionable reason: it never falls back to the worker's environment key.
+//! Any other `scheme://` value is rejected the same way, never sent as a literal key.
 use iii_sdk::{
     errors::Error,
     protocol::{RegisterTriggerInput, TriggerRequest},
@@ -20,11 +21,8 @@ use std::{
 };
 
 pub const SCHEME: &str = "secret://";
-pub const CHANGED_FN_ID: &str = "judge-typesafe::on-secret-change";
 const RESOLVE_ID: &str = "secrets::resolve";
 const CHANGED_TRIGGER_TYPE: &str = "secrets::changed";
-/// The worker name a secret's `consumers` must list for this worker to read it.
-const CONSUMER: &str = "judge-typesafe";
 /// A missing secrets worker answers `function_not_found` at once; this bounds a hung one.
 const RESOLVE_TIMEOUT_MS: u64 = 3_000;
 /// Re-read a resolved value at least this often, bounding staleness if an event is missed.
@@ -52,6 +50,15 @@ pub fn parse_ref(value: &str) -> Option<Result<&str, SecretError>> {
     } else {
         Err(SecretError::InvalidReference)
     })
+}
+
+/// The scheme of a `scheme://…` value, matching `^[A-Za-z][A-Za-z0-9+.-]*://`.
+fn scheme(value: &str) -> Option<&str> {
+    let (scheme, _) = value.trim().split_once("://")?;
+    let mut chars = scheme.chars();
+    (chars.next()?.is_ascii_alphabetic()
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')))
+    .then_some(scheme)
 }
 
 /// A resolved value: redacted in `Debug`, overwritten on drop (best effort, no extra
@@ -113,14 +120,15 @@ impl SecretError {
         }
     }
     /// What an operator should do, naming the secret but never a value. A malformed
-    /// reference is not echoed: it may be a pasted key.
-    pub fn describe(&self, name: &str) -> String {
+    /// reference is not echoed: it may be a pasted key. `consumer` is the worker name
+    /// a secret's `consumers` must list for this worker to read it.
+    pub fn describe(&self, name: &str, consumer: &str) -> String {
         match self {
             Self::NotFound => format!(
                 "secret {name} not found in the secrets worker; store it there or fix the reference"
             ),
             Self::Forbidden => format!(
-                "{CONSUMER} is not allowed to read secret {name}; add {CONSUMER} to the secret's consumers"
+                "{consumer} is not allowed to read secret {name}; add {consumer} to the secret's consumers"
             ),
             Self::InvalidReference => format!(
                 "api_key holds a malformed secret reference; the name after {SCHEME} must match \
@@ -172,29 +180,39 @@ struct Entry {
 pub struct SecretCache {
     fetch: Fetch,
     entries: Mutex<HashMap<String, Entry>>,
+    consumer: &'static str,
 }
 impl SecretCache {
-    pub fn new(fetch: Fetch) -> Self {
+    /// `consumer` is this worker's name, as a secret's `consumers` must list it.
+    pub fn new(fetch: Fetch, consumer: &'static str) -> Self {
         Self {
             fetch,
             entries: Mutex::default(),
+            consumer,
         }
     }
 
     /// The key a call uses: `Ok(None)` when unset (the boot key applies), the literal
-    /// key, or a resolved reference. `Err` is the actionable reason a reference failed.
+    /// key, or a resolved reference. `Err` is the actionable reason a reference failed
+    /// or a `scheme://` value is unsupported.
     pub async fn configured_key(&self, api_key: Option<&str>) -> Result<Option<String>, String> {
         let Some(api_key) = api_key else {
             return Ok(None);
         };
         match parse_ref(api_key) {
-            None => Ok(Some(api_key.to_owned())),
-            Some(Err(error)) => Err(error.describe("")),
+            None => match scheme(api_key) {
+                // Only the scheme is echoed: the rest may be a pasted key.
+                Some(scheme) => Err(format!(
+                    "api_key uses an unsupported {scheme}:// reference; use {SCHEME}NAME"
+                )),
+                None => Ok(Some(api_key.to_owned())),
+            },
+            Some(Err(error)) => Err(error.describe("", self.consumer)),
             Some(Ok(name)) => self
                 .resolve(name)
                 .await
                 .map(Some)
-                .map_err(|error| error.describe(name)),
+                .map_err(|error| error.describe(name, self.consumer)),
         }
     }
 
@@ -261,12 +279,13 @@ pub struct SecretChangedResponse {
     pub ok: bool,
 }
 
-/// Evict the named secret on `secrets::changed`. The type belongs to the optional
-/// `secrets` worker: when it is absent the engine parks this binding and activates it
-/// once the type registers, so nothing retries here; the TTLs bound staleness.
-pub fn register_secret_trigger(iii: &IIIClient, cache: Arc<SecretCache>) {
+/// Register `fn_id` (`<worker>::on-secret-change`) to evict the named secret on
+/// `secrets::changed`. The type belongs to the optional `secrets` worker: when it is
+/// absent the engine parks this binding and activates it once the type registers, so
+/// nothing retries here; the TTLs bound staleness.
+pub fn register_secret_trigger(iii: &IIIClient, cache: Arc<SecretCache>, fn_id: &str) {
     iii.register_function(
-        CHANGED_FN_ID,
+        fn_id,
         RegisterFunction::new_async(move |event: SecretChangedEvent| {
             let cache = cache.clone();
             async move {
@@ -287,7 +306,7 @@ pub fn register_secret_trigger(iii: &IIIClient, cache: Arc<SecretCache>) {
     );
     if let Err(error) = iii.register_trigger(RegisterTriggerInput::new(
         CHANGED_TRIGGER_TYPE,
-        CHANGED_FN_ID,
+        fn_id,
         json!({}),
     )) {
         tracing::warn!(%error, "binding secrets::changed failed; secret:// keys refresh on their TTL only");
@@ -364,7 +383,7 @@ mod tests {
             SecretError::Unavailable
         );
         assert_eq!(
-            SecretError::Forbidden.describe("TYPESAFE_API_KEY"),
+            SecretError::Forbidden.describe("TYPESAFE_API_KEY", "judge-typesafe"),
             "judge-typesafe is not allowed to read secret TYPESAFE_API_KEY; add judge-typesafe to the secret's consumers"
         );
     }
@@ -380,7 +399,7 @@ mod tests {
     async fn configured_keys_resolve_cache_evict_and_never_fall_back() {
         let answers: Arc<Mutex<HashMap<String, Result<String, SecretError>>>> = Arc::default();
         let calls: Arc<Mutex<u32>> = Arc::default();
-        let cache = SecretCache::new(fake(answers.clone(), calls.clone()));
+        let cache = SecretCache::new(fake(answers.clone(), calls.clone()), "judge-typesafe");
         let set = |outcome: Result<&str, SecretError>| {
             answers
                 .lock()
@@ -442,5 +461,32 @@ mod tests {
             error.contains("add judge-typesafe to the secret's consumers"),
             "{error}"
         );
+    }
+
+    #[tokio::test]
+    async fn unsupported_schemes_are_errors_that_echo_only_the_scheme() {
+        let calls: Arc<Mutex<u32>> = Arc::default();
+        let cache = SecretCache::new(fake(Arc::default(), calls.clone()), "judge-openai");
+        for (value, scheme) in [
+            ("env://X", "env"),
+            ("ENV://x", "ENV"),
+            (" vault+kv://sk-123 ", "vault+kv"),
+        ] {
+            assert_eq!(
+                cache.configured_key(Some(value)).await,
+                Err(format!(
+                    "api_key uses an unsupported {scheme}:// reference; use secret://NAME"
+                )),
+                "{value}"
+            );
+        }
+        // Not a scheme: still a literal key.
+        for literal in ["9x://y", "sk-live", "a:b://c"] {
+            assert_eq!(
+                cache.configured_key(Some(literal)).await,
+                Ok(Some(literal.into()))
+            );
+        }
+        assert_eq!(*calls.lock().unwrap(), 0);
     }
 }

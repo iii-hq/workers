@@ -107,7 +107,10 @@ resolve returns `missing_key` with `provider_error.message` naming the fix
 (`secret NAME not found in the secrets worker`, `judge-typesafe is not allowed to
 read secret NAME; add judge-typesafe to the secret's consumers`, `secrets worker is
 not running`) and never falls back to `TYPESAFE_API_KEY`. The reference itself is
-not secret; never paste a key after `secret://`.
+not secret; never paste a key after `secret://`. Any other `scheme://` value, such
+as `env://TYPESAFE_API_KEY`, is not sent as a literal key either: it returns
+`missing_key` with `api_key uses an unsupported env:// reference; use
+secret://NAME`, which echoes only the scheme, and also never falls back.
 The form retains unknown values when editing other fields and shows errors
 returned by the configuration service; a `${TYPESAFE_API_KEY}` value expands in
 the configuration service's environment instead of this process.

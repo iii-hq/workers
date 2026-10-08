@@ -160,10 +160,16 @@ Retries are the provider's policy, not the caller's. `judge-typesafe` follows
 the TypeSafe SDK defaults: two retries after the first attempt on HTTP 408, 429
 and 5xx, connection failures and attempt timeouts; exponential backoff from
 500 ms, capped at 5 s, minus up to 25% jitter; a server `retry-after-ms` or
-`Retry-After` (delta-seconds or HTTP date) up to 60 s is honored instead.
-Backoff releases the shared HTTP permit, the whole-call deadline bounds every
-wait, and exhaustion returns the final provider error. Requests never carry
-credentials, provider URLs or extra HTTP headers.
+`Retry-After` (delta-seconds or HTTP date) is honored instead. A hint longer
+than 60 s or than the remaining whole-call budget is not waited out: the call
+returns `http` at once with the `http_status` and `retry_after_ms`. A 429 that
+reports exhausted billing is final: `error.type` `insufficient_quota`, or an
+`error.code` of `insufficient_quota`, `credit_balance_exhausted`,
+`organization_spend_limit_exceeded`, `project_spend_limit_exceeded` or
+`organization_usage_limit_exceeded`. Backoff releases the shared HTTP permit,
+the whole-call deadline bounds every wait, and exhaustion returns the final
+provider error. Requests never carry credentials, provider URLs or extra HTTP
+headers.
 
 ## Handle results and failures
 
@@ -259,7 +265,9 @@ text, malformed JSON and oversized provider error bodies still report `code:
 "http"` and the HTTP status. Malformed escaped diagnostics that cannot be safely
 sanitized are omitted; `truncated` identifies clipped or omitted diagnostics.
 `retry_after_ms` is the parsed provider hint, when available, rather than a promise
-that another attempt will occur.
+that another attempt will occur. A hint that does not fit the remaining budget
+or the 60 s cap ends the call with this error immediately instead of a later
+`deadline`, so the caller can back off for that long.
 If reading an error body reaches the attempt deadline after headers arrive,
 the known HTTP status and retry hint still govern retries; incomplete diagnostics
 are marked truncated. Expiring the whole-call deadline still stops the call.

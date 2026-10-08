@@ -1,12 +1,14 @@
 //! Bounded provider HTTP requests and retries.
 
-use crate::client::ExecutionLimits;
-use judge_contract::{ErrorCode, ProviderError, RequestOptions};
+use judge_contract::{
+    ErrorCode, ProviderError, RequestOptions, DEFAULT_MAX_REQUEST_BYTES,
+    DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_TIMEOUT_MS,
+};
 use reqwest::header::HeaderMap;
 use serde_json::Value;
 use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    time::{Duration, SystemTime},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     sync::Semaphore,
@@ -14,6 +16,51 @@ use tokio::{
 };
 
 const MAX_ERROR_BYTES: usize = 64 * 1024;
+/// Billing `error.code`s on a 429: retrying cannot help until someone pays or
+/// raises the limit.
+const BILLING_CODES: [&str; 5] = [
+    "insufficient_quota",
+    "credit_balance_exhausted",
+    "organization_spend_limit_exceeded",
+    "project_spend_limit_exceeded",
+    "organization_usage_limit_exceeded",
+];
+
+/// Independent request/response byte guards and a whole-call deadline ceiling.
+#[derive(Clone, Copy, Debug)]
+pub struct ExecutionLimits {
+    pub max_request_bytes: usize,
+    pub max_response_bytes: usize,
+    pub max_timeout_ms: u64,
+}
+
+impl Default for ExecutionLimits {
+    fn default() -> Self {
+        Self {
+            max_request_bytes: DEFAULT_MAX_REQUEST_BYTES,
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+            max_timeout_ms: DEFAULT_MAX_TIMEOUT_MS,
+        }
+    }
+}
+
+impl ExecutionLimits {
+    pub fn validate(self) -> Result<(), ErrorCode> {
+        if self.max_request_bytes == 0
+            || self.max_response_bytes == 0
+            || self.max_request_bytes > isize::MAX as usize
+            || self.max_response_bytes > isize::MAX as usize
+            || self.max_timeout_ms == 0
+            || i64::try_from(self.max_timeout_ms).is_err()
+            || Instant::now()
+                .checked_add(Duration::from_millis(self.max_timeout_ms))
+                .is_none()
+        {
+            return Err(ErrorCode::InvalidRequest);
+        }
+        Ok(())
+    }
+}
 
 /// Retry policy after the official TypeSafe SDK defaults. Not a caller knob;
 /// tests inject faster variants.
@@ -22,7 +69,7 @@ pub struct RetryPolicy {
     pub max_retries: u32,
     pub backoff_initial_ms: u64,
     pub backoff_max_ms: u64,
-    /// Server `Retry-After` hints above this fall back to backoff.
+    /// Server `Retry-After` hints above this end the call instead of waiting.
     pub max_retry_after_ms: u64,
 }
 pub const DEFAULT_RETRY: RetryPolicy = RetryPolicy {
@@ -33,11 +80,11 @@ pub const DEFAULT_RETRY: RetryPolicy = RetryPolicy {
 };
 
 #[derive(Debug)]
-pub(crate) struct Failure {
-    pub(crate) code: ErrorCode,
-    pub(crate) http_status: Option<u16>,
-    pub(crate) provider_error: Option<ProviderError>,
-    pub(crate) retry_after_ms: Option<u64>,
+pub struct Failure {
+    pub code: ErrorCode,
+    pub http_status: Option<u16>,
+    pub provider_error: Option<ProviderError>,
+    pub retry_after_ms: Option<u64>,
 }
 
 impl From<ErrorCode> for Failure {
@@ -51,7 +98,7 @@ impl From<ErrorCode> for Failure {
     }
 }
 
-pub(crate) fn validate_options(
+pub fn validate_options(
     options: &RequestOptions,
     limits: ExecutionLimits,
 ) -> Result<(), ErrorCode> {
@@ -85,7 +132,7 @@ impl Drop for InFlight<'_> {
 }
 
 #[allow(clippy::too_many_arguments)] // Shared transport boundary used by both client operations.
-pub(crate) async fn send_http(
+pub async fn send_http(
     http: &reqwest::Client,
     permits: &Semaphore,
     key: &str,
@@ -152,6 +199,18 @@ pub(crate) async fn send_http(
                     if attempt == retry.max_retries || !retryable(&failure) {
                         return Err(failure);
                     }
+                    // Return a hint that outlasts the remaining budget or the policy
+                    // cap at once: waiting could only end in `deadline`, and an
+                    // earlier retry ignores the server. Compare durations; a
+                    // saturated hint must never be added to an Instant.
+                    if failure.retry_after_ms.is_some_and(|ms| {
+                        Duration::from_millis(ms)
+                            > deadline
+                                .saturating_duration_since(Instant::now())
+                                .min(Duration::from_millis(retry.max_retry_after_ms))
+                    }) {
+                        return Err(failure);
+                    }
                     sleep(Duration::from_millis(retry_delay(
                         &retry,
                         attempt,
@@ -167,12 +226,42 @@ pub(crate) async fn send_http(
     .unwrap_or_else(|_| Err(ErrorCode::Deadline.into()))
 }
 
-pub(crate) fn check_deadline(deadline: Instant) -> Result<(), ErrorCode> {
+pub fn check_deadline(deadline: Instant) -> Result<(), ErrorCode> {
     if Instant::now() >= deadline {
         Err(ErrorCode::Deadline)
     } else {
         Ok(())
     }
+}
+
+/// The whole-call deadline: `timeout_ms` after `started`, or the absolute
+/// `expires_at_unix_ms` when that comes first.
+pub fn deadline(
+    limits: ExecutionLimits,
+    started: Instant,
+    timeout_ms: u64,
+    expires_at_unix_ms: Option<u64>,
+) -> Result<Instant, ErrorCode> {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let remaining_ms = expires_at_unix_ms
+        .map(|expiry| u128::from(expiry).saturating_sub(now_ms))
+        .unwrap_or(u128::MAX);
+    // Absolute expiry wins, while invalid relative timeouts stay validation errors.
+    if remaining_ms == 0 {
+        return Err(ErrorCode::Deadline);
+    }
+    limits.validate()?;
+    if !(1..=limits.max_timeout_ms).contains(&timeout_ms) {
+        return Err(ErrorCode::InvalidRequest);
+    }
+    let budget_ms = u64::try_from(remaining_ms.min(u128::from(timeout_ms)))
+        .map_err(|_| ErrorCode::InvalidRequest)?;
+    started
+        .checked_add(Duration::from_millis(budget_ms))
+        .ok_or(ErrorCode::InvalidRequest)
 }
 
 fn transport_error(error: reqwest::Error) -> Failure {
@@ -249,15 +338,34 @@ async fn http_failure(
     }
 }
 
-/// 408/429/5xx, connection failures and attempt timeouts; everything else is final.
+/// 408/429/5xx, connection failures and attempt timeouts; everything else is
+/// final, including a 429 that reports exhausted credit or quota.
 fn retryable(failure: &Failure) -> bool {
     match failure.code {
-        ErrorCode::Http => failure
-            .http_status
-            .is_some_and(|status| matches!(status, 408 | 429 | 500..=599)),
+        ErrorCode::Http => match failure.http_status {
+            Some(429) => !billing(failure),
+            Some(status) => matches!(status, 408 | 500..=599),
+            None => false,
+        },
         ErrorCode::Transport | ErrorCode::AttemptTimeout => true,
         _ => false,
     }
+}
+
+/// `{"error": {"type": "insufficient_quota"}}` or a billing `error.code`, read
+/// from the redacted body already kept as `provider_error.detail`.
+fn billing(failure: &Failure) -> bool {
+    let Some(error) = failure
+        .provider_error
+        .as_ref()
+        .and_then(|error| error.detail.as_ref())
+        .and_then(|detail| detail.get("error"))
+    else {
+        return false;
+    };
+    let field = |name| error.get(name).and_then(Value::as_str);
+    field("type") == Some("insufficient_quota")
+        || field("code").is_some_and(|code| BILLING_CODES.contains(&code))
 }
 
 /// Honored server hint, else capped exponential backoff minus up to 25% jitter.
@@ -419,7 +527,6 @@ impl Redactor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::ExecutionLimits;
     use judge_contract::{ErrorCode, RequestOptions};
     use reqwest::header::HeaderValue;
     use serde_json::json;
@@ -885,10 +992,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transport_releases_permit_during_backoff_and_total_deadline_stops_retry() {
+    async fn transport_releases_permit_during_backoff_and_unfitting_hint_stops_retry() {
         let server = Server::start(|_| {
             let mut reply = Reply::new(429, "busy");
-            reply.headers = "retry-after-ms: 500\r\n".into();
+            reply.headers = "retry-after-ms: 200\r\n".into();
             reply
         })
         .await;
@@ -898,6 +1005,8 @@ mod tests {
         let attempts = AtomicUsize::new(0);
         let unknown = AtomicBool::new(false);
         let options = options();
+        // The first hint fits the budget; the second no longer does.
+        let deadline = Instant::now() + Duration::from_millis(300);
         let future = send_http(
             &http,
             &permits,
@@ -905,7 +1014,7 @@ mod tests {
             ExecutionLimits::default(),
             &options,
             fast(2),
-            Instant::now() + Duration::from_millis(100),
+            deadline,
             &attempts,
             &unknown,
             || Ok(http.get(&server.url)),
@@ -917,16 +1026,107 @@ mod tests {
                 while server.requests.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
                 let other_attempts = AtomicUsize::new(0);
                 let other_unknown = AtomicBool::new(false);
-                let result = send_http(&http, &permits, "key", ExecutionLimits::default(), &RequestOptions::default(), fast(0), Instant::now() + Duration::from_millis(70), &other_attempts, &other_unknown, || Ok(http.get(&unrelated.url))).await;
+                let result = send_http(&http, &permits, "key", ExecutionLimits::default(), &RequestOptions::default(), fast(0), Instant::now() + Duration::from_millis(150), &other_attempts, &other_unknown, || Ok(http.get(&unrelated.url))).await;
                 assert_eq!(result.unwrap(), b"available");
                 assert_eq!(attempts.load(Ordering::SeqCst), 1);
                 assert_eq!(other_attempts.load(Ordering::SeqCst), 1);
             } => {}
         }
-        assert_eq!(future.await.unwrap_err().code, ErrorCode::Deadline);
-        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let failure = future.await.unwrap_err();
+        assert!(
+            Instant::now() < deadline,
+            "the unfitting hint returns at once"
+        );
+        assert_eq!(
+            (failure.code, failure.http_status, failure.retry_after_ms),
+            (ErrorCode::Http, Some(429), Some(200))
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
         assert!(!unknown.load(Ordering::SeqCst));
         assert_eq!(permits.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn transport_returns_hints_past_the_budget_or_cap_at_once() {
+        for (hint, budget) in [
+            // Past the remaining budget.
+            ("500", Duration::from_millis(100)),
+            // Inside the budget but past the 60 s policy cap.
+            ("90000", Duration::from_secs(300)),
+            // Saturated: comparing must not overflow an Instant.
+            ("18446744073709551615", Duration::from_secs(300)),
+        ] {
+            let server = Server::start(move |_| {
+                let mut reply = Reply::new(429, "busy");
+                reply.headers = format!("retry-after-ms: {hint}\r\n");
+                reply
+            })
+            .await;
+            let http = client();
+            let permits = Semaphore::new(1);
+            let attempts = AtomicUsize::new(0);
+            let unknown = AtomicBool::new(false);
+            let options = options();
+            let deadline = Instant::now() + budget;
+            let failure = timeout(
+                Duration::from_secs(5),
+                send_http(
+                    &http,
+                    &permits,
+                    "key",
+                    ExecutionLimits::default(),
+                    &options,
+                    fast(2),
+                    deadline,
+                    &attempts,
+                    &unknown,
+                    || Ok(http.get(&server.url)),
+                ),
+            )
+            .await
+            .expect("no wait for the hint")
+            .unwrap_err();
+            assert!(Instant::now() < deadline, "{hint}");
+            assert_eq!(
+                (failure.code, failure.http_status, failure.retry_after_ms),
+                (ErrorCode::Http, Some(429), Some(hint.parse().unwrap())),
+                "{hint}"
+            );
+            assert_eq!(attempts.load(Ordering::SeqCst), 1, "{hint}");
+            assert!(!unknown.load(Ordering::SeqCst));
+            assert_eq!(permits.available_permits(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn transport_billing_429_is_final_and_rate_limits_still_retry() {
+        let mut cases = vec![(
+            json!({"error": {"type": "insufficient_quota", "code": null}}),
+            1,
+        )];
+        for code in BILLING_CODES {
+            cases.push((json!({"error": {"type": "requests", "code": code}}), 1));
+        }
+        cases.push((
+            json!({"error": {"type": "requests", "code": "rate_limit_exceeded"}}),
+            3,
+        ));
+        for (body, expected_attempts) in cases {
+            let wire = body.to_string();
+            let server = Server::start(move |_| {
+                let mut reply = Reply::new(429, wire.clone());
+                reply.headers = "retry-after-ms: 0\r\n".into();
+                reply
+            })
+            .await;
+            let (result, attempts, unknown) =
+                call_with(&server, &options(), fast(2), ExecutionLimits::default()).await;
+            let failure = result.unwrap_err();
+            assert_eq!(failure.http_status, Some(429), "{body}");
+            assert_eq!(failure.provider_error.unwrap().detail, Some(body.clone()));
+            assert_eq!(attempts, expected_attempts, "{body}");
+            assert!(!unknown);
+        }
     }
 
     #[tokio::test]
@@ -1189,13 +1389,57 @@ mod tests {
                 .await;
                 if cancel {
                     assert!(result.is_err(), "dropping must interrupt {during_body}");
-                } else {
+                } else if during_body {
                     assert_eq!(result.unwrap().unwrap_err().code, ErrorCode::Deadline);
+                } else {
+                    // The 1000 ms hint outlasts the 150 ms budget: no backoff.
+                    let failure = result.unwrap().unwrap_err();
+                    assert_eq!(
+                        (failure.code, failure.http_status, failure.retry_after_ms),
+                        (ErrorCode::Http, Some(429), Some(1000))
+                    );
                 }
                 assert_eq!(attempts.load(Ordering::SeqCst), 1);
                 assert!(!unknown.load(Ordering::SeqCst));
                 assert_eq!(permits.available_permits(), 1);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn transport_total_deadline_stops_a_backoff_without_hint() {
+        let server = Server::start(|_| Reply::new(429, "busy")).await;
+        let http = client();
+        let permits = Semaphore::new(1);
+        let attempts = AtomicUsize::new(0);
+        let unknown = AtomicBool::new(false);
+        let options = options();
+        // Jitter keeps the backoff at or above 750 ms, past the 150 ms budget.
+        let retry = RetryPolicy {
+            backoff_initial_ms: 1000,
+            backoff_max_ms: 1000,
+            ..fast(1)
+        };
+        let result = timeout(
+            Duration::from_millis(500),
+            send_http(
+                &http,
+                &permits,
+                "key",
+                ExecutionLimits::default(),
+                &options,
+                retry,
+                Instant::now() + Duration::from_millis(150),
+                &attempts,
+                &unknown,
+                || Ok(http.get(&server.url)),
+            ),
+        )
+        .await
+        .expect("the deadline ends the backoff");
+        assert_eq!(result.unwrap_err().code, ErrorCode::Deadline);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(!unknown.load(Ordering::SeqCst));
+        assert_eq!(permits.available_permits(), 1);
     }
 }
