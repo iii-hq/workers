@@ -83,7 +83,7 @@ impl SecurityRuntime for IiiRuntime {
                 .await?,
                 CasOutcome::Swapped
             ) {
-                self.emit_reconciliation_update(&snapshot.run_id);
+                self.emit_reconciliation_update(&snapshot).await;
                 return Ok(());
             }
         }
@@ -136,7 +136,7 @@ impl SecurityRuntime for IiiRuntime {
         match self.compare_and_set(&run.run_id, None, Some(value)).await? {
             CasOutcome::Swapped => {
                 self.sync_run_index_best_effort(&run.run_id).await;
-                self.emit_run_update(&run);
+                self.emit_run_update(&run).await;
                 self.archive_run(&run).await;
                 Ok(CreateRunOutcome::Created)
             }
@@ -188,7 +188,7 @@ impl SecurityRuntime for IiiRuntime {
         );
         if swapped {
             self.sync_run_index_best_effort(&replacement.run_id).await;
-            self.emit_run_update(&replacement);
+            self.emit_run_update(&replacement).await;
             self.archive_run(&replacement).await;
         }
         Ok(swapped)
@@ -250,7 +250,7 @@ impl SecurityRuntime for IiiRuntime {
             .await?
         {
             CasOutcome::Swapped => {
-                self.emit_action_update(&action);
+                self.emit_action_update(&action).await;
                 Ok(crate::CreateActionOutcome::Created)
             }
             CasOutcome::Current(current) => {
@@ -351,7 +351,7 @@ impl SecurityRuntime for IiiRuntime {
         };
         let swapped = matches!(replacement_outcome, CasOutcome::Swapped);
         if swapped {
-            self.emit_action_update(&replacement);
+            self.emit_action_update(&replacement).await;
         } else if session_changed {
             if inserted_replacement_session {
                 if let Some(session_id) = replacement_session {

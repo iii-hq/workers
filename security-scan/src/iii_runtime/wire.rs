@@ -1076,45 +1076,6 @@ fn action_queue_definition() -> Value {
     })
 }
 
-fn run_update_payload(run: &RunRecordV1) -> Value {
-    json!({
-        "stream_name": RUN_STREAM_NAME,
-        "group_id": RUN_STREAM_GROUP,
-        "type": RUN_UPDATED_EVENT_TYPE,
-        "data": {
-            "run_id": run.run_id,
-            "repository": run.repository,
-            "status": run.status,
-            "attempt": run.attempt,
-            "updated_at": run.updated_at,
-            "completed_at": run.completed_at,
-        },
-    })
-}
-
-fn reconciliation_update_payload(run_id: &str) -> Value {
-    json!({
-        "stream_name": RUN_STREAM_NAME,
-        "group_id": RUN_STREAM_GROUP,
-        "type": RECONCILIATION_UPDATED_EVENT_TYPE,
-        "data": { "run_id": run_id },
-    })
-}
-
-fn action_update_payload(action: &crate::SecurityActionRecordV1) -> Value {
-    json!({
-        "stream_name": RUN_STREAM_NAME,
-        "group_id": RUN_STREAM_GROUP,
-        "type": "security-scan:action-updated",
-        "data": {
-            "action_id": action.action_id,
-            "run_id": action.run_id,
-            "status": action.status,
-            "updated_at": action.updated_at,
-        },
-    })
-}
-
 fn snapshot_is_newer(
     existing: &ReconciliationSnapshotV1,
     candidate: &ReconciliationSnapshotV1,

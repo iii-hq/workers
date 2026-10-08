@@ -417,8 +417,8 @@ export function SecurityScanPage({
               aria-label={live ? 'live updates' : 'reconnecting'}
               title={
                 live
-                  ? 'Run updates arrive through the security-scan stream.'
-                  : 'Stream binding is unavailable. Runs refresh on reconnect, on tab focus, and on refresh.'
+                  ? 'Run updates arrive through security-scan change notifications.'
+                  : 'Live updates are unavailable. Runs refresh on reconnect, on tab focus, and on refresh.'
               }
             >
               <StatusDot tone={live ? 'accent' : 'ink'} pulse={live} />

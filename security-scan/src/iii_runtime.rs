@@ -13,6 +13,10 @@ use iii_sdk::{IIIClient, TriggerAction};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::events::{
+    ActionChangedEventV1, ChangeFeed, ChangeKind, IiiChangeDeliverer, ReconciliationChangedEventV1,
+    RunChangedEventV1,
+};
 use crate::{
     archive, AnalysisHandle, AnalysisPlan, ArchiveConfigV1, CreateRunOutcome, EnqueueRequest,
     ExecutionRuntime, MaterializationRequest, MaterializedTargetV1, PublicRunSummaryV1,
@@ -45,14 +49,9 @@ const EXECUTE_ID: &str = "security-scan::execute";
 const ACTION_EXECUTE_ID: &str = "security-scan::action-execute";
 const GITHUB_API_ID: &str = "github::api";
 const GITHUB_ALERT_LIMIT: usize = 500;
-const RUN_STREAM_NAME: &str = "security-scan:runs";
-const RUN_STREAM_GROUP: &str = "all";
-const RUN_UPDATED_EVENT_TYPE: &str = "security-scan:updated";
-const RECONCILIATION_UPDATED_EVENT_TYPE: &str = "security-scan:reconciliation-updated";
 const STORAGE_PUT_ID: &str = "storage::putObject";
 const STORAGE_GET_ID: &str = "storage::getObject";
 const RPC_TIMEOUT_MS: u64 = 30_000;
-const EVENT_TIMEOUT_MS: u64 = 5_000;
 const INDEX_REPAIR_ATTEMPTS: u32 = 8;
 const BOOT_ATTEMPTS: u32 = 20;
 const BOOT_RETRY_MS: u64 = 250;
@@ -65,10 +64,14 @@ pub struct IiiRuntime {
     action_session_backfill_pending: Arc<AtomicBool>,
     private_state_ready: Arc<AtomicBool>,
     archive: Arc<Mutex<Option<ArchiveConfigV1>>>,
+    change_feed: Arc<ChangeFeed>,
 }
 
 impl IiiRuntime {
     pub fn new(iii: Arc<IIIClient>) -> Self {
+        let change_feed = Arc::new(ChangeFeed::new(Arc::new(IiiChangeDeliverer::new(
+            iii.clone(),
+        ))));
         Self {
             iii,
             pending_index_repairs: Arc::new(Mutex::new(HashSet::new())),
@@ -76,11 +79,17 @@ impl IiiRuntime {
             action_session_backfill_pending: Arc::new(AtomicBool::new(true)),
             private_state_ready: Arc::new(AtomicBool::new(false)),
             archive: Arc::new(Mutex::new(None)),
+            change_feed,
         }
     }
 
     pub fn private_state_is_ready(&self) -> bool {
         self.private_state_ready.load(Ordering::Acquire)
+    }
+
+    /// Binding tables and emitter behind this worker's change trigger types.
+    pub fn change_feed(&self) -> Arc<ChangeFeed> {
+        self.change_feed.clone()
     }
 
     pub async fn claim_private_state(&self) -> Result<(), SecurityScanError> {
@@ -546,58 +555,47 @@ impl IiiRuntime {
             .remove(run_id);
     }
 
-    fn emit_run_update(&self, run: &RunRecordV1) {
-        let runtime = self.clone();
-        let payload = run_update_payload(run);
-        let run_id = run.run_id.clone();
-        tokio::spawn(async move {
-            if let Err(error) = runtime
-                .call("stream::send", payload, None, Some(EVENT_TIMEOUT_MS))
-                .await
-            {
-                tracing::warn!(
-                    %run_id,
-                    %error,
-                    "security scan live-update doorbell failed"
-                );
-            }
-        });
+    /// Notifies `security-scan::run-changed` bindings. Callers invoke this
+    /// only after the run CAS swapped, so every notification describes a
+    /// committed record.
+    async fn emit_run_update(&self, run: &RunRecordV1) {
+        self.change_feed
+            .emit(
+                ChangeKind::Run,
+                &run.repository,
+                &run.run_id,
+                &RunChangedEventV1::from(run),
+            )
+            .await;
     }
 
-    fn emit_action_update(&self, action: &crate::SecurityActionRecordV1) {
-        let runtime = self.clone();
-        let payload = action_update_payload(action);
-        let action_id = action.action_id.clone();
-        tokio::spawn(async move {
-            if let Err(error) = runtime
-                .call("stream::send", payload, None, Some(EVENT_TIMEOUT_MS))
-                .await
-            {
-                tracing::warn!(
-                    %action_id,
-                    %error,
-                    "security scan action live-update doorbell failed"
-                );
-            }
-        });
+    /// Notifies `security-scan::action-changed` bindings after the action
+    /// CAS swapped.
+    async fn emit_action_update(&self, action: &crate::SecurityActionRecordV1) {
+        self.change_feed
+            .emit(
+                ChangeKind::Action,
+                &action.repository,
+                &action.run_id,
+                &ActionChangedEventV1::from(action),
+            )
+            .await;
     }
 
-    fn emit_reconciliation_update(&self, run_id: &str) {
-        let runtime = self.clone();
-        let payload = reconciliation_update_payload(run_id);
-        let run_id = run_id.to_owned();
-        tokio::spawn(async move {
-            if let Err(error) = runtime
-                .call("stream::send", payload, None, Some(EVENT_TIMEOUT_MS))
-                .await
-            {
-                tracing::warn!(
-                    %run_id,
-                    %error,
-                    "security scan reconciliation live-update doorbell failed"
-                );
-            }
-        });
+    /// Notifies `security-scan::reconciliation-changed` bindings after the
+    /// snapshot CAS swapped.
+    async fn emit_reconciliation_update(&self, snapshot: &ReconciliationSnapshotV1) {
+        self.change_feed
+            .emit(
+                ChangeKind::Reconciliation,
+                &snapshot.repository,
+                &snapshot.run_id,
+                &ReconciliationChangedEventV1 {
+                    run_id: snapshot.run_id.clone(),
+                    repository: snapshot.repository.clone(),
+                },
+            )
+            .await;
     }
 
     async fn jail_unattended_session(&self, plan: &AnalysisPlan) {
