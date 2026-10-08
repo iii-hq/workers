@@ -13,10 +13,12 @@
 import type {
   FunctionTriggerMessage,
   FunctionTriggerRenderer,
+  Host,
 } from '@iii-dev/console-ui'
 import { isErrorOutput, unwrapEnvelope } from '../lib/envelope'
 import { AgentsFunctionsView, AgentsGetView, AgentsListView, AgentsUpdateView } from './AgentsViews'
 import { SkillsDownloadView } from './DownloadView'
+import { KitApplyPreview, KitApplyView, KitListView, KitPlanView, KitUpdatesView } from './KitsViews'
 import { isDirectoryFunction } from './parsers'
 import {
   SystemPromptsGetView,
@@ -42,6 +44,7 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
 function render(
   message: FunctionTriggerMessage,
   running: boolean,
+  host?: Host,
 ): React.ReactNode | null {
   if (!isDirectoryFunction(message.functionId)) return null
   if (message.pendingApproval) return null
@@ -152,20 +155,38 @@ function render(
           running={running}
         />
       )
+    case 'directory::download-kit':
+    case 'directory::kits::plan-update':
+    case 'directory::kits::remove':
+      return <KitPlanView input={input} output={output} running={running} host={host} />
+    case 'directory::kits::apply':
+      return <KitApplyView input={input} output={output} running={running} host={host} />
+    case 'directory::kits::check-updates':
+      return <KitUpdatesView input={input} output={output} running={running} host={host} />
+    case 'directory::kits::list':
+      return <KitListView input={input} output={output} running={running} />
     default:
       return null
   }
 }
 
-export function createDirectoryTriggerRenderer(): FunctionTriggerRenderer {
+/**
+ * Pending harness approval. Only `directory::kits::apply` has a preview of
+ * its own: the plan it would execute, so approve/deny is informed.
+ * Everything else keeps the console's default request-JSON pane.
+ */
+export function renderPreview(message: FunctionTriggerMessage, host?: Host): React.ReactNode | null {
+  if (message.functionId !== 'directory::kits::apply') return null
+  return <KitApplyPreview input={unwrapEnvelope(message.input)} host={host} />
+}
+
+export function createDirectoryTriggerRenderer(host?: Host): FunctionTriggerRenderer {
   return {
     id: 'iii-directory/page.js#directory',
     isMatch: isDirectoryFunction,
-    tryRender: (message) => render(message, !!message.running),
-    tryRenderRunning: (message) => render(message, true),
-    // Directory reads aren't approval-gated; the writes keep the default
-    // request-JSON preview pane when a gate ever fronts them.
-    tryRenderPreview: () => null,
+    tryRender: (message) => render(message, !!message.running, host),
+    tryRenderRunning: (message) => render(message, true, host),
+    tryRenderPreview: (message) => renderPreview(message, host),
     FunctionIdLabel,
   }
 }
