@@ -378,7 +378,8 @@ supports them, to set scripts, start_after, config_override, or other supported 
 Otherwise keep the selected payload as shorthand for defaults; if settings are required, \
 report that they cannot be applied and stop the installation. Explain the worker and \
 follow the caller's installation approval requirements; if approval is still needed, \
-wait for explicit confirmation before compose::add. Choose a unique operation_id. \
+wait for explicit confirmation before compose::add. Choose a fresh operation_id that \
+starts with your session id (ids are global to Compose and never reusable). \
 Register a one-shot compose-operation \
 wake with engine::register_trigger { \"trigger_type\": \"compose-operation\", \
 \"config\": { \"operation_id\": \"<operation-id>\", \"terminal_only\": true }, \"once\": true }. \

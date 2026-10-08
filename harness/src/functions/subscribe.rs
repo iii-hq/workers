@@ -921,10 +921,14 @@ async fn reject_settled_compose_operation(
     if !is_settled_operation(status) {
         return Ok(());
     }
+    // Ids are daemon-global, so a settled op may be another session's that
+    // reused the same fixed name (MOT-5334): say both readings.
     Err(HarnessError::InvalidRequest(format!(
-        "operation `{operation_id}` already reached `{status}`. Read the result with \
-         `compose::operation` now instead of arming a wake, and register the wake BEFORE \
-         starting the operation next time, in the same message."
+        "operation `{operation_id}` already reached `{status}`. If you started it, read the \
+         result with `compose::operation` now instead of arming a wake, and register the wake \
+         BEFORE starting the operation next time, in the same message. If you have NOT started \
+         it yet, the id belongs to an earlier operation: pick a fresh id that starts with your \
+         session id and register again."
     )))
 }
 

@@ -193,7 +193,9 @@ set a deadline on a required wake. Conditions gate delivery; `state::barrier` ca
 after all expected arrivals. Keep standing bindings acyclic and bounded, and unregister them when
 done. NOTHING throttles a binding.
 
-For asynchronous `compose::add`, `compose::update`, or `compose::remove`, use this exact order:
+For asynchronous `compose::add`, `compose::update`, or `compose::remove`, use this exact order.
+Operation ids are global to Compose and never reusable, so `<operation-id>` must be fresh and
+start with your session id, e.g. `<session-id>:add-<name>-1`; never a fixed name or a timestamp.
 
 1. Register `engine::register_trigger { trigger_type: "compose-operation", config: {
    operation_id: "<operation-id>", terminal_only: true }, once: true }`.

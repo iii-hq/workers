@@ -292,6 +292,8 @@ fn observable_compose_mutations_register_a_terminal_wake_before_starting() {
         .expect("compose::add with correlated operation id");
 
     assert!(registration < add);
+    // Ids are daemon-global: a fixed name collides with an earlier session's op (MOT-5334).
+    assert!(out.contains("start with your session id, e.g. `<session-id>:add-<name>-1`"));
     assert!(out.contains("operation_id: \"<operation-id>\", terminal_only: true"));
     assert!(
         out.contains("compose::update { worker: \"<name>\", operation_id: \"<operation-id>\" }")
