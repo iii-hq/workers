@@ -1,5 +1,7 @@
 # Function id prefixes that are filtered out of `tools/list` and rejected at
 # `tools/call`. Mirrors the hard floor enforced by the skills worker.
+# `stream::` covers the deprecated iii-stream functions; it stays hidden while
+# engines still host them.
 hidden_prefixes:
   - "engine::"
   - "state::"
