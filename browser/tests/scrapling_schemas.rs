@@ -48,6 +48,7 @@ fn catalog_lists_all_scraping_functions_at_browser_root() {
             "browser::session-close",
             "browser::session-list",
             "browser::crawl",
+            "browser::crawl::items",
         ]
     );
 }
