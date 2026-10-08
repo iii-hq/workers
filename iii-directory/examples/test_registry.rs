@@ -24,6 +24,7 @@ async fn main() -> Result<(), String> {
         &skills_folder,
         &agents_folder,
         30_000,
+        &Default::default(),
     )
     .await?;
 

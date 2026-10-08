@@ -62,6 +62,7 @@ pub mod configuration;
 pub mod fs_source;
 pub mod functions;
 pub mod hook;
+pub mod kits;
 pub mod manifest;
 pub mod sources;
 pub mod surface;

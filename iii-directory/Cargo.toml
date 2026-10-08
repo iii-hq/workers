@@ -49,8 +49,12 @@ judge-contract = { path = "../crates/judge-contract" }
 # Caller-supplied session id from OTel baggage keys the search's per-session
 # resend-avoidance memory. Never a security boundary.
 opentelemetry = { version = "0.31", default-features = false }
-# Catalog fingerprint hashing for the search index.
+# Catalog fingerprint hashing for the search index; kit file digests.
 sha2 = "0.10"
+# Kits: semver ranges for kit refs and worker ranges, three-way merge of
+# locally edited kit files on update.
+semver = "1"
+diffy = "0.4"
 # Pinned local-only embedding runtime. Default features include Hub access.
 
 # Local MiniLM retrieval and reranking, built on every target for which ort-sys
