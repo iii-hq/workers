@@ -1654,6 +1654,31 @@ async fn calls_outside_the_turn_step_use_the_session_judge_provider() {
     }
 }
 
+/// The turn step routes its calls to the session's judge provider, and a
+/// step whose enqueuer carried a provider drops it for a session without
+/// one: otherwise in-step calls and released held calls ask different judges.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_turn_step_uses_only_the_session_judge_provider() {
+    for provider in [Some("clef"), None] {
+        let stack = Stack::new("completed").await;
+        if let Some(provider) = provider {
+            let mut store = stack.store.lock().unwrap();
+            let meta = store.sessions.get_mut("child1").unwrap();
+            meta["metadata"]["judge_provider"] = json!(provider);
+        }
+        // Stops at the mock's context::assemble boundary.
+        let _ = iii_helpers::observability::run_with_baggage(
+            &[("iii.judge.provider", "ambient")],
+            harness::functions::turn::handle(&stack.deps, step("child1")),
+        )
+        .await;
+        assert_eq!(
+            stamped_provider(&stack, "context::assemble").as_deref(),
+            provider
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordinary_stop_persists_abort_on_router_failure_but_deletion_fails_closed() {
     for code in ["test_error", "function_not_found"] {

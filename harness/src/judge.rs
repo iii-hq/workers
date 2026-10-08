@@ -39,25 +39,33 @@ const SECRET_KEYS: [&str; 11] = [
 /// failing judge never pauses another session's.
 static PAUSED_UNTIL: Mutex<BTreeMap<String, i64>> = Mutex::new(BTreeMap::new());
 
-/// Run `future` under `session_id`'s judge provider, as its turn step would:
+/// Run `future` under `session_id`'s judge provider, as its turn step does:
 /// work outside the step (a released held call, a direct
-/// `harness::function::trigger`) keeps the session's judge. A session
-/// without one clears any provider the caller's context carried, so a
-/// caller never picks the judge a session call uses.
+/// `harness::function::trigger`) keeps the session's judge.
 pub(crate) async fn with_session_provider<T>(
     deps: &Deps,
     session_id: &str,
     future: impl std::future::Future<Output = T>,
 ) -> T {
-    use iii_helpers::observability::opentelemetry::{
-        baggage::BaggageExt as _, trace::FutureExt as _, Context, KeyValue,
-    };
     let provider = deps
         .session()
         .await
         .turn_hints(session_id)
         .await
         .judge_provider;
+    with_provider(provider, future).await
+}
+
+/// Run `future` with `provider` as its only judge provider. `None` clears
+/// any provider the caller's context carried, so a caller never picks the
+/// judge a session call uses.
+pub(crate) async fn with_provider<T>(
+    provider: Option<String>,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    use iii_helpers::observability::opentelemetry::{
+        baggage::BaggageExt as _, trace::FutureExt as _, Context, KeyValue,
+    };
     let context = Context::current();
     let mut entries: Vec<KeyValue> = context
         .baggage()
