@@ -254,11 +254,15 @@ export async function invoke(
 let hubSeq = 0
 
 /**
- * The engine's own catalogue signals. Both are internal trigger types the
+ * The engine's own catalogue signals. All are internal trigger types the
  * engine publishes itself, which is why the pages never poll:
  *
- * - `engine::functions-available` fires when functions are registered or
- *   unregistered (a worker connecting registers its whole surface at once)
+ * - `engine::functions-available` fires when the function set changes,
+ *   carrying the full function list. How it detects that depends on the
+ *   engine: newer engines fire ~100ms after a register, re-register
+ *   or unregister and fold the burst into that one event; older engines
+ *   poll on a 5s tick and compare function ids only, so they lag by up to
+ *   5s and miss a re-registration that only changed a schema or description
  * - `engine::workers-available` fires when a worker connects or disconnects
  * - `trace` is a coalesced "spans changed" tick carrying the affected trace
  *   ids; it is a refetch beat, not a span feed, so a live view re-reads
@@ -271,8 +275,16 @@ export type LiveSignal =
 
 /**
  * Subscribe to engine signals for this component's lifetime and call `onTick`
- * when any of them fires, debounced across bursts (a worker connecting emits
- * one event per function).
+ * when any of them fires, debounced so one change costs one refetch.
+ *
+ * The engine already folds a burst of function changes into one
+ * `engine::functions-available` event, but the debounce still earns its
+ * keep: one worker connecting raises that event AND
+ * `engine::workers-available`, which the engine sends independently; a
+ * surface registered over longer than the engine's fold window (or several
+ * workers starting together) still arrives as a few events; and `trace`
+ * ticks keep coming under load. Each tick would otherwise be a full
+ * catalogue re-read.
  *
  * The binding is a per-tab handler under the `iii::` prefix, which keeps the
  * per-event invocations span-suppressed and out of the trace feed — a live
