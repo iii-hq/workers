@@ -134,7 +134,11 @@ describe('FindRelevantCard', () => {
       issues: { resource_limit: 1, token_budget: 1 },
     })!
     expect(renderToStaticMarkup(<FindRelevantCard summary={budget} running={false} />)).toContain(
-      'Stopped at the judge token budget (size limit, judge token budget spent)',
+      'Stopped at the judge token budget (size limit): ',
+    )
+    const budgetOnly = summarizeFindRelevant(input, { ...output, status: 'incomplete', reason: 'token_budget' })!
+    expect(renderToStaticMarkup(<FindRelevantCard summary={budgetOnly} running={false} />)).toContain(
+      'Stopped at the judge token budget: ',
     )
     const unavailable = summarizeFindRelevant(input, {
       ...output,
@@ -147,8 +151,9 @@ describe('FindRelevantCard', () => {
     expect(html).toContain('No judge answered (judge window too small)')
   })
 
-  it("ends each note with the worker's hint and labels every issue kind", () => {
-    const hint = 'Coverage is partial (judge_call_timeout): verify with coder::search. Narrow path.'
+  it("says each note once: the worker's hint (as hint() words it) with the issue counts", () => {
+    const hint =
+      'Coverage is partial (judge_call_timeout): the answer may be in files not listed, so verify with coder::search before relying on this list. Narrow path, or retry with a larger timeout_ms.'
     const timedOut = summarizeFindRelevant(input, {
       ...output,
       status: 'incomplete',
@@ -157,27 +162,40 @@ describe('FindRelevantCard', () => {
       issues: { judge_call_timeout: 2, invalid_response: 1 },
     })!
     const html = renderToStaticMarkup(<FindRelevantCard summary={timedOut} running={false} />)
-    expect(html).toContain(`Partial result (judge calls timed out ×2, failed judge evaluations): `)
-    expect(html).toContain(hint)
-    expect(html).not.toContain('Narrow the folder for full coverage')
-    // A reason with no issue counted still names the gap.
+    expect(html).toContain(`${hint} Issues: judge calls timed out ×2, failed judge evaluations.`)
+    expect(html).not.toContain('Partial result')
+    // A reason with no issue counted and no hint still names the gap.
     const stopped = summarizeFindRelevant(input, { ...output, status: 'incomplete', reason: 'judge failed' })!
     expect(renderToStaticMarkup(<FindRelevantCard summary={stopped} running={false} />)).toContain(
       'Partial result (judge failed)',
     )
+    const plain = summarizeFindRelevant(input, {
+      ...output,
+      status: 'unavailable',
+      reason: 'provider',
+      hint: 'No judge answered: use coder::search.',
+      files: [],
+    })!
+    const down = renderToStaticMarkup(<FindRelevantCard summary={plain} running={false} />)
+    expect(down).toContain('No judge answered: use coder::search. Reason: provider.')
+    expect(down.match(/No judge answered/g)).toHaveLength(1)
     const loading = summarizeFindRelevant(input, {
       ...output,
       status: 'unavailable',
-      reason: 'judge model loading; retry shortly',
-      hint: 'The judge is still loading its model: retry the ask in a minute.',
+      reason: 'judge listing timed out; retry shortly',
+      hint: 'The judge did not list its models in time (a local judge may still be loading its model): retry the ask in a minute, or use coder::search now.',
       files: [],
     })!
     const unavailable = renderToStaticMarkup(<FindRelevantCard summary={loading} running={false} />)
     expect(unavailable).toContain('retry the ask in a minute')
     expect(unavailable).not.toContain('still works')
-    const empty = summarizeFindRelevant(input, { ...output, files: [], hint: 'Nothing under path looked relevant.' })!
+    const empty = summarizeFindRelevant(input, {
+      ...output,
+      files: [],
+      hint: 'Nothing under path looked relevant to the judge: widen path, or use coder::search for exact names.',
+    })!
     expect(renderToStaticMarkup(<FindRelevantCard summary={empty} running={false} />)).toContain(
-      'Nothing under path looked relevant.',
+      'Nothing under path looked relevant to the judge',
     )
   })
 

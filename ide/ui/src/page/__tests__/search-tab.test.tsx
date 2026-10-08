@@ -122,6 +122,10 @@ describe('askFolder', () => {
     expect(askFolder('*.ts')).toBeNull()
     expect(askFolder('a/**, b/**')).toBeNull()
     expect(askFolder('src/*.rs')).toBeNull()
+    // bracketed and grouped folder names are literal folders
+    expect(askFolder('app/[slug]/**')).toBe('app/[slug]')
+    expect(askFolder('app/(group)/[id]/**')).toBe('app/(group)/[id]')
+    expect(askFolder('{a,b}/**')).toBeNull()
   })
 })
 
@@ -141,6 +145,22 @@ describe('the Search tab in ask mode', () => {
     expect(tab.refresh().disabled).toBe(false)
     tab.enter()
     expect(coderFindRelevant).toHaveBeenCalledTimes(2)
+  })
+
+  it('says a new question waits while its own ask runs', async () => {
+    const tab = render()
+    tab.toggleAsk()
+    tab.type('how are judge slots limited?')
+    tab.enter()
+    tab.type('where are secrets redacted?')
+    tab.enter()
+    expect(coderFindRelevant).toHaveBeenCalledTimes(1)
+    expect(tab.page()).toContain('An earlier ask is still running')
+
+    asks[0](answer({}))
+    await settle()
+    expect(tab.page()).not.toContain('An earlier ask is still running')
+    expect(tab.page()).toContain('Results for “how are judge slots limited?”')
   })
 
   it('waits for an ask whose answer was dropped, then clears the wait note', async () => {
@@ -187,23 +207,64 @@ describe('the Search tab in ask mode', () => {
     expect(tab.page()).toContain('An ask takes one folder')
   })
 
-  it("marks the answer stale once the question changes and shows the worker's hint", async () => {
+  it('marks the answer stale once the question, folder or exclusions change', async () => {
     const tab = render()
     tab.toggleAsk()
     tab.type('how are judge slots limited?')
     tab.enter()
-    const hint = 'Coverage is partial (token_budget): verify with coder::search. Narrow path for fuller coverage.'
-    asks[0](answer({ status: 'incomplete', reason: 'token_budget', hint }))
+    asks[0](answer({}))
     await settle()
-    expect(tab.page()).toContain(hint)
     expect(tab.page()).not.toContain('Results for')
 
+    tab.find((p) => p['aria-label'] === 'Toggle search details').onClick()
+    tab.find((p) => p.placeholder === 'e.g. src/**').onChange({ target: { value: 'lib/**' } })
+    expect(tab.page()).toContain('Results for “how are judge slots limited?” — press Enter to ask again.')
+    tab.find((p) => p.placeholder === 'e.g. src/**').onChange({ target: { value: '' } })
+    expect(tab.page()).not.toContain('Results for')
+    tab.find((p) => p.placeholder === 'e.g. *.test.ts, dist/**').onChange({ target: { value: 'gen/**' } })
+    expect(tab.page()).toContain('Results for')
+    tab.find((p) => p.placeholder === 'e.g. *.test.ts, dist/**').onChange({ target: { value: '' } })
     tab.type('where are secrets redacted?')
     expect(tab.page()).toContain('Results for “how are judge slots limited?” — press Enter to ask again.')
     expect(coderFindRelevant).toHaveBeenCalledTimes(1)
   })
 
-  it('reports an unavailable judge with its reason and hint', async () => {
+  it('words partial and empty answers for this view, once each, not with the agent hint', async () => {
+    const hint =
+      'Coverage is partial (token_budget): the answer may be in files not listed, so verify with coder::search before relying on this list. Narrow path for fuller coverage.'
+    const tab = render()
+    tab.toggleAsk()
+    tab.type('how are judge slots limited?')
+    tab.enter()
+    asks[0](answer({ status: 'incomplete', reason: 'token_budget', hint }))
+    await settle()
+    expect(tab.page()).toContain('Partial results (token_budget) — the answer may be in files not listed.')
+    expect(tab.page()).not.toContain('coder::search')
+
+    // no rows: the empty state carries the notice, no banner repeats it
+    tab.enter()
+    tab.type('where are secrets redacted?')
+    tab.enter()
+    asks[1](answer({ status: 'incomplete', reason: 'deadline', hint, files: [] }))
+    await settle()
+    expect(tab.page()).not.toContain('Partial results')
+    expect(tab.find((p) => p.title === 'No results').description).toContain('Partial results (deadline)')
+
+    tab.type('where is the cache keyed?')
+    tab.enter()
+    asks[2](
+      answer({
+        files: [],
+        hint: 'Nothing under path looked relevant to the judge: widen path, or use coder::search for exact names.',
+      }),
+    )
+    await settle()
+    expect(tab.find((p) => p.title === 'No results').description).toBe(
+      'The judge found nothing relevant — widen the folder or use text search.',
+    )
+  })
+
+  it('reports an unavailable judge with its reason in its own words', async () => {
     const tab = render()
     tab.toggleAsk()
     tab.type('how are judge slots limited?')
@@ -211,15 +272,16 @@ describe('the Search tab in ask mode', () => {
     asks[0](
       answer({
         status: 'unavailable',
-        reason: 'judge model loading; retry shortly',
-        hint: 'The judge is still loading its model: retry the ask in a minute.',
+        reason: 'judge listing timed out; retry shortly',
+        hint: 'The judge did not list its models in time (a local judge may still be loading its model): retry the ask in a minute, or use coder::search now.',
         files: [],
       }),
     )
     await settle()
     expect(tab.page()).toContain(
-      'Judge unavailable (judge model loading; retry shortly): The judge is still loading its model: retry the ask in a minute.',
+      'Judge unavailable (judge listing timed out; retry shortly) — use text search, or ask again later.',
     )
+    expect(tab.page()).not.toContain('coder::search')
   })
 })
 
@@ -236,5 +298,15 @@ describe('the Search tab while hidden', () => {
     tab.update({ hidden: false })
     expect(tab.view.result.props.hidden).toBe(false)
     expect(tab.page()).toContain('1 result in 1 file')
+  })
+
+  it('takes no pane focus while hidden', () => {
+    const tab = render()
+    const input = { setAttribute: vi.fn(), toggleAttribute: vi.fn(), focus() {}, select() {} }
+    ;(tab.find((p) => p['aria-label'] === 'Search query').ref as unknown as { current: unknown }).current = input
+    tab.update({ hidden: true })
+    expect(input.toggleAttribute).toHaveBeenLastCalledWith('data-autofocus', false)
+    tab.update({ hidden: false })
+    expect(input.toggleAttribute).toHaveBeenLastCalledWith('data-autofocus', true)
   })
 })

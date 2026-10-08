@@ -360,7 +360,8 @@ export interface FindRelevantResponse {
 }
 
 /** Ask the judge which files under `path` answer a behavioural question;
-    `excludeGlobs` are relative to `path`. The bus wait outlives the
+    `excludeGlobs` are relative to the workspace root, like coderSearch's,
+    not to `path`. The bus wait outlives the
     worker's own deadline so a partial answer lands instead of a transport
     timeout. */
 export function coderFindRelevant(

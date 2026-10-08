@@ -152,7 +152,7 @@ const QUESTION_TOKENS: u64 = 110;
 pub fn request_cap(bytes: usize, window: Option<u64>, questions: usize) -> usize {
     window.map_or(bytes, |tokens| {
         let room = tokens.saturating_sub(QUESTION_TOKENS * questions as u64);
-        bytes.min(usize::try_from(room * 5 / 2).unwrap_or(usize::MAX))
+        bytes.min(usize::try_from(room.saturating_mul(5) / 2).unwrap_or(usize::MAX))
     })
 }
 
@@ -441,5 +441,7 @@ mod tests {
         assert_eq!(request_cap(38_000, Some(16_384), 1), 38_000);
         assert_eq!(request_cap(38_000, Some(16_384), 106), 11_810);
         assert_eq!(request_cap(38_000, Some(1_000), 10), 0);
+        // an absurd advertised window never wraps to a tiny cap
+        assert_eq!(request_cap(38_000, Some(u64::MAX), 1), 38_000);
     }
 }

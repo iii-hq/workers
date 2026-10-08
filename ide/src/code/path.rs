@@ -250,6 +250,23 @@ impl PathResolver {
             .map(PathBuf::as_path)
     }
 
+    /// The session grant containing `canon`, if any.
+    pub fn grant_root(&self, canon: &Path) -> Option<&Path> {
+        self.grant_roots_canon
+            .iter()
+            .find(|r| canon.starts_with(r))
+            .map(PathBuf::as_path)
+    }
+
+    /// The allowed root containing `canon` that is not a session grant.
+    pub fn configured_root(&self, canon: &Path) -> Option<&Path> {
+        self.roots_canon
+            .iter()
+            .filter(|r| !self.grant_roots_canon.contains(r))
+            .find(|r| canon.starts_with(r))
+            .map(PathBuf::as_path)
+    }
+
     /// Canonical form of a session `scope_root` (the per-call working directory
     /// the harness scopes a call to), using the SAME canonicalisation as
     /// [`resolve_in`]. `None` when `scope_root` cannot be canonicalised or sits

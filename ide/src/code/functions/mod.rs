@@ -211,11 +211,12 @@ const FIND_RELEVANT_DESC: &str =
      files not listed, so verify with coder::search (reason and issues say \
      why); complete with no files = nothing under path looked relevant, \
      widen path or use coder::search; unavailable = no judge, use \
-     coder::search (or retry when the model is loading). Sends the query, root-relative paths and file text to \
+     coder::search (or retry when the listing timed out). Sends the query, root-relative paths and file text to \
      the session's judge provider, which may be hosted: never protected, \
      ignored, hidden, .git or secret-named files, nor the text of binary or \
-     secret-key files. A path that is hidden, gitignored or outside a \
-     project folder is refused. Paths: relative to the primary root or \
+     secret-key files. A path that is hidden, secret-named, gitignored or \
+     outside a project folder (the session folder, a Git work tree, a \
+     granted folder or a jailed worker's root) is refused. Paths: relative to the primary root or \
      absolute inside an allowed root (see coder::info).";
 
 /// One function's complete agent-facing wire surface: id, registration

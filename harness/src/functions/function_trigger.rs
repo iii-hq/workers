@@ -67,7 +67,18 @@ pub enum FunctionTriggerResponse {
     Pending(TriggerPendingResponse),
 }
 
+/// A direct call runs outside the turn step, under the session's judge
+/// provider as the step would be.
 pub async fn handle(
+    deps: &Deps,
+    req: FunctionTriggerRequest,
+) -> Result<FunctionTriggerResponse, HarnessError> {
+    let session_id = req.session_id.clone();
+    // Boxed: the pipeline's future is large for a caller's stack.
+    crate::judge::with_session_provider(deps, &session_id, Box::pin(trigger_call(deps, req))).await
+}
+
+async fn trigger_call(
     deps: &Deps,
     req: FunctionTriggerRequest,
 ) -> Result<FunctionTriggerResponse, HarnessError> {

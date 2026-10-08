@@ -1566,11 +1566,28 @@ async fn a_released_call_keeps_the_boundary_its_holder_reviewed() {
     assert_eq!(payload["fs_scope"]["boundary"], "workspace", "{payload}");
 }
 
-/// An approved held call runs outside the turn step yet keeps the session's
-/// judge provider: without it a released `coder::find-relevant` asks the
-/// hub's default judge instead of the one the session chose.
+/// The `iii.judge.provider` baggage the call to `function_id` carried.
+fn stamped_provider(stack: &Stack, function_id: &str) -> Option<String> {
+    let store = stack.store.lock().unwrap();
+    let (_, baggage) = store
+        .baggage
+        .iter()
+        .find(|(f, _)| f == function_id)
+        .expect("the call is dispatched");
+    baggage
+        .as_str()
+        .unwrap_or_default()
+        .split(',')
+        .find_map(|entry| entry.trim().strip_prefix("iii.judge.provider="))
+        .map(str::to_string)
+}
+
+/// Calls made outside the turn step (an approved held call, a direct
+/// `harness::function::trigger`) keep the session's judge provider, and a
+/// caller's own provider never reaches them: without it a
+/// `coder::find-relevant` asks another judge than the session chose.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_released_call_keeps_the_session_judge_provider() {
+async fn calls_outside_the_turn_step_use_the_session_judge_provider() {
     for provider in [Some("clef"), None] {
         let stack = Stack::new("completed").await;
         {
@@ -1581,6 +1598,7 @@ async fn a_released_call_keeps_the_session_judge_provider() {
             }
             let mut turn = store.state("harness_turn", "child1");
             turn["status"] = json!("awaiting_functions");
+            turn["options"]["functions"] = json!({"allow": ["coder::*"]});
             turn["calls"] = json!({"held-1": {
                 "state": "pending",
                 "function_id": "coder::find-relevant",
@@ -1589,32 +1607,50 @@ async fn a_released_call_keeps_the_session_judge_provider() {
             }});
             store.put("harness_turn", "child1", turn);
         }
-        let resolved = harness::functions::function_resolve::handle(
-            &stack.deps,
-            serde_json::from_value(json!({
-                "session_id": "child1",
-                "turn_id": "t_child1",
-                "function_call_id": "held-1",
-                "action": "execute"
-            }))
-            .unwrap(),
+        // the caller's own context names another provider
+        let ambient = [("iii.judge.provider", "ambient")];
+        let resolved = iii_helpers::observability::run_with_baggage(
+            &ambient,
+            harness::functions::function_resolve::handle(
+                &stack.deps,
+                serde_json::from_value(json!({
+                    "session_id": "child1",
+                    "turn_id": "t_child1",
+                    "function_call_id": "held-1",
+                    "action": "execute"
+                }))
+                .unwrap(),
+            ),
         )
         .await
         .unwrap();
         assert!(resolved.resolved, "{provider:?}");
-        let store = stack.store.lock().unwrap();
-        let (_, baggage) = store
-            .baggage
-            .iter()
-            .find(|(f, _)| f == "coder::find-relevant")
-            .expect("the released call is dispatched");
-        let stamped = baggage
-            .as_str()
-            .unwrap_or_default()
-            .split(',')
-            .find_map(|entry| entry.trim().strip_prefix("iii.judge.provider="))
-            .map(str::to_string);
-        assert_eq!(stamped.as_deref(), provider, "{baggage}");
+        assert_eq!(
+            stamped_provider(&stack, "coder::find-relevant").as_deref(),
+            provider
+        );
+
+        iii_helpers::observability::run_with_baggage(
+            &ambient,
+            harness::functions::function_trigger::handle(
+                &stack.deps,
+                serde_json::from_value(json!({
+                    "session_id": "child1",
+                    "call": {
+                        "id": "direct-1",
+                        "function_id": "coder::search",
+                        "arguments": {"query": "retries"}
+                    }
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stamped_provider(&stack, "coder::search").as_deref(),
+            provider
+        );
     }
 }
 

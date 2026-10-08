@@ -187,11 +187,12 @@ coverage: the answer may be in files not listed, so verify with
 for a budget or size limit, retry after `changed`). `complete` with no
 files means nothing under `path` looked relevant: widen `path` or use
 `coder::search`. `unavailable` means no judge answered (fall back to
-`coder::search`; with reason `judge model loading; retry shortly`, retry
-the ask in a minute). The
+`coder::search`; with reason `judge listing timed out; retry shortly`,
+retry the ask in a minute). The
 query, root-relative paths and file text go to the session's judge
 provider, which may be hosted; protected, ignored, hidden and
-secret-looking files never do, and a hidden or gitignored `path` is refused
+secret-looking files never do, and a hidden, secret-named or gitignored
+`path`, or one outside a project folder, is refused
 (use `coder::search` there). `exclude_globs` are relative to the session
 root, as in `coder::search`. An excerpt with `partial` is only a byte span of
 its lines: read the file before rewriting those lines.

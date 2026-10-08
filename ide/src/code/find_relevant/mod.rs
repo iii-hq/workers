@@ -224,7 +224,7 @@ pub async fn handle(
     req: FindRelevantInput,
 ) -> Result<FindRelevantOutput, String> {
     let provider = judge::session_provider();
-    let slots = cfg.find_relevant_judge_slots as usize;
+    let slots = judge::slots(cfg.find_relevant_judge_slots as usize);
     let evaluate = judge::evaluator(iii.clone(), provider.clone(), slots);
     let listed = provider.clone();
     run(
@@ -303,40 +303,64 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
         .and_then(|root| resolver.session_root(root))
         .filter(|root| walk_root.starts_with(root));
     let top = walk::git_top(&walk_root);
-    let configured = resolver.containing_root(&walk_root);
-    if resolver.unjailed() && req.fs_scope.is_none() && top.is_none() && configured.is_none() {
+    // An unjailed worker's roots only anchor relative paths (`/tmp`, the
+    // engine's folder), so they make no project folder.
+    let configured = resolver
+        .configured_root(&walk_root)
+        .filter(|_| !resolver.unjailed());
+    // The project folder bounding the ask: the session's, else the Git work
+    // tree's (inside the jail), else a granted folder, else the configured
+    // root.
+    let Some(base) = session.clone().or_else(|| {
+        top.filter(|top| resolver.unjailed() || resolver.containing_root(top).is_some())
+            .or_else(|| resolver.grant_root(&walk_root))
+            .or(configured)
+            .map(Path::to_path_buf)
+    }) else {
         return Err(CoderError::BadInput(format!(
             "find-relevant sends file text to the judge, so it only searches a project \
-             folder (a Git work tree or a configured root, see coder::info), and {} is \
-             neither; use coder::search",
+             folder (the session folder, a Git work tree, a granted folder or a jailed \
+             worker's root, see coder::info), and {} is none; use coder::search",
             req.path
         )));
-    }
-    // The project folder bounding the ask: the session's, else the Git work
-    // tree's (inside the jail), else the configured root's, else the
-    // filesystem root. It and its ancestors may be hidden (worktrees under
-    // .claude/worktrees).
-    let base = match &session {
-        Some(session) => session.as_path(),
-        None => top
-            .filter(|top| resolver.unjailed() || resolver.containing_root(top).is_some())
-            .or(configured)
-            .or_else(|| walk_root.ancestors().last())
-            .unwrap_or(&walk_root),
-    }
-    .to_path_buf();
-    let hidden = walk_root.strip_prefix(&base).is_ok_and(|rel| {
-        rel.components()
-            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+    };
+    // Hidden and secret-named folders count from the session folder or a
+    // linked worktree's top (either may sit under a dot-folder, like
+    // .claude/worktrees), else from the configured root or the filesystem
+    // root: a dot-folder repository or grant is still hidden.
+    let linked = top.filter(|top| *top == base && walk::linked_worktree(top));
+    let trusted = session
+        .as_deref()
+        .or(linked)
+        .or(configured)
+        .unwrap_or(Path::new("/"));
+    let hidden = walk_root.strip_prefix(trusted).is_ok_and(|rel| {
+        rel.components().any(|c| {
+            let name = c.as_os_str().to_string_lossy();
+            name.starts_with('.') || walk::is_sensitive(&name)
+        })
     });
     if hidden {
         return Err(CoderError::BadInput(format!(
-            "path is a hidden folder or inside one, which find-relevant never searches: {}; \
-             use coder::search",
+            "path is a hidden or secret-named folder or inside one, which find-relevant \
+             never searches: {}; use coder::search",
             req.path
         )));
     }
-    if top.is_some_and(|top| walk::ignored(top, &walk_root)) {
+    // Ignore rules count up to the outermost work tree below `trusted`, so
+    // a repository nested in an ignored folder is still ignored.
+    let outermost = walk_root
+        .ancestors()
+        .take_while(|dir| dir.starts_with(trusted))
+        .filter(|dir| dir.join(".git").exists())
+        .last();
+    let bound = match (&session, outermost) {
+        (Some(session), _) => session.as_path(),
+        (None, Some(top)) if top.starts_with(&base) => &base,
+        (None, Some(top)) => top,
+        (None, None) => &base,
+    };
+    if walk::ignored(bound, &walk_root) {
         return Err(CoderError::BadInput(format!(
             "path is gitignored or inside an ignored folder, which find-relevant never \
              searches: {}; use coder::search",
@@ -368,12 +392,18 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
         }
         Ok(listing) => listing,
     };
-    // Answers are kept per provider and listed models, so a switched hub
-    // default or model never serves old ones; a failed listing bypasses.
-    let cache = listing.models.map(|models| {
-        serde_json::json!({ "provider": provider.unwrap_or_default(), "models": models })
-            .to_string()
-    });
+    // Answers are kept per provider and listed models, so a switched model
+    // never serves old ones. A failed listing keeps a named provider's
+    // answers by name alone; the hub default could switch unseen, so it
+    // bypasses the cache.
+    let cache = match (listing.models, provider) {
+        (Some(models), provider) => {
+            Some(serde_json::json!({ "provider": provider.unwrap_or_default(), "models": models }))
+        }
+        (None, Some(provider)) => Some(serde_json::json!({ "provider": provider, "models": null })),
+        (None, None) => None,
+    }
+    .map(|namespace| namespace.to_string());
 
     let run = Arc::new(Run {
         query: req.query,
@@ -508,9 +538,9 @@ fn hint(output: &FindRelevantOutput) -> Option<String> {
                 .to_string()
         }
         Status::Complete => return None,
-        Status::Unavailable if reason == judge::LOADING => {
-            "The judge is still loading its model: retry the ask in a minute, or use \
-             coder::search now."
+        Status::Unavailable if reason == judge::LISTING_TIMEOUT => {
+            "The judge did not list its models in time (a local judge may still be \
+             loading its model): retry the ask in a minute, or use coder::search now."
                 .to_string()
         }
         Status::Unavailable if reason == judge::PAUSED => format!(

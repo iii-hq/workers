@@ -798,17 +798,34 @@ async fn a_gitignored_or_hidden_walk_root_is_refused() {
             (".tokens/hosts.yml", b"oauth_token: SECRET_DOT needle"),
             ("src/.cache/needle.rs", b"SECRET_CACHE needle"),
             ("src/needle.rs", b"fn needle() {}\n"),
+            ("credentials/prod.json", b"SECRET_CRED needle"),
+            // a repository nested in an ignored folder, and a planted `.git`
+            ("data/lib/.git/HEAD", b"ref: refs/heads/main\n"),
+            ("data/lib/conf.txt", b"SECRET_NESTED needle"),
+            ("src/logs/.git", b""),
+            // a dot-folder that is a repository of its own
+            (".config/.git/HEAD", b"ref: refs/heads/main\n"),
+            (".config/gh/hosts.yml", b"oauth_token: SECRET_CFG needle"),
         ],
         |_, _| {},
     );
-    for path in ["data", "data/conf", "src/logs"] {
+    for path in ["data", "data/conf", "src/logs", "data/lib"] {
         let message = refused(&fx, at(path)).await;
         assert!(message.contains("gitignored"), "{path}: {message}");
         assert!(message.contains("coder::search"), "{path}: {message}");
     }
-    for path in [".tokens", "src/.cache"] {
+    for path in [
+        ".tokens",
+        "src/.cache",
+        "credentials",
+        ".config",
+        ".config/gh",
+    ] {
         let message = refused(&fx, at(path)).await;
-        assert!(message.contains("hidden"), "{path}: {message}");
+        assert!(
+            message.contains("hidden or secret-named"),
+            "{path}: {message}"
+        );
     }
     let out = ask_with(&fx, at("src"), None, judge(&Log::default(), keyword)).await;
     assert_eq!(paths(&fx, &out), ["src/needle.rs"]);
@@ -847,6 +864,24 @@ async fn a_worktree_under_a_hidden_ignored_folder_is_searched() {
 }
 
 #[tokio::test]
+async fn ignore_files_apply_to_the_walk_root_outside_a_repository_too() {
+    let fx = fixture(
+        &[
+            (".gitignore", b"/data/\n"),
+            ("data/conf/notes.toml", b"token = \"SECRET_IGN\" needle"),
+            ("src/needle.rs", b"fn needle() {}\n"),
+        ],
+        |_, _| {},
+    );
+    for path in ["data", "data/conf"] {
+        let message = refused(&fx, at(path)).await;
+        assert!(message.contains("gitignored"), "{path}: {message}");
+    }
+    let out = ask_with(&fx, at("src"), None, judge(&Log::default(), keyword)).await;
+    assert_eq!(paths(&fx, &out), ["src/needle.rs"]);
+}
+
+#[tokio::test]
 async fn ignore_files_above_the_repository_do_not_apply() {
     let fx = fixture(
         &[
@@ -860,29 +895,86 @@ async fn ignore_files_above_the_repository_do_not_apply() {
     assert_eq!(paths(&fx, &out), ["outer/repo/src/needle.rs"]);
 }
 
+fn scoped(
+    path: &str,
+    root: &Path,
+    grants: &[&Path],
+    boundary: crate::fs::FsBoundary,
+) -> FindRelevantInput {
+    FindRelevantInput {
+        fs_scope: Some(crate::fs::FsScope {
+            root: root.display().to_string(),
+            grants: grants.iter().map(|g| g.display().to_string()).collect(),
+            boundary,
+        }),
+        ..at(path)
+    }
+}
+
 #[tokio::test]
-async fn an_unjailed_ask_without_a_scope_needs_a_project_folder() {
+async fn an_unjailed_ask_needs_a_project_folder() {
+    use crate::fs::FsBoundary::{ConfiguredRoots, Workspace};
     let fx = fixture(&[("needle.rs", b"fn needle() {}\n")], |_, cfg| {
         cfg.unjailed = true;
     });
-    let outside = tempfile::tempdir().unwrap();
-    let outside = outside.path().canonicalize().unwrap();
+    // not a dot-name like tempdir's own `.tmp…`
+    let dir = tempfile::Builder::new().prefix("plain").tempdir().unwrap();
+    let outside = dir.path().canonicalize().unwrap();
     std::fs::write(outside.join("needle.rs"), b"SECRET_HOST needle").unwrap();
-    let message = refused(&fx, at(&outside.display().to_string())).await;
-    assert!(message.contains("project folder"), "{message}");
-    // a Git work tree is a project folder
-    std::fs::create_dir(outside.join(".git")).unwrap();
+    let wire = outside.display().to_string();
+    // neither unscoped nor from a session elsewhere, and an unjailed
+    // worker's roots (`/tmp`, its folder) only anchor relative paths
+    for req in [
+        at(&wire),
+        scoped(&wire, &fx.root, &[], ConfiguredRoots),
+        at("."),
+    ] {
+        let message = refused(&fx, req).await;
+        assert!(message.contains("project folder"), "{message}");
+    }
+    // the session folder is one
     let out = ask_with(
         &fx,
-        at(&outside.display().to_string()),
+        scoped(".", &fx.root, &[], Workspace),
         None,
         judge(&Log::default(), keyword),
     )
     .await;
-    assert_eq!(out.files.len(), 1);
-    // and so is a configured root
-    let out = ask_with(&fx, at("."), None, judge(&Log::default(), keyword)).await;
     assert_eq!(paths(&fx, &out), ["needle.rs"]);
+    // a granted dot-folder is still hidden
+    let tokens = outside.join(".tokens");
+    std::fs::create_dir(&tokens).unwrap();
+    std::fs::write(
+        tokens.join("hosts.yml"),
+        b"oauth_token: SECRET_GRANT needle",
+    )
+    .unwrap();
+    // (the registered handler adds a session's grants to the resolver)
+    let req = scoped(
+        &tokens.display().to_string(),
+        &fx.root,
+        &[&tokens],
+        Workspace,
+    );
+    let granted = Fixture {
+        resolver: fx.resolver.session_scoped(
+            crate::fs::scope_root(req.fs_scope.as_ref()),
+            crate::fs::scope_grants(req.fs_scope.as_ref()),
+        ),
+        cfg: fx.cfg.clone(),
+        root: fx.root.clone(),
+        _dir: tempfile::tempdir().unwrap(),
+    };
+    let message = refused(&granted, req).await;
+    assert!(message.contains("hidden"), "{message}");
+    // a dot-folder repository found from the filesystem root is too
+    std::fs::create_dir(tokens.join(".git")).unwrap();
+    let message = refused(&fx, at(&tokens.display().to_string())).await;
+    assert!(message.contains("hidden"), "{message}");
+    // a Git work tree is a project folder
+    std::fs::create_dir(outside.join(".git")).unwrap();
+    let out = ask_with(&fx, at(&wire), None, judge(&Log::default(), keyword)).await;
+    assert_eq!(out.files.len(), 1);
 }
 
 #[tokio::test]
@@ -1052,14 +1144,14 @@ async fn a_judge_not_ready_is_unavailable_without_a_call() {
         fx.resolver.clone(),
         fx.cfg.clone(),
         input("needle", 120_000),
-        |_| async { Err(JudgeError::Unavailable(judge::LOADING.into())) },
+        |_| async { Err(JudgeError::Unavailable(judge::LISTING_TIMEOUT.into())) },
         judge(&log, keyword),
         None,
     )
     .await
     .unwrap();
     assert_eq!(out.status, Status::Unavailable);
-    assert_eq!(out.reason.as_deref(), Some(judge::LOADING));
+    assert_eq!(out.reason.as_deref(), Some(judge::LISTING_TIMEOUT));
     assert!(out.hint.unwrap().contains("retry the ask in a minute"));
     assert!(log.lock().unwrap().is_empty());
 
@@ -1410,6 +1502,24 @@ async fn answers_are_reused_across_asks_of_one_provider_and_model() {
         assert_eq!(out.stats.cache_hits, 0, "{models:?}");
         assert_eq!(out.stats.judge_calls, first.stats.judge_calls, "{models:?}");
     }
+    // a named provider keeps its answers by name while its listing fails
+    let again = ask_listing(&Log::default(), false, None).await.unwrap();
+    assert_eq!(again.stats.judge_calls, 0);
+    assert_eq!(again.stats.cache_hits, first.stats.judge_calls);
+    // the hub default may have switched unseen: never cached
+    for _ in 0..2 {
+        let out = run(
+            fx.resolver.clone(),
+            fx.cfg.clone(),
+            input("where is the needle?", 120_000),
+            |_| async { Ok(Listing::default()) },
+            judge_for(&Log::default(), false),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.stats.cache_hits, 0);
+    }
 }
 
 #[test]
@@ -1623,6 +1733,33 @@ async fn a_spent_judge_token_budget_stops_the_ask_as_incomplete() {
         "{:?}",
         paths(&unlimited, &out)
     );
+}
+
+#[tokio::test]
+async fn local_call_context_is_presented_after_a_judge_outage_stop() {
+    let fx = fixture(&[("needle.py", CALLER)], |_, _| {});
+    // the file assessment fails last, after the evidence was selected
+    let evaluate: Evaluator = Arc::new(|evaluation, _| {
+        let evaluation = prompts::decoded(evaluation);
+        Box::pin(async move {
+            if evaluation.questions.contains_key("priority") {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                return Err(JudgeError::Unavailable("transport".into()));
+            }
+            by_declaration(
+                &evaluation,
+                |name| if name == "Needle.go" { 0.9 } else { 0.1 },
+            )
+            .map(|scores| (scores, 7))
+        })
+    });
+    let out = ask(&fx, None, evaluate).await;
+    assert_eq!(out.status, Status::Incomplete);
+    assert_eq!(out.reason.as_deref(), Some("transport"));
+    let file = &out.files[0];
+    assert!(file.roles.is_empty());
+    assert_eq!(file.call_leads.len(), 1, "{file:?}");
+    assert_eq!(file.call_leads[0].name, "Base.run");
 }
 
 #[tokio::test]

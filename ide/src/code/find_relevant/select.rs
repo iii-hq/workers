@@ -536,12 +536,16 @@ pub async fn select_file(run: Arc<Run>, candidate: Candidate) -> (String, Option
             groups.insert(index, first);
         };
         // The state cap is jevgrep's; a known window also counts the
-        // questions, two per declaration.
-        if group.len() > 1
-            && (prompts::state_text(&request).len() > run.state_cap
-                || !prompts::fits(&request, usize::MAX, run.window))
-        {
+        // questions, two per declaration. One declaration over the window
+        // would reach the judge cut short, so it is not sent.
+        let over_window = !prompts::fits(&request, usize::MAX, run.window);
+        if group.len() > 1 && (prompts::state_text(&request).len() > run.state_cap || over_window) {
             halve(&mut groups);
+            continue;
+        }
+        if over_window {
+            run.issue("request_size");
+            index += 1;
             continue;
         }
         let scores = match run.call(request).await {
@@ -876,6 +880,44 @@ mod tests {
                 .collect();
             assert_eq!(sent, asked, "window {window:?}");
             assert!(issues(&run).is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn one_declaration_over_a_known_window_is_not_sent() {
+        // 22.4 KB in one function: under the 24 000-byte unit limit, over
+        // the smallest window a judge may have (8192 tokens)
+        let source = format!(
+            "function big() {{\n{}}}\n\n\n\n\n\n\n\n\nfunction small() {{ return 1; }}\n",
+            format!("  return {};\n", "x".repeat(70)).repeat(280)
+        );
+        for (window, sent_big) in [
+            (None, true),
+            (Some(crate::code::find_relevant::MIN_WINDOW_TOKENS), false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.ts"), &source).unwrap();
+            let (mut run, log) = run_over(dir.path(), MAX_STATE_BYTES, |_, _| Ok(0.9));
+            Arc::get_mut(&mut run).unwrap().window = window;
+            let candidate = candidate(&run, "a.ts");
+            select_file(run.clone(), candidate).await;
+            let names: Vec<String> = log
+                .lock()
+                .unwrap()
+                .iter()
+                .flat_map(|ev| ev.state["declarations"].as_array().unwrap().clone())
+                .map(|d| d["name"].as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(names.contains(&"big".to_string()), sent_big, "{window:?}");
+            assert!(
+                names.contains(&"small".to_string()),
+                "{window:?}: {names:?}"
+            );
+            assert_eq!(
+                issues(&run).get("request_size"),
+                (!sent_big).then_some(&1),
+                "{window:?}"
+            );
         }
     }
 

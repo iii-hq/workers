@@ -77,14 +77,19 @@ function issueList(issues: readonly [string, number][]): string {
     .join(', ')
 }
 
-/** What stopped the ask, then the worker's next step (`hint`) or ours. */
+/** The worker's `hint` (it names the gap) with the issue counts, or our
+    own sentence when there is none. */
 function partialNote(summary: RelevantSummary): string {
-  const issues = issueList(summary.issues) || (summary.reason ? issueList([[summary.reason, 1]]) : '')
-  const detail = issues ? ` (${issues})` : ''
+  const counted = issueList(summary.issues)
+  if (summary.hint) return counted ? `${summary.hint} Issues: ${counted}.` : summary.hint
   if (summary.reason === 'token_budget') {
-    return `Stopped at the judge token budget${detail}: the folder was too big to judge in full. ${summary.hint ?? 'Ask about a narrower folder.'}`
+    const others = issueList(summary.issues.filter(([kind]) => kind !== 'token_budget'))
+    const detail = others ? ` (${others})` : ''
+    return `Stopped at the judge token budget${detail}: the folder was too big to judge in full. Ask about a narrower folder.`
   }
-  return `Partial result${detail}: some folders or files went unjudged. ${summary.hint ?? 'Narrow the folder for full coverage.'}`
+  const issues = counted || (summary.reason ? issueList([[summary.reason, 1]]) : '')
+  const detail = issues ? ` (${issues})` : ''
+  return `Partial result${detail}: some folders or files went unjudged. Narrow the folder for full coverage.`
 }
 
 function Note({ tone, children }: { tone: 'partial' | 'unavailable' | 'empty'; children: React.ReactNode }) {
@@ -270,9 +275,11 @@ export function FindRelevantCard({
 
       {summary.status === 'unavailable' ? (
         <Note tone="unavailable">
-          {summary.reason ? `No judge answered (${summary.reason}). ` : 'No judge answered. '}
-          {summary.hint ?? (
+          {summary.hint ? (
+            `${summary.hint}${summary.reason ? ` Reason: ${summary.reason}.` : ''}`
+          ) : (
             <>
+              {summary.reason ? `No judge answered (${summary.reason}). ` : 'No judge answered. '}
               Text search with <code>coder::search</code> still works.
             </>
           )}

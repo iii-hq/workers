@@ -115,7 +115,7 @@ static PRIVATE_KEY: Lazy<regex::Regex> = Lazy::new(|| {
 });
 
 /// jevgrep `isSensitive`.
-fn is_sensitive(name: &str) -> bool {
+pub fn is_sensitive(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower == ".env"
         || lower.starts_with(".env.")
@@ -153,6 +153,12 @@ pub fn git_top(path: &Path) -> Option<&Path> {
     path.ancestors().find(|dir| dir.join(".git").exists())
 }
 
+/// Whether `top` is a linked worktree: its `.git` is a file pointing at
+/// the main repository's (an empty or other `.git` file is not one).
+pub fn linked_worktree(top: &Path) -> bool {
+    std::fs::read_to_string(top.join(".git")).is_ok_and(|git| git.starts_with("gitdir: "))
+}
+
 /// A one-level walk of `dir` under its ignore files and every ancestor's;
 /// `in_git` stops at the work tree's top, as git does.
 fn one_level(dir: &Path, in_git: bool) -> ignore::WalkBuilder {
@@ -170,23 +176,26 @@ fn one_level(dir: &Path, in_git: bool) -> ignore::WalkBuilder {
     walker
 }
 
-/// True when the ignore rules of the work tree whose top is `top` leave out
-/// `path` or a folder between them: an ignore pattern matches only the
-/// entry it names, so a walk started inside an ignored folder would see
-/// none of it. Blocking.
-pub fn ignored(top: &Path, path: &Path) -> bool {
+/// True when ignore rules leave out `path` or a folder between it and
+/// `bound`, each folder judged as a listing of its parent would (inside a
+/// work tree or not): an ignore pattern matches only the entry it names,
+/// so a walk started inside an ignored folder would see none of it.
+/// Blocking.
+pub fn ignored(bound: &Path, path: &Path) -> bool {
     path.ancestors()
-        .take_while(|dir| *dir != top && dir.starts_with(top))
+        .take_while(|dir| *dir != bound && dir.starts_with(bound))
         .any(|dir| {
             let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
                 return false;
             };
             let name = name.to_os_string();
-            let mut walker = one_level(parent, true);
+            let mut walker = one_level(parent, git_top(parent).is_some());
             walker
                 .hidden(false)
                 .filter_entry(move |e| e.depth() == 0 || e.file_name() == name);
-            !walker.build().flatten().any(|e| e.depth() == 1)
+            // A folder that cannot be listed proves nothing; the walk
+            // reports what it cannot read.
+            !walker.build().any(|e| e.map_or(true, |e| e.depth() == 1))
         })
 }
 

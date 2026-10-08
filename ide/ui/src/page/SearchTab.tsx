@@ -82,8 +82,25 @@ interface SearchResults {
   truncated: boolean
   /** The question an ask answered; the box may have moved on since. */
   query?: string
-  /** The worker's next step for a partial or empty answer. */
-  hint?: string | null
+  /** What the ask was: question, folder and exclusions ([askKey]). */
+  asked?: string
+  /** Why an ask's answer is partial. */
+  reason?: string | null
+}
+
+/** One ask's identity: an answer is stale once any part changes. */
+function askKey(query: string, includeGlob: string, excludeGlob: string): string {
+  return JSON.stringify([query.trim(), askFolder(includeGlob), splitGlobs(excludeGlob)])
+}
+
+/** The Search view's own words for an ask's answer; the worker's `hint`
+    is written for agents (wire fields, `coder::search`). */
+export function askNotice(status: 'complete' | 'incomplete' | 'unavailable', reason?: string | null): string {
+  const why = reason ? ` (${reason})` : ''
+  if (status === 'unavailable') return `Judge unavailable${why} — use text search, or ask again later.`
+  if (status === 'incomplete')
+    return `Partial results${why} — the answer may be in files not listed. Narrow the folder, or check with text search.`
+  return 'The judge found nothing relevant — widen the folder or use text search.'
 }
 
 /** A glob the user typed matches anywhere below the root: a bare pattern
@@ -108,7 +125,8 @@ export function splitGlobs(text: string): string[] {
 export function askFolder(includeGlob: string): string | null {
   const trimmed = includeGlob.trim()
   if (trimmed === '') return ''
-  return trimmed.match(/^\/?([^*?,{}[\]]+?)\/\*\*$/)?.[1] ?? null
+  const folder = trimmed.match(/^\/?(.+?)\/\*\*$/)?.[1]
+  return folder === undefined || /[*?,]/.test(folder) ? null : folder
 }
 
 /** Module-level, so the memoized list sees the same function every render. */
@@ -157,6 +175,8 @@ function SearchTabView({
   // worker cannot cancel an ask, and a second one would share its judge
   // slots, so a new ask waits even for one whose answer was dropped.
   const askingRef = useRef(0)
+  // That ask's [askKey]: Enter on the same ask while it runs says nothing.
+  const askingKeyRef = useRef('')
   const appliedRequestRef = useRef(0)
 
   const run = useCallback(
@@ -180,7 +200,10 @@ function SearchTabView({
         return
       }
       if (params.ask && askingRef.current !== 0) {
-        if (askingRef.current !== seqRef.current) setError(ASK_BUSY)
+        const same =
+          askingRef.current === seqRef.current &&
+          askingKeyRef.current === askKey(q, params.includeGlob, params.excludeGlob)
+        if (!same) setError(ASK_BUSY)
         return
       }
       const seq = ++seqRef.current
@@ -190,6 +213,7 @@ function SearchTabView({
         const folder = askFolder(params.includeGlob)
         setAskStartedAt(Date.now())
         askingRef.current = seq
+        askingKeyRef.current = askKey(q, params.includeGlob, params.excludeGlob)
         coderFindRelevant(host, {
           query: q,
           path: folder ? `${root.replace(/\/+$/, '')}/${folder}` : root,
@@ -200,7 +224,7 @@ function SearchTabView({
             if (seqRef.current !== seq) return
             if (out.status === 'unavailable') {
               setResults(null)
-              setError(`Judge unavailable (${out.reason ?? 'no reason given'}): ${out.hint ?? 'use text search.'}`)
+              setError(askNotice(out.status, out.reason))
               return
             }
             setResults({
@@ -208,7 +232,8 @@ function SearchTabView({
               paths: [],
               truncated: out.status === 'incomplete',
               query: q,
-              hint: out.hint,
+              asked: askingKeyRef.current,
+              reason: out.reason,
             })
             setDismissed(new Set())
             setFocusIndex(-1)
@@ -220,10 +245,8 @@ function SearchTabView({
           })
           .finally(() => {
             askingRef.current = 0
-            if (seqRef.current !== seq) {
-              setError((shown) => (shown === ASK_BUSY ? null : shown))
-              return
-            }
+            setError((shown) => (shown === ASK_BUSY ? null : shown))
+            if (seqRef.current !== seq) return
             setSearching(false)
             setAskStartedAt(null)
           })
@@ -329,7 +352,9 @@ function SearchTabView({
   // An incomplete ask has its own notice; "refine the query" is text-search advice.
   const summary = results ? searchSummary(visibleGroups, results.paths, results.truncated && !ask) : null
   const staleQuery =
-    ask && !searching && results?.query !== undefined && results.query.trim() !== query.trim() ? results.query : null
+    ask && !searching && results?.asked !== undefined && results.asked !== askKey(query, includeGlob, excludeGlob)
+      ? (results.query ?? '')
+      : null
   const askFolderIgnored = ask && askFolder(includeGlob) === null
   const allCollapsed = visibleGroups.length > 0 && visibleGroups.every((group) => collapsed.has(group.path))
 
@@ -664,16 +689,16 @@ function SearchTabView({
             title="No results"
             description={
               ask
-                ? (results.hint ?? 'The judge found nothing relevant.')
+                ? askNotice(results.truncated ? 'incomplete' : 'complete', results.reason)
                 : 'Nothing matched. Review the query and the configured exclusions.'
             }
           />
         </div>
       ) : null}
-      {results?.truncated ? (
+      {results?.truncated && !(ask && rows.length === 0) ? (
         <div className="shui-search-truncated">
           {ask
-            ? (results.hint ?? 'Partial results — narrow the question or the folder.')
+            ? askNotice('incomplete', results.reason)
             : 'Showing the first results only — narrow the query or the folder.'}
         </div>
       ) : null}

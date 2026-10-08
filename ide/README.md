@@ -254,7 +254,7 @@ error.
 |---|---|
 | `complete` | Every admitted branch was explored. With no files, nothing under `path` looked relevant: widen `path` or use `coder::search`. |
 | `incomplete` | Partial coverage: the deadline hit, the judge token budget ran out, a request failed or was too large, or a walk limit was reached. The answer may be in files not listed: verify with `coder::search`. `reason` names the stop, else the leading issue kind; `issues` counts each kind (below). |
-| `unavailable` | No judge answered (not deployed, no key, paused after a recent outage, or a context window under 8192 tokens). Use `coder::search`. With reason `judge model loading; retry shortly`, a local judge is still loading its model: retry the ask in a minute. |
+| `unavailable` | No judge answered (not deployed, no key, paused after a recent outage, or a context window under 8192 tokens). Use `coder::search`. With reason `judge listing timed out; retry shortly`, the judge did not list its models in time (a local judge may still be loading its model): retry the ask in a minute. |
 
 A result that is incomplete, unavailable or complete with no files also
 carries `hint`, the next step in one sentence. `issues` kinds, in the order
@@ -323,13 +323,16 @@ eligible folders beside it, closest name first.
   `*.tfstate(.backup)`, `*.jks`/`*.keystore`, `*.kdbx`). The text of files
   holding a private key (PEM, armored PGP, PuTTY or age) and of binary or
   non-UTF-8 files is never sent, though their names can appear in a
-  folder's preview. `path` itself is refused (`C210`) when it is gitignored
-  or inside an ignored folder, or hidden or inside a hidden folder below
-  the project folder (the session folder, else the Git work tree, else the
-  configured root; that folder may itself sit under a dot-folder, like a
-  worktree in `.claude/worktrees`). Without a session scope, an unjailed
-  worker also refuses a `path` outside every Git work tree and configured
-  root. `exclude_globs` match paths relative to the session root, as in
+  folder's preview. `path` must sit in a project folder: the session
+  folder, else a Git work tree (inside the jail), else a granted folder,
+  else a configured root (not on an unjailed worker, whose roots only
+  anchor relative paths). It is refused (`C210`) when it is gitignored or
+  inside an ignored folder (the ignore files of every enclosing work tree
+  up to the session folder count, Git or not), or hidden or secret-named
+  or inside such a folder, counted from the session folder or a linked
+  worktree's top (either may sit under a dot-folder, like a worktree in
+  `.claude/worktrees`), else from the configured root or `/`: a dot-folder
+  repository such as `~/.config` is refused. `exclude_globs` match paths relative to the session root, as in
   `coder::search`, not to `path`. `agents_md` lists the `AGENTS.md` files
   from the project folder down to `path` and above returned files. Tokens hard-coded in
   ordinary source files, and the query itself, still go to the provider. A
