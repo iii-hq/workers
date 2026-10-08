@@ -335,6 +335,25 @@
   font-family: var(--font-sans);
   word-break: normal;
 }
+/* A profile's origin (kit, worker, local…) under its description. */
+[data-iii-ui="iii-directory"] .dir-ui-browser.prominent-list .dir-ui-nav-row .iii-ui-list-item__description:has(.dir-ui-nav-origin) {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-nav-desc-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="iii-directory"] .dir-ui-nav-origin {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* The row glyph is the same token glyph the avatar picker renders. */
 [data-iii-ui="iii-directory"] .dir-ui-nav-ico {
   display: inline-flex;

@@ -78,6 +78,9 @@ export interface BrowserRow {
   description: string
   /** Fine-print line (size · modified). */
   fine: string
+  /** Where the entry came from (agents: `kit acme/team`, `worker kanban`,
+   * `local`…), shown under the description in prominent lists. */
+  origin?: string
   /** Built-in entries can be viewed and copied but not changed. */
   readOnly?: boolean
   /** Editable entries with no backing file yet (saving creates one) have
@@ -879,7 +882,14 @@ export function CollectionBrowser({
                       label={<span className={isTitled ? undefined : 'dir-ui-mono'}>{isTitled ? r.title : r.key}</span>}
                       description={
                         adapter.prominentListItems ? (
-                          r.description || r.key
+                          r.origin ? (
+                            <>
+                              <span className="dir-ui-nav-desc-line">{r.description || r.key}</span>
+                              <span className="dir-ui-nav-origin">{r.origin}</span>
+                            </>
+                          ) : (
+                            r.description || r.key
+                          )
                         ) : (
                           <>
                             {isTitled ? <span className="dir-ui-nav-id">{r.key}</span> : null}

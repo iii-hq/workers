@@ -48,6 +48,26 @@ interface AgentRow {
   }
 }
 
+/** Short origin label for the list row: `kit acme/team · edited`,
+ * `worker kanban`, `local`, `global` or `built-in`. */
+export function originLabel(a: AgentRow): string | undefined {
+  const s = a.source
+  if (a.builtin || s?.kind === 'builtin') return 'built-in'
+  const edited = s?.modified ? ' · edited' : ''
+  switch (s?.kind) {
+    case 'kit':
+      return `kit ${s.kit ?? ''}${edited}`
+    case 'worker':
+      return `worker ${s.worker ?? ''}${edited}`
+    case 'global':
+      return 'global'
+    case 'local':
+      return 'local'
+    default:
+      return undefined
+  }
+}
+
 /** The list's fine print: where the profile came from, then when it changed. */
 export function agentOrigin(a: AgentRow): string {
   if (a.builtin) return 'Built-in · edits save a local override'
@@ -157,6 +177,7 @@ export const agentsAdapter: BrowserAdapter = {
       title: a.name,
       description: a.description,
       fine: agentOrigin(a),
+      origin: originLabel(a),
       ...(a.builtin ? { noDelete: true } : {}),
     }))
   },

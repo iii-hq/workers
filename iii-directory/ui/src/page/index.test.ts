@@ -1,7 +1,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { expect, it, vi } from 'vitest'
 import { resolveBrowserPaneVisibility } from './browser'
-import { agentOrigin, agentsAdapter, COLLECTIONS, kitsRouteFromContext } from './index'
+import { agentOrigin, agentsAdapter, COLLECTIONS, kitsRouteFromContext, originLabel } from './index'
 
 vi.mock('@iii-dev/console-ui', () => ({
   Button: () => null,
@@ -107,4 +107,12 @@ it('labels each profile with where it came from', () => {
   expect(agentOrigin({ ...row, source: { kind: 'worker', worker: 'kanban' } })).toMatch(/^worker kanban/)
   expect(agentOrigin({ ...row, source: { kind: 'local' } })).toMatch(/^local/)
   expect(agentOrigin({ ...row, builtin: true, source: { kind: 'builtin' } })).toBe('Built-in · edits save a local override')
+})
+
+it('gives profile rows a short origin label', () => {
+  const row = { id: 'x', name: 'X', description: '', logo: null, icon: null, color: null, modified_at: '' }
+  expect(originLabel({ ...row, source: { kind: 'kit', kit: 'acme/team', modified: true } })).toBe('kit acme/team · edited')
+  expect(originLabel({ ...row, source: { kind: 'worker', worker: 'kanban' } })).toBe('worker kanban')
+  expect(originLabel({ ...row, builtin: true })).toBe('built-in')
+  expect(originLabel(row)).toBeUndefined()
 })
