@@ -272,7 +272,10 @@ that picks `reason` when the ask did not stop:
 | `agents_md_incomplete` | The `agents_md` list may miss one. Alone it leaves the result `complete`. | Look for `AGENTS.md` with `coder::list-folder`. |
 
 A `path` that does not exist fails with `C211`, which names up to five
-eligible folders beside it, closest name first.
+eligible folders beside it, closest name first, when find-relevant would
+search its parent (none inside a hidden or gitignored folder). A relative
+`path` on an unjailed worker without a session names the folder it
+resolved against instead: pass an absolute path.
 
 - **Budget.** `timeout_ms` (default 240000, max 280000, below the harness's
   300 s dispatch timeout) bounds the whole ask; each judge call may use
@@ -329,12 +332,16 @@ eligible folders beside it, closest name first.
   anchor relative paths). It is refused (`C210`) when it is gitignored or
   inside an ignored folder (the ignore files of every enclosing work tree
   up to the session folder count, Git or not), or hidden or secret-named
-  or inside such a folder, counted from the session folder or a linked
-  worktree's top (either may sit under a dot-folder, like a worktree in
-  `.claude/worktrees`), else from the configured root or `/`: a dot-folder
-  repository such as `~/.config` is refused. `exclude_globs` match paths relative to the session root, as in
-  `coder::search`, not to `path`. `agents_md` lists the `AGENTS.md` files
-  from the project folder down to `path` and above returned files. Tokens hard-coded in
+  or inside such a folder, counted from a linked worktree's top or the
+  session folder (either may sit under a dot-folder, like a worktree in
+  `.claude/worktrees`), else from the configured root or the project
+  folder's parent: a dot-folder repository such as `~/.config` is refused,
+  a repository inside one is not. A linked worktree counts only when its
+  `.git` file and the main repository's admin folder point at each other.
+  `exclude_globs` match paths relative to the session folder, else the
+  project folder, as in `coder::search`, not to `path`. `agents_md` lists
+  the `AGENTS.md` files from the session folder or granted folder (else the
+  project folder) down to `path` and above returned files. Tokens hard-coded in
   ordinary source files, and the query itself, still go to the provider. A
   `'!coder::find-relevant'` rule in `iii-permissions.yaml` above its allow
   entry (first match wins) takes the function from agents only: the IDE's

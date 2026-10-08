@@ -189,7 +189,12 @@ async fn nothing_protected_ignored_or_secret_reaches_the_judge() {
             ),
             (
                 "src/core/age.txt",
-                concat!("AGE-SECRET", "-KEY-1QQQQ SECRET_AGE needle\n").as_bytes(),
+                concat!(
+                    "AGE-SECRET",
+                    "-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+                    " SECRET_AGE needle\n"
+                )
+                .as_bytes(),
             ),
             ("deploy.ppk", b"SECRET_PPKNAME needle"),
             ("terraform.tfstate", b"{\"password\": \"SECRET_TF needle\"}"),
@@ -234,6 +239,41 @@ async fn nothing_protected_ignored_or_secret_reaches_the_judge() {
     ] {
         assert!(!sent.contains(forbidden), "{forbidden} reached the judge");
     }
+}
+
+#[test]
+fn secret_keys_are_matched_by_shape_not_by_name() {
+    let fx = fixture(
+        &[
+            (
+                "age.txt",
+                concat!(
+                    "KEY=AGE-SECRET",
+                    "-KEY-1QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7LQPZRY9X8GF2TVDW0S3JN54KHCE\n"
+                )
+                .as_bytes(),
+            ),
+            (
+                "putty.txt",
+                concat!("PuTTY-User-Key", "-File-2: ssh-rsa\n").as_bytes(),
+            ),
+            (
+                "mentions.rs",
+                concat!("// PuTTY-User-Key", "-File- and AGE-SECRET", "-KEY-1\n").as_bytes(),
+            ),
+        ],
+        |_, _| {},
+    );
+    let tree = walk::Tree::new(&fx.resolver, &fx.root, None, &fx.root, u64::MAX);
+    assert!(matches!(walk::read(&tree, "age.txt"), walk::Snap::Excluded));
+    assert!(matches!(
+        walk::read(&tree, "putty.txt"),
+        walk::Snap::Excluded
+    ));
+    assert!(matches!(
+        walk::read(&tree, "mentions.rs"),
+        walk::Snap::Ok(_)
+    ));
 }
 
 fn file_item(path: &str, text: String) -> NavigationItem {
@@ -802,7 +842,10 @@ async fn a_gitignored_or_hidden_walk_root_is_refused() {
             // a repository nested in an ignored folder, and a planted `.git`
             ("data/lib/.git/HEAD", b"ref: refs/heads/main\n"),
             ("data/lib/conf.txt", b"SECRET_NESTED needle"),
-            ("src/logs/.git", b""),
+            ("src/logs/.git", b"gitdir: x\n"),
+            // a dot-folder whose `.git` file points nowhere
+            (".planted/.git", b"gitdir: /nonexistent\n"),
+            (".planted/needle.rs", b"SECRET_PLANTED needle"),
             // a dot-folder that is a repository of its own
             (".config/.git/HEAD", b"ref: refs/heads/main\n"),
             (".config/gh/hosts.yml", b"oauth_token: SECRET_CFG needle"),
@@ -820,6 +863,7 @@ async fn a_gitignored_or_hidden_walk_root_is_refused() {
         "credentials",
         ".config",
         ".config/gh",
+        ".planted",
     ] {
         let message = refused(&fx, at(path)).await;
         assert!(
@@ -831,35 +875,48 @@ async fn a_gitignored_or_hidden_walk_root_is_refused() {
     assert_eq!(paths(&fx, &out), ["src/needle.rs"]);
 }
 
+/// Makes `<root>/<top>` a linked worktree of the repository at `root`, as
+/// `git worktree add` does: a `.git` file naming an admin folder whose
+/// `gitdir` points back at it.
+fn link_worktree(root: &Path, top: &str) {
+    let admin = root.join(".git/worktrees").join(top.replace('/', "-"));
+    std::fs::create_dir_all(&admin).unwrap();
+    std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+    let git = root.join(top).join(".git");
+    std::fs::write(&git, format!("gitdir: {}\n", admin.display())).unwrap();
+    std::fs::write(admin.join("gitdir"), format!("{}\n", git.display())).unwrap();
+}
+
 #[tokio::test]
 async fn a_worktree_under_a_hidden_ignored_folder_is_searched() {
+    use crate::fs::FsBoundary::Workspace;
     let fx = fixture(
         &[
             (".git/HEAD", b"ref: refs/heads/main\n"),
-            (".gitignore", b".claude/\n"),
-            (
-                ".claude/worktrees/wt/.git",
-                b"gitdir: ../../../.git/worktrees/wt\n",
-            ),
+            (".gitignore", b".claude/\nwt/\n"),
             (".claude/worktrees/wt/src/needle.rs", b"fn needle() {}\n"),
+            ("wt/feat/src/needle.rs", b"fn needle() {}\n"),
         ],
         |_, _| {},
     );
-    let worktree = fx.root.join(".claude/worktrees/wt");
-    let scoped = FindRelevantInput {
-        fs_scope: Some(crate::fs::FsScope {
-            root: worktree.display().to_string(),
-            grants: Vec::new(),
-            boundary: crate::fs::FsBoundary::Workspace,
-        }),
-        ..at(".")
-    };
-    for req in [at(".claude/worktrees/wt"), scoped] {
+    link_worktree(&fx.root, ".claude/worktrees/wt");
+    link_worktree(&fx.root, "wt/feat");
+    for (top, req) in [
+        (".claude/worktrees/wt", at(".claude/worktrees/wt")),
+        (
+            ".claude/worktrees/wt",
+            scoped(".", &fx.root.join(".claude/worktrees/wt"), &[], Workspace),
+        ),
+        // a session on the main repository
+        (
+            ".claude/worktrees/wt",
+            scoped(".claude/worktrees/wt", &fx.root, &[], Workspace),
+        ),
+        ("wt/feat", at("wt/feat")),
+        ("wt/feat", scoped("wt/feat", &fx.root, &[], Workspace)),
+    ] {
         let out = ask_with(&fx, req, None, judge(&Log::default(), keyword)).await;
-        assert_eq!(
-            out.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
-            [worktree.join("src/needle.rs").display().to_string()]
-        );
+        assert_eq!(paths(&fx, &out), [format!("{top}/src/needle.rs")]);
     }
 }
 
@@ -949,23 +1006,13 @@ async fn an_unjailed_ask_needs_a_project_folder() {
         b"oauth_token: SECRET_GRANT needle",
     )
     .unwrap();
-    // (the registered handler adds a session's grants to the resolver)
     let req = scoped(
         &tokens.display().to_string(),
         &fx.root,
         &[&tokens],
         Workspace,
     );
-    let granted = Fixture {
-        resolver: fx.resolver.session_scoped(
-            crate::fs::scope_root(req.fs_scope.as_ref()),
-            crate::fs::scope_grants(req.fs_scope.as_ref()),
-        ),
-        cfg: fx.cfg.clone(),
-        root: fx.root.clone(),
-        _dir: tempfile::tempdir().unwrap(),
-    };
-    let message = refused(&granted, req).await;
+    let message = refused(&granted(&fx, &req), req).await;
     assert!(message.contains("hidden"), "{message}");
     // a dot-folder repository found from the filesystem root is too
     std::fs::create_dir(tokens.join(".git")).unwrap();
@@ -975,6 +1022,98 @@ async fn an_unjailed_ask_needs_a_project_folder() {
     std::fs::create_dir(outside.join(".git")).unwrap();
     let out = ask_with(&fx, at(&wire), None, judge(&Log::default(), keyword)).await;
     assert_eq!(out.files.len(), 1);
+}
+
+/// `req` against `fx` with the session's grants added to the resolver, as
+/// the registered handler does.
+fn granted(fx: &Fixture, req: &FindRelevantInput) -> Fixture {
+    Fixture {
+        resolver: fx.resolver.session_scoped(
+            crate::fs::scope_root(req.fs_scope.as_ref()),
+            crate::fs::scope_grants(req.fs_scope.as_ref()),
+        ),
+        cfg: fx.cfg.clone(),
+        root: fx.root.clone(),
+        _dir: tempfile::tempdir().unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn a_repository_inside_a_dot_folder_is_searched_unjailed() {
+    let fx = fixture(
+        &[
+            (".dotparent/repo/.git/HEAD", b"ref: refs/heads/main\n"),
+            (".dotparent/repo/needle.rs", b"fn needle() {}\n"),
+        ],
+        |_, cfg| cfg.unjailed = true,
+    );
+    let dotparent = fx.root.join(".dotparent");
+    let repo = dotparent.join("repo").display().to_string();
+    let out = ask_with(&fx, at(&repo), None, judge(&Log::default(), keyword)).await;
+    assert_eq!(paths(&fx, &out), [".dotparent/repo/needle.rs"]);
+    // the dot-folder itself, granted, is still hidden
+    let req = scoped(
+        &dotparent.display().to_string(),
+        &fx.root,
+        &[&dotparent],
+        crate::fs::FsBoundary::Workspace,
+    );
+    let message = refused(&granted(&fx, &req), req).await;
+    assert!(message.contains("hidden"), "{message}");
+}
+
+#[tokio::test]
+async fn exclude_globs_match_from_the_work_tree_without_a_session() {
+    let fx = fixture(&[], |_, cfg| cfg.unjailed = true);
+    // outside every configured root, not a dot-name like tempdir's own
+    let dir = tempfile::Builder::new().prefix("plain").tempdir().unwrap();
+    let repo = dir.path().canonicalize().unwrap();
+    for path in [".git/HEAD", "ade/needle.rs", "ade/gen/needle.rs"] {
+        std::fs::create_dir_all(repo.join(path).parent().unwrap()).unwrap();
+        std::fs::write(repo.join(path), b"fn needle() {}\n").unwrap();
+    }
+    let req = FindRelevantInput {
+        exclude_globs: vec!["ade/gen/**".into()],
+        ..at(&repo.join("ade").display().to_string())
+    };
+    let out = ask_with(&fx, req, None, judge(&Log::default(), keyword)).await;
+    assert_eq!(
+        out.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+        [repo.join("ade/needle.rs").display().to_string()]
+    );
+}
+
+#[tokio::test]
+async fn agents_md_stops_at_a_grant_outside_the_session() {
+    let fx = fixture(
+        &[
+            (".git/HEAD", b"ref: refs/heads/main\n"),
+            ("AGENTS.md", b"top rules"),
+            ("session/a.rs", b"x"),
+            ("grant/AGENTS.md", b"grant rules"),
+            ("grant/needle.rs", b"fn needle() {}\n"),
+        ],
+        |_, _| {},
+    );
+    let grant = fx.root.join("grant");
+    let req = scoped(
+        &grant.display().to_string(),
+        &fx.root.join("session"),
+        &[&grant],
+        crate::fs::FsBoundary::Workspace,
+    );
+    let out = ask_with(
+        &granted(&fx, &req),
+        req,
+        None,
+        judge(&Log::default(), keyword),
+    )
+    .await;
+    assert_eq!(paths(&fx, &out), ["grant/needle.rs"]);
+    assert_eq!(
+        out.agents_md,
+        [grant.join("AGENTS.md").display().to_string()]
+    );
 }
 
 #[tokio::test]
@@ -1213,7 +1352,9 @@ async fn a_missing_path_names_the_closest_eligible_folders_beside_it() {
             ("judge-typesafe/a.rs", b"x"),
             ("judge-denied/a.rs", b"x"),
             ("judge-ignored/a.rs", b"x"),
+            ("judge-ignored/out/a.rs", b"x"),
             (".judge-hub/a.rs", b"x"),
+            (".github/workflows/ci.yml", b"x"),
             ("harness/a.rs", b"x"),
             ("ide/a.rs", b"x"),
             ("console/a.rs", b"x"),
@@ -1265,6 +1406,44 @@ async fn a_missing_path_names_the_closest_eligible_folders_beside_it() {
     assert_eq!(
         bare.message(),
         CoderError::not_found_or_denied("judge/sub").message()
+    );
+    // a parent the ask itself would refuse (hidden, ignored) names none
+    for path in [".github/workflowz", "judge-ignored/ou"] {
+        assert_eq!(
+            refusal(path).await.message(),
+            CoderError::not_found_or_denied(path).message()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_missing_relative_path_on_an_unjailed_worker_names_its_anchor() {
+    let fx = fixture(
+        &[
+            (".git/HEAD", b"ref: refs/heads/main\n"),
+            ("judge/a.rs", b"x"),
+        ],
+        |_, cfg| cfg.unjailed = true,
+    );
+    let error = run(
+        fx.resolver.clone(),
+        fx.cfg.clone(),
+        at("judge-hub"),
+        |_| async { Ok(Listing::default()) },
+        judge(&Log::default(), keyword),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code(), "C211");
+    assert_eq!(
+        error.message(),
+        format!(
+            "judge-hub: not found or not accessible. Verify the path with \
+             coder::list-folder or coder::tree. Relative paths resolve against {}; \
+             pass an absolute path.",
+            fx.root.display()
+        )
     );
 }
 

@@ -201,6 +201,20 @@ impl CoderError {
         ))
     }
 
+    /// [`not_found_or_denied`] for a relative `path`, naming the folder it
+    /// resolved against (`coder::find-relevant` on an unjailed worker, whose
+    /// roots are not projects). Redaction-safe: the same whether `path` is
+    /// missing or denied, and `anchor` is the worker's own root (as C215
+    /// names it), not a discovered path.
+    ///
+    /// [`not_found_or_denied`]: Self::not_found_or_denied
+    pub fn not_found_or_denied_relative(path: &str, anchor: &std::path::Path) -> Self {
+        CoderError::NotFoundOrDenied(format!(
+            "{path}: {C211_SUFFIX} Relative paths resolve against {}; pass an absolute path.",
+            anchor.display()
+        ))
+    }
+
     /// The other allowed C211 shape: a recursive delete refused
     /// because the subtree contains non-accessible entries. Redaction-safe
     /// because non-accessible entries' EXISTENCE is already public by

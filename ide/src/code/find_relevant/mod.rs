@@ -299,76 +299,8 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
             req.path
         )));
     }
-    let session = crate::fs::scope_anchor(req.fs_scope.as_ref())
-        .and_then(|root| resolver.session_root(root))
-        .filter(|root| walk_root.starts_with(root));
-    let top = walk::git_top(&walk_root);
-    // An unjailed worker's roots only anchor relative paths (`/tmp`, the
-    // engine's folder), so they make no project folder.
-    let configured = resolver
-        .configured_root(&walk_root)
-        .filter(|_| !resolver.unjailed());
-    // The project folder bounding the ask: the session's, else the Git work
-    // tree's (inside the jail), else a granted folder, else the configured
-    // root.
-    let Some(base) = session.clone().or_else(|| {
-        top.filter(|top| resolver.unjailed() || resolver.containing_root(top).is_some())
-            .or_else(|| resolver.grant_root(&walk_root))
-            .or(configured)
-            .map(Path::to_path_buf)
-    }) else {
-        return Err(CoderError::BadInput(format!(
-            "find-relevant sends file text to the judge, so it only searches a project \
-             folder (the session folder, a Git work tree, a granted folder or a jailed \
-             worker's root, see coder::info), and {} is none; use coder::search",
-            req.path
-        )));
-    };
-    // Hidden and secret-named folders count from the session folder or a
-    // linked worktree's top (either may sit under a dot-folder, like
-    // .claude/worktrees), else from the configured root or the filesystem
-    // root: a dot-folder repository or grant is still hidden.
-    let linked = top.filter(|top| *top == base && walk::linked_worktree(top));
-    let trusted = session
-        .as_deref()
-        .or(linked)
-        .or(configured)
-        .unwrap_or(Path::new("/"));
-    let hidden = walk_root.strip_prefix(trusted).is_ok_and(|rel| {
-        rel.components().any(|c| {
-            let name = c.as_os_str().to_string_lossy();
-            name.starts_with('.') || walk::is_sensitive(&name)
-        })
-    });
-    if hidden {
-        return Err(CoderError::BadInput(format!(
-            "path is a hidden or secret-named folder or inside one, which find-relevant \
-             never searches: {}; use coder::search",
-            req.path
-        )));
-    }
-    // Ignore rules count up to the outermost work tree below `trusted`, so
-    // a repository nested in an ignored folder is still ignored.
-    let outermost = walk_root
-        .ancestors()
-        .take_while(|dir| dir.starts_with(trusted))
-        .filter(|dir| dir.join(".git").exists())
-        .last();
-    let bound = match (&session, outermost) {
-        (Some(session), _) => session.as_path(),
-        (None, Some(top)) if top.starts_with(&base) => &base,
-        (None, Some(top)) => top,
-        (None, None) => &base,
-    };
-    if walk::ignored(bound, &walk_root) {
-        return Err(CoderError::BadInput(format!(
-            "path is gitignored or inside an ignored folder, which find-relevant never \
-             searches: {}; use coder::search",
-            req.path
-        )));
-    }
+    let project = project_folder(&resolver, req.fs_scope.as_ref(), &walk_root, &req.path)?;
     let exclude = crate::code::functions::search::build_globset(&req.exclude_globs)?;
-    let anchor = session.unwrap_or_else(|| walk_root.clone());
 
     let unavailable = |reason: String| FindRelevantOutput {
         status: Status::Unavailable,
@@ -407,7 +339,13 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
 
     let run = Arc::new(Run {
         query: req.query,
-        tree: walk::Tree::new(&resolver, &walk_root, exclude, &anchor, cfg.max_read_bytes),
+        tree: walk::Tree::new(
+            &resolver,
+            &walk_root,
+            exclude,
+            &project.base,
+            cfg.max_read_bytes,
+        ),
         evaluate,
         deadline,
         state_cap: select::MAX_STATE_BYTES,
@@ -446,12 +384,13 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
     let root = run.tree.root.clone();
     let candidates = run.sorted_candidates();
     let (lookup, listed) = (run.clone(), candidates.clone());
-    let agents_md = tokio::task::spawn_blocking(move || agents_md(&lookup, &base, &listed))
-        .await
-        .unwrap_or_else(|_| {
-            run.issue("agents_md_incomplete");
-            Vec::new()
-        });
+    let agents_md =
+        tokio::task::spawn_blocking(move || agents_md(&lookup, &project.agents_base, &listed))
+            .await
+            .unwrap_or_else(|_| {
+                run.issue("agents_md_incomplete");
+                Vec::new()
+            });
     let state = std::mem::take(&mut *run.state());
     let admitted = !candidates.is_empty();
     let mut files: Vec<RelevantFile> = candidates
@@ -571,10 +510,107 @@ fn hint(output: &FindRelevantOutput) -> Option<String> {
     Some(hint)
 }
 
+/// The folders bounding an ask at a [`project_folder`].
+struct Project {
+    /// The session folder, else the Git work tree, granted folder or
+    /// configured root holding the walk root: `exclude_globs` match from
+    /// here.
+    base: PathBuf,
+    /// Where the `AGENTS.md` walk starts: `base`, or the granted folder
+    /// below it that a session-less walk sits in (above a grant is outside
+    /// the Workspace boundary, C220).
+    agents_base: PathBuf,
+}
+
+/// The project folder bounding an ask at `walk_root` (named `wire`), or the
+/// refusal (`C210`) when there is none or `walk_root` is hidden,
+/// secret-named or gitignored. Blocking.
+fn project_folder(
+    resolver: &PathResolver,
+    scope: Option<&crate::fs::FsScope>,
+    walk_root: &Path,
+    wire: &str,
+) -> Result<Project, CoderError> {
+    let session = crate::fs::scope_anchor(scope)
+        .and_then(|root| resolver.session_root(root))
+        .filter(|root| walk_root.starts_with(root));
+    let top = walk::git_top(walk_root);
+    // An unjailed worker's roots only anchor relative paths (`/tmp`, the
+    // engine's folder), so they make no project folder.
+    let configured = resolver
+        .configured_root(walk_root)
+        .filter(|_| !resolver.unjailed());
+    // The project folder bounding the ask: the session's, else the Git work
+    // tree's (inside the jail), else a granted folder, else the configured
+    // root.
+    let Some(base) = session.clone().or_else(|| {
+        top.filter(|top| resolver.unjailed() || resolver.containing_root(top).is_some())
+            .or_else(|| resolver.grant_root(walk_root))
+            .or(configured)
+            .map(Path::to_path_buf)
+    }) else {
+        return Err(CoderError::BadInput(format!(
+            "find-relevant sends file text to the judge, so it only searches a project \
+             folder (the session folder, a Git work tree, a granted folder or a jailed \
+             worker's root, see coder::info), and {wire} is none; use coder::search"
+        )));
+    };
+    // Hidden and secret-named folders count from a linked worktree's top at
+    // or below `base` (it may sit under a dot-folder, like
+    // .claude/worktrees), else the session folder, else the configured
+    // root, else the project folder's parent: a dot-folder repository or
+    // grant is still hidden, a repository inside one is not.
+    let linked = top.filter(|top| top.starts_with(&base) && walk::linked_worktree(top));
+    let trusted = linked.or(session.as_deref()).or(configured);
+    let hidden_from = trusted.unwrap_or_else(|| base.parent().unwrap_or(&base));
+    let hidden = walk_root.strip_prefix(hidden_from).is_ok_and(|rel| {
+        rel.components().any(|c| {
+            let name = c.as_os_str().to_string_lossy();
+            name.starts_with('.') || walk::is_sensitive(&name)
+        })
+    });
+    if hidden {
+        return Err(CoderError::BadInput(format!(
+            "path is a hidden or secret-named folder or inside one, which find-relevant \
+             never searches: {wire}; use coder::search"
+        )));
+    }
+    // Ignore rules count up to the outermost work tree below `trusted` (or
+    // `/`), so a repository nested in an ignored folder is still ignored;
+    // a linked worktree's own top bounds them.
+    let outermost = walk_root
+        .ancestors()
+        .take_while(|dir| dir.starts_with(trusted.unwrap_or(Path::new("/"))))
+        .filter(|dir| dir.join(".git").exists())
+        .last();
+    let bound = match (linked, &session, outermost) {
+        (Some(top), _, _) => top,
+        (None, Some(session), _) => session.as_path(),
+        (None, None, Some(top)) if top.starts_with(&base) => &base,
+        (None, None, Some(top)) => top,
+        (None, None, None) => &base,
+    };
+    if walk::ignored(bound, walk_root) {
+        return Err(CoderError::BadInput(format!(
+            "path is gitignored or inside an ignored folder, which find-relevant never \
+             searches: {wire}; use coder::search"
+        )));
+    }
+    let agents_base = resolver
+        .grant_root(walk_root)
+        .filter(|grant| session.is_none() && grant.starts_with(&base))
+        .map_or_else(|| base.clone(), Path::to_path_buf);
+    Ok(Project { base, agents_base })
+}
+
 /// A C211 for `req.path` that also names up to five eligible folders
-/// beside it (the walk's own gates: never hidden, ignored or protected),
-/// closest name first; any other error unchanged. The same whether the
-/// path is missing or denied (REDACTION INVARIANT). Blocking.
+/// beside it, closest name first, when its parent passes
+/// [`project_folder`] (each then under the walk's own gates: never hidden,
+/// ignored or protected), so a retry with one is not refused. A relative
+/// path on an unjailed worker without a session names its anchor instead,
+/// the worker's own folder rather than a project. Any other error
+/// unchanged. The same whether the path is missing or denied (REDACTION
+/// INVARIANT). Blocking.
 fn with_nearby_folders(
     resolver: &Arc<PathResolver>,
     cfg: &CoderConfig,
@@ -587,6 +623,9 @@ fn with_nearby_folders(
     else {
         return error;
     };
+    if req.fs_scope.is_none() && wire.is_relative() && resolver.unjailed() {
+        return CoderError::not_found_or_denied_relative(&req.path, resolver.base_root());
+    }
     let listed = match parent.to_string_lossy() {
         p if p.is_empty() => ".".to_string(),
         p => p.into_owned(),
@@ -594,6 +633,9 @@ fn with_nearby_folders(
     let Ok(dir) = resolver.resolve_scope(req.fs_scope.as_ref(), &listed) else {
         return error;
     };
+    if project_folder(resolver, req.fs_scope.as_ref(), &dir, &listed).is_err() {
+        return error;
+    }
     let name = name.to_string_lossy().to_lowercase();
     let mut near: Vec<(usize, String)> =
         walk::Tree::new(resolver, &dir, None, &dir, cfg.max_read_bytes)

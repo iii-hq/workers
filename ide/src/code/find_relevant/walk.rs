@@ -90,8 +90,6 @@ const SENSITIVE_SUFFIXES: [&str; 10] = [
     ".keystore",
     ".kdbx",
 ];
-/// Unarmored secret keys: a PuTTY key file and an age identity.
-const SECRET_MARKERS: [&str; 2] = ["PuTTY-User-Key-File-", "AGE-SECRET-KEY-1"];
 
 /// Entries one ask may list (jevgrep's `entriesSeen` cap), charged as
 /// discovery lists a directory; a preview or lookup lists at most this many.
@@ -112,6 +110,13 @@ static PRIVATE_KEY: Lazy<regex::Regex> = Lazy::new(|| {
     // jevgrep's pattern, plus the ` BLOCK` of an ASCII-armored PGP key.
     regex::Regex::new(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")
         .expect("private-key regex")
+});
+/// Unarmored secret keys by shape, not a mention of their format: a PuTTY
+/// key file header and an age identity (bech32). Unanchored, so a key
+/// pasted into a `.env` or YAML value still counts.
+static SECRET_KEY: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"PuTTY-User-Key-File-\d+: |AGE-SECRET-KEY-1[02-9AC-HJ-NP-Z]{58}")
+        .expect("secret-key regex")
 });
 
 /// jevgrep `isSensitive`.
@@ -153,10 +158,12 @@ pub fn git_top(path: &Path) -> Option<&Path> {
     path.ancestors().find(|dir| dir.join(".git").exists())
 }
 
-/// Whether `top` is a linked worktree: its `.git` is a file pointing at
-/// the main repository's (an empty or other `.git` file is not one).
+/// Whether `top` is a linked worktree: its `.git` is a small regular file
+/// whose `gitdir:` admin folder in the main repository points back at it
+/// (a submodule, a symlink or a planted pointer is not one).
 pub fn linked_worktree(top: &Path) -> bool {
-    std::fs::read_to_string(top.join(".git")).is_ok_and(|git| git.starts_with("gitdir: "))
+    std::fs::symlink_metadata(top.join(".git")).is_ok_and(|md| md.is_file() && md.len() <= 4096)
+        && crate::exec::confine::repo_git_dir(top).is_some()
 }
 
 /// A one-level walk of `dir` under its ignore files and every ancestor's;
@@ -193,9 +200,18 @@ pub fn ignored(bound: &Path, path: &Path) -> bool {
             walker
                 .hidden(false)
                 .filter_entry(move |e| e.depth() == 0 || e.file_name() == name);
-            // A folder that cannot be listed proves nothing; the walk
-            // reports what it cannot read.
-            !walker.build().any(|e| e.map_or(true, |e| e.depth() == 1))
+            // Errors before the parent itself come from ancestors' ignore
+            // files (a line git reads but globset cannot parse; the rest
+            // still apply). A parent that cannot be listed proves nothing;
+            // the walk reports what it cannot read.
+            let mut opened = false;
+            !walker.build().any(|e| match e {
+                Ok(e) => {
+                    opened |= e.depth() == 0;
+                    e.depth() == 1
+                }
+                Err(_) => opened,
+            })
         })
 }
 
@@ -410,7 +426,7 @@ pub fn read(tree: &Tree, path: &str) -> Snap {
     let Ok(source) = String::from_utf8(bytes) else {
         return Snap::Excluded;
     };
-    if PRIVATE_KEY.is_match(&source) || SECRET_MARKERS.iter().any(|m| source.contains(m)) {
+    if PRIVATE_KEY.is_match(&source) || SECRET_KEY.is_match(&source) {
         return Snap::Excluded;
     }
     Snap::Ok(Snapshot {
@@ -716,6 +732,24 @@ mod tests {
         for name in ["env", ".envrc", "keys.rs", "id_rsa.pub", "secrets.toml"] {
             assert!(!is_sensitive(name), "{name}");
         }
+    }
+
+    #[test]
+    fn an_unparsable_ignore_line_leaves_the_other_rules_in_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().canonicalize().unwrap();
+        for (path, text) in [
+            (".git/HEAD", "ref: refs/heads/main\n"),
+            // git reads `tmp{` as a literal; globset cannot parse it
+            (".gitignore", "tmp{\n"),
+            ("app/.gitignore", "build/\n"),
+            ("app/build/keys/k.txt", "x"),
+        ] {
+            std::fs::create_dir_all(repo.join(path).parent().unwrap()).unwrap();
+            std::fs::write(repo.join(path), text).unwrap();
+        }
+        assert!(ignored(&repo, &repo.join("app/build/keys")));
+        assert!(!ignored(&repo, &repo.join("app")));
     }
 
     #[test]
