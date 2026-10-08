@@ -251,6 +251,7 @@ name = "devin"
 version = "0.1.17"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "iii-helpers",
  "iii-sdk",

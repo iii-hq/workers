@@ -5,6 +5,11 @@
 //! `engine_url` is intentionally NOT here — it is bootstrap (you need it to
 //! reach the configuration worker), so it stays on the `--url` CLI flag.
 //!
+//! The event feeds are the fixed trigger types `devin::agent-event` and
+//! `devin::raw-event` (see `agent_feed`), so there are no stream-name keys.
+//! A stored config that still carries the retired `events_stream` /
+//! `raw_events_stream` keys keeps loading: unknown fields are ignored.
+//!
 //! The Devin API key is referenced in the seed as `${DEVIN_API_KEY}`; the
 //! configuration worker env-expands it before this worker ever sees the value,
 //! so the secret never lives in the repo or on the wire in plaintext form.
@@ -47,12 +52,6 @@ pub struct Config {
     /// engine (the point of the CLI surface). Drop to `accept-edits` or `auto`
     /// to restrict the agent. The prompt is always passed after `--`.
     pub cli_extra_args: Vec<String>,
-    /// Stream that carries the AgentEvent frames the console and acp worker
-    /// render. Grouped by session_id.
-    pub events_stream: String,
-    /// Stream that carries the raw `devin` CLI stdout lines, verbatim. Grouped
-    /// by session_id.
-    pub raw_events_stream: String,
     /// Prepend the iii runtime context to the first prompt of a `devin::run`
     /// session so the agent discovers and calls engine functions through the
     /// `iii` CLI, the same as the grok and codex workers. Defaults on for
@@ -75,8 +74,6 @@ impl Default for Config {
             request_timeout_secs: 120,
             devin_executable: String::new(),
             cli_extra_args: vec!["--permission-mode".to_string(), "dangerous".to_string()],
-            events_stream: "agent::events".to_string(),
-            raw_events_stream: "devin::events".to_string(),
             iii_context: true,
             session_recording: true,
         }

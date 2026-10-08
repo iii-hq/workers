@@ -6,6 +6,7 @@ use iii_helpers::observability::OtelConfig;
 use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::RwLock;
 
+use devin::agent_feed;
 use devin::api;
 use devin::config::Config;
 use devin::configuration;
@@ -91,6 +92,9 @@ async fn main() -> Result<()> {
     configuration::reconcile(&iii, &cell).await;
 
     let http = api::build_client();
+    // Own the devin::agent-event / devin::raw-event trigger types before the
+    // first turn can emit.
+    agent_feed::register(&iii);
     register_all(&iii, cell, http);
     tracing::info!("devin worker registered all functions, ready");
 

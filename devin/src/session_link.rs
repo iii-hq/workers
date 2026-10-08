@@ -1,9 +1,10 @@
 //! Mirror a `devin::run` turn into `session-manager`, so a Devin run shows up
 //! in the console's session list and transcript like a harness session.
 //!
-//! `agent::events` / `devin::events` are a live tape: a console window opened
-//! after the run has nothing to replay from them, and without the stream
-//! worker they carry nothing at all. The session manager is the durable side
+//! `devin::agent-event` / `devin::raw-event` are a live tape: they are not
+//! stored or replayed, so a console window opened after the run has nothing
+//! to read from them, and with no binding they deliver nothing. The session
+//! manager is the durable side
 //! the console reads (`session::list`, `session::messages`), so a turn writes
 //! the same records a harness turn does:
 //!

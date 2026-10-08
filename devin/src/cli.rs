@@ -1,8 +1,8 @@
 //! The `devin::run` turn: spawn the local Devin CLI (the SWE-1.6 coding agent)
-//! in non-interactive mode (`devin [extra args] --print -- "<prompt>"`), stream
-//! its stdout verbatim onto `devin::events`, mirror a terminal AgentEvent frame
-//! onto `agent::events` so the console renders the turn like any other agent
-//! worker, and record the Devin session id it prints. The turn is also written
+//! in non-interactive mode (`devin [extra args] --print -- "<prompt>"`), deliver
+//! its stdout verbatim on `devin::raw-event`, deliver the terminal AgentEvent
+//! frames on `devin::agent-event` so consumers (acp) render the turn like any
+//! other agent worker, and record the Devin session id it prints. The turn is also written
 //! to `session-manager` (see `session_link`) so it is listed and replayable in
 //! the console like a harness session.
 //!
@@ -21,8 +21,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use crate::agent_feed::{emit_agent_event, emit_raw_event};
 use crate::config::Config;
-use crate::events::emit;
 use crate::functions::types::{extract_prompt, RunRequest};
 use crate::iii_prompt::III_CONTEXT_PROMPT;
 use crate::session_link::{self, TurnLink};
@@ -236,7 +236,7 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     record.updated_at_ms = now_ms();
     let _ = save_session(&iii, &record).await;
 
-    let mut outcome = stream_turn(&iii, &cfg, &session_id, &mut child, &cancel, &mut link).await;
+    let mut outcome = stream_turn(&iii, &session_id, &mut child, &cancel, &mut link).await;
 
     release(&session_id).await;
 
@@ -271,27 +271,9 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
             .await;
     }
 
-    let final_msg = assistant_message(
-        vec![ContentBlock::Text {
-            text: outcome.result_text.clone(),
-        }],
-        &record.model,
-        &outcome.stop_reason,
-    );
-    emit(
-        &iii,
-        &cfg.events_stream,
-        &session_id,
-        json!({ "type": "turn_end", "message": final_msg, "function_results": [] }),
-    )
-    .await;
-    emit(
-        &iii,
-        &cfg.events_stream,
-        &session_id,
-        json!({ "type": "agent_end", "messages": [] }),
-    )
-    .await;
+    for frame in terminal_frames(&outcome.result_text, &record.model, &outcome.stop_reason) {
+        emit_agent_event(&iii, &session_id, frame).await;
+    }
 
     json!({
         "session_id": session_id,
@@ -304,6 +286,27 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     })
 }
 
+/// The `devin::raw-event` frame for one CLI stdout line.
+pub fn stdout_frame(line: &str) -> Value {
+    json!({ "type": "stdout", "line": line })
+}
+
+/// The terminal `devin::agent-event` frames of a turn, in order: `turn_end`
+/// with the final assistant message, then `agent_end`.
+pub fn terminal_frames(result_text: &str, model: &str, stop_reason: &str) -> [Value; 2] {
+    let final_msg = assistant_message(
+        vec![ContentBlock::Text {
+            text: result_text.to_string(),
+        }],
+        model,
+        stop_reason,
+    );
+    [
+        json!({ "type": "turn_end", "message": final_msg, "function_results": [] }),
+        json!({ "type": "agent_end", "messages": [] }),
+    ]
+}
+
 struct Outcome {
     result_text: String,
     stop_reason: String,
@@ -312,7 +315,6 @@ struct Outcome {
 
 async fn stream_turn(
     iii: &IIIClient,
-    cfg: &Config,
     session_id: &str,
     child: &mut tokio::process::Child,
     cancel: &CancellationToken,
@@ -354,14 +356,8 @@ async fn stream_turn(
                 break;
             }
         };
-        // Mirror the raw line verbatim onto the raw stream.
-        emit(
-            iii,
-            &cfg.raw_events_stream,
-            session_id,
-            json!({ "type": "stdout", "line": line }),
-        )
-        .await;
+        // Mirror the raw line verbatim onto the raw feed.
+        emit_raw_event(iii, session_id, stdout_frame(&line)).await;
         // Accumulate into the turn result.
         if !outcome.result_text.is_empty() {
             outcome.result_text.push('\n');

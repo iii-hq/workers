@@ -86,8 +86,8 @@ fn register_run(iii: &IIIClient, cell: &ConfigCell) {
         .description(
             "Run one Devin CLI turn and wait for the result. Accepts `prompt` or a `messages` \
              array; records the turn as a session-manager session (listed in the console, \
-             nested under `parent_session_id` when given), streams raw CLI stdout onto \
-             devin::events, terminal AgentEvent frames onto agent::events, and returns \
+             nested under `parent_session_id` when given), delivers raw CLI stdout on \
+             devin::raw-event and terminal AgentEvent frames on devin::agent-event, and returns \
              {session_id, devin_session_id, url, result, stop_reason, is_error}.",
         ),
     );
@@ -142,8 +142,8 @@ fn register_start(iii: &IIIClient, cell: &ConfigCell) {
         }))
         .description(
             "Start a Devin CLI turn and return immediately; follow the session-manager session \
-             (session::messages, session_id) or devin::events / agent::events (group_id = \
-             session_id) for progress and turn_end.",
+             (session::messages, session_id) or bind devin::agent-event / devin::raw-event with \
+             { session_id } for progress and turn_end.",
         ),
     );
 }
