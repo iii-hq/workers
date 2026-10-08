@@ -4,9 +4,8 @@ vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 
 import { spawn } from 'node:child_process';
 import { type Config, loadConfig } from '../src/config.js';
-import { makeEmitter } from '../src/events.js';
 import { executeRun, RunPayloadSchema } from '../src/run.js';
-import { fakeIii } from './_helpers/fake-iii.js';
+import { AGENT, boundFeeds, fakeIii, RAW } from './_helpers/fake-iii.js';
 import { ev, newSpawnCapture, scriptedSpawn } from './_helpers/fake-opencode.js';
 
 const spawnMock = vi.mocked(spawn);
@@ -16,8 +15,10 @@ async function run(events: object[], payload: Record<string, unknown> = {}) {
   const fake = fakeIii();
   const c = await cfg();
   spawnMock.mockImplementation(scriptedSpawn(events, newSpawnCapture()) as never);
-  const emit = makeEmitter(fake.iii, c.events_stream);
-  const emitRaw = makeEmitter(fake.iii, c.raw_events_stream);
+  const { emit, emitRaw } = await boundFeeds(
+    fake,
+    typeof payload.session_id === 'string' ? payload.session_id : 's1',
+  );
   const result = await executeRun(
     fake.iii,
     c,
@@ -25,7 +26,7 @@ async function run(events: object[], payload: Record<string, unknown> = {}) {
     emitRaw,
     RunPayloadSchema.parse({ prompt: 'x', session_id: 's1', iii_context: false, ...payload }),
   );
-  const agent = fake.streamFrames('agent::events').map((f) => f.data as Record<string, unknown>);
+  const agent = fake.feedEvents(AGENT);
   return { fake, result, agent };
 }
 
@@ -132,18 +133,18 @@ describe('event translation', () => {
         newSpawnCapture(),
       ) as never,
     );
-    const emit = makeEmitter(fake.iii, c.events_stream);
+    const { emit, emitRaw } = await boundFeeds(fake, 's1');
     const result = await executeRun(
       fake.iii,
       c,
       emit,
-      emit,
+      emitRaw,
       RunPayloadSchema.parse({ prompt: 'x', session_id: 's1', iii_context: false }),
     );
     expect(result.result).toBe('ok');
     expect(result.is_error).toBe(false);
     // the garbage line is not mirrored as a parsed event
-    const raw = fake.streamFrames('opencode::events').map((f) => f.data as { type?: string });
+    const raw = fake.feedEvents(RAW);
     expect(raw.every((d) => typeof d.type === 'string')).toBe(true);
   });
 });

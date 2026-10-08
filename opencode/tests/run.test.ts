@@ -4,9 +4,8 @@ vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 
 import { spawn } from 'node:child_process';
 import { type Config, loadConfig } from '../src/config.js';
-import { makeEmitter } from '../src/events.js';
 import { executeRun, RunPayloadSchema } from '../src/run.js';
-import { fakeIii } from './_helpers/fake-iii.js';
+import { AGENT, boundFeeds, fakeIii, RAW } from './_helpers/fake-iii.js';
 import { ev, fullTurn, newSpawnCapture, scriptedSpawn } from './_helpers/fake-opencode.js';
 
 const spawnMock = vi.mocked(spawn);
@@ -24,8 +23,10 @@ async function runTurn(
   const cfg = { ...(await baseConfig()), ...cfgOverrides };
   const capture = newSpawnCapture();
   spawnMock.mockImplementation(scriptedSpawn(events, capture) as never);
-  const emit = makeEmitter(fake.iii, cfg.events_stream);
-  const emitRaw = makeEmitter(fake.iii, cfg.raw_events_stream);
+  const { emit, emitRaw } = await boundFeeds(
+    fake,
+    ...(typeof payload.session_id === 'string' ? [payload.session_id] : []),
+  );
   const result = await executeRun(fake.iii, cfg, emit, emitRaw, RunPayloadSchema.parse(payload));
   return { fake, capture, result };
 }
@@ -46,9 +47,9 @@ describe('executeRun', () => {
     expect((result.usage as { output_tokens: number }).output_tokens).toBe(5);
   });
 
-  it('emits the translated AgentEvent sequence on agent::events', async () => {
+  it('delivers the translated AgentEvent sequence on opencode::agent-event', async () => {
     const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
-    const types = fake.streamFrames('agent::events').map((f) => (f.data as { type: string }).type);
+    const types = fake.feedEvents(AGENT).map((d) => d.type);
     expect(types).toEqual([
       'message_complete',
       'function_execution_start',
@@ -57,17 +58,51 @@ describe('executeRun', () => {
       'agent_end',
     ]);
     const [start, end] = fake
-      .streamFrames('agent::events')
-      .map((f) => f.data as Record<string, unknown>)
+      .feedEvents(AGENT)
       .filter((d) => String(d.type).startsWith('function_execution'));
     expect(start).toMatchObject({ function_id: 'opencode::bash', args: { command: 'ls' } });
     expect(end).toMatchObject({ function_id: 'opencode::bash', is_error: false });
   });
 
-  it('mirrors every raw OpenCode event onto opencode::events', async () => {
+  it('mirrors every raw OpenCode event onto opencode::raw-event', async () => {
     const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
-    const raw = fake.streamFrames('opencode::events').map((f) => (f.data as { type: string }).type);
+    const raw = fake.feedEvents(RAW).map((d) => d.type);
     expect(raw).toEqual(['step_start', 'text', 'tool_use', 'step_finish']);
+  });
+
+  it('numbers each feed contiguously from 0 for the turn', async () => {
+    const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
+    expect(fake.feedPayloads(AGENT).map((p) => p.seq)).toEqual([0, 1, 2, 3, 4]);
+    expect(fake.feedPayloads(RAW).map((p) => p.seq)).toEqual([0, 1, 2, 3]);
+    for (const p of [...fake.feedPayloads(AGENT), ...fake.feedPayloads(RAW)]) {
+      expect(p).toMatchObject({ session_id: 's1', source: 'opencode' });
+      expect(p.event_id).toBe(`s1-${p.epoch}-${String(p.seq).padStart(8, '0')}`);
+    }
+  });
+
+  it('completes the turn when every feed delivery fails', async () => {
+    const fake = fakeIii();
+    const original = fake.iii.trigger.bind(fake.iii);
+    (fake.iii as { trigger: typeof fake.iii.trigger }).trigger = (async (req: {
+      function_id: string;
+    }) => {
+      if (req.function_id.startsWith('consumer::')) throw new Error('consumer gone');
+      return original(req as never);
+    }) as typeof fake.iii.trigger;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    spawnMock.mockImplementation(scriptedSpawn(fullTurn, newSpawnCapture()) as never);
+    const { emit, emitRaw } = await boundFeeds(fake, 's1');
+    const result = await executeRun(
+      fake.iii,
+      await baseConfig(),
+      emit,
+      emitRaw,
+      RunPayloadSchema.parse({ prompt: 'x', session_id: 's1' }),
+    );
+    expect(result).toMatchObject({ session_id: 's1', result: 'pong', is_error: false });
+    expect((fake.state.get('opencode_sessions/s1') as { status: string }).status).toBe('done');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('persists working then done with the opencode session id', async () => {
@@ -107,12 +142,12 @@ describe('executeRun', () => {
     const cfg = await baseConfig();
     const capture = newSpawnCapture();
     spawnMock.mockImplementation(scriptedSpawn(fullTurn, capture) as never);
-    const emit = makeEmitter(fake.iii, cfg.events_stream);
+    const { emit, emitRaw } = await boundFeeds(fake, 's1');
     const result = await executeRun(
       fake.iii,
       cfg,
       emit,
-      emit,
+      emitRaw,
       RunPayloadSchema.parse({ prompt: 'again', session_id: 's1' }),
     );
     expect(capture.args).toContain('--session');
@@ -128,19 +163,19 @@ describe('executeRun', () => {
     spawnMock.mockImplementation(
       scriptedSpawn([ev.step_start()], capture, { code: 1, stderr: 'boom' }) as never,
     );
-    const emit = makeEmitter(fake.iii, cfg.events_stream);
+    const { emit, emitRaw } = await boundFeeds(fake, 's1');
     const result = await executeRun(
       fake.iii,
       cfg,
       emit,
-      emit,
+      emitRaw,
       RunPayloadSchema.parse({ prompt: 'x', session_id: 's1' }),
     );
     expect(result.is_error).toBe(true);
     expect(result.stop_reason).toBe('error');
     expect(String(result.result)).toContain('boom');
     expect((fake.state.get('opencode_sessions/s1') as { status: string }).status).toBe('error');
-    const types = fake.streamFrames('agent::events').map((f) => (f.data as { type: string }).type);
+    const types = fake.feedEvents(AGENT).map((d) => d.type);
     expect(types).toContain('turn_end');
     expect(types).toContain('agent_end');
   });
@@ -151,10 +186,7 @@ describe('executeRun', () => {
       ev.tool('bash', { command: 'false' }, '', 'ses_1', 1),
       ev.step_finish(),
     ]);
-    const end = fake
-      .streamFrames('agent::events')
-      .map((f) => f.data as Record<string, unknown>)
-      .find((d) => d.type === 'function_execution_end');
+    const end = fake.feedEvents(AGENT).find((d) => d.type === 'function_execution_end');
     expect(end).toMatchObject({ is_error: true });
   });
 
@@ -163,12 +195,12 @@ describe('executeRun', () => {
     const cfg = await baseConfig();
     const capture = newSpawnCapture();
     spawnMock.mockImplementation(scriptedSpawn(fullTurn, capture, { hang: true }) as never);
-    const emit = makeEmitter(fake.iii, cfg.events_stream);
+    const { emit, emitRaw } = await boundFeeds(fake, 'busy');
     const first = executeRun(
       fake.iii,
       cfg,
       emit,
-      emit,
+      emitRaw,
       RunPayloadSchema.parse({ prompt: 'a', session_id: 'busy' }),
     );
     await new Promise((r) => setTimeout(r, 20));
@@ -176,7 +208,7 @@ describe('executeRun', () => {
       fake.iii,
       cfg,
       emit,
-      emit,
+      emitRaw,
       RunPayloadSchema.parse({ prompt: 'b', session_id: 'busy' }),
     )) as Record<string, unknown>;
     expect(second).toMatchObject({ session_id: 'busy', busy: true });

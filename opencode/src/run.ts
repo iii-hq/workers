@@ -1,7 +1,8 @@
 /**
  * opencode::* function registrations. `opencode::run` spawns
  * `opencode run --format json`, parses the JSON event stream line by line,
- * translates it onto agent::events, mirrors it raw onto opencode::events, and
+ * translates it onto the opencode::agent-event feed, mirrors it raw onto the
+ * opencode::raw-event feed, and
  * returns the final result with token usage and cost. Accepts a bare `prompt`
  * or the shared agent entrypoint shape (`messages`), so anything that drives
  * `run::start_and_wait` can drive OpenCode unchanged.
@@ -13,7 +14,7 @@ import { createInterface } from 'node:readline';
 import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import type { Emit } from './events.js';
+import type { Emit } from './agent-feed.js';
 import { III_CONTEXT_PROMPT } from './iii-prompt.js';
 import {
   addUsage,
@@ -365,7 +366,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       executeRun(iii, getCfg(), emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
     {
       description:
-        'Run one OpenCode coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; streams raw events onto opencode::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.',
+        'Run one OpenCode coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; delivers raw events on the opencode::raw-event trigger and AgentEvent frames on opencode::agent-event (bind with { session_id }), and returns {session_id, result, usage, total_cost_usd}.',
       request_format: RUN_REQUEST_FORMAT,
       response_format: RUN_RESPONSE_FORMAT,
     },
@@ -394,7 +395,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
     },
     {
       description:
-        'Start an OpenCode turn and return immediately; watch agent::events (group_id = session_id) for progress and turn_end.',
+        'Start an OpenCode turn and return immediately; bind opencode::agent-event with { session_id } for progress and turn_end.',
       request_format: RUN_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },

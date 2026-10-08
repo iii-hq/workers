@@ -4,9 +4,8 @@ vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 
 import { spawn } from 'node:child_process';
 import { loadConfig } from '../src/config.js';
-import { makeEmitter } from '../src/events.js';
 import { register } from '../src/run.js';
-import { fakeIii, type FakeIii } from './_helpers/fake-iii.js';
+import { boundFeeds, fakeIii, type FakeIii } from './_helpers/fake-iii.js';
 import { fullTurn, newSpawnCapture, scriptedSpawn } from './_helpers/fake-opencode.js';
 
 const spawnMock = vi.mocked(spawn);
@@ -14,8 +13,7 @@ const spawnMock = vi.mocked(spawn);
 async function registeredWorker(): Promise<FakeIii> {
   const fake = fakeIii();
   const cfg = await loadConfig('/nonexistent/config.yaml');
-  const emit = makeEmitter(fake.iii, cfg.events_stream);
-  const emitRaw = makeEmitter(fake.iii, cfg.raw_events_stream);
+  const { emit, emitRaw } = await boundFeeds(fake, 's1', 's2', 'bg1', 'busy1', 'live1');
   register(fake.iii, () => cfg, emit, emitRaw);
   return fake;
 }

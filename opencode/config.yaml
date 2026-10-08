@@ -5,13 +5,10 @@ defaults:
   cwd: ""                  # default working directory for runs
   agent: ""                # OpenCode agent to use; empty = default
 
-# Stream AgentEvent frames here, grouped by session_id. The console and
-# acp worker both read this stream.
-events_stream: agent::events
-
-# Raw OpenCode JSON events (verbatim `opencode run --format json` lines:
-# step_start, text, tool_use, step_finish) mirrored here, grouped by session_id.
-raw_events_stream: opencode::events
+# Event feeds are fixed trigger types, not configurable: translated AgentEvent
+# frames on opencode::agent-event, raw OpenCode JSON events on
+# opencode::raw-event (bind either with { session_id }). The old
+# events_stream / raw_events_stream keys are ignored if present.
 
 # Prepend the iii runtime context to the prompt on a fresh session: teaches the
 # agent live discovery against the engine catalog through the iii CLI

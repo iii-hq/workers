@@ -3,9 +3,9 @@
  * seed installed as `initial_value` on first registration; the live value is
  * authoritative thereafter and hot-reloads on `configuration:updated`.
  *
- * Stream names (`events_stream` / `raw_events_stream`) are read once at boot to
- * build the emitters — a change to those needs a restart. Every other field
- * hot-reloads.
+ * Every field hot-reloads. The legacy `events_stream` / `raw_events_stream`
+ * keys are accepted and ignored (the feeds are the fixed trigger types
+ * opencode::agent-event / opencode::raw-event).
  */
 
 import type { IIIClient } from 'iii-sdk';
@@ -37,7 +37,7 @@ export async function registerOpencodeConfig(iii: IIIClient, seed: Config): Prom
     id: CONFIG_ID,
     name: 'OpenCode',
     description:
-      'OpenCode worker: per-turn defaults (model, working directory, agent), the agent::events / opencode::events stream names, the opencode CLI path, and whether to inject the iii runtime context.',
+      'OpenCode worker: per-turn defaults (model, working directory, agent), the opencode CLI path, and whether to inject the iii runtime context.',
     schema: runtimeJsonSchema(),
     metadata: { ui_form: DEFAULT_CONFIG_ID },
     initial_value: toRuntime(seed),

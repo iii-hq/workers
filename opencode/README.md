@@ -1,6 +1,6 @@
 # opencode
 
-OpenCode as an iii worker: the OpenCode API exposed as functions and streams on the iii bus, nothing else. The worker spawns the same `opencode` CLI the user runs in their terminal, with the same login, filesystem, and tools. `opencode::run` executes one headless turn (`opencode run --format json`) and returns the result with token usage and cost; the raw JSON events mirror verbatim onto the `opencode::events` stream, and a translated AgentEvent view lands on `agent::events`, so the iii console, the acp worker, and any sibling worker observe an OpenCode run exactly like a native harness turn. The worker also registers `run::start_and_wait`, the same entrypoint the console and acp worker drive.
+OpenCode as an iii worker: the OpenCode API exposed as functions and trigger types on the iii bus, nothing else. The worker spawns the same `opencode` CLI the user runs in their terminal, with the same login, filesystem, and tools. `opencode::run` executes one headless turn (`opencode run --format json`) and returns the result with token usage and cost; the raw JSON events are delivered verbatim on the `opencode::raw-event` trigger type, and a translated AgentEvent view on `opencode::agent-event`, so the acp worker and any sibling worker that binds them observe an OpenCode run exactly like a native harness turn. The worker also registers `run::start_and_wait`, the same entrypoint the console and acp worker drive.
 
 ## Install
 
@@ -67,18 +67,18 @@ A turn from the CLI returns the result with token usage and cost, and `opencode:
 
 ![iii trigger opencode::run --help printing the request schema as a parameter table](https://raw.githubusercontent.com/iii-hq/workers/main/opencode/assets/cli-help.png)
 
-**Resume uses the iii `session_id`, not `opencode_session_id`.** Two ids come back from every run: `session_id` (a UUID) is the iii key for resume / status / stop and the stream group; `opencode_session_id` (`ses_...`) is OpenCode's own id, returned for reference only. To continue a conversation, pass the same **iii `session_id`** again. The worker looks up the stored OpenCode session for that key and resumes with `--session`:
+**Resume uses the iii `session_id`, not `opencode_session_id`.** Two ids come back from every run: `session_id` (a UUID) is the iii key for resume / status / stop and the `session_id` event feeds are bound with; `opencode_session_id` (`ses_...`) is OpenCode's own id, returned for reference only. To continue a conversation, pass the same **iii `session_id`** again. The worker looks up the stored OpenCode session for that key and resumes with `--session`:
 
 ![two opencode::run turns sharing the iii session_id; the second resumes (num_turns 2) and recalls a token from the first](https://raw.githubusercontent.com/iii-hq/workers/main/opencode/assets/cli-resume.png)
 
-Long turns: use `opencode::start` to return immediately, then watch `agent::events` (group_id = session_id) for `message_complete`, `function_execution_start/end`, and `turn_end`. `opencode::stop` interrupts a live run.
+Long turns: use `opencode::start` to return immediately, then bind `opencode::agent-event` with `{ session_id }` (see [Event feeds](#event-feeds)) for `message_complete`, `function_execution_start/end`, and `turn_end`. `opencode::stop` interrupts a live run.
 
 ## Functions
 
 | Function | Purpose |
 | --- | --- |
 | `opencode::run` | Run one turn, wait, return the final result + usage + cost |
-| `opencode::start` | Fire-and-forget turn; progress arrives on `agent::events` |
+| `opencode::start` | Fire-and-forget turn; progress arrives on `opencode::agent-event` |
 | `opencode::stop` | Interrupt a live run |
 | `opencode::status` | Session state, live flag, usage, cost |
 | `opencode::sessions::list` | All sessions this worker has run |
@@ -88,9 +88,9 @@ Long turns: use `opencode::start` to return immediately, then watch `agent::even
 
 ## Events, usage, and cost
 
-Every line OpenCode emits under `--format json` is mirrored verbatim onto `opencode::events`, group_id = session_id:
+Every line OpenCode emits under `--format json` is delivered verbatim on `opencode::raw-event`, and translated onto `opencode::agent-event`:
 
-| OpenCode event | `agent::events` |
+| OpenCode event | `opencode::agent-event` |
 | --- | --- |
 | `text` | `message_complete` |
 | `tool_use` (completed) | `function_execution_start` + `function_execution_end` |
@@ -98,6 +98,32 @@ Every line OpenCode emits under `--format json` is mirrored verbatim onto `openc
 | stream end | `turn_end` + `agent_end` |
 
 OpenCode reports per-step `tokens` (input / output / reasoning / cache read+write) and `cost` inline in the event stream, so `opencode::run` returns `usage` + `total_cost_usd` with no extra bookkeeping.
+
+## Event feeds
+
+The worker owns two trigger types. Bind either one to a function of yours with the session you want to follow; the worker calls that function once per frame (fire-and-forget).
+
+| Trigger type | `event` in the payload |
+| --- | --- |
+| `opencode::agent-event` | one translated AgentEvent frame (`message_complete`, `function_execution_start/end`, `turn_end`, `agent_end`) |
+| `opencode::raw-event` | one raw OpenCode JSON event, verbatim (`step_start`, `text`, `tool_use`, `step_finish`) |
+
+Binding config: `{ "session_id": "<iii session_id>", "metadata": { ... } }`. `session_id` is required (non-empty, at most 512 characters); `metadata` is optional and is handed to your function (it wins over the binding's own metadata). Unknown keys are rejected, and each trigger type accepts at most 256 bindings.
+
+Payload your function receives:
+
+```jsonc
+{
+  "session_id": "<iii session_id>",
+  "event_id": "<session_id>-<epoch>-00000007", // identity, for dedup
+  "seq": 7,              // contiguous per (feed, session_id, epoch), from 0
+  "epoch": "<uuid>",     // per worker process; a new epoch restarts seq at 0
+  "source": "opencode",
+  "event": { "type": "message_complete", "...": "..." }
+}
+```
+
+The two feeds number their frames independently. Deliveries are not guaranteed to arrive in order, so order by `(epoch, seq)` and drop repeated `event_id`s. Frames are ephemeral: nothing is stored or replayed, and a consumer bound after a frame was emitted never sees it. The durable record of a turn is the value `opencode::run` returns and the session record behind `opencode::status` / `opencode::sessions::list`. These feeds replace the former `agent::events` / `opencode::events` iii-stream streams (see the guide "Migrate from iii-stream and pubsub").
 
 ## The agent on the bus
 
@@ -117,21 +143,19 @@ defaults:
   cwd: ""                  # default working directory for runs
   agent: ""                # OpenCode agent; empty = default
 
-events_stream: agent::events       # translated AgentEvent frames
-raw_events_stream: opencode::events  # verbatim OpenCode JSON events
 iii_context: true                    # prepend the iii runtime context on a fresh session
 opencode_executable: ""              # path to the opencode CLI; empty = resolve on PATH
 ```
 
-`config.yaml` is the seed: on first boot the worker registers it with the built-in `configuration` worker as the initial value, then reads the live value back and hot-reloads on `configuration:updated`. `engine_url` stays on the local seed (bootstrap).
+`config.yaml` is the seed: on first boot the worker registers it with the built-in `configuration` worker as the initial value, then reads the live value back and hot-reloads on `configuration:updated`. `engine_url` stays on the local seed (bootstrap). The event feeds are fixed trigger types, not configuration; the former `events_stream` / `raw_events_stream` keys are accepted and ignored so stored configs keep loading.
 
 ## How it maps
 
 | OpenCode | iii |
 | --- | --- |
 | `opencode run --format json` turn | `opencode::run` invocation |
-| each JSON event, verbatim | `opencode::events` stream frame |
-| `text` part | `message_complete` frame on `agent::events` |
+| each JSON event, verbatim | `opencode::raw-event` delivery |
+| `text` part | `message_complete` frame on `opencode::agent-event` |
 | `tool_use` part | `function_execution_start` / `function_execution_end` frames |
 | `step_finish` tokens + cost | `usage` + `total_cost_usd` on the result + `agent_end` |
 | session resume (`--session ses_...`) | engine state scope `opencode_sessions`, keyed by iii session_id |

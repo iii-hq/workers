@@ -8,6 +8,7 @@
 
 import { parseArgs } from 'node:util';
 import { registerWorker } from 'iii-sdk';
+import { createAgentFeeds } from './agent-feed.js';
 import { type Config, loadConfig } from './config.js';
 import {
   bindConfigTrigger,
@@ -15,7 +16,6 @@ import {
   fetchRuntime,
   registerOpencodeConfig,
 } from './configuration.js';
-import { makeEmitter } from './events.js';
 import { resolveOpencodeExecutable } from './executable.js';
 import { register } from './run.js';
 
@@ -57,8 +57,8 @@ const refresh = async () => {
 
 await bindConfigTrigger(iii, refresh);
 
-const emit = makeEmitter(iii, holder.current.events_stream);
-const emitRaw = makeEmitter(iii, holder.current.raw_events_stream);
+// Owned feeds: opencode::agent-event and opencode::raw-event (bind with { session_id }).
+const { emit, emitRaw } = createAgentFeeds(iii);
 register(iii, () => holder.current, emit, emitRaw);
 
 console.log(`opencode worker connected to ${url}`);
