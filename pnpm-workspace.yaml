@@ -13,6 +13,7 @@ packages:
   - judge-laya/ui
   - judge-clef/ui
   - judge-typesafe/ui
+  - judge-openai/ui
   - packages/*
   - ade/web
   - ade/ui
