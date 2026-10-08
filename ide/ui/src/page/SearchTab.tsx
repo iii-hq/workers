@@ -26,7 +26,7 @@ import {
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import type { Host } from '@iii-dev/console-ui'
-import { nextStep, reasonLabel } from '../function-trigger/find-relevant'
+import { NOTHING_JUDGED, nextStep, reasonLabel } from '../function-trigger/find-relevant'
 import { coderFindRelevant, coderSearch } from './coder'
 import { FileTypeIcon } from './file-type-icon'
 import {
@@ -87,6 +87,8 @@ interface SearchResults {
   asked?: string
   /** Why an ask's answer is partial. */
   reason?: string | null
+  /** Whether the judge saw anything: false when nothing was eligible. */
+  judged?: boolean
 }
 
 /** One ask's identity: an answer is stale once any part changes. A field
@@ -97,8 +99,16 @@ function askKey(root: string, query: string, includeGlob: string, excludeGlob: s
 
 /** The Search view's own words for an ask's answer; the worker's `hint`
     is written for agents (wire fields, `coder::search`). */
-export function askNotice(status: 'complete' | 'incomplete' | 'unavailable', reason?: string | null): string {
-  if (status === 'complete') return 'The judge found nothing relevant — widen the folder or use text search.'
+export function askNotice(
+  status: 'complete' | 'incomplete' | 'unavailable',
+  reason?: string | null,
+  judged = true,
+): string {
+  if (status === 'complete') {
+    return judged
+      ? 'The judge found nothing relevant — widen the folder or use text search.'
+      : `${NOTHING_JUDGED} Check the folder and the exclusions.`
+  }
   const why = reason ? ` (${reasonLabel(reason)})` : ''
   const next = reason ? nextStep(reason) : ''
   const head =
@@ -113,17 +123,27 @@ export function askNotice(status: 'complete' | 'incomplete' | 'unavailable', rea
 /** The worker's refusals of an ask in this view's words; its own text
     sends an agent to `coder::search`. */
 const ASK_REFUSALS: [RegExp, string][] = [
-  [/only searches a project folder/, 'Ask only searches a project folder'],
-  [/hidden or secret-named/, 'Ask never searches hidden or secret-named folders'],
-  [/gitignored/, 'Ask never searches folders Git ignores'],
-  [/inside a \.git directory/, "Ask never searches Git's own folder"],
-  [/not a directory/, 'Ask takes a folder, not a file'],
-  [/not found or not accessible/, 'No such folder in this workspace'],
+  [/only searches a project folder/, 'Ask only searches a project folder — use text search here.'],
+  [/hidden or secret-named/, 'Ask never searches hidden or secret-named folders — use text search here.'],
+  [/gitignored/, 'Ask never searches folders Git ignores — use text search here.'],
+  [/inside a \.git directory/, "Ask never searches Git's own folder — use text search here."],
+  [/not a directory/, 'Ask takes a folder, not a file — use text search here.'],
+  [/outside the session directory/, 'That folder leads outside this workspace — ask about one inside it.'],
+  [/query is \d+ bytes/, 'The question is too long to ask — shorten it, or use text search for literal text.'],
+  [/not found or not accessible/, 'No such folder in this workspace — check the folder to ask about.'],
 ]
 
-export function askRefusal(error: string): string {
+/** A refusal in this view's words; a missing folder names the worker's
+    closest folders beside it, relative to `root`. */
+export function askRefusal(error: string, root = ''): string {
+  const near = /Folders beside it, closest name first: (.*?)\.(?:"|$)/.exec(error)
+  if (near) {
+    const base = `${root.replace(/\/+$/, '')}/`
+    const folders = near[1].split(', ').map((folder) => (folder.startsWith(base) ? folder.slice(base.length) : folder))
+    return `No such folder in this workspace — did you mean ${folders.join(', ')}?`
+  }
   const refusal = ASK_REFUSALS.find(([pattern]) => pattern.test(error))
-  return refusal ? `${refusal[1]} — use text search here.` : error
+  return refusal ? refusal[1] : error
 }
 
 /** A glob the user typed matches anywhere below the root: a bare pattern
@@ -204,6 +224,10 @@ function SearchTabView({
   // re-attaches to it, even after its answer was dropped.
   const askingKeyRef = useRef('')
   const askStartRef = useRef(0)
+  // The seq that shows that ask: its own, or a fresh one when Enter
+  // re-attaches, so seqRef never goes back to a seq an older text search
+  // still holds.
+  const askViewRef = useRef(0)
   const appliedRequestRef = useRef(0)
 
   const run = useCallback(
@@ -229,7 +253,7 @@ function SearchTabView({
       if (params.ask && askingRef.current !== 0) {
         if (askingKeyRef.current === askKey(root, q, params.includeGlob, params.excludeGlob)) {
           // Its then/finally land again; any newer search is superseded.
-          seqRef.current = askingRef.current
+          askViewRef.current = ++seqRef.current
           setSearching(true)
           setError(null)
           setAskStartedAt(askStartRef.current)
@@ -244,6 +268,7 @@ function SearchTabView({
         askStartRef.current = Date.now()
         setAskStartedAt(askStartRef.current)
         askingRef.current = seq
+        askViewRef.current = seq
         askingKeyRef.current = askKey(root, q, params.includeGlob, params.excludeGlob)
         coderFindRelevant(host, {
           query: q,
@@ -253,7 +278,7 @@ function SearchTabView({
           timeoutMs: ASK_TIMEOUT_MS,
         })
           .then((out) => {
-            if (seqRef.current !== seq) return
+            if (seqRef.current !== askViewRef.current) return
             if (out.status === 'unavailable') {
               setResults(null)
               setError(askNotice(out.status, out.reason))
@@ -263,22 +288,23 @@ function SearchTabView({
               groups: groupContentMatches(relevantAsMatches(out), root, NO_HIGHLIGHT),
               paths: [],
               truncated: out.status === 'incomplete',
-              query: q,
+              query: q.trim(),
               asked: askingKeyRef.current,
               reason: out.reason,
+              judged: (out.stats?.judge_calls ?? 0) + (out.stats?.cache_hits ?? 0) > 0,
             })
             setDismissed(new Set())
             setFocusIndex(-1)
           })
           .catch((err: unknown) => {
-            if (seqRef.current !== seq) return
+            if (seqRef.current !== askViewRef.current) return
             setResults(null)
-            setError(askRefusal(errorMessage(err)))
+            setError(askRefusal(errorMessage(err), root))
           })
           .finally(() => {
             askingRef.current = 0
             setError((shown) => (shown === ASK_BUSY ? null : shown))
-            if (seqRef.current !== seq) return
+            if (seqRef.current !== askViewRef.current) return
             setSearching(false)
             setAskStartedAt(null)
           })
@@ -725,7 +751,7 @@ function SearchTabView({
               results.groups.length > 0
                 ? 'All results dismissed — search again to restore them.'
                 : ask
-                  ? askNotice(results.truncated ? 'incomplete' : 'complete', results.reason)
+                  ? askNotice(results.truncated ? 'incomplete' : 'complete', results.reason, results.judged)
                   : 'Nothing matched. Review the query and the configured exclusions.'
             }
           />

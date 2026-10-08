@@ -4,12 +4,13 @@ import {
   firstLocation,
   formatElapsed,
   ISSUE_LABELS,
+  NOTHING_JUDGED,
   namedLeads,
   nextStep,
   previewLines,
-  reasonLabel,
   type RelevantRow,
   type RelevantSummary,
+  reasonLabel,
 } from './find-relevant'
 
 const VISIBLE_FILE_LIMIT = 5
@@ -269,7 +270,11 @@ export function FindRelevantCard({
       ) : null}
       {summary.status === 'incomplete' ? <Note tone="partial">{partialNote(summary)}</Note> : null}
       {summary.status === 'complete' && summary.rows.length === 0 ? (
-        <Note tone="empty">The judge found nothing in this folder that answers the question.</Note>
+        <Note tone="empty">
+          {summary.judgeCalls + summary.cacheHits === 0
+            ? NOTHING_JUDGED
+            : 'The judge found nothing in this folder that answers the question.'}
+        </Note>
       ) : null}
 
       {primary.length > 0 ? <RowList rows={primary} previewed={previewed} onOpen={onOpen} /> : null}

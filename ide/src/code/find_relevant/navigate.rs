@@ -344,9 +344,10 @@ impl Run {
 
     /// retrieve.ts `discover`: breadth-first from `seeds`, two levels per
     /// round. Admitted directories seed the next round; files above the
-    /// threshold become candidates, keeping their best score. No round
-    /// starts past [`DISCOVERY_SHARE`] of the time left (jevgrep keeps
-    /// discovering until its deadline).
+    /// threshold become candidates, keeping their best score. Once a file
+    /// is admitted, no round starts past [`DISCOVERY_SHARE`] of the time
+    /// left (jevgrep keeps discovering until its deadline); with none, the
+    /// later passes have nothing to use it on.
     pub async fn discover(self: &Arc<Self>, seeds: Vec<String>) {
         let started = Instant::now();
         let reserve =
@@ -355,7 +356,7 @@ impl Run {
         while !directories.is_empty()
             && !self.stopped()
             && self.state().entries_seen < walk::MAX_ENTRIES
-            && Instant::now() < reserve
+            && (Instant::now() < reserve || self.state().candidates.is_empty())
         {
             let level = std::mem::take(&mut directories);
             let run = self.clone();

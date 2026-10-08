@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { FindRelevantResponse } from '../coder'
-import { coderFindRelevant } from '../coder'
+import { coderFindRelevant, coderSearch } from '../coder'
 import { askFolder, askNotice, askRefusal, SearchTab } from '../SearchTab'
 import { mount } from './bare-hooks'
 
@@ -111,6 +111,7 @@ const answer = (out: Partial<FindRelevantResponse>): FindRelevantResponse => ({
       source_omitted: false,
     },
   ],
+  stats: { judge_calls: 3, cache_hits: 0 },
   ...out,
 })
 
@@ -301,6 +302,78 @@ describe('the Search tab in ask mode', () => {
     expect(tab.find((p) => p.title === 'No results').description).toBe(
       'The judge found nothing relevant — widen the folder or use text search.',
     )
+
+    // nothing eligible: the judge never saw the folder
+    tab.type('where is the cache evicted?')
+    tab.enter()
+    asks[3](answer({ files: [], stats: { judge_calls: 0, cache_hits: 0 } }))
+    await settle()
+    expect(tab.find((p) => p.title === 'No results').description).toBe(
+      'Nothing in this folder could be judged: it is empty, or every file is hidden, ignored or excluded. Check the folder and the exclusions.',
+    )
+  })
+
+  it('tells how to fix a judge that cannot work, not to wait', () => {
+    expect(askNotice('unavailable', 'missing_key')).toBe(
+      'Judge unavailable (no API key is set for the judge provider). Set the provider key in the judge settings. Text search still works.',
+    )
+    expect(askNotice('unavailable', 'not registered')).toContain('Start the judge worker or pick another judge.')
+    expect(askNotice('unavailable', 'invalid_request')).toBe(
+      'Judge unavailable (the judge rejected the request). Text search still works.',
+    )
+    expect(askNotice('unavailable', 'http')).toContain('Ask again later.')
+  })
+
+  it('compares a question with surrounding spaces as asked', async () => {
+    const tab = render()
+    tab.toggleAsk()
+    tab.type(' how are judge slots limited? ')
+    tab.enter()
+    asks[0](answer({}))
+    await settle()
+    tab.find((p) => p['aria-label'] === 'Toggle search details').onClick()
+    tab.find((p) => p.placeholder === 'e.g. src').onChange({ target: { value: 'lib/**' } })
+    expect(tab.page()).toContain('Results are for an earlier folder or exclusions — press Enter to ask again.')
+  })
+
+  it('never lets an older text search overwrite a newer one across a re-attach', async () => {
+    const searches: Array<{ query: string; land: (out: unknown) => void }> = []
+    const pending: typeof coderSearch = (_host, args) =>
+      new Promise((land) => searches.push({ query: args.query, land })) as never
+    vi.mocked(coderSearch).mockImplementationOnce(pending).mockImplementationOnce(pending)
+    const hit = (path: string) => ({
+      content_matches: [{ path, line: 1, column: 1, text: 'x' }],
+      path_matches: [],
+      truncated: false,
+    })
+    const debounce = () => new Promise((resolve) => setTimeout(resolve, 260))
+    const shown = () =>
+      (
+        (tab.find((p) => typeof p.renderRow === 'function').rows as unknown as Array<{
+          type: string
+          group?: { rel: string }
+        }>) ?? []
+      )
+        .filter((row) => row.type === 'file')
+        .map((row) => row.group?.rel)
+    const tab = render()
+    tab.toggleAsk()
+    tab.type('needle')
+    tab.enter()
+    tab.toggleAsk()
+    await debounce()
+    // the same ask again: Enter re-attaches while text search A runs
+    tab.toggleAsk()
+    tab.enter()
+    tab.type('other')
+    tab.toggleAsk()
+    await debounce()
+    expect(searches.map((search) => search.query)).toEqual(['needle', 'other'])
+    searches[1].land(hit('/repo/other.rs'))
+    await settle()
+    searches[0].land(hit('/repo/needle.rs'))
+    await settle()
+    expect(shown()).toEqual(['other.rs'])
   })
 
   it('reports an unavailable judge with its reason in its own words', async () => {
@@ -342,6 +415,21 @@ describe('the Search tab in ask mode', () => {
       'Ask never searches folders Git ignores — use text search here.',
     )
     expect(askRefusal('transport timeout')).toBe('transport timeout')
+    expect(
+      askRefusal(
+        'handler error: {"code":"C211","message":"/repo/scr: not found or not accessible. Verify the path with coder::list-folder or coder::tree. Folders beside it, closest name first: /repo/src, /repo/scripts."}',
+        '/repo/',
+      ),
+    ).toBe('No such folder in this workspace — did you mean src, scripts?')
+    expect(askRefusal('/repo/x: not found or not accessible. Verify the path with coder::tree.')).toBe(
+      'No such folder in this workspace — check the folder to ask about.',
+    )
+    expect(askRefusal('query is 4100 bytes; at most 4000: retry with the question alone')).toContain(
+      'The question is too long to ask',
+    )
+    expect(
+      askRefusal('this session is scoped to /repo; /etc is inside an allowed root but outside the session directory'),
+    ).toBe('That folder leads outside this workspace — ask about one inside it.')
 
     vi.mocked(coderFindRelevant).mockImplementationOnce(() => Promise.reject(new Error(refusal)))
     const tab = render()

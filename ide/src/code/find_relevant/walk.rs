@@ -112,10 +112,10 @@ static PRIVATE_KEY: Lazy<regex::Regex> = Lazy::new(|| {
         .expect("private-key regex")
 });
 /// Unarmored secret keys by shape, not a mention of their format: a PuTTY
-/// key file header and an age identity (bech32). Unanchored, so a key
-/// pasted into a `.env` or YAML value still counts.
+/// key file header and an age identity (bech32, post-quantum too).
+/// Unanchored, so a key pasted into a `.env` or YAML value still counts.
 static SECRET_KEY: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"PuTTY-User-Key-File-\d+: |AGE-SECRET-KEY-1[02-9AC-HJ-NP-Z]{58}")
+    regex::Regex::new(r"PuTTY-User-Key-File-\d+: |AGE-SECRET-KEY-(?:PQ-)?1[02-9AC-HJ-NP-Z]{58,}")
         .expect("secret-key regex")
 });
 
@@ -158,12 +158,20 @@ pub fn git_top(path: &Path) -> Option<&Path> {
     path.ancestors().find(|dir| dir.join(".git").exists())
 }
 
-/// Whether `top` is a linked worktree: its `.git` is a small regular file
-/// whose `gitdir:` admin folder in the main repository points back at it
-/// (a submodule, a symlink or a planted pointer is not one).
+/// Whether `top` is a linked worktree: its `.git` is a regular file whose
+/// `gitdir:` admin folder in a main repository outside `top` points back at
+/// it (a submodule, a symlink, a planted pointer or an admin folder planted
+/// inside `top` is not one).
 pub fn linked_worktree(top: &Path) -> bool {
-    std::fs::symlink_metadata(top.join(".git")).is_ok_and(|md| md.is_file() && md.len() <= 4096)
-        && crate::exec::confine::repo_git_dir(top).is_some()
+    std::fs::symlink_metadata(top.join(".git")).is_ok_and(|md| md.is_file())
+        && crate::exec::confine::repo_git_dir(top).is_some_and(|common| !common.starts_with(top))
+}
+
+/// Whether `top` is the work tree of a repository: its git dir holds a
+/// `HEAD` file and an `objects` folder (an empty `.git` is not one).
+pub fn repository(top: &Path) -> bool {
+    crate::exec::confine::repo_git_dir(top)
+        .is_some_and(|git| git.join("HEAD").is_file() && git.join("objects").is_dir())
 }
 
 /// A one-level walk of `dir` under its ignore files and every ancestor's;

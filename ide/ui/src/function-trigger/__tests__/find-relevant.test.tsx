@@ -210,6 +210,23 @@ describe('FindRelevantCard', () => {
     const none = renderToStaticMarkup(<FindRelevantCard summary={empty} running={false} />)
     expect(none).toContain('The judge found nothing in this folder that answers the question.')
     expect(none).not.toContain('Nothing under path')
+    const unjudged = summarizeFindRelevant(input, {
+      ...output,
+      files: [],
+      stats: { ...output.stats, judge_calls: 0 },
+    })!
+    expect(renderToStaticMarkup(<FindRelevantCard summary={unjudged} running={false} />)).toContain(
+      'Nothing in this folder could be judged: it is empty, or every file is hidden, ignored or excluded.',
+    )
+    const keyless = summarizeFindRelevant(input, {
+      ...output,
+      status: 'unavailable',
+      reason: 'missing_key',
+      files: [],
+    })!
+    expect(renderToStaticMarkup(<FindRelevantCard summary={keyless} running={false} />)).toContain(
+      'The judge could not answer (no API key is set for the judge provider). Set the provider key in the judge settings.',
+    )
   })
 
   it('mounts at most twenty overflow rows and counts the rest', () => {

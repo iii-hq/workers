@@ -102,12 +102,18 @@ export const ISSUE_LABELS: Record<string, string> = {
   unreadable: 'unreadable files or folders',
 }
 
-/** The judge-failure `reason` keys; any other reason is an issue kind or
-    the judge's own code. */
+/** The judge-failure `reason` keys and the judge hub's error codes; any
+    other reason is an issue kind or shows as sent. */
 const REASON_LABELS: Record<string, string> = {
   paused: 'paused after a recent failure',
   listing_timeout: 'the judge did not list its models in time',
   window_too_small: "the judge's context window is too small",
+  missing_key: 'no API key is set for the judge provider',
+  provider_unavailable: 'the judge provider is not running',
+  'not registered': 'the judge is not running',
+  transport: 'could not reach the judge',
+  http: 'the judge provider returned an error',
+  invalid_request: 'the judge rejected the request',
 }
 
 export function reasonLabel(reason: string): string {
@@ -125,16 +131,27 @@ const NEXT_STEPS: Record<string, string> = {
   paused: 'Ask again in a minute.',
   listing_timeout: 'Ask again in a minute.',
   window_too_small: 'Use a judge with a larger context window.',
+  missing_key: 'Set the provider key in the judge settings.',
+  provider_unavailable: 'Start the judge worker or pick another judge.',
+  'not registered': 'Start the judge worker or pick another judge.',
+  // A request this worker built wrong: asking again fails the same way.
+  invalid_request: '',
   unreadable: '',
   local_call_context: '',
   agents_md_incomplete: '',
 }
 
-/** A reader's next step for an ask that stopped for `reason`; a judge
-    failure (`provider`, `invalid_*`, its own code) passes with time. */
+/** A reader's next step for an ask that stopped for `reason`; any other
+    judge failure (`provider`, `invalid_response`, `http`, `transport`)
+    passes with time. */
 export function nextStep(reason: string): string {
   return NEXT_STEPS[reason] ?? 'Ask again later.'
 }
+
+/** A complete ask with no judge call and no cached answer: nothing under
+    the folder was eligible, so the judge never saw it. */
+export const NOTHING_JUDGED =
+  'Nothing in this folder could be judged: it is empty, or every file is hidden, ignored or excluded.'
 
 export function isFindRelevantResponse(output: unknown): boolean {
   return responseSchema.safeParse(output).success

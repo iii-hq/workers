@@ -24,7 +24,8 @@ struct Fixture {
 }
 
 fn fixture(files: &[(&str, &[u8])], configure: impl FnOnce(&Path, &mut CoderConfig)) -> Fixture {
-    let dir = tempfile::tempdir().unwrap();
+    // not a dot-name like tempdir's own `.tmp…`: a session's name counts
+    let dir = tempfile::Builder::new().prefix("plain").tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     for (path, bytes) in files {
         let path = root.join(path);
@@ -254,6 +255,15 @@ fn secret_keys_are_matched_by_shape_not_by_name() {
                 .as_bytes(),
             ),
             (
+                "age-pq.txt",
+                concat!(
+                    "AGE-SECRET",
+                    "-KEY-PQ-1QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7LQPZRY9X8GF2TVDW0S3JN54KHCE",
+                    "6MUA7LQPZRY9X8GF2TVDW0S3JN54KHCE\n"
+                )
+                .as_bytes(),
+            ),
+            (
                 "putty.txt",
                 concat!("PuTTY-User-Key", "-File-2: ssh-rsa\n").as_bytes(),
             ),
@@ -266,6 +276,10 @@ fn secret_keys_are_matched_by_shape_not_by_name() {
     );
     let tree = walk::Tree::new(&fx.resolver, &fx.root, None, &fx.root, u64::MAX);
     assert!(matches!(walk::read(&tree, "age.txt"), walk::Snap::Excluded));
+    assert!(matches!(
+        walk::read(&tree, "age-pq.txt"),
+        walk::Snap::Excluded
+    ));
     assert!(matches!(
         walk::read(&tree, "putty.txt"),
         walk::Snap::Excluded
@@ -1093,6 +1107,7 @@ async fn a_repository_inside_a_dot_folder_is_searched_unjailed() {
     let fx = fixture(
         &[
             (".dotparent/repo/.git/HEAD", b"ref: refs/heads/main\n"),
+            (".dotparent/repo/.git/objects/info/packs", b""),
             (".dotparent/repo/needle.rs", b"fn needle() {}\n"),
         ],
         |_, cfg| cfg.unjailed = true,
@@ -1110,6 +1125,45 @@ async fn a_repository_inside_a_dot_folder_is_searched_unjailed() {
     );
     let message = refused(&granted(&fx, &req), req).await;
     assert!(message.contains("hidden"), "{message}");
+}
+
+#[tokio::test]
+async fn a_grant_bare_git_fake_worktree_or_session_inside_a_dot_folder_is_hidden() {
+    use crate::fs::FsBoundary::Workspace;
+    let fx = fixture(
+        &[
+            (".cfg/app/token.json", b"SECRET_APP needle"),
+            (".cfg/sub/needle.rs", b"SECRET_SUB needle"),
+            (".gh/hosts.yml", b"oauth_token: SECRET_GH needle"),
+            // an admin folder planted inside the work tree it vouches for
+            (".secrets/.git", b"gitdir: fake/worktrees/w\n"),
+            (".secrets/fake/worktrees/w/gitdir", b"../../../.git\n"),
+            (".secrets/fake/HEAD", b"ref: refs/heads/main\n"),
+            (".secrets/fake/objects/info/packs", b""),
+            (".secrets/token.txt", b"SECRET_FAKE needle"),
+        ],
+        |_, cfg| cfg.unjailed = true,
+    );
+    std::fs::create_dir(fx.root.join(".cfg/sub/.git")).unwrap();
+    let session = tempfile::Builder::new().prefix("plain").tempdir().unwrap();
+    let app = fx.root.join(".cfg/app");
+    let grant = scoped(
+        &app.display().to_string(),
+        &session.path().canonicalize().unwrap(),
+        &[&app],
+        Workspace,
+    );
+    let message = refused(&granted(&fx, &grant), grant).await;
+    assert!(message.contains("hidden"), "{message}");
+    let wire = |path: &str| fx.root.join(path).display().to_string();
+    for req in [
+        at(&wire(".cfg/sub")),
+        at(&wire(".secrets")),
+        scoped(".", &fx.root.join(".gh"), &[], Workspace),
+    ] {
+        let message = refused(&fx, req).await;
+        assert!(message.contains("hidden"), "{message}");
+    }
 }
 
 #[tokio::test]
@@ -2249,4 +2303,79 @@ async fn an_identical_ask_while_one_runs_shares_its_walk() {
         ask_with(&fx, input("where is the needle?", 60_000), None, slow())
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2 * walk);
+}
+
+#[tokio::test]
+async fn discovery_goes_on_past_its_share_until_a_file_is_admitted() {
+    let fx = fixture(
+        &[
+            ("other.rs", b"fn other() {}\n"),
+            ("needle_dir/sub/deeper/needle.rs", TWO_FUNCTIONS),
+        ],
+        |_, _| {},
+    );
+    // the first round ends past 60% of the time, admitting no file
+    let rounds = Arc::new(AtomicUsize::new(0));
+    let slow: Evaluator = Arc::new(move |ev, _deadline| {
+        let ev = prompts::decoded(ev);
+        let first = ev.state["items"].is_array() && rounds.fetch_add(1, Ordering::SeqCst) == 0;
+        Box::pin(async move {
+            if first {
+                tokio::time::sleep(Duration::from_millis(2_000)).await;
+            }
+            if ev.state["items"].is_array() {
+                return keyword(&ev).map(|scores| (scores, 1));
+            }
+            by_declaration(&ev, |_| 0.9).map(|scores| (scores, 1))
+        })
+    });
+    let out = ask_with(&fx, input("where is the needle?", 3_000), None, slow).await;
+    assert_eq!(paths(&fx, &out), ["needle_dir/sub/deeper/needle.rs"]);
+    assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
+}
+
+#[tokio::test]
+async fn joiners_of_a_dropped_ask_share_one_walk() {
+    let fx = fixture(&[("needle.rs", TWO_FUNCTIONS)], |_, _| {});
+    let calls = Arc::new(AtomicUsize::new(0));
+    let slow = || -> Evaluator {
+        let calls = calls.clone();
+        Arc::new(move |ev, _deadline| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let ev = prompts::decoded(ev);
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                by_declaration(&ev, |_| 0.9).map(|scores| (scores, 1))
+            })
+        })
+    };
+    let spawn = |evaluate: Evaluator| {
+        let (resolver, cfg) = (fx.resolver.clone(), fx.cfg.clone());
+        tokio::spawn(async move {
+            run(
+                resolver,
+                cfg,
+                input("where is the needle?", 120_000),
+                |_| async { Ok(Listing::default()) },
+                evaluate,
+                None,
+            )
+            .await
+            .unwrap()
+        })
+    };
+    ask(&fx, None, slow()).await;
+    let walk = calls.swap(0, Ordering::SeqCst);
+    let leader = spawn(slow());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let joiners = [spawn(slow()), spawn(slow())];
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    leader.abort();
+    let _ = leader.await;
+    let before = calls.load(Ordering::SeqCst);
+    let [a, b] = joiners;
+    let (a, b) = (a.await.unwrap(), b.await.unwrap());
+    assert_eq!(paths(&fx, &a), ["needle.rs"]);
+    assert_eq!(paths(&fx, &b), paths(&fx, &a));
+    assert_eq!(calls.load(Ordering::SeqCst) - before, walk);
 }

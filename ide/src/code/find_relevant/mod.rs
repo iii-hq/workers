@@ -323,18 +323,20 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
             &provider,
         )
     );
-    let flight = match board(key) {
-        Ok(flight) => flight,
-        Err(mut answer) => {
-            let landed = answer
-                .wait_for(Option::is_some)
-                .await
-                .ok()
-                .and_then(|output| output.clone());
-            match landed {
-                Some(output) => return Ok(output),
-                // The leading ask was dropped: walk alone.
-                None => Flight(None),
+    let flight = loop {
+        match board(key.clone()) {
+            Ok(flight) => break flight,
+            Err(mut answer) => {
+                let landed = answer
+                    .wait_for(Option::is_some)
+                    .await
+                    .ok()
+                    .and_then(|output| output.clone());
+                if let Some(output) = landed {
+                    return Ok(output);
+                }
+                // The leading ask was dropped: the first to board again
+                // leads, the rest join it.
             }
         }
     };
@@ -637,12 +639,22 @@ fn project_folder(
     };
     // Hidden and secret-named folders count from a linked worktree's top at
     // or below `base` (it may sit under a dot-folder, like
-    // .claude/worktrees), else the session folder, else the configured
-    // root, else the project folder's parent: a dot-folder repository or
-    // grant is still hidden, a repository inside one is not.
+    // .claude/worktrees), else the session folder's parent (its own name
+    // counts), else the configured root, else a repository's parent when
+    // the project folder is its work tree, else `/`: a dot-folder
+    // repository is still hidden, a repository inside one is not, and a
+    // grant or bare `.git` inside one is.
     let linked = top.filter(|top| top.starts_with(&base) && walk::linked_worktree(top));
     let trusted = linked.or(session.as_deref()).or(configured);
-    let hidden_from = trusted.unwrap_or_else(|| base.parent().unwrap_or(&base));
+    let hidden_from = match (linked, session.as_deref(), configured) {
+        (Some(top), _, _) => top,
+        (None, Some(session), _) => session.parent().unwrap_or(session),
+        (None, None, Some(root)) => root,
+        (None, None, None) if top == Some(base.as_path()) && walk::repository(&base) => {
+            base.parent().unwrap_or(&base)
+        }
+        (None, None, None) => Path::new("/"),
+    };
     let hidden = walk_root.strip_prefix(hidden_from).is_ok_and(|rel| {
         rel.components().any(|c| {
             let name = c.as_os_str().to_string_lossy();

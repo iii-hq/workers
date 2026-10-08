@@ -357,6 +357,7 @@ export interface FindRelevantResponse {
   hint?: string | null
   /** Ranked best first by the worker. */
   files: RelevantFile[]
+  stats?: { judge_calls?: number; cache_hits?: number }
 }
 
 /** Ask the judge which files under `path` answer a behavioural question.
