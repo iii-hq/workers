@@ -256,16 +256,25 @@ async fn on_config_change(
 
 // ---------------------------------------------------------------------------
 // Catalog-cache feed — proactively invalidate the discovery catalog when the
-// engine's function set changes, so a freshly-registered (or removed) function
-// is reflected sooner than the lazy TTL. Best-effort; the TTL is the backstop.
+// engine's function set changes, so a registered, re-registered or removed
+// function is reflected sooner than the lazy TTL. Best-effort; the TTL is the
+// backstop.
+//
+// How promptly this fires depends on the engine. Engines that notify from the
+// function registry send one coalesced event shortly (~100ms) after a burst of
+// registrations, overwrites or removals. Older engines poll every 5s and
+// compare only the set of function ids, so a re-registration that changes
+// only metadata is never signalled there. Trigger (binding) changes are not
+// signalled by this trigger on any engine. `CACHE_TTL` covers both gaps.
 // ---------------------------------------------------------------------------
 
+/// The `engine::functions-available` payload is
+/// `{ event: "functions_changed", functions: [...] }`. The handler only
+/// invalidates the cache, so it reads nothing; undeclared fields are ignored.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct FunctionsAvailableEvent {
     #[serde(default)]
     pub event: Option<String>,
-    #[serde(default)]
-    pub worker_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]

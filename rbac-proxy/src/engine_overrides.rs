@@ -105,6 +105,10 @@ struct BindState {
 
 /// Short TTL — the discovery surface tolerates seconds of staleness, and a
 /// metadata-gated function is briefly invisible (fail closed) until refresh.
+/// Kept even though `engine::functions-available` invalidates the cache: that
+/// trigger never signals binding changes (the `bindings` index), and older
+/// engines poll on an id-only hash, so they miss metadata-only changes and
+/// lag by up to 5s.
 const CACHE_TTL: Duration = Duration::from_secs(5);
 
 /// TTL caches over the control connection. Keyed by the **engine** id
@@ -127,8 +131,10 @@ impl CatalogCache {
         }
     }
 
-    /// Force a refresh on the next access (called on
-    /// `engine::functions-available`).
+    /// Force a refresh on the next access. Called from the
+    /// `engine::functions-available` handler; that event covers function
+    /// changes only, and older engines skip metadata-only re-registrations, so
+    /// `CACHE_TTL` still bounds staleness for whatever it misses.
     pub async fn invalidate(&self) {
         self.functions.write().await.fetched_at = None;
         self.bindings.write().await.fetched_at = None;
