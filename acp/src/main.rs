@@ -29,8 +29,8 @@ struct Args {
                 run::start_and_wait when --use-canonical-brain is set; off \
                 otherwise (built-in echo brain). Any function with the \
                 turn-orchestrator wire shape (session_id, messages, model, \
-                ...) emitting AgentEvent frames into the agent::events \
-                stream will work."
+                ...) whose worker publishes AgentEvent frames on a \
+                `<namespace>::agent-event` trigger type will work."
     )]
     brain_fn: Option<String>,
 
@@ -40,6 +40,17 @@ struct Args {
         help = "iii function id that stops the configured external brain for a session"
     )]
     brain_stop_fn: Option<String>,
+
+    #[arg(
+        long = "events-trigger-type",
+        env = "IIIACP_EVENTS_TRIGGER_TYPE",
+        value_delimiter = ',',
+        help = "Trigger type(s) carrying the brain's AgentEvent frames, bound \
+                per session with { session_id }. Repeat or comma-separate. \
+                Defaults to `<brain namespace>::agent-event` (claude::run -> \
+                claude::agent-event)."
+    )]
+    events_trigger_types: Vec<String>,
 
     #[arg(
         long,
@@ -127,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
             model: args.model,
             provider: args.provider,
             system_prompt: args.system_prompt,
+            events_trigger_types: args.events_trigger_types,
         },
     ));
 

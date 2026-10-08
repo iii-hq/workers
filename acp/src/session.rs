@@ -16,7 +16,7 @@ pub fn scope() -> String {
 // unique uuid (sess_<32hex>) and must survive subprocess restarts so a
 // reconnecting editor can resume an old thread via session/load. conn_id
 // stays in-memory only as transient ownership metadata for routing
-// agent::events to the right subprocess.
+// agent events to the right subprocess.
 pub fn session_key(session_id: &str) -> String {
     format!("sessions:{}", session_id)
 }
@@ -29,11 +29,9 @@ pub fn session_history_key(session_id: &str) -> String {
     format!("sessions:{}:history", session_id)
 }
 
-// Streaming wire = the iii ecosystem's `agent::events` stream. No
-// per-connection topic exists. Brains (turn-orchestrator and any
-// drop-in replacement) emit AgentEvent frames into that stream with
-// group_id = session_id; iii-acp subscribes once and routes by group.
-pub const AGENT_EVENTS_STREAM: &str = "agent::events";
+// Streaming wire = each agent worker's own `<namespace>::agent-event`
+// trigger type (see agent_feed). acp binds it per owned session with
+// `{ session_id }`; no per-connection topic exists for events.
 
 pub fn cancel_topic(conn_id: &str, session_id: &str) -> String {
     format!("acp:{}:session:{}:cancel", conn_id, session_id)
@@ -757,7 +755,6 @@ mod tests {
 
     #[test]
     fn topics_namespace_globally() {
-        assert_eq!(AGENT_EVENTS_STREAM, "agent::events");
         assert_eq!(cancel_topic("c1", "s1"), "acp:c1:session:s1:cancel");
     }
 

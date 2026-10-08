@@ -31,7 +31,7 @@ others don't.
 | **MCP server** (`iii-mcp`) | Exposes iii functions as **tools** to an external agent | You're already running Claude Code / Cursor / etc. and want to give it iii tools |
 | **Skill bundles** | Curated prompts + tools loaded into an agent host | You're inside a skill-aware host (Claude Code, Cursor) and want a preset toolset |
 | **Agent workers** (`turn-orchestrator`, `agent`, `coding`, …) | The brain itself — registers `run::start_and_wait`, runs LLM turns, executes tools | You're calling iii from your own code (`iii.trigger("run::start_and_wait", …)`) or backend automation |
-| **`iii-acp` (this worker)** | Editor → iii. Translates ACP `session/*` JSON-RPC into the canonical iii brain contract; turns iii's `agent::events` stream into ACP `session/update` notifications | You want iii to **be** the agent in an editor users already opened today |
+| **`iii-acp` (this worker)** | Editor → iii. Translates ACP `session/*` JSON-RPC into the canonical iii brain contract; turns the brain worker's `<namespace>::agent-event` trigger into ACP `session/update` notifications | You want iii to **be** the agent in an editor users already opened today |
 
 ACP is the **north** edge of the stack. MCP is the **south** edge. They
 coexist:
@@ -93,9 +93,9 @@ binary, set the `IIIACP_*` env vars below.
 
 ```bash
 # 1. Workers acp uses directly. state holds session
-#    records + history; iii-stream carries the agent::events tape;
-#    queue backs durable cancel topics.
-iii trigger compose::add worker=state worker=iii-stream worker=queue
+#    records + history; queue backs durable cancel topics. Agent
+#    events come from the brain's own worker.
+iii trigger compose::add worker=state worker=queue
 
 # 2. acp itself.
 iii trigger compose::add worker=acp
@@ -154,6 +154,7 @@ iii-acp --use-canonical-brain --model claude-sonnet-4-5-20250929 --provider anth
 | `--debug` (`-d`) | Verbose tracing on stderr. |
 | `--brain-fn` (`IIIACP_BRAIN_FN`) | iii function id that runs the prompt turn. Falls back to a built-in echo brain when unset. Canonical value is `run::start_and_wait` (turn-orchestrator). |
 | `--brain-stop-fn` (`IIIACP_BRAIN_STOP_FN`) | Optional iii function id called with `session_id` when ACP cancels an external brain turn. |
+| `--events-trigger-type` (`IIIACP_EVENTS_TRIGGER_TYPE`) | Trigger type(s) carrying the brain's `AgentEvent` frames, comma-separated or repeated. Default `<brain namespace>::agent-event` (`claude::run` -> `claude::agent-event`, `codex::run` -> `codex::agent-event`). |
 | `--use-canonical-brain` (`IIIACP_USE_CANONICAL_BRAIN`) | Shortcut for `--brain-fn run::start_and_wait`. |
 | `--model` (`IIIACP_MODEL`) | Model id forwarded to the brain (e.g. `claude-sonnet-4-5-20250929`). |
 | `--provider` (`IIIACP_PROVIDER`) | Provider id forwarded to the brain (e.g. `anthropic`). Routes to `provider::<provider>::complete`. |
@@ -280,9 +281,20 @@ iii-acp picks the ACP `stopReason` from the final assistant message's
 `stop_reason` field (`end` → `end_turn`, `length` → `max_tokens`,
 `aborted` → `cancelled`, `error` → `refusal`).
 
-**Streaming.** The brain emits `AgentEvent` frames into `agent::events`
-(group_id = session_id). iii-acp registers one stream subscriber per
-connection at startup and translates each event:
+**Streaming.** The brain's worker publishes `AgentEvent` frames on its own
+trigger type `<namespace>::agent-event` (claude-code `claude::agent-event`,
+pi `pi::agent-event`, opencode, cursor, codex, grok, devin and hermes the
+same way). iii-acp binds it once per session it owns, with config
+`{ "session_id": "<id>" }`, so the producer only delivers that connection's
+sessions; the binding is removed on `session/close` and when the process
+exits. Each delivery is `{ session_id, event_id, seq, epoch, source, event }`;
+iii-acp restores order by `(epoch, seq)` (a 250 ms reorder window per stream,
+bounded at 256 buffered frames) and drops duplicates. Before running an
+external brain it checks that every events trigger type is registered
+(`engine::triggers::info`) and fails the prompt with the missing type and
+worker otherwise. Frames are not replayed: if none reached the editor during
+a prompt (for example across a reconnect), the final text of the brain's
+response is rendered once instead. Each event is translated:
 
 | `AgentEvent` | ACP `sessionUpdate` |
 |---|---|
@@ -293,8 +305,10 @@ connection at startup and translates each event:
 | `tool_execution_end` | `tool_call_update` (status: `completed`/`failed`) |
 | other | dropped |
 
-This is the same stream `context-compaction` and every provider worker
-already subscribe to. **No bespoke iii-acp publish protocol.**
+Any brain that registers a `<namespace>::agent-event` trigger type with this
+contract works; point `--events-trigger-type` at it when its namespace differs
+from the brain function's.
+**No bespoke iii-acp publish protocol.**
 
 ## State layout
 
@@ -307,7 +321,7 @@ sessions:<session_id>      = { session_id, conn_id, cwd, mcp_servers, created_at
 sessions:<session_id>:history = { entries, cursor_item_ids, owner_conn_id, active_prompt, closed, closed_by_conn_id }
 ```
 
-Streaming wire: `agent::events` (per-session events), per-connection topic
+Streaming wire: the brain's `<namespace>::agent-event` trigger (bound per session), per-connection topic
 `acp:<conn_id>:session:<session_id>:cancel` (best-effort cancel signal).
 
 ## Wire example (raw stdio)
@@ -325,5 +339,6 @@ Replies stream on stdout, one JSON frame per line.
 cargo test
 ```
 
-37 lib + 10 protocol envelope tests. Integration smoke against a live engine
+50 lib (including the agent event sequencer, feed contract and readiness) + 10
+protocol envelope tests. Integration smoke against a live engine
 lives in the iii test harness.
