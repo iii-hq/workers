@@ -220,13 +220,15 @@ function useOnChange(host: Host, triggerType: string, onEvent: () => void) {
   onEventRef.current = onEvent
   useEffect(() => {
     const slug = triggerType.replace(/[^a-z0-9]+/g, '-')
-    const fnId = `iii::iii-directory-ui::${slug}::${host.iii.browserId}`
-    const offHandler = host.iii.on(fnId, () => {
+    // `on` registers the handler tab-scoped as `<id>::<browserId>`; the
+    // trigger must name that full id (as the session chip does).
+    const handlerId = `iii::iii-directory-ui::${slug}`
+    const offHandler = host.iii.on(handlerId, () => {
       onEventRef.current()
     })
     const offTrigger = host.iii.registerTrigger({
       type: triggerType,
-      function_id: fnId,
+      function_id: `${handlerId}::${host.iii.browserId}`,
       config: {},
     })
     return () => {
