@@ -1,0 +1,92 @@
+{
+  "description": "Console-only: run a live binding's declared read-only provider query and persist the result into the surface data model.",
+  "function_id": "a2ui::binding::refresh",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "binding_id": {
+        "description": "Binding whose declared provider query should run.",
+        "type": "string"
+      },
+      "surface_id": {
+        "description": "Surface that owns the binding.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "binding_id",
+      "surface_id"
+    ],
+    "title": "BindingRefreshRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SurfaceStatus": {
+        "enum": [
+          "active",
+          "deleted"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "Receipt of `a2ui::binding::refresh`.",
+    "properties": {
+      "catalog_id": {
+        "type": "string"
+      },
+      "changed": {
+        "description": "False when the stored value already matched and nothing was written.",
+        "type": "boolean"
+      },
+      "component_count": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "page": {
+        "type": "string"
+      },
+      "protocol_version": {
+        "type": "string"
+      },
+      "revision": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/SurfaceStatus"
+      },
+      "surface_id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "value": {
+        "description": "Value now stored at the binding's target path."
+      }
+    },
+    "required": [
+      "catalog_id",
+      "changed",
+      "component_count",
+      "page",
+      "protocol_version",
+      "revision",
+      "session_id",
+      "status",
+      "surface_id",
+      "title",
+      "value"
+    ],
+    "title": "BindingRefreshReceipt",
+    "type": "object"
+  }
+}

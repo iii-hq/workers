@@ -8,6 +8,7 @@ import type {
   SurfaceRecord,
   SurfaceReceipt,
   SurfaceTemplate,
+  BindingRefreshReceipt,
 } from './types'
 import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 
@@ -33,6 +34,11 @@ export function listTemplates(host: Host, sessionId: string): Promise<{ template
 
 export function applyBinding(host: Host, sessionId: string, surfaceId: string, bindingId: string, value: JsonValue): Promise<SurfaceReceipt> {
   return call(host, 'a2ui::binding::apply', { session_id: sessionId, surface_id: surfaceId, binding_id: bindingId, value })
+}
+
+/** Runs the binding's declared provider query server-side and persists the result. */
+export function refreshBinding(host: Host, sessionId: string, surfaceId: string, bindingId: string): Promise<BindingRefreshReceipt> {
+  return call(host, 'a2ui::binding::refresh', { session_id: sessionId, surface_id: surfaceId, binding_id: bindingId })
 }
 
 export function listSurfaces(

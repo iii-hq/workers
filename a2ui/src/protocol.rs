@@ -230,15 +230,46 @@ pub struct SurfaceRevision {
     pub reason: String,
 }
 
+/// Declarative live-data binding rendered by the Console: the page registers
+/// `trigger_type`/`config` for its own view and writes delivered values to
+/// `target_path`. Bindings cannot invoke arbitrary functions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LiveBinding {
+    /// Stable binding id within the surface.
     pub id: String,
+    /// Trigger type to bind: a worker-owned trigger type (for example
+    /// `orders::changed`), `state`, or `shell::changed`. `stream` is accepted
+    /// only as deprecated legacy compatibility.
     pub trigger_type: String,
+    /// Trigger configuration, validated against the trigger type's registered
+    /// configuration schema when the provider declares one.
     pub config: Value,
+    /// JSON Pointer in the surface data model that receives the value.
     pub target_path: String,
+    /// JSON Pointer inside the event payload to apply (event mode only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_path: Option<String>,
+    /// Optional provider query for worker-owned trigger types: run for the
+    /// initial read, after every notification, and on reconnect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<BindingQuery>,
+}
+
+/// Read-only query a worker-owned trigger type's provider exposes for the
+/// current data. The function must be registered by the same worker as the
+/// trigger type with metadata `{"read_only": true}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BindingQuery {
+    /// Provider function that returns the current value.
+    pub function_id: String,
+    /// Fixed request payload, validated against the function's request schema.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub payload: Value,
+    /// JSON Pointer inside the query result to apply. Defaults to the whole result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -536,24 +567,125 @@ pub fn push_history(surface: &mut SurfaceRecord, entry: SurfaceRevision, limit: 
     }
 }
 
-pub fn validate_live_binding(binding: &LiveBinding) -> Result<(), String> {
+/// Legacy `stream` trigger type kept for compatibility while iii-stream is
+/// deprecated. Standard deprecation wording, without the guide URL.
+pub const LEGACY_STREAM_TRIGGER_TYPE: &str = "stream";
+pub const STREAM_BINDING_DEPRECATION: &str = "stream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: \"Migrate from iii-stream and pubsub\". Bind a worker-owned trigger type instead.";
+
+/// Maximum live bindings declared on one surface (each mounted Console view
+/// registers one trigger per binding).
+pub const MAX_BINDINGS_PER_SURFACE: usize = 32;
+/// Maximum serialized size of a binding `config` or `query.payload`.
+pub const MAX_BINDING_CONFIG_BYTES: usize = 4096;
+
+/// Trigger-type prefixes a binding may never target: engine internals,
+/// Harness turn plumbing, Browser (approval boundary), A2UI itself (feedback
+/// loops) and iii-internal feeds.
+const RESERVED_TRIGGER_PREFIXES: &[&str] =
+    &["engine::", "harness::", "browser::", "a2ui::", "iii::"];
+/// Trigger types that are ingress, scheduling, queue consumption or deprecated
+/// pubsub/stream membership rather than data-change feeds.
+const RESERVED_TRIGGER_TYPES: &[&str] = &[
+    "http",
+    "cron",
+    "queue",
+    "durable:subscriber",
+    "subscribe",
+    "stream:join",
+    "stream:leave",
+];
+
+/// How a validated binding is delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingKind {
+    /// `state` or `shell::changed`: built-in, exact-config bindings.
+    Builtin,
+    /// `stream`: deprecated legacy compatibility (requires iii-stream).
+    LegacyStream,
+    /// Any other worker-owned trigger type; checked against the engine
+    /// registry before it is stored.
+    Owned,
+}
+
+pub fn validate_live_binding(binding: &LiveBinding) -> Result<BindingKind, String> {
     validate_identifier("binding id", &binding.id)?;
     validate_json_pointer("binding target_path", &binding.target_path)?;
     if let Some(path) = binding.event_path.as_deref() {
         validate_json_pointer("binding event_path", path)?;
     }
-    match binding.trigger_type.as_str() {
+    let kind = match binding.trigger_type.as_str() {
         "state" => {
             validate_binding_config(&binding.config, &["scope", "key"], &[])?;
             if binding.config.get("scope").and_then(Value::as_str) == Some("a2ui") {
                 return Err("bindings cannot subscribe to A2UI's own state scope".into());
             }
+            BindingKind::Builtin
         }
-        "stream" => {
-            validate_binding_config(&binding.config, &["stream_name", "group_id"], &["item_id"])?
+        LEGACY_STREAM_TRIGGER_TYPE => {
+            validate_binding_config(&binding.config, &["stream_name", "group_id"], &["item_id"])?;
+            BindingKind::LegacyStream
         }
-        "shell::changed" => validate_binding_config(&binding.config, &["path"], &[])?,
-        _ => return Err("binding trigger_type must be state, stream, or shell::changed".into()),
+        "shell::changed" => {
+            validate_binding_config(&binding.config, &["path"], &[])?;
+            BindingKind::Builtin
+        }
+        other => {
+            validate_owned_trigger_type(other)?;
+            validate_bounded_object("binding config", &binding.config)?;
+            BindingKind::Owned
+        }
+    };
+    match (&binding.query, kind) {
+        (Some(query), BindingKind::Owned) => validate_binding_query(query)?,
+        (Some(_), _) => {
+            return Err(format!(
+                "binding query is only supported for worker-owned trigger types, not `{}`",
+                binding.trigger_type
+            ))
+        }
+        (None, _) => {}
+    }
+    Ok(kind)
+}
+
+fn validate_owned_trigger_type(trigger_type: &str) -> Result<(), String> {
+    validate_identifier("binding trigger_type", trigger_type)?;
+    let lower = trigger_type.to_ascii_lowercase();
+    let reserved = RESERVED_TRIGGER_PREFIXES
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+        || RESERVED_TRIGGER_TYPES.contains(&lower.as_str())
+        || lower
+            .split([':', '.', '-', '_'])
+            .any(|segment| segment == "hook");
+    if reserved {
+        return Err(format!(
+            "binding trigger_type `{trigger_type}` is reserved; bind a worker-owned data-change trigger type, `state`, or `shell::changed`"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_binding_query(query: &BindingQuery) -> Result<(), String> {
+    validate_identifier("binding query function_id", &query.function_id)?;
+    if !query.payload.is_null() {
+        validate_bounded_object("binding query payload", &query.payload)?;
+    }
+    if let Some(path) = query.result_path.as_deref() {
+        validate_json_pointer("binding query result_path", path)?;
+    }
+    Ok(())
+}
+
+fn validate_bounded_object(label: &str, value: &Value) -> Result<(), String> {
+    if !value.is_object() {
+        return Err(format!("{label} must be an object"));
+    }
+    let size = serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len());
+    if size > MAX_BINDING_CONFIG_BYTES {
+        return Err(format!(
+            "{label} is {size} bytes; maximum is {MAX_BINDING_CONFIG_BYTES}"
+        ));
     }
     Ok(())
 }
@@ -1353,8 +1485,9 @@ mod tests {
             config: json!({"path": "/workspace"}),
             target_path: "/last_change".into(),
             event_path: None,
+            query: None,
         };
-        assert!(validate_live_binding(&valid).is_ok());
+        assert_eq!(validate_live_binding(&valid), Ok(BindingKind::Builtin));
         let mut invalid = valid.clone();
         invalid.trigger_type = "harness::pre-turn".into();
         assert!(validate_live_binding(&invalid).is_err());
@@ -1371,7 +1504,10 @@ mod tests {
 
         invalid.trigger_type = "stream".into();
         invalid.config = json!({"stream_name": "agent::events", "group_id": "session-1"});
-        assert!(validate_live_binding(&invalid).is_ok());
+        assert_eq!(
+            validate_live_binding(&invalid),
+            Ok(BindingKind::LegacyStream)
+        );
         invalid.config = json!({"stream_name": "agent::events"});
         assert!(validate_live_binding(&invalid).is_err());
 
@@ -1382,5 +1518,111 @@ mod tests {
         invalid.trigger_type = "shell::changed".into();
         invalid.target_path = "/constructor/polluted".into();
         assert!(validate_live_binding(&invalid).is_err());
+    }
+
+    fn owned_binding() -> LiveBinding {
+        LiveBinding {
+            id: "orders-open".into(),
+            trigger_type: "orders::changed".into(),
+            config: json!({"status": "open"}),
+            target_path: "/orders".into(),
+            event_path: None,
+            query: Some(BindingQuery {
+                function_id: "orders::list".into(),
+                payload: json!({"status": "open"}),
+                result_path: Some("/items".into()),
+            }),
+        }
+    }
+
+    #[test]
+    fn owned_trigger_type_bindings_are_structurally_validated() {
+        let binding = owned_binding();
+        assert_eq!(validate_live_binding(&binding), Ok(BindingKind::Owned));
+        let mut event_mode = binding.clone();
+        event_mode.query = None;
+        event_mode.event_path = Some("/order".into());
+        assert_eq!(validate_live_binding(&event_mode), Ok(BindingKind::Owned));
+
+        for reserved in [
+            "harness::hook::pre-trigger",
+            "harness::turn-completed",
+            "engine::functions-available",
+            "browser::console-event",
+            "a2ui::surface-changed",
+            "iii::devtools",
+            "directory::hook::search",
+            "orders:hook",
+            "http",
+            "cron",
+            "queue",
+            "durable:subscriber",
+            "subscribe",
+            "stream:join",
+            "stream:leave",
+            "HTTP",
+        ] {
+            let mut invalid = binding.clone();
+            invalid.trigger_type = reserved.into();
+            let error = validate_live_binding(&invalid).unwrap_err();
+            assert!(
+                error.contains("reserved") || error.contains("may contain"),
+                "{reserved}: {error}"
+            );
+        }
+        let mut invalid = binding.clone();
+        invalid.trigger_type = "orders changed".into();
+        assert!(validate_live_binding(&invalid).is_err());
+
+        let mut invalid = binding.clone();
+        invalid.config = json!("open");
+        assert!(validate_live_binding(&invalid)
+            .unwrap_err()
+            .contains("must be an object"));
+        invalid.config = json!({"blob": "x".repeat(MAX_BINDING_CONFIG_BYTES)});
+        assert!(validate_live_binding(&invalid)
+            .unwrap_err()
+            .contains("maximum"));
+
+        let mut invalid = binding.clone();
+        invalid.query.as_mut().unwrap().function_id = "orders list".into();
+        assert!(validate_live_binding(&invalid).is_err());
+        let mut invalid = binding.clone();
+        invalid.query.as_mut().unwrap().payload = json!([1]);
+        assert!(validate_live_binding(&invalid).is_err());
+        let mut invalid = binding.clone();
+        invalid.query.as_mut().unwrap().result_path = Some("items".into());
+        assert!(validate_live_binding(&invalid).is_err());
+        let mut no_payload = binding.clone();
+        no_payload.query.as_mut().unwrap().payload = Value::Null;
+        assert!(validate_live_binding(&no_payload).is_ok());
+
+        for builtin in ["state", "shell::changed", "stream"] {
+            let mut invalid = binding.clone();
+            invalid.trigger_type = builtin.into();
+            invalid.config = match builtin {
+                "state" => json!({"scope": "orders", "key": "open"}),
+                "shell::changed" => json!({"path": "/workspace"}),
+                _ => json!({"stream_name": "orders", "group_id": "open"}),
+            };
+            let error = validate_live_binding(&invalid).unwrap_err();
+            assert!(error.contains("only supported for worker-owned"), "{error}");
+        }
+    }
+
+    #[test]
+    fn bindings_without_query_round_trip_unchanged() {
+        let stored = json!({
+            "id": "legacy",
+            "trigger_type": "stream",
+            "config": {"stream_name": "agent::events", "group_id": "s1"},
+            "target_path": "/events"
+        });
+        let binding: LiveBinding = serde_json::from_value(stored.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&binding).unwrap(), stored);
+        assert!(STREAM_BINDING_DEPRECATION.starts_with(
+            "stream is deprecated (iii-stream) and will be removed in an upcoming release."
+        ));
+        assert!(!STREAM_BINDING_DEPRECATION.contains("https://"));
     }
 }

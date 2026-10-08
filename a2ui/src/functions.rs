@@ -6,6 +6,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -16,10 +17,11 @@ use crate::hook::{StampSessionEvent, StampSessionResponse, STAMP_SESSION_ID};
 use crate::protocol::{
     apply_messages, enforce_state_limits, export_surface, now_ms, push_history, set_data_path,
     snapshot, validate_identifier, validate_live_binding, validate_renderable, ActionRecord,
-    DeleteSurface, DeleteSurfaceMessage, LiveBinding, ServerMessage, SessionState, SurfaceExport,
-    SurfaceRecord, SurfaceRevision, SurfaceStatus, SurfaceSummary, SurfaceTemplate, CATALOG_ID,
-    PAGE_ID, PROTOCOL_VERSION,
+    BindingKind, DeleteSurface, DeleteSurfaceMessage, LiveBinding, ServerMessage, SessionState,
+    SurfaceExport, SurfaceRecord, SurfaceRevision, SurfaceStatus, SurfaceSummary, SurfaceTemplate,
+    CATALOG_ID, MAX_BINDINGS_PER_SURFACE, PAGE_ID, PROTOCOL_VERSION, STREAM_BINDING_DEPRECATION,
 };
+use crate::schema_check;
 use crate::store::Store;
 
 pub const GENERATE_ID: &str = "a2ui::generate";
@@ -39,6 +41,7 @@ pub const EXPORT_CODE_ID: &str = "a2ui::surface::export-code";
 pub const BINDING_SET_ID: &str = "a2ui::binding::set";
 pub const BINDING_DELETE_ID: &str = "a2ui::binding::delete";
 pub const BINDING_APPLY_ID: &str = "a2ui::binding::apply";
+pub const BINDING_REFRESH_ID: &str = "a2ui::binding::refresh";
 pub const TEMPLATE_SAVE_ID: &str = "a2ui::template::save";
 pub const TEMPLATE_LIST_ID: &str = "a2ui::template::list";
 pub const TEMPLATE_GET_ID: &str = "a2ui::template::get";
@@ -64,11 +67,13 @@ const IMPORT_DESC: &str =
     "Import a portable A2UI surface package into the current Harness session.";
 const EXPORT_CODE_DESC: &str =
     "Generate source code from an A2UI surface: a React app or a data-serving iii worker.";
-const BINDING_SET_DESC: &str =
-    "Attach an allowlisted live state, stream, or shell event binding to a surface.";
+const BINDING_SET_DESC: &str = "Attach a declarative live binding to a surface: a worker-owned trigger type (optionally with its provider's read-only query), state, or shell::changed. Legacy stream bindings are deprecated.";
 const BINDING_DELETE_DESC: &str = "Remove a declarative live event binding from an A2UI surface.";
 const BINDING_APPLY_DESC: &str =
     "Console-only: persist a value delivered by a declared A2UI live binding.";
+const BINDING_REFRESH_DESC: &str = "Console-only: run a live binding's declared read-only provider query and persist the result into the surface data model.";
+/// Largest value a live binding may write (matches the Console limit).
+const MAX_LIVE_VALUE_BYTES: usize = 512 * 1024;
 const TEMPLATE_SAVE_DESC: &str =
     "Save an A2UI surface as a reusable template in the current Harness session.";
 const TEMPLATE_LIST_DESC: &str =
@@ -376,6 +381,43 @@ pub struct BindingApplyRequest {
     #[serde(rename = "_caller_worker_id", default, skip_serializing)]
     #[schemars(skip)]
     pub(crate) _caller_worker_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BindingRefreshRequest {
+    /// Surface that owns the binding.
+    pub surface_id: String,
+    /// Binding whose declared provider query should run.
+    pub binding_id: String,
+    #[serde(default)]
+    #[schemars(skip)]
+    pub session_id: Option<String>,
+    #[serde(rename = "_caller_worker_id", default, skip_serializing)]
+    #[schemars(skip)]
+    pub(crate) _caller_worker_id: Option<String>,
+}
+
+/// Receipt of `a2ui::binding::set`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct BindingSetReceipt {
+    #[serde(flatten)]
+    pub receipt: SurfaceReceipt,
+    /// Present when the binding uses a deprecated trigger type (`stream`);
+    /// the binding is stored and keeps working while iii-stream runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<String>,
+}
+
+/// Receipt of `a2ui::binding::refresh`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct BindingRefreshReceipt {
+    #[serde(flatten)]
+    pub receipt: SurfaceReceipt,
+    /// Value now stored at the binding's target path.
+    pub value: Value,
+    /// False when the stored value already matched and nothing was written.
+    pub changed: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1008,9 +1050,20 @@ pub async fn import_surface(deps: &Deps, req: ImportRequest) -> Result<SurfaceRe
     .await
 }
 
-pub async fn set_binding(deps: &Deps, req: BindingSetRequest) -> Result<SurfaceReceipt, String> {
-    validate_live_binding(&req.binding)?;
-    mutate_surface(
+pub async fn set_binding(deps: &Deps, req: BindingSetRequest) -> Result<BindingSetReceipt, String> {
+    let kind = validate_live_binding(&req.binding)?;
+    if kind == BindingKind::Owned {
+        let (trigger, query) = registry_facts(deps, &req.binding).await?;
+        check_owned_binding(&req.binding, &trigger, query.as_ref())?;
+    }
+    let deprecation = (kind == BindingKind::LegacyStream).then(|| {
+        tracing::warn!(
+            target: "a2ui::deprecation",
+            "a2ui::binding::set: {STREAM_BINDING_DEPRECATION}"
+        );
+        STREAM_BINDING_DEPRECATION.to_string()
+    });
+    let receipt = mutate_surface(
         deps,
         req.session_id,
         &req.surface_id,
@@ -1024,13 +1077,257 @@ pub async fn set_binding(deps: &Deps, req: BindingSetRequest) -> Result<SurfaceR
             {
                 *item = req.binding;
             } else {
+                if surface.bindings.len() >= MAX_BINDINGS_PER_SURFACE {
+                    return Err(format!(
+                        "surface has reached its limit of {MAX_BINDINGS_PER_SURFACE} live bindings"
+                    ));
+                }
                 surface.bindings.push(req.binding);
             }
             Ok(())
         },
     )
-    .await
+    .await?;
+    Ok(BindingSetReceipt {
+        receipt,
+        deprecation,
+    })
 }
+
+/// Registry facts about a worker-owned trigger type (`engine::triggers::info`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TriggerTypeFacts {
+    pub id: String,
+    #[serde(default)]
+    pub worker_name: String,
+    #[serde(default)]
+    pub configuration_schema: Option<Value>,
+}
+
+/// Registry facts about a binding query function (`engine::functions::info`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FunctionFacts {
+    pub function_id: String,
+    #[serde(default)]
+    pub worker_name: String,
+    #[serde(default)]
+    pub request_schema: Option<Value>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+}
+
+async fn engine_lookup<T: DeserializeOwned>(
+    deps: &Deps,
+    function_id: &str,
+    payload: Value,
+) -> Result<T, String> {
+    let value = deps
+        .iii
+        .trigger(TriggerRequest {
+            function_id: function_id.into(),
+            payload,
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    serde_json::from_value(value)
+        .map_err(|error| format!("unexpected {function_id} reply: {error}"))
+}
+
+/// Resolve the trigger type (and query function) of an owned binding through
+/// engine introspection. Fails closed when the engine cannot answer.
+async fn registry_facts(
+    deps: &Deps,
+    binding: &LiveBinding,
+) -> Result<(TriggerTypeFacts, Option<FunctionFacts>), String> {
+    let trigger: TriggerTypeFacts = engine_lookup(
+        deps,
+        "engine::triggers::info",
+        json!({ "id": binding.trigger_type }),
+    )
+    .await
+    .map_err(|error| {
+        format!(
+            "trigger type `{}` is not registered with the engine; start its provider worker before binding ({error})",
+            binding.trigger_type
+        )
+    })?;
+    let function = match &binding.query {
+        Some(query) => Some(
+            engine_lookup::<FunctionFacts>(
+                deps,
+                "engine::functions::info",
+                json!({ "function_id": query.function_id }),
+            )
+            .await
+            .map_err(|error| {
+                format!(
+                    "binding query function `{}` is not registered with the engine ({error})",
+                    query.function_id
+                )
+            })?,
+        ),
+        None => None,
+    };
+    Ok((trigger, function))
+}
+
+/// Registry checks for a worker-owned trigger-type binding: config matches
+/// the registered configuration schema, and the optional query is a
+/// read-only function registered by the same worker as the trigger type.
+pub fn check_owned_binding(
+    binding: &LiveBinding,
+    trigger: &TriggerTypeFacts,
+    function: Option<&FunctionFacts>,
+) -> Result<(), String> {
+    let owner = trigger.worker_name.trim();
+    if owner.is_empty() || owner == "a2ui" {
+        return Err(format!(
+            "trigger type `{}` has no external owning worker",
+            binding.trigger_type
+        ));
+    }
+    if let Some(schema) = &trigger.configuration_schema {
+        schema_check::validate("binding config", schema, &binding.config)?;
+    }
+    let Some(query) = &binding.query else {
+        return Ok(());
+    };
+    let function = function.ok_or_else(|| {
+        format!(
+            "binding query function `{}` is not registered",
+            query.function_id
+        )
+    })?;
+    if function.worker_name.trim() != owner {
+        return Err(format!(
+            "binding query function `{}` must be registered by `{owner}`, the worker that owns `{}`",
+            query.function_id, binding.trigger_type
+        ));
+    }
+    let read_only = function
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("read_only"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    if !read_only {
+        return Err(format!(
+            "binding query function `{}` must be registered with metadata {{\"read_only\": true}}",
+            query.function_id
+        ));
+    }
+    if let Some(schema) = &function.request_schema {
+        schema_check::validate("binding query payload", schema, &query_payload(query))?;
+    }
+    Ok(())
+}
+
+fn query_payload(query: &crate::protocol::BindingQuery) -> Value {
+    if query.payload.is_null() {
+        json!({})
+    } else {
+        query.payload.clone()
+    }
+}
+
+/// Pick the value a binding query applies and bound its size.
+pub fn select_query_value(result: Value, result_path: Option<&str>) -> Result<Value, String> {
+    let value = match result_path {
+        None | Some("") | Some("/") => result,
+        Some(path) => result
+            .pointer(path)
+            .cloned()
+            .ok_or_else(|| format!("binding query result has no value at `{path}`"))?,
+    };
+    let size = serde_json::to_vec(&value).map_or(usize::MAX, |bytes| bytes.len());
+    if size > MAX_LIVE_VALUE_BYTES {
+        return Err(format!(
+            "binding query result is {size} bytes; maximum is {MAX_LIVE_VALUE_BYTES}"
+        ));
+    }
+    Ok(value)
+}
+
+pub async fn refresh_binding(
+    deps: &Deps,
+    req: BindingRefreshRequest,
+) -> Result<BindingRefreshReceipt, String> {
+    let session_id = require_session(req.session_id)?;
+    let binding = deps
+        .store
+        .load(&session_id)
+        .await?
+        .get(&req.surface_id)
+        .ok_or_else(|| format!("surface `{}` was not found", req.surface_id))?
+        .bindings
+        .iter()
+        .find(|item| item.id == req.binding_id)
+        .cloned()
+        .ok_or_else(|| "binding was not found".to_string())?;
+    let query = binding
+        .query
+        .clone()
+        .ok_or_else(|| "binding has no query; its events are applied directly".to_string())?;
+    if validate_live_binding(&binding)? != BindingKind::Owned {
+        return Err("binding query is only supported for worker-owned trigger types".into());
+    }
+    let (trigger, function) = registry_facts(deps, &binding).await?;
+    check_owned_binding(&binding, &trigger, function.as_ref())?;
+    let result = deps
+        .iii
+        .trigger(TriggerRequest {
+            function_id: query.function_id.clone(),
+            payload: query_payload(&query),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await
+        .map_err(|error| format!("binding query `{}` failed: {error}", query.function_id))?;
+    let value = select_query_value(result, query.result_path.as_deref())?;
+    persist_refresh(deps, &session_id, &req.surface_id, &binding, value).await
+}
+
+async fn persist_refresh(
+    deps: &Deps,
+    session_id: &str,
+    surface_id: &str,
+    binding: &LiveBinding,
+    value: Value,
+) -> Result<BindingRefreshReceipt, String> {
+    let cfg = deps.config.read().await.clone();
+    let _guard = deps.store.mutation_guard(session_id).await;
+    let mut state = deps.store.load(session_id).await?;
+    let surface = state
+        .get_mut(surface_id)
+        .ok_or_else(|| format!("surface `{surface_id}` was not found"))?;
+    if !surface.bindings.iter().any(|item| item == binding) {
+        return Err("binding changed during refresh; refresh again".into());
+    }
+    let mut next = surface.data_model.clone();
+    set_data_path(&mut next, &binding.target_path, value.clone())?;
+    if next == surface.data_model {
+        return Ok(BindingRefreshReceipt {
+            receipt: receipt(surface, SurfaceStatus::Active),
+            value,
+            changed: false,
+        });
+    }
+    surface.data_model = next;
+    surface.revision += 1;
+    surface.updated_at_ms = now_ms();
+    let result = receipt(surface, SurfaceStatus::Active);
+    let updated_at_ms = surface.updated_at_ms;
+    state.updated_at_ms = updated_at_ms;
+    save_state(deps, &mut state, &cfg).await?;
+    Ok(BindingRefreshReceipt {
+        receipt: result,
+        value,
+        changed: true,
+    })
+}
+
 pub async fn delete_binding(
     deps: &Deps,
     req: BindingDeleteRequest,
@@ -1068,6 +1365,12 @@ pub async fn apply_binding(
                 .iter()
                 .find(|item| item.id == req.binding_id)
                 .ok_or_else(|| "binding was not found".to_string())?;
+            if binding.query.is_some() {
+                return Err(
+                    "binding reads through its query; the Console refreshes it with a2ui::binding::refresh"
+                        .into(),
+                );
+            }
             let path = binding.target_path.clone();
             set_data_path(&mut surface.data_model, &path, req.value)
         },
@@ -1778,9 +2081,13 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<PinRequest, SurfaceReceipt>(PIN_ID, PIN_DESC),
         spec::<ImportRequest, SurfaceReceipt>(IMPORT_ID, IMPORT_DESC),
         spec::<ExportCodeRequest, CodeExport>(EXPORT_CODE_ID, EXPORT_CODE_DESC),
-        spec::<BindingSetRequest, SurfaceReceipt>(BINDING_SET_ID, BINDING_SET_DESC),
+        spec::<BindingSetRequest, BindingSetReceipt>(BINDING_SET_ID, BINDING_SET_DESC),
         spec::<BindingDeleteRequest, SurfaceReceipt>(BINDING_DELETE_ID, BINDING_DELETE_DESC),
         spec::<BindingApplyRequest, SurfaceReceipt>(BINDING_APPLY_ID, BINDING_APPLY_DESC),
+        spec::<BindingRefreshRequest, BindingRefreshReceipt>(
+            BINDING_REFRESH_ID,
+            BINDING_REFRESH_DESC,
+        ),
         spec::<TemplateSaveRequest, SurfaceTemplate>(TEMPLATE_SAVE_ID, TEMPLATE_SAVE_DESC),
         spec::<TemplateListRequest, TemplateListResponse>(TEMPLATE_LIST_ID, TEMPLATE_LIST_DESC),
         spec::<TemplateSelectRequest, SurfaceTemplate>(TEMPLATE_GET_ID, TEMPLATE_GET_DESC),
@@ -1921,6 +2228,12 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: Deps) {
         apply_binding
     );
     register_async!(
+        BINDING_REFRESH_ID,
+        BINDING_REFRESH_DESC,
+        BindingRefreshRequest,
+        refresh_binding
+    );
+    register_async!(
         TEMPLATE_SAVE_ID,
         TEMPLATE_SAVE_DESC,
         TemplateSaveRequest,
@@ -1979,6 +2292,7 @@ mod tests {
                 BINDING_SET_ID,
                 BINDING_DELETE_ID,
                 BINDING_APPLY_ID,
+                BINDING_REFRESH_ID,
                 TEMPLATE_SAVE_ID,
                 TEMPLATE_LIST_ID,
                 TEMPLATE_GET_ID,
@@ -2070,5 +2384,325 @@ mod tests {
         let mut changed = request;
         changed.name = "reject".into();
         assert!(validate_action_retry(&record, &changed).is_err());
+    }
+
+    mod bindings {
+        use super::*;
+        use crate::config::WorkerConfig;
+        use crate::protocol::{BindingQuery, STREAM_BINDING_DEPRECATION};
+
+        fn deps() -> Deps {
+            // Never connected: every engine call fails, which is how the
+            // fail-closed paths are exercised without an engine.
+            let iii = Arc::new(IIIClient::new("ws://127.0.0.1:9"));
+            Deps {
+                iii: iii.clone(),
+                config: Arc::new(tokio::sync::RwLock::new(Arc::new(WorkerConfig::default()))),
+                store: Arc::new(Store::in_memory()),
+                composer: Arc::new(Composer::new(iii)),
+            }
+        }
+
+        async fn seed(deps: &Deps, bindings: Vec<LiveBinding>) {
+            let mut state = SessionState::empty("s1");
+            let messages: Vec<ServerMessage> = serde_json::from_value(json!([
+                {"version": PROTOCOL_VERSION, "createSurface": {"surfaceId": "live", "catalogId": CATALOG_ID}},
+                {"version": PROTOCOL_VERSION, "updateComponents": {"surfaceId": "live", "components": [
+                    {"id": "root", "component": "Text", "text": {"path": "/count"}}
+                ]}}
+            ]))
+            .unwrap();
+            apply_messages(&mut state, &messages, None, &WorkerConfig::default()).unwrap();
+            state.get_mut("live").unwrap().bindings = bindings;
+            deps.store.save(&state).await.unwrap();
+        }
+
+        async fn stored(deps: &Deps) -> SurfaceRecord {
+            deps.store
+                .load("s1")
+                .await
+                .unwrap()
+                .get("live")
+                .unwrap()
+                .clone()
+        }
+
+        fn set_request(binding: Value) -> BindingSetRequest {
+            serde_json::from_value(json!({
+                "session_id": "s1",
+                "surface_id": "live",
+                "binding": binding
+            }))
+            .unwrap()
+        }
+
+        fn owned() -> LiveBinding {
+            LiveBinding {
+                id: "counter".into(),
+                trigger_type: "demo::counter-changed".into(),
+                config: json!({"counter": "clicks"}),
+                target_path: "/count".into(),
+                event_path: None,
+                query: Some(BindingQuery {
+                    function_id: "demo::counter::get".into(),
+                    payload: json!({"counter": "clicks"}),
+                    result_path: Some("/value".into()),
+                }),
+            }
+        }
+
+        fn trigger_facts() -> TriggerTypeFacts {
+            TriggerTypeFacts {
+                id: "demo::counter-changed".into(),
+                worker_name: "demo-provider".into(),
+                configuration_schema: Some(json!({
+                    "type": "object",
+                    "required": ["counter"],
+                    "properties": {"counter": {"type": "string", "minLength": 1}},
+                    "additionalProperties": false
+                })),
+            }
+        }
+
+        fn function_facts() -> FunctionFacts {
+            FunctionFacts {
+                function_id: "demo::counter::get".into(),
+                worker_name: "demo-provider".into(),
+                request_schema: Some(json!({
+                    "type": "object",
+                    "required": ["counter"],
+                    "properties": {"counter": {"type": "string"}}
+                })),
+                metadata: Some(json!({"read_only": true})),
+            }
+        }
+
+        #[tokio::test]
+        async fn legacy_stream_binding_is_still_accepted_with_the_deprecation_flag() {
+            let deps = deps();
+            seed(&deps, Vec::new()).await;
+            let receipt = set_binding(
+                &deps,
+                set_request(json!({
+                    "id": "events",
+                    "trigger_type": "stream",
+                    "config": {"stream_name": "agent::events", "group_id": "s1"},
+                    "target_path": "/events"
+                })),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                receipt.deprecation.as_deref(),
+                Some(STREAM_BINDING_DEPRECATION)
+            );
+            let wire = serde_json::to_value(&receipt).unwrap();
+            assert_eq!(wire["surface_id"], "live");
+            assert!(wire["deprecation"]
+                .as_str()
+                .unwrap()
+                .contains("deprecated (iii-stream)"));
+            assert_eq!(stored(&deps).await.bindings[0].trigger_type, "stream");
+
+            let builtin = set_binding(
+                &deps,
+                set_request(json!({
+                    "id": "files",
+                    "trigger_type": "shell::changed",
+                    "config": {"path": "/workspace"},
+                    "target_path": "/files"
+                })),
+            )
+            .await
+            .unwrap();
+            assert!(builtin.deprecation.is_none());
+            assert!(serde_json::to_value(&builtin)
+                .unwrap()
+                .get("deprecation")
+                .is_none());
+        }
+
+        #[tokio::test]
+        async fn owned_bindings_fail_closed_when_the_engine_cannot_confirm_the_trigger_type() {
+            let deps = deps();
+            seed(&deps, Vec::new()).await;
+            let error = set_binding(&deps, set_request(serde_json::to_value(owned()).unwrap()))
+                .await
+                .unwrap_err();
+            assert!(
+                error.contains("is not registered with the engine"),
+                "{error}"
+            );
+            assert!(stored(&deps).await.bindings.is_empty());
+        }
+
+        #[tokio::test]
+        async fn surfaces_cap_their_live_bindings() {
+            let deps = deps();
+            let bindings = (0..MAX_BINDINGS_PER_SURFACE)
+                .map(|index| LiveBinding {
+                    id: format!("b{index}"),
+                    trigger_type: "shell::changed".into(),
+                    config: json!({"path": "/workspace"}),
+                    target_path: format!("/b{index}"),
+                    event_path: None,
+                    query: None,
+                })
+                .collect();
+            seed(&deps, bindings).await;
+            let error = set_binding(
+                &deps,
+                set_request(json!({
+                    "id": "one-more",
+                    "trigger_type": "shell::changed",
+                    "config": {"path": "/workspace"},
+                    "target_path": "/x"
+                })),
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("limit"), "{error}");
+            let replaced = set_binding(
+                &deps,
+                set_request(json!({
+                    "id": "b0",
+                    "trigger_type": "shell::changed",
+                    "config": {"path": "/other"},
+                    "target_path": "/b0"
+                })),
+            )
+            .await;
+            assert!(
+                replaced.is_ok(),
+                "replacing an existing binding stays allowed"
+            );
+        }
+
+        #[test]
+        fn registry_checks_validate_config_owner_read_only_and_payload() {
+            let binding = owned();
+            assert!(
+                check_owned_binding(&binding, &trigger_facts(), Some(&function_facts())).is_ok()
+            );
+
+            let mut bad_config = binding.clone();
+            bad_config.config = json!({"counter": "clicks", "group": "x"});
+            let error = check_owned_binding(&bad_config, &trigger_facts(), Some(&function_facts()))
+                .unwrap_err();
+            assert_eq!(error, "binding config: unsupported field `group`");
+            bad_config.config = json!({});
+            let error = check_owned_binding(&bad_config, &trigger_facts(), Some(&function_facts()))
+                .unwrap_err();
+            assert!(
+                error.contains("missing required field `counter`"),
+                "{error}"
+            );
+
+            let mut no_schema = trigger_facts();
+            no_schema.configuration_schema = None;
+            assert!(check_owned_binding(&bad_config, &no_schema, Some(&function_facts())).is_ok());
+
+            let mut unowned = trigger_facts();
+            unowned.worker_name = String::new();
+            assert!(check_owned_binding(&binding, &unowned, Some(&function_facts())).is_err());
+            unowned.worker_name = "a2ui".into();
+            assert!(check_owned_binding(&binding, &unowned, Some(&function_facts())).is_err());
+
+            let mut foreign = function_facts();
+            foreign.worker_name = "other-worker".into();
+            let error =
+                check_owned_binding(&binding, &trigger_facts(), Some(&foreign)).unwrap_err();
+            assert!(
+                error.contains("must be registered by `demo-provider`"),
+                "{error}"
+            );
+
+            let mut writable = function_facts();
+            writable.metadata = None;
+            let error =
+                check_owned_binding(&binding, &trigger_facts(), Some(&writable)).unwrap_err();
+            assert!(error.contains("read_only"), "{error}");
+            writable.metadata = Some(json!({"read_only": "yes"}));
+            assert!(check_owned_binding(&binding, &trigger_facts(), Some(&writable)).is_err());
+
+            let mut bad_payload = binding.clone();
+            bad_payload.query.as_mut().unwrap().payload = json!({"counter": 7});
+            let error =
+                check_owned_binding(&bad_payload, &trigger_facts(), Some(&function_facts()))
+                    .unwrap_err();
+            assert!(error.starts_with("binding query payload"), "{error}");
+            assert!(check_owned_binding(&binding, &trigger_facts(), None).is_err());
+
+            let mut event_mode = binding.clone();
+            event_mode.query = None;
+            assert!(check_owned_binding(&event_mode, &trigger_facts(), None).is_ok());
+        }
+
+        #[test]
+        fn query_values_are_selected_and_bounded() {
+            let result = json!({"value": 3, "revision": 9});
+            assert_eq!(
+                select_query_value(result.clone(), Some("/value")).unwrap(),
+                json!(3)
+            );
+            assert_eq!(select_query_value(result.clone(), None).unwrap(), result);
+            assert!(select_query_value(result, Some("/missing")).is_err());
+            let huge = json!({"blob": "x".repeat(MAX_LIVE_VALUE_BYTES)});
+            assert!(select_query_value(huge, None)
+                .unwrap_err()
+                .contains("maximum"));
+        }
+
+        #[tokio::test]
+        async fn refresh_writes_only_changes_and_detects_concurrent_edits() {
+            let deps = deps();
+            seed(&deps, vec![owned()]).await;
+            let before = stored(&deps).await.revision;
+            let first = persist_refresh(&deps, "s1", "live", &owned(), json!(3))
+                .await
+                .unwrap();
+            assert!(first.changed);
+            assert_eq!(first.receipt.revision, before + 1);
+            assert_eq!(stored(&deps).await.data_model["count"], 3);
+
+            let same = persist_refresh(&deps, "s1", "live", &owned(), json!(3))
+                .await
+                .unwrap();
+            assert!(!same.changed, "unchanged values must not bump the revision");
+            assert_eq!(same.receipt.revision, before + 1);
+
+            let mut edited = owned();
+            edited.target_path = "/other".into();
+            let error = persist_refresh(&deps, "s1", "live", &edited, json!(4))
+                .await
+                .unwrap_err();
+            assert!(error.contains("binding changed during refresh"), "{error}");
+        }
+
+        #[tokio::test]
+        async fn query_bindings_reject_direct_apply_and_unbind_cleans_up() {
+            let deps = deps();
+            seed(&deps, vec![owned()]).await;
+            let apply: BindingApplyRequest = serde_json::from_value(json!({
+                "session_id": "s1", "surface_id": "live", "binding_id": "counter", "value": 1
+            }))
+            .unwrap();
+            let error = apply_binding(&deps, apply).await.unwrap_err();
+            assert!(error.contains("a2ui::binding::refresh"), "{error}");
+
+            let delete: BindingDeleteRequest = serde_json::from_value(json!({
+                "session_id": "s1", "surface_id": "live", "binding_id": "counter"
+            }))
+            .unwrap();
+            delete_binding(&deps, delete).await.unwrap();
+            assert!(stored(&deps).await.bindings.is_empty());
+
+            let refresh: BindingRefreshRequest = serde_json::from_value(json!({
+                "session_id": "s1", "surface_id": "live", "binding_id": "counter"
+            }))
+            .unwrap();
+            let error = refresh_binding(&deps, refresh).await.unwrap_err();
+            assert_eq!(error, "binding was not found");
+        }
     }
 }
