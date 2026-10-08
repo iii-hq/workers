@@ -8,7 +8,8 @@
 //!
 //! A directory is listed only when navigation reaches it (jevgrep's
 //! per-directory cursors), by a one-level `ignore` walk that loads the
-//! ignore files of every ancestor, as one whole-tree walk would. Every gate
+//! ignore files of every ancestor, as one whole-tree walk would (inside a
+//! Git work tree, only those up to its top, as git reads them). Every gate
 //! runs there, so a pruned entry never shows up in a preview either:
 //! - the jail's protections: operator denylist, `non_accessible_globs`
 //!   (REDACTION INVARIANT), `default_exclude_globs`;
@@ -18,10 +19,13 @@
 //! - jevgrep's dependency directories and credential-like names;
 //! - the caller's `exclude_globs`.
 //!
-//! Content gates (control bytes, invalid UTF-8, a PRIVATE KEY block) run on
-//! every read: such a file is never scored, admitted or returned, though its
-//! name still shows in its folder's preview (as in jevgrep, which previews
-//! names only).
+//! The walk root itself is checked once, before the walk ([`ignored`] and
+//! the caller's hidden check).
+//!
+//! Content gates (control bytes, invalid UTF-8, a PRIVATE KEY block, a
+//! PuTTY or age secret key) run on every read: such a file is never scored,
+//! admitted or returned, though its name still shows in its folder's preview
+//! (as in jevgrep, which previews names only).
 //!
 //! Nothing under a `.git` directory is ever walked or read, and a read
 //! re-checks that its path still resolves, through no symlink, to the file
@@ -39,6 +43,7 @@ use sha2::{Digest, Sha256};
 use super::passes;
 use super::prompts::{Declaration, DirectoryPreview, FilePreview, Kind, PreviewEntry, SourceRange};
 use super::units::{self, MAX_PARSE_BYTES};
+use crate::code::functions::search::relative_to;
 use crate::code::path::PathResolver;
 
 /// jevgrep `filesystemDefaults.dependencyDirectories`.
@@ -57,7 +62,8 @@ const DEPENDENCY_DIRECTORIES: [&str; 13] = [
     ".nuxt",
     ".turbo",
 ];
-/// jevgrep `filesystemDefaults.sensitiveNames` / `sensitiveSuffixes`.
+/// jevgrep `filesystemDefaults.sensitiveNames` / `sensitiveSuffixes`, plus
+/// PuTTY keys, Terraform state, Java keystores and KeePass databases.
 const SENSITIVE_NAMES: [&str; 12] = [
     "credentials",
     "credentials.json",
@@ -72,7 +78,20 @@ const SENSITIVE_NAMES: [&str; 12] = [
     ".npmrc",
     ".pypirc",
 ];
-const SENSITIVE_SUFFIXES: [&str; 4] = [".pem", ".key", ".p12", ".pfx"];
+const SENSITIVE_SUFFIXES: [&str; 10] = [
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".ppk",
+    ".tfstate",
+    ".tfstate.backup",
+    ".jks",
+    ".keystore",
+    ".kdbx",
+];
+/// Unarmored secret keys: a PuTTY key file and an age identity.
+const SECRET_MARKERS: [&str; 2] = ["PuTTY-User-Key-File-", "AGE-SECRET-KEY-1"];
 
 /// Entries one ask may list (jevgrep's `entriesSeen` cap), charged as
 /// discovery lists a directory; a preview or lookup lists at most this many.
@@ -128,6 +147,49 @@ pub fn in_git_dir(path: &Path) -> bool {
     path.components().any(|c| c.as_os_str() == ".git")
 }
 
+/// The top of the Git work tree holding `path`: its nearest ancestor (or
+/// itself) with a `.git` entry, a linked worktree's `.git` file included.
+pub fn git_top(path: &Path) -> Option<&Path> {
+    path.ancestors().find(|dir| dir.join(".git").exists())
+}
+
+/// A one-level walk of `dir` under its ignore files and every ancestor's;
+/// `in_git` stops at the work tree's top, as git does.
+fn one_level(dir: &Path, in_git: bool) -> ignore::WalkBuilder {
+    let mut walker = ignore::WalkBuilder::new(dir);
+    walker
+        .max_depth(Some(1))
+        .follow_links(false)
+        .hidden(true)
+        .parents(true)
+        .ignore(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .require_git(in_git);
+    walker
+}
+
+/// True when the ignore rules of the work tree whose top is `top` leave out
+/// `path` or a folder between them: an ignore pattern matches only the
+/// entry it names, so a walk started inside an ignored folder would see
+/// none of it. Blocking.
+pub fn ignored(top: &Path, path: &Path) -> bool {
+    path.ancestors()
+        .take_while(|dir| *dir != top && dir.starts_with(top))
+        .any(|dir| {
+            let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
+                return false;
+            };
+            let name = name.to_os_string();
+            let mut walker = one_level(parent, true);
+            walker
+                .hidden(false)
+                .filter_entry(move |e| e.depth() == 0 || e.file_name() == name);
+            !walker.build().flatten().any(|e| e.depth() == 1)
+        })
+}
+
 /// `dir` + `name` in the walk's root-relative form (`.` is the root).
 pub fn join(dir: &str, name: &str) -> String {
     if dir == "." {
@@ -149,6 +211,11 @@ pub struct Tree {
     pub root: PathBuf,
     resolver: Arc<PathResolver>,
     exclude: Option<globset::GlobSet>,
+    /// What `exclude` matches relative to outside every configured root,
+    /// as in coder::search.
+    anchor: PathBuf,
+    /// The root is inside a Git work tree ([`one_level`]).
+    in_git: bool,
     /// Naming an excluded folder as the walk root disables the default
     /// excludes for that walk, as in coder::search and coder::tree.
     default_excludes: bool,
@@ -172,12 +239,15 @@ impl Tree {
         resolver: &Arc<PathResolver>,
         root: &Path,
         exclude: Option<globset::GlobSet>,
+        anchor: &Path,
         max_read_bytes: u64,
     ) -> Self {
         Self {
             root: root.to_path_buf(),
             resolver: resolver.clone(),
             exclude,
+            anchor: anchor.to_path_buf(),
+            in_git: git_top(root).is_some(),
             default_excludes: !resolver.is_default_excluded_dir(root),
             max_file_bytes: MAX_FILE_BYTES.min(max_read_bytes),
         }
@@ -187,26 +257,21 @@ impl Tree {
     /// every name gate (module docs): the first `limit` in directory order,
     /// sorted by name. Blocking.
     pub fn list(&self, dir: &str, limit: usize) -> Listing {
-        let path = if dir == "." {
-            self.root.clone()
+        if dir == "." {
+            self.list_path(&self.root, limit)
         } else {
-            self.root.join(dir)
-        };
-        let mut walker = ignore::WalkBuilder::new(&path);
-        walker
-            .max_depth(Some(1))
-            .follow_links(false)
-            .hidden(true)
-            .parents(true)
-            .ignore(true)
-            .git_ignore(true)
-            .git_global(true)
-            .git_exclude(true)
-            .require_git(false);
-        let (resolver, exclude, root) = (
+            self.list_path(&self.root.join(dir), limit)
+        }
+    }
+
+    /// [`Tree::list`] of a canonical absolute folder, which may sit above
+    /// the root. Blocking.
+    pub fn list_path(&self, path: &Path, limit: usize) -> Listing {
+        let mut walker = one_level(path, self.in_git);
+        let (resolver, exclude, anchor) = (
             self.resolver.clone(),
             self.exclude.clone(),
-            self.root.clone(),
+            self.anchor.clone(),
         );
         let default_excludes = self.default_excludes;
         walker.filter_entry(move |e| {
@@ -242,15 +307,18 @@ impl Tree {
             {
                 return false;
             }
-            // A directory also matches as `rel/`, so `gen/` and `gen/**`
-            // prune the folder itself, not just its contents.
-            match (&exclude, abs.strip_prefix(&root)) {
-                (Some(set), Ok(rel)) => {
-                    !(set.is_match(rel)
-                        || is_dir && set.is_match(format!("{}/", rel.to_string_lossy())))
-                }
-                _ => true,
-            }
+            // coder::search's relative form; a directory also matches as
+            // `rel/`, so `gen/` and `gen/**` prune the folder itself, not
+            // just its contents.
+            let Some(set) = &exclude else {
+                return true;
+            };
+            resolver
+                .relative(abs)
+                .or_else(|| relative_to(&anchor, abs))
+                .is_none_or(|rel| {
+                    !(set.is_match(&rel) || is_dir && set.is_match(format!("{rel}/")))
+                })
         });
 
         let mut listing = Listing::default();
@@ -333,7 +401,7 @@ pub fn read(tree: &Tree, path: &str) -> Snap {
     let Ok(source) = String::from_utf8(bytes) else {
         return Snap::Excluded;
     };
-    if PRIVATE_KEY.is_match(&source) {
+    if PRIVATE_KEY.is_match(&source) || SECRET_MARKERS.iter().any(|m| source.contains(m)) {
         return Snap::Excluded;
     }
     Snap::Ok(Snapshot {
@@ -627,6 +695,12 @@ mod tests {
             "x.pem",
             "a.KEY",
             ".npmrc",
+            "deploy.ppk",
+            "terraform.tfstate",
+            "terraform.tfstate.backup",
+            "release.jks",
+            "debug.keystore",
+            "vault.kdbx",
         ] {
             assert!(is_sensitive(name), "{name}");
         }

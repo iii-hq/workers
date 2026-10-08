@@ -210,7 +210,7 @@ both surfaces are unjailed and `coder::*` keeps the engine workspace cwd +
 | `coder::search` | Literal/regex content + path search over a folder or one file, with context lines, bounded by match/byte budgets. `respect_gitignore: true` skips what `.gitignore` hides; `fuzzy_paths: true` ranks path matches quick-open style, best first. |
 | `coder::list-folder` | Paginated single-folder listing. |
 | `coder::tree` | Recursive depth- and per-folder-bounded directory snapshot. |
-| `coder::find-relevant` | Judge-ranked discovery for behavioural questions (a port of [jevgrep](https://github.com/dzhng/jevgrep)): returns files best first with verbatim excerpts and line ranges. **Egress:** sends the query, root-relative paths and file text to the session's judge provider (`judge::evaluate`; hosted `judge-typesafe` by default), never protected, ignored or secret-looking files nor hidden entries below `path`; binary and private-key files show by name only. A `'!coder::find-relevant'` deny rule in `iii-permissions.yaml`, above its allow entry, takes it from agents; the IDE's Search tab calls it directly. See [below](#judge-ranked-discovery-coderfind-relevant). |
+| `coder::find-relevant` | Judge-ranked discovery for behavioural questions (a port of [jevgrep](https://github.com/dzhng/jevgrep)): returns files best first with verbatim excerpts and line ranges. **Egress:** sends the query, root-relative paths and file text to the session's judge provider (`judge::evaluate`; hosted `judge-typesafe` by default), never protected, ignored, hidden or secret-looking files, and refuses a hidden or gitignored `path`; binary and secret-key files show by name only. A `'!coder::find-relevant'` deny rule in `iii-permissions.yaml`, above its allow entry, takes it from agents; the IDE's Search tab calls it directly. See [below](#judge-ranked-discovery-coderfind-relevant). |
 | `coder::create-file` / `coder::update-file` / `coder::delete-file` / `coder::move` | Batched create, line/regex edits, delete, and atomic rename/move. |
 | `coder::list-templates` | The worker templates `coder::scaffold-worker` creates from, with their language and the compose containers they need. Read from `code.templates`: a local `dir`, or a cached shallow clone of `url` at `ref` (`refresh: true` re-fetches it). |
 | `coder::scaffold-worker` | Create a worker from a template in a missing or empty folder whose last segment is the worker name (default `workers/<name>`), all or nothing, with the template's name token replaced in paths and text, and return `compose_add`, the `compose::add` payload to send whole, adding `start_after` to its entry and missing `requires` as more entries (`{ workers: [compose] }`; the bare `worker` string form drops the scripts). Writes go through the `coder::create-file` path and show in the turn summary. |
@@ -295,15 +295,24 @@ error.
   asks started after it. An outage pauses calls to that provider for 30 s.
 - **What leaves the host.** Paths relative to `path`, never the host
   layout. The walk skips `non_accessible_globs`, `fs.denylist_paths`,
-  gitignored entries, hidden entries below `path` (any dot-name, even one
-  an ignore file whitelists; `path` itself may be a dot-folder, so do not
-  point it at one holding tokens), dependency and build folders
-  (`node_modules`, `vendor`, `target`, `dist`, …) and secret-named files
-  (`.env`/`.env.*`, `id_rsa`-style keys, `credentials(.json)`,
-  `secrets.{json,yaml,yml}`, `.netrc`/`.npmrc`/`.pypirc`,
-  `*.pem`/`*.key`/`*.p12`/`*.pfx`). The text of files holding a private key
-  (PEM or armored PGP) and of binary or non-UTF-8 files is never sent,
-  though their names can appear in a folder's preview. Tokens hard-coded in
+  gitignored entries (inside a Git work tree, by the ignore files up to its
+  top, as git reads them), hidden entries (any dot-name, even one an ignore
+  file whitelists), dependency and build folders (`node_modules`, `vendor`,
+  `target`, `dist`, …) and secret-named files (`.env`/`.env.*`,
+  `id_rsa`-style keys, `credentials(.json)`, `secrets.{json,yaml,yml}`,
+  `.netrc`/`.npmrc`/`.pypirc`, `*.pem`/`*.key`/`*.p12`/`*.pfx`/`*.ppk`,
+  `*.tfstate(.backup)`, `*.jks`/`*.keystore`, `*.kdbx`). The text of files
+  holding a private key (PEM, armored PGP, PuTTY or age) and of binary or
+  non-UTF-8 files is never sent, though their names can appear in a
+  folder's preview. `path` itself is refused (`C210`) when it is gitignored
+  or inside an ignored folder, or hidden or inside a hidden folder below
+  the project folder (the session folder, else the Git work tree, else the
+  configured root; that folder may itself sit under a dot-folder, like a
+  worktree in `.claude/worktrees`). Without a session scope, an unjailed
+  worker also refuses a `path` outside every Git work tree and configured
+  root. `exclude_globs` match paths relative to the session root, as in
+  `coder::search`, not to `path`. `agents_md` lists the `AGENTS.md` files
+  from the project folder down to `path` and above returned files. Tokens hard-coded in
   ordinary source files, and the query itself, still go to the provider. A
   `'!coder::find-relevant'` rule in `iii-permissions.yaml` above its allow
   entry (first match wins) takes the function from agents only: the IDE's

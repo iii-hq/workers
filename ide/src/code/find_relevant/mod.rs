@@ -28,6 +28,7 @@ pub mod walk;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -67,8 +68,10 @@ pub struct FindRelevantInput {
     /// Folder to search (default `.`); result paths are absolute.
     #[serde(default = "default_path")]
     pub path: String,
-    /// Root-relative globs (not gitignore lines) to leave out; `gen/` or
-    /// `gen/**` drops the folder itself. They only narrow.
+    /// Globs (not gitignore lines) to leave out, relative to the session
+    /// root like coder::search's, NOT to `path`: with path `ade`, write
+    /// `ade/gen/**` or `**/gen/**`. `gen/` or `gen/**` drops the folder
+    /// itself. They only narrow.
     #[serde(default)]
     pub exclude_globs: Vec<String>,
     /// Deadline for the whole ask in ms; work left at the deadline makes
@@ -188,7 +191,8 @@ pub struct FindRelevantOutput {
     pub reason: Option<String>,
     /// Best first.
     pub files: Vec<RelevantFile>,
-    /// AGENTS.md files at the root and above returned files.
+    /// AGENTS.md files from the project folder down to `path`, and above
+    /// returned files.
     pub agents_md: Vec<String>,
     /// Coverage issues by kind.
     pub issues: BTreeMap<String, u64>,
@@ -260,7 +264,52 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
             req.path
         )));
     }
+    let session = crate::fs::scope_anchor(req.fs_scope.as_ref())
+        .and_then(|root| resolver.session_root(root))
+        .filter(|root| walk_root.starts_with(root));
+    let top = walk::git_top(&walk_root);
+    let configured = resolver.containing_root(&walk_root);
+    if resolver.unjailed() && req.fs_scope.is_none() && top.is_none() && configured.is_none() {
+        return Err(CoderError::BadInput(format!(
+            "find-relevant sends file text to the judge, so it only searches a project \
+             folder (a Git work tree or a configured root, see coder::info), and {} is \
+             neither; use coder::search",
+            req.path
+        )));
+    }
+    // The project folder bounding the ask: the session's, else the Git work
+    // tree's (inside the jail), else the configured root's, else the
+    // filesystem root. It and its ancestors may be hidden (worktrees under
+    // .claude/worktrees).
+    let base = match &session {
+        Some(session) => session.as_path(),
+        None => top
+            .filter(|top| resolver.unjailed() || resolver.containing_root(top).is_some())
+            .or(configured)
+            .or_else(|| walk_root.ancestors().last())
+            .unwrap_or(&walk_root),
+    }
+    .to_path_buf();
+    let hidden = walk_root.strip_prefix(&base).is_ok_and(|rel| {
+        rel.components()
+            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+    });
+    if hidden {
+        return Err(CoderError::BadInput(format!(
+            "path is a hidden folder or inside one, which find-relevant never searches: {}; \
+             use coder::search",
+            req.path
+        )));
+    }
+    if top.is_some_and(|top| walk::ignored(top, &walk_root)) {
+        return Err(CoderError::BadInput(format!(
+            "path is gitignored or inside an ignored folder, which find-relevant never \
+             searches: {}; use coder::search",
+            req.path
+        )));
+    }
     let exclude = crate::code::functions::search::build_globset(&req.exclude_globs)?;
+    let anchor = session.unwrap_or_else(|| walk_root.clone());
 
     let unavailable = |reason: String| FindRelevantOutput {
         status: Status::Unavailable,
@@ -292,7 +341,7 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
 
     let run = Arc::new(Run {
         query: req.query,
-        tree: walk::Tree::new(&resolver, &walk_root, exclude, cfg.max_read_bytes),
+        tree: walk::Tree::new(&resolver, &walk_root, exclude, &anchor, cfg.max_read_bytes),
         evaluate,
         deadline,
         state_cap: select::MAX_STATE_BYTES,
@@ -331,7 +380,7 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
     let root = run.tree.root.clone();
     let candidates = run.sorted_candidates();
     let (lookup, listed) = (run.clone(), candidates.clone());
-    let agents_md = tokio::task::spawn_blocking(move || agents_md(&lookup, &listed))
+    let agents_md = tokio::task::spawn_blocking(move || agents_md(&lookup, &base, &listed))
         .await
         .unwrap_or_else(|_| {
             run.issue("agents_md_incomplete");
@@ -486,25 +535,35 @@ fn spend_budget(output: &mut FindRelevantOutput, mut source: usize, result: usiz
     }
 }
 
-/// repository-context.ts: `AGENTS.md` at the walk root and in every folder
-/// above a returned file, when a listing admits it (the jail's protections,
-/// ignore rules and `exclude_globs` all apply); a folder too large or
-/// unreadable to tell counts `agents_md_incomplete`. Absolute. Blocking.
-fn agents_md(run: &Run, candidates: &[Candidate]) -> Vec<String> {
-    let mut directories = vec![".".to_string()];
+/// repository-context.ts: `AGENTS.md` in every folder from `base` down to
+/// the walk root (jevgrep starts at the root, its repository) and above a
+/// returned file, when a listing admits it (the jail's protections, ignore
+/// rules and `exclude_globs` all apply); a folder too large or unreadable to
+/// tell counts `agents_md_incomplete`. Absolute. Blocking.
+fn agents_md(run: &Run, base: &Path, candidates: &[Candidate]) -> Vec<String> {
+    let root = &run.tree.root;
+    let mut directories: Vec<PathBuf> = root
+        .ancestors()
+        .skip(1)
+        .take_while(|dir| dir.starts_with(base))
+        .map(Path::to_path_buf)
+        .collect();
+    directories.reverse();
+    directories.push(root.clone());
     for candidate in candidates {
         let mut path = candidate.path.as_str();
         while let Some((parent, _)) = path.rsplit_once('/') {
-            if !directories.iter().any(|known| known == parent) {
-                directories.push(parent.to_string());
+            let parent_dir = root.join(parent);
+            if !directories.contains(&parent_dir) {
+                directories.push(parent_dir);
             }
             path = parent;
         }
     }
     directories
-        .iter()
+        .into_iter()
         .filter(|directory| {
-            let listing = run.tree.list(directory, walk::MAX_ENTRIES);
+            let listing = run.tree.list_path(directory, walk::MAX_ENTRIES);
             let found = listing
                 .entries
                 .iter()
@@ -514,13 +573,7 @@ fn agents_md(run: &Run, candidates: &[Candidate]) -> Vec<String> {
             }
             found
         })
-        .map(|directory| {
-            run.tree
-                .root
-                .join(walk::join(directory, "AGENTS.md"))
-                .display()
-                .to_string()
-        })
+        .map(|directory| directory.join("AGENTS.md").display().to_string())
         .collect()
 }
 

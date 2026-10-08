@@ -929,7 +929,7 @@ fn clip_line(line: &str, max_line_bytes: usize) -> &str {
 /// `PathResolver::relative` has no root to strip. `None` when `abs` isn't
 /// under `anchor` (the entry has no expressible relative form and is
 /// skipped, as before).
-fn relative_to(anchor: &std::path::Path, abs: &std::path::Path) -> Option<String> {
+pub(crate) fn relative_to(anchor: &std::path::Path, abs: &std::path::Path) -> Option<String> {
     abs.strip_prefix(anchor)
         .ok()
         .map(|p| p.to_string_lossy().replace('\\', "/"))

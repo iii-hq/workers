@@ -185,7 +185,8 @@ takes minutes and stops at the judge token budget (reason `token_budget`).
 `unavailable` means no judge answered (fall back to `coder::search`; with
 reason `judge model loading; retry shortly`, retry the ask in a minute). The
 query, root-relative paths and file text go to the session's judge
-provider, which may be hosted; protected, ignored and secret-looking files
-never do, nor hidden entries below `path` (so never point `path` at a
-dot-folder holding tokens). An excerpt with `partial` is only a byte span of
+provider, which may be hosted; protected, ignored, hidden and
+secret-looking files never do, and a hidden or gitignored `path` is refused
+(use `coder::search` there). `exclude_globs` are relative to the session
+root, as in `coder::search`. An excerpt with `partial` is only a byte span of
 its lines: read the file before rewriting those lines.

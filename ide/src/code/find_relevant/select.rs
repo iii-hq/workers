@@ -708,7 +708,7 @@ mod tests {
             ..Default::default()
         };
         let resolver = Arc::new(crate::code::path::PathResolver::new(&cfg).unwrap());
-        let tree = walk::Tree::new(&resolver, &root, None, 1 << 24);
+        let tree = walk::Tree::new(&resolver, &root, None, &root, 1 << 24);
         let run = Arc::new(Run {
             query: "q".into(),
             tree,

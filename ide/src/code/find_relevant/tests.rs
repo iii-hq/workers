@@ -178,6 +178,20 @@ async fn nothing_protected_ignored_or_secret_reaches_the_judge() {
                 )
                 .as_bytes(),
             ),
+            (
+                "src/core/putty.txt",
+                concat!(
+                    "PuTTY-User-Key",
+                    "-File-3: ssh-ed25519\nSECRET_PPK needle\n"
+                )
+                .as_bytes(),
+            ),
+            (
+                "src/core/age.txt",
+                concat!("AGE-SECRET", "-KEY-1QQQQ SECRET_AGE needle\n").as_bytes(),
+            ),
+            ("deploy.ppk", b"SECRET_PPKNAME needle"),
+            ("terraform.tfstate", b"{\"password\": \"SECRET_TF needle\"}"),
             ("src/core/blob.bin", b"\x00\x01SECRET_BIN needle"),
             ("src/core/latin.txt", b"SECRET_UTF8 needle \xff"),
             // a whitelisted dot-folder is still hidden
@@ -208,6 +222,8 @@ async fn nothing_protected_ignored_or_secret_reaches_the_judge() {
         ".secretdir",
         "id_rsa",
         "x.pem",
+        "deploy.ppk",
+        "terraform.tfstate",
         "credentials.json",
         "ignored.txt",
         "node_modules",
@@ -717,6 +733,172 @@ async fn git_metadata_is_never_a_walk_root() {
     assert!(log.lock().unwrap().is_empty());
 }
 
+/// `req`'s refusal, which no judge call precedes.
+async fn refused(fx: &Fixture, req: FindRelevantInput) -> String {
+    let log = Log::default();
+    let error = run(
+        fx.resolver.clone(),
+        fx.cfg.clone(),
+        req,
+        |_| async { Ok(Listing::default()) },
+        judge(&log, keyword),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(log.lock().unwrap().is_empty());
+    match error {
+        CoderError::BadInput(message) => message,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn at(path: &str) -> FindRelevantInput {
+    FindRelevantInput {
+        path: path.into(),
+        ..input("where is the needle?", 120_000)
+    }
+}
+
+#[tokio::test]
+async fn a_gitignored_or_hidden_walk_root_is_refused() {
+    let fx = fixture(
+        &[
+            (".git/HEAD", b"ref: refs/heads/main\n"),
+            (".gitignore", b"/data/\nlogs\n"),
+            ("data/conf/notes.toml", b"token = \"SECRET_IGN\" needle"),
+            ("src/logs/needle.txt", b"SECRET_LOG needle"),
+            (".tokens/hosts.yml", b"oauth_token: SECRET_DOT needle"),
+            ("src/.cache/needle.rs", b"SECRET_CACHE needle"),
+            ("src/needle.rs", b"fn needle() {}\n"),
+        ],
+        |_, _| {},
+    );
+    for path in ["data", "data/conf", "src/logs"] {
+        let message = refused(&fx, at(path)).await;
+        assert!(message.contains("gitignored"), "{path}: {message}");
+        assert!(message.contains("coder::search"), "{path}: {message}");
+    }
+    for path in [".tokens", "src/.cache"] {
+        let message = refused(&fx, at(path)).await;
+        assert!(message.contains("hidden"), "{path}: {message}");
+    }
+    let out = ask_with(&fx, at("src"), None, judge(&Log::default(), keyword)).await;
+    assert_eq!(paths(&fx, &out), ["src/needle.rs"]);
+}
+
+#[tokio::test]
+async fn a_worktree_under_a_hidden_ignored_folder_is_searched() {
+    let fx = fixture(
+        &[
+            (".git/HEAD", b"ref: refs/heads/main\n"),
+            (".gitignore", b".claude/\n"),
+            (
+                ".claude/worktrees/wt/.git",
+                b"gitdir: ../../../.git/worktrees/wt\n",
+            ),
+            (".claude/worktrees/wt/src/needle.rs", b"fn needle() {}\n"),
+        ],
+        |_, _| {},
+    );
+    let worktree = fx.root.join(".claude/worktrees/wt");
+    let scoped = FindRelevantInput {
+        fs_scope: Some(crate::fs::FsScope {
+            root: worktree.display().to_string(),
+            grants: Vec::new(),
+            boundary: crate::fs::FsBoundary::Workspace,
+        }),
+        ..at(".")
+    };
+    for req in [at(".claude/worktrees/wt"), scoped] {
+        let out = ask_with(&fx, req, None, judge(&Log::default(), keyword)).await;
+        assert_eq!(
+            out.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+            [worktree.join("src/needle.rs").display().to_string()]
+        );
+    }
+}
+
+#[tokio::test]
+async fn ignore_files_above_the_repository_do_not_apply() {
+    let fx = fixture(
+        &[
+            ("outer/.gitignore", b"*.rs\n"),
+            ("outer/repo/.git/HEAD", b"ref: refs/heads/main\n"),
+            ("outer/repo/src/needle.rs", b"fn needle() {}\n"),
+        ],
+        |_, _| {},
+    );
+    let out = ask_with(&fx, at("outer/repo"), None, judge(&Log::default(), keyword)).await;
+    assert_eq!(paths(&fx, &out), ["outer/repo/src/needle.rs"]);
+}
+
+#[tokio::test]
+async fn an_unjailed_ask_without_a_scope_needs_a_project_folder() {
+    let fx = fixture(&[("needle.rs", b"fn needle() {}\n")], |_, cfg| {
+        cfg.unjailed = true;
+    });
+    let outside = tempfile::tempdir().unwrap();
+    let outside = outside.path().canonicalize().unwrap();
+    std::fs::write(outside.join("needle.rs"), b"SECRET_HOST needle").unwrap();
+    let message = refused(&fx, at(&outside.display().to_string())).await;
+    assert!(message.contains("project folder"), "{message}");
+    // a Git work tree is a project folder
+    std::fs::create_dir(outside.join(".git")).unwrap();
+    let out = ask_with(
+        &fx,
+        at(&outside.display().to_string()),
+        None,
+        judge(&Log::default(), keyword),
+    )
+    .await;
+    assert_eq!(out.files.len(), 1);
+    // and so is a configured root
+    let out = ask_with(&fx, at("."), None, judge(&Log::default(), keyword)).await;
+    assert_eq!(paths(&fx, &out), ["needle.rs"]);
+}
+
+#[tokio::test]
+async fn exclude_globs_match_from_the_session_root_like_coder_search() {
+    let fx = fixture(
+        &[
+            ("sub/needle.rs", b"fn needle() {}\n"),
+            ("sub/gen/needle.rs", b"fn needle() {}\n"),
+        ],
+        |_, _| {},
+    );
+    let log = Log::default();
+    let req = FindRelevantInput {
+        exclude_globs: vec!["sub/gen/**".into()],
+        ..at("sub")
+    };
+    let out = ask_with(&fx, req, None, judge(&log, keyword)).await;
+    assert_eq!(paths(&fx, &out), ["sub/needle.rs"]);
+    let sent = log.lock().unwrap().join("\n");
+    for forbidden in ["\"gen", "\\\"gen"] {
+        assert!(!sent.contains(forbidden), "{forbidden} reached the judge");
+    }
+    let search: crate::code::functions::search::SearchInput =
+        serde_json::from_value(serde_json::json!({
+            "query": "needle",
+            "path": "sub",
+            "exclude_globs": ["sub/gen/**"],
+        }))
+        .unwrap();
+    let found = crate::code::functions::search::handle(fx.resolver.clone(), fx.cfg.clone(), search)
+        .await
+        .unwrap();
+    let searched: Vec<_> = found
+        .content_matches
+        .iter()
+        .map(|m| m.path.clone())
+        .collect();
+    assert_eq!(
+        searched,
+        [fx.root.join("sub/needle.rs").display().to_string()]
+    );
+}
+
 #[tokio::test]
 async fn a_preview_too_big_for_the_window_is_scored_in_chunks_keeping_the_best() {
     // 375 lines of 80 bytes: three 12 000-byte chunks, `alpha` in the first,
@@ -904,7 +1086,7 @@ fn a_folder_swapped_for_a_link_after_the_walk_is_never_read() {
     let fx = fixture(&[("src/a.rs", b"inside")], |_, _| {});
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("a.rs"), "SECRET_OUTSIDE").unwrap();
-    let tree = walk::Tree::new(&fx.resolver, &fx.root, None, u64::MAX);
+    let tree = walk::Tree::new(&fx.resolver, &fx.root, None, &fx.root, u64::MAX);
     assert!(matches!(walk::read(&tree, "src/a.rs"), walk::Snap::Ok(_)));
     std::fs::rename(fx.root.join("src"), fx.root.join("old")).unwrap();
     std::os::unix::fs::symlink(outside.path(), fx.root.join("src")).unwrap();
@@ -1162,6 +1344,15 @@ async fn agents_md_lists_accessible_files_at_the_root_and_above_returned_files()
         ]
     );
     assert!(!log.lock().unwrap().join("\n").contains("SECRET_RULES"));
+    // a narrowed path still lists the ones above it, through the same gates
+    let out = ask_with(&fx, at("src/core"), None, judge(&log, keyword)).await;
+    assert_eq!(
+        out.agents_md,
+        [
+            format!("{root}/AGENTS.md"),
+            format!("{root}/src/core/AGENTS.md")
+        ]
+    );
 }
 
 #[tokio::test]

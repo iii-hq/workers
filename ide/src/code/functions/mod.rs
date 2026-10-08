@@ -211,9 +211,9 @@ const FIND_RELEVANT_DESC: &str =
      use coder::search. Sends the query, root-relative paths and file text to \
      the session's judge provider, which may be hosted: never protected, \
      ignored, hidden, .git or secret-named files, nor the text of binary or \
-     private-key files. Hidden entries are skipped only below path, so do \
-     not point path at a dot-folder holding tokens. Paths: relative to the \
-     primary root or absolute inside an allowed root (see coder::info).";
+     secret-key files. A path that is hidden, gitignored or outside a \
+     project folder is refused. Paths: relative to the primary root or \
+     absolute inside an allowed root (see coder::info).";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

@@ -1,5 +1,5 @@
 {
-  "description": "Find the code relevant to a behavioural question (how, why or where something works, even one naming a function or setting): walks folders then files asking the judge yes/no relevance questions and returns files best first. Start behavioural discovery here before broad text searches; for exact symbols, strings or filenames use coder::search. Set path to the folder of the component the question is about (e.g. judge/src): time and judge cost grow with the folder, and a repository-root ask on a large repo hits the judge token budget. Read the returned files before searching again. incomplete = partial coverage (see reason and issues; narrow path); unavailable = no judge, use coder::search. Sends the query, root-relative paths and file text to the session's judge provider, which may be hosted: never protected, ignored, hidden, .git or secret-named files, nor the text of binary or private-key files. Hidden entries are skipped only below path, so do not point path at a dot-folder holding tokens. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
+  "description": "Find the code relevant to a behavioural question (how, why or where something works, even one naming a function or setting): walks folders then files asking the judge yes/no relevance questions and returns files best first. Start behavioural discovery here before broad text searches; for exact symbols, strings or filenames use coder::search. Set path to the folder of the component the question is about (e.g. judge/src): time and judge cost grow with the folder, and a repository-root ask on a large repo hits the judge token budget. Read the returned files before searching again. incomplete = partial coverage (see reason and issues; narrow path); unavailable = no judge, use coder::search. Sends the query, root-relative paths and file text to the session's judge provider, which may be hosted: never protected, ignored, hidden, .git or secret-named files, nor the text of binary or secret-key files. A path that is hidden, gitignored or outside a project folder is refused. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
   "function_id": "coder::find-relevant",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -12,7 +12,7 @@
     "properties": {
       "exclude_globs": {
         "default": [],
-        "description": "Root-relative globs (not gitignore lines) to leave out; `gen/` or `gen/**` drops the folder itself. They only narrow.",
+        "description": "Globs (not gitignore lines) to leave out, relative to the session root like coder::search's, NOT to `path`: with path `ade`, write `ade/gen/**` or `**/gen/**`. `gen/` or `gen/**` drops the folder itself. They only narrow.",
         "items": {
           "type": "string"
         },
@@ -293,7 +293,7 @@
     },
     "properties": {
       "agents_md": {
-        "description": "AGENTS.md files at the root and above returned files.",
+        "description": "AGENTS.md files from the project folder down to `path`, and above returned files.",
         "items": {
           "type": "string"
         },
