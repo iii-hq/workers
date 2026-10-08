@@ -162,7 +162,8 @@ environment requires a restart.
 
 ## Privacy
 
-The worker never logs keys, inputs or answers, and sets
+The worker never logs keys, inputs or answers. A retried attempt logs one
+warning with its error code, HTTP status and timings. The worker also sets
 `III_DISABLE_TRACE_PAYLOADS=1` at startup so its own OpenTelemetry spans carry
 no request or response payloads. Spans recorded by the `judge` hub and by the
 calling workers still include the payload; set the variable on those workers

@@ -149,6 +149,7 @@ pub async fn send_http(
     timeout_at(deadline, async {
         for attempt in 0..=retry.max_retries {
             check_deadline(deadline)?;
+            let attempt_started;
             let result = {
                 let _permit = permits.acquire().await.map_err(|_| ErrorCode::Transport)?;
                 check_deadline(deadline)?;
@@ -168,6 +169,7 @@ pub async fn send_http(
                     unknown_usage,
                     unresolved: true,
                 };
+                attempt_started = Instant::now();
                 attempts.fetch_add(1, Ordering::SeqCst);
                 async {
                     let response = timeout_at(attempt_deadline, http.execute(request))
@@ -211,12 +213,18 @@ pub async fn send_http(
                     }) {
                         return Err(failure);
                     }
-                    sleep(Duration::from_millis(retry_delay(
-                        &retry,
-                        attempt,
-                        failure.retry_after_ms,
-                    )))
-                    .await;
+                    let delay_ms = retry_delay(&retry, attempt, failure.retry_after_ms);
+                    // Code, status and timings only: never content or credentials.
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        code = ?failure.code,
+                        http_status = ?failure.http_status,
+                        attempt_ms = attempt_started.elapsed().as_millis() as u64,
+                        retry_after_ms = ?failure.retry_after_ms,
+                        delay_ms,
+                        "provider attempt failed; retrying"
+                    );
+                    sleep(Duration::from_millis(delay_ms)).await;
                 }
             }
         }
