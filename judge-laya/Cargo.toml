@@ -14,6 +14,7 @@ console-ui = ["dep:iii-console-ui"]
 
 [dependencies]
 judge-contract = { path = "../crates/judge-contract" }
+judge-provider = { path = "../crates/judge-provider" }
 iii-sdk = "=0.23.0"
 iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui", optional = true }

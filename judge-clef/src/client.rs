@@ -2,7 +2,6 @@
 //! forward per evaluation), with the judge contract's deadlines, atomic
 //! results, usage accounting and caller-scoped cancellation.
 use crate::{
-    cancellation::CancellationRegistry,
     download::Checkpoint,
     encode::{self, Encoded},
     engine::{self, Engine, Stop},
@@ -15,6 +14,7 @@ use judge_contract::{
     EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, Question, Stats, Usage,
     DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_TIMEOUT_MS,
 };
+use judge_provider::cancellation::CancellationRegistry;
 use std::{
     collections::BTreeMap,
     sync::{
