@@ -38,6 +38,8 @@ import type { InstalledFile, KitInfo } from './types'
 
 type Tab = 'overview' | 'profiles' | 'skills' | 'workers' | 'files'
 
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+
 export function KitDetail({
   host,
   kit,
@@ -203,7 +205,8 @@ export function KitDetail({
         </Button>
         <span className="dir-ui-kit-foot-gap" />
         <span className="dir-ui-kit-fine">
-          {info.files.agents} profiles · {info.files.skills} skills · {Object.keys(info.workers).length} workers
+          {plural(info.files.agents, 'profile')} · {plural(info.files.skills, 'skill')} ·{' '}
+          {plural(Object.keys(info.workers).length, 'worker')}
         </span>
         <ExternalLinkButton href={info.registry_url}>Open in registry</ExternalLinkButton>
       </footer>

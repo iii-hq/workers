@@ -1785,6 +1785,15 @@
   justify-content: space-between;
   gap: 8px;
 }
+[data-iii-ui="iii-directory"] .dir-ui-kit-side-actions .dir-ui-count {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="iii-directory"] .dir-ui-kit-side-actions > button {
+  flex: none;
+}
 [data-iii-ui="iii-directory"] .dir-ui-kit-side-actions svg {
   width: 16px;
   height: 16px;
