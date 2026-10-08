@@ -283,24 +283,20 @@ pub async fn run<W: Future<Output = Result<Listing, JudgeError>>>(
         }
         Ok(listing) => listing,
     };
-    let window = listing.window;
     // Answers are kept per provider and listed models, so a switched hub
     // default or model never serves old ones; a failed listing bypasses.
     let cache = listing.models.map(|models| {
         serde_json::json!({ "provider": provider.unwrap_or_default(), "models": models })
             .to_string()
     });
-    // A known window caps every request at twice its tokens.
-    let cap = |jevgrep: usize| window.map_or(jevgrep, |tokens| jevgrep.min(2 * tokens as usize));
 
     let run = Arc::new(Run {
         query: req.query,
         tree: walk::Tree::new(&resolver, &walk_root, exclude, cfg.max_read_bytes),
         evaluate,
         deadline,
-        cap: cap(navigate::MAX_REQUEST_BYTES),
-        state_cap: cap(select::MAX_STATE_BYTES),
-        window_cap: cap(usize::MAX),
+        state_cap: select::MAX_STATE_BYTES,
+        window: listing.window,
         cache,
         slots: (cfg.find_relevant_judge_slots as usize).clamp(1, judge::MAX_SLOTS),
         token_budget: cfg.find_relevant_judge_token_budget,

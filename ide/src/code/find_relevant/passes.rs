@@ -9,8 +9,8 @@
 //!
 //! Deviations: the assessment reads the discovery preview without re-reading
 //! the file; its roles attach only where the evidence re-hash held (the
-//! caller's check, retrieve.ts 643-650); an assessment request over
-//! `Run::window_cap` is not sent (jevgrep has no cap there). Python names
+//! caller's check, retrieve.ts 643-650); an assessment request over a
+//! known window is not sent (jevgrep has no cap there). Python names
 //! and query tokens are not NFKC normalized, and parser columns are UTF-8
 //! bytes, not UTF-16 units. Of the checks jevgrep runs on its parser
 //! process's output only the call ranges' remain (a class header on one
@@ -78,7 +78,7 @@ pub async fn assess_files(run: &Arc<Run>) -> HashMap<String, Assessment> {
     run.parallel(run.admitted(), |run, candidate| async move {
         let preview = run.state().previews.get(&candidate.path).cloned()?;
         let request = prompts::file_assessment(&run.query, &candidate.path, &preview);
-        if prompts::request_bytes(&request) > run.window_cap {
+        if !prompts::fits(&request, usize::MAX, run.window) {
             run.issue("request-size");
             return None;
         }

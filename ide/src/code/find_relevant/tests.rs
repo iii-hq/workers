@@ -245,13 +245,13 @@ fn batches_hold_at_most_128_items_and_38000_bytes() {
         .collect();
     // the verbatim file question alone is ~560 bytes, so at 38 000 bytes the
     // byte cap binds first; the item cap shows under a larger one
-    let (batches, oversize) = plan_batches("q", tiny.clone(), usize::MAX);
+    let (batches, oversize) = plan_batches("q", tiny.clone(), usize::MAX, None);
     assert_eq!(oversize, 0);
     assert_eq!(
         batches.iter().map(Vec::len).collect::<Vec<_>>(),
         [128, 128, 44]
     );
-    let (batches, _) = plan_batches("q", tiny, navigate::MAX_REQUEST_BYTES);
+    let (batches, _) = plan_batches("q", tiny, navigate::MAX_REQUEST_BYTES, None);
     assert_eq!(batches.iter().map(Vec::len).sum::<usize>(), 300);
     for batch in &batches {
         let bytes = prompts::request_bytes(&prompts::navigation("q", batch));
@@ -262,20 +262,22 @@ fn batches_hold_at_most_128_items_and_38000_bytes() {
         .map(|i| file_item(&format!("f{i}.rs"), "a".repeat(10_000)))
         .collect();
     big.insert(3, file_item("huge.rs", "a".repeat(40_000)));
-    let (batches, oversize) = plan_batches("q", big, navigate::MAX_REQUEST_BYTES);
+    let (batches, oversize) = plan_batches("q", big, navigate::MAX_REQUEST_BYTES, None);
     assert_eq!(oversize, 1, "a single item over the cap is dropped");
     assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), [3, 3, 1]);
     for batch in &batches {
         let bytes = prompts::request_bytes(&prompts::navigation("q", batch));
         assert!(bytes <= navigate::MAX_REQUEST_BYTES, "{bytes}");
     }
-    // a known window caps a request at twice its tokens
+    // a known window also caps a request at 2.5 bytes a token after its
+    // questions' framing: two 10 000-byte items are over 8192 tokens
     let (batches, _) = plan_batches(
         "q",
         (0..4)
             .map(|i| file_item(&format!("f{i}.rs"), "a".repeat(10_000)))
             .collect(),
-        2 * 10_000,
+        navigate::MAX_REQUEST_BYTES,
+        Some(8_192),
     );
     assert_eq!(
         batches.iter().map(Vec::len).collect::<Vec<_>>(),
@@ -718,8 +720,8 @@ async fn git_metadata_is_never_a_walk_root() {
 #[tokio::test]
 async fn a_preview_too_big_for_the_window_is_scored_in_chunks_keeping_the_best() {
     // 375 lines of 80 bytes: three 12 000-byte chunks, `alpha` in the first,
-    // `needle` in the last
-    let line = |word: &str| format!("{word:<79}\n");
+    // `needle` in the last; 30 quotes a line escape to 110 bytes of JSON
+    let line = |word: &str| format!("{word:<49}{}\n", "\"".repeat(30));
     let mut source = line("alpha");
     for i in 2..=375 {
         source.push_str(&line(if i == 301 { "needle" } else { "filler" }));
@@ -743,7 +745,8 @@ async fn a_preview_too_big_for_the_window_is_scored_in_chunks_keeping_the_best()
         }),
     )
     .await;
-    // the whole preview is over 2 × 8192 bytes, too big to assess
+    // the 22 528-byte preview is over 8192 tokens at 2.5 bytes a token, too
+    // big to assess
     assert_eq!(out.status, Status::Incomplete);
     assert_eq!(
         out.issues,
@@ -760,6 +763,52 @@ async fn a_preview_too_big_for_the_window_is_scored_in_chunks_keeping_the_best()
     assert!(navigation
         .iter()
         .all(|sent| sent.contains("sampled source ranges")));
+}
+
+#[tokio::test]
+async fn a_large_file_fits_a_small_window_whole_and_is_assessed() {
+    // ~175 KB and 200 declarations: the preview's declaration index alone
+    // would be over 32 000 bytes
+    let mut source = String::from("// needle\n");
+    for i in 0..200 {
+        source.push_str(&format!(
+            "fn handle_filesystem_request_number_{i:03}_with_a_long_descriptive_name() {{\n"
+        ));
+        for j in 0..36 {
+            source.push_str(&format!("    let value_{j:02} = {j};\n"));
+        }
+        source.push_str("}\n");
+    }
+    assert!(
+        (170_000..180_000).contains(&source.len()),
+        "{}",
+        source.len()
+    );
+    let fx = fixture(&[("big.rs", source.as_bytes())], |_, _| {});
+    for window in [16_384, 10_000] {
+        let log = Log::default();
+        let inner = judge(&log, keyword);
+        let over = Arc::new(AtomicUsize::new(0));
+        let counted = over.clone();
+        let evaluate: Evaluator = Arc::new(move |evaluation, deadline| {
+            if !prompts::fits(&evaluation, usize::MAX, Some(window)) {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }
+            inner(evaluation, deadline)
+        });
+        let out = ask(&fx, Some(window), evaluate).await;
+        assert_eq!(over.load(Ordering::SeqCst), 0, "window {window}");
+        assert_eq!(out.status, Status::Complete, "{:?}", out.issues);
+        assert_eq!(paths(&fx, &out), ["big.rs"]);
+        assert!(out.files[0].priority.is_some());
+        let log = log.lock().unwrap();
+        let navigation: Vec<_> = log.iter().filter(|s| s.contains("\"items\"")).collect();
+        // one preview item, not chunks, with part of its index
+        assert_eq!(navigation.len(), 1);
+        assert!(!navigation[0].contains("sampled source ranges"));
+        assert!(navigation[0].contains("\"declarationIndexTruncated\":true"));
+        assert!(navigation[0].contains("number_000"));
+    }
 }
 
 #[tokio::test]

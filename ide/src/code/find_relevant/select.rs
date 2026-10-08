@@ -7,8 +7,9 @@
 //!
 //! Deviations: one read per file, re-hashed before its excerpts are
 //! emitted, instead of a freshness check before every judge attempt; a
-//! group the judge finds too large is halved like one over the state cap;
-//! files run concurrently up to the worker's judge slots.
+//! group the judge finds too large, or over a known window, is halved like
+//! one over the state cap; files run concurrently up to the worker's judge
+//! slots.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -32,7 +33,7 @@ const WHOLE_FILE_BYTES: usize = 16_000;
 const OPENING_LINES: usize = 20;
 const CONTEXT_LINES: usize = 8;
 const EXCERPT_LINES: usize = 3;
-/// jevgrep's evidence state cap (`Run::state_cap` may lower it).
+/// jevgrep's evidence state cap.
 pub const MAX_STATE_BYTES: usize = 80_000;
 /// Selection, lead and presentation thresholds (strict).
 const SELECT: f64 = 0.5;
@@ -534,7 +535,12 @@ pub async fn select_file(run: Arc<Run>, candidate: Candidate) -> (String, Option
             groups.insert(index, second);
             groups.insert(index, first);
         };
-        if group.len() > 1 && prompts::state_text(&request).len() > run.state_cap {
+        // The state cap is jevgrep's; a known window also counts the
+        // questions, two per declaration.
+        if group.len() > 1
+            && (prompts::state_text(&request).len() > run.state_cap
+                || !prompts::fits(&request, usize::MAX, run.window))
+        {
             halve(&mut groups);
             continue;
         }
@@ -708,9 +714,8 @@ mod tests {
             tree,
             evaluate,
             deadline: Instant::now() + Duration::from_secs(60),
-            cap: usize::MAX,
             state_cap,
-            window_cap: usize::MAX,
+            window: None,
             cache: None,
             slots: crate::code::judge::DEFAULT_SLOTS,
             token_budget: 0,
@@ -846,6 +851,32 @@ mod tests {
         assert_eq!(asked, [1; 8]);
         assert_eq!(run.state().judge_calls, sent.len() as u64);
         assert_eq!(ranges(&selected), [(1, 9)]);
+    }
+
+    #[tokio::test]
+    async fn a_group_over_a_known_window_is_halved() {
+        // 53 declarations in one group: their 106 questions and the state
+        // are over a 16 384-token window, though the state is far under the
+        // state cap
+        let source: String = (0..53)
+            .map(|i| format!("function f{i:02}() {{ return {i}; }}\n"))
+            .collect();
+        for (window, asked) in [(None, vec![53]), (Some(16_384), vec![27, 26])] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.ts"), &source).unwrap();
+            let (mut run, log) = run_over(dir.path(), MAX_STATE_BYTES, |_, _| Ok(0.9));
+            Arc::get_mut(&mut run).unwrap().window = window;
+            let candidate = candidate(&run, "a.ts");
+            select_file(run.clone(), candidate).await;
+            let sent: Vec<usize> = log
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|ev| ev.state["declarations"].as_array().unwrap().len())
+                .collect();
+            assert_eq!(sent, asked, "window {window:?}");
+            assert!(issues(&run).is_empty());
+        }
     }
 
     #[tokio::test]

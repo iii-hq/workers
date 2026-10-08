@@ -80,12 +80,11 @@ pub struct Run {
     pub tree: Tree,
     pub evaluate: Evaluator,
     pub deadline: Instant,
-    /// Navigation request byte cap: jevgrep's, or twice a small window.
-    pub cap: usize,
-    /// Evidence state byte cap, likewise.
+    /// Evidence state byte cap (jevgrep's).
     pub state_cap: usize,
-    /// Twice a known window, for requests jevgrep does not cap.
-    pub window_cap: usize,
+    /// The judge's advertised context window in tokens: every request also
+    /// stays within [`prompts::request_cap`] of it.
+    pub window: Option<u64>,
     /// Answer-cache namespace (the judge provider and its listed models);
     /// `None` bypasses the cache.
     pub cache: Option<String>,
@@ -274,7 +273,8 @@ impl Run {
     /// judge found too large and requeue its halves. Only a failed leaf
     /// records an issue.
     pub async fn score(self: &Arc<Self>, items: Vec<NavigationItem>) -> Vec<(NavigationItem, f64)> {
-        let (mut batches, oversize) = plan_batches(&self.query, items, self.cap);
+        let (mut batches, oversize) =
+            plan_batches(&self.query, items, MAX_REQUEST_BYTES, self.window);
         for _ in 0..oversize {
             self.issue("request-size");
         }
@@ -375,6 +375,37 @@ impl Run {
         }
     }
 
+    /// The declaration-index budget of `path`'s preview: jevgrep's, shrunk
+    /// under a known window until the preview fits both its navigation item
+    /// and its file assessment. A preview's JSON enters each request
+    /// verbatim, so the rest of a request is the same for any preview.
+    fn index_budget(&self, path: &str) -> usize {
+        if self.window.is_none() {
+            return walk::PREVIEW_INDEX_JSON_BYTES;
+        }
+        let empty = FilePreview::default();
+        let room = |request: Evaluation, bytes: usize| {
+            prompts::request_cap(bytes, self.window, request.questions.len())
+                .saturating_sub(prompts::request_bytes(&request) - walk::json_len(&empty))
+        };
+        let item = NavigationItem {
+            path: path.into(),
+            kind: Kind::File,
+            source_range: None,
+            file_preview: Some(empty.clone()),
+            child_preview: None,
+        };
+        walk::PREVIEW_INDEX_JSON_BYTES
+            .min(room(
+                prompts::navigation(&self.query, &[item]),
+                MAX_REQUEST_BYTES,
+            ))
+            .min(room(
+                prompts::file_assessment(&self.query, path, &empty),
+                usize::MAX,
+            ))
+    }
+
     /// Read and preview one round: the `directories`, their child
     /// directories, and every eligible file in both. Returns the items to
     /// score and the chunked items of files whose preview alone is too big
@@ -442,7 +473,8 @@ impl Run {
                         continue;
                     }
                 };
-                let file_preview = walk::preview_file(&snapshot, &self.query);
+                let file_preview =
+                    walk::preview_file(&snapshot, &self.query, self.index_budget(&child));
                 {
                     let mut state = self.state();
                     state.previews.insert(child.clone(), file_preview.clone());
@@ -462,10 +494,11 @@ impl Run {
                     child_preview: None,
                 };
                 let oversize = size <= MAX_PARSE_BYTES
-                    && prompts::request_bytes(&prompts::navigation(
-                        &self.query,
-                        std::slice::from_ref(&item),
-                    )) > self.cap;
+                    && !prompts::fits(
+                        &prompts::navigation(&self.query, std::slice::from_ref(&item)),
+                        MAX_REQUEST_BYTES,
+                        self.window,
+                    );
                 if !oversize {
                     items.push(item);
                     continue;
@@ -498,25 +531,27 @@ impl Run {
     }
 }
 
-/// Group `items` into requests of at most [`MAX_ITEMS`] items and `cap`
-/// bytes; an item over `cap` on its own is dropped and counted.
+/// Group `items` into requests of at most [`MAX_ITEMS`] items within
+/// [`prompts::request_cap`] of `cap` bytes and `window`; an item over it on
+/// its own is dropped and counted.
 pub fn plan_batches(
     query: &str,
     items: Vec<NavigationItem>,
     cap: usize,
+    window: Option<u64>,
 ) -> (VecDeque<Vec<NavigationItem>>, usize) {
-    let bytes =
-        |batch: &[NavigationItem]| prompts::request_bytes(&prompts::navigation(query, batch));
+    let over =
+        |batch: &[NavigationItem]| !prompts::fits(&prompts::navigation(query, batch), cap, window);
     let (mut batches, mut batch, mut oversize) = (VecDeque::new(), Vec::new(), 0);
     for item in items {
-        if bytes(std::slice::from_ref(&item)) > cap {
+        if over(std::slice::from_ref(&item)) {
             oversize += 1;
             continue;
         }
         if !batch.is_empty()
             && (batch.len() >= MAX_ITEMS || {
                 batch.push(item.clone());
-                let over = bytes(&batch) > cap;
+                let over = over(&batch);
                 batch.pop();
                 over
             })

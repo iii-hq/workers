@@ -83,7 +83,8 @@ const PREVIEW_ENTRIES: usize = 64;
 const PREVIEW_ENTRY_BYTES: usize = 4096;
 const PREVIEW_FILE_BYTES: usize = 16_384;
 const PREVIEW_JSON_BYTES: usize = 24_000;
-const PREVIEW_INDEX_JSON_BYTES: usize = 32_000;
+/// jevgrep's declaration-index cap; a small judge window lowers it.
+pub const PREVIEW_INDEX_JSON_BYTES: usize = 32_000;
 
 static CONTROL: Lazy<regex::bytes::Regex> = Lazy::new(|| {
     regex::bytes::Regex::new(r"[\x00-\x08\x0b\x0e-\x1f\x7f]").expect("control-byte regex")
@@ -450,8 +451,9 @@ fn utf16_prefix(text: &str, units: usize) -> &str {
 /// retrieve.ts `previewFile`: the strict-UTF-8 opening bytes, shrunk until
 /// their JSON fits, or for a truncated Python file the `query`-aware
 /// sample ([`passes::python_preview`]); a truncated source file also lists
-/// its declarations.
-pub fn preview_file(snapshot: &Snapshot, query: &str) -> FilePreview {
+/// its declarations while the preview's JSON stays within `index_bytes`
+/// ([`PREVIEW_INDEX_JSON_BYTES`] in jevgrep).
+pub fn preview_file(snapshot: &Snapshot, query: &str, index_bytes: usize) -> FilePreview {
     let bytes = snapshot.source.as_bytes();
     let head = &bytes[..bytes.len().min(PREVIEW_FILE_BYTES)];
     // The source is valid UTF-8, so only the cut can split a character.
@@ -508,7 +510,7 @@ pub fn preview_file(snapshot: &Snapshot, query: &str) -> FilePreview {
         let mut fits = |keep: usize, truncated: bool| {
             preview.declarations = Some(all[..keep].to_vec());
             preview.declaration_index_truncated = Some(truncated);
-            json_len(&preview) <= PREVIEW_INDEX_JSON_BYTES
+            json_len(&preview) <= index_bytes
         };
         if !fits(all.len(), false) && !all.is_empty() {
             // retrieve.ts pops one entry at a time until the preview fits
@@ -668,32 +670,44 @@ mod tests {
             source,
             content_hash: String::new(),
         };
-        let small = preview_file(&snapshot("fn a() {}\n".into()), "");
+        let small = preview_file(
+            &snapshot("fn a() {}\n".into()),
+            "",
+            PREVIEW_INDEX_JSON_BYTES,
+        );
         assert!(!small.truncated);
         assert_eq!(small.text, "fn a() {}\n");
         assert_eq!(small.extension, ".rs");
         // 16 KiB of quotes escapes to 32 KiB of JSON: shrunk by 3/4 steps
-        let quotes = preview_file(&snapshot("\"".repeat(20_000)), "");
+        let quotes = preview_file(&snapshot("\"".repeat(20_000)), "", PREVIEW_INDEX_JSON_BYTES);
         assert!(quotes.truncated);
         assert!(json_len(&quotes.text) <= PREVIEW_JSON_BYTES);
         assert_eq!(quotes.text.len(), 16_384 * 3 / 4 * 3 / 4);
         // a cut through a multibyte character drops the partial character
-        let wide = preview_file(&snapshot("é".repeat(9_000)), "");
+        let wide = preview_file(&snapshot("é".repeat(9_000)), "", PREVIEW_INDEX_JSON_BYTES);
         assert_eq!(wide.text.len(), 16_384);
         assert_eq!(wide.preview_bytes, 16_384);
     }
 
     #[test]
-    fn truncated_source_previews_index_their_declarations_within_32000_bytes() {
+    fn truncated_source_previews_index_their_declarations_within_their_budget() {
         let snapshot = |path: &str, source: String| Snapshot {
             path: path.into(),
             source,
             content_hash: String::new(),
         };
-        let small = preview_file(&snapshot("a.rs", "fn a() {}\n".into()), "");
+        let small = preview_file(
+            &snapshot("a.rs", "fn a() {}\n".into()),
+            "",
+            PREVIEW_INDEX_JSON_BYTES,
+        );
         assert_eq!(small.declarations, Some(Vec::new()));
         let source: String = (0..2_000).map(|i| format!("fn f{i:04}() {{}}\n")).collect();
-        let big = preview_file(&snapshot("a.rs", source.clone()), "");
+        let big = preview_file(
+            &snapshot("a.rs", source.clone()),
+            "",
+            PREVIEW_INDEX_JSON_BYTES,
+        );
         let declarations = big.declarations.as_ref().unwrap();
         assert_eq!(
             declarations[1],
@@ -714,8 +728,14 @@ mod tests {
             end_line: declarations.len() + 1,
         });
         assert!(json_len(&longer) > PREVIEW_INDEX_JSON_BYTES);
+        // a smaller budget keeps a shorter prefix
+        let small = preview_file(&snapshot("a.rs", source.clone()), "", 20_000);
+        let kept = small.declarations.as_ref().unwrap().len();
+        assert!(0 < kept && kept < declarations.len());
+        assert!(json_len(&small) <= 20_000);
+        assert_eq!(small.declarations.unwrap()[..], declarations[..kept]);
         // unsupported languages and text fallbacks list none
-        let text = preview_file(&snapshot("a.txt", source), "");
+        let text = preview_file(&snapshot("a.txt", source), "", PREVIEW_INDEX_JSON_BYTES);
         assert_eq!(text.declarations, Some(Vec::new()));
     }
 }

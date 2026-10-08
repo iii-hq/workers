@@ -32,7 +32,7 @@ pub struct Declaration {
     pub end_line: usize,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FilePreview {
     pub size_bytes: usize,
@@ -137,6 +137,28 @@ pub fn request_bytes(evaluation: &Evaluation) -> usize {
     serde_json::to_vec(&evaluation.questions).map_or(usize::MAX, |questions| {
         r#"{"state":,"questions":}"#.len() + state_text(evaluation).len() + questions.len()
     })
+}
+
+/// Tokens a judge adds to frame each question (Clef-Flash spends about 110
+/// on a noul question's field, instruction and option scaffolding).
+const QUESTION_TOKENS: u64 = 110;
+
+/// The largest [`request_bytes`] of a request with `questions` questions
+/// that stays within `bytes` (a jevgrep cap, `usize::MAX` for none) and,
+/// when the judge advertises one, its `window` of tokens. The window is
+/// read conservatively, 2.5 bytes per token (Clef-Flash reads escaped code
+/// at about 3.5) plus [`QUESTION_TOKENS`] per question: a judge may cut the
+/// state's tail to fit its window without saying so.
+pub fn request_cap(bytes: usize, window: Option<u64>, questions: usize) -> usize {
+    window.map_or(bytes, |tokens| {
+        let room = tokens.saturating_sub(QUESTION_TOKENS * questions as u64);
+        bytes.min(usize::try_from(room * 5 / 2).unwrap_or(usize::MAX))
+    })
+}
+
+/// Whether `evaluation` is within [`request_cap`].
+pub fn fits(evaluation: &Evaluation, bytes: usize, window: Option<u64>) -> bool {
+    request_bytes(evaluation) <= request_cap(bytes, window, evaluation.questions.len())
 }
 
 /// A state decoded back into the object its text encodes, for fake judges.
@@ -405,5 +427,19 @@ mod tests {
                 questions > 0
             );
         }
+    }
+
+    #[test]
+    fn a_known_window_allows_2_5_bytes_a_token_after_question_framing() {
+        assert_eq!(request_cap(38_000, None, 3), 38_000);
+        assert_eq!(request_cap(usize::MAX, None, 3), usize::MAX);
+        assert_eq!(
+            request_cap(usize::MAX, Some(16_384), 2),
+            (16_384 - 220) * 5 / 2
+        );
+        // jevgrep's cap still binds below the window
+        assert_eq!(request_cap(38_000, Some(16_384), 1), 38_000);
+        assert_eq!(request_cap(38_000, Some(16_384), 106), 11_810);
+        assert_eq!(request_cap(38_000, Some(1_000), 10), 0);
     }
 }
