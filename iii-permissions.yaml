@@ -20,6 +20,7 @@ rules:
   - '!state::set'
   - '!state::update'
   - '!state::delete'
+  # Deprecated iii-stream write; keep denied while engines still host it.
   - '!stream::set'
   - '!iii::durable::publish'
   - '!email::on-config-change'
