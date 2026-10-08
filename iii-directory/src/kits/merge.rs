@@ -54,6 +54,7 @@ pub fn three_way(base: &str, ours: &str, theirs: &str) -> MergeResult {
             conflicts: 0,
         },
         Err(content) => {
+            let content = relabel_markers(&content);
             let conflicts = content
                 .lines()
                 .filter(|l| l.starts_with("<<<<<<<"))
@@ -66,6 +67,27 @@ pub fn three_way(base: &str, ours: &str, theirs: &str) -> MergeResult {
             }
         }
     }
+}
+
+/// Name the sides in the reader's terms: `yours` (the file on disk),
+/// `installed` (the base) and `kit` (the new version).
+fn relabel_markers(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    for line in content.split_inclusive('\n') {
+        let (body, eol) = match line.strip_suffix('\n') {
+            Some(b) => (b, "\n"),
+            None => (line, ""),
+        };
+        let relabeled = match body {
+            "<<<<<<< ours" => "<<<<<<< yours",
+            "||||||| original" => "||||||| installed",
+            ">>>>>>> theirs" => ">>>>>>> kit",
+            other => other,
+        };
+        out.push_str(relabeled);
+        out.push_str(eol);
+    }
+    out
 }
 
 /// Does `content` still carry conflict markers?
@@ -107,7 +129,8 @@ mod tests {
         let merged = three_way(BASE, ours, theirs);
         assert_eq!(merged.status, MergeStatus::Conflicts);
         assert_eq!(merged.conflicts, 1);
-        assert!(merged.content.contains("<<<<<<<"));
+        assert!(merged.content.contains("<<<<<<< yours"));
+        assert!(merged.content.contains(">>>>>>> kit"));
         assert!(merged.content.contains("Step 2 (mine)."));
         assert!(merged.content.contains("Step 2 (kit)."));
         assert!(has_conflict_markers(&merged.content));

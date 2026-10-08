@@ -90,6 +90,17 @@ pub async fn resolve_version(
     }
 }
 
+/// What the lock records as `requested`. An exact version installs exactly
+/// that version but is recorded as its caret range (`1.3.0` → `^1.3.0`),
+/// the way npm saves an exact install, so later compatible releases are
+/// offered as updates. Tags and ranges are recorded as given.
+pub fn requested_for(version: &VersionRef) -> String {
+    match version {
+        VersionRef::Exact(v) => format!("^{v}"),
+        other => other.as_str().to_string(),
+    }
+}
+
 fn kit_not_found(kit: &str) -> String {
     format!(
         "D510 not_found: kit {kit:?} does not exist in the registry. \
@@ -178,12 +189,14 @@ pub async fn download_kit(
     let kit = parsed.id();
     let lock = env.read_lock()?;
     let installed = lock.kits.get(&kit).cloned();
-    let requested = match (&parsed.version, &installed) {
-        (Some(v), _) => v.as_str().to_string(),
-        (None, Some(locked)) => locked.requested.clone(),
-        (None, None) => "latest".to_string(),
+    let (version, requested) = match (&parsed.version, &installed) {
+        (Some(v), _) => (v.clone(), requested_for(v)),
+        (None, Some(locked)) => (
+            VersionRef::parse(&locked.requested).map_err(|e| format!("D511 invalid_input: {e}"))?,
+            locked.requested.clone(),
+        ),
+        (None, None) => (VersionRef::Tag("latest".into()), "latest".to_string()),
     };
-    let version = VersionRef::parse(&requested).map_err(|e| format!("D511 invalid_input: {e}"))?;
     let detail = resolve_version(registry, &kit, &version).await?;
     let available = compose_ok(compose).await;
     let view = LocalView::load(env, &lock, available);
@@ -246,10 +259,12 @@ pub async fn plan_update(
         .get(kit)
         .cloned()
         .ok_or_else(|| not_installed(kit))?;
-    let requested = version
-        .map(str::to_string)
-        .unwrap_or_else(|| locked.requested.clone());
-    let wanted = VersionRef::parse(&requested).map_err(|e| format!("D511 invalid_input: {e}"))?;
+    let wanted = VersionRef::parse(version.unwrap_or(&locked.requested))
+        .map_err(|e| format!("D511 invalid_input: {e}"))?;
+    let requested = match version {
+        Some(_) => requested_for(&wanted),
+        None => locked.requested.clone(),
+    };
     let detail = resolve_version(registry, kit, &wanted).await?;
     if detail.version == locked.version {
         return Ok(KitPlanResponse {

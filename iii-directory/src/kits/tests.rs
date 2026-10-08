@@ -783,9 +783,10 @@ async fn apply_true_installs_only_a_plan_without_warnings() {
     .await
     .unwrap();
     assert_eq!(out.status, PlanStatus::Applied);
+    // An exact request installs that version and records its caret range.
     assert_eq!(
         KitsLock::read(&p.env.lock_path).unwrap().kits[KIT].requested,
-        "1.0.0"
+        "^1.0.0"
     );
 
     // A collision keeps the plan for review even with apply=true.

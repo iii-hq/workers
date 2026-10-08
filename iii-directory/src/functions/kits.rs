@@ -240,9 +240,27 @@ impl Ctx {
                 if !moved.is_empty() {
                     self.download_worker_bundles(cfg.clone(), moved);
                 }
+                if report.kind != Some(PlanKind::Remove) {
+                    self.check_kit_updates(report.kit.clone());
+                }
             }
             PlanStatus::UpToDate => {}
         }
+    }
+
+    /// After an install or update, ask the registry right away whether a
+    /// newer release already exists, so the list shows it without waiting
+    /// for the 6-hour check.
+    fn check_kit_updates(&self, kit: String) {
+        let ctx = self.clone();
+        tokio::spawn(async move {
+            let (_cfg, env, reg) = ctx.env();
+            match service::check_updates(&env, reg.as_ref(), Some(&kit)).await {
+                Ok((_, true)) => ctx.emit(json!({ "op": "updates", "kit": kit })).await,
+                Ok(_) => {}
+                Err(e) => tracing::debug!(kit, error = %e, "kit update check after apply failed"),
+            }
+        });
     }
 
     /// Workers a kit just added or moved get their own skills and profiles
