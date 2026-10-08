@@ -33,10 +33,12 @@ export const LIFECYCLE_TRIGGERS = [
 ] as const
 
 /**
- * Stream the worker pushes live desktop frames onto (group = session id). The
- * page subscribes with a `type:'stream'` trigger instead of polling.
+ * Worker-owned trigger type fired after each new (or cleared) screencast
+ * frame; config `{ session_id }` (required). The payload is a small
+ * notification (`{ session_id, epoch, frame_seq, change, ... }`, no image):
+ * the page reads the frame with `computer::frame` (notify, then fetch).
  */
-export const FRAMES_STREAM = 'computer:frames'
+export const FRAME_CHANGED_TRIGGER = 'computer::frame-changed'
 
 /** Every `computer::*` bus function belongs to this family. */
 export function isComputerFunction(functionId: string): boolean {
@@ -96,21 +98,11 @@ const frameSchema = z.object({
   width: z.number(),
   height: z.number(),
   frame_seq: z.number(),
+  epoch: z.number().optional(),
   timestamp: z.number(),
   active: z.boolean(),
 })
 export type ComputerFrame = z.infer<typeof frameSchema>
-
-/** One pushed screencast frame, as it arrives on the stream. */
-const streamFrameSchema = z.object({
-  data: z.string(),
-  mime: z.string(),
-  width: z.number(),
-  height: z.number(),
-  frame_seq: z.number(),
-  timestamp: z.number(),
-})
-export type ComputerStreamFrame = z.infer<typeof streamFrameSchema>
 
 const contentBlockSchema = z.object({
   type: z.string(),
@@ -205,19 +197,6 @@ export function sessionIdFromCall(
   return null
 }
 
-/** A stream push (`{event:{data}}` or `{data}`) → the frame it carries. */
-export function extractStreamFrame(raw: unknown): ComputerStreamFrame | null {
-  if (!raw || typeof raw !== 'object') return null
-  const obj = raw as Record<string, unknown>
-  const outer =
-    obj.event && typeof obj.event === 'object'
-      ? (obj.event as Record<string, unknown>)
-      : obj
-  const data = 'data' in outer ? outer.data : obj.data
-  const parsed = streamFrameSchema.safeParse(data)
-  return parsed.success ? parsed.data : null
-}
-
 export interface StartSessionInput {
   image?: string
   endpoint?: string
@@ -301,8 +280,9 @@ export async function stopScreencast(
 }
 
 /**
- * Newest pushed screencast frame; a memory read on the worker, cheap to poll.
- * `frame` is absent while `sinceFrame` is still the newest seq.
+ * Newest stored screencast frame; a memory read on the worker. `frame` is
+ * absent while `sinceFrame` is still the newest seq. Read once on open and
+ * after each `computer::frame-changed` notification.
  */
 export async function readFrame(
   iii: ExtensionIii,

@@ -48,15 +48,17 @@ pub const ACT_DESC: &str =
      hotkey. Address by pixel coordinates read off the screenshot (top-left origin).";
 pub const SCREENCAST_START_ID: &str = "computer::screencast::start";
 pub const SCREENCAST_START_DESC: &str =
-    "Internal: start pushing live desktop frames onto the computer:frames stream for the console \
-     viewport. Console-UI plumbing; agents use computer::screenshot. Not an agent function.";
+    "Internal: start capturing live desktop frames for the console viewport; each new frame \
+     fires computer::frame-changed and is read with computer::frame. Console-UI plumbing; agents \
+     use computer::screenshot. Not an agent function.";
 pub const SCREENCAST_STOP_ID: &str = "computer::screencast::stop";
 pub const SCREENCAST_STOP_DESC: &str =
-    "Internal: stop the live frame push. Idempotent. Not an agent function.";
+    "Internal: stop the live frame capture and clear the stored frame. Idempotent. Not an agent \
+     function.";
 pub const FRAME_ID: &str = "computer::frame";
 pub const FRAME_DESC: &str =
     "Internal: newest screencast frame, or nothing when since_frame is still current. No capture \
-     round-trip; poll fast. Not an agent function.";
+     round-trip; read it on each computer::frame-changed notification. Not an agent function.";
 
 /// One wire-surface entry: everything the golden schema test pins.
 pub struct FunctionSpec {
@@ -481,37 +483,7 @@ fn register_frame(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sessions = sessions.clone();
             async move {
                 let session = get_session(&sessions, &req.session_id).await?;
-                let active = session.screencast_active();
-                let out = match session.latest_frame() {
-                    Some(f) => {
-                        // Fast no-change poll copies only metadata; the base64
-                        // is cloned once, only when a new frame is delivered.
-                        let unchanged = req.since_frame == Some(f.frame_seq);
-                        frame::FrameOutput {
-                            frame: if unchanged {
-                                None
-                            } else {
-                                Some(f.data_b64.clone())
-                            },
-                            mime: f.mime.clone(),
-                            width: f.width,
-                            height: f.height,
-                            frame_seq: f.frame_seq,
-                            timestamp: f.timestamp,
-                            active,
-                        }
-                    }
-                    None => frame::FrameOutput {
-                        frame: None,
-                        mime: "image/png".to_string(),
-                        width: session.screen.width,
-                        height: session.screen.height,
-                        frame_seq: 0,
-                        timestamp: 0,
-                        active,
-                    },
-                };
-                Ok::<_, Error>(out)
+                Ok::<_, Error>(frame::read_latest(&session, req.since_frame))
             }
         })
         .description(FRAME_DESC)

@@ -1,13 +1,18 @@
 //! `computer::screencast::start` / `stop` / `computer::frame` — the live-view
 //! pipeline behind the console viewport. The worker polls the driver
-//! screenshot at the configured fps and pushes each frame onto the
-//! `computer:frames` stream; `computer::frame` hands out the newest frame
-//! without a capture round-trip so the UI can poll fast. All three are
-//! internal console-UI plumbing, not agent surface — agents read the desktop
-//! with `computer::screenshot` and `computer::observe`.
+//! screenshot at the configured fps and keeps ONLY the newest frame per
+//! session in memory; after each frame it fires the worker-owned
+//! `computer::frame-changed` trigger type (a small notification, no image,
+//! see `crate::frames`), and `computer::frame` hands out the stored frame
+//! without a capture round-trip (initial read, and the read behind every
+//! notification). All three are internal console-UI plumbing, not agent
+//! surface — agents read the desktop with `computer::screenshot` and
+//! `computer::observe`.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::session::Session;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ScreencastStartInput {
@@ -45,7 +50,47 @@ pub struct FrameOutput {
     pub width: u32,
     pub height: u32,
     pub frame_seq: u64,
+    /// Session incarnation in this worker process; `frame_seq` restarts when
+    /// it changes. Order frames by `(epoch, frame_seq)`.
+    pub epoch: i64,
     pub timestamp: i64,
     /// False when no screencast is running (call screencast::start first).
     pub active: bool,
+}
+
+/// The `computer::frame` answer for `session`: the stored frame, or metadata
+/// only when `since_frame` is still the newest (or nothing is stored).
+pub fn read_latest(session: &Session, since_frame: Option<u64>) -> FrameOutput {
+    let active = session.screencast_active();
+    match session.latest_frame() {
+        Some(f) => {
+            // Fast no-change read copies only metadata; the base64 is cloned
+            // once, only when a new frame is delivered.
+            let unchanged = since_frame == Some(f.frame_seq);
+            FrameOutput {
+                frame: if unchanged {
+                    None
+                } else {
+                    Some(f.data_b64.clone())
+                },
+                mime: f.mime.clone(),
+                width: f.width,
+                height: f.height,
+                frame_seq: f.frame_seq,
+                epoch: session.epoch,
+                timestamp: f.timestamp,
+                active,
+            }
+        }
+        None => FrameOutput {
+            frame: None,
+            mime: "image/png".to_string(),
+            width: session.screen.width,
+            height: session.screen.height,
+            frame_seq: 0,
+            epoch: session.epoch,
+            timestamp: 0,
+            active,
+        },
+    }
 }

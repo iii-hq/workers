@@ -1,5 +1,5 @@
 {
-  "description": "Internal: newest screencast frame, or nothing when since_frame is still current. No capture round-trip; poll fast. Not an agent function.",
+  "description": "Internal: newest screencast frame, or nothing when since_frame is still current. No capture round-trip; read it on each computer::frame-changed notification. Not an agent function.",
   "function_id": "computer::frame",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -30,6 +30,11 @@
       "active": {
         "description": "False when no screencast is running (call screencast::start first).",
         "type": "boolean"
+      },
+      "epoch": {
+        "description": "Session incarnation in this worker process; `frame_seq` restarts when it changes. Order frames by `(epoch, frame_seq)`.",
+        "format": "int64",
+        "type": "integer"
       },
       "frame": {
         "description": "Base64 image of the newest frame; absent when `since_frame` is still current or no frame has arrived yet.",
@@ -64,6 +69,7 @@
     },
     "required": [
       "active",
+      "epoch",
       "frame_seq",
       "height",
       "mime",

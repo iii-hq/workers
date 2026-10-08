@@ -33,7 +33,7 @@ The native driver does the work no guest does for it:
   stable for the life of the session.
 - Downscale to `max_screenshot_dimension` and JPEG-encode at
   `screenshot_quality`. A full Retina frame is tens of megabytes of PNG; that
-  floods both the model context and the frame stream.
+  floods both the model context and the live viewport.
 - Input maps back through the display's **logical point** size and global
   origin — the space `enigo` absolute coordinates use — so a click on a scaled
   display lands where the model saw it.
@@ -50,13 +50,29 @@ away in the meantime fails to reconnect and its record is dropped, and restore
 never displaces a session that started while it was running. Callers should be
 ready to start a new session rather than assume an id survives.
 
-The screencast pump is one task per session. It captures at
-`screencast_fps`, pushes each frame onto the `computer:frames` stream
-(`stream::set`, group = session id, one item), and keeps the newest frame in
-memory for `computer::frame`. Both writes matter: the stream is how the console
-follows without polling, the in-memory copy is how a late subscriber paints
-immediately. A capture failure stops the pump rather than looping on a broken
-driver, and `stop_screencast` clears both the stream item and the buffer so a
+The screencast pump is one task per session. It captures at `screencast_fps`
+and stores each frame in the session's single `latest_frame` slot, replacing
+(and freeing) the previous one: resident frame memory is at most one frame per
+live session (`max_sessions` caps sessions), and there is no frame history.
+Only AFTER the slot holds the new frame does it fire `computer::frame-changed`
+(`frames.rs`), so a viewer that reads `computer::frame` on a notification
+always finds that frame or a newer one. The notification is ~200 bytes and
+carries no image on purpose: frames are 60-250 KB of JPEG (native, sandbox) up
+to 0.5-2 MB of PNG (remote executors), 15 times a second, and copying them
+into every binding's payload would turn a slow viewer into a backlog.
+
+`frames.rs` keeps the fan-out bounded: at most 64 bindings, a required
+`session_id` filter, and per binding one coalescing slot (one delivery in
+flight, one pending notification; newer replaces pending). Delivery is a
+synchronous call with a 5 s timeout, so a slow consumer keeps its slot busy
+and only loses intermediate notifications; the pump never waits on a viewer.
+Each binding's `namespace` and `metadata` are forwarded unchanged.
+
+`epoch` (ms when this process created or restored the session object) orders
+frames across worker restarts, where `frame_seq` restarts at 1. A capture
+failure stops the pump rather than looping on a broken driver;
+`stop_screencast` (also run by session stop, idle stop and worker shutdown)
+and a capture failure clear the slot and fire `change: "cleared"`, so a
 stopped session never leaves a multi-megabyte image resident.
 
 ## macOS permission gates

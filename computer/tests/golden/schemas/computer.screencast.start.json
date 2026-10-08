@@ -1,5 +1,5 @@
 {
-  "description": "Internal: start pushing live desktop frames onto the computer:frames stream for the console viewport. Console-UI plumbing; agents use computer::screenshot. Not an agent function.",
+  "description": "Internal: start capturing live desktop frames for the console viewport; each new frame fires computer::frame-changed and is read with computer::frame. Console-UI plumbing; agents use computer::screenshot. Not an agent function.",
   "function_id": "computer::screencast::start",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

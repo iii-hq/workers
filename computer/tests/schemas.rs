@@ -90,3 +90,22 @@ fn every_function_has_typed_request_and_response_schemas() {
         );
     }
 }
+
+/// The worker-owned `computer::frame-changed` trigger type: binding config and
+/// notification payload are wire surface too (the console viewport binds it).
+#[test]
+fn frame_changed_trigger_contract_matches_golden() {
+    use computer::frames::{FrameBindingConfig, FrameChange, FRAME_CHANGED, FRAME_CHANGED_DESC};
+    let generator = || schemars::r#gen::SchemaSettings::draft07().into_generator();
+    let value = serde_json::json!({
+        "trigger_type": FRAME_CHANGED,
+        "description": FRAME_CHANGED_DESC,
+        "config_schema": generator().into_root_schema_for::<FrameBindingConfig>(),
+        "payload_schema": generator().into_root_schema_for::<FrameChange>(),
+    });
+    let mut pretty = serde_json::to_string_pretty(&value).expect("contract serializes");
+    pretty.push('\n');
+    if let Err(msg) = support::check_golden("triggers/computer.frame-changed.json", &pretty) {
+        panic!("{msg}");
+    }
+}
