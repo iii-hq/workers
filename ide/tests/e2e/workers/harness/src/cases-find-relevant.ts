@@ -33,6 +33,13 @@ function fixture(): string {
   return root;
 }
 
+/// The workspace scope the IDE Search tab and a harness session stamp: the
+/// fixture is no Git work tree, and an unjailed worker only sends a project
+/// folder's text to the judge.
+function scope(root: string) {
+  return { root, grants: [], boundary: 'workspace' };
+}
+
 /// 0.9 or 0.05 for every `noul` key: a navigation key `q007` reads
 /// `state.items[7]`, any other request reads its whole state. The ide sends
 /// each state as JSON text so the engine cannot reorder its keys.
@@ -83,6 +90,7 @@ export const FIND_RELEVANT_CASES: TestCase[] = [
           query: `which function returns the answer in ${MARKER}?`,
           path: root,
           timeout_ms: DEADLINE_MS,
+          fs_scope: scope(root),
         });
 
         expectEqual(out.status, 'complete', `status (reason ${out.reason}, issues ${JSON.stringify(out.issues)})`);
@@ -132,6 +140,7 @@ export const FIND_RELEVANT_CASES: TestCase[] = [
         query: 'where is the entry point?',
         path: root,
         timeout_ms: DEADLINE_MS,
+        fs_scope: scope(root),
       });
       expectEqual(gone.status, 'unavailable', `status without a judge (reason ${gone.reason})`);
       expectEqual(gone.reason, 'not registered', 'reason');

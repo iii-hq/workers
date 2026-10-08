@@ -1611,7 +1611,9 @@ async fn calls_outside_the_turn_step_use_the_session_judge_provider() {
         let ambient = [("iii.judge.provider", "ambient")];
         let resolved = iii_helpers::observability::run_with_baggage(
             &ambient,
-            harness::functions::function_resolve::handle(
+            // Boxed: both handlers' futures inline overflow the default 2 MiB
+            // test-thread stack.
+            Box::pin(harness::functions::function_resolve::handle(
                 &stack.deps,
                 serde_json::from_value(json!({
                     "session_id": "child1",
@@ -1620,7 +1622,7 @@ async fn calls_outside_the_turn_step_use_the_session_judge_provider() {
                     "action": "execute"
                 }))
                 .unwrap(),
-            ),
+            )),
         )
         .await
         .unwrap();
@@ -1632,7 +1634,7 @@ async fn calls_outside_the_turn_step_use_the_session_judge_provider() {
 
         iii_helpers::observability::run_with_baggage(
             &ambient,
-            harness::functions::function_trigger::handle(
+            Box::pin(harness::functions::function_trigger::handle(
                 &stack.deps,
                 serde_json::from_value(json!({
                     "session_id": "child1",
@@ -1643,7 +1645,7 @@ async fn calls_outside_the_turn_step_use_the_session_judge_provider() {
                     }
                 }))
                 .unwrap(),
-            ),
+            )),
         )
         .await
         .unwrap();
@@ -1669,7 +1671,10 @@ async fn the_turn_step_uses_only_the_session_judge_provider() {
         // Stops at the mock's context::assemble boundary.
         let _ = iii_helpers::observability::run_with_baggage(
             &[("iii.judge.provider", "ambient")],
-            harness::functions::turn::handle(&stack.deps, step("child1")),
+            Box::pin(harness::functions::turn::handle(
+                &stack.deps,
+                step("child1"),
+            )),
         )
         .await;
         assert_eq!(
