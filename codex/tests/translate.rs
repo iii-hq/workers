@@ -1,10 +1,15 @@
 //! Full per-turn translation: feed a scripted Codex event sequence through the
-//! pure stepper and assert the agent::events frame sequence + accumulated turn
-//! state (thread id, usage, result, error). This is the orchestration the
-//! stream loop runs, exercised without a live engine.
+//! pure stepper and assert the codex::agent-event frame sequence + accumulated
+//! turn state (thread id, usage, result, error). This is the orchestration the
+//! stream loop runs, exercised without a live engine; the last test pushes the
+//! turn through the owned feeds with a capturing sender.
 
+use std::sync::Mutex;
+
+use codex::agent_feed::{Delivery, Feed, Feeds};
 use codex::codex::events_types::ThreadEvent;
 use codex::codex::translate::{step, TurnState};
+use iii_sdk::trigger::TriggerConfig;
 use serde_json::{json, Value};
 
 fn run(events: &[Value]) -> (TurnState, Vec<Value>) {
@@ -117,4 +122,100 @@ fn mcp_tool_call_maps_to_server_tool_id() {
         frames.last().unwrap()["function_id"],
         "github::create_issue"
     );
+}
+
+/// Bind one consumer on each feed for `session` and capture every delivery.
+fn bound_feeds(session: &str) -> Feeds {
+    let feeds = Feeds::new("epoch-turn");
+    for feed in [&feeds.agent, &feeds.raw] {
+        feed.bind(&TriggerConfig {
+            id: format!("{}-consumer", feed.id()),
+            function_id: "acp::__on_event::c1".into(),
+            config: json!({ "session_id": session }),
+            metadata: None,
+            namespace: None,
+        })
+        .unwrap();
+    }
+    feeds
+}
+
+async fn push(feed: &Feed, session: &str, event: Value, sink: &Mutex<Vec<Delivery>>) {
+    feed.emit_with(session, event, |delivery| {
+        sink.lock().unwrap().push(delivery);
+        std::future::ready(Ok::<Value, iii_sdk::Error>(Value::Null))
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn turn_frames_flow_unchanged_through_the_owned_feeds() {
+    // The stream loop's order: each raw line goes to codex::raw-event, then the
+    // frames it translates to go to codex::agent-event.
+    let script = vec![
+        json!({ "type": "thread.started", "thread_id": "th-1" }),
+        json!({ "type": "turn.started" }),
+        json!({ "type": "item.completed", "item": { "id": "i1", "type": "command_execution", "command": "ls", "aggregated_output": "files", "exit_code": 0, "status": "completed" } }),
+        json!({ "type": "item.completed", "item": { "id": "i2", "type": "agent_message", "text": "done" } }),
+        json!({ "type": "turn.completed", "usage": { "input_tokens": 5, "cached_input_tokens": 0, "output_tokens": 2 } }),
+    ];
+    let (_, expected_frames) = run(&script);
+
+    let feeds = bound_feeds("s1");
+    let raw_sink = Mutex::new(Vec::new());
+    let agent_sink = Mutex::new(Vec::new());
+    let mut translated = Vec::new();
+    let mut state = TurnState::new("gpt-5.2-codex".into());
+    for line in &script {
+        push(&feeds.raw, "s1", line.clone(), &raw_sink).await;
+        let parsed: ThreadEvent = serde_json::from_value(line.clone()).unwrap();
+        let frames = step(&mut state, parsed);
+        translated.extend(frames.iter().cloned());
+        for frame in frames {
+            push(&feeds.agent, "s1", frame, &agent_sink).await;
+        }
+    }
+    // A different session's frames never reach the s1 consumer.
+    push(
+        &feeds.agent,
+        "s2",
+        json!({ "type": "agent_end" }),
+        &agent_sink,
+    )
+    .await;
+
+    let raw = raw_sink.into_inner().unwrap();
+    let agent = agent_sink.into_inner().unwrap();
+    let events = |sent: &[Delivery]| {
+        sent.iter()
+            .map(|d| d.payload["event"].clone())
+            .collect::<Vec<_>>()
+    };
+    let seqs = |sent: &[Delivery]| {
+        sent.iter()
+            .map(|d| d.payload["seq"].as_u64().unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(events(&raw), script, "raw frames are verbatim");
+    assert_eq!(
+        events(&agent),
+        translated,
+        "AgentEvent frames are unchanged"
+    );
+    assert_eq!(
+        types(&events(&agent)),
+        types(&expected_frames),
+        "AgentEvent sequence unchanged"
+    );
+    assert_eq!(seqs(&raw), (0..script.len() as u64).collect::<Vec<_>>());
+    assert_eq!(
+        seqs(&agent),
+        (0..expected_frames.len() as u64).collect::<Vec<_>>()
+    );
+    for delivery in raw.iter().chain(agent.iter()) {
+        assert_eq!(delivery.function_id, "acp::__on_event::c1");
+        assert_eq!(delivery.payload["session_id"], "s1");
+        assert_eq!(delivery.payload["source"], "codex");
+        assert_eq!(delivery.payload["epoch"], "epoch-turn");
+    }
 }

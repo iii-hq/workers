@@ -1,6 +1,6 @@
 # codex
 
-OpenAI Codex as an iii worker: the Codex API exposed as functions and streams on the iii bus, nothing else. The worker spawns the same `codex` binary the user runs in their terminal, with the same login (ChatGPT or API key), the same filesystem, and the same sandbox. `codex::run` executes one headless turn and returns the result; the raw Codex thread events mirror verbatim onto the `codex::events` stream, and a translated AgentEvent view lands on `agent::events`, so the iii console and any sibling worker observe a Codex run exactly like a native harness turn.
+OpenAI Codex as an iii worker: the Codex API exposed as functions and trigger types on the iii bus, nothing else. The worker spawns the same `codex` binary the user runs in their terminal, with the same login (ChatGPT or API key), the same filesystem, and the same sandbox. `codex::run` executes one headless turn and returns the result; the raw Codex thread events are delivered verbatim on the `codex::raw-event` trigger type, and a translated AgentEvent view on `codex::agent-event`, so the acp worker and any sibling worker observe a Codex run exactly like a native harness turn.
 
 ## Install
 
@@ -105,7 +105,33 @@ The worker drives the `codex exec --json` CLI, so anything the CLI exposes as a 
 
 Extra writable directories use the named `additional_directories` field (the CLI's `--add-dir`).
 
-And the full output side is available raw: every event Codex emits (`thread.started`, `turn.started`, `item.started/updated/completed` for commands, patches, MCP tool calls, web searches, reasoning, agent messages, `turn.completed` with usage, `turn.failed`) is mirrored verbatim onto the `codex::events` stream, group_id = session_id. Consumers that want the exact Codex wire format read `codex::events`; consumers that want harness-shaped frames read `agent::events`. Same turn, two views.
+And the full output side is available raw: every event Codex emits (`thread.started`, `turn.started`, `item.started/updated/completed` for commands, patches, MCP tool calls, web searches, reasoning, agent messages, `turn.completed` with usage, `turn.failed`) is delivered verbatim on the `codex::raw-event` trigger type. Consumers that want the exact Codex wire format bind `codex::raw-event`; consumers that want harness-shaped frames bind `codex::agent-event`. Same turn, two views.
+
+## Event feeds
+
+The worker owns two trigger types. Bind one to a function of your own with `{ session_id }` to receive one session's frames:
+
+| Trigger type | Carries |
+| --- | --- |
+| `codex::agent-event` | translated AgentEvent frames (`function_execution_start` / `function_execution_end`, `message_complete`, `turn_end`, `agent_end`), what the acp worker renders |
+| `codex::raw-event` | every Codex thread event, verbatim |
+
+Binding config: `{ "session_id": "<iii session id>", "metadata": { } }`. `session_id` is required (non-empty, at most 512 characters); `metadata` is optional and is handed to your function (it wins over the binding's own metadata). Any other key rejects the binding, and each trigger type accepts at most 256 bindings.
+
+Your function gets one fire-and-forget call per frame:
+
+```json
+{
+  "session_id": "sess-1",
+  "event_id": "sess-1-<epoch>-00000007",
+  "seq": 7,
+  "epoch": "<uuid>",
+  "source": "codex",
+  "event": { "type": "message_complete", "message": { } }
+}
+```
+
+`seq` counts from 0 per feed and session within one `epoch` (a uuid minted per worker process, so a restart starts a new epoch); the two feeds count independently. Deliveries may arrive out of order: order by `(epoch, seq)` and dedup by `event_id`. The feeds are ephemeral: nothing is stored or replayed, and a binding made mid-turn only sees later frames. History lives in the session record (`codex::status`, `codex::sessions::list`) and in the `codex::run` result. A failing consumer never fails the turn. These trigger types replace the former `agent::events` / `codex::events` streams (see the guide "Migrate from iii-stream and pubsub").
 
 ## Configuration
 
@@ -120,8 +146,6 @@ defaults:
   cwd: ""                         # default working directory for runs
   skip_git_repo_check: true
 
-events_stream: agent::events       # translated AgentEvent frames
-raw_events_stream: codex::events   # verbatim Codex thread events
 codex_executable: ""               # path to the codex CLI; empty = PATH resolution
 ```
 
@@ -166,8 +190,8 @@ Every `codex::run` is an ordinary traced invocation on the engine: the trace car
 | Codex | iii |
 | --- | --- |
 | SDK `runStreamed()` turn | `codex::run` invocation |
-| every thread event, verbatim | `codex::events` stream frame |
-| agent_message / reasoning item | `message_complete` frame on `agent::events` |
+| every thread event, verbatim | `codex::raw-event` delivery |
+| agent_message / reasoning item | `message_complete` frame on `codex::agent-event` |
 | command_execution / file_change / mcp_tool_call / web_search | `function_execution_start` / `function_execution_end` frames |
 | turn end | `turn_end` + `agent_end` frames, function return value |
 | thread resume | engine state scope `codex_sessions`, keyed by iii session_id |

@@ -1,6 +1,6 @@
 //! The Codex turn: spawn `codex exec --json`, write the prompt to stdin, parse
-//! the JSONL event stream, mirror it verbatim onto `codex::events`, translate
-//! it onto `agent::events`, and persist the session record.
+//! the JSONL event stream, deliver it verbatim on `codex::raw-event`, translate
+//! it onto `codex::agent-event`, and persist the session record.
 
 pub mod args;
 pub mod events_types;
@@ -18,8 +18,8 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio_util_compat::CancellationToken;
 
+use crate::agent_feed::{emit_agent_event, emit_raw_event};
 use crate::config::Config;
-use crate::events::emit;
 use crate::functions::types::{extract_prompt, RunRequest};
 use crate::iii_prompt::III_CONTEXT_PROMPT;
 use crate::state::{load_session, save_session};
@@ -204,7 +204,7 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     record.updated_at_ms = now_ms();
     let _ = save_session(&iii, &record).await;
 
-    let mut outcome = stream_turn(&iii, &cfg, &session_id, &mut child, &cancel, &mut record).await;
+    let mut outcome = stream_turn(&iii, &session_id, &mut child, &cancel, &mut record).await;
 
     release(&session_id).await;
     drop(schema_file);
@@ -231,7 +231,7 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     record.updated_at_ms = now_ms();
     let _ = save_session(&iii, &record).await;
 
-    // turn_end + agent_end on the translated stream.
+    // turn_end + agent_end on the translated feed.
     let final_msg = assistant_message(
         vec![ContentBlock::Text {
             text: outcome.result_text.clone(),
@@ -240,16 +240,14 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
         record.usage.clone(),
         &outcome.stop_reason,
     );
-    emit(
+    emit_agent_event(
         &iii,
-        &cfg.events_stream,
         &session_id,
         json!({ "type": "turn_end", "message": final_msg, "function_results": [] }),
     )
     .await;
-    emit(
+    emit_agent_event(
         &iii,
-        &cfg.events_stream,
         &session_id,
         json!({ "type": "agent_end", "messages": [] }),
     )
@@ -275,7 +273,6 @@ struct Outcome {
 
 async fn stream_turn(
     iii: &IIIClient,
-    cfg: &Config,
     session_id: &str,
     child: &mut tokio::process::Child,
     cancel: &CancellationToken,
@@ -329,8 +326,8 @@ async fn stream_turn(
                 continue;
             }
         };
-        // verbatim onto the raw stream
-        emit(iii, &cfg.raw_events_stream, session_id, raw.clone()).await;
+        // verbatim onto the raw feed
+        emit_raw_event(iii, session_id, raw.clone()).await;
 
         let event: ThreadEvent = match serde_json::from_value(raw) {
             Ok(e) => e,
@@ -346,7 +343,7 @@ async fn stream_turn(
             }
         }
         for frame in frames {
-            emit(iii, &cfg.events_stream, session_id, frame).await;
+            emit_agent_event(iii, session_id, frame).await;
         }
     }
 

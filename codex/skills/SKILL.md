@@ -14,9 +14,9 @@ runs in their terminal, with the same login, filesystem, and sandbox — in a
 chosen working directory, and returns the final result and token usage. The
 worker is a pure pass-through: named payload fields cover the common path,
 the `options` field forwards any Codex SDK ThreadOption verbatim, and every
-thread event mirrors untouched onto the `codex::events` stream. A translated
-AgentEvent view lands on `agent::events`, which is what the iii console
-renders.
+thread event is delivered untouched on the `codex::raw-event` trigger type. A
+translated AgentEvent view is delivered on `codex::agent-event`, which is what
+the acp worker renders.
 
 Requires the `codex` CLI on the host with an existing `codex login` or
 `OPENAI_API_KEY` in the worker environment. When a turn needs a capability
@@ -31,9 +31,9 @@ anything onto this one.
 - Continue a conversation across calls: pass the same `session_id` again and
   the worker resumes the underlying Codex thread with full context.
 - Run long jobs without holding the call open: `codex::start` returns
-  `{session_id, started}` immediately; follow `codex::events` (group_id =
-  session_id) for raw progress or `agent::events` for the rendered view;
-  interrupt with `codex::stop`.
+  `{session_id, started}` immediately; bind `codex::raw-event` with
+  `{ session_id }` for raw progress or `codex::agent-event` for the rendered
+  view (or poll `codex::status`); interrupt with `codex::stop`.
 - Act on the whole backend: turns carry the iii runtime context by default
   (delivered as Codex `developer_instructions`), so the agent discovers and
   calls any registered function through the iii CLI
@@ -65,9 +65,10 @@ anything onto this one.
 - One turn per session at a time: check `codex::status` (`live: true`)
   before sending another `codex::run` for the same `session_id`; parallel
   runs against one session race on the underlying thread resume.
-- `agent::events` carries whole-message frames; per-item progress detail
+- `codex::agent-event` carries whole-message frames; per-item progress detail
   (command output as it accumulates, todo lists) exists only on
-  `codex::events`.
+  `codex::raw-event`. Both feeds are ephemeral (not stored or replayed);
+  order by `(epoch, seq)`.
 
 ## Functions
 
@@ -77,7 +78,7 @@ anything onto this one.
   `skip_git_repo_check`, `output_schema`, and raw `options`; returns
   `{session_id, codex_thread_id, result, stop_reason, usage}`.
 - `codex::start` — same payload, returns `{session_id, started}`
-  immediately; progress arrives on the streams.
+  immediately; progress arrives on the event feeds.
 - `codex::stop` — interrupt the live run for a session.
 - `codex::status` — point-in-time session view: live flag, status, turns,
   usage.

@@ -10,14 +10,10 @@ defaults:
   cwd: ""
   skip_git_repo_check: true
 
-# Stream AgentEvent frames here, grouped by session_id. The console and
-# acp worker both read this stream.
-events_stream: agent::events
-
-# Raw Codex thread events (exact SDK shapes: thread.started, turn.started,
-# item.started/updated/completed, turn.completed, turn.failed, error)
-# mirrored verbatim here, grouped by session_id.
-raw_events_stream: codex::events
+# Event feeds are fixed trigger types, not configurable streams: bind
+# `codex::agent-event` (translated AgentEvent frames) or `codex::raw-event`
+# (verbatim Codex thread events) with { session_id }. The retired
+# events_stream / raw_events_stream keys are ignored if still present.
 
 # Deliver the iii runtime context as Codex developer_instructions: teaches
 # the agent live discovery against the engine catalog through the iii CLI

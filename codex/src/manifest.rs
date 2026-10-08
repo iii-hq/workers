@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-const DESCRIPTION: &str = "OpenAI Codex as an iii worker — codex::* run headless Codex turns, mirror raw thread events onto codex::events, and stream AgentEvent frames onto agent::events.";
+const DESCRIPTION: &str = "OpenAI Codex as an iii worker — codex::* run headless Codex turns, deliver raw thread events on the codex::raw-event trigger type and AgentEvent frames on codex::agent-event.";
 
 #[derive(Serialize)]
 pub struct ModuleManifest {
@@ -27,8 +27,6 @@ pub fn build_manifest() -> ModuleManifest {
                 "cwd": "",
                 "skip_git_repo_check": true,
             },
-            "events_stream": "agent::events",
-            "raw_events_stream": "codex::events",
             "codex_executable": "",
             "base_url": "",
             "iii_context": true,

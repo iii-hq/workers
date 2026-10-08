@@ -1,5 +1,5 @@
 //! Translate Codex thread items to the AgentEvent wire subset emitted on
-//! `agent::events`. Command/patch/mcp/web items become function_execution
+//! `codex::agent-event`. Command/patch/mcp/web items become function_execution
 //! frames; agent_message/reasoning become message_complete.
 
 use serde_json::{json, Value};

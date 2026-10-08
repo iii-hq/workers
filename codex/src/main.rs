@@ -6,6 +6,7 @@ use iii_helpers::observability::OtelConfig;
 use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::RwLock;
 
+use codex::agent_feed;
 use codex::config::Config;
 use codex::configuration;
 use codex::functions::register_all;
@@ -92,6 +93,9 @@ async fn main() -> Result<()> {
     }
     configuration::reconcile(&iii, &cell).await;
 
+    // Own the codex::agent-event / codex::raw-event trigger types before the
+    // first turn can emit.
+    agent_feed::register(&iii);
     register_all(&iii, cell);
     tracing::info!("codex worker registered all functions, ready");
 
