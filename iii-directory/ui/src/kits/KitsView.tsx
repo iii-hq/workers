@@ -153,12 +153,26 @@ export function KitsView({
               </span>
               <span>Install a kit</span>
             </Button>
-            {listing ? (
-              <div className="dir-ui-count" aria-live="polite">
-                {listing.kits.length} installed
-                {listing.pending.length ? ` · ${listing.pending.length} to review` : ''}
-              </div>
-            ) : null}
+            <div className="dir-ui-kit-side-actions">
+              {listing ? (
+                <span className="dir-ui-count" aria-live="polite">
+                  {listing.kits.length} installed
+                  {listing.pending.length ? ` · ${listing.pending.length} to review` : ''}
+                </span>
+              ) : (
+                <span />
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={checkUpdates}
+                disabled={checking}
+                title="Check installed kits for updates"
+              >
+                <RefreshCw aria-hidden className={checking ? uiClasses.spin : undefined} />
+                {checking ? 'Checking…' : 'Updates'}
+              </Button>
+            </div>
           </div>
           <div className="dir-ui-side-scroll">
             {listError ? (
