@@ -99,8 +99,9 @@ errors, the cancellation registry and `secret://` resolution live in the shared
 Make transport changes there, run its suite, then rerun this worker's suites. The
 Decisions wire format lives in [src/decisions.rs](src/decisions.rs).
 
-The bus test fixtures are shared with judge-typesafe through `#[path]`
-(`judge-typesafe/tests/support/`); a change there must keep both suites passing.
+The bus test fixtures in `judge-typesafe/tests/support/` are compiled through
+`#[path]` by the other judge workers and crates/judge-provider; a change there
+must keep all of those suites passing.
 
 ## Real-engine integration with local mocked HTTP
 

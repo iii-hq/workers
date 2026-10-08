@@ -25,5 +25,7 @@ schemars = "0.8"
 tracing = "0.1"
 
 [dev-dependencies]
+async-trait = "0.1"
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "net", "io-util"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }

@@ -131,7 +131,7 @@ jobs:
           test "$(awk '{print $NF}' "$JUDGE_E2E_REPORT_DIR/engine-version.log")" = "${III_RELEASE_TAG#iii/v}"
           echo "III_ENGINE_BIN=$BIN_DIR/iii" >> "$GITHUB_ENV"
 
-      - name: Real-engine tests (10 local mocked cases)
+      - name: Real-engine tests (11 local mocked cases)
         run: bash .github/scripts/judge-e2e.sh
 
       - name: Upload test logs

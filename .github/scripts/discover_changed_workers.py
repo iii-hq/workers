@@ -116,6 +116,7 @@ CRATE_FIXTURE_PREFIXES = {
         "judge-decider/tests/fixtures/",
         "judge-laya/tests/fixtures/",
     ),
+    "judge-provider": ("judge-typesafe/tests/support/",),
 }
 
 # Worker test support that other workers' suites compile through #[path]: a

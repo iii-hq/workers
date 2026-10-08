@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# judge hub + judge-typesafe + judge-semif + judge-decider + judge-laya + judge-clef + judge-openai over an isolated real engine (TypeSafe and OpenAI mocks, tiny GGUFs).
+# judge hub + judge-typesafe + judge-semif + judge-decider + judge-laya + judge-clef + judge-openai + judge-provider over an isolated real engine (TypeSafe and OpenAI mocks, tiny GGUFs).
 # Build the workers' UIs first (or let their build scripts do so). No inference key is needed.
 set -euo pipefail
 
@@ -19,6 +19,7 @@ printf 'judge E2E logs: %s\n' "$JUDGE_E2E_REPORT_DIR"
 
 run_suite() {
   local worker="$1" suite="$2"
+  local log="$JUDGE_E2E_REPORT_DIR/${worker##*/}.$suite.log"
   shift 2
   if (( $# == 0 )); then
     echo "Refusing empty $worker $suite test selection" >&2
@@ -26,12 +27,12 @@ run_suite() {
   fi
   cargo test --manifest-path "$repo_root/$worker/Cargo.toml" --locked --release \
     --test "$suite" -- --ignored --exact --test-threads=1 --nocapture "$@" \
-    2>&1 | tee "$JUDGE_E2E_REPORT_DIR/$worker.$suite.log"
+    2>&1 | tee "$log"
   # libtest succeeds when filters match zero tests. Require every selected case
   # to pass so renames/removals fail this gate. The fixture preserves engine logs
   # separately and kills/reaps each child before deleting its scratch directory.
-  if ! grep -Fq "test result: ok. $# passed; 0 failed; 0 ignored;" "$JUDGE_E2E_REPORT_DIR/$worker.$suite.log"; then
-    echo "Expected all $# selected $suite cases to pass; check $JUDGE_E2E_REPORT_DIR/$worker.$suite.log" >&2
+  if ! grep -Fq "test result: ok. $# passed; 0 failed; 0 ignored;" "$log"; then
+    echo "Expected all $# selected $suite cases to pass; check $log" >&2
     return 1
   fi
 }
@@ -51,6 +52,8 @@ run_suite judge-clef engine \
 run_suite judge-openai engine \
   independent_consumer_evaluates_mixed_decisions_and_lists_models \
   cancellation_is_scoped_to_the_persistent_engine_caller
+run_suite crates/judge-provider engine \
+  secrets_changed_reaches_a_binding_made_before_its_provider
 run_suite judge engine \
   hub_forwards_to_the_provider_and_scopes_cancellation_to_the_original_caller \
   hub_routes_judge_openai_by_provider_and_session_baggage
