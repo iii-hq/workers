@@ -53,4 +53,3 @@ dependencies:
   session-manager: "latest"
   ide: "latest"
   iii-observability: "latest"
-  iii-stream: "latest"
