@@ -7,6 +7,7 @@ import {
   cursorCliLaunchOptions,
   defaultConfig,
   requireApiKey,
+  runtimeJsonSchema,
 } from '../src/config.js';
 import {
   bindConfigTrigger,
@@ -39,9 +40,9 @@ describe('Cursor configuration', () => {
       agent_binary: CURSOR_AGENT_BIN_ENV_REFERENCE,
       api_key: API_KEY_ENV_REFERENCE,
       bridge_binary: BRIDGE_BIN_ENV_REFERENCE,
-      events_stream: 'agent::events',
-      raw_events_stream: 'cursor::events',
     });
+    expect(defaultConfig()).not.toHaveProperty('events_stream');
+    expect(defaultConfig()).not.toHaveProperty('raw_events_stream');
     expect(() => requireApiKey(defaultConfig())).toThrow('Cursor API key is not configured');
     expect(cursorCliLaunchOptions(defaultConfig(), '/repo')).toMatchObject({
       workspace: '/repo',
@@ -52,6 +53,30 @@ describe('Cursor configuration', () => {
     });
     process.env.III_CONFIG_NAME = 'cursor-team';
     expect(configId()).toBe('cursor-team');
+  });
+
+  it('keeps loading a stored config that still carries the legacy stream keys', async () => {
+    const schema = runtimeJsonSchema() as {
+      additionalProperties?: boolean;
+      required?: string[];
+      properties: Record<string, { deprecated?: boolean }>;
+    };
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.properties.events_stream?.deprecated).toBe(true);
+    expect(schema.properties.raw_events_stream?.deprecated).toBe(true);
+    expect(schema.required ?? []).not.toContain('events_stream');
+    expect(schema.required ?? []).not.toContain('raw_events_stream');
+
+    const iii = new MockIII();
+    iii.configValue = {
+      ...defaultConfig(),
+      api_key: 'key_runtime',
+      events_stream: 'agent::events',
+      raw_events_stream: 'cursor::events',
+    };
+    const runtime = await fetchRuntime(iii.asClient());
+    expect(runtime.api_key).toBe('key_runtime');
+    expect(runtime.local_backend).toBe('cli-acp');
   });
 
   it('registers and fetches the configuration through typed worker calls', async () => {

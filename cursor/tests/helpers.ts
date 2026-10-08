@@ -7,6 +7,13 @@ import type {
   BridgeLaunchOptions,
   RpcOptions,
 } from '../src/bridge.js';
+import {
+  AGENT_EVENT_TRIGGER_TYPE,
+  createAgentFeeds,
+  type FeedEmit,
+  type FeedPayload,
+  RAW_EVENT_TRIGGER_TYPE,
+} from '../src/agent-feed.js';
 import { defaultConfig, type Config } from '../src/config.js';
 import type { RunStreamMessageWire } from '../src/types.js';
 
@@ -15,11 +22,29 @@ type Registration = {
   options: Record<string, unknown>;
 };
 
+export type TriggerBinding = {
+  id: string;
+  function_id: string;
+  config: unknown;
+  namespace?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type TriggerTypeHandler = {
+  registerTrigger: (binding: TriggerBinding) => Promise<void>;
+  unregisterTrigger: (binding: TriggerBinding) => Promise<void>;
+};
+
+export const AGENT = AGENT_EVENT_TRIGGER_TYPE;
+export const RAW = RAW_EVENT_TRIGGER_TYPE;
+export const consumerFor = (typeId: string) => `consumer::${typeId}`;
+
 export class MockIII {
   readonly state = new Map<string, unknown>();
   readonly functions = new Map<string, Registration>();
   readonly triggers: unknown[] = [];
-  readonly streamItems: unknown[] = [];
+  /** Owned trigger types the worker registered, with their handler. */
+  readonly triggerTypes = new Map<string, TriggerTypeHandler>();
   readonly triggerCalls: Array<Record<string, unknown>> = [];
   configValue: unknown = defaultConfig();
   configFailures = 0;
@@ -35,6 +60,47 @@ export class MockIII {
 
   registerTrigger(trigger: unknown): void {
     this.triggers.push(trigger);
+  }
+
+  registerTriggerType(type: { id: string }, handler: TriggerTypeHandler): { id: string } {
+    this.triggerTypes.set(type.id, handler);
+    return { id: type.id };
+  }
+
+  /** Bind a consumer to an owned trigger type like the engine would. */
+  async bind(typeId: string, sessionId: string, binding: Partial<TriggerBinding> = {}) {
+    await this.handlerFor(typeId).registerTrigger({
+      id: `${typeId}:${sessionId}`,
+      function_id: consumerFor(typeId),
+      config: { session_id: sessionId },
+      ...binding,
+    });
+  }
+
+  async unbind(typeId: string, id: string) {
+    await this.handlerFor(typeId).unregisterTrigger({
+      id,
+      function_id: consumerFor(typeId),
+      config: {},
+    });
+  }
+
+  /** Payloads delivered to the default consumer of a feed (`consumer::<typeId>`). */
+  feedPayloads(typeId: string): FeedPayload[] {
+    return this.triggerCalls
+      .filter((call) => call.function_id === consumerFor(typeId))
+      .map((call) => call.payload as FeedPayload);
+  }
+
+  /** The `event` of every payload delivered to the default consumer of a feed. */
+  feedEvents(typeId: string): Array<Record<string, unknown>> {
+    return this.feedPayloads(typeId).map((payload) => payload.event as Record<string, unknown>);
+  }
+
+  private handlerFor(typeId: string): TriggerTypeHandler {
+    const handler = this.triggerTypes.get(typeId);
+    if (!handler) throw new Error(`trigger type ${typeId} is not registered`);
+    return handler;
   }
 
   async trigger(request: Record<string, unknown>): Promise<unknown> {
@@ -59,19 +125,8 @@ export class MockIII {
       return { swapped: true };
     }
     if (functionId === 'state::list') return [...this.state.values()].map(clone);
-    if (functionId === 'stream::set') {
-      const current = this.streamItems.findIndex((item) => {
-        const stored = item as Record<string, unknown>;
-        return (
-          stored.stream_name === payload.stream_name &&
-          stored.group_id === payload.group_id &&
-          stored.item_id === payload.item_id
-        );
-      });
-      if (current >= 0) this.streamItems[current] = clone(payload);
-      else this.streamItems.push(clone(payload));
-      return null;
-    }
+    // Void feed deliveries to bound consumers: recorded above, nothing to return.
+    if (request.action !== undefined) return undefined;
     if (functionId === 'configuration::register') {
       if (!this.ensureError) throw new Error('unexpected legacy registration');
       if (Object.hasOwn(payload, 'initial_value')) this.configValue = clone(payload.initial_value);
@@ -174,6 +229,19 @@ export class FakeBridgeFactory implements BridgeClientFactory {
   forceCloseAll(): void {
     this.forceCloseAllCalls += 1;
   }
+}
+
+/** Register the worker's two feeds on `iii` and bind the default consumers for `sessions`. */
+export async function boundFeeds(
+  iii: MockIII,
+  ...sessions: string[]
+): Promise<{ emit: FeedEmit; emitRaw: FeedEmit }> {
+  const feeds = createAgentFeeds(iii.asClient());
+  for (const session of sessions) {
+    await iii.bind(AGENT, session);
+    await iii.bind(RAW, session);
+  }
+  return feeds;
 }
 
 export function testConfig(overrides: Partial<Config> = {}): Config {

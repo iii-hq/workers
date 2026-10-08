@@ -18,7 +18,7 @@ import {
   resolveCursorAcpModelId,
 } from './cli.js';
 import { bridgeLaunchOptions, type Config, cursorCliLaunchOptions } from './config.js';
-import { type Emit, releaseEmitterSequence } from './events.js';
+import { type Emit, releaseEmitterSequence } from './agent-feed.js';
 import {
   extractRunId,
   mapAgentInfo,
@@ -276,7 +276,7 @@ export class CursorWorker {
       async (payload: unknown) => this.start(RunPayloadSchema.parse(payload ?? {})),
       {
         description:
-          'Start a Cursor agent turn and return immediately. Watch agent::events with group_id equal to session_id.',
+          'Start a Cursor agent turn and return immediately. Bind cursor::agent-event with { session_id } for progress frames.',
         request_format: jsonSchema(RunPayloadSchema),
         response_format: jsonSchema(StartResponseSchema),
       },

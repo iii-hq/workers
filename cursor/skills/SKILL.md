@@ -10,7 +10,7 @@ Use this worker when a task should be handled by a Cursor coding agent. Local ex
 - Select a `cursor/*` model in LLM Router for text-only chat through the normal Cursor login. The provider does not advertise router tools, vision, structured output, usage, or cost because Cursor ACP does not expose those raw-model contracts.
 
 - Call `cursor::run` for a blocking turn. `run::start_and_wait` is its standard alias.
-- Call `cursor::start`, subscribe to `agent::events` with the returned session ID as `group_id`, and call `cursor::stop` when asynchronous lifecycle control is needed.
+- Call `cursor::start`, bind the `cursor::agent-event` trigger type with `{ "session_id": <returned session ID> }` (frames are ephemeral; `cursor::status` is the durable view), and call `cursor::stop` when asynchronous lifecycle control is needed.
 - Reuse `session_id` for follow-up turns. Local sessions must keep their original `cwd`; sdk-bridge sessions must also keep their original tool list.
 - Call `cursor::status` or `cursor::sessions::list` for durable lifecycle discovery.
 - Call `cursor::auth::status` to check login availability without returning account details or credentials.

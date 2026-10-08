@@ -62,6 +62,32 @@ iii-acp --brain-fn cursor::run --brain-stop-fn cursor::stop --model auto --provi
 
 ACP forwards the editor `cwd`, maps cancellation to `cursor::stop`, and reports Cursor's top-level stop reason.
 
+## Event feeds
+
+The worker owns two trigger types. Bind either one to a function of yours with the session you want to follow; the worker calls that function once per frame (fire-and-forget).
+
+| Trigger type | `event` in the payload |
+| --- | --- |
+| `cursor::agent-event` | one normalized AgentEvent frame (`message_update` text/thinking deltas, `function_execution_start/end`, `message_complete`, `turn_end`, `agent_end`) |
+| `cursor::raw-event` | one raw frame, unchanged: an ACP `session/update` notification or an SDK Bridge run-stream message |
+
+Binding config: `{ "session_id": "<iii session_id>", "metadata": { ... } }`. `session_id` is required (non-empty, at most 512 characters); `metadata` is optional and is handed to your function (it wins over the binding's own metadata). Unknown keys are rejected, and each trigger type accepts at most 256 bindings.
+
+Payload your function receives:
+
+```jsonc
+{
+  "session_id": "<iii session_id>",
+  "event_id": "cursor-1f0c...",  // stable for replayed frames; else <session_id>-<epoch>-<seq:08>
+  "seq": 7,                      // contiguous per (feed, session_id, epoch), from 0
+  "epoch": "<uuid>-<uuid>",      // worker process + per-turn generation; a new epoch restarts seq at 0
+  "source": "cursor",
+  "event": { "type": "message_update", "...": "..." }
+}
+```
+
+The two feeds number their frames independently, and each turn starts a new epoch. Frames the worker re-emits while recovering a run (Bridge `ObserveRun` replay, ACP updates) keep the same stable `cursor-...` `event_id`, so drop repeated `event_id`s. Deliveries are not guaranteed to arrive in order: order by `(epoch, seq)`. Frames are ephemeral: nothing is stored or replayed, and a consumer bound after a frame was emitted never sees it. Text and thinking deltas are only counted as streamed once a bound consumer accepted them, so when nobody received them the final `message_complete` carries the full body without `body_streamed`. The durable record is the session record behind `cursor::status` / `cursor::sessions::list` and the value `cursor::run` returns. These feeds replace the former `agent::events` / `cursor::events` iii-stream streams (see the guide "Migrate from iii-stream and pubsub").
+
 ## Configuration
 
 The built-in `cursor` configuration defaults local execution to login-backed ACP. The API key and Bridge binary are optional unless cloud mode or the explicit Bridge backend is used:
@@ -76,9 +102,9 @@ startup_timeout_ms: 30000
 shutdown_timeout_ms: 5000
 rpc_timeout_ms: 60000
 max_frame_bytes: 16777216
-events_stream: agent::events
-raw_events_stream: cursor::events
 ```
+
+The event feeds are fixed trigger types, not configuration. The former `events_stream` / `raw_events_stream` keys are accepted and ignored so stored configurations keep loading.
 
 Login-backed local sessions run in Cursor's `ask` mode, and the worker cancels every permission request. Cursor ACP does not provide an enforceable per-request tool-list control, so explicit `tools` values, including `tools: []`, are rejected. Omit `tools` for CLI ACP. Start a new session when changing backend; legacy Bridge session IDs are never loaded as CLI ACP sessions.
 

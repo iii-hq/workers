@@ -2,11 +2,11 @@
 
 import { parseArgs } from 'node:util';
 import { registerWorker } from 'iii-sdk';
+import { createAgentFeeds } from './agent-feed.js';
 import { ProductionBridgeClientFactory } from './bridge.js';
 import { ProductionCursorCliFactory } from './cli.js';
 import { type ConfigHolder, defaultConfig } from './config.js';
 import { bindConfigTrigger, fetchRuntime, registerCursorConfig } from './configuration.js';
-import { makeEmitter } from './events.js';
 import { CursorProvider } from './provider.js';
 import { CursorWorker } from './run.js';
 
@@ -26,8 +26,8 @@ await registerCursorConfig(iii, defaultConfig());
 const holder: ConfigHolder = { current: await fetchRuntime(iii) };
 const factory = new ProductionBridgeClientFactory();
 const cliFactory = new ProductionCursorCliFactory();
-const emit = makeEmitter(iii, () => holder.current.events_stream);
-const emitRaw = makeEmitter(iii, () => holder.current.raw_events_stream);
+// Owned feeds: cursor::agent-event and cursor::raw-event (bind with { session_id }).
+const { emit, emitRaw } = createAgentFeeds(iii);
 const worker = new CursorWorker(iii, () => holder.current, emit, emitRaw, factory, cliFactory);
 const provider = new CursorProvider(iii, () => holder.current, cliFactory);
 worker.register();
