@@ -24,16 +24,32 @@
 //! notice a mid-conversation registry change and tell the model its cached
 //! contracts may be stale.
 //!
-//! The trigger only fires ON CHANGE, so the snapshot is seeded once at boot;
-//! after that the trigger keeps it live. The engine computes "change" over
-//! the function-ID set only, so a worker that restarts with the same ids but
-//! new schemas or descriptions never fires it; every worker announce
-//! (`engine::workers-available` → [`crate::engine_events`]) therefore runs
-//! [`refresh`], which re-reads every schema rather than carrying the cached
-//! ones forward. No timer reloads anything. A live worker re-registering an
-//! existing id with a new schema, without reconnecting, is still invisible:
-//! the engine emits no event for it.
-//! [`build_tools`](crate::turn_loop) reads it under
+//! The trigger only fires ON CHANGE and has no catch-up snapshot, so the
+//! snapshot is seeded once at boot; after that two event sources keep it
+//! live, and no timer reloads anything:
+//!
+//! - `engine::functions-available` runs the internal handler. What fires it
+//!   depends on the engine. Released engines up to v0.24.5-rc.2 poll every
+//!   5 s and hash only the sorted function-ID set: they fire on adds and
+//!   removes, but never when an existing id is re-registered with a new
+//!   schema or description. Engines with registry-driven notification
+//!   (iii-hq/iii#2283) fire on every registration, overwrites included, and
+//!   on every removal, folding a burst into one event ~100 ms later. The
+//!   payload carries no schemas either way, so the handler re-reads the
+//!   registry and picks its hydration from what moved (`change_hydration`).
+//! - Every worker announce (`engine::workers-available` →
+//!   [`crate::engine_events`]) runs [`refresh`], which re-reads every schema
+//!   rather than carrying the cached ones forward. On an id-set-only engine
+//!   this is the only path that sees a restarted worker's new contracts under
+//!   unchanged ids, so it stays even though newer engines report them too.
+//!
+//! Still invisible: on an id-set-only engine, a live worker re-registering an
+//! existing id with a new schema without reconnecting (no event at all); on a
+//! newer engine, such an overwrite folded into the same burst as an id add or
+//! remove (the event reads as an id change), until the next announce or
+//! overwrite of that id.
+//!
+//! [`build_tools`](crate::turn_loop) reads the snapshot under
 //! [`Deps::functions`](crate::deps::Deps::functions).
 
 use std::collections::hash_map::DefaultHasher;
@@ -129,9 +145,8 @@ fn fingerprint_of<'a>(functions: impl IntoIterator<Item = &'a FunctionDescriptor
 /// with a byte-identical set deliberately do NOT bump: the generation feeds the
 /// registry-changed notice and the discovery hint, and a no-op bump invalidates
 /// the provider's prompt-cache prefix for nothing. A response-schema-only
-/// change is fingerprint-invisible and goes un-noticed until a list-visible
-/// field moves — a schema-aware engine `functions_hash` (with an event per
-/// re-registration) is the real fix for that.
+/// change is fingerprint-invisible (the cache keeps no response schemas), so
+/// it goes un-noticed until a cached field moves.
 pub async fn apply(cell: &FunctionsCell, functions: Vec<FunctionDescriptor>) {
     apply_with_internal(cell, functions, None).await;
 }
@@ -195,12 +210,43 @@ async fn prev_params(cell: &FunctionsCell) -> HashMap<String, Value> {
 /// Which schemas a reload re-reads from `engine::functions::info`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Hydration {
-    /// Only ids with no cached schema (the function-set changed).
+    /// Only ids with no cached schema: the id set changed, and the ids that
+    /// stayed keep their cached schemas.
     Missing,
-    /// Every id: a worker announced, and may have re-registered its ids with
-    /// new schemas. Cached schemas stay as the fallback for a failed fetch,
-    /// so a flaky read never reads as a contract change.
+    /// Every id: a worker announced, or an existing id was re-registered,
+    /// either of which may carry new schemas. Cached schemas stay as the
+    /// fallback for a failed fetch, so a flaky read never reads as a
+    /// contract change.
     All,
+}
+
+/// The hydration for a `functions-available` event, from what the fresh
+/// registry read moved relative to the cached snapshot. The payload carries
+/// no schemas, so it cannot say which contract changed. When neither the
+/// public nor the full id set moved, the event can only be an overwrite of an
+/// existing id (engines with registry-driven notification fire on those), so
+/// every schema is re-read. Anything else is explained by an add or remove
+/// and fetches only the missing schemas, which keeps the frequent internal
+/// churn (per-console watches) cheap. An unknown full id set (a failed read)
+/// keeps the cheap path. On an engine that hashes only the id set, an
+/// unchanged set means an announce refresh already applied the change: the
+/// re-read is redundant there, never wrong.
+fn change_hydration(
+    cached: &FunctionsSnapshot,
+    functions: &[FunctionDescriptor],
+    internal_ids: Option<&BTreeSet<String>>,
+) -> Hydration {
+    let Some(ids) = internal_ids.filter(|ids| !ids.is_empty()) else {
+        return Hydration::Missing;
+    };
+    let public = |fs: &[FunctionDescriptor]| -> BTreeSet<String> {
+        fs.iter().map(|d| d.function_id.clone()).collect()
+    };
+    if *ids == cached.internal_ids && public(functions) == public(&cached.functions) {
+        Hydration::All
+    } else {
+        Hydration::Missing
+    }
 }
 
 /// Carry a prior `parameters` forward for any id still `None`; report the ids
@@ -292,16 +338,24 @@ fn apply_fetched(carried: &mut [FunctionDescriptor], fetched: &HashMap<String, O
 }
 
 /// Fetch the authoritative registry, hydrate schemas, and swap the snapshot;
-/// returns the count.
+/// returns the count. `mode: None` is a `functions-available` event: the
+/// hydration is picked by [`change_hydration`] from what the read moved.
 async fn reload(
     iii: &Arc<IIIClient>,
     cell: &FunctionsCell,
     timeout_ms: u64,
-    mode: Hydration,
+    mode: Option<Hydration>,
 ) -> usize {
     let engine = EngineClient::new(iii.clone(), timeout_ms);
     let (functions, internal_ids) =
         tokio::join!(engine.functions_list(), engine.internal_function_ids());
+    let mode = match mode {
+        Some(mode) => mode,
+        None => {
+            let cached = cell.read().await.clone();
+            change_hydration(&cached, &functions, internal_ids.as_ref())
+        }
+    };
     let functions = hydrate(&engine, cell, functions, mode).await;
     let count = functions.len();
     apply_with_internal(cell, functions, internal_ids).await;
@@ -309,10 +363,11 @@ async fn reload(
 }
 
 /// Re-read the registry AND every schema — run on each worker announce,
-/// where a restarted worker may have changed contracts under unchanged ids.
+/// where a restarted worker may have changed contracts under unchanged ids
+/// (an engine that hashes only the id set never reports that).
 /// The generation moves only if something actually changed.
 pub async fn refresh(iii: &Arc<IIIClient>, cell: &FunctionsCell, timeout_ms: u64) -> usize {
-    reload(iii, cell, timeout_ms, Hydration::All).await
+    reload(iii, cell, timeout_ms, Some(Hydration::All)).await
 }
 
 /// Seed the snapshot from the registry. The trigger fires only on change, so
@@ -358,14 +413,15 @@ pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, tim
             let engine = engine.clone();
             let cell = cell.clone();
             async move {
-                let count = reload(&engine, &cell, timeout_ms, Hydration::Missing).await;
+                let count = reload(&engine, &cell, timeout_ms, None).await;
                 tracing::debug!(count, "function-registry cache refreshed");
                 Ok::<OnFunctionsChangeResponse, Error>(OnFunctionsChangeResponse { ok: true })
             }
         })
         .description(
             "Internal: refresh the cached function-registry snapshot when functions are \
-             registered/unregistered (driven by the engine::functions-available trigger).",
+             registered, re-registered or unregistered (driven by the \
+             engine::functions-available trigger).",
         )
         .metadata(json!({ "internal": true })),
     );
@@ -493,8 +549,8 @@ mod tests {
     }
 
     /// A worker announce re-reads every schema: a restarted worker may have
-    /// changed a contract under an unchanged id, which the engine's id-set
-    /// change trigger never reports. The cached schema stays as the fallback.
+    /// changed a contract under an unchanged id, which an engine that hashes
+    /// only the id set never reports. The cached schema stays as the fallback.
     #[test]
     fn an_announce_refetches_every_schema_and_keeps_the_cache_as_fallback() {
         let prev: HashMap<String, Value> = [("a::b".to_string(), json!({ "type": "object" }))]
@@ -542,5 +598,38 @@ mod tests {
         let c = carried.iter().find(|d| d.function_id == "c::d").unwrap();
         assert_eq!(c.parameters, None);
         assert_eq!(needs_fetch, vec!["c::d".to_string()]);
+    }
+
+    #[test]
+    fn an_event_that_moved_no_id_rereads_every_schema() {
+        let ids =
+            |list: &[&str]| -> BTreeSet<String> { list.iter().map(|id| id.to_string()).collect() };
+        let mut cached = snapshot_of(vec![desc("a::b", Some(json!({ "type": "object" })))]);
+        cached.internal_ids = ids(&["a::b", "engine::functions::info"]);
+        let listed = vec![desc("a::b", None)];
+        // Neither id set moved: only an overwrite of an existing id fires that.
+        let same = cached.internal_ids.clone();
+        assert_eq!(
+            change_hydration(&cached, &listed, Some(&same)),
+            Hydration::All
+        );
+        // Internal churn (a console watch) is an id change: cheap path.
+        let churned = ids(&["a::b", "engine::functions::info", "console::watch::r1"]);
+        assert_eq!(
+            change_hydration(&cached, &listed, Some(&churned)),
+            Hydration::Missing
+        );
+        // A public add is an id change too.
+        let added = vec![desc("a::b", None), desc("c::d", None)];
+        assert_eq!(
+            change_hydration(&cached, &added, Some(&same)),
+            Hydration::Missing
+        );
+        // An unknown full id set keeps the cheap path.
+        assert_eq!(change_hydration(&cached, &listed, None), Hydration::Missing);
+        assert_eq!(
+            change_hydration(&cached, &listed, Some(&BTreeSet::new())),
+            Hydration::Missing
+        );
     }
 }

@@ -103,7 +103,8 @@ impl Deps {
     }
 
     /// The current cached function-registry snapshot (cheap `Arc` clone). Kept
-    /// live by the `engine::functions-available` trigger; see [`crate::discovery`].
+    /// live by the `engine::functions-available` trigger and by worker
+    /// announces; see [`crate::discovery`].
     /// Carries both the callable set (`.functions`) and its `.generation`.
     pub async fn functions(&self) -> Arc<FunctionsSnapshot> {
         self.functions.read().await.clone()
