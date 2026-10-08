@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../src/session.js', () => ({ buildSession: vi.fn() }));
 
 import { loadConfig } from '../src/config.js';
-import { makeEmitter } from '../src/events.js';
+import { AGENT_EVENT_TRIGGER, RAW_EVENT_TRIGGER, registerAgentFeeds } from '../src/agent-feed.js';
 import { register } from '../src/run.js';
 import { buildSession } from '../src/session.js';
 import { fakeIii, type FakeIii } from './_helpers/fake-iii.js';
@@ -30,9 +30,8 @@ function script(events: PiEvent[] = fullTurnEvents, gate?: Promise<void>): Sessi
 async function registeredWorker(): Promise<FakeIii> {
   const fake = fakeIii();
   const cfg = await loadConfig('/nonexistent/config.yaml');
-  const emit = makeEmitter(fake.iii, cfg.events_stream);
-  const emitRaw = makeEmitter(fake.iii, cfg.raw_events_stream);
-  register(fake.iii, () => cfg, emit, emitRaw);
+  const feeds = registerAgentFeeds(fake.iii);
+  register(fake.iii, () => cfg, feeds.agent.emit, feeds.raw.emit);
   return fake;
 }
 
@@ -101,6 +100,30 @@ describe('register', () => {
         | undefined;
       expect(record?.status).toBe('done');
     });
+  });
+
+  it('pi::task publishes frames on both feeds through the record wrapper', async () => {
+    const fake = await registeredWorker();
+    script();
+    await fake.bindFeed(AGENT_EVENT_TRIGGER, 'task-1');
+    await fake.bindFeed(RAW_EVENT_TRIGGER, 'task-1');
+
+    await fake.registered.get('pi::task')?.({ task: 'review', session_id: 'task-1' });
+    await vi.waitFor(() => {
+      expect(fake.state.get('agent_tasks/task-1')).toMatchObject({ status: 'done' });
+    });
+    const agent = fake.feedFrames(AGENT_EVENT_TRIGGER);
+    expect(agent.map((f) => (f.event as { type: string }).type)).toEqual([
+      'function_execution_start',
+      'function_execution_end',
+      'message_complete',
+      'turn_end',
+      'agent_end',
+    ]);
+    expect(agent.map((f) => f.seq)).toEqual([0, 1, 2, 3, 4]);
+    expect(fake.feedFrames(RAW_EVENT_TRIGGER).map((f) => f.event)).toEqual(fullTurnEvents);
+    // The wrapper still captures the transcript for session::append.
+    expect(fake.calls.some((c) => c.function_id === 'session::append')).toBe(true);
   });
 
   it('marks the session error when a background run throws mid-stream', async () => {

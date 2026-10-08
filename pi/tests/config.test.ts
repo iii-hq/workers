@@ -10,8 +10,8 @@ describe('loadConfig', () => {
     expect(cfg.engine_url).toBe('ws://127.0.0.1:49134');
     expect(cfg.defaults.thinking_level).toBe('medium');
     expect(cfg.defaults.tools).toEqual([]);
-    expect(cfg.events_stream).toBe('agent::events');
-    expect(cfg.raw_events_stream).toBe('pi::events');
+    expect(cfg).not.toHaveProperty('events_stream');
+    expect(cfg).not.toHaveProperty('raw_events_stream');
     expect(cfg.iii_context).toBe(true);
   });
 
@@ -31,6 +31,19 @@ describe('loadConfig', () => {
     expect(cfg.engine_url).toBe('ws://10.0.0.1:49134');
     expect(cfg.defaults.thinking_level).toBe('high');
     expect(cfg.defaults.tools).toEqual([]);
+    expect(cfg.iii_context).toBe(false);
+  });
+
+  it('still loads a config that carries the removed stream-name keys', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pi-config-'));
+    const path = join(dir, 'config.yaml');
+    await writeFile(
+      path,
+      ['events_stream: agent::events', 'raw_events_stream: pi::events', 'iii_context: false'].join(
+        '\n',
+      ),
+    );
+    const cfg = await loadConfig(path);
     expect(cfg.iii_context).toBe(false);
   });
 

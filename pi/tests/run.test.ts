@@ -3,10 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../src/session.js', () => ({ buildSession: vi.fn() }));
 
 import { type Config, loadConfig } from '../src/config.js';
-import { makeEmitter } from '../src/events.js';
+import { AGENT_EVENT_TRIGGER, RAW_EVENT_TRIGGER, registerAgentFeeds } from '../src/agent-feed.js';
 import { executeRun, RunPayloadSchema } from '../src/run.js';
 import { buildSession } from '../src/session.js';
-import { fakeIii } from './_helpers/fake-iii.js';
+import { type FakeIii, fakeIii } from './_helpers/fake-iii.js';
 import {
   fullTurnEvents,
   newCapture,
@@ -16,6 +16,14 @@ import {
 } from './_helpers/fake-session.js';
 
 const buildMock = vi.mocked(buildSession);
+
+/** Both feeds, with a consumer bound to each for `session_id`. */
+async function boundFeeds(fake: FakeIii, session_id = 's1') {
+  const feeds = registerAgentFeeds(fake.iii);
+  await fake.bindFeed(AGENT_EVENT_TRIGGER, session_id);
+  await fake.bindFeed(RAW_EVENT_TRIGGER, session_id);
+  return feeds;
+}
 
 async function baseConfig(): Promise<Config> {
   return loadConfig('/nonexistent/config.yaml');
@@ -38,8 +46,9 @@ async function runTurn(
   const fake = fakeIii();
   const cfg = { ...(await baseConfig()), ...cfgOverrides };
   const capture = script(events);
-  const emit = makeEmitter(fake.iii, cfg.events_stream);
-  const emitRaw = makeEmitter(fake.iii, cfg.raw_events_stream);
+  const feeds = await boundFeeds(fake, String(payload.session_id ?? 's1'));
+  const emit = feeds.agent.emit;
+  const emitRaw = feeds.raw.emit;
   const result = await executeRun(fake.iii, cfg, emit, emitRaw, RunPayloadSchema.parse(payload));
   return { fake, capture, result };
 }
@@ -59,7 +68,7 @@ describe('executeRun', () => {
       if (req.function_id === 'state::set') throw new Error('store down');
       return realTrigger(req as never);
     };
-    const emit = makeEmitter(fake.iii, cfg.events_stream);
+    const emit = (await boundFeeds(fake)).agent.emit;
     await executeRun(
       fake.iii,
       cfg,
@@ -106,17 +115,19 @@ describe('executeRun', () => {
     expect(final.total_cost_usd).toBe(0.01);
   });
 
-  it('mirrors every Pi event verbatim onto the raw stream', async () => {
+  it('mirrors every Pi event verbatim onto pi::raw-event', async () => {
     const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
-    const raw = fake.streamFrames('pi::events').map((f) => f.data);
+    const raw = fake.feedFrames(RAW_EVENT_TRIGGER).map((f) => f.event);
     expect(raw).toEqual(fullTurnEvents);
-    const groupIds = fake.streamFrames('pi::events').map((f) => f.group_id);
-    expect(new Set(groupIds)).toEqual(new Set(['s1']));
+    const sessionIds = fake.feedFrames(RAW_EVENT_TRIGGER).map((f) => f.session_id);
+    expect(new Set(sessionIds)).toEqual(new Set(['s1']));
   });
 
-  it('emits the translated AgentEvent sequence on agent::events', async () => {
+  it('emits the translated AgentEvent sequence on pi::agent-event', async () => {
     const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
-    const types = fake.streamFrames('agent::events').map((f) => (f.data as { type: string }).type);
+    const types = fake
+      .feedFrames(AGENT_EVENT_TRIGGER)
+      .map((f) => (f.event as { type: string }).type);
     expect(types).toEqual([
       'function_execution_start',
       'function_execution_end',
@@ -125,8 +136,8 @@ describe('executeRun', () => {
       'agent_end',
     ]);
     const [start, end] = fake
-      .streamFrames('agent::events')
-      .map((f) => f.data as Record<string, unknown>)
+      .feedFrames(AGENT_EVENT_TRIGGER)
+      .map((f) => f.event as Record<string, unknown>)
       .filter((d) => String(d.type).startsWith('function_execution'));
     expect(start).toMatchObject({
       function_call_id: 'call_1',
@@ -193,7 +204,7 @@ describe('executeRun', () => {
     });
     const cfg = await baseConfig();
     const capture = script();
-    const emit = makeEmitter(fake.iii, cfg.events_stream);
+    const emit = (await boundFeeds(fake)).agent.emit;
     const result = await executeRun(
       fake.iii,
       cfg,
@@ -223,7 +234,7 @@ describe('executeRun', () => {
     });
     const cfg = await baseConfig();
     const capture = script();
-    const emit = makeEmitter(fake.iii, cfg.events_stream);
+    const emit = (await boundFeeds(fake)).agent.emit;
     await executeRun(
       fake.iii,
       cfg,
@@ -260,7 +271,7 @@ describe('executeRun', () => {
     const fake = fakeIii();
     const cfg = await baseConfig();
     script([], new Error('spawn failed'));
-    const emit = makeEmitter(fake.iii, cfg.events_stream);
+    const emit = (await boundFeeds(fake)).agent.emit;
     const result = await executeRun(
       fake.iii,
       cfg,
@@ -273,7 +284,9 @@ describe('executeRun', () => {
     expect(String(result.result)).toContain('spawn failed');
     const record = fake.state.get('pi_sessions/s1') as { status: string };
     expect(record.status).toBe('error');
-    const types = fake.streamFrames('agent::events').map((f) => (f.data as { type: string }).type);
+    const types = fake
+      .feedFrames(AGENT_EVENT_TRIGGER)
+      .map((f) => (f.event as { type: string }).type);
     expect(types).toContain('turn_end');
     expect(types).toContain('agent_end');
   });
@@ -286,5 +299,41 @@ describe('executeRun', () => {
   it('starts a fresh session with no resume file', async () => {
     const { capture } = await runTurn({ prompt: 'x', session_id: 'fresh' });
     expect(capture.buildOpts?.resumeFile).toBeNull();
+  });
+});
+
+describe('event feed delivery during a turn', () => {
+  it('a failing consumer never fails the turn', async () => {
+    const fake = fakeIii();
+    const cfg = await baseConfig();
+    script();
+    const feeds = registerAgentFeeds(fake.iii);
+    await fake.bindFeed(AGENT_EVENT_TRIGGER, 's1', { function_id: 'gone::agent' });
+    await fake.bindFeed(RAW_EVENT_TRIGGER, 's1', { function_id: 'gone::raw' });
+    const real = fake.iii.trigger.bind(fake.iii);
+    (fake.iii as { trigger: unknown }).trigger = async (req: { function_id: string }) => {
+      if (req.function_id.startsWith('gone::')) throw new Error('function_not_found');
+      return real(req as never);
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await executeRun(
+      fake.iii,
+      cfg,
+      feeds.agent.emit,
+      feeds.raw.emit,
+      RunPayloadSchema.parse({ prompt: 'x', session_id: 's1' }),
+    );
+    expect(result).toMatchObject({ session_id: 's1', result: 'done' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('gone::agent'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('gone::raw'));
+    warn.mockRestore();
+  });
+
+  it('does not touch iii-stream at all', async () => {
+    const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
+    expect(fake.calls.some((c) => c.function_id.startsWith('stream::'))).toBe(false);
+    for (const call of fake.calls.filter((c) => c.function_id.startsWith('test::on::'))) {
+      expect(call.action).toEqual({ type: 'void' });
+    }
   });
 });

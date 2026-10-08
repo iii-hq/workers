@@ -1,6 +1,6 @@
 /**
- * Wire types for the AgentEvent subset this worker emits onto the
- * `agent::events` stream. Mirrors harness/src/types/* in iii-hq/workers so
+ * Wire types for the AgentEvent subset this worker emits on the
+ * `pi::agent-event` trigger type. Mirrors harness/src/types/* in iii-hq/workers so
  * the console and acp worker render Pi turns like any other agent worker.
  */
 

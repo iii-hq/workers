@@ -20,14 +20,24 @@ const ConfigSchema = z.object({
     })
     .prefault({})
     .describe('Per-turn defaults applied when a pi::run payload omits a field'),
+  // Deprecated and ignored: the feeds are the fixed trigger types
+  // pi::agent-event / pi::raw-event. Kept as optional properties only because
+  // the published schema is closed (additionalProperties: false), so a stored
+  // configuration that still carries them keeps validating.
   events_stream: z
     .string()
-    .default('agent::events')
-    .describe('Stream carrying the translated AgentEvent frames'),
+    .optional()
+    .meta({ deprecated: true })
+    .describe(
+      'Deprecated, ignored. AgentEvent frames are published on the pi::agent-event trigger type.',
+    ),
   raw_events_stream: z
     .string()
-    .default('pi::events')
-    .describe('Stream carrying the raw Pi events, verbatim'),
+    .optional()
+    .meta({ deprecated: true })
+    .describe(
+      'Deprecated, ignored. Raw Pi events are published on the pi::raw-event trigger type.',
+    ),
   iii_context: z
     .boolean()
     .default(true)

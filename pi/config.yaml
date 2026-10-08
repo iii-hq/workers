@@ -7,13 +7,9 @@ defaults:
   tools: []                # empty = Pi defaults (read, bash, edit, write); else an allowlist of tool names
   agent_dir: ""            # Pi global config dir; empty = ~/.pi/agent
 
-# Stream AgentEvent frames here, grouped by session_id. The console and
-# acp worker both read this stream.
-events_stream: agent::events
-
-# Raw Pi events (exact AgentSession event shapes: agent_start/end, turn_*,
-# message_*, tool_execution_*) mirrored verbatim here, grouped by session_id.
-raw_events_stream: pi::events
+# Event feeds are not configured here: AgentEvent frames are published on the
+# pi::agent-event trigger type and raw Pi events on pi::raw-event (bind either
+# with { session_id }). See README "Event feeds".
 
 # Append the iii runtime context to the system prompt: teaches the agent
 # live discovery against the engine catalog through the iii CLI

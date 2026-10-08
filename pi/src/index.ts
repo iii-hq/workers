@@ -7,7 +7,8 @@
  *
  * Two halves, one worker: `pi::run` drives pi headless from here, and
  * `pi::terminal::*` drives the same agent in a `shell::pty` session a person
- * types into. Both report onto the same `agent::events` stream.
+ * types into. Both report onto the same `pi::agent-event` feed (raw Pi events:
+ * `pi::raw-event`).
  */
 
 import { parseArgs } from 'node:util';
@@ -19,7 +20,7 @@ import {
   fetchRuntime,
   registerPiConfig,
 } from './configuration.js';
-import { makeEmitter } from './events.js';
+import { registerAgentFeeds } from './agent-feed.js';
 import { register } from './run.js';
 import { registerActivity } from './terminal/activity.js';
 import { registerAuth } from './terminal/auth.js';
@@ -45,7 +46,7 @@ const bootConfig: Config = { ...seed, engine_url: url };
 // (it discovers `.pi/extensions/` from the run's cwd, which IS the terminal
 // workspace). This mark tells it so: the worker reports its own headless turns,
 // and a second report from inside the same process would duplicate the run on
-// `agent::events` under a different session id.
+// `pi::agent-event` under a different session id.
 (globalThis as { __iiiPiWorker?: boolean }).__iiiPiWorker = true;
 
 const iii = registerWorker(url, { workerName: 'pi' });
@@ -110,10 +111,12 @@ const refresh = async () => {
 
 await bindConfigTrigger(iii, refresh);
 
-// The stream names are read per event, so a live change applies to the next
-// frame instead of waiting for a restart.
-const emit = makeEmitter(iii, () => holder.current.events_stream);
-const emitRaw = makeEmitter(iii, () => holder.current.raw_events_stream);
+// The two owned event feeds: pi::agent-event (AgentEvent frames) and
+// pi::raw-event (verbatim Pi events), each with its own binding table and
+// sequence counter.
+const feeds = registerAgentFeeds(iii);
+const emit = feeds.agent.emit;
+const emitRaw = feeds.raw.emit;
 register(iii, () => holder.current, emit, emitRaw);
 
 // The terminal half: the extension's event sink, what a session runs, who pays

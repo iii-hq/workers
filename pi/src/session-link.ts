@@ -96,7 +96,7 @@ export type TaskOutcome = {
 /**
  * Publish a delegated task's outcome. Best-effort: a missing `state` worker
  * costs the parent its wake-up, not the work — the run already happened, and
- * its events are on the stream either way.
+ * its events are on the pi::agent-event feed either way.
  */
 export async function recordTaskOutcome(iii: IIIClient, outcome: TaskOutcome): Promise<void> {
   try {
@@ -113,7 +113,7 @@ export async function recordTaskOutcome(iii: IIIClient, outcome: TaskOutcome): P
 /**
  * Persist one message into the child session's transcript.
  *
- * `agent::events` is a live tape: a console window opened after the run has
+ * The `pi::agent-event` feed is a live tape: a console window opened after the run has
  * nothing to replay from it, which is why a finished sub-agent used to render
  * blank with `message_count: 0`. The session manager is the durable side, and
  * the console reads it with `session::messages`. Best-effort, like the rest of
@@ -140,7 +140,7 @@ export async function appendMessage(
 /**
  * Write a finished turn into the child session: what was asked, then every
  * message the turn produced, in order. Called once, when the run ends — the
- * live view is the stream, this is what a window opened later replays.
+ * live view is the pi::agent-event feed, this is what a window opened later replays.
  */
 export async function appendTranscript(
   iii: IIIClient,

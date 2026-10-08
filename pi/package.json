@@ -2,7 +2,7 @@
   "name": "pi",
   "version": "0.1.33",
   "private": true,
-  "description": "Pi coding agent as an iii worker: headless turns over the iii bus, raw events on pi::events, AgentEvent frames on agent::events.",
+  "description": "Pi coding agent as an iii worker: headless turns over the iii bus, raw events on the pi::raw-event trigger type, AgentEvent frames on pi::agent-event.",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {

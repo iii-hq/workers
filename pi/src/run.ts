@@ -6,8 +6,8 @@
  * drive Pi unchanged.
  *
  * Pi runs the loop in-process and pushes events through `session.subscribe`.
- * Because that listener is synchronous and stream emits are async, events are
- * drained through a serial promise chain so frames land on the streams in
+ * Because that listener is synchronous and feed emits are async, events are
+ * drained through a serial promise chain so frames land on the feeds in
  * arrival order.
  */
 
@@ -16,7 +16,7 @@ import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
 import type { Config } from './config.js';
-import type { Emit } from './events.js';
+import type { Emit } from './agent-feed.js';
 import { fetchIiiContext } from './iii-context.js';
 import {
   lastAssistant,
@@ -333,7 +333,7 @@ async function runReserved(
   let isError = false;
 
   // Serial drain: the sync subscribe listener enqueues async emits so frames
-  // reach the streams in arrival order without blocking Pi's loop.
+  // reach the feeds in arrival order without blocking Pi's loop.
   let chain: Promise<void> = Promise.resolve();
   const enqueue = (fn: () => Promise<void>) => {
     chain = chain.then(fn).catch((err) => console.warn(`pi event emit failed: ${String(err)}`));
@@ -456,7 +456,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       executeRun(iii, getCfg(), emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
     {
       description:
-        'Run one Pi coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; streams raw Pi events onto pi::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.',
+        'Run one Pi coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; publishes raw Pi events on the pi::raw-event trigger type and AgentEvent frames on pi::agent-event (bind with { session_id }), and returns {session_id, result, usage, total_cost_usd}.',
       request_format: RUN_REQUEST_FORMAT,
       response_format: RUN_RESPONSE_FORMAT,
     },
@@ -488,7 +488,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
     },
     {
       description:
-        'Start a Pi turn and return immediately; watch agent::events (group_id = session_id) for progress and turn_end.',
+        'Start a Pi turn and return immediately; bind pi::agent-event with { session_id } for progress and turn_end.',
       request_format: RUN_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },
@@ -496,7 +496,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
 
   // The sub-agent entrypoint an orchestrator FIRES rather than calls: a trigger
   // bound to this id delivers a task, the ids come back at once, and the
-  // outcome arrives the way a harness sub-agent's does — on `agent::events`,
+  // outcome arrives the way a harness sub-agent's does — on `pi::agent-event`,
   // in the child session, never as a return value the caller waits for.
   iii.registerFunction(
     'pi::task',
@@ -521,8 +521,8 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       // to state under `agent_tasks/<session id>`, which is what an
       // orchestrator binds a `state` trigger to and gets woken by — the same
       // shape a harness sub-agent uses, with no polling and no blocking call.
-      // The turn is persisted as well as streamed. `agent::events` is a live
-      // tape — a console window opened after the run has nothing to replay
+      // The turn is persisted as well as published. `pi::agent-event` is a
+      // live tape — a console window opened after the run has nothing to replay
       // from it, which is why a finished sub-agent rendered blank with
       // `message_count: 0`. The session manager is the durable side, so the
       // transcript is written there when the turn ends.
@@ -564,7 +564,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
     },
     {
       description:
-        'Delegate one task to Pi and return its session id immediately — the sub-agent shape: it never parks the caller. The outcome is written to state under scope `agent_tasks`, key the child session id, so bind a `state` trigger on that BEFORE calling and be woken by it; progress streams onto agent::events (group_id = session_id). Pass `parent_session_id` to nest the child under the session that delegated it.',
+        'Delegate one task to Pi and return its session id immediately — the sub-agent shape: it never parks the caller. The outcome is written to state under scope `agent_tasks`, key the child session id, so bind a `state` trigger on that BEFORE calling and be woken by it; progress arrives on pi::agent-event (bind with { session_id }). Pass `parent_session_id` to nest the child under the session that delegated it.',
       request_format: TASK_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },
