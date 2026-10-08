@@ -10,5 +10,4 @@ workers:
         name: fs
         config:
           directory: ${HARNESS_E2E_RUN_DIR}/configuration
-  - name: iii-stream
   - name: iii-observability

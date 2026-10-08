@@ -56,7 +56,7 @@ pub(crate) fn stack_info(bins: &StackBins, layout: &RunLayout, port: u16) -> any
     Ok(json!({
         "profile": STACK_PROFILE,
         "components": {
-            "engine_builtins": ["configuration", "state", "stream", "cron"],
+            "engine_builtins": ["configuration", "state", "cron"],
             "external_workers": external_workers,
             "controlled_services": ["scripted-router", "integration-probe"]
         },

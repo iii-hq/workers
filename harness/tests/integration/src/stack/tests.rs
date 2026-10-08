@@ -59,7 +59,7 @@ fn engine_config_uses_rc_compatible_builtin_workers() {
     let layout = RunLayout::allocate(artifacts.path(), "run-001").unwrap();
     let yaml = config::render_engine_yaml(&layout, 3210);
 
-    assert!(yaml.contains("name: iii-stream"));
+    assert!(!yaml.contains("name: iii-stream"));
     assert!(!yaml.contains("name: iii-cron"));
     assert!(!yaml.contains("name: iii-observability"));
     assert!(config::WORKER_START_ORDER.contains(&"cron"));
