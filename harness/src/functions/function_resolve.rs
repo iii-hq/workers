@@ -51,5 +51,17 @@ pub async fn handle(
     deps: &Deps,
     req: FunctionResolveRequest,
 ) -> Result<FunctionResolveResponse, HarnessError> {
-    crate::deferred::resolve(deps, req).await
+    // A resolve runs outside the turn step, so re-stamp the session's judge
+    // provider the step would have carried: a released held call (e.g. an
+    // approved `coder::find-relevant`) and the result's reconciliation keep
+    // the session's judge instead of falling back to the hub default.
+    let hints = deps.session().await.turn_hints(&req.session_id).await;
+    let baggage: Vec<_> = hints
+        .judge_provider
+        .as_deref()
+        .map(|provider| (judge_contract::PROVIDER_BAGGAGE_KEY, provider))
+        .into_iter()
+        .collect();
+    iii_helpers::observability::run_with_baggage(&baggage, crate::deferred::resolve(deps, req))
+        .await
 }

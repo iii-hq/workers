@@ -21,6 +21,8 @@ struct Store {
     sessions: BTreeMap<String, Value>,
     messages: BTreeMap<String, Vec<Value>>,
     calls: Vec<(String, Value)>,
+    /// The W3C `baggage` header each call carried, in call order.
+    baggage: Vec<(String, Value)>,
     fail: BTreeSet<String>,
     fail_delete: Option<String>,
     delete_reply: Option<Value>,
@@ -198,6 +200,9 @@ impl Stack {
                 let function = message["function_id"].as_str().unwrap();
                 let (result, code) = {
                     let mut store = state.lock().unwrap();
+                    store
+                        .baggage
+                        .push((function.into(), message["baggage"].clone()));
                     let code = store
                         .codes
                         .get(function)
@@ -1559,6 +1564,58 @@ async fn a_released_call_keeps_the_boundary_its_holder_reviewed() {
         .expect("the released call is dispatched");
     assert_eq!(payload["fs_scope"]["root"], "/w", "{payload}");
     assert_eq!(payload["fs_scope"]["boundary"], "workspace", "{payload}");
+}
+
+/// An approved held call runs outside the turn step yet keeps the session's
+/// judge provider: without it a released `coder::find-relevant` asks the
+/// hub's default judge instead of the one the session chose.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_call_keeps_the_session_judge_provider() {
+    for provider in [Some("clef"), None] {
+        let stack = Stack::new("completed").await;
+        {
+            let mut store = stack.store.lock().unwrap();
+            if let Some(provider) = provider {
+                let meta = store.sessions.get_mut("child1").unwrap();
+                meta["metadata"]["judge_provider"] = json!(provider);
+            }
+            let mut turn = store.state("harness_turn", "child1");
+            turn["status"] = json!("awaiting_functions");
+            turn["calls"] = json!({"held-1": {
+                "state": "pending",
+                "function_id": "coder::find-relevant",
+                "held_by": "gone::gate",
+                "held_arguments": {"query": "where are retries decided?"}
+            }});
+            store.put("harness_turn", "child1", turn);
+        }
+        let resolved = harness::functions::function_resolve::handle(
+            &stack.deps,
+            serde_json::from_value(json!({
+                "session_id": "child1",
+                "turn_id": "t_child1",
+                "function_call_id": "held-1",
+                "action": "execute"
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(resolved.resolved, "{provider:?}");
+        let store = stack.store.lock().unwrap();
+        let (_, baggage) = store
+            .baggage
+            .iter()
+            .find(|(f, _)| f == "coder::find-relevant")
+            .expect("the released call is dispatched");
+        let stamped = baggage
+            .as_str()
+            .unwrap_or_default()
+            .split(',')
+            .find_map(|entry| entry.trim().strip_prefix("iii.judge.provider="))
+            .map(str::to_string);
+        assert_eq!(stamped.as_deref(), provider, "{baggage}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
