@@ -154,9 +154,33 @@ export function groupContentMatches(
   return [...groups.values()]
 }
 
+/* Units the parsers could not name fall back to their syntax kind; as a
+   lead they say where, not what. */
+const UNNAMED_UNITS = new Set([
+  'source',
+  'comment',
+  'use_declaration',
+  'extern_crate_declaration',
+  'attribute_item',
+  'inner_attribute_item',
+  'import_statement',
+  'import_from_statement',
+  'future_import_statement',
+  'import_declaration',
+  'package_clause',
+  'expression_statement',
+  'export_statement',
+])
+
+/** Whether a lead names its unit rather than falling back to a syntax kind. */
+export function isNamedLead(name: string | null | undefined): name is string {
+  return !!name && !UNNAMED_UNITS.has(name.slice(name.lastIndexOf('.') + 1))
+}
+
 /** `coder::find-relevant` files as search rows, in the worker's ranking:
-    an excerpt opens at its first non-blank line and shows it, a lead shows
-    its line range, a file with neither gets one row. Render with
+    an excerpt opens at its first non-blank line and shows it, a named lead
+    shows its line range (a syntax-kind fallback says where, not what), a
+    file with neither gets one row. Render with
     `query: ''` so nothing is highlighted; the grouping Map keeps the
     insertion (ranking) order. */
 export function relevantAsMatches(out: FindRelevantResponse): ContentMatch[] {
@@ -170,11 +194,12 @@ export function relevantAsMatches(out: FindRelevantResponse): ContentMatch[] {
       )
       rows.push({ path: file.path, line: excerpt.line_from + at, column: 1, text: lines[at] })
     }
-    for (const lead of file.leads) {
+    const leads = file.leads.filter((lead) => isNamedLead(lead.name))
+    for (const lead of leads) {
       const range = `lines ${lead.line_from}-${lead.line_to}`
-      rows.push({ path: file.path, line: lead.line_from, column: 1, text: lead.name ? `${lead.name} ${range}` : range })
+      rows.push({ path: file.path, line: lead.line_from, column: 1, text: `${lead.name} ${range}` })
     }
-    if (file.excerpts.length === 0 && file.leads.length === 0) {
+    if (file.excerpts.length === 0 && leads.length === 0) {
       rows.push({ path: file.path, line: 1, column: 1, text: 'relevant file' })
     }
   }

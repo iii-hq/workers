@@ -10,6 +10,8 @@ import {
 } from './find-relevant'
 
 const VISIBLE_FILE_LIMIT = 5
+/** Rows mounted behind "Show more"; the rest are only counted. */
+const OVERFLOW_FILE_LIMIT = 20
 /** Rows that show their best excerpt inline: the answer, not the index. */
 const PREVIEW_FILE_LIMIT = 2
 const PREVIEW_LINE_LIMIT = 8
@@ -75,12 +77,14 @@ function issueList(issues: readonly [string, number][]): string {
     .join(', ')
 }
 
+/** What stopped the ask, then the worker's next step (`hint`) or ours. */
 function partialNote(summary: RelevantSummary): string {
-  const issues = issueList(summary.issues)
+  const issues = issueList(summary.issues) || (summary.reason ? issueList([[summary.reason, 1]]) : '')
+  const detail = issues ? ` (${issues})` : ''
   if (summary.reason === 'token_budget') {
-    return `Stopped at the judge token budget${issues ? ` (${issues})` : ''}: the folder was too big to judge in full. Ask about a narrower folder.`
+    return `Stopped at the judge token budget${detail}: the folder was too big to judge in full. ${summary.hint ?? 'Ask about a narrower folder.'}`
   }
-  return `Partial result${issues ? ` (${issues})` : ''}: some folders or files went unjudged. Narrow the folder for full coverage.`
+  return `Partial result${detail}: some folders or files went unjudged. ${summary.hint ?? 'Narrow the folder for full coverage.'}`
 }
 
 function Note({ tone, children }: { tone: 'partial' | 'unavailable' | 'empty'; children: React.ReactNode }) {
@@ -229,7 +233,8 @@ export function FindRelevantCard({
   const [expanded, setExpanded] = useState(false)
   const overflowId = useId()
   const primary = summary.rows.slice(0, VISIBLE_FILE_LIMIT)
-  const overflow = summary.rows.slice(VISIBLE_FILE_LIMIT)
+  const overflow = summary.rows.slice(VISIBLE_FILE_LIMIT, VISIBLE_FILE_LIMIT + OVERFLOW_FILE_LIMIT)
+  const unlisted = summary.rows.length - primary.length - overflow.length
   const previewed = new Set(
     primary
       .filter((row) => row.excerpts.length > 0)
@@ -266,12 +271,16 @@ export function FindRelevantCard({
       {summary.status === 'unavailable' ? (
         <Note tone="unavailable">
           {summary.reason ? `No judge answered (${summary.reason}). ` : 'No judge answered. '}
-          Text search with <code>coder::search</code> still works.
+          {summary.hint ?? (
+            <>
+              Text search with <code>coder::search</code> still works.
+            </>
+          )}
         </Note>
       ) : null}
       {summary.status === 'incomplete' ? <Note tone="partial">{partialNote(summary)}</Note> : null}
       {summary.status === 'complete' && summary.rows.length === 0 ? (
-        <Note tone="empty">The judge found nothing in this folder that answers the question.</Note>
+        <Note tone="empty">{summary.hint ?? 'The judge found nothing in this folder that answers the question.'}</Note>
       ) : null}
 
       {primary.length > 0 ? <RowList rows={primary} previewed={previewed} onOpen={onOpen} /> : null}
@@ -281,6 +290,7 @@ export function FindRelevantCard({
           <div id={overflowId} className="shui-file-changes-overflow" data-open={expanded} aria-hidden={!expanded}>
             <div className="shui-file-changes-overflow-inner" inert={expanded ? undefined : true}>
               <RowList rows={overflow} previewed={previewed} onOpen={onOpen} />
+              {unlisted > 0 ? <Note tone="empty">{`+${plural(unlisted, 'lower-ranked file')}`}</Note> : null}
             </div>
           </div>
           <button

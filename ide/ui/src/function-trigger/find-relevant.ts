@@ -1,5 +1,6 @@
 import type { PanelOpenRequest } from '@iii-dev/console-ui'
 import { z } from 'zod'
+import { isNamedLead } from '../page/search-model'
 
 export const FIND_RELEVANT_ID = 'coder::find-relevant'
 
@@ -26,6 +27,7 @@ const fileSchema = z.object({
 const responseSchema = z.object({
   status: z.enum(['complete', 'incomplete', 'unavailable']),
   reason: z.string().nullish(),
+  hint: z.string().nullish(),
   files: z.array(fileSchema),
   issues: z.record(z.string(), z.number()).default({}),
   stats: z
@@ -73,6 +75,8 @@ export interface RelevantSummary {
   /** Null while the call is in flight or only its request is known. */
   status: RelevantStatus | null
   reason: string | null
+  /** The worker's next step for a partial, empty or unavailable result. */
+  hint: string | null
   rows: RelevantRow[]
   issues: [string, number][]
   judgeCalls: number
@@ -99,6 +103,7 @@ export function summarizeFindRelevant(input: unknown, output: unknown): Relevant
     scope: request.data.path && request.data.path !== '.' ? request.data.path : null,
     status: data?.status ?? null,
     reason: data?.reason ?? null,
+    hint: data?.hint ?? null,
     rows: (data?.files ?? []).map((file) => {
       const rel = base && file.path.startsWith(base) ? file.path.slice(base.length) : file.path
       const cut = rel.lastIndexOf('/')
@@ -138,29 +143,9 @@ export function openFileRequest(path: string, lineFrom?: number, lineTo?: number
   }
 }
 
-/* Units the parsers could not name fall back to their syntax kind; as a
-   lead they say where, not what. */
-const UNNAMED_UNITS = new Set([
-  'source',
-  'comment',
-  'use_declaration',
-  'extern_crate_declaration',
-  'attribute_item',
-  'inner_attribute_item',
-  'import_statement',
-  'import_from_statement',
-  'future_import_statement',
-  'import_declaration',
-  'package_clause',
-  'expression_statement',
-  'export_statement',
-])
-
 /** The leads worth a chip: named units, best judged first. */
 export function namedLeads(row: RelevantRow): RelevantLead[] {
-  return row.leads
-    .filter((lead) => lead.name && !UNNAMED_UNITS.has(lead.name.slice(lead.name.lastIndexOf('.') + 1)))
-    .sort((a, b) => b.score - a.score || a.lineFrom - b.lineFrom)
+  return row.leads.filter((lead) => isNamedLead(lead.name)).sort((a, b) => b.score - a.score || a.lineFrom - b.lineFrom)
 }
 
 /** Where a row click lands: its first excerpt, else its first lead. */

@@ -134,7 +134,7 @@ describe('relevantAsMatches', () => {
     expect(groups[0].matches[0]).toMatchObject({ hit: '', lead: 'function pick() {' })
   })
 
-  it('shows leads as line ranges, prefixed by their name when present', () => {
+  it('shows named leads as line ranges and drops syntax-kind fallbacks', () => {
     const out: FindRelevantResponse = {
       status: 'incomplete',
       files: [
@@ -142,13 +142,16 @@ describe('relevantAsMatches', () => {
           leads: [
             { name: 'Store.load', line_from: 20, line_to: 40, score: 0.4 },
             { line_from: 50, line_to: 60, score: 0.3 },
+            { name: 'source', line_from: 1, line_to: 400, score: 0.3 },
+            { name: 'use_declaration', line_from: 2, line_to: 2, score: 0.3 },
           ],
         }),
+        file('/r/b.rs', { leads: [{ name: 'attribute_item', line_from: 5, line_to: 5, score: 0.3 }] }),
       ],
     }
-    expect(relevantAsMatches(out).map((r) => [r.line, r.text])).toEqual([
-      [20, 'Store.load lines 20-40'],
-      [50, 'lines 50-60'],
+    expect(relevantAsMatches(out).map((r) => [r.path, r.line, r.text])).toEqual([
+      ['/r/a.ts', 20, 'Store.load lines 20-40'],
+      ['/r/b.rs', 1, 'relevant file'],
     ])
   })
 

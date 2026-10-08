@@ -353,20 +353,28 @@ export interface RelevantFile {
 export interface FindRelevantResponse {
   status: 'complete' | 'incomplete' | 'unavailable'
   reason?: string | null
+  /** The worker's next step for a partial, empty or unavailable result. */
+  hint?: string | null
   /** Ranked best first by the worker. */
   files: RelevantFile[]
 }
 
-/** Ask the judge which files under `path` answer a behavioural question.
-    The bus wait outlives the worker's own deadline so a partial answer
-    lands instead of a transport timeout. */
+/** Ask the judge which files under `path` answer a behavioural question;
+    `excludeGlobs` are relative to `path`. The bus wait outlives the
+    worker's own deadline so a partial answer lands instead of a transport
+    timeout. */
 export function coderFindRelevant(
   host: Host,
-  { query, path, timeoutMs }: { query: string; path: string; timeoutMs: number },
+  {
+    query,
+    path,
+    excludeGlobs = [],
+    timeoutMs,
+  }: { query: string; path: string; excludeGlobs?: string[]; timeoutMs: number },
 ): Promise<FindRelevantResponse> {
   return host.iii.trigger<FindRelevantResponse>(
     'coder::find-relevant',
-    { query, path, timeout_ms: timeoutMs },
+    { query, path, exclude_globs: excludeGlobs, timeout_ms: timeoutMs },
     { timeoutMs: timeoutMs + 5000 },
   )
 }

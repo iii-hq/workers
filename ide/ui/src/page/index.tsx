@@ -2507,17 +2507,7 @@ export function ShellExplorerPage({
                     onPinFile={openPinnedFile}
                     actions={explorerActions}
                   />
-                ) : sideTab === 'search' ? (
-                  <SearchTab
-                    host={host}
-                    root={root}
-                    request={searchRequest}
-                    onOpenMatch={openMatch}
-                    onPreviewFile={openPreviewFile}
-                    onPinFile={openPinnedFile}
-                    onRevealFolder={revealFolder}
-                  />
-                ) : sideTab === 'changes' && branchChanges !== null && root !== null ? (
+                ) : sideTab === 'search' ? null : sideTab === 'changes' && branchChanges !== null && root !== null ? (
                   <BranchChangesView
                     key={branchChanges}
                     host={host}
@@ -2564,6 +2554,18 @@ export function ShellExplorerPage({
                     onRevertFile={revertTurnFile}
                   />
                 )}
+                {/* Mounted while hidden: an ask runs for minutes and its
+                    answer must survive a look at another view. */}
+                <SearchTab
+                  hidden={sideTab !== 'search'}
+                  host={host}
+                  root={root}
+                  request={searchRequest}
+                  onOpenMatch={openMatch}
+                  onPreviewFile={openPreviewFile}
+                  onPinFile={openPinnedFile}
+                  onRevealFolder={revealFolder}
+                />
               </div>
             </div>
           </PageSidebar>

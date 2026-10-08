@@ -147,6 +147,52 @@ describe('FindRelevantCard', () => {
     expect(html).toContain('No judge answered (judge window too small)')
   })
 
+  it("ends each note with the worker's hint and labels every issue kind", () => {
+    const hint = 'Coverage is partial (judge_call_timeout): verify with coder::search. Narrow path.'
+    const timedOut = summarizeFindRelevant(input, {
+      ...output,
+      status: 'incomplete',
+      reason: 'judge_call_timeout',
+      hint,
+      issues: { judge_call_timeout: 2, invalid_response: 1 },
+    })!
+    const html = renderToStaticMarkup(<FindRelevantCard summary={timedOut} running={false} />)
+    expect(html).toContain(`Partial result (judge calls timed out ×2, failed judge evaluations): `)
+    expect(html).toContain(hint)
+    expect(html).not.toContain('Narrow the folder for full coverage')
+    // A reason with no issue counted still names the gap.
+    const stopped = summarizeFindRelevant(input, { ...output, status: 'incomplete', reason: 'judge failed' })!
+    expect(renderToStaticMarkup(<FindRelevantCard summary={stopped} running={false} />)).toContain(
+      'Partial result (judge failed)',
+    )
+    const loading = summarizeFindRelevant(input, {
+      ...output,
+      status: 'unavailable',
+      reason: 'judge model loading; retry shortly',
+      hint: 'The judge is still loading its model: retry the ask in a minute.',
+      files: [],
+    })!
+    const unavailable = renderToStaticMarkup(<FindRelevantCard summary={loading} running={false} />)
+    expect(unavailable).toContain('retry the ask in a minute')
+    expect(unavailable).not.toContain('still works')
+    const empty = summarizeFindRelevant(input, { ...output, files: [], hint: 'Nothing under path looked relevant.' })!
+    expect(renderToStaticMarkup(<FindRelevantCard summary={empty} running={false} />)).toContain(
+      'Nothing under path looked relevant.',
+    )
+  })
+
+  it('mounts at most twenty overflow rows and counts the rest', () => {
+    const many = { ...output, files: Array.from({ length: 40 }, (_, i) => file(`/r/judge/src/f${i}.rs`, 1 - i / 100)) }
+    const html = renderToStaticMarkup(
+      <FindRelevantCard summary={summarizeFindRelevant(input, many)!} running={false} />,
+    )
+    expect(html).toContain('Found 40 relevant files')
+    expect(html).toContain('Show 20 more files')
+    expect(html).toContain('f24.rs')
+    expect(html).not.toContain('f25.rs')
+    expect(html).toContain('+15 lower-ranked files')
+  })
+
   it('is a status region with the question while the judge works', () => {
     const summary = summarizeFindRelevant(input, undefined)!
     const html = renderToStaticMarkup(<FindRelevantCard summary={summary} running />)

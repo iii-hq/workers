@@ -551,8 +551,10 @@
     border-radius: inherit;
     background: var(--color-accent);
   }
-  .shui-relevant-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .shui-relevant-path .dir { color: var(--color-ink-faint); }
+  /* The folder takes the ellipsis; the file name stays whole. */
+  .shui-relevant-path { display: flex; min-width: 0; overflow: hidden; white-space: nowrap; }
+  .shui-relevant-path .dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--color-ink-faint); }
+  .shui-relevant-path .name { flex: none; }
   .shui-relevant-roles,
   .shui-relevant-counts {
     color: var(--color-ink-faint);
@@ -1098,6 +1100,7 @@
     flex-direction: column;
     min-height: 0;
   }
+  .shui-search[hidden] { display: none; }
   .shui-search-form {
     display: flex;
     flex-direction: column;
