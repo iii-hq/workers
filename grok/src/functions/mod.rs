@@ -60,13 +60,13 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
             .response_format(run_response_schema())
             .description(
                 "Run a Grok coding-agent turn and wait for its result. Accepts `prompt` or a \
-                 `messages` array; streams Grok events to grok::events, AgentEvent frames to \
-                 agent::events; returns {session_id, result, stop_reason}.",
+                 `messages` array; delivers raw Grok events on grok::raw-event and AgentEvent \
+                 frames on grok::agent-event; returns {session_id, result, stop_reason}.",
             ),
         );
     }
 
-    // grok::start — fire-and-forget; progress on the streams.
+    // grok::start — fire-and-forget; progress on the event feeds.
     {
         let iii_h = iii.clone();
         let cell_h = cell.clone();
@@ -113,8 +113,9 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
                 "properties": { "session_id": { "type": "string" }, "started": { "type": "boolean" } },
             }))
             .description(
-                "Start a Grok turn and return immediately; watch grok::events / agent::events \
-                 (group_id = session_id) for progress and turn_end.",
+                "Start a Grok turn and return immediately; bind grok::agent-event (or \
+                 grok::raw-event) with { session_id } for progress and turn_end, or poll \
+                 grok::status.",
             ),
         );
     }

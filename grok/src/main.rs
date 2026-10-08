@@ -6,6 +6,7 @@ use iii_helpers::observability::OtelConfig;
 use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::RwLock;
 
+use grok::agent_feed;
 use grok::config::Config;
 use grok::configuration;
 use grok::functions::register_all;
@@ -92,6 +93,9 @@ async fn main() -> Result<()> {
     }
     configuration::reconcile(&iii, &cell).await;
 
+    // Own the grok::agent-event / grok::raw-event trigger types before the
+    // first turn can emit.
+    agent_feed::register(&iii);
     register_all(&iii, cell);
     tracing::info!("grok worker registered all functions, ready");
 

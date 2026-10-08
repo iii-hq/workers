@@ -5,7 +5,7 @@
 //! arrives as `text` chunks, the turn closes with a single `end` event carrying
 //! the stop reason and the Grok session id, and failures arrive as `error`.
 //! Parsing is lenient — unknown event types fall through to `Unknown` and are
-//! skipped, and every line is forwarded verbatim onto `grok::events`, so a
+//! skipped, and every line is forwarded verbatim onto `grok::raw-event`, so a
 //! newer CLI that adds event types never drops raw data.
 
 use serde::Deserialize;

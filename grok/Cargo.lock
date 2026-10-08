@@ -414,6 +414,7 @@ name = "grok"
 version = "0.1.16"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "iii-helpers",
  "iii-sdk",
