@@ -348,7 +348,8 @@ resolved against instead: pass an absolute path.
   `'!coder::find-relevant'` rule in `iii-permissions.yaml` above its allow
   entry (first match wins) takes the function from agents only: the IDE's
   Search tab (Ask) calls it directly, outside the harness's permission
-  gate.
+  gate, with its workspace as a `workspace` `fs_scope` (so a non-Git
+  workspace is a project folder too).
 
 ## Terminal sessions (`shell::pty::*`)
 

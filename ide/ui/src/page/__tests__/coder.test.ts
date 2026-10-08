@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   coderDelete,
+  coderFindRelevant,
   coderWriteFile,
   flattenTree,
   joinPath,
@@ -81,6 +82,31 @@ describe('path helpers', () => {
     expect(relativeTo('/work', '/work/a/b.ts')).toBe('a/b.ts')
     expect(relativeTo('/work', '/work')).toBe('')
     expect(relativeTo('/work', '/elsewhere/x')).toBe('/elsewhere/x')
+  })
+})
+
+describe('coderFindRelevant', () => {
+  it('sends the workspace as the session folder the ask is bounded by', async () => {
+    const trigger = vi.fn(async () => ({ status: 'complete', files: [] }))
+    const host = { iii: { trigger } } as unknown as Parameters<typeof coderFindRelevant>[0]
+    await coderFindRelevant(host, {
+      query: 'q',
+      root: '/work',
+      path: '/work/ide',
+      excludeGlobs: ['**/ide/gen/**'],
+      timeoutMs: 1000,
+    })
+    expect(trigger).toHaveBeenCalledWith(
+      'coder::find-relevant',
+      {
+        query: 'q',
+        path: '/work/ide',
+        exclude_globs: ['**/ide/gen/**'],
+        timeout_ms: 1000,
+        fs_scope: { root: '/work', grants: [], boundary: 'workspace' },
+      },
+      { timeoutMs: 6000 },
+    )
   })
 })
 

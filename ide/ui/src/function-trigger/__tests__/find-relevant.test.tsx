@@ -148,10 +148,12 @@ describe('FindRelevantCard', () => {
     })!
     const html = renderToStaticMarkup(<FindRelevantCard summary={unavailable} running={false} />)
     expect(html).toContain('Judge unavailable')
-    expect(html).toContain("No judge answered (the judge&#x27;s context window is too small)")
+    expect(html).toContain(
+      'The judge could not answer (the judge&#x27;s context window is too small). Use a judge with a larger context window.',
+    )
   })
 
-  it("says each note once: the worker's hint (as hint() words it) with the issue counts", () => {
+  it("words every note for people, never with the worker's agent hint", () => {
     const hint =
       'Coverage is partial (judge_call_timeout): the answer may be in files not listed, so verify with coder::search before relying on this list. The judge cut a call short: narrow path, or retry the ask later.'
     const timedOut = summarizeFindRelevant(input, {
@@ -162,12 +164,23 @@ describe('FindRelevantCard', () => {
       issues: { judge_call_timeout: 2, invalid_response: 1 },
     })!
     const html = renderToStaticMarkup(<FindRelevantCard summary={timedOut} running={false} />)
-    expect(html).toContain(`${hint} Issues: judge calls timed out ×2, failed judge evaluations.`)
-    expect(html).not.toContain('Partial result')
-    // A reason with no issue counted and no hint still names the gap.
+    expect(html).toContain(
+      'Partial result (judge calls timed out ×2, failed judge evaluations): some folders or files went unjudged. Ask again, or narrow the folder.',
+    )
+    expect(html).not.toContain('Coverage is partial')
+    const changed = summarizeFindRelevant(input, {
+      ...output,
+      status: 'incomplete',
+      reason: 'changed',
+      issues: { changed: 1 },
+    })!
+    expect(renderToStaticMarkup(<FindRelevantCard summary={changed} running={false} />)).toContain(
+      'Partial result (files changed meanwhile): some folders or files went unjudged. Ask again once files stop changing.',
+    )
+    // A reason with no issue counted still names the gap.
     const stopped = summarizeFindRelevant(input, { ...output, status: 'incomplete', reason: 'judge failed' })!
     expect(renderToStaticMarkup(<FindRelevantCard summary={stopped} running={false} />)).toContain(
-      'Partial result (judge failed)',
+      'Partial result (judge failed): some folders or files went unjudged. Ask again later.',
     )
     const plain = summarizeFindRelevant(input, {
       ...output,
@@ -177,8 +190,8 @@ describe('FindRelevantCard', () => {
       files: [],
     })!
     const down = renderToStaticMarkup(<FindRelevantCard summary={plain} running={false} />)
-    expect(down).toContain('No judge answered: use coder::search. Reason: provider.')
-    expect(down.match(/No judge answered/g)).toHaveLength(1)
+    expect(down).toContain('The judge could not answer (judge errors). Ask again later.')
+    expect(down).not.toContain('No judge answered')
     const loading = summarizeFindRelevant(input, {
       ...output,
       status: 'unavailable',
@@ -186,17 +199,17 @@ describe('FindRelevantCard', () => {
       hint: 'The judge did not list its models in time (a local judge may still be loading its model): retry the ask in a minute, or use coder::search now.',
       files: [],
     })!
-    const unavailable = renderToStaticMarkup(<FindRelevantCard summary={loading} running={false} />)
-    expect(unavailable).toContain('retry the ask in a minute')
-    expect(unavailable).not.toContain('still works')
+    expect(renderToStaticMarkup(<FindRelevantCard summary={loading} running={false} />)).toContain(
+      'The judge could not answer (the judge did not list its models in time). Ask again in a minute.',
+    )
     const empty = summarizeFindRelevant(input, {
       ...output,
       files: [],
       hint: 'Nothing under path looked relevant to the judge: widen path, or use coder::search for exact names.',
     })!
-    expect(renderToStaticMarkup(<FindRelevantCard summary={empty} running={false} />)).toContain(
-      'Nothing under path looked relevant to the judge',
-    )
+    const none = renderToStaticMarkup(<FindRelevantCard summary={empty} running={false} />)
+    expect(none).toContain('The judge found nothing in this folder that answers the question.')
+    expect(none).not.toContain('Nothing under path')
   })
 
   it('mounts at most twenty overflow rows and counts the rest', () => {
@@ -208,7 +221,8 @@ describe('FindRelevantCard', () => {
     expect(html).toContain('Show 20 more files')
     expect(html).toContain('f24.rs')
     expect(html).not.toContain('f25.rs')
-    expect(html).toContain('+15 lower-ranked files')
+    // outside the collapsed overflow: shown before "Show more" is pressed
+    expect(html).toMatch(/Show fewer files<\/span><\/span>.*<\/button><p[^>]*>\+15 lower-ranked files not listed</)
   })
 
   it('is a status region with the question while the judge works', () => {

@@ -359,23 +359,31 @@ export interface FindRelevantResponse {
   files: RelevantFile[]
 }
 
-/** Ask the judge which files under `path` answer a behavioural question;
-    `excludeGlobs` are relative to the session folder, else the Git work
-    tree, not to `path`. The bus wait outlives the
-    worker's own deadline so a partial answer lands instead of a transport
+/** Ask the judge which files under `path` answer a behavioural question.
+    `root`, the workspace, goes as a workspace `fs_scope`: it is the ask's
+    project folder (a non-Git one too), and `excludeGlobs` match from it
+    like coderSearch's, not from `path`. The bus wait outlives the worker's
+    own deadline so a partial answer lands instead of a transport
     timeout. */
 export function coderFindRelevant(
   host: Host,
   {
     query,
+    root,
     path,
     excludeGlobs = [],
     timeoutMs,
-  }: { query: string; path: string; excludeGlobs?: string[]; timeoutMs: number },
+  }: { query: string; root: string; path: string; excludeGlobs?: string[]; timeoutMs: number },
 ): Promise<FindRelevantResponse> {
   return host.iii.trigger<FindRelevantResponse>(
     'coder::find-relevant',
-    { query, path, exclude_globs: excludeGlobs, timeout_ms: timeoutMs },
+    {
+      query,
+      path,
+      exclude_globs: excludeGlobs,
+      timeout_ms: timeoutMs,
+      fs_scope: { root, grants: [], boundary: 'workspace' },
+    },
     { timeoutMs: timeoutMs + 5000 },
   )
 }

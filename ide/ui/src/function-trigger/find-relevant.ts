@@ -27,7 +27,6 @@ const fileSchema = z.object({
 const responseSchema = z.object({
   status: z.enum(['complete', 'incomplete', 'unavailable']),
   reason: z.string().nullish(),
-  hint: z.string().nullish(),
   files: z.array(fileSchema),
   issues: z.record(z.string(), z.number()).default({}),
   stats: z
@@ -75,8 +74,6 @@ export interface RelevantSummary {
   /** Null while the call is in flight or only its request is known. */
   status: RelevantStatus | null
   reason: string | null
-  /** The worker's next step for a partial, empty or unavailable result. */
-  hint: string | null
   rows: RelevantRow[]
   issues: [string, number][]
   judgeCalls: number
@@ -84,8 +81,29 @@ export interface RelevantSummary {
   cacheHits: number
 }
 
-/** The judge-failure `reason` keys in a reader's words; any other reason
-    (an issue kind, the judge's own code) shows as sent. */
+/* The people-facing words for an ask's `reason` and `issues`, shared by
+   the chat card and the Search view. The worker's `hint` is written for
+   agents (wire fields, `coder::search`), so neither shows it. */
+
+/** What each coverage issue means to a reader; unknown kinds show as sent. */
+export const ISSUE_LABELS: Record<string, string> = {
+  token_budget: 'judge token budget spent',
+  deadline: 'deadline',
+  judge_call_timeout: 'judge calls timed out',
+  invalid_response: 'failed judge evaluations',
+  resource_limit: 'size limit',
+  provider: 'judge errors',
+  request_size: 'oversized requests',
+  invalid_request: 'rejected judge requests',
+  source_inspection_limit: 'files too large to inspect',
+  local_call_context: 'call context skipped',
+  agents_md_incomplete: 'AGENTS.md list partial',
+  changed: 'files changed meanwhile',
+  unreadable: 'unreadable files or folders',
+}
+
+/** The judge-failure `reason` keys; any other reason is an issue kind or
+    the judge's own code. */
 const REASON_LABELS: Record<string, string> = {
   paused: 'paused after a recent failure',
   listing_timeout: 'the judge did not list its models in time',
@@ -93,7 +111,29 @@ const REASON_LABELS: Record<string, string> = {
 }
 
 export function reasonLabel(reason: string): string {
-  return REASON_LABELS[reason] ?? reason
+  return REASON_LABELS[reason] ?? ISSUE_LABELS[reason] ?? reason
+}
+
+const NEXT_STEPS: Record<string, string> = {
+  deadline: 'Ask again, or narrow the folder.',
+  judge_call_timeout: 'Ask again, or narrow the folder.',
+  token_budget: 'Narrow the folder.',
+  request_size: 'Narrow the folder.',
+  resource_limit: 'Narrow the folder.',
+  source_inspection_limit: 'Narrow the folder.',
+  changed: 'Ask again once files stop changing.',
+  paused: 'Ask again in a minute.',
+  listing_timeout: 'Ask again in a minute.',
+  window_too_small: 'Use a judge with a larger context window.',
+  unreadable: '',
+  local_call_context: '',
+  agents_md_incomplete: '',
+}
+
+/** A reader's next step for an ask that stopped for `reason`; a judge
+    failure (`provider`, `invalid_*`, its own code) passes with time. */
+export function nextStep(reason: string): string {
+  return NEXT_STEPS[reason] ?? 'Ask again later.'
 }
 
 export function isFindRelevantResponse(output: unknown): boolean {
@@ -115,7 +155,6 @@ export function summarizeFindRelevant(input: unknown, output: unknown): Relevant
     scope: request.data.path && request.data.path !== '.' ? request.data.path : null,
     status: data?.status ?? null,
     reason: data?.reason ?? null,
-    hint: data?.hint ?? null,
     rows: (data?.files ?? []).map((file) => {
       const rel = base && file.path.startsWith(base) ? file.path.slice(base.length) : file.path
       const cut = rel.lastIndexOf('/')

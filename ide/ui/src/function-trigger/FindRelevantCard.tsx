@@ -3,7 +3,9 @@ import { useId, useState } from 'react'
 import {
   firstLocation,
   formatElapsed,
+  ISSUE_LABELS,
   namedLeads,
+  nextStep,
   previewLines,
   reasonLabel,
   type RelevantRow,
@@ -52,23 +54,6 @@ function rolesLabel(roles: readonly string[]): string {
   return `${roles.slice(0, 2).join(' · ')} +${roles.length - 2}`
 }
 
-/** What each coverage issue means to a reader; unknown kinds show as sent. */
-const ISSUE_LABELS: Record<string, string> = {
-  token_budget: 'judge token budget spent',
-  deadline: 'deadline',
-  judge_call_timeout: 'judge calls timed out',
-  invalid_response: 'failed judge evaluations',
-  resource_limit: 'size limit',
-  provider: 'judge errors',
-  request_size: 'oversized requests',
-  invalid_request: 'rejected judge requests',
-  source_inspection_limit: 'files too large to inspect',
-  local_call_context: 'call context skipped',
-  agents_md_incomplete: 'AGENTS.md list partial',
-  changed: 'files changed meanwhile',
-  unreadable: 'unreadable files or folders',
-}
-
 function issueList(issues: readonly [string, number][]): string {
   return issues
     .map(([kind, count]) => {
@@ -78,11 +63,10 @@ function issueList(issues: readonly [string, number][]): string {
     .join(', ')
 }
 
-/** The worker's `hint` (it names the gap) with the issue counts, or our
-    own sentence when there is none. */
+/** Our own sentence for a partial result, with the issue counts and a
+    next step for the reason it stopped. */
 function partialNote(summary: RelevantSummary): string {
   const counted = issueList(summary.issues)
-  if (summary.hint) return counted ? `${summary.hint} Issues: ${counted}.` : summary.hint
   if (summary.reason === 'token_budget') {
     const others = issueList(summary.issues.filter(([kind]) => kind !== 'token_budget'))
     const detail = others ? ` (${others})` : ''
@@ -90,7 +74,8 @@ function partialNote(summary: RelevantSummary): string {
   }
   const issues = counted || (summary.reason ? issueList([[summary.reason, 1]]) : '')
   const detail = issues ? ` (${issues})` : ''
-  return `Partial result${detail}: some folders or files went unjudged. Narrow the folder for full coverage.`
+  const next = nextStep(summary.reason ?? summary.issues[0]?.[0] ?? '')
+  return `Partial result${detail}: some folders or files went unjudged.${next ? ` ${next}` : ''}`
 }
 
 function Note({ tone, children }: { tone: 'partial' | 'unavailable' | 'empty'; children: React.ReactNode }) {
@@ -276,19 +261,15 @@ export function FindRelevantCard({
 
       {summary.status === 'unavailable' ? (
         <Note tone="unavailable">
-          {summary.hint ? (
-            `${summary.hint}${summary.reason ? ` Reason: ${reasonLabel(summary.reason)}.` : ''}`
-          ) : (
-            <>
-              {summary.reason ? `No judge answered (${reasonLabel(summary.reason)}). ` : 'No judge answered. '}
-              Text search with <code>coder::search</code> still works.
-            </>
-          )}
+          {summary.reason
+            ? `The judge could not answer (${reasonLabel(summary.reason)}). ${nextStep(summary.reason)} `
+            : 'The judge could not answer. '}
+          Text search with <code>coder::search</code> still works.
         </Note>
       ) : null}
       {summary.status === 'incomplete' ? <Note tone="partial">{partialNote(summary)}</Note> : null}
       {summary.status === 'complete' && summary.rows.length === 0 ? (
-        <Note tone="empty">{summary.hint ?? 'The judge found nothing in this folder that answers the question.'}</Note>
+        <Note tone="empty">The judge found nothing in this folder that answers the question.</Note>
       ) : null}
 
       {primary.length > 0 ? <RowList rows={primary} previewed={previewed} onOpen={onOpen} /> : null}
@@ -298,7 +279,6 @@ export function FindRelevantCard({
           <div id={overflowId} className="shui-file-changes-overflow" data-open={expanded} aria-hidden={!expanded}>
             <div className="shui-file-changes-overflow-inner" inert={expanded ? undefined : true}>
               <RowList rows={overflow} previewed={previewed} onOpen={onOpen} />
-              {unlisted > 0 ? <Note tone="empty">{`+${plural(unlisted, 'lower-ranked file')}`}</Note> : null}
             </div>
           </div>
           <button
@@ -319,6 +299,7 @@ export function FindRelevantCard({
             </span>
             <ChevronDown aria-hidden />
           </button>
+          {unlisted > 0 ? <Note tone="empty">{`+${plural(unlisted, 'lower-ranked file')} not listed`}</Note> : null}
         </>
       ) : null}
     </section>

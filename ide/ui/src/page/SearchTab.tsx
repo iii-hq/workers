@@ -26,7 +26,7 @@ import {
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import type { Host } from '@iii-dev/console-ui'
-import { reasonLabel } from '../function-trigger/find-relevant'
+import { nextStep, reasonLabel } from '../function-trigger/find-relevant'
 import { coderFindRelevant, coderSearch } from './coder'
 import { FileTypeIcon } from './file-type-icon'
 import {
@@ -89,19 +89,41 @@ interface SearchResults {
   reason?: string | null
 }
 
-/** One ask's identity: an answer is stale once any part changes. */
-function askKey(query: string, includeGlob: string, excludeGlob: string): string {
-  return JSON.stringify([query.trim(), askFolder(includeGlob), splitGlobs(excludeGlob)])
+/** One ask's identity: an answer is stale once any part changes. A field
+    that is not one folder asks the root, like an empty one. */
+function askKey(root: string, query: string, includeGlob: string, excludeGlob: string): string {
+  return JSON.stringify([root, query.trim(), askFolder(includeGlob) ?? '', splitGlobs(excludeGlob)])
 }
 
 /** The Search view's own words for an ask's answer; the worker's `hint`
     is written for agents (wire fields, `coder::search`). */
 export function askNotice(status: 'complete' | 'incomplete' | 'unavailable', reason?: string | null): string {
+  if (status === 'complete') return 'The judge found nothing relevant — widen the folder or use text search.'
   const why = reason ? ` (${reasonLabel(reason)})` : ''
-  if (status === 'unavailable') return `Judge unavailable${why} — use text search, or ask again later.`
-  if (status === 'incomplete')
-    return `Partial results${why} — the answer may be in files not listed. Narrow the folder, or check with text search.`
-  return 'The judge found nothing relevant — widen the folder or use text search.'
+  const next = reason ? nextStep(reason) : ''
+  const head =
+    status === 'unavailable'
+      ? `Judge unavailable${why}.`
+      : `Partial results${why} — the answer may be in files not listed.`
+  return [head, next, status === 'unavailable' ? 'Text search still works.' : 'Check with text search.']
+    .filter(Boolean)
+    .join(' ')
+}
+
+/** The worker's refusals of an ask in this view's words; its own text
+    sends an agent to `coder::search`. */
+const ASK_REFUSALS: [RegExp, string][] = [
+  [/only searches a project folder/, 'Ask only searches a project folder'],
+  [/hidden or secret-named/, 'Ask never searches hidden or secret-named folders'],
+  [/gitignored/, 'Ask never searches folders Git ignores'],
+  [/inside a \.git directory/, "Ask never searches Git's own folder"],
+  [/not a directory/, 'Ask takes a folder, not a file'],
+  [/not found or not accessible/, 'No such folder in this workspace'],
+]
+
+export function askRefusal(error: string): string {
+  const refusal = ASK_REFUSALS.find(([pattern]) => pattern.test(error))
+  return refusal ? `${refusal[1]} — use text search here.` : error
 }
 
 /** A glob the user typed matches anywhere below the root: a bare pattern
@@ -120,14 +142,16 @@ export function splitGlobs(text: string): string[] {
     .filter((glob) => glob !== '')
 }
 
-/** The folder an ask walks, from "files to include": `''` (the root) when
-    empty, the folder of a single `dir/**`, else null — an ask takes one
-    folder, not file globs. */
+/** The folder an ask walks, from "folder to ask about": `''` (the root)
+    when empty, the folder of `dir`, `./dir`, `dir/` or `dir/**`, else null
+    — an ask takes one folder inside the root, not file globs. */
 export function askFolder(includeGlob: string): string | null {
-  const trimmed = includeGlob.trim()
-  if (trimmed === '') return ''
-  const folder = trimmed.match(/^\/?(.+?)\/\*\*$/)?.[1]
-  return folder === undefined || /[*?,]/.test(folder) ? null : folder
+  const folder = includeGlob
+    .trim()
+    .replace(/^\.?(\/|$)/, '')
+    .replace(/\/(\*\*)?$/, '')
+  if (/[*?,]/.test(folder) || folder.split('/').some((part) => part === '.' || part === '..')) return null
+  return folder
 }
 
 /** Module-level, so the memoized list sees the same function every render. */
@@ -176,8 +200,10 @@ function SearchTabView({
   // worker cannot cancel an ask, and a second one would share its judge
   // slots, so a new ask waits even for one whose answer was dropped.
   const askingRef = useRef(0)
-  // That ask's [askKey]: Enter on the same ask while it runs says nothing.
+  // That ask's [askKey] and start: Enter on the same ask while it runs
+  // re-attaches to it, even after its answer was dropped.
   const askingKeyRef = useRef('')
+  const askStartRef = useRef(0)
   const appliedRequestRef = useRef(0)
 
   const run = useCallback(
@@ -201,10 +227,13 @@ function SearchTabView({
         return
       }
       if (params.ask && askingRef.current !== 0) {
-        const same =
-          askingRef.current === seqRef.current &&
-          askingKeyRef.current === askKey(q, params.includeGlob, params.excludeGlob)
-        if (!same) setError(ASK_BUSY)
+        if (askingKeyRef.current === askKey(root, q, params.includeGlob, params.excludeGlob)) {
+          // Its then/finally land again; any newer search is superseded.
+          seqRef.current = askingRef.current
+          setSearching(true)
+          setError(null)
+          setAskStartedAt(askStartRef.current)
+        } else setError(ASK_BUSY)
         return
       }
       const seq = ++seqRef.current
@@ -212,11 +241,13 @@ function SearchTabView({
       setError(null)
       if (params.ask) {
         const folder = askFolder(params.includeGlob)
-        setAskStartedAt(Date.now())
+        askStartRef.current = Date.now()
+        setAskStartedAt(askStartRef.current)
         askingRef.current = seq
-        askingKeyRef.current = askKey(q, params.includeGlob, params.excludeGlob)
+        askingKeyRef.current = askKey(root, q, params.includeGlob, params.excludeGlob)
         coderFindRelevant(host, {
           query: q,
+          root,
           path: folder ? `${root.replace(/\/+$/, '')}/${folder}` : root,
           excludeGlobs: splitGlobs(params.excludeGlob),
           timeoutMs: ASK_TIMEOUT_MS,
@@ -242,7 +273,7 @@ function SearchTabView({
           .catch((err: unknown) => {
             if (seqRef.current !== seq) return
             setResults(null)
-            setError(errorMessage(err))
+            setError(askRefusal(errorMessage(err)))
           })
           .finally(() => {
             askingRef.current = 0
@@ -352,9 +383,11 @@ function SearchTabView({
   )
   // An incomplete ask has its own notice; "refine the query" is text-search advice.
   const summary = results ? searchSummary(visibleGroups, results.paths, results.truncated && !ask) : null
-  const staleQuery =
-    ask && !searching && results?.asked !== undefined && results.asked !== askKey(query, includeGlob, excludeGlob)
-      ? (results.query ?? '')
+  const staleNote =
+    ask && !searching && results?.asked !== undefined && results.asked !== askKey(root, query, includeGlob, excludeGlob)
+      ? results.query === query.trim()
+        ? 'Results are for an earlier folder or exclusions — press Enter to ask again.'
+        : `Results for “${results.query ?? ''}” — press Enter to ask again.`
       : null
   const askFolderIgnored = ask && askFolder(includeGlob) === null
   const allCollapsed = visibleGroups.length > 0 && visibleGroups.every((group) => collapsed.has(group.path))
@@ -646,13 +679,15 @@ function SearchTabView({
                 type="text"
                 value={includeGlob}
                 onChange={(event) => setIncludeGlob(event.target.value)}
-                placeholder={ask ? 'e.g. src/**' : 'e.g. *.ts, src/**'}
+                placeholder={ask ? 'e.g. src' : 'e.g. *.ts, src/**'}
                 autoComplete="off"
                 spellCheck={false}
               />
             </label>
             {askFolderIgnored ? (
-              <span className="shui-search-summary">An ask takes one folder as dir/** — it asks about the whole root.</span>
+              <span className="shui-search-summary">
+                An ask takes one folder (e.g. src) — it asks about the whole root.
+              </span>
             ) : null}
             <label className="shui-search-field">
               <span>files to exclude</span>
@@ -681,17 +716,17 @@ function SearchTabView({
       </form>
 
       {error ? <div className="shui-side-note warn">{error}</div> : null}
-      {staleQuery !== null ? (
-        <div className="shui-side-note">Results for “{staleQuery}” — press Enter to ask again.</div>
-      ) : null}
+      {staleNote ? <div className="shui-side-note">{staleNote}</div> : null}
       {results && rows.length === 0 && !searching ? (
         <div className="shui-side-empty">
           <EmptyState
             title="No results"
             description={
-              ask
-                ? askNotice(results.truncated ? 'incomplete' : 'complete', results.reason)
-                : 'Nothing matched. Review the query and the configured exclusions.'
+              results.groups.length > 0
+                ? 'All results dismissed — search again to restore them.'
+                : ask
+                  ? askNotice(results.truncated ? 'incomplete' : 'complete', results.reason)
+                  : 'Nothing matched. Review the query and the configured exclusions.'
             }
           />
         </div>

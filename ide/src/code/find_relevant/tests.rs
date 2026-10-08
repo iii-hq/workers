@@ -1043,6 +1043,37 @@ async fn an_unjailed_ask_needs_a_project_folder() {
     assert_eq!(out.files.len(), 1);
 }
 
+/// The IDE's Search view asks with its workspace as the session folder:
+/// a non-Git workspace outside every root is a project folder, and
+/// `exclude_globs` match from it, not from the folder asked about.
+#[tokio::test]
+async fn a_workspace_scope_makes_any_folder_askable_with_root_anchored_excludes() {
+    let fx = fixture(&[], |_, cfg| cfg.unjailed = true);
+    let dir = tempfile::Builder::new().prefix("plain").tempdir().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    for file in ["ide/needle.rs", "ide/gen/needle.rs"] {
+        let path = workspace.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"fn needle() {}\n").unwrap();
+    }
+    let req = FindRelevantInput {
+        exclude_globs: vec!["**/ide/gen/**".into()],
+        ..scoped(
+            &workspace.join("ide").display().to_string(),
+            &workspace,
+            &[],
+            crate::fs::FsBoundary::Workspace,
+        )
+    };
+    let fx = granted(&fx, &req);
+    let out = ask_with(&fx, req, None, judge(&Log::default(), keyword)).await;
+    let needle = workspace.join("ide/needle.rs").display().to_string();
+    assert_eq!(
+        out.files.iter().map(|f| &f.path).collect::<Vec<_>>(),
+        [&needle]
+    );
+}
+
 /// `req` against `fx` with the session's grants added to the resolver, as
 /// the registered handler does.
 fn granted(fx: &Fixture, req: &FindRelevantInput) -> Fixture {

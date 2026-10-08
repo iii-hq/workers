@@ -551,10 +551,10 @@
     border-radius: inherit;
     background: var(--color-accent);
   }
-  /* The folder takes the ellipsis; the file name stays whole. */
+  /* The folder takes the ellipsis first; the name only when it alone overflows. */
   .shui-relevant-path { display: flex; min-width: 0; overflow: hidden; white-space: nowrap; }
-  .shui-relevant-path .dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--color-ink-faint); }
-  .shui-relevant-path .name { flex: none; }
+  .shui-relevant-path .dir { flex-shrink: 1000; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--color-ink-faint); }
+  .shui-relevant-path .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .shui-relevant-roles,
   .shui-relevant-counts {
     color: var(--color-ink-faint);

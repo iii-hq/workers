@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { FindRelevantResponse } from '../coder'
 import { coderFindRelevant } from '../coder'
-import { askFolder, SearchTab } from '../SearchTab'
+import { askFolder, askNotice, askRefusal, SearchTab } from '../SearchTab'
 import { mount } from './bare-hooks'
 
 vi.mock('react', async (original) => ({
@@ -115,10 +115,20 @@ const answer = (out: Partial<FindRelevantResponse>): FindRelevantResponse => ({
 })
 
 describe('askFolder', () => {
-  it('takes the folder of a single dir/** and nothing else', () => {
+  it('takes one folder inside the root, as a name or a dir/**, and nothing else', () => {
     expect(askFolder('')).toBe('')
+    expect(askFolder('./')).toBe('')
+    expect(askFolder('.')).toBe('')
     expect(askFolder(' judge/src/** ')).toBe('judge/src')
     expect(askFolder('/judge/**')).toBe('judge')
+    for (const plain of ['src', 'src/', './src', '/src/']) expect(askFolder(plain)).toBe('src')
+    expect(askFolder('.github')).toBe('.github')
+    // never above or beside the root
+    expect(askFolder('../other/**')).toBeNull()
+    expect(askFolder('..')).toBeNull()
+    expect(askFolder('src/../../x')).toBeNull()
+    expect(askFolder('src/./lib')).toBeNull()
+    expect(askFolder('**')).toBeNull()
     expect(askFolder('*.ts')).toBeNull()
     expect(askFolder('a/**, b/**')).toBeNull()
     expect(askFolder('src/*.rs')).toBeNull()
@@ -163,7 +173,7 @@ describe('the Search tab in ask mode', () => {
     expect(tab.page()).toContain('Results for “how are judge slots limited?”')
   })
 
-  it('waits for an ask whose answer was dropped, then clears the wait note', async () => {
+  it('re-attaches Enter on the same question to an ask whose answer was dropped', async () => {
     const tab = render()
     tab.toggleAsk()
     tab.type('how are judge slots limited?')
@@ -171,6 +181,26 @@ describe('the Search tab in ask mode', () => {
     // Leaving and re-entering ask mode drops the answer, not the worker's run.
     tab.toggleAsk()
     tab.toggleAsk()
+    expect(tab.page()).not.toContain('asking the judge')
+    tab.enter()
+    expect(coderFindRelevant).toHaveBeenCalledTimes(1)
+    expect(tab.page()).not.toContain('An earlier ask is still running')
+    expect(tab.page()).toContain('asking the judge…')
+
+    asks[0](answer({}))
+    await settle()
+    expect(tab.page()).toContain('1 result in 1 file')
+    tab.enter()
+    expect(coderFindRelevant).toHaveBeenCalledTimes(2)
+  })
+
+  it('waits for a dropped ask before a different question, then clears the wait note', async () => {
+    const tab = render()
+    tab.toggleAsk()
+    tab.type('how are judge slots limited?')
+    tab.enter()
+    tab.type('')
+    tab.type('where are secrets redacted?')
     tab.enter()
     expect(coderFindRelevant).toHaveBeenCalledTimes(1)
     expect(tab.page()).toContain('An earlier ask is still running')
@@ -178,6 +208,7 @@ describe('the Search tab in ask mode', () => {
     asks[0](answer({}))
     await settle()
     expect(tab.page()).not.toContain('An earlier ask is still running')
+    expect(tab.page()).not.toContain('1 result')
     tab.enter()
     expect(coderFindRelevant).toHaveBeenCalledTimes(2)
   })
@@ -190,6 +221,7 @@ describe('the Search tab in ask mode', () => {
     tab.enter()
     expect(coderFindRelevant).toHaveBeenCalledWith(expect.anything(), {
       query: 'how are judge slots limited?',
+      root: '/repo',
       path: '/repo/judge/src',
       excludeGlobs: ['**/gen/**', '**/*.md'],
       timeoutMs: 240_000,
@@ -217,12 +249,17 @@ describe('the Search tab in ask mode', () => {
     expect(tab.page()).not.toContain('Results for')
 
     tab.find((p) => p['aria-label'] === 'Toggle search details').onClick()
-    tab.find((p) => p.placeholder === 'e.g. src/**').onChange({ target: { value: 'lib/**' } })
-    expect(tab.page()).toContain('Results for “how are judge slots limited?” — press Enter to ask again.')
-    tab.find((p) => p.placeholder === 'e.g. src/**').onChange({ target: { value: '' } })
-    expect(tab.page()).not.toContain('Results for')
+    const folder = (value: string) => tab.find((p) => p.placeholder === 'e.g. src').onChange({ target: { value } })
+    folder('lib/**')
+    expect(tab.page()).toContain('Results are for an earlier folder or exclusions — press Enter to ask again.')
+    folder('')
+    expect(tab.page()).not.toContain('Results ')
+    // not one folder: it asks the root, like an empty field
+    folder('*.ts')
+    expect(tab.page()).not.toContain('Results ')
+    folder('')
     tab.find((p) => p.placeholder === 'e.g. *.test.ts, dist/**').onChange({ target: { value: 'gen/**' } })
-    expect(tab.page()).toContain('Results for')
+    expect(tab.page()).toContain('Results are for an earlier folder or exclusions')
     tab.find((p) => p.placeholder === 'e.g. *.test.ts, dist/**').onChange({ target: { value: '' } })
     tab.type('where are secrets redacted?')
     expect(tab.page()).toContain('Results for “how are judge slots limited?” — press Enter to ask again.')
@@ -238,7 +275,9 @@ describe('the Search tab in ask mode', () => {
     tab.enter()
     asks[0](answer({ status: 'incomplete', reason: 'token_budget', hint }))
     await settle()
-    expect(tab.page()).toContain('Partial results (token_budget) — the answer may be in files not listed.')
+    expect(tab.page()).toContain(
+      'Partial results (judge token budget spent) — the answer may be in files not listed. Narrow the folder.',
+    )
     expect(tab.page()).not.toContain('coder::search')
 
     // no rows: the empty state carries the notice, no banner repeats it
@@ -279,9 +318,58 @@ describe('the Search tab in ask mode', () => {
     )
     await settle()
     expect(tab.page()).toContain(
-      'Judge unavailable (the judge did not list its models in time) — use text search, or ask again later.',
+      'Judge unavailable (the judge did not list its models in time). Ask again in a minute. Text search still works.',
     )
     expect(tab.page()).not.toContain('coder::search')
+  })
+
+  it('says a next step that fits why the answer is partial', () => {
+    expect(askNotice('incomplete', 'changed')).toBe(
+      'Partial results (files changed meanwhile) — the answer may be in files not listed. Ask again once files stop changing. Check with text search.',
+    )
+    expect(askNotice('incomplete', 'judge_call_timeout')).toContain('(judge calls timed out)')
+    expect(askNotice('incomplete', 'invalid_response')).toContain('Ask again later.')
+    expect(askNotice('incomplete', 'unreadable')).toBe(
+      'Partial results (unreadable files or folders) — the answer may be in files not listed. Check with text search.',
+    )
+  })
+
+  it("words the worker's refusals for this view, not for an agent", async () => {
+    const refusal =
+      'handler error: {"code":"C210","message":"find-relevant sends file text to the judge, so it only searches a project folder (the session folder, a Git work tree, a granted folder or a jailed worker\'s root, see coder::info), and /repo is none; use coder::search"}'
+    expect(askRefusal(refusal)).toBe('Ask only searches a project folder — use text search here.')
+    expect(askRefusal('path is gitignored or inside an ignored folder, which find-relevant never searches')).toBe(
+      'Ask never searches folders Git ignores — use text search here.',
+    )
+    expect(askRefusal('transport timeout')).toBe('transport timeout')
+
+    vi.mocked(coderFindRelevant).mockImplementationOnce(() => Promise.reject(new Error(refusal)))
+    const tab = render()
+    tab.toggleAsk()
+    tab.type('how are judge slots limited?')
+    tab.enter()
+    await settle()
+    expect(tab.page()).toContain('Ask only searches a project folder — use text search here.')
+    expect(tab.page()).not.toContain('coder::')
+  })
+
+  it('says the results were dismissed, not that the judge found nothing', async () => {
+    const tab = render()
+    tab.toggleAsk()
+    tab.type('how are judge slots limited?')
+    tab.enter()
+    asks[0](answer({}))
+    await settle()
+    const list = tab.find((p) => typeof p.renderRow === 'function')
+    const rows = list.rows as unknown as Array<{ type: string }>
+    const index = rows.findIndex((row) => row.type === 'file')
+    const dismiss = elements(list.renderRow(rows[index], index)).find((element) =>
+      String(element.props?.['aria-label']).startsWith('Dismiss'),
+    )
+    ;(dismiss?.props?.onClick as (event: unknown) => void)({ stopPropagation() {} })
+    expect(tab.find((p) => p.title === 'No results').description).toBe(
+      'All results dismissed — search again to restore them.',
+    )
   })
 })
 
