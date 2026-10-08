@@ -356,6 +356,12 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     // The same stream is how a router that booted before the secrets worker
     // learns it arrived: references that failed as unreachable are re-read,
     // and any that now resolve refresh their providers.
+    //
+    // The event is advisory: current engines fire it once per ~100ms burst of
+    // registry changes (any register, including a schema-only re-register,
+    // and any removal); older engines poll every 5s and fire only when the
+    // set of ids changes, so recovery there can take up to one tick longer.
+    // Both followers keep their own quiet period; see `SweepHandle`.
     {
         let iii_handler = iii.clone();
         let sweep = crate::registry::rediscover::spawn_debounced_sweep(iii_handler);
@@ -365,8 +371,9 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             RegisterFunction::new_async(move |_event: FunctionsChangedEvent| {
                 let (sweep, secrets_retry) = (sweep.clone(), secrets_retry.clone());
                 async move {
-                    // Coalesce the boot burst: the handler only marks work
-                    // pending, the sweep task fires once it goes quiet.
+                    // The handler only marks work pending; each follower
+                    // runs once changes go quiet, so a spread-out burst
+                    // (several events) costs one sweep and one re-read.
                     sweep.request();
                     secrets_retry.request();
                     Ok::<RouterAck, Error>(RouterAck { ok: true })
