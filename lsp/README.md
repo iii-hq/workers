@@ -16,7 +16,7 @@ Other file types are passed through without analysis.
 
 ## Features
 
-- **Completions** — function IDs, trigger types, payload properties, trigger config properties, and known values (stream names, topics, API paths). Triggered on `'`, `"`, `:`, `{`, ` `, and `=` (for Python keyword arguments).
+- **Completions** — function IDs, trigger types, payload properties, trigger config properties, and known values (stream names, topics, API paths). Triggered on `'`, `"`, `:`, `{`, ` `, and `=` (for Python keyword arguments). The `stream`, `stream:join` and `stream:leave` trigger types (served by the deprecated iii-stream builtin) are tagged deprecated in completions and hovers.
 - **Hover** — function description plus request and response JSON schemas, rendered inline.
 - **Diagnostics** — validates function IDs, required payload fields, trigger types and config properties, cron expressions, and HTTP methods. Republished on every `did_open` / `did_change`.
 
