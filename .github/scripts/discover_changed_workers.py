@@ -118,6 +118,13 @@ CRATE_FIXTURE_PREFIXES = {
     ),
 }
 
+# Worker test support that other workers' suites compile through #[path]: a
+# change under the prefix also runs those workers' lint+test (as forced picks,
+# never source_changed).
+SHARED_TEST_SUPPORT = {
+    "judge-typesafe/tests/support/": ("judge", "judge-openai"),
+}
+
 # Docs-only files inside a crate dir. Everything else — including Cargo.toml
 # and Cargo.lock, which change what dependents build against — counts as a
 # source change.
@@ -345,6 +352,9 @@ def main(argv: list[str] | None = None) -> int:
     forced = set(args.force_worker)
     for crate in changed_crates:
         forced.update(crate_dependents(repo_root, crate, workers))
+    for prefix, dependents in SHARED_TEST_SUPPORT.items():
+        if any(f.startswith(prefix) for f in files):
+            forced.update(set(dependents) & workers)
     changed = sorted(set(touched) | forced | catalog_changed)
     source_changed = sorted(
         {

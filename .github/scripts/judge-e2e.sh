@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# judge hub + judge-typesafe + judge-semif + judge-decider + judge-laya + judge-clef over an isolated real engine (TypeSafe mocks, tiny GGUFs).
+# judge hub + judge-typesafe + judge-semif + judge-decider + judge-laya + judge-clef + judge-openai over an isolated real engine (TypeSafe and OpenAI mocks, tiny GGUFs).
 # Build the workers' UIs first (or let their build scripts do so). No inference key is needed.
 set -euo pipefail
 
 unset TYPESAFE_API_KEY
+unset OPENAI_API_KEY
 : "${III_ENGINE_BIN:?Set III_ENGINE_BIN to an absolute path to the iii engine}"
 if [[ "$III_ENGINE_BIN" != /* || ! -x "$III_ENGINE_BIN" ]]; then
   echo 'III_ENGINE_BIN must be an absolute path to an executable engine' >&2
@@ -47,5 +48,9 @@ run_suite judge-laya engine \
   tiny_checkpoint_answers_through_a_real_engine
 run_suite judge-clef engine \
   tiny_checkpoint_answers_through_a_real_engine
+run_suite judge-openai engine \
+  independent_consumer_evaluates_mixed_decisions_and_lists_models \
+  cancellation_is_scoped_to_the_persistent_engine_caller
 run_suite judge engine \
-  hub_forwards_to_the_provider_and_scopes_cancellation_to_the_original_caller
+  hub_forwards_to_the_provider_and_scopes_cancellation_to_the_original_caller \
+  hub_routes_judge_openai_by_provider_and_session_baggage

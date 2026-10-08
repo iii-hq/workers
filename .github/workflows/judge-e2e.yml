@@ -10,9 +10,11 @@ on:
       - 'judge-semif/**'
       - 'judge-decider/**'
       - 'judge-clef/**'
+      - 'judge-openai/**'
       - 'crates/llama-runtime/**'
       - 'crates/llama-native/**'
       - 'crates/judge-contract/**'
+      - 'crates/judge-provider/**'
       - 'crates/config-client/**'
       - 'crates/console-ui/**'
       - 'crates/worker-paths/**'
@@ -70,7 +72,9 @@ jobs:
             judge-laya
             judge-typesafe
             judge-clef
+            judge-openai
             crates/judge-contract
+            crates/judge-provider
 
       - name: Setup pnpm
         # Version comes from the root package.json packageManager field.
@@ -84,9 +88,9 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Install UI dependencies
-        run: pnpm --filter '@iii-workers/judge-ui...' --filter '@iii-workers/judge-laya-ui...' --filter '@iii-workers/judge-typesafe-ui...' --filter '@iii-workers/judge-semif-ui...' --filter '@iii-workers/judge-decider-ui...' --filter '@iii-workers/judge-clef-ui...' install --frozen-lockfile 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/ui-install.log"
+        run: pnpm --filter '@iii-workers/judge-ui...' --filter '@iii-workers/judge-laya-ui...' --filter '@iii-workers/judge-typesafe-ui...' --filter '@iii-workers/judge-semif-ui...' --filter '@iii-workers/judge-decider-ui...' --filter '@iii-workers/judge-clef-ui...' --filter '@iii-workers/judge-openai-ui...' install --frozen-lockfile 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/ui-install.log"
 
-      - name: UI Vitest (judge, judge-laya, judge-typesafe, judge-semif, judge-decider, judge-clef)
+      - name: UI Vitest (judge, judge-laya, judge-typesafe, judge-semif, judge-decider, judge-clef, judge-openai)
         run: |
           pnpm --dir judge/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-ui-test.log"
           pnpm --dir judge-laya/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-laya-ui-test.log"
@@ -94,6 +98,7 @@ jobs:
           pnpm --dir judge-semif/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-semif-ui-test.log"
           pnpm --dir judge-decider/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-decider-ui-test.log"
           pnpm --dir judge-clef/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-clef-ui-test.log"
+          pnpm --dir judge-openai/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-openai-ui-test.log"
 
       - name: Build real embedded UI assets
         run: |
@@ -103,6 +108,7 @@ jobs:
           pnpm --dir judge-semif/ui build 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-semif-ui-build.log"
           pnpm --dir judge-decider/ui build 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-decider-ui-build.log"
           pnpm --dir judge-clef/ui build 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-clef-ui-build.log"
+          pnpm --dir judge-openai/ui build 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-openai-ui-build.log"
           # Reuse these assets in both Cargo feature variants.
           echo 'SKIP_UI_BUILD=1' >> "$GITHUB_ENV"
 
@@ -125,7 +131,7 @@ jobs:
           test "$(awk '{print $NF}' "$JUDGE_E2E_REPORT_DIR/engine-version.log")" = "${III_RELEASE_TAG#iii/v}"
           echo "III_ENGINE_BIN=$BIN_DIR/iii" >> "$GITHUB_ENV"
 
-      - name: Real-engine tests (7 local mocked cases)
+      - name: Real-engine tests (10 local mocked cases)
         run: bash .github/scripts/judge-e2e.sh
 
       - name: Upload test logs

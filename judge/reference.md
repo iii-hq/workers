@@ -65,7 +65,7 @@ its default 16384-token window, 1.3 GB for laya, and for clef about 6 GB at
 rest and 10 GB during a 16384-token evaluation). All four together need
 about 18.6 GB: on a 16 GB GPU the driver silently moves part of the last model
 loaded into system memory and it answers several times slower, so preload at
-most three there. Hosted providers such as `judge-typesafe` are unaffected.
+most three there. Hosted providers (`judge-typesafe`, `judge-openai`) are unaffected.
 
 Credentials, default model and execution limits belong to the provider worker.
 For TypeSafe, open **Settings → Workers → judge-typesafe** in the Console or read
@@ -156,8 +156,8 @@ attempt, including reading its body. The whole-call `timeout_ms` /
 `expires_at_unix_ms` budget still covers validation, permit waits, every attempt
 and backoff; an attempt timeout never extends it.
 
-Retries are the provider's policy, not the caller's. `judge-typesafe` follows
-the TypeSafe SDK defaults: two retries after the first attempt on HTTP 408, 429
+Retries are the provider's policy, not the caller's. `judge-typesafe` and
+`judge-openai` follow the TypeSafe SDK defaults: two retries after the first attempt on HTTP 408, 429
 and 5xx, connection failures and attempt timeouts; exponential backoff from
 500 ms, capped at 5 s, minus up to 25% jitter; a server `retry-after-ms` or
 `Retry-After` (delta-seconds or HTTP date) is honored instead. A hint longer
@@ -283,8 +283,9 @@ no eligibility threshold. The local providers (`judge-decider`, `judge-semif`,
 defines it (`judge_contract::confidence`): `(n·p_max − 1) / (n − 1)` for a
 Choice, 0 for a uniform distribution and 1 for all mass on one option; for a
 Score, 1 − the expected distance from the likeliest level over the mean
-distance of the levels from the middle of the scale. A threshold therefore
-means the same whichever provider answers.
+distance of the levels from the middle of the scale. `judge-openai` returns
+OpenAI's own confidence, which matches the same definition rounded to two
+decimals (OpenAI does not document its formula). A threshold therefore means the same whichever provider answers.
 
 A complete, low-scoring evaluation can mean **no match**. A missing answer,
 deadline or service error cannot. Discard all partial answers when any evaluation
@@ -333,7 +334,9 @@ string fields `name`, `description` and `release_date`, plus an optional
 fixed window such as `laya`) and an optional `max_options` (most options one
 Choice can offer, for providers with a fixed limit below 255, such as SemIf's
 16); cards and aliases are
-returned without filtering to locally known versions. An example reply
+returned without filtering to locally known versions, except that `judge-openai`
+lists only the models it supports (`gpt-6-luna`), so a key that cannot see that
+model gets an empty `models` array. An example reply
 (illustrative values):
 
 ```json
@@ -463,7 +466,7 @@ both functions and the hook out.
 
 ## Limits and compatibility
 
-One `judge-typesafe` worker shares at most **four concurrent HTTP requests** across all
+One `judge-typesafe` or `judge-openai` worker shares at most **four concurrent HTTP requests** across all
 callers, including evaluation and model listing. Waiting for a
 slot, retrying and reading the response consume the same deadline. HTTP redirects
 are disabled. Generic defaults are 8 MiB per encoded request, 8 MiB per
