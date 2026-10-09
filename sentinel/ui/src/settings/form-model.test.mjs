@@ -12,8 +12,8 @@ test('a stored value keeps the keys this form never renders', () => {
 })
 
 test('triage starts on with a five-minute wait, and keeps what was stored', () => {
-  assert.deepEqual(normalize({}).triage, { enabled: true, delay_ms: 300_000 })
-  assert.deepEqual(normalize({ triage: { enabled: false } }).triage, { enabled: false, delay_ms: 300_000 })
+  assert.deepEqual(normalize({}).triage, { enabled: true, delay_ms: 300_000, model: '' })
+  assert.deepEqual(normalize({ triage: { enabled: false } }).triage, { enabled: false, delay_ms: 300_000, model: '' })
 })
 
 test('a negative wait before triage is refused before the round trip', () => {

@@ -101,8 +101,10 @@ not; everything else goes to [`judge`](../judge/) in batches. The judge sees
 the group as it was stored, so already redacted. Without `judge` deployed the
 groups simply stay untriaged, and a failing judge is left alone for five
 minutes. A label is a hint for ordering and filtering, never a state change.
-Switch it off, or change the wait, under **Triage** in the page's settings;
-which judge answers is chosen in the `judge` worker's own settings.
+Switch it off, change the wait, or pick the judge and its model under
+**Triage** in the page's settings (`triage.provider`, `triage.model`); left
+empty, the `judge` worker's own default answers. A new choice labels the
+groups still waiting, never relabels the old ones.
 
 The list opens on **Relevant**: defects, regressions, groups not triaged yet,
 and caller errors or environment problems that repeat (20 or more
@@ -153,12 +155,14 @@ investigation:
 triage:
   enabled: true
   delay_ms: 300000                      # wait this long after first seen; a restart registers what it was missing
+  model: ""                             # as the judge names it; empty keeps the judge's default
+  # provider: openai                    # the judge-<provider> to ask; unset keeps the judge worker's default
 projects:                               # where a worker's source lives on this machine (formerly `repositories`, still read)
   - id: workers
     path: /home/me/workspaces/workers
     workers: [harness, ade, queue]
 service_aliases: {}                     # span service.name → registered worker name, when an SDK reports a binary name
-database: primary
+database: primary                       # a `database` worker connection, SQLite or Postgres
 ```
 
 There are deliberately **no turn, token or cost ceilings**: an investigation
@@ -173,3 +177,51 @@ the same redactor. `status.ingest.redactions` shows it working.
 
 Every field and its default lives in
 [`src/config.rs`](src/config.rs).
+
+## A store shared by the team
+
+`database` names a connection of the [`database`](../database/) worker, and
+the store runs on SQLite or Postgres. Point every teammate's sentinel at the
+same Postgres and everyone works from the same groups, evidence, triage and
+diagnoses:
+
+```yaml
+# configuration id `database`
+databases:
+  primary:
+    url: sqlite:./data/iii.db
+  sentinel:
+    url: ${SENTINEL_DATABASE_URL}       # postgres://user:password@host:5432/sentinel
+    tls: { mode: verify-full }          # managed providers: see the database README
+```
+
+```yaml
+# configuration id `sentinel`
+database: sentinel
+```
+
+The tables create themselves on the first boot against an empty database;
+`database` is the one key that needs a restart. What stays per machine is
+worth knowing before you share:
+
+- Groups merge by fingerprint, and the fingerprint includes the namespace:
+  teammates on different namespaces see each other's groups side by side,
+  not merged into one.
+- An investigation's session lives on the machine that opened it. Its
+  diagnosis is in the store for everyone; the session opens only there.
+- **Resolve until the version changes** compares versions from every machine
+  reporting, so a teammate still on the old build reopens the group as a
+  regression.
+- `projects`, `ignore_services` and the rest of the configuration stay per
+  machine; only what the store holds is shared.
+- Every sentinel triages: a new group may cost two judge calls when two
+  instances reach it in the same sweep.
+
+MySQL is refused at boot: the store relies on `RETURNING`.
+
+The whole suite runs against Postgres too:
+
+```bash
+docker run -d --rm -p 127.0.0.1:5439:5432 -e POSTGRES_PASSWORD=pg postgres:17-alpine
+SENTINEL_TEST_POSTGRES_URL=postgres://postgres:pg@127.0.0.1:5439/postgres cargo test
+```

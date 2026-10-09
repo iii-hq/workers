@@ -45,6 +45,10 @@ uuid = { version = "1", features = ["v7"] }
 # The same driver the `database` worker runs SQLite on, so the store's
 # statements are tested against the engine they will actually meet.
 rusqlite = { version = "0.31", features = ["bundled"] }
+# The same statements against Postgres, when `SENTINEL_TEST_POSTGRES_URL`
+# names one (see tests/support/postgres.rs).
+tokio-postgres = "0.7"
+bytes = "1"
 serde_yaml = "0.9"
 # `test-util` lets a boot test run its retry backoff instantly instead of
 # sleeping through it.

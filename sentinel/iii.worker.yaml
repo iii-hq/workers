@@ -40,6 +40,7 @@ config:
   triage:
     enabled: true
     delay_ms: 300000
+    model: ""
   projects: []
   service_aliases: {}
   database: primary

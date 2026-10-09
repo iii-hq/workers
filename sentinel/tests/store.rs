@@ -1,25 +1,25 @@
-//! The store's statements, against a real SQLite.
+//! The store's statements, against a real SQLite (or Postgres; see support/db.rs).
 //!
 //! These are the tests that would have caught the data-model defects the
 //! adversarial review found: a pending log needs a row before its group
 //! exists, and a group's transition has to survive somebody else writing
 //! between the read and the write.
 
-#[path = "support/sqlite.rs"]
-mod sqlite;
+#[path = "support/db.rs"]
+mod db;
 
+use db::TestDb;
 use sentinel::store::schema::SCHEMA_VERSION;
 use sentinel::{
     Db, ErrorSourceV1, GroupStatusV1, IgnoreBaselineV1, IgnoreRuleV1, OccurrenceWrite,
     RecordOutcome, Statement, Store,
 };
 use serde_json::{json, Value};
-use sqlite::SqliteDb;
 
 const NOW: i64 = 1_789_000_000_000;
 
-async fn store() -> Store<SqliteDb> {
-    let store = Store::new(SqliteDb::in_memory());
+async fn store() -> Store<TestDb> {
+    let store = Store::new(db::test_db().await);
     store.migrate().await.expect("migrate a fresh database");
     store
 }
@@ -47,14 +47,15 @@ fn write(dedupe: &str, at_ms: i64) -> OccurrenceWrite {
     }
 }
 
-async fn column(store: &Store<SqliteDb>, sql: &str, params: Vec<Value>) -> Value {
+async fn column(store: &Store<TestDb>, sql: &str, params: Vec<Value>) -> Value {
     let rows = store.db().query(sql, params).await.expect("query");
     rows.first()
         .and_then(|row| row.values().next().cloned())
+        .map(db::plain)
         .unwrap_or(Value::Null)
 }
 
-async fn set_group(store: &Store<SqliteDb>, group_id: &str, sql: &str, params: Vec<Value>) {
+async fn set_group(store: &Store<TestDb>, group_id: &str, sql: &str, params: Vec<Value>) {
     let mut params = params;
     params.push(json!(group_id));
     store
@@ -437,8 +438,10 @@ async fn an_occurrence_without_a_group_is_only_legal_while_it_waits_for_its_span
         .transaction(&[orphan])
         .await
         .expect_err("a settled occurrence must belong to a group");
+    // Postgres, through the `database` worker, names only the SQLSTATE.
+    let error = error.to_string().to_lowercase();
     assert!(
-        error.to_string().to_lowercase().contains("check"),
+        error.contains("check") || error.contains("23514"),
         "{error}"
     );
 }
@@ -523,7 +526,7 @@ async fn status_counts_group_by_state_and_treat_regressed_as_open() {
 async fn a_store_already_at_v1_takes_the_upgrade() {
     // The real path on every existing install: the tables are there, the
     // meta row says 1, and boot has to add v2 without touching the rest.
-    let store = Store::new(SqliteDb::in_memory());
+    let store = Store::new(db::test_db().await);
     let db = store.db();
     db.execute(sentinel::store::schema::META_TABLE, vec![])
         .await

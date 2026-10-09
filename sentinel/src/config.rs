@@ -193,6 +193,13 @@ pub struct InvestigationConfigV1 {
 pub struct TriageConfigV1 {
     pub enabled: bool,
     pub delay_ms: u64,
+    /// The model the judge answers with, as its provider names it. Empty
+    /// keeps the provider's own default.
+    pub model: String,
+    /// The `judge-<provider>` worker asked, such as `openai`. Unset keeps the
+    /// judge's default provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 impl Default for TriageConfigV1 {
@@ -200,6 +207,8 @@ impl Default for TriageConfigV1 {
         Self {
             enabled: true,
             delay_ms: 300_000,
+            model: String::new(),
+            provider: None,
         }
     }
 }
@@ -342,6 +351,20 @@ impl WorkerConfig {
             .is_some_and(|provider| provider.trim().is_empty())
         {
             return Err(invalid("investigation.provider cannot be empty when set"));
+        }
+
+        // The judge refuses any other name, and a refused call only pauses
+        // triage: better to say so where the value is typed.
+        if self.triage.provider.as_ref().is_some_and(|provider| {
+            provider.is_empty()
+                || provider.len() > 64
+                || !provider
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        }) {
+            return Err(invalid(
+                "triage.provider must be a judge-<provider> suffix: lowercase letters, digits and hyphens, at most 64",
+            ));
         }
 
         for (span_service, worker) in &self.service_aliases {
@@ -600,6 +623,18 @@ mod tests {
         };
         let error = config.validate().expect_err("invalid regex");
         assert!(error.to_string().contains("redaction.patterns[0]"));
+    }
+
+    #[test]
+    fn a_judge_provider_must_be_a_worker_name_suffix() {
+        let mut config = WorkerConfig::default();
+        config.triage.provider = Some("openai".into());
+        config.validate().expect("a worker-name suffix");
+        for bad in ["", "OpenAI", "judge::openai"] {
+            config.triage.provider = Some(bad.into());
+            let error = config.validate().expect_err(bad);
+            assert!(error.to_string().contains("triage.provider"));
+        }
     }
 
     #[test]

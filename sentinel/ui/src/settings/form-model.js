@@ -23,7 +23,7 @@ export const DEFAULTS = Object.freeze({
     cron: '0 0 3 * * *',
   },
   archive: { bucket: '' },
-  triage: { enabled: true, delay_ms: 300_000 },
+  triage: { enabled: true, delay_ms: 300_000, model: '' },
 })
 
 /**

@@ -29,7 +29,8 @@ use serde_json::{json, Value};
 use crate::registry::{EngineRegistry, Registry};
 use crate::store::{Db, Store, UntriagedGroup};
 use crate::{
-    GroupStatusV1, GroupTriageV1, SentinelError, TriageKindV1, TriageSourceV1, WorkerConfig,
+    GroupStatusV1, GroupTriageV1, SentinelError, TriageConfigV1, TriageKindV1, TriageSourceV1,
+    WorkerConfig,
 };
 
 pub const JUDGE_FUNCTION_ID: &str = "judge::evaluate";
@@ -133,7 +134,7 @@ impl<D: Db, E: EngineRegistry> Triage<D, E> {
             .untriaged_groups(now_ms - window_ms, BATCH, offset)
             .await?;
         let fetched = due.len();
-        let labelled = self.label(due, window_ms, now_ms).await?;
+        let labelled = self.label(due, &config.triage, now_ms).await?;
         // Labelled groups leave the untriaged set; the rest of this page now
         // sits right after `offset`. A short page was the end: start over.
         let next = if fetched < BATCH {
@@ -148,9 +149,10 @@ impl<D: Db, E: EngineRegistry> Triage<D, E> {
     async fn label(
         &self,
         due: Vec<UntriagedGroup>,
-        window_ms: i64,
+        config: &TriageConfigV1,
         now_ms: i64,
     ) -> Result<usize, SentinelError> {
+        let window_ms = config.delay_ms as i64;
         let mut labelled = 0;
         let mut asking = Vec::new();
         for group in due {
@@ -192,7 +194,13 @@ impl<D: Db, E: EngineRegistry> Triage<D, E> {
             return Ok(labelled);
         }
         let asked = asking.len();
-        let request = json!({ "timeout_ms": JUDGE_TIMEOUT_MS, "evaluations": asking });
+        let mut request = json!({ "timeout_ms": JUDGE_TIMEOUT_MS, "evaluations": asking });
+        if !config.model.is_empty() {
+            request["model"] = json!(config.model);
+        }
+        if let Some(provider) = &config.provider {
+            request["provider"] = json!(provider);
+        }
         let reply = match self.judge.evaluate(request).await {
             Ok(reply) if reply["status"] == "ok" => reply,
             failure => {

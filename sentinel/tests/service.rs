@@ -1,11 +1,12 @@
 //! The surface the console calls, over a real store.
 
-#[path = "support/sqlite.rs"]
-mod sqlite;
+#[path = "support/db.rs"]
+mod db;
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use db::TestDb;
 use sentinel::service::TraceAvailability;
 use sentinel::store::Db;
 use sentinel::{
@@ -14,7 +15,6 @@ use sentinel::{
     ResolveRequestV1, Service, Store,
 };
 use serde_json::{json, Value};
-use sqlite::SqliteDb;
 
 const NOW: i64 = 1_789_000_000_000;
 
@@ -36,8 +36,8 @@ impl TraceAvailability for AlwaysThere {
     }
 }
 
-async fn fixture(traces: Arc<dyn TraceAvailability>) -> (Arc<Store<SqliteDb>>, Service<SqliteDb>) {
-    let store = Arc::new(Store::new(SqliteDb::in_memory()));
+async fn fixture(traces: Arc<dyn TraceAvailability>) -> (Arc<Store<TestDb>>, Service<TestDb>) {
+    let store = Arc::new(Store::new(db::test_db().await));
     store.migrate().await.expect("migrate");
     let service = Service::new(store.clone(), traces);
     (store, service)
@@ -66,14 +66,14 @@ fn write(fingerprint: &str, dedupe: &str, service_name: &str, at_ms: i64) -> Occ
     }
 }
 
-async fn create(store: &Store<SqliteDb>, write: &OccurrenceWrite) -> String {
+async fn create(store: &Store<TestDb>, write: &OccurrenceWrite) -> String {
     match store.record_occurrence(write).await.expect("record") {
         RecordOutcome::Created { group_id } => group_id,
         other => panic!("expected a new group, got {other:?}"),
     }
 }
 
-async fn set_status(store: &Store<SqliteDb>, group_id: &str, sql: &str) {
+async fn set_status(store: &Store<TestDb>, group_id: &str, sql: &str) {
     store
         .db()
         .execute(

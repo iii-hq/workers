@@ -1,12 +1,13 @@
-//! Triage over a real SQLite store, with the registry and the judge faked.
+//! Triage over a real store (see support/db.rs), with the registry and the judge faked.
 
-#[path = "support/sqlite.rs"]
-mod sqlite;
+#[path = "support/db.rs"]
+mod db;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use db::TestDb;
 use sentinel::registry::{EngineRegistry, FunctionEntry, Registry, WorkerEntry};
 use sentinel::service::TraceAvailability;
 use sentinel::store::{Db, OccurrenceWrite};
@@ -16,7 +17,6 @@ use sentinel::{
     TriageSourceV1, WorkerConfig,
 };
 use serde_json::{json, Value};
-use sqlite::SqliteDb;
 
 const MINUTE: i64 = 60_000;
 
@@ -87,13 +87,13 @@ impl TraceAvailability for NoTrace {
 }
 
 struct Setup {
-    store: Arc<Store<SqliteDb>>,
+    store: Arc<Store<TestDb>>,
     judge: Arc<FakeJudge>,
-    triage: Triage<SqliteDb, FakeRegistry>,
+    triage: Triage<TestDb, FakeRegistry>,
 }
 
 async fn setup(functions: Vec<&'static str>, judge: FakeJudge) -> Setup {
-    let store = Arc::new(Store::new(SqliteDb::in_memory()));
+    let store = Arc::new(Store::new(db::test_db().await));
     store.migrate().await.expect("migrate");
     let registry = Arc::new(Registry::new(
         FakeRegistry { functions },
@@ -118,7 +118,7 @@ fn judge(answer: fn(&Value) -> &'static str) -> FakeJudge {
 
 /// One occurrence of a group at each of `at`.
 async fn group(
-    store: &Store<SqliteDb>,
+    store: &Store<TestDb>,
     fingerprint: &str,
     function_id: &str,
     message: &str,
@@ -152,7 +152,7 @@ async fn group(
 }
 
 async fn triage_of(
-    store: &Arc<Store<SqliteDb>>,
+    store: &Arc<Store<TestDb>>,
     function_id: &str,
 ) -> Option<(TriageKindV1, TriageSourceV1)> {
     let service = Service::new(store.clone(), Arc::new(NoTrace));
@@ -312,13 +312,20 @@ async fn each_group_gets_the_kind_the_judge_chose_and_young_groups_wait() {
         "inside the delay"
     );
 
-    // A labelled group is never asked about again.
+    // A labelled group is never asked about again, and the configured judge
+    // is the one asked; unset, the hub and the provider keep their defaults.
+    let mut config = WorkerConfig::default();
+    config.triage.model = "gpt-5-mini".into();
+    config.triage.provider = Some("openai".into());
     setup
         .triage
-        .sweep(&WorkerConfig::default(), 20 * MINUTE)
+        .sweep(&config, 20 * MINUTE)
         .await
         .expect("sweep");
     let requests = setup.judge.requests.lock().unwrap().clone();
+    assert!(requests[0].get("model").is_none() && requests[0].get("provider").is_none());
+    assert_eq!(requests[1]["model"], "gpt-5-mini");
+    assert_eq!(requests[1]["provider"], "openai");
     assert_eq!(requests[1]["evaluations"].as_array().unwrap().len(), 1);
     assert_eq!(
         requests[1]["evaluations"][0]["state"]["function"],

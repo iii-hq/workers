@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::store::{Db, Statement, Store};
+use crate::store::{integer, number, Db, Statement, Store};
 use crate::triage;
 use crate::{
     evidence::EvidenceBundleV1, ids, lifecycle, DiagnosesListRequestV1, DiagnosesListResponseV1,
@@ -102,7 +102,7 @@ impl<D: Db> Service<D> {
             counts
                 .first()
                 .and_then(|row| row.get(column))
-                .and_then(Value::as_i64)
+                .and_then(integer)
                 .unwrap_or(0)
                 .max(0) as u64
         };
@@ -221,7 +221,7 @@ impl<D: Db> Service<D> {
             .await?
             .first()
             .and_then(|row| row.get("total"))
-            .and_then(Value::as_i64)
+            .and_then(integer)
             .unwrap_or(0) as u64;
         let rows = self
             .store
@@ -262,7 +262,7 @@ impl<D: Db> Service<D> {
             .await?
             .first()
             .and_then(|row| row.get("total"))
-            .and_then(Value::as_i64)
+            .and_then(integer)
             .unwrap_or(0)
             .max(0) as u64;
         let rows = self
@@ -344,7 +344,7 @@ impl<D: Db> Service<D> {
                     json!(transition.status.as_str()),
                     json!(ids::now_ms()),
                     json!(version),
-                    json!(request.until_version_change),
+                    json!(i64::from(request.until_version_change)),
                     json!(ids::now_ms()),
                 ],
             )
@@ -569,7 +569,7 @@ impl<D: Db> Service<D> {
             .await?
             .first()
             .and_then(|row| row.get("total"))
-            .and_then(Value::as_i64)
+            .and_then(integer)
             .unwrap_or(0) as u64)
     }
 
@@ -588,12 +588,12 @@ impl<D: Db> Service<D> {
             .await?;
         let mut bars = vec![0u64; SPARKLINE_HOURS as usize];
         for row in rows {
-            let Some(hour) = row.get("hour_ms").and_then(Value::as_i64) else {
+            let Some(hour) = row.get("hour_ms").and_then(integer) else {
                 continue;
             };
             let index = ((hour - from) / HOUR_MS) as usize;
             if index < bars.len() {
-                bars[index] = row.get("count").and_then(Value::as_i64).unwrap_or(0) as u64;
+                bars[index] = row.get("count").and_then(integer).unwrap_or(0) as u64;
             }
         }
         Ok(bars)
@@ -732,10 +732,6 @@ fn text(row: &NamedRow, column: &str) -> Option<String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .filter(|value| !value.is_empty())
-}
-
-fn number(row: &NamedRow, column: &str) -> Option<i64> {
-    row.get(column).and_then(Value::as_i64)
 }
 
 fn flag(row: &NamedRow, column: &str) -> bool {
