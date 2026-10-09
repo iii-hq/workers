@@ -21,7 +21,7 @@ import {
 } from '@iii-dev/console-ui'
 import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
 import uiClasses from '@iii-dev/console-ui/ui-classes'
-import { ArrowUpCircle, Clock, Layers, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { ArrowUpCircle, Clock, Plus, Puzzle, RefreshCw, Trash2 } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { ago } from '../lib/format'
 import { errorText, kitsApi, type PlanRecord, useKitsChange } from './api'
@@ -226,7 +226,7 @@ export function KitsView({
                           onClick={() => onRoute({ view: 'kit', kit: k.kit })}
                           leading={
                             <span className="dir-ui-nav-ico" aria-hidden>
-                              <Layers />
+                              <Puzzle />
                             </span>
                           }
                           label={<span className="dir-ui-mono">{k.kit}</span>}
@@ -475,7 +475,7 @@ function Overview({
             </div>
           ) : listing.kits.length === 0 ? (
             <EmptyState
-              icon={Layers}
+              icon={Puzzle}
               title="No kits installed"
               description="Install one above, or ask an agent to call directory::download-kit — you review every install here."
               compact

@@ -11,7 +11,7 @@
 
 import { type Host, PageHeader, type PageRenderProps, PageShell, SegmentedControl } from '@iii-dev/console-ui'
 import { formatBytes } from '@iii-dev/console-ui/format'
-import { FileText, Layers } from 'lucide-react'
+import { FileText, Puzzle } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { kitsApi, useKitsChange } from '../kits/api'
 import { type KitsRoute, KitsView } from '../kits/KitsView'
@@ -231,7 +231,7 @@ const ADAPTERS: Record<FileCollection, BrowserAdapter> = {
 function KitsTabIcon({ attention }: { attention: number }) {
   return (
     <span className="dir-ui-kits-tab">
-      <Layers aria-hidden />
+      <Puzzle aria-hidden />
       {attention > 0 ? (
         <span className="dir-ui-kits-badge" aria-label={`${attention} need attention`}>
           {attention > 9 ? '9+' : attention}

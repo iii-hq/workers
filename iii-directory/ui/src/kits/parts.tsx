@@ -33,9 +33,9 @@ import {
   Cpu,
   ExternalLink,
   FileDiff as FileDiffIcon,
-  Layers,
   LoaderCircle,
   Minus,
+  Puzzle,
   SquareFunction,
   TriangleAlert,
 } from 'lucide-react'
@@ -67,11 +67,11 @@ import type {
   SkillEntry,
 } from './types'
 
-/** The kit type mark: stacked layers + the word, always first in a header. */
+/** The kit type mark: a puzzle piece + the word, always first in a header. */
 export function KitMark() {
   return (
     <span className="dir-ui-kit-mark" title="Kit">
-      <Layers aria-hidden />
+      <Puzzle aria-hidden />
       <Eyebrow as="span">Kit</Eyebrow>
     </span>
   )

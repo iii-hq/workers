@@ -13,7 +13,7 @@
  */
 
 import { ActionLine, Badge, Button, Card, type Host, MetaRow } from '@iii-dev/console-ui'
-import { ArrowUpCircle, Layers, ShieldAlert, TriangleAlert } from 'lucide-react'
+import { ArrowUpCircle, Puzzle, ShieldAlert, TriangleAlert } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { errorText, kitsApi, useKitsChange } from '../kits/api'
 import { functionsSummary, initialSteps, ownerLabel, workerLine } from '../kits/model'
@@ -88,7 +88,7 @@ export function PlanSummary({ plan, decisions }: { plan: Plan; decisions?: Recor
           </Badge>
         ) : null}
       </MetaRow>
-      <ActionLine icon={<Layers />} tone="ink">
+      <ActionLine icon={<Puzzle />} tone="ink">
         {planTitle(plan)}
       </ActionLine>
       {plan.blocking.map((b) => (
@@ -205,7 +205,7 @@ export function KitPlanView({ input, output, running, host }: ViewProps) {
         <MetaRow items={kv([['kit', kit]])}>
           <Badge>planning…</Badge>
         </MetaRow>
-        <ActionLine icon={<Layers />} tone="ink">
+        <ActionLine icon={<Puzzle />} tone="ink">
           Planning {kit}…
         </ActionLine>
         <Loading label="reading the kit and this project…" />
@@ -219,7 +219,7 @@ export function KitPlanView({ input, output, running, host }: ViewProps) {
   if (!plan) {
     return (
       <Card>
-        <ActionLine icon={<Layers />} tone="ink">
+        <ActionLine icon={<Puzzle />} tone="ink">
           {output.message}
         </ActionLine>
       </Card>
@@ -256,7 +256,7 @@ function ApplyReportCard({ report, message }: { report: ApplyReport; message: st
       >
         <Badge variant="ok">applied</Badge>
       </MetaRow>
-      <ActionLine icon={<Layers />} tone="ink">
+      <ActionLine icon={<Puzzle />} tone="ink">
         {message}
       </ActionLine>
       {report.agents.length ? (
