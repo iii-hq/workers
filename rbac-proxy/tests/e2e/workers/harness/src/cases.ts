@@ -4,11 +4,15 @@
  * unfiltered admin connection (`support`).
  */
 
+import { randomUUID } from 'node:crypto'
 import type { IIIClient } from 'iii-sdk'
 import { createChannel } from 'iii-sdk/helpers'
+import WebSocket from 'ws'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any
+
+const PROXY_URL = process.env.PROXY_URL ?? 'ws://127.0.0.1:49271'
 
 export interface CaseContext {
   /** Admin connection straight to the engine (unfiltered ground truth). */
@@ -25,6 +29,40 @@ export interface TestCase {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Invoke `functionId` on a fresh session and resolve with its invocation
+ * result. The frame goes out in 1 MiB fragments, the way browsers send large
+ * messages, so a message over 16 MiB clears the proxy's own per-frame limit.
+ */
+function rawInvoke(functionId: string, data: Json, timeoutMs = 10_000): Promise<Json> {
+  const invocationId = randomUUID()
+  const frame = JSON.stringify({ type: 'invokefunction', function_id: functionId, invocation_id: invocationId, data })
+  const fragment = 1024 * 1024
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(PROXY_URL, { headers: { authorization: 'Bearer test-token' } })
+    const timer = setTimeout(() => {
+      ws.terminate()
+      reject(new Error(`no result for ${functionId} within ${timeoutMs}ms`))
+    }, timeoutMs)
+    ws.on('open', () => {
+      for (let i = 0; i < frame.length; i += fragment) {
+        ws.send(frame.slice(i, i + fragment), { fin: i + fragment >= frame.length })
+      }
+    })
+    ws.on('message', (raw) => {
+      const msg: Json = JSON.parse(String(raw))
+      if (msg?.type !== 'invocationresult' || msg.invocation_id !== invocationId) return
+      clearTimeout(timer)
+      ws.close()
+      resolve(msg)
+    })
+    ws.on('error', (e) => {
+      clearTimeout(timer)
+      reject(e)
+    })
+  })
+}
 
 export const CASES: TestCase[] = [
   // (a) An exposed call succeeds — and flows through middleware, which wraps
@@ -167,6 +205,29 @@ export const CASES: TestCase[] = [
       const text = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf)
       if (!text.includes('ping')) throw new Error(`channel did not relay the frame: got ${JSON.stringify(text)}`)
       ch.reader.close()
+    },
+  },
+
+  // A call over the engine's 16 MiB frame limit reaches middleware on the
+  // shared control connection. It must fail with payload_too_large instead of
+  // being replayed ahead of every later message on each reconnect, which left
+  // the proxy unable to authenticate sessions or answer any call. Kept last:
+  // on failure the proxy stays wedged for the cases after it.
+  {
+    name: 'oversized-call-rejected-without-poisoning',
+    async run({ down }) {
+      const big: Json = await rawInvoke('api::echo', { blob: 'x'.repeat(17 * 1024 * 1024) })
+      if (big?.error?.code !== 'payload_too_large') {
+        throw new Error(`oversized call should fail with payload_too_large: ${JSON.stringify(big).slice(0, 300)}`)
+      }
+      const r: Json = await down.trigger({ function_id: 'api::echo', payload: { hi: 2 }, timeoutMs: 10_000 })
+      if (r?.result?.hi !== 2) {
+        throw new Error(`middleware stopped answering after the oversized call: ${JSON.stringify(r)}`)
+      }
+      const fresh: Json = await rawInvoke('api::echo', { hi: 3 })
+      if (fresh?.result?.result?.hi !== 3) {
+        throw new Error(`a new session failed after the oversized call: ${JSON.stringify(fresh)}`)
+      }
     },
   },
 ]
