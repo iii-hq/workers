@@ -1,5 +1,9 @@
 import path from 'node:path'
 import { defineConfig } from '@playwright/test'
+import {
+  forceDeleteFixtureProject,
+  forceDeleteFixtureServer,
+} from './e2e/force-delete-ui/playwright.config'
 import { genericConsoleTestIgnore } from './e2e/namespaced-provider-selection'
 
 const artifactsRoot =
@@ -8,7 +12,14 @@ const artifactsRoot =
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: genericConsoleTestIgnore(),
+  projects: [
+    {
+      name: 'native-console',
+      testIgnore: [...genericConsoleTestIgnore(), '**/force-delete-ui/**'],
+    },
+    forceDeleteFixtureProject,
+  ],
+  webServer: forceDeleteFixtureServer,
   fullyParallel: false,
   workers: 1,
   retries: 0,

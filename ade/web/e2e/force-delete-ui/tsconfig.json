@@ -1,0 +1,4 @@
+{
+  "extends": "../../tsconfig.app.json",
+  "include": ["main.tsx", "boundaries.tsx", "../../src/vite-env.d.ts"]
+}

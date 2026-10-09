@@ -23,6 +23,17 @@ impl SessionLocks {
         Self::default()
     }
 
+    /// Nonblocking lifecycle barrier: deletion must not erase under a live writer.
+    pub fn try_guard(&self, session_id: &str) -> Option<OwnedMutexGuard<()>> {
+        let lock = {
+            let mut map = self.map.lock().unwrap_or_else(|p| p.into_inner());
+            map.entry(session_id.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        lock.try_lock_owned().ok()
+    }
+
     /// Acquire the lock for `session_id`, creating it on first use.
     pub async fn guard(&self, session_id: &str) -> OwnedMutexGuard<()> {
         let lock = {

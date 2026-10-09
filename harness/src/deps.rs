@@ -30,7 +30,11 @@ pub struct Deps {
     pub topology: Arc<tokio::sync::Mutex<()>>,
     pub deletion_commands: SessionLocks,
     pub turn_activity: SessionLocks,
+    /// Short per-session witness admission/erase barrier; never held over a tool call.
+    pub dispatch_admission: SessionLocks,
     pub deletion_changed: Arc<tokio::sync::Notify>,
+    /// Ticket id → session executing here, not remote liveness or completion proof.
+    pub(crate) live_dispatches: Arc<std::sync::Mutex<std::collections::BTreeMap<String, String>>>,
     /// Memoized "no tombstone on this session or its ancestors" answers,
     /// invalidated by every guard write in this process; see [`crate::liveness`].
     pub liveness: crate::liveness::LivenessMemo,
@@ -66,7 +70,9 @@ impl Deps {
             topology: Arc::new(tokio::sync::Mutex::new(())),
             deletion_commands: SessionLocks::new(),
             turn_activity: SessionLocks::new(),
+            dispatch_admission: SessionLocks::new(),
             deletion_changed: Arc::new(tokio::sync::Notify::new()),
+            live_dispatches: Arc::default(),
             liveness: crate::liveness::LivenessMemo::new(),
             deletion_events,
             iii,

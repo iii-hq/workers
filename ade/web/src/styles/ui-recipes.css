@@ -1134,13 +1134,13 @@ a.iii-ui-tree-item {
 /* A checked box keeps its accent fill under the pointer: this selector
    outranks the checked rule below, so it has to step aside itself. */
 .iii-ui-checkbox:hover
-  .iii-ui-checkbox__control:not(
-    :has(
-      .iii-ui-checkbox__input:disabled,
-      .iii-ui-checkbox__input:checked,
-      .iii-ui-checkbox__input:indeterminate
-    )
-  ) {
+.iii-ui-checkbox__control:not(
+  :has(
+    .iii-ui-checkbox__input:disabled,
+    .iii-ui-checkbox__input:checked,
+    .iii-ui-checkbox__input:indeterminate
+  )
+) {
   background: var(--color-surface-hover);
 }
 
@@ -1593,19 +1593,167 @@ a.iii-ui-tree-item {
   max-height: 85dvh;
   padding: 1rem;
   overflow-wrap: anywhere;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  container-type: inline-size;
+}
+
+[data-chat-delete-dialog] > h2,
+[data-chat-delete-actions] {
+  flex-shrink: 0;
+}
+
+[data-chat-delete-body] {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 [data-chat-delete-actions] {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 0.5rem;
   margin-top: 1rem;
 }
 
-[data-chat-delete-error] {
-  max-height: 25dvh;
+/* Each disclosure is bounded; paging caps DOM rows, not authoritative data. */
+[data-chat-delete-diagnostics] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  margin-top: 0.75rem;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+[data-deletion-outcome-counts] {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--color-ink-faint);
+}
+
+[data-deletion-outcome-counts] > div {
+  background: var(--color-surface);
+  padding: 0.5rem;
+  border-radius: var(--radius-sm);
+}
+
+[data-deletion-outcome-counts] dd {
+  margin-top: 0.25rem;
+}
+
+[data-chat-delete-diagnostics] summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 3rem;
+  padding: 0.5rem;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  list-style: none;
+}
+
+[data-chat-delete-diagnostics] summary::-webkit-details-marker {
+  display: none;
+}
+
+[data-chat-delete-diagnostics] summary:hover {
+  background: var(--color-surface-hover);
+}
+
+[data-chat-delete-diagnostics] summary:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+
+[data-chat-delete-diagnostics] details[open] > summary > svg {
+  transform: rotate(90deg);
+}
+
+[data-deletion-blockers] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+[data-deletion-blocker-list],
+[data-deletion-outcome-list] {
   overflow-y: auto;
   overscroll-behavior: contain;
+  padding: 0.25rem;
+  max-height: min(16rem, 28dvh);
+}
+
+[data-deletion-outcome-list] {
+  max-height: 12dvh;
+}
+
+[data-deletion-outcome-list]:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+
+[data-deletion-session-group] {
+  margin-bottom: 0.5rem;
+  padding: 0.5rem;
+  background: var(--color-surface);
+  border-radius: var(--radius-sm);
+}
+
+[data-deletion-blocker-detail] {
+  padding: 0.5rem;
+}
+
+[data-deletion-blocker-detail] dl > div,
+[data-deletion-outcome-list] li {
+  margin-bottom: 0.5rem;
+}
+
+[data-deletion-blocker-detail] dt {
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+}
+
+[data-deletion-blocker-detail] dd,
+[data-deletion-outcome-list] li {
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+[data-deletion-pagination] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem;
+}
+
+/* The portal's own width, not the originating workspace pane. */
+@container (max-width: 30rem) {
+  [data-chat-delete-diagnostics] input,
+  [data-chat-delete-diagnostics] button,
+  [data-chat-delete-actions] > button {
+    min-height: 3rem;
+  }
+
+  [data-chat-delete-diagnostics] input {
+    font-size: 1rem;
+    padding-right: 3.5rem;
+  }
+
+  [data-chat-delete-diagnostics] input + button {
+    min-width: 3rem;
+  }
+}
+
+[data-chat-delete-actions] [data-force-delete] {
+  background: var(--color-alert);
+  color: var(--color-bg);
 }
 
 /* Picker and sheet-detail views occupy the same panel and move in opposing

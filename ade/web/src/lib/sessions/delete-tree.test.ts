@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 import {
+  canForceDelete,
   DELETE_TREE_WAIT_MS,
   deleteSessionTree,
+  deletionCommandErrorMessage,
+  deletionFailureMessage,
+  deletionOutcomes,
+  hasDeletionOutcomeCounts,
+  SessionTreeDeletionError,
   type SessionTreeDeletionSnapshot,
 } from './delete-tree'
 
@@ -44,6 +50,7 @@ beforeEach(() => {
   accepted = deferred<SessionTreeDeletionSnapshot>()
   client = {
     browserId: 'test-browser',
+    addConnectionStateListener: vi.fn(() => vi.fn()),
     on: vi.fn((_id, handler) => {
       order.push('handler')
       emit = handler
@@ -84,6 +91,206 @@ function cleaned() {
 }
 
 describe('deleteSessionTree', () => {
+  it('preserves typed failure diagnostics and sends only the explicit force identity', async () => {
+    const { outcome } = await start({
+      force: { operation_id: 'op-new', attempt: 1 },
+    })
+    expect(client.trigger).toHaveBeenCalledWith(
+      'harness::delete-session-tree',
+      {
+        session_id: 'child2',
+        mode: 'force',
+        operation_id: 'op-new',
+        attempt: 1,
+      },
+    )
+    const failed = {
+      ...snapshot('failed', 'op-new', 2),
+      mode: 'normal' as const,
+      failure_code: 'blocked' as const,
+      force_eligible: true,
+      blockers: [
+        {
+          kind: 'unknown_completion' as const,
+          session_id: 'grandchild1',
+          function_id: 'browser::fetch',
+        },
+      ],
+    }
+    accepted.resolve(failed)
+    const result = await outcome
+    expect('error' in result && result.error).toBeInstanceOf(
+      SessionTreeDeletionError,
+    )
+    if ('error' in result)
+      expect((result.error as SessionTreeDeletionError).snapshot).toEqual(
+        failed,
+      )
+    expect(canForceDelete(failed)).toBe(true)
+    expect(canForceDelete({ ...failed, failure_code: 'failed' })).toBe(false)
+    cleaned()
+  })
+
+  it('rejoins terminal durable state on reconnect without issuing another command', async () => {
+    const { result } = await start()
+    accepted.resolve(snapshot())
+    await vi.advanceTimersByTimeAsync(1)
+    vi.mocked(client.trigger).mockResolvedValueOnce(snapshot('completed'))
+    const reconnect = vi.mocked(client.addConnectionStateListener).mock
+      .calls[0][0]
+    reconnect('connected')
+    await expect(result).resolves.toEqual(snapshot('completed'))
+    expect(
+      vi
+        .mocked(client.trigger)
+        .mock.calls.filter(([id]) => id === 'harness::delete-session-tree'),
+    ).toHaveLength(1)
+    cleaned()
+  })
+
+  it('reconnects into a newer authoritative attempt and ignores earlier events', async () => {
+    const { result } = await start()
+    accepted.resolve(snapshot())
+    await vi.advanceTimersByTimeAsync(1)
+    vi.mocked(client.trigger).mockResolvedValueOnce(
+      snapshot('deleting', 'op-new', 2),
+    )
+    vi.mocked(client.addConnectionStateListener).mock.calls[0][0]('connected')
+    await vi.advanceTimersByTimeAsync(1)
+    emit(snapshot('completed', 'op-new', 1))
+    expect(offHandler).not.toHaveBeenCalled()
+    emit(snapshot('completed', 'op-new', 2))
+    await expect(result).resolves.toEqual(snapshot('completed', 'op-new', 2))
+    cleaned()
+  })
+
+  it('refreshes an eligible failure event before exposing force', async () => {
+    const { outcome } = await start()
+    accepted.resolve(snapshot())
+    await vi.advanceTimersByTimeAsync(1)
+    const failed: SessionTreeDeletionSnapshot = {
+      ...snapshot('failed'),
+      mode: 'normal',
+      failure_code: 'blocked',
+      force_eligible: true,
+      blockers: [{ kind: 'unknown_completion', session_id: 'child2' }],
+    }
+    vi.mocked(client.trigger).mockResolvedValueOnce({
+      ...failed,
+      force_eligible: false,
+      blockers: [],
+    })
+    emit(failed)
+    const result = await outcome
+    expect('error' in result && result.error).toBeInstanceOf(
+      SessionTreeDeletionError,
+    )
+    if ('error' in result)
+      expect(
+        canForceDelete((result.error as SessionTreeDeletionError).snapshot),
+      ).toBe(false)
+    expect(client.trigger).toHaveBeenLastCalledWith(
+      'harness::delete-session-tree-status',
+      { operation_id: 'op-new' },
+    )
+    cleaned()
+  })
+
+  it('keeps the typed event but disables force if eligibility refresh fails', async () => {
+    const { outcome } = await start()
+    accepted.resolve(snapshot())
+    await vi.advanceTimersByTimeAsync(1)
+    const failed: SessionTreeDeletionSnapshot = {
+      ...snapshot('failed'),
+      mode: 'normal',
+      failure_code: 'blocked',
+      force_eligible: true,
+      blockers: [{ kind: 'active_processing', session_id: 'child2' }],
+    }
+    vi.mocked(client.trigger).mockRejectedValueOnce(new Error('offline'))
+    emit(failed)
+    const result = await outcome
+    expect('error' in result && result.error).toBeInstanceOf(
+      SessionTreeDeletionError,
+    )
+    if ('error' in result)
+      expect((result.error as SessionTreeDeletionError).snapshot).toEqual({
+        ...failed,
+        force_eligible: false,
+      })
+    cleaned()
+  })
+
+  it('does not treat an empty failed result as enumeration proof', () => {
+    expect(
+      hasDeletionOutcomeCounts({
+        ...snapshot('failed'),
+        remaining_session_ids: [],
+      }),
+    ).toBe(false)
+    expect(
+      hasDeletionOutcomeCounts({
+        ...snapshot('failed'),
+        remaining_session_ids: ['child2'],
+      }),
+    ).toBe(true)
+    expect(
+      hasDeletionOutcomeCounts({
+        ...snapshot('completed'),
+        remaining_session_ids: [],
+      }),
+    ).toBe(true)
+    expect(hasDeletionOutcomeCounts(snapshot('failed'))).toBe(false)
+  })
+
+  it('recovers eligible terminal status without a second failing refresh or stale event winning', async () => {
+    const failed: SessionTreeDeletionSnapshot = {
+      ...snapshot('failed'),
+      mode: 'normal',
+      failure_code: 'blocked',
+      force_eligible: true,
+      blockers: [{ kind: 'unknown_completion', session_id: 'child2' }],
+    }
+    vi.mocked(client.trigger)
+      .mockImplementationOnce(async () => {
+        emit({ ...failed, force_eligible: false })
+        return failed
+      })
+      .mockRejectedValueOnce(new Error('redundant read failed'))
+    const { outcome } = await start({ recover: true })
+    const result = await outcome
+    expect(
+      'error' in result &&
+        canForceDelete((result.error as SessionTreeDeletionError).snapshot),
+    ).toBe(true)
+    expect(client.trigger).toHaveBeenCalledTimes(1)
+    cleaned()
+  })
+
+  it('reviews exact server operation read-only and never retries an absent operation', async () => {
+    const { outcome } = await start({ reviewOperationId: 'server-owner' })
+    expect('error' in (await outcome)).toBe(true)
+    expect(client.trigger).toHaveBeenCalledExactlyOnceWith(
+      'harness::delete-session-tree-status',
+      { operation_id: 'server-owner' },
+    )
+    cleaned()
+  })
+
+  it('recovers an existing failed operation without issuing a new attempt', async () => {
+    const failed = snapshot('failed')
+    vi.mocked(client.trigger).mockResolvedValue(failed)
+    const { outcome } = await start({ recover: true })
+    expect('error' in (await outcome)).toBe(true)
+    expect(
+      vi
+        .mocked(client.trigger)
+        .mock.calls.every(
+          ([id]) => id === 'harness::delete-session-tree-status',
+        ),
+    ).toBe(true)
+    cleaned()
+  })
   it('subscribes before one selected-id command, reads once and waits without polling', async () => {
     const { result } = await start()
     expect(order).toEqual([
@@ -235,13 +442,16 @@ describe('deleteSessionTree', () => {
     cleaned()
   })
 
-  it('cleans up a failed catch-up read', async () => {
+  it('keeps waiting for the terminal event when the catch-up read fails', async () => {
     const { result } = await start()
     vi.mocked(client.trigger).mockRejectedValueOnce(
       new Error('read unavailable'),
     )
     accepted.resolve(snapshot())
-    await expect(result).rejects.toThrow('read unavailable')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(offHandler).not.toHaveBeenCalled()
+    emit(snapshot('completed'))
+    await expect(result).resolves.toMatchObject({ status: 'completed' })
     cleaned()
   })
 
@@ -295,6 +505,149 @@ describe('deleteSessionTree', () => {
     const { result } = await start()
     accepted.resolve({ status: 'completed' } as SessionTreeDeletionSnapshot)
     await expect(result).rejects.toThrow('Invalid deletion response')
+    cleaned()
+  })
+})
+
+describe('deletion outcome reporting', () => {
+  const partial: SessionTreeDeletionSnapshot = {
+    ...snapshot('failed'),
+    mode: 'force',
+    failure_code: 'failed',
+    deleted_session_ids: ['grandchild1'],
+    remaining_session_ids: ['child2'],
+    unconfirmed_session_ids: ['child2'],
+    error: 'Old generic error: data retained.',
+  }
+
+  it('separates confirmed deletes, not deleted sessions and unconfirmed erase outcomes', () => {
+    expect(deletionOutcomes(partial)).toEqual({
+      notDeleted: [],
+      unconfirmed: ['child2'],
+    })
+    expect(
+      deletionOutcomes({ ...partial, unconfirmed_session_ids: [] }),
+    ).toEqual({ notDeleted: ['child2'], unconfirmed: [] })
+    expect(deletionFailureMessage(partial)).not.toMatch(/retained/i)
+    expect(
+      canForceDelete({
+        ...partial,
+        mode: 'normal',
+        failure_code: 'blocked',
+        force_eligible: true,
+        blockers: [{ kind: 'active_processing', session_id: 'child2' }],
+      }),
+    ).toBe(false)
+  })
+
+  it('only calls known deterministic Force rejections unchanged', () => {
+    for (const code of ['invalid_request', 'harness/invalid_request']) {
+      const error = Object.assign(new Error('stale or topology changed'), {
+        code,
+      })
+      expect(deletionCommandErrorMessage(error, true)).toContain(
+        'Force delete was rejected; nothing changed.',
+      )
+      expect(deletionCommandErrorMessage(error, false)).toBeNull()
+    }
+    expect(
+      deletionCommandErrorMessage(
+        new Error('invalid_request in network text'),
+        true,
+      ),
+    ).toBeNull()
+    expect(
+      deletionCommandErrorMessage(
+        Object.assign(new Error('timeout'), { code: 'timeout' }),
+        true,
+      ),
+    ).toBeNull()
+  })
+
+  it('requires structured initial-block proof before claiming retention', () => {
+    const initial = {
+      ...partial,
+      mode: 'normal' as const,
+      failure_code: 'blocked' as const,
+      deleted_session_ids: [],
+      unconfirmed_session_ids: [],
+      data_retained: true,
+    }
+    expect(deletionFailureMessage(initial)).toContain(
+      'No conversations were deleted; data retained.',
+    )
+    expect(deletionFailureMessage(initial)).not.toMatch(/pending/i)
+    for (const value of [
+      { ...initial, data_retained: undefined },
+      { ...initial, data_retained: false },
+      { ...initial, unconfirmed_session_ids: undefined },
+      { ...initial, unconfirmed_session_ids: ['child2'] },
+      { ...initial, deleted_session_ids: ['grandchild1'] },
+    ])
+      expect(deletionFailureMessage(value)).not.toMatch(/retained/i)
+  })
+
+  it('rejects invalid retention proof types on the wire', async () => {
+    const { outcome } = await start()
+    accepted.resolve({
+      ...partial,
+      data_retained: 'true',
+    } as unknown as SessionTreeDeletionSnapshot)
+    const result = await outcome
+    expect('error' in result && result.error.message).toContain(
+      'Completion could not be confirmed',
+    )
+    cleaned()
+  })
+
+  it('treats legacy generic remaining ids as unconfirmed, not retained', () => {
+    expect(
+      deletionOutcomes({ ...partial, unconfirmed_session_ids: undefined }),
+    ).toEqual({ notDeleted: [], unconfirmed: ['child2'] })
+  })
+
+  it('preserves the additive field when recovering a failed operation without retrying', async () => {
+    vi.mocked(client.trigger).mockResolvedValue(partial)
+    const { outcome } = await start({ recover: true })
+    const result = await outcome
+    expect('error' in result && result.error).toBeInstanceOf(
+      SessionTreeDeletionError,
+    )
+    if ('error' in result)
+      expect((result.error as SessionTreeDeletionError).snapshot).toEqual(
+        partial,
+      )
+    expect(
+      vi
+        .mocked(client.trigger)
+        .mock.calls.every(
+          ([id]) => id === 'harness::delete-session-tree-status',
+        ),
+    ).toBe(true)
+    cleaned()
+  })
+
+  it('rejects unconfirmed ids outside remaining instead of exposing an inconsistent snapshot', async () => {
+    const { outcome } = await start()
+    accepted.resolve({ ...partial, unconfirmed_session_ids: ['foreign'] })
+    const result = await outcome
+    expect('error' in result && result.error.message).toContain(
+      'Completion could not be confirmed',
+    )
+    cleaned()
+  })
+
+  it('does not reinterpret failed catch-up as retention or backend completion', async () => {
+    const { outcome } = await start()
+    vi.mocked(client.trigger).mockRejectedValueOnce(
+      new Error('refresh offline'),
+    )
+    accepted.resolve(snapshot())
+    await vi.advanceTimersByTimeAsync(DELETE_TREE_WAIT_MS)
+    const result = await outcome
+    expect('error' in result && result.error.message).toContain(
+      'backend may still be running',
+    )
     cleaned()
   })
 })

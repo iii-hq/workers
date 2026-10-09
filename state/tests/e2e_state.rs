@@ -731,13 +731,18 @@ async fn claim_namespace_lifecycle() {
     let get_id = format!("{name}::state::get");
     let list_id = format!("{name}::state::list");
     let cas_id = format!("{name}::state::compare-and-set");
+    let keys_id = format!("{name}::state::list_keys");
+    let entries_id = format!("{name}::state::list_entries");
     let functions: Vec<&str> = claimed["functions"]
         .as_array()
         .expect("functions array")
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    assert_eq!(functions, vec![&get_id, &list_id, &cas_id]);
+    assert_eq!(
+        functions,
+        vec![&get_id, &list_id, &keys_id, &entries_id, &cas_id]
+    );
 
     // A trigger bound to the private scope: private writes must NEVER reach
     // state-trigger fan-out (asserted at the end).
@@ -786,6 +791,8 @@ async fn claim_namespace_lifecycle() {
     )
     .await;
     expect_reserved(&iii, "state::list", json!({"scope": private_scope})).await;
+    expect_reserved(&iii, "state::list_keys", json!({"scope": private_scope})).await;
+    expect_reserved(&iii, "state::list_entries", json!({"scope": private_scope})).await;
     expect_reserved(
         &iii,
         "state::compare-and-set",
@@ -827,6 +834,15 @@ async fn claim_namespace_lifecycle() {
         .await
         .expect("accessor list");
     assert_eq!(listed.as_array().expect("array").len(), 1);
+
+    let keys = call(&iii, &keys_id, json!({"scope": private_scope}))
+        .await
+        .expect("private keyed listing");
+    assert_eq!(keys, json!({"keys":["slot"]}));
+    let entries = call(&iii, &entries_id, json!({"scope": private_scope}))
+        .await
+        .expect("private entries listing");
+    assert_eq!(entries, json!({"entries":[["slot", {"owner":"a"}]]}));
 
     // Hard-scoped: the accessor cannot leave its own namespace.
     let err = call(&iii, &get_id, json!({"scope": "agent_state", "key": "k"}))

@@ -4,5 +4,9 @@
     "allowImportingTsExtensions": false,
     "types": ["node", "@playwright/test"]
   },
-  "include": ["e2e", "playwright.config.ts"]
+  "include": ["e2e", "playwright.config.ts"],
+  "exclude": [
+    "e2e/force-delete-ui/main.tsx",
+    "e2e/force-delete-ui/boundaries.tsx"
+  ]
 }

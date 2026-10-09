@@ -62,6 +62,7 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(config)));
     let invoker: Arc<dyn Invoker> = Arc::new(SdkInvoker { iii: iii.clone() });
     let ctx = Arc::new(StateCtx {
+        pages: Default::default(),
         adapter,
         triggers: triggers.clone(),
         config: cell.clone(),

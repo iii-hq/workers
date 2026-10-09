@@ -7,6 +7,8 @@ export interface RemovalPreview {
   title: string
   parentId?: string
   hasChildren: boolean
+  /** Count from the complete durable tree, excluding the selected root. */
+  descendantCount: number
   hasRunningWork: boolean
   /** Only a verified empty, inactive leaf can skip confirmation. */
   empty: boolean
@@ -30,6 +32,7 @@ export async function getRemovalPreview(
     title: conversation.title,
     parentId: conversation.parentId,
     hasChildren: false,
+    descendantCount: 0,
     hasRunningWork: conversation.status === 'working',
     empty: false,
   }
@@ -62,7 +65,8 @@ export async function getRemovalPreview(
     )
   }
   const ids = [...new Set(tree.sessions.map((node) => node.session_id))]
-  preview.hasChildren = ids.length > 1
+  preview.descendantCount = ids.length - 1
+  preview.hasChildren = preview.descendantCount > 0
   // The persisted snapshot is authoritative; local data only prevents an
   // unsent/optimistic message from being mistaken for an empty conversation.
   preview.hasRunningWork = false

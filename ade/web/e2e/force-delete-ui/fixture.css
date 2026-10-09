@@ -1,0 +1,4 @@
+/* Worktrees are gitignored: explicitly scan native sources in this isolated
+   frontend fixture so shared Tailwind controls match the real Console. */
+@import "../../src/index.css";
+@source "../../src";

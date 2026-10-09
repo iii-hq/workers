@@ -17,8 +17,8 @@ use crate::config::StateConfig;
 use crate::events::{Invoker, fan_out_lazy};
 use crate::structs::{
     StateDeleteInput, StateEventData, StateEventType, StateGetGroupInput, StateGetInput,
-    StateListGroupsInput, StateListGroupsResult, StateListKeysResult, StateSetInput,
-    StateUpdateInput,
+    StateListEntriesInput, StateListGroupsInput, StateListGroupsResult, StateListKeysResult,
+    StatePrivateListEntriesInput, StateSetInput, StateUpdateInput,
 };
 use crate::trigger::TriggerTable;
 
@@ -29,7 +29,7 @@ pub type ConfigCell = Arc<RwLock<Arc<StateConfig>>>;
 /// scopes — public `state::*` calls must never read, mutate, list, or fan
 /// them out to state triggers — and registers internal accessors under the
 /// claimant's own function-id prefix (`<prefix>::state::{get, list,
-/// compare-and-set}`).
+/// list_keys, list_entries, compare-and-set}`).
 ///
 /// This worker knows nothing about WHO claims, and needs no configuration:
 /// a claim is authorized by the engine-stamped `_caller_worker_id` (the
@@ -263,6 +263,7 @@ pub struct BarrierInput {
 }
 
 pub struct StateCtx {
+    pub pages: crate::pagination::EntryPages,
     pub adapter: Arc<dyn StateAdapter>,
     pub triggers: TriggerTable,
     pub config: ConfigCell,
@@ -613,6 +614,22 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
         );
     }
 
+    {
+        let ctx = ctx.clone();
+        iii.register_function(
+            "state::list_entries",
+            RegisterFunction::new_async(move |input: StateListEntriesInput| {
+                let ctx = ctx.clone();
+                async move {
+                    reject_reserved_scope(&ctx.private, &input.scope)?;
+                    ctx.pages.list(&ctx.adapter, "state::list_entries", input).await
+                        .map_err(|error| Error::Handler(error.to_string()))
+                }
+            })
+            .description("Read a count/UTF-8-byte-bounded immutable page; continue until done=true. Cursors expire after 120s; restart without cursor on INVALID_CURSOR."),
+        );
+    }
+
     // state::list_keys — keys within a scope. Added alongside the console
     // state UI: state::list returns values only, which cannot drive per-item
     // navigation (no builtin counterpart; additive surface).
@@ -785,14 +802,20 @@ fn register_claim_namespace(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
                 Ok(ClaimNamespaceResult {
                     claimed,
                     scopes,
-                    functions: vec![get_id, list_id, cas_id],
+                    functions: vec![
+                        get_id,
+                        list_id,
+                        format!("{}::state::list_keys", input.functions_prefix),
+                        format!("{}::state::list_entries", input.functions_prefix),
+                        cas_id,
+                    ],
                 })
             }
         })
         .description(
             "Reserve a private state namespace for the calling worker (its own worker name \
              only): its scopes leave public state::* and trigger fan-out, and \
-             `<prefix>::state::{get, list, compare-and-set}` accessors are registered. \
+             `<prefix>::state::{get, list, list_keys, list_entries, compare-and-set}` accessors are registered. \
              Idempotent.",
         ),
     );
@@ -970,6 +993,60 @@ fn register_private_namespace_functions(
         );
     }
 
+    // Legacy values need not embed their storage key. Keep keyed listing
+    // inside the same live ownership bound as the private value readers.
+    {
+        let ctx = ctx.clone();
+        let prefix = prefix.clone();
+        iii.register_function(
+            format!("{prefix}::state::list_keys"),
+            RegisterFunction::new_async(move |input: StateGetGroupInput| {
+                let ctx = ctx.clone();
+                let prefix = prefix.clone();
+                async move {
+                    require_owned_scope(&ctx.private.owned_scopes(&prefix), &prefix, &input.scope)?;
+                    let keys = ctx.adapter.list_keys(&input.scope).await.map_err(|e| {
+                        Error::Handler(format!("LIST_KEYS_ERROR: Failed to list private keys: {e}"))
+                    })?;
+                    Ok(StateListKeysResult { keys })
+                }
+            })
+            .description(format!(
+                "Internal: list private `{}` bookkeeping keys",
+                namespace.functions_prefix
+            ))
+            .metadata(internal.clone()),
+        );
+    }
+
+    {
+        let ctx = ctx.clone();
+        let prefix = prefix.clone();
+        iii.register_function(
+            format!("{prefix}::state::list_entries"),
+            RegisterFunction::new_async(move |input: StatePrivateListEntriesInput| {
+                let ctx = ctx.clone();
+                let prefix = prefix.clone();
+                async move {
+                    require_owned_scope(
+                        &ctx.private.owned_scopes(&prefix),
+                        &prefix,
+                        &input.page.scope,
+                    )?;
+                    ctx.pages
+                        .list_private(&ctx.adapter, &prefix, input)
+                        .await
+                        .map_err(|error| Error::Handler(error.to_string()))
+                }
+            })
+            .description(format!(
+                "Internal: read a bounded immutable page of private `{}` bookkeeping entries",
+                namespace.functions_prefix
+            ))
+            .metadata(internal.clone()),
+        );
+    }
+
     {
         let ctx = ctx.clone();
         iii.register_function(
@@ -1081,6 +1158,12 @@ mod private_namespace_tests {
         async fn list(&self, _: &str) -> anyhow::Result<Vec<crate::structs::StateValue>> {
             unreachable!()
         }
+        async fn list_entries(
+            &self,
+            _: &str,
+        ) -> anyhow::Result<Vec<(String, crate::structs::StateValue)>> {
+            unreachable!()
+        }
         async fn list_keys(&self, _: &str) -> anyhow::Result<Vec<String>> {
             unreachable!()
         }
@@ -1108,6 +1191,7 @@ mod private_namespace_tests {
 
     fn test_ctx(adapter: Arc<dyn StateAdapter>) -> Arc<StateCtx> {
         Arc::new(StateCtx {
+            pages: Default::default(),
             adapter,
             triggers: crate::trigger::StateTriggerHandler::new().triggers,
             config: Arc::new(RwLock::new(Arc::new(StateConfig::default()))),

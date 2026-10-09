@@ -66,8 +66,9 @@ pub(crate) async fn list_values<T: serde::de::DeserializeOwned>(
         .collect()
 }
 
-const STATE_LIST_ID: &str = "state::list";
 const STATE_LIST_KEYS_ID: &str = "state::list_keys";
+const PRIVATE_STATE_LIST_KEYS_ID: &str = "harness::state::list_keys";
+const STATE_LIST_ID: &str = "state::list";
 const PRIVATE_STATE_GET_ID: &str = "harness::state::get";
 const PRIVATE_STATE_LIST_ID: &str = "harness::state::list";
 const STATE_CAS_ID: &str = "harness::state::compare-and-set";
@@ -765,23 +766,59 @@ pub(crate) async fn state_list(
     }
 }
 
-/// Public scopes only: the state worker has no private `list_keys` accessor.
-async fn state_list_keys(
+pub(crate) async fn state_list_keys(
     iii: &IIIClient,
     scope: &str,
     timeout_ms: u64,
 ) -> Result<Value, HarnessError> {
-    run_hidden(
-        HIDDEN_FAMILY,
-        iii.trigger(TriggerRequest {
-            function_id: STATE_LIST_KEYS_ID.into(),
-            payload: json!({ "scope": scope }),
-            action: None,
-            timeout_ms: Some(timeout_ms),
-        }),
-    )
-    .await
-    .map_err(|e| HarnessError::State(format!("{STATE_LIST_KEYS_ID} {scope}: {e}")))
+    let private = is_binding_scope(scope);
+    let function_id = if private {
+        PRIVATE_STATE_LIST_KEYS_ID
+    } else {
+        STATE_LIST_KEYS_ID
+    };
+    let call = || async {
+        run_hidden(
+            HIDDEN_FAMILY,
+            iii.trigger(TriggerRequest {
+                function_id: function_id.into(),
+                payload: json!({ "scope": scope }),
+                action: None,
+                timeout_ms: Some(timeout_ms),
+            }),
+        )
+        .await
+        .map_err(|e| HarnessError::State(format!("{function_id} {scope}: {e}")))
+    };
+    if private {
+        with_private_namespace(iii, timeout_ms, call).await
+    } else {
+        call().await
+    }
+}
+
+/// One private immutable non-null dispatch snapshot page. Retired null keys
+/// remain stored but do not consume snapshot caps. Never use public state or N GETs.
+pub(crate) async fn state_list_entries(
+    iii: &IIIClient,
+    scope: &str,
+    cursor: Option<&str>,
+    timeout_ms: u64,
+) -> Result<Value, HarnessError> {
+    let call = || async {
+        run_hidden(
+            HIDDEN_FAMILY,
+            iii.trigger(TriggerRequest {
+                function_id: "harness::state::list_entries".into(),
+                payload: json!({"scope":scope,"cursor":cursor,"limit":100,"max_bytes":1_000_000,"non_null_only":true}),
+                action: None,
+                timeout_ms: Some(timeout_ms),
+            }),
+        )
+        .await
+        .map_err(|e| HarnessError::State(format!("harness::state::list_entries {scope}: {e}")))
+    };
+    with_private_namespace(iii, timeout_ms, call).await
 }
 
 /// Ask the state worker to reserve our binding scopes and register
