@@ -153,9 +153,13 @@ fn map_models(mut remote: Vec<CodexModel>) -> Vec<Model> {
                 id: format!("codex/{}", model.slug),
                 provider: PROVIDER_ID.to_string(),
                 display_name: Some(format!("{} (Codex)", model.display_name)),
+                // `context_window` is the Codex CLI's default working window
+                // (272K); the backend accepts input up to ~922K on current
+                // models, so the catalog's override ceiling is the real limit
+                // we can safely advertise.
                 context_window: model
-                    .context_window
-                    .or(model.max_context_window)
+                    .max_context_window
+                    .or(model.context_window)
                     .unwrap_or(DEFAULT_CONTEXT_WINDOW),
                 max_output_tokens: model.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
                 input_limit: None,
@@ -380,7 +384,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["codex/new-first", "codex/new-second"]
         );
-        assert_eq!(models[0].context_window, 272_000);
+        assert_eq!(models[0].context_window, 872_000);
         assert_eq!(models[0].supports_xhigh, Some(true));
         assert_eq!(models[0].supports_vision, Some(true));
         assert_eq!(
@@ -444,11 +448,14 @@ mod tests {
     }
 
     #[test]
-    fn astra_uses_the_backend_context_window() {
-        for slug in ["gpt-6-astra", "gpt-6-astra-2026-09-15"] {
-            let models = map_models(vec![model(slug, "list", 1)]);
-            assert_eq!(models[0].context_window, 272_000);
-        }
+    fn context_window_is_the_override_ceiling_else_the_default_window() {
+        let models = map_models(vec![model("gpt-6-astra", "list", 1)]);
+        assert_eq!(models[0].context_window, 872_000);
+
+        let mut no_ceiling = model("gpt-6-astra", "list", 1);
+        no_ceiling.max_context_window = None;
+        let models = map_models(vec![no_ceiling]);
+        assert_eq!(models[0].context_window, 272_000);
     }
 
     #[test]
