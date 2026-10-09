@@ -52,6 +52,47 @@ where
     call("configuration::register", payload).await.map(|_| ())
 }
 
+/// Plain (env-expanded, schema-validated) read of one entry: `Ok(None)` when
+/// nothing usable is stored, `Ok(Some(value))` otherwise.
+///
+/// Two answers mean "nothing usable is stored" rather than a failure: the
+/// exact `NOT_FOUND` entry code, and a stored `null` the engine refuses to
+/// serve. A plain `configuration::get` validates the value against the
+/// registered schema, so an entry left at `null` (an unseeded registration, or
+/// a base the engine lost) comes back as `SCHEMA_INVALID` instead of a readable
+/// null. Treating that as fatal turns one bad persisted entry into a crash
+/// loop for the worker and everything depending on it. A raw probe tells the
+/// two apart: only a raw `null` is absent; a real value that fails validation
+/// stays an error so a broken operator edit is never read as "use defaults".
+pub async fn get_value_with<F, Fut>(id: &str, mut call: F) -> Result<Option<Value>, String>
+where
+    F: FnMut(&'static str, Value) -> Fut,
+    Fut: Future<Output = Result<Value, String>>,
+{
+    let error = match call("configuration::get", serde_json::json!({ "id": id })).await {
+        Ok(response) => return Ok(response.get("value").cloned()),
+        Err(error) => error,
+    };
+    if remote_code(&error, "configuration::get", "NOT_FOUND") {
+        return Ok(None);
+    }
+    if !remote_code(&error, "configuration::get", "SCHEMA_INVALID") {
+        return Err(error);
+    }
+    let raw = call(
+        "configuration::get",
+        serde_json::json!({ "id": id, "raw": true }),
+    )
+    .await;
+    match raw {
+        Ok(response) if response.get("value").is_some_and(Value::is_null) => {
+            tracing::warn!(id, "stored configuration value is null; treating it as absent");
+            Ok(None)
+        }
+        _ => Err(error),
+    }
+}
+
 /// Match the SDK Display envelope, optionally wrapped by the existing three-attempt
 /// retry ladder. Never search message text, accept another wrapper, or fold case.
 fn remote_code(error: &str, function: &str, code: &str) -> bool {

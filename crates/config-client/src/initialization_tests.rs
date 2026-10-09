@@ -254,3 +254,98 @@ async fn real_sdk_remote_codes_are_distinct_from_local_errors() {
         assert_eq!(calls.len(), 1);
     }
 }
+
+const SCHEMA_INVALID_NULL: &str = "configuration::get failed after 3 attempts: remote error \
+    (SCHEMA_INVALID): schema validation failed: null is not of type \"object\"";
+
+async fn read_case(
+    plain: Result<Value, String>,
+    raw: Result<Value, String>,
+) -> (Result<Option<Value>, String>, Vec<Value>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let recorded = calls.clone();
+    let result = get_value_with("read-contract", |function, payload| {
+        assert_eq!(function, "configuration::get");
+        let response = if payload["raw"] == json!(true) {
+            raw.clone()
+        } else {
+            plain.clone()
+        };
+        recorded.lock().unwrap().push(payload);
+        std::future::ready(response)
+    })
+    .await;
+    let snapshot = calls.lock().unwrap().clone();
+    (result, snapshot)
+}
+
+#[tokio::test]
+async fn read_returns_the_stored_value_untouched() {
+    for value in [json!({"a": 1}), json!(false), json!(null)] {
+        let (result, calls) = read_case(
+            Ok(json!({"value": value})),
+            Err("must not read raw".into()),
+        )
+        .await;
+        assert_eq!(result.unwrap(), Some(value));
+        assert_eq!(calls, vec![json!({"id": "read-contract"})]);
+    }
+}
+
+#[tokio::test]
+async fn read_treats_a_stored_null_the_engine_rejects_as_absent() {
+    let (result, calls) = read_case(
+        Err(SCHEMA_INVALID_NULL.into()),
+        Ok(json!({"value": null})),
+    )
+    .await;
+    assert_eq!(result.unwrap(), None);
+    assert_eq!(
+        calls,
+        vec![
+            json!({"id": "read-contract"}),
+            json!({"id": "read-contract", "raw": true}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn read_keeps_schema_failures_of_a_real_value_fatal() {
+    let (result, _) = read_case(
+        Err(SCHEMA_INVALID_NULL.into()),
+        Ok(json!({"value": {"bad": true}})),
+    )
+    .await;
+    assert_eq!(result.unwrap_err(), SCHEMA_INVALID_NULL);
+}
+
+#[tokio::test]
+async fn read_surfaces_the_original_error_when_the_raw_probe_fails() {
+    let (result, _) = read_case(
+        Err(SCHEMA_INVALID_NULL.into()),
+        Err("remote error (timeout): slow".into()),
+    )
+    .await;
+    assert_eq!(result.unwrap_err(), SCHEMA_INVALID_NULL);
+}
+
+#[tokio::test]
+async fn read_maps_only_the_exact_not_found_code_to_absent() {
+    let (result, calls) = read_case(
+        Err("remote error (NOT_FOUND): configuration 'x' not found".into()),
+        Err("must not read raw".into()),
+    )
+    .await;
+    assert_eq!(result.unwrap(), None);
+    assert_eq!(calls.len(), 1);
+
+    for other in [
+        "remote error (function_not_found): configuration absent",
+        "remote error (EXPAND_FAILED): unset variable",
+        "remote error (RESOURCE_NOT_FOUND): other",
+    ] {
+        let (result, calls) = read_case(Err(other.into()), Err("no raw".into())).await;
+        assert_eq!(result.unwrap_err(), other);
+        assert_eq!(calls.len(), 1, "no raw probe for {other}");
+    }
+}
