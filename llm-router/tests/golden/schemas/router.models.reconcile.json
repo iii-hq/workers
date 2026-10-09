@@ -4,6 +4,66 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "DiscoveryCode": {
+        "description": "Explicit allowlist: arbitrary error strings cannot cross the router boundary.",
+        "enum": [
+          "permission-denied",
+          "invalid-api-key",
+          "insufficient-credits",
+          "spending-limit-exceeded",
+          "rate-limit-exceeded"
+        ],
+        "type": "string"
+      },
+      "DiscoveryOutcome": {
+        "description": "Safe discovery categories. No upstream message, team id or URL is retained.",
+        "enum": [
+          "success",
+          "empty",
+          "not_configured",
+          "billing",
+          "authentication",
+          "permission",
+          "rate_limit",
+          "unavailable",
+          "invalid_response"
+        ],
+        "type": "string"
+      },
+      "DiscoveryReport": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "type": "string"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/DiscoveryCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "http_status": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "outcome": {
+            "$ref": "#/definitions/DiscoveryOutcome"
+          }
+        },
+        "required": [
+          "attempt",
+          "outcome"
+        ],
+        "type": "object"
+      },
       "Model": {
         "description": "The capability record (README § Model descriptor).",
         "properties": {
@@ -227,6 +287,17 @@
     },
     "description": "Input of `router::models::reconcile` — the only catalog write path.",
     "properties": {
+      "discovery": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/DiscoveryReport"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional token-gated discovery completion. Failures preserve the slice."
+      },
       "models": {
         "default": [],
         "description": "The full replacement set of models for this provider.",

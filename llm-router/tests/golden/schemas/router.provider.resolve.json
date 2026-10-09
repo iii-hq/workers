@@ -5,6 +5,11 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "description": "Input of `router::provider::resolve`.",
     "properties": {
+      "begin_discovery": {
+        "default": false,
+        "description": "Begin a latest-wins discovery attempt. Older providers omit this.",
+        "type": "boolean"
+      },
       "id": {
         "default": "",
         "description": "Provider id to resolve credentials/config for.",
@@ -152,6 +157,13 @@
           }
         ],
         "description": "Where the credential comes from: `config`, `env`, `secret` or `none`."
+      },
+      "discovery_attempt": {
+        "description": "Opaque lease returned only to a token-authenticated discovery caller.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "max_tokens": {
         "format": "uint64",

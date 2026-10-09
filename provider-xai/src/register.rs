@@ -117,7 +117,10 @@ pub async fn declare_with_backoff(iii: IIIClient) {
 pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client) {
     declare_with_backoff(iii.clone()).await;
     match refresh_models(&iii, &http).await {
-        Ok(count) => println!("[provider-xai] catalog refreshed: {count} models"),
+        Ok(result) => println!(
+            "[provider-xai] discovery: {:?}, {} models",
+            result.discovery, result.refreshed.count
+        ),
         Err(e) => eprintln!("[provider-xai] post-register refresh failed ({e})"),
     }
 }

@@ -1,3 +1,4 @@
+// Discovery feedback regression uses a real isolated engine/router and local HTTP only.
 //! Engine-backed integration suite — real engine, real router, real provider,
 //! stubbed upstream. Self-skips when no engine is available.
 use std::sync::Arc;
@@ -62,6 +63,205 @@ async fn consumer_channel(
 struct StubUpstream {
     url: String, // http://addr/v1/chat/completions — what goes in the config slice
     handle: tokio::task::JoinHandle<()>,
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
+    use iii_sdk::{errors::Error, protocol::RegisterTriggerInput, RegisterFunction};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let engine = engine_or_skip!();
+    let iii = register_worker(&engine.url, test_init_options());
+    register_router(iii.clone()).await.unwrap();
+    let registered = call(
+        &iii,
+        "router::provider::register",
+        serde_json::to_value(provider_xai::register::declaration()).unwrap(),
+    )
+    .await
+    .unwrap();
+    let token = registered["registration_token"].as_str().unwrap();
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    iii.register_function(
+        "probe::discovery_event",
+        RegisterFunction::new_async(move |input: Value| {
+            let events_tx = events_tx.clone();
+            async move {
+                let _ = events_tx.send(input);
+                Ok::<_, Error>(json!({}))
+            }
+        }),
+    );
+    iii.register_trigger(RegisterTriggerInput::new(
+        "router::models::changed",
+        "probe::discovery_event",
+        json!({}),
+    ))
+    .unwrap();
+    // A bus roundtrip ensures the fixture subscription is registered before production.
+    call(&iii, "router::provider::list", json!({}))
+        .await
+        .unwrap();
+    provider_xai::state::store_token(&iii, token).await.unwrap();
+    let response = Arc::new(std::sync::Mutex::new((403, json!({"code":"permission-denied", "error":"team-PRIVATE has no credits or reached its monthly spending limit; sk-PRIVATE https://private.invalid"}).to_string())));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    let current = response.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            socket.read(&mut request).await.unwrap();
+            let (status, body) = current.lock().unwrap().clone();
+            socket.write_all(format!("HTTP/1.1 {status} Stub\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        }
+    });
+    configure_stub_key(&iii, &url).await;
+    call(
+        &iii,
+        "router::on_config_changed",
+        json!({"id":"llm-router"}),
+    )
+    .await
+    .unwrap();
+    let http = reqwest::Client::new();
+    let failed = provider_xai::discovery::refresh_models(&iii, &http)
+        .await
+        .unwrap();
+    assert!(!failed.refreshed.ok);
+    assert_eq!(
+        failed.discovery,
+        llm_router::types::router::DiscoveryOutcome::Billing
+    );
+    let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(event["count"], 0);
+    let list = call(&iii, "router::provider::list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(list["providers"][0]["discovery"]["outcome"], "billing");
+    assert_eq!(list["providers"][0]["configured"], true);
+    let wire = list.to_string();
+    assert!(!wire.contains("PRIVATE"));
+    assert!(!wire.contains("private.invalid"));
+    let restored = llm_router::registry::store::RegistryStore::new(iii.clone());
+    restored.load().await.unwrap();
+    assert_eq!(
+        restored
+            .get("xai")
+            .await
+            .unwrap()
+            .discovery
+            .unwrap()
+            .outcome,
+        failed.discovery
+    );
+
+    let begin = || {
+        call(
+            &iii,
+            "router::provider::resolve",
+            json!({"id":"xai", "token":token, "begin_discovery":true}),
+        )
+    };
+    assert!(call(
+        &iii,
+        "router::provider::resolve",
+        json!({"id":"xai", "begin_discovery":true})
+    )
+    .await
+    .is_err());
+    let first = begin().await.unwrap()["discovery_attempt"].clone();
+    let latest = begin().await.unwrap()["discovery_attempt"].clone();
+    let report = |attempt: Value| json!({"provider":"xai", "token":token, "models":[], "discovery":{"attempt":attempt, "outcome":"empty", "http_status":200}});
+    let mut unauthorized = report(latest.clone());
+    unauthorized["token"] = json!("wrong-token");
+    assert!(call(&iii, "router::models::reconcile", unauthorized)
+        .await
+        .is_err());
+    assert!(call(&iii, "router::models::reconcile", report(first))
+        .await
+        .is_err());
+    let mut unsafe_code = report(latest.clone());
+    unsafe_code["discovery"]["code"] = json!("sk-PRIVATE");
+    assert!(call(&iii, "router::models::reconcile", unsafe_code)
+        .await
+        .is_err());
+    call(&iii, "router::models::reconcile", report(latest))
+        .await
+        .unwrap();
+    let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        event["count"], 0,
+        "empty recovery must emit even when count stays zero"
+    );
+    assert_eq!(
+        call(&iii, "router::provider::list", json!({}))
+            .await
+            .unwrap()["providers"][0]["discovery"]["outcome"],
+        "empty"
+    );
+
+    *response.lock().unwrap() = (200, json!({"data":[{"id":"grok-4"}]}).to_string());
+    assert!(
+        provider_xai::discovery::refresh_models(&iii, &http)
+            .await
+            .unwrap()
+            .refreshed
+            .ok
+    );
+    *response.lock().unwrap() = (503, "private outage".into());
+    let transient = provider_xai::discovery::refresh_models(&iii, &http)
+        .await
+        .unwrap();
+    assert!(!transient.refreshed.ok);
+    assert_eq!(transient.refreshed.count, 1);
+    assert_eq!(
+        call(&iii, "router::provider::list", json!({}))
+            .await
+            .unwrap()["providers"][0]["discovery"]["stale"],
+        true
+    );
+    let old_config = begin().await.unwrap()["discovery_attempt"].clone();
+    call(&iii, "configuration::set", json!({"id":"llm-router", "value":{"providers":{"xai":{"api_key":"new-fixture-key", "api_url":url}}}})).await.unwrap();
+    call(
+        &iii,
+        "router::on_config_changed",
+        json!({"id":"llm-router"}),
+    )
+    .await
+    .unwrap();
+    assert!(call(&iii, "router::models::reconcile", report(old_config))
+        .await
+        .is_err());
+    *response.lock().unwrap() = (200, json!({"data":[]}).to_string());
+    let empty = provider_xai::discovery::refresh_models(&iii, &http)
+        .await
+        .unwrap();
+    assert!(empty.refreshed.ok);
+    assert_eq!(empty.refreshed.count, 0);
+    let list = call(&iii, "router::provider::list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(list["providers"][0]["discovery"]["outcome"], "empty");
+    assert_eq!(list["providers"][0]["discovery"]["stale"], false);
+    assert!(list["providers"][0]["discovery"].get("code").is_none());
+    // Legacy callers still replace their own slice without a discovery report.
+    call(
+        &iii,
+        "router::models::reconcile",
+        json!({"provider":"xai", "token":token, "models":[]}),
+    )
+    .await
+    .unwrap();
+    server.abort();
 }
 
 impl Drop for StubUpstream {
