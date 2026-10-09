@@ -35,13 +35,22 @@ pub fn declaration() -> ProviderDeclaration {
         }),
         config_schema: None, // the router's default {api_key, api_url, max_tokens}
         supports_model_listing: Some(true),
-        // Starting point for callers that name no model: the current
-        // mid-range model first, then its predecessors (router picks the
-        // first one the live catalog holds).
+        // Starting point for callers that name no model. The router ranks
+        // by variant in this order (Terra, then Sol, then Astra, then Luna), then the
+        // newest version within the variant.
         default_models: Some(vec![
+            "gpt-6.1-terra".into(),
+            "gpt-6-terra".into(),
+            "gpt-5.6-terra".into(),
             "gpt-6.1-sol".into(),
             "gpt-6-sol".into(),
             "gpt-5.6-sol".into(),
+            "gpt-6.1-astra".into(),
+            "gpt-6-astra".into(),
+            "gpt-5.6-astra".into(),
+            "gpt-6.1-luna".into(),
+            "gpt-6-luna".into(),
+            "gpt-5.6-luna".into(),
         ]),
         default_thinking_level: Some(ThinkingLevel::Minimal),
         context_overflow_hint: None,

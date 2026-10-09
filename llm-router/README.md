@@ -336,12 +336,20 @@ caller with no model choice of its own (a fresh `harness::send` naming only
 a provider, a console opening its first chat) starts on something sensible.
 It is resolved at read time against the provider's current catalog slice:
 
-1. the first id in the declared `default_models` the slice holds;
-2. otherwise the slice model sharing the longest id prefix with the first
-   preference, as long as they share the family (the id up to its first
-   `-`: `claude`, `gpt`, `codex/gpt`). On a tie the highest version wins
-   (`gpt-4.1` over `gpt-4o`), then the plain id over a dated snapshot or a
-   `-mini` variant;
+1. the model variant first. A variant is the first all-letter id segment
+   after the family (`terra` in `gpt-6.1-terra`, `sonnet` in
+   `claude-sonnet-5-5`), ranked in the order `default_models` first names
+   it. Within a ranked variant the newest version in the slice wins,
+   listed or not, so a newer Luna never beats a Terra when Terra is listed
+   first. A model with a ranked variant counts even outside the first
+   preference's family, as long as it has the same `vendor/` prefix, so
+   Copilot ranks GPT and Claude models in one list;
+2. ids with no ranked variant come last: the first id in the declared
+   `default_models` the slice holds, else the slice model sharing the
+   longest id prefix with the first preference, as long as they share the
+   family (the id up to its first `-`: `claude`, `gpt`, `codex/gpt`). On a
+   tie the highest version wins (`gpt-4.1` over `gpt-4o`), then the plain
+   id over a dated snapshot or a `-mini` variant;
 3. otherwise absent, and the caller keeps its previous behaviour.
 
 A provider that declares no `default_models` (local model servers, speech

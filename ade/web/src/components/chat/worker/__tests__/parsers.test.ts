@@ -64,7 +64,12 @@ describe('worker::list', () => {
       workers: [
         { name: 'iii-worker-manager', pid: null, running: true },
         { name: 'iii-directory', pid: 19052, running: true, version: '0.5.2' },
-        { name: 'iii-stream', pid: null, running: true, version: '0.11.6' },
+        {
+          name: 'iii-observability',
+          pid: null,
+          running: true,
+          version: '0.11.6',
+        },
       ],
     }
     const parsed = safeParseResponse(workerListResponseSchema, wrap(payload))
@@ -117,7 +122,7 @@ describe('worker::status', () => {
 
   it('parses null pid / version / logs_dir (engine builtin)', () => {
     const parsed = safeParseResponse(workerStatusResponseSchema, {
-      name: 'iii-stream',
+      name: 'iii-observability',
       installed: true,
       worker_type: 'builtin',
       running: true,
@@ -225,11 +230,11 @@ describe('worker::start', () => {
   it('parses a response with null pid + port (engine builtin)', () => {
     expect(
       safeParseResponse(workerStartResponseSchema, {
-        name: 'iii-stream',
+        name: 'iii-observability',
         pid: null,
         port: null,
       }),
-    ).toMatchObject({ name: 'iii-stream', pid: null, port: null })
+    ).toMatchObject({ name: 'iii-observability', pid: null, port: null })
   })
 
   it('parses a response with real pid + port', () => {

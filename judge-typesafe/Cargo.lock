@@ -854,18 +854,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "judge-provider"
+version = "0.1.0"
+dependencies = [
+ "httpdate",
+ "iii-sdk",
+ "judge-contract",
+ "rand 0.9.5",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "judge-typesafe"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "clap",
  "futures-util",
- "httpdate",
  "iii-config-client",
  "iii-console-ui",
  "iii-sdk",
  "judge-contract",
- "rand 0.9.5",
+ "judge-provider",
  "reqwest",
  "schemars",
  "serde",

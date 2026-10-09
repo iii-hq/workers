@@ -61,3 +61,18 @@ def test_a_fixture_another_crate_loads_runs_that_crate(
     )
     assert discover.main(["--base", "main"]) == 0
     assert "llama-native" in json.loads(capsys.readouterr().out)["crates"]
+
+
+def test_shared_test_support_runs_the_workers_that_compile_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(SCRIPTS.parents[1])
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(
+        discover, "changed_files", lambda base, head: ["judge-typesafe/tests/support/fake_engine.rs"]
+    )
+    assert discover.main(["--base", "main"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert {"judge", "judge-openai", "judge-typesafe"} <= set(payload["by_language"]["rust"])
+    assert "judge-provider" in payload["crates"]
+    assert payload["source_changed"] == ["judge-typesafe"]

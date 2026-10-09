@@ -30,3 +30,6 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+async-trait = "0.1"

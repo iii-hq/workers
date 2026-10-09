@@ -2,7 +2,7 @@
 
 [package]
 name = "judge"
-version = "0.2.8"
+version = "0.2.9"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
@@ -32,6 +32,7 @@ opentelemetry = { version = "0.31", default-features = false }
 
 [dev-dependencies]
 futures-util = "0.3"
+judge-openai = { path = "../judge-openai", default-features = false }
 judge-typesafe = { path = "../judge-typesafe", default-features = false }
 tempfile = "3"
 tokio-tungstenite = "0.28"

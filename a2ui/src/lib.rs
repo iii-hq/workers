@@ -5,5 +5,6 @@ pub mod functions;
 pub mod hook;
 pub mod manifest;
 pub mod protocol;
+pub mod schema_check;
 pub mod store;
 pub mod ui;

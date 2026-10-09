@@ -1,5 +1,5 @@
 {
-  "description": "List registered providers with their configured/available status, where each credential comes from (credential_source, credential_ref, credential_error; never a value), and the provider's starting point (default_model: its first declared preference present in the catalog, else the closest same-family model; default_thinking_level).",
+  "description": "List registered providers with their configured/available status, where each credential comes from (credential_source, credential_ref, credential_error; never a value), and the provider's starting point (default_model: the newest model of the best-ranked variant its preferences name, else its first declared preference present in the catalog, else the closest same-family model; default_thinking_level).",
   "function_id": "router::provider::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -69,7 +69,7 @@
             "description": "Where the credential comes from: `config`, `env`, `secret` or `none`."
           },
           "default_model": {
-            "description": "The model a consumer should start with when nothing else names one: the first of the provider's declared `default_models` present in its catalog slice, else the closest same-family model, else absent (see `registry::availability::resolve_default_model`).",
+            "description": "The model a consumer should start with when nothing else names one: the newest model of the best-ranked variant its declared `default_models` name (Terra, Sol, Astra, Luna for GPT providers; Sonnet, Opus, Fable, Haiku for Claude providers), else the first declared id in its catalog slice, else the closest same-family model, else absent (see `registry::availability::resolve_default_model`).",
             "type": [
               "string",
               "null"

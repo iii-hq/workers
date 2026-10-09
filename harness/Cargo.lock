@@ -637,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "harness"
-version = "1.8.49"
+version = "1.8.50"
 dependencies = [
  "anyhow",
  "async-trait",

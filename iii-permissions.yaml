@@ -70,8 +70,10 @@ rules:
   # queue's engine event handler (functions/workers available): wakes waits
   # for a target function and the engine-restart check; engine dispatch only.
   - '!queue::on-engine-change'
-  # judge-typesafe's own secrets::changed handler (drops a rotated key).
+  # judge-typesafe's and judge-openai's own secrets::changed handlers (drop a
+  # rotated key).
   - '!judge-typesafe::on-secret-change'
+  - '!judge-openai::on-secret-change'
   - '!directory::pre-generate'
   - '!directory::on-functions-change'
   - '!directory::hint-preview'
@@ -163,6 +165,7 @@ rules:
   - '!judge-clef::on-judge-config-change'
   - '!directory::on-judge-config-change'
   - '!judge-typesafe::on-config-change'
+  - '!judge-openai::on-config-change'
   - '!session::on-config-change'
   # (coder::on-config-change retired: the code surface folded into the shell
   # worker, whose shell::on-config-change is already denied above.)

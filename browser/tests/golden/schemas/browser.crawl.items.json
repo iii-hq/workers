@@ -1,0 +1,66 @@
+{
+  "function_id": "browser::crawl::items",
+  "description": "Page through every item a recent browser::crawl retained (by crawl.id, in seq order).",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "crawl_id": {
+        "type": "string",
+        "description": "crawl.id from browser::crawl"
+      },
+      "after": {
+        "type": "integer",
+        "description": "return items with seq greater than this (default 0); pass next_after to continue"
+      },
+      "limit": {
+        "type": "integer",
+        "description": "items per page, 1-100 (default 20)"
+      }
+    },
+    "required": [
+      "crawl_id"
+    ]
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "crawl_id": {
+        "type": "string"
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "seq": {
+              "type": "integer"
+            },
+            "item": {
+              "type": "object"
+            }
+          }
+        },
+        "description": "retained items in crawl order; seq matches the browser::crawl-item events"
+      },
+      "next_after": {
+        "type": "integer",
+        "description": "present when more retained items follow"
+      },
+      "retained": {
+        "type": "integer"
+      },
+      "running": {
+        "type": "boolean",
+        "description": "the crawl is still in progress"
+      },
+      "truncated": {
+        "type": "boolean",
+        "description": "a retention cap was hit; items after the retained ones were not kept"
+      },
+      "stats": {
+        "type": "object",
+        "description": "the crawl's final stats, once it finished"
+      }
+    }
+  }
+}

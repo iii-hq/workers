@@ -127,10 +127,11 @@ pub struct WorkerConfig {
     pub default_functions: Option<FunctionPolicy>,
 
     /// Working-directory root stamped onto the FIRST turn of a session whose
-    /// send carries no `metadata.fs_scope.root`. Absent/null → the harness
-    /// process's working directory at boot (the local stack launches every
-    /// worker from the user's project folder, so that cwd IS the current
-    /// folder); the literal string `"off"` → never default (sessions stay
+    /// send carries no `metadata.fs_scope.root`. Absent/null → the project
+    /// directory: `III_COMPOSE_DIR` under Compose, else the process's working
+    /// directory at boot. Not the cwd under Compose: a `path://` worker runs
+    /// inside its own folder, not the project's (MOT-5340). The literal
+    /// string `"off"` → never default (sessions stay
     /// unscoped unless the caller supplies a root); any other value → that
     /// path. Explicit roots on the send always win, and existing sessions are
     /// never retroactively scoped.
@@ -209,33 +210,50 @@ impl WorkerConfig {
 
     /// The effective default working-directory root for new sessions (see
     /// [`WorkerConfig::default_filesystem_root`]): the configured path, the
-    /// boot-time process cwd when unset, or `None` when set to `"off"`.
+    /// project directory when unset, or `None` when set to `"off"`.
     pub fn resolved_default_filesystem_root(&self) -> Option<String> {
         match self.default_filesystem_root.as_deref() {
             Some("off") => None,
             Some(path) => Some(path.to_string()),
-            None => boot_cwd().map(str::to_string),
+            None => boot_project_dir().map(str::to_string),
         }
     }
 }
 
-/// The process working directory captured once at first use (workers never
-/// chdir), canonicalized so it matches the paths the shell worker echoes.
-fn boot_cwd() -> Option<&'static str> {
-    static BOOT_CWD: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    BOOT_CWD
+/// The project directory captured once at first use (workers never chdir):
+/// see [`project_dir`].
+fn boot_project_dir() -> Option<&'static str> {
+    static PROJECT_DIR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    PROJECT_DIR
         .get_or_init(|| {
-            let cwd = match std::env::current_dir() {
-                Ok(cwd) => cwd,
-                Err(e) => {
-                    tracing::warn!(error = %e, "cannot read process cwd; no default filesystem root");
-                    return None;
-                }
-            };
-            let canon = std::fs::canonicalize(&cwd).unwrap_or(cwd);
-            Some(canon.to_string_lossy().into_owned())
+            let cwd = std::env::current_dir()
+                .inspect_err(|e| tracing::warn!(error = %e, "cannot read process cwd"))
+                .ok();
+            let dir = project_dir(
+                std::env::var_os(iii_worker_paths::COMPOSE_DIR_ENV).as_deref(),
+                cwd,
+            );
+            if dir.is_none() {
+                tracing::warn!("no project directory; no default filesystem root");
+            }
+            dir
         })
         .as_deref()
+}
+
+/// `III_COMPOSE_DIR` when Compose sets it, else `current_dir`. This is the
+/// rule every worker path follows (`iii_worker_paths`). The result is
+/// canonicalized so it matches the paths the shell worker echoes.
+fn project_dir(
+    compose_dir: Option<&std::ffi::OsStr>,
+    current_dir: Option<std::path::PathBuf>,
+) -> Option<String> {
+    let dir = compose_dir
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or(current_dir)?;
+    let canon = std::fs::canonicalize(&dir).unwrap_or(dir);
+    Some(canon.to_string_lossy().into_owned())
 }
 
 /// Signature of the structurally-bound config (see
@@ -377,6 +395,41 @@ impl Default for WorkerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `path://` worker runs inside its own folder, so the cwd is not the
+    /// project; Compose's `III_COMPOSE_DIR` is (MOT-5340).
+    #[test]
+    fn project_dir_prefers_the_compose_dir_over_the_cwd() {
+        let project = tempfile::tempdir().unwrap();
+        let worker = tempfile::tempdir().unwrap();
+        let canon = std::fs::canonicalize(project.path()).unwrap();
+        assert_eq!(
+            project_dir(
+                Some(project.path().as_os_str()),
+                Some(worker.path().to_path_buf())
+            ),
+            Some(canon.to_string_lossy().into_owned())
+        );
+    }
+
+    #[test]
+    fn project_dir_is_the_cwd_outside_compose() {
+        let cwd = tempfile::tempdir().unwrap();
+        let canon = std::fs::canonicalize(cwd.path())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let empty = std::ffi::OsStr::new("");
+        assert_eq!(
+            project_dir(None, Some(cwd.path().to_path_buf())),
+            Some(canon.clone())
+        );
+        assert_eq!(
+            project_dir(Some(empty), Some(cwd.path().to_path_buf())),
+            Some(canon)
+        );
+        assert_eq!(project_dir(None, None), None);
+    }
 
     #[test]
     fn defaults_from_empty_object() {

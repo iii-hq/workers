@@ -346,7 +346,8 @@ worker's hardcoded cap.
 
 ### Fetching, sessions and crawl
 
-Nine more functions go out to the network. They share one response envelope —
+Nine more functions go out to the network (plus `browser::crawl::items`,
+which reads back what a crawl retained). They share one response envelope —
 `{status, url, headers, cookies, encoding}` plus, on request, `extracted`
 (from `selectors`), `content`+`format` (`markdown`/`text`) and `html` — so the
 parse layer above is reachable inline, without a second call.
@@ -388,9 +389,32 @@ process. Compat mode supports request proxies, remote `cdp_url`, and
 
 `crawl` walks links breadth-first from `start_urls`, extracting per page. It
 stays on the seed domain by default (`www.` folded), strips URL fragments when
-deduping, and stops at `max_pages` (20) or `max_depth` (2). Every page is
-emitted on a stream; the RPC response carries only a ≤10-item sample plus the
-stream name and group id to read the rest with `stream::on`.
+deduping, and stops at `max_pages` (20) or `max_depth` (2). The RPC response carries
+`stats` and only a ≤10-item sample; `crawl: { id, items_function,
+trigger_type, retained, dropped_events }` says where the rest is:
+
+- **All items, after the call:** `browser::crawl::items { crawl_id, after?,
+  limit? }` pages through every retained item in crawl order (`seq` 1..n,
+  `next_after` to continue, ≤100 per page). Retention is worker-owned and
+  in memory: the last 32 crawls, for 1 h after they finish, 32 MiB per crawl
+  and 128 MiB in total, not across worker restarts. A crawl that hit a cap
+  reports `retained` below `stats.crawled` and the read says `truncated`.
+- **Live, while it runs:** bind the `browser::crawl-item` trigger type
+  (filter `{ crawl_id }`) *before* calling `browser::crawl { crawl_id }`.
+  Each bound function receives `{ crawl_id, event: "item", seq, item,
+  truncated }` per page, in `seq` order, then one `{ event: "done", seq: n+1,
+  stats, retained, dropped_events }`. Event items cut page content to 64 KiB
+  (`truncated: true`); the full item is in `browser::crawl::items`. Delivery
+  goes through a bounded per-crawl queue and never slows the crawl: when a
+  slow consumer fills it, events are dropped and counted in `dropped_events`,
+  and the consumer reads the missing `seq`s back with `browser::crawl::items`.
+
+`crawl_id` is optional (default: a random id) and must not name a crawl that
+is still running. The legacy `group_id` input still works as the crawl id.
+`stream_name` is deprecated and ignored: items are no longer written to a
+stream, the call still succeeds, and the response gains a `warnings` entry.
+`stream: { name, group_id }` is still echoed for older callers; read
+`crawl.id` instead. The crawl works on an engine without any stream worker.
 
 **These functions take a caller-supplied URL, so they are an SSRF surface.**
 Safe mode rejects caller proxies and checks every connection against private,
@@ -424,8 +448,8 @@ worker's unbounded response and retry/redirect quirks.
 Request/response schemas are golden-pinned to the Python wrapper this
 surface replaced. Every call is `browser::<leaf>`: the wrapper's
 `scrapling::screenshot` is `browser::screenshot-url` here, while
-`browser::screenshot` is the interactive session screenshot, and crawl
-streams default to `browser::crawl`.
+`browser::screenshot` is the interactive session screenshot. The
+`stream_name` crawl input is accepted for compatibility but ignored.
 
 `security_mode: safe` is the default. It keeps SSRF checks and resource
 ceilings, refuses network options the safe engine cannot enforce, rejects
@@ -556,7 +580,8 @@ test envelope, not permission to exceed configured session caps.
 ## Custom trigger types
 
 Sibling workers (and the console UI) can subscribe to session activity. All
-bindings accept an optional `{ "session_id": "..." }` filter.
+session bindings accept an optional `{ "session_id": "..." }` filter;
+`browser::crawl-item` takes `{ "crawl_id": "..." }` instead.
 
 | Trigger type | Fires when | Payload to subscribers |
 |---|---|---|
@@ -569,6 +594,7 @@ bindings accept an optional `{ "session_id": "..." }` filter.
 | `browser::handoff-requested` | A session paused for a human step (CAPTCHA, 2FA, payment) | `{ session_id, handoff_id, instructions, timestamp }` |
 | `browser::frame-event` | Internal: a live screencast frame of a watched tab (console viewport plumbing) | `{ session_id, frame, width, height, frame_seq, timestamp }` |
 | `browser::chromium-install-progress` | A `browser::chromium::install` job entered a phase or moved ~1 % (at most every 250 ms) | `{ job_id, phase: "resolving" \| "downloading" \| "extracting" \| "verifying" \| "done" \| "failed", version?, bytes_done, bytes_total?, path?, error?, hint?, timestamp }` — not a session event: bind it without a `session_id` filter |
+| `browser::crawl-item` | A `browser::crawl` page was crawled, or the crawl ended | `{ crawl_id, event: "item", seq, item, truncated }` per page in `seq` order, then `{ crawl_id, event: "done", seq, stats, retained, dropped_events }` — filter is `{ crawl_id }` instead of `session_id`; see Fetching, sessions and crawl |
 
 `browser::console-event` is high-volume; bind it with a `session_id` filter
 and treat `browser::console::read` as the durable record. `browser::picked`

@@ -20,14 +20,16 @@ Surfaces belong to the current Harness session. The Harness pre-trigger hook sta
 - Export a finished surface as portable A2UI JSON for reuse outside the current conversation.
 - Reuse, undo, pin, duplicate, import, or export a surface as a runnable React app or a data-serving iii worker template.
 - Materialize the React app into the selected workspace when the person wants to inspect and edit its files in Shell, then preview it through Browser.
-- Bind surface data to exact state, stream, or Shell change events when the UI should stay live.
+- Bind surface data to a worker-owned trigger type (optionally with its provider's read-only query), exact state, or Shell change events when the UI should stay live.
 
 ## Boundaries
 
 - Do not use A2UI for plain answers that are clearer as a short message.
 - Generated surfaces use the fixed Console catalog; they cannot execute HTML, JavaScript, CSS, or arbitrary components.
 - Use `canvas` for diagrams and freeform drawing, and use a domain worker directly when no visual surface is needed.
-- `a2ui::action`, `a2ui::binding::apply`, `a2ui::stamp-session`, and `a2ui::on-config-change` are internal Console/Harness lifecycle functions, not agent tools.
+- `a2ui::action`, `a2ui::binding::apply`, `a2ui::binding::refresh`, `a2ui::stamp-session`, and `a2ui::on-config-change` are internal Console/Harness lifecycle functions, not agent tools.
+- Live bindings never bind `browser::*`, `harness::*`, `engine::*`, hook, `http`, `cron`, or queue trigger types. A binding `query` must be a function registered by the trigger type's own worker with metadata `{"read_only": true}`.
+- Do not create new `stream` bindings: `stream` is deprecated (iii-stream) and will be removed in an upcoming release. Existing ones keep working while iii-stream runs. Bind the producing worker's own trigger type instead.
 
 ## Functions
 
@@ -40,7 +42,7 @@ Surfaces belong to the current Harness session. The Harness pre-trigger hook sta
 - `a2ui::surface::export` — return a session-free, replayable A2UI JSON package.
 - `a2ui::surface::history`, `undo`, `duplicate`, and `pin` — manage the surface library and revisions.
 - `a2ui::surface::import` and `export-code` — move surfaces between sessions or into source code.
-- `a2ui::binding::set` and `delete` — manage safe declarative live-data bindings.
+- `a2ui::binding::set` and `delete` — manage safe declarative live-data bindings. Example: `{ "id": "clicks-count", "trigger_type": "demo::counter-changed", "config": { "counter": "clicks" }, "target_path": "/count", "query": { "function_id": "demo::counter::get", "payload": { "counter": "clicks" }, "result_path": "/value" } }`.
 - `a2ui::template::*` — save, list, read, apply, and delete reusable session templates.
 - `a2ui::action` — internal Console action ingress and optional Harness forwarding.
 - `a2ui::stamp-session` — internal Harness hook that stamps authoritative turn context.

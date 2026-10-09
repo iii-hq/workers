@@ -3174,7 +3174,7 @@ mod tests {
 
     #[test]
     fn resolved_default_filesystem_root_states() {
-        // Absent → the boot cwd (the local stack's launch folder).
+        // Absent → the project directory: the boot cwd outside Compose.
         let cfg = WorkerConfig::default();
         let cwd = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
         assert_eq!(

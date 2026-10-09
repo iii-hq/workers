@@ -2,12 +2,19 @@ import { useEffect, useRef } from 'react'
 import type { Host } from '@iii-dev/console-ui'
 import type { JsonValue, LiveBinding, SurfaceRecord } from './types'
 import { getPath } from './bindings'
-import { applyBinding } from './data'
+import { applyBinding, refreshBinding } from './data'
 
 const EVENTS_FN = 'iii::a2ui-ui::events'
 const BINDING_DEBOUNCE_MS = 120
 const SURFACE_REFRESH_DEBOUNCE_MS = 50
 const MAX_LIVE_VALUE_BYTES = 512 * 1024
+/** Deprecated legacy trigger type, kept working while iii-stream runs. */
+const LEGACY_STREAM_TRIGGER_TYPE = 'stream'
+
+/** True for bindings on the deprecated `stream` trigger type (iii-stream). */
+export function isDeprecatedBinding(binding: LiveBinding): boolean {
+  return binding.trigger_type === LEGACY_STREAM_TRIGGER_TYPE
+}
 
 interface StateEvent {
   type: 'state'
@@ -73,6 +80,7 @@ function bindingKey(surface: SurfaceRecord, binding: LiveBinding): string {
     binding.config,
     binding.target_path,
     binding.event_path ?? null,
+    binding.query ?? null,
   ])
 }
 
@@ -122,8 +130,17 @@ export function subscribeLiveBinding(
     }, BINDING_DEBOUNCE_MS)
   }
 
+  // Query mode (worker-owned trigger type with a provider query): events are
+  // notifications only; every flush re-reads through a2ui::binding::refresh.
+  const queryMode = binding.query != null
+
   try {
     entry.offHandler = host.iii.on(localId, (event: unknown) => {
+      if (queryMode) {
+        entry.hasPending = true
+        schedule()
+        return
+      }
       void (async () => {
         try {
           const payload = binding.trigger_type === 'state'
@@ -151,6 +168,12 @@ export function subscribeLiveBinding(
     return () => {}
   }
   registry.set(key, entry)
+  if (queryMode) {
+    // Bound first, then the initial read, so no change in between is missed.
+    // Re-mounting after a reconnect repeats it and recovers missed events.
+    entry.hasPending = true
+    schedule()
+  }
   return () => releaseBinding(registry, key, entry, listener)
 }
 
@@ -165,20 +188,30 @@ async function flushBinding(
     if (entry.hasPending) schedule()
     return
   }
-  const value = entry.pending as JsonValue
+  const pending = entry.pending as JsonValue
   entry.pending = undefined
   entry.hasPending = false
   entry.inFlight = true
   try {
-    const receipt = await applyBinding(
-      host,
-      surface.session_id,
-      surface.surface_id,
-      binding.id,
-      value,
-    )
+    let value: JsonValue
+    let revision: number
+    if (binding.query) {
+      const receipt = await refreshBinding(host, surface.session_id, surface.surface_id, binding.id)
+      value = receipt.value
+      revision = receipt.revision
+    } else {
+      const receipt = await applyBinding(
+        host,
+        surface.session_id,
+        surface.surface_id,
+        binding.id,
+        pending,
+      )
+      value = pending
+      revision = receipt.revision
+    }
     for (const listener of entry.listeners) {
-      listener(binding.target_path, value, receipt.revision)
+      listener(binding.target_path, value, revision)
     }
   } catch {
     return
@@ -263,6 +296,9 @@ export function useLiveBindings(
 ): void {
   const handler = useRef(onValue)
   handler.current = onValue
+  // Keyed on binding content, not array identity: a re-fetched surface with the
+  // same bindings must not re-register triggers or re-run initial queries.
+  const bindingsKey = JSON.stringify(surface.bindings ?? [])
   useEffect(() => {
     const offs = (surface.bindings ?? []).map((binding) =>
       subscribeLiveBinding(host, surface, binding, (path, value, revision) =>
@@ -270,7 +306,7 @@ export function useLiveBindings(
       ),
     )
     return () => { for (const off of offs) off() }
-  }, [host, surface.session_id, surface.surface_id, surface.bindings])
+  }, [host, surface.session_id, surface.surface_id, bindingsKey])
 }
 
 export function useSurfaceEvents(

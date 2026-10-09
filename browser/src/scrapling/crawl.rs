@@ -1,5 +1,6 @@
 //! `browser::crawl` — breadth-first crawl from one or more start
-//! URLs, extracting per page and streaming the results (crawl.py:73-190).
+//! URLs, extracting per page and handing every result to an `emit` callback
+//! (crawl.py:73-190); `net::op_crawl` routes them to `crawl_feed`.
 //!
 //! The frontier walk is parameterised over the fetch step, so the whole
 //! algorithm — ordering, dedup, the depth and page caps, per-page error
@@ -17,7 +18,8 @@ use crate::config::SecurityMode;
 use crate::scrapling::dom;
 use crate::scrapling::page::{serialize_page, PageData};
 
-/// The RPC response carries only a sample; the full set goes to the stream.
+/// The RPC response carries only a sample; the full set is retained by
+/// `crawl_feed` for `browser::crawl::items`.
 const SAMPLE_MAX: usize = 10;
 /// Ceiling on the per-page politeness delay (see the note where it is read).
 const MAX_DOWNLOAD_DELAY_SECS: f64 = 300.0;
@@ -32,6 +34,9 @@ pub struct CrawlOpts {
     pub max_depth: i64,
     pub concurrency: usize,
     pub download_delay: Duration,
+    /// Deprecated and ignored: only echoed back as `stream.name` in the
+    /// response for callers that still read it. Nothing is written to a
+    /// stream.
     pub stream_name: Value,
 }
 
@@ -344,7 +349,7 @@ pub struct CrawlOutcome {
 }
 
 /// Walk the frontier. `fetch` does the I/O; `emit` receives every item (in
-/// completion order) for streaming. Neither is allowed to abort the crawl:
+/// completion order) for the crawl feed. Neither is allowed to abort the crawl:
 /// a failing page becomes an `{url, error}` item, exactly as in the reference
 /// where `visit()` never raises.
 pub async fn run<F, Fut, E>(
@@ -677,6 +682,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_item_reaches_a_bound_crawl_item_consumer_in_seq_order_and_is_retained() {
+        use crate::scrapling::crawl_feed::{CrawlFeedHub, FeedBinding, FeedDelivery};
+        use std::sync::{Arc, Mutex};
+
+        struct Recorder(Mutex<Vec<Value>>);
+        #[async_trait::async_trait]
+        impl FeedDelivery for Recorder {
+            async fn deliver(&self, _binding: &FeedBinding, payload: Value) -> Result<(), String> {
+                self.0.lock().unwrap().push(payload);
+                Ok(())
+            }
+        }
+
+        let o = opts(json!({"url": "https://e.com/p0", "max_pages": 30, "max_depth": 1}));
+        let links: String = (1..=15)
+            .map(|i| format!(r#"<a href="/p{i}">p</a>"#))
+            .collect();
+        let mut site: Vec<(String, String)> = vec![("https://e.com/p0".into(), links)];
+        for i in 1..=14 {
+            site.push((format!("https://e.com/p{i}"), String::new()));
+        }
+        // /p15 is missing: an error item travels the same path.
+        let refs: Vec<(&str, &str)> = site.iter().map(|(u, h)| (u.as_str(), h.as_str())).collect();
+
+        let recorder = Arc::new(Recorder(Mutex::new(Vec::new())));
+        let hub = CrawlFeedHub::new(recorder.clone());
+        for (id, crawl_id) in [("mine", "k1"), ("other", "k2")] {
+            hub.bindings()
+                .add(iii_sdk::trigger::TriggerConfig {
+                    id: id.into(),
+                    function_id: format!("consumer::{id}"),
+                    config: json!({ "crawl_id": crawl_id }),
+                    metadata: None,
+                    namespace: None,
+                })
+                .unwrap();
+        }
+
+        let mut feed = hub.start("k1").unwrap();
+        let out = run(
+            &o,
+            &json!({}),
+            None,
+            |url| {
+                let found = refs
+                    .iter()
+                    .find(|(u, _)| *u == url)
+                    .map(|(u, h)| page(u, h));
+                async move { found.ok_or_else(|| "404 not found".to_string()) }
+            },
+            |item| {
+                feed.push(item);
+                Box::pin(async {})
+            },
+        )
+        .await;
+        let summary = feed.finish(&json!({"crawled": out.crawled})).await;
+
+        assert_eq!(out.crawled, 16);
+        assert_eq!(out.errors, 1);
+        assert_eq!(summary.retained, 16);
+        assert_eq!(summary.dropped_events, 0);
+
+        let seen = recorder.0.lock().unwrap().clone();
+        assert_eq!(seen.len(), 17, "16 items + done, none from the k2 binding");
+        let page = hub.items(&json!({"crawl_id": "k1", "limit": 100})).unwrap();
+        let retained = page["items"].as_array().unwrap();
+        for (i, event) in seen[..16].iter().enumerate() {
+            assert_eq!(event["crawl_id"], "k1");
+            assert_eq!(event["seq"], json!(i + 1), "events arrive in seq order");
+            assert_eq!(
+                event["item"], retained[i]["item"],
+                "live and retained agree"
+            );
+        }
+        assert_eq!(seen[16]["event"], "done");
+        // The RPC sample is the head of the same sequence, unchanged.
+        assert_eq!(out.items.len(), SAMPLE_MAX);
+        for (i, sample) in out.items.iter().enumerate() {
+            assert_eq!(sample, &retained[i]["item"]);
+        }
+    }
+
+    #[tokio::test]
     async fn item_count_counts_successes_only_and_errors_count_separately() {
         let o = opts(json!({"url": "https://e.com/", "max_depth": 1}));
         let site = [
@@ -933,7 +1022,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_name_defaults_to_our_namespace() {
+    fn deprecated_stream_name_echo_defaults_to_our_namespace() {
         assert_eq!(opts(json!({"url": "u"})).stream_name, "browser::crawl");
         assert_eq!(
             opts(json!({"url": "u", "stream_name": 3})).stream_name,

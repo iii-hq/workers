@@ -47,6 +47,30 @@
         ],
         "type": "object"
       },
+      "BindingQuery": {
+        "additionalProperties": false,
+        "description": "Read-only query a worker-owned trigger type's provider exposes for the current data. The function must be registered by the same worker as the trigger type with metadata `{\"read_only\": true}`.",
+        "properties": {
+          "function_id": {
+            "description": "Provider function that returns the current value.",
+            "type": "string"
+          },
+          "payload": {
+            "description": "Fixed request payload, validated against the function's request schema."
+          },
+          "result_path": {
+            "description": "JSON Pointer inside the query result to apply. Defaults to the whole result.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "function_id"
+        ],
+        "type": "object"
+      },
       "Component": {
         "additionalProperties": true,
         "properties": {
@@ -67,21 +91,39 @@
       },
       "LiveBinding": {
         "additionalProperties": false,
+        "description": "Declarative live-data binding rendered by the Console: the page registers `trigger_type`/`config` for its own view and writes delivered values to `target_path`. Bindings cannot invoke arbitrary functions.",
         "properties": {
-          "config": true,
+          "config": {
+            "description": "Trigger configuration, validated against the trigger type's registered configuration schema when the provider declares one."
+          },
           "event_path": {
+            "description": "JSON Pointer inside the event payload to apply (event mode only).",
             "type": [
               "string",
               "null"
             ]
           },
           "id": {
+            "description": "Stable binding id within the surface.",
             "type": "string"
           },
+          "query": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/BindingQuery"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional provider query for worker-owned trigger types: run for the initial read, after every notification, and on reconnect."
+          },
           "target_path": {
+            "description": "JSON Pointer in the surface data model that receives the value.",
             "type": "string"
           },
           "trigger_type": {
+            "description": "Trigger type to bind: a worker-owned trigger type (for example `orders::changed`), `state`, or `shell::changed`. `stream` is accepted only as deprecated legacy compatibility.",
             "type": "string"
           }
         },

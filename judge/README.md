@@ -71,7 +71,8 @@ See the [mixed Noul/Choice/Score example](reference.md#evaluate),
 
 **Settings → Workers → judge** selects the default provider from the workers
 registered as `judge-<provider>` (seeded from `JUDGE_PROVIDER`, else `typesafe`).
-Five ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV),
+Six ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV),
+[`judge-openai`](../judge-openai/) (OpenAI's hosted Decisions API),
 [`judge-decider`](../judge-decider/), [`judge-semif`](../judge-semif/),
 [`judge-laya`](../judge-laya/) and [`judge-clef`](../judge-clef/) (open models running inside the worker); a request may name its own with a top-level
 `provider`. Between the two sits

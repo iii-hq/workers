@@ -92,14 +92,22 @@ export function CrawlView({
         ) : null}
         {crawlChips(req)}
       </MetaRow>
-      {res.stream?.name ? (
+      {res.crawl?.id ? (
         <ActionLine icon={<Radio size={16} aria-hidden />} tone="accent">
           <span className="br-ui-faint br-ui-break">
-            stream {res.stream.name}
-            {res.stream.group_id ? ` · ${res.stream.group_id}` : ''}
+            crawl {res.crawl.id}
+            {typeof res.crawl.retained === 'number'
+              ? ` · ${res.crawl.retained} retained`
+              : ''}
+            {` · ${res.crawl.items_function ?? 'browser::crawl::items'}`}
           </span>
         </ActionLine>
       ) : null}
+      {res.warnings?.map((warning) => (
+        <Chip key={warning} tone="warning">
+          <span>{warning}</span>
+        </Chip>
+      ))}
       {res.items && res.items.length > 0 ? (
         <div>
           <div className={cn('br-ui-scrape-label', uiClasses.eyebrow)}>

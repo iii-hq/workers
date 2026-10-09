@@ -1,11 +1,11 @@
 //! Typed bus registration and console configuration-form assets.
-use crate::secrets::{bus_fetch, SecretCache};
 use crate::{client::JevClient, configuration::SharedConfig};
 use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use judge_contract::{
     CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse, ModelsRequest,
     ModelsResponse, ProviderError, Stats,
 };
+use judge_provider::secrets::{bus_fetch, SecretCache};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -14,9 +14,9 @@ use std::sync::Arc;
 /// A missing key is an ordinary typed error,
 /// so schema capture and worker readiness never require provider credentials.
 /// Returns the cache `secret://` keys resolve through; bind it to
-/// `secrets::changed` with [`crate::secrets::register_secret_trigger`].
+/// `secrets::changed` with [`judge_provider::secrets::register_secret_trigger`].
 pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) -> Arc<SecretCache> {
-    let secrets = Arc::new(SecretCache::new(bus_fetch(iii.clone())));
+    let secrets = Arc::new(SecretCache::new(bus_fetch(iii.clone()), "judge-typesafe"));
     let models_config = config.clone();
     let models_client = client.clone();
     let models_secrets = secrets.clone();
@@ -135,8 +135,9 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) -> Arc
     secrets
 }
 
-/// `missing_key` diagnostics for a `secret://` key that did not resolve: the reason
-/// names the secret and the fix, never a value.
+/// `missing_key` diagnostics for a configured key that cannot be used (an unresolved
+/// `secret://` reference or an unsupported `scheme://` value): the reason names the
+/// fix, never a value.
 fn credential_error(reason: String) -> ProviderError {
     ProviderError {
         detail: None,

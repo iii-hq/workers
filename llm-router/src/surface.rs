@@ -82,8 +82,9 @@ pub const PROVIDER_LIST_ID: &str = "router::provider::list";
 pub const PROVIDER_LIST_DESC: &str =
     "List registered providers with their configured/available status, where each \
      credential comes from (credential_source, credential_ref, credential_error; never a value), \
-     and the provider's starting point (default_model: its first declared preference present in \
-     the catalog, else the closest same-family model; default_thinking_level).";
+     and the provider's starting point (default_model: the newest model of the best-ranked variant \
+     its preferences name, else its first declared preference present in the catalog, else the \
+     closest same-family model; default_thinking_level).";
 
 pub const ROUTE_ID: &str = "router::route";
 pub const ROUTE_DESC: &str = "Read-only routing preview: resolve {model, provider?} to the chosen \

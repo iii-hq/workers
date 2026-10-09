@@ -1,5 +1,5 @@
-//! The nine outbound `browser::*` functions: the fetch tiers,
-//! screenshot, persistent sessions and crawl.
+//! The ten stateful `browser::*` functions: the fetch tiers,
+//! screenshot, persistent sessions, crawl and its retained-items read.
 //!
 //! Unlike the ten parse ops (sync, stateless, `fn(&Value) -> Result<Value>`),
 //! these are async and need state — an HTTP session registry, the browser
@@ -12,7 +12,8 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use crate::config::{SecurityMode, SharedConfig, WorkerConfig};
-use crate::scrapling::crawl::{self, CrawlOpts};
+use crate::scrapling::crawl::{self, CrawlOpts, CrawlOutcome};
+use crate::scrapling::crawl_feed::{self, CrawlFeedHub, FeedSummary, IiiFeedDelivery};
 use crate::scrapling::fetch::{self, HttpMode, HttpOptions};
 use crate::scrapling::page::{self, PageData};
 use crate::scrapling::raw_browser::{RawBrowser, RawBrowserOptions};
@@ -26,6 +27,8 @@ pub struct Ctx {
     pub iii: Arc<iii_sdk::IIIClient>,
     /// The interactive tabs, so a scraping call handed a tab id can say so.
     pub tabs: Arc<Sessions>,
+    /// Live `browser::crawl-item` delivery and retained crawl items.
+    pub crawl_feed: Arc<CrawlFeedHub>,
 }
 
 impl Ctx {
@@ -35,6 +38,9 @@ impl Ctx {
         Self {
             http: Registry::new(startup.max_sessions, startup.session_idle_timeout_s),
             config,
+            crawl_feed: Arc::new(CrawlFeedHub::new(Arc::new(IiiFeedDelivery::new(
+                iii.clone(),
+            )))),
             iii,
             tabs: sessions,
         }
@@ -350,15 +356,13 @@ pub async fn op_crawl(ctx: &Ctx, payload: &Value) -> Result<Value, String> {
         cfg.scrapling.max_bulk_concurrency as usize,
         cfg.scrapling.security_mode,
     )?;
-    let (group_id, group_id_text) = crawl_group_id(payload);
+    let (group_id, crawl_id) = crawl_identity(payload)?;
+    let warnings = crawl_feed::deprecated_input_warnings(payload, crawl::json_truthy);
+    let mut feed = ctx.crawl_feed.start(&crawl_id)?;
 
     let http = opts.fetcher == "http";
     let policy = ctx.policy();
     let mode = ctx.config.load().scrapling.security_mode;
-    // Atomic, not Cell: this future is handed to the SDK, which requires Send
-    // + Sync.
-    let seq = std::sync::atomic::AtomicUsize::new(0);
-
     let outcome = crawl::run(
         &opts,
         payload,
@@ -388,41 +392,72 @@ pub async fn op_crawl(ctx: &Ctx, payload: &Value) -> Result<Value, String> {
             }
         },
         |item| {
-            let n = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            let iii = ctx.iii.clone();
-            let payload = json!({
-                "stream_name": opts.stream_name,
-                "group_id": group_id,
-                "item_id": format!("{group_id_text}-{n:06}"),
-                "data": item,
-            });
-            Box::pin(async move {
-                let res = iii
-                    .trigger(iii_sdk::protocol::TriggerRequest {
-                        function_id: "stream::set".to_string(),
-                        payload,
-                        action: None,
-                        timeout_ms: Some(5_000),
-                    })
-                    .await;
-                if let Err(e) = res {
-                    tracing::debug!(error = %e, "crawl stream::set failed; continuing");
-                }
-            })
+            // Never waits on a consumer: the feed stores the item and queues
+            // its live event (or counts it as dropped when the queue is full).
+            feed.push(item);
+            Box::pin(std::future::ready(()))
         },
     )
     .await;
 
-    Ok(json!({
-        "stats": {
-            "crawled": outcome.crawled,
-            "items": outcome.item_count,
-            "errors": outcome.errors,
-            "stopped": outcome.stopped,
-        },
+    let summary = feed.finish(&crawl_stats(&outcome)).await;
+    Ok(crawl_result(
+        &outcome, &opts, group_id, &crawl_id, summary, warnings,
+    ))
+}
+
+fn crawl_stats(outcome: &CrawlOutcome) -> Value {
+    json!({
+        "crawled": outcome.crawled,
+        "items": outcome.item_count,
+        "errors": outcome.errors,
+        "stopped": outcome.stopped,
+    })
+}
+
+/// The `browser::crawl` response. `stats`, the `items` sample and the
+/// deprecated `stream` echo keep their pre-migration shape and values;
+/// `crawl` says where the full set lives, `warnings` flags deprecated input.
+pub(crate) fn crawl_result(
+    outcome: &CrawlOutcome,
+    opts: &CrawlOpts,
+    group_id: Value,
+    crawl_id: &str,
+    summary: FeedSummary,
+    warnings: Vec<String>,
+) -> Value {
+    let mut out = json!({
+        "stats": crawl_stats(outcome),
         "items": outcome.items,
         "stream": {"name": opts.stream_name, "group_id": group_id},
-    }))
+        "crawl": {
+            "id": crawl_id,
+            "items_function": crawl_feed::ITEMS_FUNCTION,
+            "trigger_type": crawl_feed::CRAWL_ITEM,
+            "retained": summary.retained,
+            "dropped_events": summary.dropped_events,
+        },
+    });
+    if !warnings.is_empty() {
+        out["warnings"] = json!(warnings);
+    }
+    out
+}
+
+/// The crawl's id and the legacy `group_id` echo. A documented `crawl_id`
+/// wins; otherwise the undocumented legacy `group_id` input keeps working
+/// exactly as before (any truthy JSON, Python-style text form); otherwise a
+/// fresh uuid4 hex.
+fn crawl_identity(payload: &Value) -> Result<(Value, String), String> {
+    if let Some(value) = payload
+        .get("crawl_id")
+        .filter(|value| crawl::json_truthy(value))
+    {
+        let id = value.as_str().ok_or("`crawl_id` must be a string")?;
+        crawl_feed::validate_crawl_id(id)?;
+        return Ok((json!(id), id.to_string()));
+    }
+    Ok(crawl_group_id(payload))
 }
 
 fn crawl_group_id(payload: &Value) -> (Value, String) {
@@ -442,7 +477,7 @@ fn crawl_group_id(payload: &Value) -> (Value, String) {
     (json!(id), id)
 }
 
-/// Route one of the nine async function ids to its handler. The ten sync
+/// Route one of the ten async function ids to its handler. The ten sync
 /// parse ops go through `super::op_for` instead; `super::register_all` picks
 /// the path per catalog entry.
 pub async fn dispatch(ctx: &Ctx, function_id: &str, payload: &Value) -> Result<Value, String> {
@@ -456,6 +491,7 @@ pub async fn dispatch(ctx: &Ctx, function_id: &str, payload: &Value) -> Result<V
         "browser::session-close" => op_session_close(ctx, payload).await,
         "browser::session-list" => op_session_list(ctx, payload).await,
         "browser::crawl" => op_crawl(ctx, payload).await,
+        crawl_feed::ITEMS_FUNCTION => ctx.crawl_feed.items(payload),
         other => Err(format!("not implemented: {other}")),
     }
 }
@@ -472,11 +508,124 @@ pub const NET_IDS: &[&str] = &[
     "browser::session-close",
     "browser::session-list",
     "browser::crawl",
+    "browser::crawl::items",
 ];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn outcome() -> CrawlOutcome {
+        CrawlOutcome {
+            items: vec![
+                json!({"url": "https://e.com/", "status": 200, "content": "hi"}),
+                json!({"url": "https://e.com/x", "error": "404 not found"}),
+            ],
+            item_count: 1,
+            crawled: 2,
+            errors: 1,
+            stopped: "done",
+        }
+    }
+
+    /// The response exactly as fb138f652's `op_crawl` built it.
+    fn pre_migration_result(outcome: &CrawlOutcome, opts: &CrawlOpts, group_id: Value) -> Value {
+        json!({
+            "stats": {
+                "crawled": outcome.crawled,
+                "items": outcome.item_count,
+                "errors": outcome.errors,
+                "stopped": outcome.stopped,
+            },
+            "items": outcome.items,
+            "stream": {"name": opts.stream_name, "group_id": group_id},
+        })
+    }
+
+    #[test]
+    fn crawl_result_keeps_every_pre_migration_field_and_adds_the_locator() {
+        let opts = CrawlOpts::from_payload(&json!({"url": "https://e.com/"}), 4).unwrap();
+        let summary = FeedSummary {
+            retained: 2,
+            dropped_events: 0,
+        };
+        let out = crawl_result(&outcome(), &opts, json!("g1"), "g1", summary, Vec::new());
+        let before = pre_migration_result(&outcome(), &opts, json!("g1"));
+        for key in ["stats", "items", "stream"] {
+            assert_eq!(out[key], before[key], "{key} unchanged");
+        }
+        let keys: Vec<&str> = out
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            ["stats", "items", "stream", "crawl"],
+            "no warnings without deprecated input"
+        );
+        assert_eq!(
+            out["crawl"],
+            json!({
+                "id": "g1",
+                "items_function": "browser::crawl::items",
+                "trigger_type": "browser::crawl-item",
+                "retained": 2,
+                "dropped_events": 0,
+            })
+        );
+        assert_eq!(out["stream"]["name"], "browser::crawl");
+    }
+
+    #[test]
+    fn a_caller_still_passing_stream_name_gets_the_same_result_plus_a_warning() {
+        let payload = json!({"url": "https://e.com/", "stream_name": "legacy", "group_id": 3});
+        let opts = CrawlOpts::from_payload(&payload, 4).unwrap();
+        let (group_id, crawl_id) = crawl_identity(&payload).unwrap();
+        assert_eq!((group_id.clone(), crawl_id.as_str()), (json!(3), "3"));
+        let warnings = crawl_feed::deprecated_input_warnings(&payload, crawl::json_truthy);
+        let summary = FeedSummary {
+            retained: 2,
+            dropped_events: 0,
+        };
+        let out = crawl_result(
+            &outcome(),
+            &opts,
+            group_id.clone(),
+            &crawl_id,
+            summary,
+            warnings,
+        );
+        let before = pre_migration_result(&outcome(), &opts, group_id);
+        for key in ["stats", "items", "stream"] {
+            assert_eq!(out[key], before[key], "{key} unchanged");
+        }
+        assert_eq!(
+            out["stream"],
+            json!({"name": "legacy", "group_id": 3}),
+            "echo kept"
+        );
+        assert_eq!(out["crawl"]["id"], "3");
+        assert_eq!(out["warnings"], json!([crawl_feed::STREAM_NAME_WARNING]));
+    }
+
+    #[test]
+    fn crawl_id_wins_over_the_legacy_group_id_and_defaults_to_a_uuid() {
+        let (echo, id) = crawl_identity(&json!({"crawl_id": "mine", "group_id": "old"})).unwrap();
+        assert_eq!((echo, id.as_str()), (json!("mine"), "mine"));
+        let (echo, id) = crawl_identity(&json!({"group_id": "old"})).unwrap();
+        assert_eq!((echo, id.as_str()), (json!("old"), "old"));
+        let (echo, id) = crawl_identity(&json!({})).unwrap();
+        assert_eq!(echo, json!(id));
+        assert_eq!(id.len(), 32);
+        assert!(crawl_identity(&json!({"crawl_id": 7}))
+            .unwrap_err()
+            .contains("must be a string"));
+        assert!(crawl_identity(&json!({"crawl_id": "x".repeat(300)}))
+            .unwrap_err()
+            .contains("longer than"));
+    }
 
     #[test]
     fn every_net_id_dispatches_somewhere() {

@@ -1,9 +1,5 @@
-// Exercise the crate-private registry without making it part of the public API.
-#[path = "../src/cancellation.rs"]
-mod cancellation;
-
-use cancellation::CancellationRegistry;
 use judge_contract::ErrorCode;
+use judge_provider::cancellation::CancellationRegistry;
 use std::{sync::Arc, time::Duration};
 use tokio::time::timeout;
 

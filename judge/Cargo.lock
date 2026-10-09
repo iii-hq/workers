@@ -846,7 +846,7 @@ dependencies = [
 
 [[package]]
 name = "judge"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "clap",
@@ -855,6 +855,7 @@ dependencies = [
  "iii-console-ui",
  "iii-sdk",
  "judge-contract",
+ "judge-openai",
  "judge-typesafe",
  "mention-contract",
  "opentelemetry",
@@ -879,16 +880,50 @@ dependencies = [
 ]
 
 [[package]]
-name = "judge-typesafe"
-version = "0.2.2"
+name = "judge-openai"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
- "httpdate",
  "iii-config-client",
  "iii-sdk",
  "judge-contract",
+ "judge-provider",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "judge-provider"
+version = "0.1.0"
+dependencies = [
+ "httpdate",
+ "iii-sdk",
+ "judge-contract",
  "rand 0.9.5",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "judge-typesafe"
+version = "0.2.3"
+dependencies = [
+ "anyhow",
+ "clap",
+ "iii-config-client",
+ "iii-sdk",
+ "judge-contract",
+ "judge-provider",
  "reqwest",
  "schemars",
  "serde",
