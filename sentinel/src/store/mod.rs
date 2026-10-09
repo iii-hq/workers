@@ -683,12 +683,14 @@ impl<D: Db> Store<D> {
     }
 
     /// Groups first seen before `seen_before_ms` that nobody has triaged
-    /// yet, oldest first. Status does not matter: an ignored group still
-    /// shows when it comes back, and its kind is the same either way.
+    /// yet, oldest first, skipping the first `offset`. Status does not
+    /// matter: an ignored group still shows when it comes back, and its kind
+    /// is the same either way.
     pub async fn untriaged_groups(
         &self,
         seen_before_ms: i64,
         limit: usize,
+        offset: usize,
     ) -> Result<Vec<UntriagedGroup>, SentinelError> {
         let rows = self
             .db
@@ -699,8 +701,12 @@ impl<D: Db> Store<D> {
                  AS sessions_affected \
                  FROM sentinel_groups g \
                  WHERE g.triage IS NULL AND g.archived = 0 AND g.first_seen_ms <= ? \
-                 ORDER BY g.first_seen_ms LIMIT ?",
-                vec![json!(seen_before_ms), json!(limit as i64)],
+                 ORDER BY g.first_seen_ms, g.id LIMIT ? OFFSET ?",
+                vec![
+                    json!(seen_before_ms),
+                    json!(limit as i64),
+                    json!(offset as i64),
+                ],
             )
             .await?;
         Ok(rows

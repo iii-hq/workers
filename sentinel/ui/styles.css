@@ -820,7 +820,10 @@
   max-width: 100%;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-model:focus { outline: none; }
+[data-iii-ui="sentinel"] .sentinel-ui-model:focus {
+  outline: 2px solid color-mix(in oklab, var(--color-ink) 55%, transparent);
+  outline-offset: 2px;
+}
 
 [data-iii-ui="sentinel"] .sentinel-ui-model-picker {
   width: min(100%, 280px);

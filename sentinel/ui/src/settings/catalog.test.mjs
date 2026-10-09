@@ -63,7 +63,7 @@ test('an option is keyed like the stored pair and named for people', () => {
 test('a configured model the router no longer offers is kept beside the catalog', () => {
   const options = withStoredModel(CATALOG, 'zai::glm-9')
   assert.equal(options.length, 4)
-  assert.deepEqual(options.at(-1), { id: 'zai::glm-9', label: 'glm-9' })
+  assert.deepEqual(options.at(-1), { id: 'zai::glm-9', label: 'glm-9 (not offered now)' })
 })
 
 test('an offered or empty selection adds nothing', () => {

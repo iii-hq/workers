@@ -277,7 +277,7 @@ export function GroupsListView({
       ) : null}
 
       {!loading && groups.length === 0 ? (
-        relevance === 'relevant' && !filters.search && !filters.service ? (
+        relevance === 'relevant' && noiseTotal > 0 && !filters.search && !filters.service ? (
           <EmptyState
             icon={Inbox}
             title="Nothing here needs attention"

@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use sentinel::registry::{EngineRegistry, FunctionEntry, Registry, WorkerEntry};
 use sentinel::service::TraceAvailability;
 use sentinel::store::{Db, OccurrenceWrite};
-use sentinel::triage::{Judge, Triage};
+use sentinel::triage::{Judge, Triage, BATCH};
 use sentinel::{
     ErrorSourceV1, GroupsListRequestV1, SentinelError, Service, Store, TriageKindV1,
     TriageSourceV1, WorkerConfig,
@@ -350,6 +350,46 @@ async fn a_failing_judge_leaves_groups_untriaged_and_is_left_alone_for_a_while()
 
     setup.triage.sweep(&config, 16 * MINUTE).await.unwrap();
     assert_eq!(calls(&setup), 2, "asked again once the pause ran out");
+}
+
+#[tokio::test]
+async fn groups_the_judge_cannot_label_do_not_keep_newer_ones_waiting() {
+    // No judge deployed: a full page of groups only it could label stays
+    // untriaged, and the newer group the rule settles is past that page.
+    let setup = setup(vec!["state::get"], judge(|_| "defect")).await;
+    for index in 0..BATCH {
+        let fingerprint = format!("fp_bug_{index}");
+        let function_id = format!("bug{index}::get");
+        group(
+            &setup.store,
+            &fingerprint,
+            &function_id,
+            "index out of bounds",
+            &[index as i64],
+        )
+        .await;
+    }
+    group(
+        &setup.store,
+        "fp_race",
+        "state::get",
+        "Function not found",
+        &[MINUTE, 2 * MINUTE],
+    )
+    .await;
+    let config = WorkerConfig::default();
+
+    assert_eq!(setup.triage.sweep(&config, 10 * MINUTE).await.unwrap(), 0);
+    assert_eq!(setup.triage.sweep(&config, 11 * MINUTE).await.unwrap(), 1);
+    assert_eq!(
+        triage_of(&setup.store, "state::get").await,
+        Some((TriageKindV1::Transient, TriageSourceV1::Rule))
+    );
+    assert_eq!(
+        setup.triage.sweep(&config, 12 * MINUTE).await.unwrap(),
+        0,
+        "the end of the list starts the sweeps over from the oldest"
+    );
 }
 
 #[tokio::test]

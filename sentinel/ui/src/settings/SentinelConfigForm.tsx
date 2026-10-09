@@ -430,7 +430,7 @@ export function SentinelConfigForm({
         <SettingsList>
           <SettingsRow
             label="Triage groups"
-            description="Off leaves every group unlabelled, and the list shows them all as relevant."
+            description="Off stops labelling new groups. Groups already labelled keep their label; new ones show as relevant."
             control={
               <Switch
                 aria-label="Triage groups"

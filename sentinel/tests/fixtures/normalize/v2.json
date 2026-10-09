@@ -100,6 +100,21 @@
     "expected": "session_<id> lost, run_<id> seen"
   },
   {
+    "note": "an id followed by `_` is masked too, so a retry suffix does not split every session into its own group",
+    "input": "state::get session_aaaaaaaaaaaaaaaa_retry failed",
+    "expected": "state::get session_<hex>_retry failed"
+  },
+  {
+    "note": "so another session with the same suffix lands in the same group",
+    "input": "state::get session_bbbbbbbbbbbbbbbb_retry failed",
+    "expected": "state::get session_<hex>_retry failed"
+  },
+  {
+    "note": "two ids joined by one `_` are both masked, and a suffixed uuid is one placeholder",
+    "input": "s_e2360c40552844efaee1b61aee96dfdf_30341a4cbd8647ad832cbabfffba0e66 and run_0191f0c4-7b2a-7c3d-9e8f-1a2b3c4d5e6f_old",
+    "expected": "s_<hex>_<hex> and run_<id>_old"
+  },
+  {
     "note": "an underscored word that is not hex is left alone",
     "input": "harness_filesystem_grants missing",
     "expected": "harness_filesystem_grants missing"

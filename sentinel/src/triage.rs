@@ -19,7 +19,7 @@
 //! that is not deployed or fails leaves the groups untriaged, and a later
 //! sweep asks again.
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
@@ -34,9 +34,7 @@ use crate::{
 
 pub const JUDGE_FUNCTION_ID: &str = "judge::evaluate";
 /// Groups per sweep, and so per judge call.
-// ponytail: oldest first, so while the judge is down only these 128 get the
-// rule; page past them if a long outage ever leaves rule-only groups waiting.
-const BATCH: usize = 128;
+pub const BATCH: usize = 128;
 /// The judge's own budget for one batch; 60 groups took four seconds.
 const JUDGE_TIMEOUT_MS: u64 = 60_000;
 /// The hub adds 5 s of bus slack on top of the judge's budget.
@@ -105,6 +103,11 @@ pub struct Triage<D: Db, E: EngineRegistry> {
     registry: Arc<Registry<E>>,
     judge: Arc<dyn Judge>,
     paused_until_ms: AtomicI64,
+    /// Untriaged groups the sweeps have already passed over. A group the
+    /// judge cannot label right now (paused, not deployed, or it left the
+    /// group out) stays untriaged; without this, 128 of them at the head
+    /// would keep every newer group, even one the rule settles, waiting.
+    offset: AtomicUsize,
 }
 
 impl<D: Db, E: EngineRegistry> Triage<D, E> {
@@ -114,6 +117,7 @@ impl<D: Db, E: EngineRegistry> Triage<D, E> {
             registry,
             judge,
             paused_until_ms: AtomicI64::new(0),
+            offset: AtomicUsize::new(0),
         }
     }
 
@@ -123,11 +127,30 @@ impl<D: Db, E: EngineRegistry> Triage<D, E> {
             return Ok(0);
         }
         let window_ms = config.triage.delay_ms as i64;
+        let offset = self.offset.load(Ordering::Relaxed);
         let due = self
             .store
-            .untriaged_groups(now_ms - window_ms, BATCH)
+            .untriaged_groups(now_ms - window_ms, BATCH, offset)
             .await?;
+        let fetched = due.len();
+        let labelled = self.label(due, window_ms, now_ms).await?;
+        // Labelled groups leave the untriaged set; the rest of this page now
+        // sits right after `offset`. A short page was the end: start over.
+        let next = if fetched < BATCH {
+            0
+        } else {
+            offset + fetched.saturating_sub(labelled)
+        };
+        self.offset.store(next, Ordering::Relaxed);
+        Ok(labelled)
+    }
 
+    async fn label(
+        &self,
+        due: Vec<UntriagedGroup>,
+        window_ms: i64,
+        now_ms: i64,
+    ) -> Result<usize, SentinelError> {
         let mut labelled = 0;
         let mut asking = Vec::new();
         for group in due {

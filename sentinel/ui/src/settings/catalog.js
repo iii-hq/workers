@@ -79,5 +79,6 @@ export function readCatalog(response) {
  */
 export function withStoredModel(options, selected) {
   if (!selected || options.some((option) => option.id === selected)) return options
-  return [...options, { id: selected, label: splitKey(selected).model || selected }]
+  const name = splitKey(selected).model || selected
+  return [...options, { id: selected, label: `${name} (not offered now)` }]
 }
