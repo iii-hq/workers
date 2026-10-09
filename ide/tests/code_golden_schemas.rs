@@ -54,6 +54,7 @@ fn catalog_lists_every_function_in_registration_order() {
             "coder::move",
             "coder::list-templates",
             "coder::scaffold-worker",
+            "coder::find-relevant",
         ]
     );
 }

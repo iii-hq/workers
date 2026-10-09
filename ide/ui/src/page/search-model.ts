@@ -2,7 +2,7 @@
    renders: matches grouped by file, each line trimmed to a window around
    the hit, plus the flat row list a virtualized list walks. */
 
-import type { ContentMatch, SearchResponse } from './coder'
+import type { ContentMatch, FindRelevantResponse, SearchResponse } from './coder'
 import { basename, dirname } from './paths'
 
 export interface SearchMatchRow {
@@ -154,6 +154,58 @@ export function groupContentMatches(
   return [...groups.values()]
 }
 
+/* Units the parsers could not name fall back to their syntax kind; as a
+   lead they say where, not what. */
+const UNNAMED_UNITS = new Set([
+  'source',
+  'comment',
+  'use_declaration',
+  'extern_crate_declaration',
+  'attribute_item',
+  'inner_attribute_item',
+  'import_statement',
+  'import_from_statement',
+  'future_import_statement',
+  'import_declaration',
+  'package_clause',
+  'expression_statement',
+  'export_statement',
+])
+
+/** Whether a lead names its unit rather than falling back to a syntax kind. */
+export function isNamedLead(name: string | null | undefined): name is string {
+  return !!name && !UNNAMED_UNITS.has(name.slice(name.lastIndexOf('.') + 1))
+}
+
+/** `coder::find-relevant` files as search rows, in the worker's ranking:
+    an excerpt opens at its first non-blank line and shows it, a named lead
+    shows its line range (a syntax-kind fallback says where, not what), a
+    file with neither gets one row. Render with
+    `query: ''` so nothing is highlighted; the grouping Map keeps the
+    insertion (ranking) order. */
+export function relevantAsMatches(out: FindRelevantResponse): ContentMatch[] {
+  const rows: ContentMatch[] = []
+  for (const file of out.files) {
+    for (const excerpt of file.excerpts) {
+      const lines = excerpt.text.split('\n')
+      const at = Math.max(
+        0,
+        lines.findIndex((line) => line.trim() !== ''),
+      )
+      rows.push({ path: file.path, line: excerpt.line_from + at, column: 1, text: lines[at] })
+    }
+    const leads = file.leads.filter((lead) => isNamedLead(lead.name))
+    for (const lead of leads) {
+      const range = `lines ${lead.line_from}-${lead.line_to}`
+      rows.push({ path: file.path, line: lead.line_from, column: 1, text: `${lead.name} ${range}` })
+    }
+    if (file.excerpts.length === 0 && leads.length === 0) {
+      rows.push({ path: file.path, line: 1, column: 1, text: 'relevant file' })
+    }
+  }
+  return rows
+}
+
 export interface SearchPathRow {
   path: string
   rel: string
@@ -182,13 +234,16 @@ export type SearchRow =
   | { type: 'section'; key: string; label: string; count: number }
 
 /** The rows a virtual list renders: a section per kind, a header per
-    file with its matches indented beneath unless collapsed. */
+    file with its matches indented beneath unless collapsed. Keys are
+    unique: the judge's rows can share a line (an excerpt and a lead of
+    the same unit), so a repeated line:column gets a `#n` suffix. */
 export function flattenSearchRows(
   groups: readonly SearchFileGroup[],
   paths: readonly SearchPathRow[],
   collapsed: ReadonlySet<string>,
 ): SearchRow[] {
   const rows: SearchRow[] = []
+  const seen = new Map<string, number>()
   if (paths.length > 0) {
     rows.push({ type: 'section', key: 'section:paths', label: 'Files and folders', count: paths.length })
     for (const entry of paths) rows.push({ type: 'path', key: `path:${entry.path}`, entry })
@@ -202,12 +257,10 @@ export function flattenSearchRows(
     rows.push({ type: 'file', key: `file:${group.path}`, group, collapsed: isCollapsed })
     if (isCollapsed) continue
     for (const match of group.matches) {
-      rows.push({
-        type: 'match',
-        key: `match:${group.path}:${match.line}:${match.column}`,
-        group,
-        match,
-      })
+      const key = `match:${group.path}:${match.line}:${match.column}`
+      const repeat = seen.get(key) ?? 0
+      seen.set(key, repeat + 1)
+      rows.push({ type: 'match', key: repeat === 0 ? key : `${key}#${repeat}`, group, match })
     }
   }
   return rows

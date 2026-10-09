@@ -128,7 +128,8 @@ pub struct CoderConfig {
     /// fails with a C218 that reports the file's size and line count and
     /// names the recovery paths (window, stat probe, or per-call
     /// `max_output_bytes` raise, clamped to `max_read_bytes`). Windowed
-    /// reads and batch mode are NOT governed by this key.
+    /// reads and batch mode are NOT governed by this key. It also caps
+    /// `coder::find-relevant`'s excerpt bytes per result (at most 128 KiB).
     #[serde(default = "default_max_output_bytes")]
     pub max_output_bytes: u64,
 
@@ -147,6 +148,26 @@ pub struct CoderConfig {
     /// `coder::scaffold-worker`: a local checkout or a cached clone.
     #[serde(default)]
     pub templates: TemplatesConfig,
+
+    /// Judge calls `coder::find-relevant` keeps in flight, shared by every
+    /// ask of this worker (1..=64). Keep it below the judge provider's own
+    /// limit (judge-typesafe `concurrency`, default 4) so other judge callers
+    /// (harness reconcile, directory search) keep a free slot. That headroom
+    /// only exists on a parallel provider: a serial local one (judge-clef)
+    /// runs one pass at a time, so those calls wait behind an ask's passes
+    /// at any slot count. A new count applies to asks started after it.
+    #[serde(default = "default_find_relevant_judge_slots")]
+    #[schemars(range(min = 1, max = 64))]
+    pub find_relevant_judge_slots: u32,
+
+    /// Judge input tokens one `coder::find-relevant` ask may spend (0 =
+    /// unlimited). Past it the ask schedules no more judge calls and returns
+    /// `incomplete` with what it found; calls already scheduled (up to about
+    /// twice `find_relevant_judge_slots`) still go out. TypeSafe bills about
+    /// $0.042 per million; a repository-root ask on a large monorepo can
+    /// pass 20 million, a component folder rarely 2.
+    #[serde(default = "default_find_relevant_judge_token_budget")]
+    pub find_relevant_judge_token_budget: u64,
 }
 
 fn default_default_exclude_globs() -> Vec<String> {
@@ -193,6 +214,12 @@ fn default_max_output_bytes() -> u64 {
 }
 fn default_search_response_budget_bytes() -> u64 {
     262_144
+}
+fn default_find_relevant_judge_token_budget() -> u64 {
+    3_000_000
+}
+fn default_find_relevant_judge_slots() -> u32 {
+    crate::code::judge::DEFAULT_SLOTS as u32
 }
 
 /// Where `coder::list-templates` and `coder::scaffold-worker` read worker
@@ -321,6 +348,8 @@ impl Default for CoderConfig {
             max_output_bytes: default_max_output_bytes(),
             search_response_budget_bytes: default_search_response_budget_bytes(),
             templates: TemplatesConfig::default(),
+            find_relevant_judge_slots: default_find_relevant_judge_slots(),
+            find_relevant_judge_token_budget: default_find_relevant_judge_token_budget(),
         }
     }
 }

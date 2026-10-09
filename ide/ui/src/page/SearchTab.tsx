@@ -3,7 +3,10 @@
    globs behind a disclosure, results grouped by file with the matched
    text highlighted inside a short window of its line, keyboard-walkable
    and virtualized so a thousand hits stay light. Searches run as you
-   type (debounced), a stale response never overwrites a newer one. */
+   type (debounced), a stale response never overwrites a newer one. The
+   Ask toggle sends the query to `coder::find-relevant` instead, on Enter
+   only and one ask at a time: the judge ranks files and the rows are its
+   excerpts and leads. */
 
 import { EmptyState, IconButton, SearchField } from '@iii-dev/console-ui'
 import {
@@ -16,19 +19,22 @@ import {
   Folder,
   Regex,
   RefreshCw,
+  Sparkles,
   WholeWord,
   X,
 } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import type { Host } from '@iii-dev/console-ui'
-import { coderSearch } from './coder'
+import { NOTHING_JUDGED, nextStep, reasonLabel } from '../function-trigger/find-relevant'
+import { coderFindRelevant, coderSearch } from './coder'
 import { FileTypeIcon } from './file-type-icon'
 import {
   effectivePattern,
   flattenSearchRows,
   groupContentMatches,
   pathRows,
+  relevantAsMatches,
   type SearchFileGroup,
   type SearchPathRow,
   type SearchRow,
@@ -41,6 +47,12 @@ import { VirtualList } from './VirtualList'
 const DEBOUNCE_MS = 220
 const ROW_HEIGHT = 22
 const MIN_AUTO_QUERY = 2
+/** The worker's default deadline for one ask; it answers `incomplete` when
+    it runs out, and the bus waits a margin longer (`coderFindRelevant`). */
+const ASK_TIMEOUT_MS = 240_000
+/** Nothing to highlight: the judge's rows carry no literal hit. */
+const NO_HIGHLIGHT = { query: '', regex: false, ignoreCase: true, wholeWord: false }
+const ASK_BUSY = 'An earlier ask is still running on the worker — ask again once it finishes.'
 
 /** An outside request to search: "Find in folder…" from the explorer. */
 export interface SearchRequest {
@@ -50,6 +62,8 @@ export interface SearchRequest {
 }
 
 interface SearchTabProps {
+  /** Kept mounted while another side view shows, so an ask survives. */
+  hidden: boolean
   host: Host
   root: string
   request: SearchRequest | null
@@ -67,6 +81,69 @@ interface SearchResults {
   groups: SearchFileGroup[]
   paths: SearchPathRow[]
   truncated: boolean
+  /** The question an ask answered; the box may have moved on since. */
+  query?: string
+  /** What the ask was: question, folder and exclusions ([askKey]). */
+  asked?: string
+  /** Why an ask's answer is partial. */
+  reason?: string | null
+  /** Whether the judge saw anything: false when nothing was eligible. */
+  judged?: boolean
+}
+
+/** One ask's identity: an answer is stale once any part changes. A field
+    that is not one folder asks the root, like an empty one. */
+function askKey(root: string, query: string, includeGlob: string, excludeGlob: string): string {
+  return JSON.stringify([root, query.trim(), askFolder(includeGlob) ?? '', splitGlobs(excludeGlob)])
+}
+
+/** The Search view's own words for an ask's answer; the worker's `hint`
+    is written for agents (wire fields, `coder::search`). */
+export function askNotice(
+  status: 'complete' | 'incomplete' | 'unavailable',
+  reason?: string | null,
+  judged = true,
+): string {
+  if (status === 'complete') {
+    return judged
+      ? 'The judge found nothing relevant — widen the folder or use text search.'
+      : `${NOTHING_JUDGED} Check the folder and the exclusions.`
+  }
+  const why = reason ? ` (${reasonLabel(reason)})` : ''
+  const next = reason ? nextStep(reason) : ''
+  const head =
+    status === 'unavailable'
+      ? `Judge unavailable${why}.`
+      : `Partial results${why} — the answer may be in files not listed.`
+  return [head, next, status === 'unavailable' ? 'Text search still works.' : 'Check with text search.']
+    .filter(Boolean)
+    .join(' ')
+}
+
+/** The worker's refusals of an ask in this view's words; its own text
+    sends an agent to `coder::search`. */
+const ASK_REFUSALS: [RegExp, string][] = [
+  [/only searches a project folder/, 'Ask only searches a project folder — use text search here.'],
+  [/hidden or secret-named/, 'Ask never searches hidden or secret-named folders — use text search here.'],
+  [/gitignored/, 'Ask never searches folders Git ignores — use text search here.'],
+  [/inside a \.git directory/, "Ask never searches Git's own folder — use text search here."],
+  [/not a directory/, 'Ask takes a folder, not a file — use text search here.'],
+  [/outside the session directory/, 'That folder leads outside this workspace — ask about one inside it.'],
+  [/query is \d+ bytes/, 'The question is too long to ask — shorten it, or use text search for literal text.'],
+  [/not found or not accessible/, 'No such folder in this workspace — check the folder to ask about.'],
+]
+
+/** A refusal in this view's words; a missing folder names the worker's
+    closest folders beside it, relative to `root`. */
+export function askRefusal(error: string, root = ''): string {
+  const near = /Folders beside it, closest name first: (.*?)\.(?:"|$)/.exec(error)
+  if (near) {
+    const base = `${root.replace(/\/+$/, '')}/`
+    const folders = near[1].split(', ').map((folder) => (folder.startsWith(base) ? folder.slice(base.length) : folder))
+    return `No such folder in this workspace — did you mean ${folders.join(', ')}?`
+  }
+  const refusal = ASK_REFUSALS.find(([pattern]) => pattern.test(error))
+  return refusal ? refusal[1] : error
 }
 
 /** A glob the user typed matches anywhere below the root: a bare pattern
@@ -85,14 +162,38 @@ export function splitGlobs(text: string): string[] {
     .filter((glob) => glob !== '')
 }
 
+/** The folder an ask walks, from "folder to ask about": `''` (the root)
+    when empty, the folder of `dir`, `./dir`, `dir/` or `dir/**`, else null
+    — an ask takes one folder inside the root, not file globs. */
+export function askFolder(includeGlob: string): string | null {
+  const folder = includeGlob
+    .trim()
+    .replace(/^\.?(\/|$)/, '')
+    .replace(/\/(\*\*)?$/, '')
+  if (/[*?,]/.test(folder) || folder.split('/').some((part) => part === '.' || part === '..')) return null
+  return folder
+}
+
 /** Module-level, so the memoized list sees the same function every render. */
 const rowKey = (row: SearchRow) => row.key
 
-function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinFile, onRevealFolder }: SearchTabProps) {
+function SearchTabView({
+  hidden,
+  host,
+  root,
+  request,
+  onOpenMatch,
+  onPreviewFile,
+  onPinFile,
+  onRevealFolder,
+}: SearchTabProps) {
   const [query, setQuery] = useState('')
   const [matchCase, setMatchCase] = useState(false)
   const [wholeWord, setWholeWord] = useState(false)
   const [regex, setRegex] = useState(false)
+  const [ask, setAsk] = useState(false)
+  const [askStartedAt, setAskStartedAt] = useState<number | null>(null)
+  const [elapsed, setElapsed] = useState(0)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [includeGlob, setIncludeGlob] = useState('')
   const [excludeGlob, setExcludeGlob] = useState('')
@@ -105,15 +206,28 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
   const [focusIndex, setFocusIndex] = useState(-1)
   const inputRef = useRef<HTMLInputElement>(null)
   // The page's search verb and the console's pane focus both look the box
-  // up by attribute; the shared field carries no data-* props.
+  // up by attribute; the shared field carries no data-* props. Hidden, the
+  // box must not take the pane's focus from the view on show.
   useEffect(() => {
     inputRef.current?.setAttribute('data-shell-search-input', '')
-    inputRef.current?.setAttribute('data-autofocus', '')
-  }, [])
+    inputRef.current?.toggleAttribute('data-autofocus', !hidden)
+  }, [hidden])
   const listRef = useRef<HTMLDivElement>(null)
   // Only the newest in-flight search may land — a slow older response
   // must not overwrite a newer one.
   const seqRef = useRef(0)
+  // The seq of the ask the worker is still running, 0 when none. The
+  // worker cannot cancel an ask, and a second one would share its judge
+  // slots, so a new ask waits even for one whose answer was dropped.
+  const askingRef = useRef(0)
+  // That ask's [askKey] and start: Enter on the same ask while it runs
+  // re-attaches to it, even after its answer was dropped.
+  const askingKeyRef = useRef('')
+  const askStartRef = useRef(0)
+  // The seq that shows that ask: its own, or a fresh one when Enter
+  // re-attaches, so seqRef never goes back to a seq an older text search
+  // still holds.
+  const askViewRef = useRef(0)
   const appliedRequestRef = useRef(0)
 
   const run = useCallback(
@@ -125,6 +239,7 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
       includeGlob: string
       excludeGlob: string
       useGitignore: boolean
+      ask: boolean
     }) => {
       const q = params.query
       if (q.trim() === '') {
@@ -132,11 +247,70 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
         setResults(null)
         setError(null)
         setSearching(false)
+        setAskStartedAt(null)
+        return
+      }
+      if (params.ask && askingRef.current !== 0) {
+        if (askingKeyRef.current === askKey(root, q, params.includeGlob, params.excludeGlob)) {
+          // Its then/finally land again; any newer search is superseded.
+          askViewRef.current = ++seqRef.current
+          setSearching(true)
+          setError(null)
+          setAskStartedAt(askStartRef.current)
+        } else setError(ASK_BUSY)
         return
       }
       const seq = ++seqRef.current
       setSearching(true)
       setError(null)
+      if (params.ask) {
+        const folder = askFolder(params.includeGlob)
+        askStartRef.current = Date.now()
+        setAskStartedAt(askStartRef.current)
+        askingRef.current = seq
+        askViewRef.current = seq
+        askingKeyRef.current = askKey(root, q, params.includeGlob, params.excludeGlob)
+        coderFindRelevant(host, {
+          query: q,
+          root,
+          path: folder ? `${root.replace(/\/+$/, '')}/${folder}` : root,
+          excludeGlobs: splitGlobs(params.excludeGlob),
+          timeoutMs: ASK_TIMEOUT_MS,
+        })
+          .then((out) => {
+            if (seqRef.current !== askViewRef.current) return
+            if (out.status === 'unavailable') {
+              setResults(null)
+              setError(askNotice(out.status, out.reason))
+              return
+            }
+            setResults({
+              groups: groupContentMatches(relevantAsMatches(out), root, NO_HIGHLIGHT),
+              paths: [],
+              truncated: out.status === 'incomplete',
+              query: q.trim(),
+              asked: askingKeyRef.current,
+              reason: out.reason,
+              judged: (out.stats?.judge_calls ?? 0) + (out.stats?.cache_hits ?? 0) > 0,
+            })
+            setDismissed(new Set())
+            setFocusIndex(-1)
+          })
+          .catch((err: unknown) => {
+            if (seqRef.current !== askViewRef.current) return
+            setResults(null)
+            setError(askRefusal(errorMessage(err), root))
+          })
+          .finally(() => {
+            askingRef.current = 0
+            setError((shown) => (shown === ASK_BUSY ? null : shown))
+            if (seqRef.current !== askViewRef.current) return
+            setSearching(false)
+            setAskStartedAt(null)
+          })
+        return
+      }
+      setAskStartedAt(null)
       const options = { query: q, regex: params.regex, ignoreCase: !params.matchCase, wholeWord: params.wholeWord }
       const { pattern, regex: sendRegex } = effectivePattern(options)
       coderSearch(host, {
@@ -171,18 +345,45 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
     [host, root],
   )
 
-  // Search as you type. A fresh root clears the old answer.
+  // A new root orphans the answer and any search in flight: rows carry
+  // paths relative to the old root, and a click would open them in the
+  // new one. Text search re-runs below; an ask waits for Enter.
+  const shownRootRef = useRef(root)
+  useEffect(() => {
+    if (shownRootRef.current === root) return
+    shownRootRef.current = root
+    seqRef.current += 1
+    setResults(null)
+    setError(null)
+    setSearching(false)
+    setAskStartedAt(null)
+  }, [root])
+
+  // Search as you type. An ask costs judge calls, so it runs on Enter only.
   useEffect(() => {
     if (query.trim().length < MIN_AUTO_QUERY) {
-      if (query.trim() === '') run({ query: '', matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore })
+      if (query.trim() === '')
+        run({ query: '', matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore, ask })
       return
     }
+    if (ask) return
     const timer = window.setTimeout(
-      () => run({ query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore }),
+      () => run({ query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore, ask }),
       DEBOUNCE_MS,
     )
     return () => window.clearTimeout(timer)
-  }, [query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore, run])
+  }, [query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore, ask, run])
+
+  // Seconds since the running ask started; asks take tens of seconds.
+  useEffect(() => {
+    setElapsed(0)
+    if (askStartedAt === null) return
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - askStartedAt) / 1000)), 1000)
+    return () => window.clearInterval(timer)
+  }, [askStartedAt])
+  // The live region says only start and finish; the ticking seconds sit
+  // beside it, hidden from screen readers.
+  const searchingLabel = askStartedAt !== null ? 'asking the judge…' : 'searching…'
 
   useEffect(() => {
     if (!request || request.seq === appliedRequestRef.current) return
@@ -206,7 +407,15 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
     () => (results ? flattenSearchRows(visibleGroups, results.paths, collapsed) : []),
     [results, visibleGroups, collapsed],
   )
-  const summary = results ? searchSummary(visibleGroups, results.paths, results.truncated) : null
+  // An incomplete ask has its own notice; "refine the query" is text-search advice.
+  const summary = results ? searchSummary(visibleGroups, results.paths, results.truncated && !ask) : null
+  const staleNote =
+    ask && !searching && results?.asked !== undefined && results.asked !== askKey(root, query, includeGlob, excludeGlob)
+      ? results.query === query.trim()
+        ? 'Results are for an earlier folder or exclusions — press Enter to ask again.'
+        : `Results for “${results.query ?? ''}” — press Enter to ask again.`
+      : null
+  const askFolderIgnored = ask && askFolder(includeGlob) === null
   const allCollapsed = visibleGroups.length > 0 && visibleGroups.every((group) => collapsed.has(group.path))
 
   const toggleGroup = useCallback((path: string) => {
@@ -368,15 +577,15 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
   )
 
   return (
-    <div className="shui-search">
+    <div className="shui-search" hidden={hidden}>
       <ViewHeader
         title="Search"
         actions={
           <>
             <IconButton
               label="Refresh"
-              disabled={query.trim() === ''}
-              onClick={() => run({ query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore })}
+              disabled={query.trim() === '' || askStartedAt !== null}
+              onClick={() => run({ query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore, ask })}
             >
               <RefreshCw aria-hidden />
             </IconButton>
@@ -408,7 +617,7 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
         className="shui-search-form"
         onSubmit={(event) => {
           event.preventDefault()
-          run({ query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore })
+          run({ query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore, ask })
         }}
       >
         <div className="shui-search-box">
@@ -416,11 +625,17 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
             ref={inputRef}
             value={query}
             onChange={setQuery}
-            placeholder="Search"
+            placeholder={ask ? 'Ask what the code does, then Enter' : 'Search'}
             aria-label="Search query"
             className="shui-search-query"
             onKeyDown={(event) => {
-              if (event.key === 'ArrowDown' && rows.length > 0) {
+              // Run here, not by implicit form submission: with the details
+              // open the form has three text fields and no submit button,
+              // so the browser's Enter-to-submit never fires.
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                event.preventDefault()
+                run({ query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore, ask })
+              } else if (event.key === 'ArrowDown' && rows.length > 0) {
                 event.preventDefault()
                 setFocusIndex(stepSearchRow(rows, -1, 1))
                 listRef.current?.focus()
@@ -428,14 +643,42 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
             }}
           />
           <span className="shui-search-toggles">
-            <SearchToggle label="Match case" pressed={matchCase} onToggle={() => setMatchCase((value) => !value)}>
-              <CaseSensitive aria-hidden />
-            </SearchToggle>
-            <SearchToggle label="Match whole word" pressed={wholeWord} onToggle={() => setWholeWord((value) => !value)}>
-              <WholeWord aria-hidden />
-            </SearchToggle>
-            <SearchToggle label="Use regular expression" pressed={regex} onToggle={() => setRegex((value) => !value)}>
-              <Regex aria-hidden />
+            {ask ? null : (
+              <>
+                <SearchToggle label="Match case" pressed={matchCase} onToggle={() => setMatchCase((value) => !value)}>
+                  <CaseSensitive aria-hidden />
+                </SearchToggle>
+                <SearchToggle
+                  label="Match whole word"
+                  pressed={wholeWord}
+                  onToggle={() => setWholeWord((value) => !value)}
+                >
+                  <WholeWord aria-hidden />
+                </SearchToggle>
+                <SearchToggle
+                  label="Use regular expression"
+                  pressed={regex}
+                  onToggle={() => setRegex((value) => !value)}
+                >
+                  <Regex aria-hidden />
+                </SearchToggle>
+              </>
+            )}
+            <SearchToggle
+              label="Ask the judge"
+              title="Ask the judge which code does this (Enter to run; file text is sent to the judge provider)"
+              pressed={ask}
+              onToggle={() => {
+                // Drop the other mode's answer; leaving ask re-runs text search.
+                seqRef.current += 1
+                setResults(null)
+                setError(null)
+                setSearching(false)
+                setAskStartedAt(null)
+                setAsk((value) => !value)
+              }}
+            >
+              <Sparkles aria-hidden />
             </SearchToggle>
           </span>
         </div>
@@ -449,29 +692,29 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
           >
             <Ellipsis aria-hidden />
           </button>
-          {summary !== null ? (
-            <span className="shui-search-summary" role="status">
-              {searching ? 'searching…' : summary}
-            </span>
-          ) : searching ? (
-            <span className="shui-search-summary" role="status">
-              searching…
-            </span>
-          ) : null}
+          <span className="shui-search-summary">
+            <span role="status">{searching ? searchingLabel : (summary ?? '')}</span>
+            {askStartedAt !== null ? <span aria-hidden="true"> {elapsed}s</span> : null}
+          </span>
         </div>
         {detailsOpen ? (
           <div className="shui-search-details">
             <label className="shui-search-field">
-              <span>files to include</span>
+              <span>{ask ? 'folder to ask about' : 'files to include'}</span>
               <input
                 type="text"
                 value={includeGlob}
                 onChange={(event) => setIncludeGlob(event.target.value)}
-                placeholder="e.g. *.ts, src/**"
+                placeholder={ask ? 'e.g. src' : 'e.g. *.ts, src/**'}
                 autoComplete="off"
                 spellCheck={false}
               />
             </label>
+            {askFolderIgnored ? (
+              <span className="shui-search-summary">
+                An ask takes one folder (e.g. src) — it asks about the whole root.
+              </span>
+            ) : null}
             <label className="shui-search-field">
               <span>files to exclude</span>
               <input
@@ -483,22 +726,43 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
                 spellCheck={false}
               />
             </label>
-            <label className="shui-search-check">
-              <input type="checkbox" checked={useGitignore} onChange={(event) => setUseGitignore(event.target.checked)} />
-              <span>skip files ignored by Git</span>
-            </label>
+            {ask ? null : (
+              // An ask always skips ignored files.
+              <label className="shui-search-check">
+                <input
+                  type="checkbox"
+                  checked={useGitignore}
+                  onChange={(event) => setUseGitignore(event.target.checked)}
+                />
+                <span>skip files ignored by Git</span>
+              </label>
+            )}
           </div>
         ) : null}
       </form>
 
       {error ? <div className="shui-side-note warn">{error}</div> : null}
+      {staleNote ? <div className="shui-side-note">{staleNote}</div> : null}
       {results && rows.length === 0 && !searching ? (
         <div className="shui-side-empty">
-          <EmptyState title="No results" description="Nothing matched. Review the query and the configured exclusions." />
+          <EmptyState
+            title="No results"
+            description={
+              results.groups.length > 0
+                ? 'All results dismissed — search again to restore them.'
+                : ask
+                  ? askNotice(results.truncated ? 'incomplete' : 'complete', results.reason, results.judged)
+                  : 'Nothing matched. Review the query and the configured exclusions.'
+            }
+          />
         </div>
       ) : null}
-      {results?.truncated ? (
-        <div className="shui-search-truncated">Showing the first results only — narrow the query or the folder.</div>
+      {results?.truncated && !(ask && rows.length === 0) ? (
+        <div className="shui-search-truncated">
+          {ask
+            ? askNotice('incomplete', results.reason)
+            : 'Showing the first results only — narrow the query or the folder.'}
+        </div>
       ) : null}
       {rows.length > 0 ? (
         <VirtualList
@@ -524,11 +788,13 @@ export const SearchTab = memo(SearchTabView)
 
 function SearchToggle({
   label,
+  title = label,
   pressed,
   onToggle,
   children,
 }: {
   label: string
+  title?: string
   pressed: boolean
   onToggle: () => void
   children: React.ReactNode
@@ -539,7 +805,7 @@ function SearchToggle({
       className={`shui-search-toggle${pressed ? ' active' : ''}`}
       aria-label={label}
       aria-pressed={pressed}
-      title={label}
+      title={title}
       onClick={onToggle}
     >
       {children}

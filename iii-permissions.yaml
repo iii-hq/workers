@@ -484,6 +484,11 @@ rules:
   - coder::tree
   # Lists scaffoldable templates; a refresh only updates the IDE's own cache.
   - coder::list-templates
+  # Read-only too, but sends file text to the session's judge provider
+  # (possibly hosted). To take it from agents, replace this line with
+  # '!coder::find-relevant' (first match wins: a deny below it never
+  # fires). The IDE's Search tab calls it directly, outside this gate.
+  - coder::find-relevant
   # fp: the twenty-three pure value transforms are side-effect-free reshapes (no
   # I/O, no authority). fp::pipe stays at the needs_approval default ON
   # PURPOSE: its steps run with the fp worker's authority, so the pipe

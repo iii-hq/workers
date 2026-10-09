@@ -170,3 +170,31 @@ the ide runs in, so a harness session without `compose::add`, or whose
 `compose::add` the approval gate would not allow outright, gets the files
 only, with a note (an explicit `start: true` is refused there); its own
 `compose::add` then goes through approval as usual.
+
+To find where or how something works, ask `coder::find-relevant` with the
+question in plain words ("where does the harness stamp the filesystem scope
+on coder calls?"). It asks the judge which folders, files and declarations
+matter and returns files best first with verbatim excerpts and line ranges.
+Use `coder::search` instead for an exact symbol, string or filename. Read
+the returned excerpts, and `leads` via `coder::read-file`, before searching
+again. Set `path` to the folder of the component the question is about
+(`judge/src`, not the repository root): every level is a judge round trip
+and the judge bills per token, so a whole-repo ask on a large repository
+takes minutes and stops at the judge token budget (reason `token_budget`).
+Follow `hint` when the result carries one. `incomplete` means partial
+coverage: the answer may be in files not listed, so verify with
+`coder::search` before trusting the list (`reason` says why: narrow `path`
+for a budget or walk limit, read listed files without excerpts directly
+after `request_size`, retry after `changed`). `complete` with no files
+means nothing under `path` was eligible (check `exclude_globs`) or looked
+relevant (widen `path` or use `coder::search`). `unavailable` means no
+judge answered (fall back to `coder::search`; with reason
+`listing_timeout`, retry the ask in a minute; with `window_too_small`,
+pick a session judge with a larger window). The
+query, root-relative paths and file text go to the session's judge
+provider, which may be hosted; protected, ignored, hidden and
+secret-looking files never do, and a hidden, secret-named or gitignored
+`path`, or one outside a project folder, is refused
+(use `coder::search` there). `exclude_globs` are relative to the session
+root, as in `coder::search`. An excerpt with `partial` is only a byte span of
+its lines: read the file before rewriting those lines.

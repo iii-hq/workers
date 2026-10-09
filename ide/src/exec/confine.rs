@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 /// counts only as git's `gitdir: <common>/worktrees/<id>` whose back-pointer
 /// (`<id>/gitdir`) names this file. Forging that takes a write inside the
 /// common dir it would grant. Anything else (a submodule too) is `None`.
+/// Both links are read as small regular files, so a planted FIFO or device
+/// cannot hang or exhaust the caller.
 pub fn repo_git_dir(root: &Path) -> Option<PathBuf> {
     for dir in root.ancestors() {
         let dot_git = dir.join(".git");
@@ -20,15 +22,12 @@ pub fn repo_git_dir(root: &Path) -> Option<PathBuf> {
         if meta.is_dir() {
             return dot_git.canonicalize().ok();
         }
-        if !meta.is_file() {
-            return None;
-        }
-        let text = std::fs::read_to_string(&dot_git).ok()?;
+        let text = pointer(&dot_git)?;
         let gitdir = dir
             .join(text.strip_prefix("gitdir:")?.trim())
             .canonicalize()
             .ok()?;
-        let back = std::fs::read_to_string(gitdir.join("gitdir")).ok()?;
+        let back = pointer(&gitdir.join("gitdir"))?;
         if gitdir.join(back.trim()).canonicalize().ok()? != dot_git.canonicalize().ok()? {
             return None;
         }
@@ -40,6 +39,25 @@ pub fn repo_git_dir(root: &Path) -> Option<PathBuf> {
         return is_git_dir.then(|| common.to_path_buf());
     }
     None
+}
+
+/// The text of `path` when it is a regular file of at most 4 KiB, as git's
+/// one-line links are; a symlink, FIFO or device is `None`.
+// ponytail: checked, then opened: a FIFO swapped in between still blocks
+// the open; open with O_NOFOLLOW | O_NONBLOCK if that race ever matters.
+fn pointer(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > 4096 {
+        return None;
+    }
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(4096)
+        .read_to_string(&mut text)
+        .ok()?;
+    Some(text)
 }
 
 /// Every path a confined exec may write under: the (canonical) scope root and
@@ -395,6 +413,21 @@ mod tests {
         std::fs::write(looks_like_git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
         assert_eq!(self_pointing(&looks_like_git.join("r")), None);
         assert_eq!(self_pointing(&tmp.path().join("q/worktrees")), None);
+    }
+
+    /// A back-pointer that is a FIFO or a link to an endless device is
+    /// refused without being read.
+    #[test]
+    fn a_back_pointer_that_is_not_a_small_file_is_never_read() {
+        let (tmp, main_git) = linked_worktree();
+        let back = main_git.join("worktrees/wt/gitdir");
+        std::fs::remove_file(&back).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", &back).unwrap();
+        assert_eq!(repo_git_dir(&tmp.path().join("wt")), None);
+        std::fs::remove_file(&back).unwrap();
+        let made = std::process::Command::new("mkfifo").arg(&back).status();
+        assert!(made.unwrap().success());
+        assert_eq!(repo_git_dir(&tmp.path().join("wt")), None);
     }
 
     #[test]

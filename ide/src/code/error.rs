@@ -182,13 +182,40 @@ impl CoderError {
 
     /// The primary C211 wording. Single constructor so the missing and
     /// glob-denied cases can never drift apart (REDACTION INVARIANT).
-    /// `not_found_or_denied_subtree` below is the ONLY other allowed
-    /// C211 shape.
+    /// `not_found_or_denied_near` and `not_found_or_denied_subtree` below
+    /// are the ONLY other allowed C211 shapes.
     pub fn not_found_or_denied(path: &str) -> Self {
         CoderError::NotFoundOrDenied(format!("{path}: {C211_SUFFIX}"))
     }
 
-    /// The ONLY other allowed C211 shape: a recursive delete refused
+    /// [`not_found_or_denied`] plus the eligible folders beside `path`
+    /// (`coder::find-relevant`). Redaction-safe: the caller could list
+    /// them with coder::list-folder, protected entries are never named,
+    /// and the list is the same whether `path` is missing or denied.
+    ///
+    /// [`not_found_or_denied`]: Self::not_found_or_denied
+    pub fn not_found_or_denied_near(path: &str, near: &[String]) -> Self {
+        CoderError::NotFoundOrDenied(format!(
+            "{path}: {C211_SUFFIX} Folders beside it, closest name first: {}.",
+            near.join(", ")
+        ))
+    }
+
+    /// [`not_found_or_denied`] for a relative `path`, naming the folder it
+    /// resolved against (`coder::find-relevant` on an unjailed worker, whose
+    /// roots are not projects). Redaction-safe: the same whether `path` is
+    /// missing or denied, and `anchor` is the worker's own root (as C215
+    /// names it), not a discovered path.
+    ///
+    /// [`not_found_or_denied`]: Self::not_found_or_denied
+    pub fn not_found_or_denied_relative(path: &str, anchor: &std::path::Path) -> Self {
+        CoderError::NotFoundOrDenied(format!(
+            "{path}: {C211_SUFFIX} Relative paths resolve against {}; pass an absolute path.",
+            anchor.display()
+        ))
+    }
+
+    /// The other allowed C211 shape: a recursive delete refused
     /// because the subtree contains non-accessible entries. Redaction-safe
     /// because non-accessible entries' EXISTENCE is already public by
     /// design — `list-folder`/`tree` show them with `non_accessible: true`

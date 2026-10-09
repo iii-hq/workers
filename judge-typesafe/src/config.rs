@@ -23,6 +23,11 @@ pub struct JevConfig {
     /// Maximum relative deadline for evaluations and model listing.
     #[schemars(range(min = 1))]
     pub max_timeout_ms: u64,
+    /// Maximum TypeSafe HTTP requests in flight across every caller of this
+    /// worker. Raise it for bulk callers (coder::find-relevant); TypeSafe
+    /// answers 429 past its account rate limit.
+    #[schemars(range(min = 1, max = 64))]
+    pub concurrency: usize,
 }
 impl std::fmt::Debug for JevConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -32,6 +37,7 @@ impl std::fmt::Debug for JevConfig {
             .field("max_request_bytes", &self.max_request_bytes)
             .field("max_response_bytes", &self.max_response_bytes)
             .field("max_timeout_ms", &self.max_timeout_ms)
+            .field("concurrency", &self.concurrency)
             .finish()
     }
 }
@@ -43,6 +49,7 @@ impl Default for JevConfig {
             max_request_bytes: judge_contract::DEFAULT_MAX_REQUEST_BYTES,
             max_response_bytes: judge_contract::DEFAULT_MAX_RESPONSE_BYTES,
             max_timeout_ms: judge_contract::DEFAULT_MAX_TIMEOUT_MS,
+            concurrency: crate::client::DEFAULT_CONCURRENCY,
         }
     }
 }
@@ -50,6 +57,9 @@ impl JevConfig {
     pub fn validate(&self) -> Result<(), String> {
         if self.model.trim().is_empty() {
             return Err("JEV model must not be blank".into());
+        }
+        if !(1..=crate::client::MAX_CONCURRENCY).contains(&self.concurrency) {
+            return Err("JEV concurrency must be between 1 and 64".into());
         }
         self.execution_limits()
             .validate()

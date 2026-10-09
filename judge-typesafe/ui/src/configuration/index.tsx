@@ -17,7 +17,7 @@ import { type ComponentType, useCallback, useEffect, useRef, useState } from 're
 /** What the worker uses when the entry stores no model. */
 export const BUILT_IN_MODEL = 'jev-latest'
 
-const limitFields = [
+const limitFields: { field: string; label: string; fallback: number; max?: number; description: string }[] = [
   {
     field: 'max_request_bytes',
     label: 'Maximum request bytes',
@@ -36,8 +36,17 @@ const limitFields = [
     fallback: 300000,
     description: 'Maximum caller timeout, including queue waits and response reading. Clear to use 300000 (5 minutes).',
   },
+  {
+    field: 'concurrency',
+    label: 'Concurrent requests',
+    fallback: 4,
+    max: 64,
+    description:
+      'TypeSafe requests in flight across every caller (1 to 64). Raise it for bulk callers such as coder::find-relevant; TypeSafe answers 429 past its rate limit. Clear to use 4.',
+  },
 ]
 const knownFields = ['api_key', 'model', ...limitFields.map(({ field }) => field)]
+const maxOf = (field: string) => limitFields.find((entry) => entry.field === field)?.max
 
 export interface ModelCard {
   name: string
@@ -143,7 +152,7 @@ export function JevConfigForm({
     if (raw === '') delete next[field]
     else {
       const number = Number(raw)
-      if (!Number.isSafeInteger(number) || number <= 0) return
+      if (!Number.isSafeInteger(number) || number <= 0 || number > (maxOf(field) ?? Number.MAX_SAFE_INTEGER)) return
       next[field] = number
     }
     props.onChange(next)
@@ -274,7 +283,7 @@ export function JevConfigForm({
         description="Positive integers only. Byte limits are local transport safeguards; provider token limits still apply. Callers can supply a shorter timeout."
       >
         <SettingsList>
-          {limitFields.map(({ field, label, fallback, description }) => (
+          {limitFields.map(({ field, label, fallback, max, description }) => (
             <SettingsField
               key={field}
               id={`jev-cfg-${field}`}
@@ -287,6 +296,7 @@ export function JevConfigForm({
                   {...controlProps}
                   type="number"
                   min={1}
+                  max={max}
                   step={1}
                   aria-label={label}
                   placeholder={String(fallback)}
