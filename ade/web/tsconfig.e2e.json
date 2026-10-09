@@ -1,8 +1,8 @@
 {
-  "extends": "./tsconfig.node.json",
+  "extends": ["./tsconfig.node.json", "./tsconfig.app.json"],
   "compilerOptions": {
     "allowImportingTsExtensions": false,
-    "types": ["node", "@playwright/test"]
+    "types": ["node", "@playwright/test", "vite/client"]
   },
   "include": ["e2e", "playwright.config.ts"]
 }

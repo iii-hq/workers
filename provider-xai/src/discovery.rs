@@ -352,7 +352,7 @@ mod tests {
 
     #[tokio::test]
     async fn real_http_empty_invalid_success_and_transport_are_distinct() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         for (body, expected) in [
             ("{\"data\":[]}", DiscoveryOutcome::Empty),
             ("{}", DiscoveryOutcome::InvalidResponse),
@@ -367,8 +367,15 @@ mod tests {
             let addr = listener.local_addr().unwrap();
             let server = tokio::spawn(async move {
                 let (mut socket, _) = listener.accept().await.unwrap();
-                let mut request = [0; 2048];
-                socket.read(&mut request).await.unwrap();
+                let mut reader = BufReader::new(&mut socket);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    assert!(reader.read_line(&mut line).await.unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
                 socket.write_all(format!("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
             });
             let fetched = fetch_live_models(

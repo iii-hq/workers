@@ -68,7 +68,7 @@ struct StubUpstream {
 #[tokio::test(flavor = "multi_thread")]
 async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
     use iii_sdk::{errors::Error, protocol::RegisterTriggerInput, RegisterFunction};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let engine = engine_or_skip!();
     let iii = register_worker(&engine.url, test_init_options());
     register_router(iii.clone()).await.unwrap();
@@ -112,8 +112,15 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
     let server = tokio::spawn(async move {
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = [0; 2048];
-            socket.read(&mut request).await.unwrap();
+            let mut reader = BufReader::new(&mut socket);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                assert!(reader.read_line(&mut line).await.unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
             let (status, body) = current.lock().unwrap().clone();
             socket.write_all(format!("HTTP/1.1 {status} Stub\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
         }
