@@ -422,10 +422,15 @@ describe('judgePlan', () => {
     ])
   })
 
-  it('needs no key for a local judge', () => {
-    const laya = JUDGE_OPTIONS.find((option) => option.id === 'laya')
-    if (!laya) throw new Error('no laya')
-    const plan = judgePlan(laya, undefined, new Set(['judge']))
+  it.each([
+    ['laya', 'judge-laya'],
+    ['decider', 'judge-decider'],
+    ['clef', 'judge-clef'],
+  ])('needs no key for the local judge %s', (id, worker) => {
+    const local = JUDGE_OPTIONS.find((option) => option.id === id)
+    if (!local) throw new Error(`no ${id}`)
+    expect(local.envVar).toBeUndefined()
+    const plan = judgePlan(local, undefined, new Set(['judge']))
     expect(plan.map((step) => step.kind)).toEqual([
       'add-workers',
       'set-config',
@@ -433,7 +438,7 @@ describe('judgePlan', () => {
     ])
     const add = plan[0]
     if (add.kind !== 'add-workers') throw new Error('expected add-workers')
-    expect(add.workers).toEqual(['judge-laya'])
+    expect(add.workers).toEqual([worker])
   })
 })
 

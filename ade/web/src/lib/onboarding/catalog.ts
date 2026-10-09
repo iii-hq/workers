@@ -176,6 +176,14 @@ export const JUDGE_OPTIONS: readonly JudgeOption[] = [
     summary: 'A larger decision model that runs on this machine.',
     runs: 'Runs on this machine · a GPU is recommended · downloads its model once',
   },
+  {
+    id: 'clef',
+    worker: 'judge-clef',
+    title: 'Clef by Cloudflare',
+    summary:
+      "Cloudflare's decision model. Decides every question of a call in one pass, on this machine.",
+    runs: 'Runs on this machine · a GPU is recommended · downloads its 6.5 GB model once',
+  },
 ]
 
 export const JUDGE_HUB_WORKER = 'judge'
