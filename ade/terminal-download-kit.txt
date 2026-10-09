@@ -1,0 +1,601 @@
+$ iii trigger directory::download-kit kit=iii-hq/kanban-team@1.0.0
+{
+  "kit": "iii-hq/kanban-team",
+  "message": "Install iii-hq/kanban-team 1.0.0 is planned (2 warnings). Review it in the ADE: Directory → Kits, or apply it with `iii trigger directory::kits::apply plan_id=kp_2f11d0d6f872417b9ce7b10c3432addc`.",
+  "plan": {
+    "author": {
+      "handle": "iii-hq",
+      "name": "iii",
+      "verified": true
+    },
+    "blocking": [],
+    "capabilities": {
+      "functions_added": [
+        {
+          "agent": "product-manager",
+          "function": "kanban::board::get"
+        },
+        {
+          "agent": "product-manager",
+          "function": "kanban::ticket::list"
+        },
+        {
+          "agent": "product-manager",
+          "function": "kanban::ticket::get"
+        },
+        {
+          "agent": "product-manager",
+          "function": "kanban::ticket::create"
+        },
+        {
+          "agent": "product-manager",
+          "function": "kanban::ticket::update"
+        },
+        {
+          "agent": "product-manager",
+          "function": "kanban::ticket::move"
+        },
+        {
+          "agent": "product-manager",
+          "function": "kanban::comment::create"
+        },
+        {
+          "agent": "product-manager",
+          "function": "kanban::comment::list"
+        },
+        {
+          "agent": "product-manager",
+          "function": "harness::ask"
+        },
+        {
+          "agent": "reviewer",
+          "function": "kanban::ticket::get"
+        },
+        {
+          "agent": "reviewer",
+          "function": "kanban::ticket::move"
+        },
+        {
+          "agent": "reviewer",
+          "function": "kanban::comment::create"
+        },
+        {
+          "agent": "reviewer",
+          "function": "kanban::comment::list"
+        },
+        {
+          "agent": "reviewer",
+          "function": "kanban::activity::list"
+        },
+        {
+          "agent": "tech-lead",
+          "function": "kanban::board::get"
+        },
+        {
+          "agent": "tech-lead",
+          "function": "kanban::ticket::list"
+        },
+        {
+          "agent": "tech-lead",
+          "function": "kanban::ticket::get"
+        },
+        {
+          "agent": "tech-lead",
+          "function": "kanban::ticket::create"
+        },
+        {
+          "agent": "tech-lead",
+          "function": "kanban::ticket::update"
+        },
+        {
+          "agent": "tech-lead",
+          "function": "kanban::ticket::move"
+        },
+        {
+          "agent": "tech-lead",
+          "function": "kanban::comment::create"
+        },
+        {
+          "agent": "tech-lead",
+          "function": "kanban::comment::list"
+        },
+        {
+          "agent": "tech-lead",
+          "function": "kanban::agent::list"
+        }
+      ],
+      "models_changed": [
+        {
+          "agent": "product-manager",
+          "from": null,
+          "to": "sonnet"
+        },
+        {
+          "agent": "reviewer",
+          "from": null,
+          "to": "sonnet"
+        },
+        {
+          "agent": "tech-lead",
+          "from": null,
+          "to": "opus"
+        }
+      ],
+      "workers_added": []
+    },
+    "counts": {
+      "added": 9,
+      "agents": 3,
+      "collisions": 2,
+      "conflicts": 0,
+      "decisions_required": 0,
+      "functions": 11,
+      "modified": 0,
+      "removed": 0,
+      "skills": 6,
+      "unchanged": 0,
+      "workers": 1
+    },
+    "created_at": "2026-10-09T16:59:22Z",
+    "description": "A product team that researches, plans, builds and reviews work through the kanban board",
+    "expires_at": "2026-10-10T16:59:22Z",
+    "files": [
+      {
+        "agent": {
+          "color": "amber",
+          "description": "Turns a feature conversation into kanban tickets with observable acceptance criteria, and keeps the ticket the single source of truth as the plan changes.",
+          "extends": "iii-minimal",
+          "functions": [
+            "kanban::board::get",
+            "kanban::ticket::list",
+            "kanban::ticket::get",
+            "kanban::ticket::create",
+            "kanban::ticket::update",
+            "kanban::ticket::move",
+            "kanban::comment::create",
+            "kanban::comment::list",
+            "harness::ask"
+          ],
+          "hidden": false,
+          "icon": "review",
+          "id": "product-manager",
+          "logo": "📋",
+          "model": "sonnet",
+          "name": "Product Manager",
+          "path": "agents/product-manager.md",
+          "reasoning_effort": "medium",
+          "sha256": "5c5f87d48d517e153944e0bd6feef63cc979baaaef76c098969416fd9e2c6c31",
+          "size_bytes": 2467,
+          "skills": [
+            "iii-hq/kanban-team/tickets/feature-planning",
+            "iii-hq/kanban-team/tickets/acceptance-criteria",
+            "kanban/tickets/kanban-tickets"
+          ]
+        },
+        "change": "added",
+        "collision": {
+          "modified": false,
+          "owner": "worker",
+          "sha256": "bf9a120125463c0f2000265cd5dc2acd2e4d8418ede4fc917d2c8531a47fa25f",
+          "version": "0.1.18",
+          "worker": "kanban"
+        },
+        "default": "overwrite",
+        "id": "product-manager",
+        "kind": "agent",
+        "local": "occupied",
+        "note": "came from worker kanban 0.1.18",
+        "options": [
+          "overwrite",
+          "keep"
+        ],
+        "ours": "bf9a120125463c0f2000265cd5dc2acd2e4d8418ede4fc917d2c8531a47fa25f",
+        "path": "agents/product-manager.md",
+        "source": "agents/product-manager.md",
+        "theirs": "5c5f87d48d517e153944e0bd6feef63cc979baaaef76c098969416fd9e2c6c31"
+      },
+      {
+        "agent": {
+          "color": "green",
+          "description": "Verifies finished work against the ticket's acceptance criteria — every criterion checked against the running system — and sends it back with a precise comment when one fails.",
+          "extends": "iii-minimal",
+          "functions": [
+            "kanban::ticket::get",
+            "kanban::ticket::move",
+            "kanban::comment::create",
+            "kanban::comment::list",
+            "kanban::activity::list"
+          ],
+          "hidden": false,
+          "icon": "test",
+          "id": "reviewer",
+          "logo": "🔍",
+          "model": "sonnet",
+          "name": "Reviewer",
+          "path": "agents/reviewer.md",
+          "reasoning_effort": null,
+          "sha256": "3f81a2a32626a071630dbc3847806fd685a5cc3e05c3b5f7230695a50a681af5",
+          "size_bytes": 1657,
+          "skills": [
+            "iii-hq/kanban-team/review/checklist",
+            "kanban/tickets/acceptance-review"
+          ]
+        },
+        "change": "added",
+        "default": "overwrite",
+        "id": "reviewer",
+        "kind": "agent",
+        "local": "absent",
+        "options": [
+          "overwrite"
+        ],
+        "path": "agents/reviewer.md",
+        "source": "agents/reviewer.md",
+        "theirs": "3f81a2a32626a071630dbc3847806fd685a5cc3e05c3b5f7230695a50a681af5"
+      },
+      {
+        "agent": {
+          "color": "blue",
+          "description": "Breaks planned tickets into slices that can each be verified on their own, orders them by what unblocks what, and keeps the board honest about progress.",
+          "extends": "iii-minimal",
+          "functions": [
+            "kanban::board::get",
+            "kanban::ticket::list",
+            "kanban::ticket::get",
+            "kanban::ticket::create",
+            "kanban::ticket::update",
+            "kanban::ticket::move",
+            "kanban::comment::create",
+            "kanban::comment::list",
+            "kanban::agent::list"
+          ],
+          "hidden": false,
+          "icon": "code",
+          "id": "tech-lead",
+          "logo": "🧭",
+          "model": "opus",
+          "name": "Tech Lead",
+          "path": "agents/tech-lead.md",
+          "reasoning_effort": "high",
+          "sha256": "17eacda6d4774a518aae0ec488c4def69c8144ca75a23ca6e382e0840f19f928",
+          "size_bytes": 2030,
+          "skills": [
+            "iii-hq/kanban-team/tickets/breakdown",
+            "kanban/tickets/ticket-orchestration"
+          ]
+        },
+        "change": "added",
+        "collision": {
+          "modified": false,
+          "owner": "worker",
+          "sha256": "4a82f2d49104e9415b7858a9d462dffcb6a3babc4b08501a506ab8ecad38bac0",
+          "version": "0.1.18",
+          "worker": "kanban"
+        },
+        "default": "overwrite",
+        "id": "tech-lead",
+        "kind": "agent",
+        "local": "occupied",
+        "note": "came from worker kanban 0.1.18",
+        "options": [
+          "overwrite",
+          "keep"
+        ],
+        "ours": "4a82f2d49104e9415b7858a9d462dffcb6a3babc4b08501a506ab8ecad38bac0",
+        "path": "agents/tech-lead.md",
+        "source": "agents/tech-lead.md",
+        "theirs": "17eacda6d4774a518aae0ec488c4def69c8144ca75a23ca6e382e0840f19f928"
+      },
+      {
+        "change": "added",
+        "default": "overwrite",
+        "id": "iii-hq/kanban-team/legacy/standup-notes",
+        "kind": "skill",
+        "local": "absent",
+        "options": [
+          "overwrite"
+        ],
+        "path": "skills/iii-hq/kanban-team/legacy/standup-notes.md",
+        "skill": {
+          "description": "Summarise yesterday's board activity as a short standup update.",
+          "id": "iii-hq/kanban-team/legacy/standup-notes",
+          "path": "skills/legacy/standup-notes.md",
+          "sha256": "3ecaeb16ebfcfc1989c84feb26adda11d2fd2f039f7d0be04d117d01f506ede6",
+          "size_bytes": 422,
+          "title": "Standup notes",
+          "type": "how-to",
+          "used_by": []
+        },
+        "source": "skills/legacy/standup-notes.md",
+        "theirs": "3ecaeb16ebfcfc1989c84feb26adda11d2fd2f039f7d0be04d117d01f506ede6"
+      },
+      {
+        "change": "added",
+        "default": "overwrite",
+        "id": "iii-hq/kanban-team/review/checklist",
+        "kind": "skill",
+        "local": "absent",
+        "options": [
+          "overwrite"
+        ],
+        "path": "skills/iii-hq/kanban-team/review/checklist.md",
+        "skill": {
+          "description": "What to check beyond the written criteria before moving a ticket to done.",
+          "id": "iii-hq/kanban-team/review/checklist",
+          "path": "skills/review/checklist.md",
+          "sha256": "1af551f018207671c755f198d0f6e864a0e47ef1a791ca219b5dc8c2cc33f42d",
+          "size_bytes": 855,
+          "title": "Review checklist",
+          "type": "checklist",
+          "used_by": [
+            "reviewer"
+          ]
+        },
+        "source": "skills/review/checklist.md",
+        "theirs": "1af551f018207671c755f198d0f6e864a0e47ef1a791ca219b5dc8c2cc33f42d"
+      },
+      {
+        "change": "added",
+        "default": "overwrite",
+        "id": "iii-hq/kanban-team/tickets/acceptance-criteria",
+        "kind": "skill",
+        "local": "absent",
+        "options": [
+          "overwrite"
+        ],
+        "path": "skills/iii-hq/kanban-team/tickets/acceptance-criteria.md",
+        "skill": {
+          "description": "Write criteria a reviewer can verify without asking the author — observable, numbered, each with a Verify line.",
+          "id": "iii-hq/kanban-team/tickets/acceptance-criteria",
+          "path": "skills/tickets/acceptance-criteria.md",
+          "sha256": "e838dadaf874f38af829a53852a89eeec0eb95011afb1f242551dbea710defc6",
+          "size_bytes": 1072,
+          "title": "Acceptance criteria",
+          "type": "reference",
+          "used_by": [
+            "product-manager"
+          ]
+        },
+        "source": "skills/tickets/acceptance-criteria.md",
+        "theirs": "e838dadaf874f38af829a53852a89eeec0eb95011afb1f242551dbea710defc6"
+      },
+      {
+        "change": "added",
+        "default": "overwrite",
+        "id": "iii-hq/kanban-team/tickets/breakdown",
+        "kind": "skill",
+        "local": "absent",
+        "options": [
+          "overwrite"
+        ],
+        "path": "skills/iii-hq/kanban-team/tickets/breakdown.md",
+        "skill": {
+          "description": "Split a planned ticket into slices that are independently checkable, small enough to review, and ordered by dependency.",
+          "id": "iii-hq/kanban-team/tickets/breakdown",
+          "path": "skills/tickets/breakdown.md",
+          "sha256": "a437534647cce18c6f20ca83b145bde7215cfd7c744ab68a558218f14c99f907",
+          "size_bytes": 841,
+          "title": "Ticket breakdown",
+          "type": "how-to",
+          "used_by": [
+            "tech-lead"
+          ]
+        },
+        "source": "skills/tickets/breakdown.md",
+        "theirs": "a437534647cce18c6f20ca83b145bde7215cfd7c744ab68a558218f14c99f907"
+      },
+      {
+        "change": "added",
+        "default": "overwrite",
+        "id": "iii-hq/kanban-team/tickets/feature-planning",
+        "kind": "skill",
+        "local": "absent",
+        "options": [
+          "overwrite"
+        ],
+        "path": "skills/iii-hq/kanban-team/tickets/feature-planning.md",
+        "skill": {
+          "description": "Interview first, then write a ticket whose description stays the source of truth for the feature.",
+          "id": "iii-hq/kanban-team/tickets/feature-planning",
+          "path": "skills/tickets/feature-planning.md",
+          "sha256": "e6dc6ebc2b01995eda858793abd309a16bc17dea9a1870792e85e233f20ff0d9",
+          "size_bytes": 1028,
+          "title": "Feature planning",
+          "type": "how-to",
+          "used_by": [
+            "product-manager"
+          ]
+        },
+        "source": "skills/tickets/feature-planning.md",
+        "theirs": "e6dc6ebc2b01995eda858793abd309a16bc17dea9a1870792e85e233f20ff0d9"
+      },
+      {
+        "change": "added",
+        "default": "overwrite",
+        "id": "iii-hq/kanban-team/tickets/index",
+        "kind": "skill",
+        "local": "absent",
+        "options": [
+          "overwrite"
+        ],
+        "path": "skills/iii-hq/kanban-team/tickets/index.md",
+        "skill": {
+          "description": "How the kanban-team profiles plan, slice and review work as kanban tickets.",
+          "id": "iii-hq/kanban-team/tickets/index",
+          "path": "skills/tickets/index.md",
+          "sha256": "dfe735184e7ffce01a99eaa44bb7c9ffe16832b50edea3040a9b3a534df3795f",
+          "size_bytes": 640,
+          "title": "tickets",
+          "type": "overview",
+          "used_by": []
+        },
+        "source": "skills/tickets/index.md",
+        "theirs": "dfe735184e7ffce01a99eaa44bb7c9ffe16832b50edea3040a9b3a534df3795f"
+      }
+    ],
+    "from": null,
+    "functions": [
+      {
+        "description": null,
+        "id": "harness::ask",
+        "status": "unknown",
+        "used_by": [
+          "product-manager"
+        ],
+        "worker": null,
+        "worker_version": null
+      },
+      {
+        "description": "Read a ticket's activity timeline: field changes, lane moves, deletion and comment events, oldest first.",
+        "id": "kanban::activity::list",
+        "status": "ok",
+        "used_by": [
+          "reviewer"
+        ],
+        "worker": "kanban",
+        "worker_version": "0.1.18"
+      },
+      {
+        "description": "List assignable agent profiles, resolved through iii-directory with a fallback to the configured agents folder.",
+        "id": "kanban::agent::list",
+        "status": "ok",
+        "used_by": [
+          "tech-lead"
+        ],
+        "worker": "kanban",
+        "worker_version": "0.1.18"
+      },
+      {
+        "description": "Read the board: every configured column with its tickets, plus the resolved paths and priorities. Narrow it with statuses, updated_since and limit, and ask for compact rows to keep the response small.",
+        "id": "kanban::board::get",
+        "status": "ok",
+        "used_by": [
+          "product-manager",
+          "tech-lead"
+        ],
+        "worker": "kanban",
+        "worker_version": "0.1.18"
+      },
+      {
+        "description": "Comment on a ticket, or reply to a comment by passing parent_id. Returns the new comment and the ticket.",
+        "id": "kanban::comment::create",
+        "status": "ok",
+        "used_by": [
+          "product-manager",
+          "reviewer",
+          "tech-lead"
+        ],
+        "worker": "kanban",
+        "worker_version": "0.1.18"
+      },
+      {
+        "description": "Read a ticket's comments with filtering, mirroring the kanban:comment trigger: by author, excluding an author, roots only, or after a timestamp.",
+        "id": "kanban::comment::list",
+        "status": "ok",
+        "used_by": [
+          "product-manager",
+          "reviewer",
+          "tech-lead"
+        ],
+        "worker": "kanban",
+        "worker_version": "0.1.18"
+      },
+      {
+        "description": "Create a ticket on the board and return it.",
+        "id": "kanban::ticket::create",
+        "status": "ok",
+        "used_by": [
+          "product-manager",
+          "tech-lead"
+        ],
+        "worker": "kanban",
+        "worker_version": "0.1.18"
+      },
+      {
+        "description": "Read one ticket with its comments and activity. The id accepts the internal uuid or the human-readable key.",
+        "id": "kanban::ticket::get",
+        "status": "ok",
+        "used_by": [
+          "product-manager",
+          "reviewer",
+          "tech-lead"
+        ],
+        "worker": "kanban",
+        "worker_version": "0.1.18"
+      },
+      {
+        "description": "List tickets, optionally narrowed to a column, an assignee or an updated_since timestamp; compact rows carry only key, title, status, priority, assignee and comment_count.",
+        "id": "kanban::ticket::list",
+        "status": "ok",
+        "used_by": [
+          "product-manager",
+          "tech-lead"
+        ],
+        "worker": "kanban",
+        "worker_version": "0.1.18"
+      },
+      {
+        "description": "Move a ticket to a column (and position inside it); used by the board drag and drop.",
+        "id": "kanban::ticket::move",
+        "status": "ok",
+        "used_by": [
+          "product-manager",
+          "reviewer",
+          "tech-lead"
+        ],
+        "worker": "kanban",
+        "worker_version": "0.1.18"
+      },
+      {
+        "description": "Update a ticket field (title, description, status, priority, assignee, labels) and return the ticket.",
+        "id": "kanban::ticket::update",
+        "status": "ok",
+        "used_by": [
+          "product-manager",
+          "tech-lead"
+        ],
+        "worker": "kanban",
+        "worker_version": "0.1.18"
+      }
+    ],
+    "kind": "install",
+    "kit": "iii-hq/kanban-team",
+    "license": "Apache-2.0",
+    "major": false,
+    "notes": "First release: product-manager, tech-lead and reviewer profiles, with the\nplanning, breakdown and review skills they preload.",
+    "plan_id": "kp_2f11d0d6f872417b9ce7b10c3432addc",
+    "published_at": "2026-09-12T21:31:58.497Z",
+    "registry_url": "http://localhost:4914/kits/iii-hq/kanban-team",
+    "repo": "https://github.com/iii-hq/kits/tree/main/kanban-team",
+    "requested": "^1.0.0",
+    "review": "Review it in the ADE (Directory → Kits) or apply it with `iii trigger directory::kits::apply plan_id=kp_2f11d0d6f872417b9ce7b10c3432addc`.",
+    "to": "1.0.0",
+    "warnings": [
+      {
+        "code": "agent_overwrite",
+        "message": "agents/product-manager.md came from worker kanban 0.1.18 and will be replaced.",
+        "path": "agents/product-manager.md"
+      },
+      {
+        "code": "agent_overwrite",
+        "message": "agents/tech-lead.md came from worker kanban 0.1.18 and will be replaced.",
+        "path": "agents/tech-lead.md"
+      }
+    ],
+    "workers": [
+      {
+        "action": "none",
+        "container": "kanban",
+        "declared": "0.1.18",
+        "description": "File-backed kanban board — tickets, threaded comments, agent assignment, the kanban:change and kanban:comment trigger types, and an injectable console board with agent profiles for planning and review.",
+        "installed": "0.1.18",
+        "name": "kanban",
+        "range": "^0.1.0",
+        "registry_url": "http://localhost:4914/workers/kanban",
+        "to": "0.1.18",
+        "type": "binary"
+      }
+    ]
+  },
+  "status": "planned"
+}
