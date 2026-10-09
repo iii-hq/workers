@@ -163,6 +163,25 @@ export const JUDGE_OPTIONS: readonly JudgeOption[] = [
     recommended: true,
   },
   {
+    id: 'openai',
+    worker: 'judge-openai',
+    title: 'Decisions by OpenAI',
+    summary:
+      "OpenAI's hosted Decisions API: a choice or a score with its probabilities, in one call.",
+    runs: 'Hosted · needs an OpenAI API key',
+    envVar: 'OPENAI_API_KEY',
+    keyOwner: 'OpenAI',
+    keysUrl: 'https://platform.openai.com/api-keys',
+  },
+  {
+    id: 'clef',
+    worker: 'judge-clef',
+    title: 'Clef by Cloudflare',
+    summary:
+      "Cloudflare's decision model. Decides every question of a call in one pass, on this machine.",
+    runs: 'Runs on this machine · a GPU is recommended · downloads its 6.5 GB model once',
+  },
+  {
     id: 'laya',
     worker: 'judge-laya',
     title: 'Laya',
@@ -175,14 +194,6 @@ export const JUDGE_OPTIONS: readonly JudgeOption[] = [
     title: 'Decider',
     summary: 'A larger decision model that runs on this machine.',
     runs: 'Runs on this machine · a GPU is recommended · downloads its model once',
-  },
-  {
-    id: 'clef',
-    worker: 'judge-clef',
-    title: 'Clef by Cloudflare',
-    summary:
-      "Cloudflare's decision model. Decides every question of a call in one pass, on this machine.",
-    runs: 'Runs on this machine · a GPU is recommended · downloads its 6.5 GB model once',
   },
 ]
 

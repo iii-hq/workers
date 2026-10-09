@@ -389,6 +389,44 @@ describe('connectPlan', () => {
 })
 
 describe('judgePlan', () => {
+  it('lists the judges hosted first, then the local ones', () => {
+    expect(JUDGE_OPTIONS.map((option) => option.id)).toEqual([
+      'typesafe',
+      'openai',
+      'clef',
+      'laya',
+      'decider',
+    ])
+  })
+
+  it('sets up OpenAI with the key the OpenAI provider may already share', () => {
+    const openai = JUDGE_OPTIONS.find((option) => option.id === 'openai')
+    if (!openai) throw new Error('no openai')
+    const plan = judgePlan(
+      openai,
+      { mode: 'paste', value: 'sk-test-123456' },
+      new Set(['secrets', 'judge']),
+    )
+    expect(plan[1]).toMatchObject({
+      kind: 'store-secret',
+      name: 'OPENAI_API_KEY',
+      consumers: ['judge-openai'],
+    })
+    expect(plan[2]).toMatchObject({
+      configuration: 'judge-openai',
+      path: ['api_key'],
+      value: 'secret://OPENAI_API_KEY',
+    })
+    expect(plan[3]).toMatchObject({ path: ['provider'], value: 'openai' })
+    expect(plan.map(describeStep)).toEqual([
+      'Add the judge-openai worker',
+      'Store your OpenAI key encrypted on this machine',
+      'Connect Decisions by OpenAI with that key',
+      'Have Judge answer with Decisions by OpenAI',
+      'Check that Decisions by OpenAI answers',
+    ])
+  })
+
   it('sets up the hosted judge with its key behind a reference', () => {
     const jev = JUDGE_OPTIONS[0]
     const plan = judgePlan(
