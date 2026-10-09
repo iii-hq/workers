@@ -101,6 +101,7 @@ fn sha256_hex(path: &Path) -> Option<String> {
 fn llama() {
     println!("cargo:rerun-if-changed=native");
     println!("cargo:rerun-if-env-changed=III_LLAMA_CPP_TARBALL");
+    println!("cargo:rerun-if-env-changed=III_LLAMA_CPP_MINIMAL");
     let out = PathBuf::from(env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
     let src = llama_source(&out);
     let os = env::var("CARGO_CFG_TARGET_OS").expect("cargo sets the target OS");
@@ -126,11 +127,18 @@ fn llama() {
         .define("GGML_OPENMP", "OFF")
         .define("BUILD_SHARED_LIBS", if dynamic { "ON" } else { "OFF" });
     if dynamic {
+        // III_LLAMA_CPP_MINIMAL=1 (test-only builds such as Judge E2E): one CPU
+        // module and no Vulkan, a fraction of the build time. Never ship it.
+        let full = if env::var("III_LLAMA_CPP_MINIMAL").as_deref() == Ok("1") {
+            "OFF"
+        } else {
+            "ON"
+        };
         fs::create_dir_all(&backends).expect("creating the backends directory");
         cmake
             .define("GGML_BACKEND_DL", "ON")
-            .define("GGML_CPU_ALL_VARIANTS", "ON")
-            .define("GGML_VULKAN", "ON")
+            .define("GGML_CPU_ALL_VARIANTS", full)
+            .define("GGML_VULKAN", full)
             .define("GGML_BACKEND_DIR", &backends);
     }
     if os == "macos" {
