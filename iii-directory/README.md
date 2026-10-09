@@ -524,7 +524,7 @@ chat cards:
   "kit": "acme/kanban-team", "from": "1.3.0", "to": "1.4.0", "requested": "^1.3.0",
   "bump": "minor", "major": false,
   "author": { "handle": "acme", "name": "Acme", "verified": true },
-  "registry_url": "https://workers.iii.dev/kits/acme/kanban-team", "notes": "…",
+  "registry_url": "<registry_web_url>/kits/acme/kanban-team", "notes": "…",
   "workers": [
     { "name": "github", "range": "^2.0", "installed": null, "action": "add", "to": "2.0.3", "type": "binary" },
     { "name": "kanban", "range": "^1.6", "range_from": "^1.4", "installed": "1.5.2", "action": "update", "to": "1.6.1" }

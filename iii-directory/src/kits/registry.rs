@@ -566,8 +566,8 @@ mod tests {
     #[test]
     fn web_urls_strip_the_api_host_unless_overridden() {
         assert_eq!(
-            kit_web_url("https://api.workers.iii.dev", None, "acme/k"),
-            "https://workers.iii.dev/kits/acme/k"
+            kit_web_url("https://api.registry.example", None, "acme/k"),
+            "https://registry.example/kits/acme/k"
         );
         assert_eq!(
             kit_web_url(
