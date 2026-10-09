@@ -46,8 +46,8 @@ function agentLabel(
 /**
  * The last step: what setup connected, every worker it added (iii is
  * composable, so each one is new behavior in the project), and the
- * project's example prompts — one click opens a new chat with the prompt
- * ready to send, its agent profile and its model chosen.
+ * project's example prompts — one click opens a new chat that sends the
+ * prompt, its agent profile and its model chosen.
  */
 export function ReadyStep({
   onboarding,
@@ -63,7 +63,7 @@ export function ReadyStep({
   prompts: readonly ExamplePrompt[] | null
   /** Agent profile display names by id, for each prompt's chip. */
   agentNames: ReadonlyMap<string, string>
-  /** Close the wizard and open a new chat with this prompt in the composer. */
+  /** Close the wizard and open a new chat that sends this prompt. */
   onPrompt: (prompt: ExamplePrompt) => void
   /** Close the wizard and hand the composer the focus. */
   onFinish: () => void
@@ -267,7 +267,7 @@ export function ReadyStep({
             </ul>
           )}
           <p className="font-sans text-[13px] leading-relaxed text-ink">
-            Opens a new chat with the message ready for you to send.
+            Starts a new chat and sends the message.
           </p>
         </Section>
       ) : null}

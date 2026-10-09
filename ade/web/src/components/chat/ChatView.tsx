@@ -59,7 +59,7 @@ import type {
   ContextUsageReport,
   QueuedMessagePreview,
 } from '@/lib/backend/types'
-import { requestComposerFocus } from '@/lib/composer-insert'
+import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { errText } from '@/lib/errors'
@@ -1415,6 +1415,10 @@ export function ChatView({
       conversationsCtx?.setDraftText(conversation.id, text)
     },
     [conversationsCtx, conversation.id],
+  )
+  const claimComposerSend = useCallback(
+    () => claimDraftSend(conversation.id),
+    [conversation.id],
   )
   // The chips follow the same route as the text. The composer is remounted
   // per conversation (ChatPanel keys this view), so without the seed every
@@ -3093,6 +3097,7 @@ export function ChatView({
               queueWhileStreaming={!!backend.queueMessage}
               blocked={harnessBlocked}
               submitBlocked={submitBlocked || modelSwitch.pending}
+              claimDraftSend={claimComposerSend}
               autoFocus={focusComposerOnOpen && !harnessBlocked}
               idlePlaceholder={idleComposerPlaceholder(
                 conversation.agentProfile,

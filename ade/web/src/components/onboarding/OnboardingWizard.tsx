@@ -30,6 +30,7 @@ import {
   fetchExamplePrompts,
 } from '@/lib/onboarding/prompts'
 import { cn } from '@/lib/utils'
+import { fetchNewChatWorkingDir } from '@/lib/working-dir'
 import { BrowserStep } from './BrowserStep'
 import { openExamplePrompt } from './example-prompt'
 import { JudgeStep } from './JudgeStep'
@@ -80,8 +81,8 @@ export function stepPosition(
  * Ready ends setup with Finish, and — once a model is connected — offers
  * the example prompts the project's template declares (`onboarding.yaml`,
  * read through `console::onboarding::prompts`): a click finishes setup and
- * opens a new chat with the prompt waiting in the composer, its agent
- * profile and model chosen (see `openExamplePrompt`).
+ * opens a new chat that sends the prompt, its agent profile and model
+ * chosen (see `openExamplePrompt`).
  */
 export function OnboardingWizardHost() {
   const ctx = useConversationsCtxOptional()
@@ -264,15 +265,17 @@ export function OnboardingWizardHost() {
   const startPrompt = useCallback(
     async (prompt: ExamplePrompt) => {
       finish()
-      // Profiles still loading (a quick click): ask for them once more.
-      const profiles =
+      const [profiles, workingDir] = await Promise.all([
+        // Profiles still loading (a quick click): ask for them once more.
         agents ??
-        (await getIiiClient()
-          .then(listAgents)
-          .catch(() => []))
+          getIiiClient()
+            .then(listAgents)
+            .catch(() => []),
+        fetchNewChatWorkingDir().catch(() => null),
+      ])
       const api = ctxRef.current
       if (!api) return
-      openExamplePrompt(api, prompt, profiles)
+      openExamplePrompt(api, prompt, profiles, workingDir)
       window.requestAnimationFrame(requestComposerFocus)
     },
     [agents, finish],

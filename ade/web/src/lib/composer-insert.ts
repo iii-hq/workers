@@ -72,6 +72,23 @@ export function onComposerInsert(listener: ComposerInsertListener): () => void {
   return inserts.subscribe(listener)
 }
 
+const draftSends = new Set<string>()
+
+/**
+ * Send a chat's draft as soon as its composer can (session ready, working
+ * directory resolved) — for a surface whose click WAS the decision to send,
+ * such as an example prompt in the setup wizard. Keyed by chat, unlike an
+ * insert, so it reaches that chat's composer and no other.
+ */
+export function sendDraftWhenReady(conversationId: string): void {
+  draftSends.add(conversationId)
+}
+
+/** Claim the send asked for this chat; true once. */
+export function claimDraftSend(conversationId: string): boolean {
+  return draftSends.delete(conversationId)
+}
+
 type ComposerAttachListener = (files: File[]) => void
 
 const attachments = bufferedBus<File[]>()

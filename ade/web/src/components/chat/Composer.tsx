@@ -218,6 +218,12 @@ interface ComposerProps {
   blocked?: boolean
   /** Prevent sending without locking the editor (e.g. transcript hydration). */
   submitBlocked?: boolean
+  /**
+   * Claims a send someone already decided for this chat's draft (see
+   * `sendDraftWhenReady`); asked whenever the composer can send, and the
+   * draft goes when it answers true.
+   */
+  claimDraftSend?: () => boolean
   /** Placeholder while `blocked` is true. */
   blockedPlaceholder?: string
   /**
@@ -348,6 +354,7 @@ export function Composer({
   queueWhileStreaming,
   blocked,
   submitBlocked,
+  claimDraftSend,
   blockedPlaceholder = 'chat unavailable…',
   idlePlaceholder = GENERIC_COMPOSER_PLACEHOLDER,
   autoFocus,
@@ -510,6 +517,13 @@ export function Composer({
     onTextChange,
     updateAttachments,
   ])
+
+  // A draft whose send was decided before the chat opened goes the moment
+  // the composer can send it.
+  useEffect(() => {
+    if (submitDisabled || !textRef.current.trim()) return
+    if (claimDraftSend?.()) handleSubmit()
+  }, [submitDisabled, claimDraftSend, handleSubmit])
 
   const handleAttach = useCallback(
     (next: Attachment[]) => {

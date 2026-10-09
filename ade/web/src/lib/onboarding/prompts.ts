@@ -31,7 +31,7 @@ export interface ExamplePrompt {
   description?: string
   /** Agent profile id (`ade-worker-builder`, `default`). */
   agent: string
-  /** The message prefilled in the composer, never sent by itself. */
+  /** The message the new chat sends. */
   prompt: string
   models: PromptModel[]
 }

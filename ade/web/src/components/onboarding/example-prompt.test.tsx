@@ -7,6 +7,7 @@ import {
   useConversations,
 } from '@/hooks/use-conversations'
 import type { AgentEntry } from '@/lib/backend/directory-prompts'
+import { claimDraftSend } from '@/lib/composer-insert'
 import { getIiiClient } from '@/lib/iii-client'
 import type { ExamplePrompt } from '@/lib/onboarding/prompts'
 import { fetchTranscriptTail, listSessions } from '@/lib/sessions/api'
@@ -42,7 +43,7 @@ const MODELS: ModelOption[] = [
 
 const BUILDER: AgentEntry = {
   id: 'ade-worker-builder',
-  name: 'Create an app or tool',
+  name: 'Onboarding',
   description: 'Builds a worker',
   logo: null,
   icon: 'code',
@@ -86,6 +87,7 @@ async function open(
   prompt: ExamplePrompt,
   agents: AgentEntry[] = [BUILDER],
   models: ModelOption[] = MODELS,
+  workingDir: string | null = '/home/me/shop',
 ) {
   const shown: string[] = []
   let id = ''
@@ -101,6 +103,7 @@ async function open(
       },
       prompt,
       agents,
+      workingDir,
     )
   })
   const chat = api.conversations.find((conversation) => conversation.id === id)
@@ -133,17 +136,21 @@ afterEach(async () => {
 })
 
 describe('openExamplePrompt', () => {
-  it('opens a new chat with the prompt waiting to be sent, its profile and the first model this machine has', async () => {
+  it('opens a new chat that sends the prompt, with its profile and the first model this machine has', async () => {
     const { chat, shown } = await open(TODO)
     expect(chat).toMatchObject({
       draft: true,
       messages: [],
       model: 'anthropic::claude-sonnet-5-5',
       thinkingLevel: 'medium',
-      agentProfile: { id: 'ade-worker-builder', name: 'Create an app or tool' },
+      agentProfile: { id: 'ade-worker-builder', name: 'Onboarding' },
+      // Set before the send, which does not wait for the chat's own lookup.
+      workingDir: '/home/me/shop',
     })
-    // In the message box, not sent.
+    // The composer sends the draft once it can, and only once.
     expect(api.getDraftText(chat.id)).toBe(TODO.prompt)
+    expect(claimDraftSend(chat.id)).toBe(true)
+    expect(claimDraftSend(chat.id)).toBe(false)
     expect(api.activeId).toBe(chat.id)
     expect(shown).toEqual([chat.id])
   })
@@ -169,9 +176,10 @@ describe('openExamplePrompt', () => {
     expect(chat.thinkingLevel).not.toBe('high')
   })
 
-  it('selects no profile the Directory does not serve, and still prefills the text', async () => {
+  it('selects no profile the Directory does not serve, and still sends the text', async () => {
     const { chat } = await open(TODO, [])
     expect(chat.agentProfile).toBeUndefined()
     expect(api.getDraftText(chat.id)).toBe(TODO.prompt)
+    expect(claimDraftSend(chat.id)).toBe(true)
   })
 })
