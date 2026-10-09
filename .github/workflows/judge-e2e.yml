@@ -53,6 +53,22 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
+          # The PR merge commit plus its first parent (the base tip) for the diff below.
+          fetch-depth: 2
+
+      # packages/console-ui (types only) and the root pnpm files feed the UI
+      # checks but nothing the Rust engine suite exercises, so a PR touching
+      # only those skips the ~37 min engine half. Keep this regex in sync with
+      # on.pull_request.paths minus those JS-only entries.
+      - name: Decide whether the engine suite runs
+        id: scope
+        run: |
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          if grep -qE '^(judge(-laya|-typesafe|-semif|-decider|-clef|-openai)?/|crates/(llama-runtime|llama-native|judge-contract|judge-provider|config-client|console-ui|worker-paths)/|rust-toolchain\.toml$|\.cargo/|\.github/scripts/judge-|\.github/workflows/judge-e2e\.yml$)' <<<"$changed"; then
+            echo "engine=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Only JS-side shared files changed; skipping the Rust engine suite."
+          fi
 
       - name: Prepare reports
         run: |
@@ -60,11 +76,13 @@ jobs:
           echo "JUDGE_E2E_REPORT_DIR=$RUNNER_TEMP/judge-e2e-reports" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
+        if: steps.scope.outputs.engine == 'true'
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: 1.97.1
 
       - name: Cache cargo registry and builds
+        if: steps.scope.outputs.engine == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
@@ -116,9 +134,11 @@ jobs:
       # through crates/llama-native (curl, tar, patch, cmake; no libclang) and
       # the runtime-loaded Vulkan backend module (headers + glslc).
       - name: Provision llama.cpp build tools
+        if: steps.scope.outputs.engine == 'true'
         run: sudo apt-get update && sudo apt-get install -y cmake libvulkan-dev glslc spirv-headers
 
       - name: Install pinned iii engine
+        if: steps.scope.outputs.engine == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           BIN_DIR: ${{ runner.temp }}/judge-engine/bin
@@ -132,6 +152,7 @@ jobs:
           echo "III_ENGINE_BIN=$BIN_DIR/iii" >> "$GITHUB_ENV"
 
       - name: Real-engine tests (11 local mocked cases)
+        if: steps.scope.outputs.engine == 'true'
         run: bash .github/scripts/judge-e2e.sh
 
       - name: Upload test logs
