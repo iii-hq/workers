@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { catalogKey, modelGroups, readCatalog, splitKey } from './catalog.js'
+import { catalogKey, readCatalog, splitKey, withStoredModel } from './catalog.js'
 
 const CATALOG = readCatalog({
   models: [
@@ -15,7 +15,7 @@ test('a row without an id or a provider cannot be addressed and is dropped', () 
     models: [{ id: 'a', provider: 'p' }, { id: '', provider: 'p' }, { id: 'b' }, null, 'nope'],
   })
   assert.deepEqual(
-    catalog.map((model) => model.key),
+    catalog.map((model) => model.id),
     ['p::a'],
   )
 })
@@ -27,7 +27,7 @@ test('an unreachable router is an empty catalog, not a crash', () => {
 })
 
 test('a row without a display name falls back to its id', () => {
-  const deepseek = CATALOG.find((model) => model.provider === 'deepseek')
+  const deepseek = CATALOG.find((model) => model.id === 'deepseek::deepseek-v4-pro')
   assert.equal(deepseek?.label, 'deepseek-v4-pro')
 })
 
@@ -49,34 +49,24 @@ test('nothing configured is an empty key, not a half one', () => {
   assert.equal(catalogKey(undefined, undefined), '')
 })
 
-test('the picker groups by provider', () => {
-  const groups = modelGroups(CATALOG, 'anthropic::claude-sonnet-5')
+test('an option is keyed like the stored pair and named for people', () => {
   assert.deepEqual(
-    groups.map((group) => group.label),
-    ['anthropic', 'deepseek', 'openai'],
+    CATALOG.map((model) => [model.id, model.label]),
+    [
+      ['anthropic::claude-sonnet-5', 'Claude Sonnet 5'],
+      ['deepseek::deepseek-v4-pro', 'deepseek-v4-pro'],
+      ['openai::gpt-5.2', 'GPT-5.2'],
+    ],
   )
-  assert.deepEqual(groups[0].options[0], {
-    value: 'anthropic::claude-sonnet-5',
-    label: 'Claude Sonnet 5',
-  })
 })
 
-test('a configured model the router no longer offers is kept, and says why', () => {
-  const groups = modelGroups(CATALOG, 'zai::glm-9')
-  assert.equal(groups[0].label, 'configured')
-  assert.equal(groups[0].options[0].value, 'zai::glm-9')
-  assert.equal(groups[0].options[0].description, 'not offered by the router right now')
-  assert.equal(groups.length, 4, 'and the catalog is still offered beside it')
+test('a configured model the router no longer offers is kept beside the catalog', () => {
+  const options = withStoredModel(CATALOG, 'zai::glm-9')
+  assert.equal(options.length, 4)
+  assert.deepEqual(options.at(-1), { id: 'zai::glm-9', label: 'glm-9 (not offered now)' })
 })
 
-test('before the catalog loads, the configured model is not accused of being gone', () => {
-  const groups = modelGroups([], 'zai::glm-9')
-  assert.equal(groups[0].options[0].description, 'the router catalog is not loaded')
-})
-
-test('nothing configured adds no group of its own', () => {
-  assert.deepEqual(
-    modelGroups(CATALOG, '').map((group) => group.label),
-    ['anthropic', 'deepseek', 'openai'],
-  )
+test('an offered or empty selection adds nothing', () => {
+  assert.equal(withStoredModel(CATALOG, 'openai::gpt-5.2'), CATALOG)
+  assert.equal(withStoredModel(CATALOG, ''), CATALOG)
 })

@@ -183,6 +183,27 @@ pub struct InvestigationConfigV1 {
     pub provider: Option<String>,
 }
 
+/// Sorting the noise from the defects. A group waits `delay_ms` after it is
+/// first seen — long enough for a restart to finish registering what it was
+/// missing — and is then classified once: by a deterministic check when one
+/// applies, otherwise by `judge::evaluate`. Without a judge deployed the
+/// groups simply stay untriaged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct TriageConfigV1 {
+    pub enabled: bool,
+    pub delay_ms: u64,
+}
+
+impl Default for TriageConfigV1 {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            delay_ms: 300_000,
+        }
+    }
+}
+
 /// Where a worker's source lives on this machine. A worker with no repository
 /// is still grouped, still investigated — the agent just works from the
 /// evidence alone and says so.
@@ -222,6 +243,7 @@ pub struct WorkerConfig {
     pub evidence: EvidenceConfigV1,
     pub retention: RetentionConfigV1,
     pub investigation: InvestigationConfigV1,
+    pub triage: TriageConfigV1,
     /// Where each worker's source lives, so an investigation can read it.
     pub projects: Vec<RepositoryConfigV1>,
     /// The name `projects` had until 2026-09. Still read, so a value stored
@@ -256,6 +278,7 @@ impl Default for WorkerConfig {
             evidence: EvidenceConfigV1::default(),
             retention: RetentionConfigV1::default(),
             investigation: InvestigationConfigV1::default(),
+            triage: TriageConfigV1::default(),
             projects: Vec::new(),
             former_repositories: None,
             service_aliases: BTreeMap::new(),

@@ -16,6 +16,19 @@ export type IgnoreRule =
   | { kind: 'occurrences'; count: number }
   | { kind: 'version_change' }
 
+export type TriageKind = 'defect' | 'caller_error' | 'transient' | 'environment' | 'test_traffic'
+export type Relevance = 'relevant' | 'noise'
+
+/** A hint for ordering and filtering; it never moves a group. */
+export interface GroupTriage {
+  kind: TriageKind
+  /** 0–1 as the judge reports it; 1 for a rule. */
+  confidence: number
+  source: 'rule' | 'judge'
+  model?: string
+  at_ms: number
+}
+
 export interface GroupSummary {
   id: string
   fingerprint: string
@@ -39,6 +52,9 @@ export interface GroupSummary {
   resolved_at_ms?: number
   resolved_version?: string
   resolve_until_version_change?: boolean
+  triage?: GroupTriage
+  /** Whether the default list shows it. */
+  relevant: boolean
 }
 
 export interface OccurrenceSummary {
@@ -190,8 +206,18 @@ export interface GroupsListRequest {
   service_name?: string
   since_ms?: number
   search?: string
+  /** Absent lists both sides. */
+  relevance?: Relevance
   offset?: number
   limit?: number
+}
+
+export interface GroupsListResponse {
+  groups: GroupSummary[]
+  total: number
+  /** Both sides under the same filters, whatever `relevance` asked for. */
+  relevant_total: number
+  noise_total: number
 }
 
 /** Typed calls into the worker. Nothing else in the page talks to `iii`. */
@@ -202,7 +228,7 @@ export function client(iii: ExtensionIii) {
   return {
     status: () => call<StatusResponse>(FN.status),
     groups: (request: GroupsListRequest) =>
-      call<{ groups: GroupSummary[]; total: number }>(FN.groupsList, { ...request }),
+      call<GroupsListResponse>(FN.groupsList, { ...request }),
     group: (group_id: string) => call<GroupDetail>(FN.groupsGet, { group_id }),
     occurrences: (group_id: string, limit = 50) =>
       call<{ occurrences: OccurrenceSummary[]; total: number }>(FN.occurrences, {

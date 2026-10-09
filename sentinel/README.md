@@ -82,14 +82,34 @@ and the logs of that trace.
 read the checkout mapped to the failing worker, and you can write to it at any
 time; a message lands in the turn that is already running. When it has a
 cause it records one by calling `sentinel::diagnosis::record`, which is the
-only write its policy allows — everything else it can reach is a read, and the
-engine's raw telemetry is not on the list at all. Each recording is a version;
+only write to this worker its policy allows. Besides reads of the code and
+the evidence, it can reach GitHub and the web, writes included (a PR merge,
+a POST); the engine's raw telemetry is not on the list at all. Each recording is a version;
 the most recent one stands and the earlier ones stay, so the same failure
 diagnosed twice can be compared.
 
 **Open in chat** does the same thing without running anything: the session is
 created with the evidence already in the transcript and waits for you to
 speak.
+
+Each group is also **triaged** once, five minutes after it is first seen,
+into `defect`, `caller_error`, `transient`, `environment` or `test_traffic`,
+and the label rides on `sentinel::groups::list` and `::get` as `triage`. A
+"function not found" whose function is registered by then is decided
+without a model — a restart when it was brief, the environment when it was
+not; everything else goes to [`judge`](../judge/) in batches. The judge sees
+the group as it was stored, so already redacted. Without `judge` deployed the
+groups simply stay untriaged, and a failing judge is left alone for five
+minutes. A label is a hint for ordering and filtering, never a state change.
+Switch it off, or change the wait, under **Triage** in the page's settings;
+which judge answers is chosen in the `judge` worker's own settings.
+
+The list opens on **Relevant**: defects, regressions, groups not triaged yet,
+and caller errors or environment problems that repeat (20 or more
+occurrences across an hour or more), since a program repeating a failing call
+needs a fix even when its message is a polite refusal. **Noise** holds the
+rest, ordered by kind, and each side shows its count, so nothing is more than
+a click away. `sentinel::groups::list` takes the same choice as `relevance`.
 
 Resolving and ignoring are yours. An ignore can last forever, for a number of
 further occurrences, or until the worker version changes — and the counters
@@ -130,6 +150,9 @@ retention:
   resolved_ttl_days: 90
 investigation:
   model: ""                             # catalog id an investigation opens with; each run may pick another
+triage:
+  enabled: true
+  delay_ms: 300000                      # wait this long after first seen; a restart registers what it was missing
 projects:                               # where a worker's source lives on this machine (formerly `repositories`, still read)
   - id: workers
     path: /home/me/workspaces/workers

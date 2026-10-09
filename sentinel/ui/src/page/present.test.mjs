@@ -10,6 +10,7 @@ import {
   sessionAffordance,
   sinceMs,
   sparklineBars,
+  triageFact,
 } from './present.js'
 
 test('a running first pass offers stopping, not relabelling', () => {
@@ -225,4 +226,14 @@ test('a history row names the state and who moved it', () => {
   const resolved = transitionLook({ from_status: 'new', to_status: 'resolved', reason: 'resolved', actor: 'console' })
   assert.equal(resolved.what, 'Resolved')
   assert.equal(resolved.note, 'marked resolved · by a person')
+})
+
+test('a triage says what the group is and who said so', () => {
+  const now = 10 * 60_000
+  assert.deepEqual(
+    triageFact({ kind: 'caller_error', confidence: 0.624, source: 'judge', model: 'jev-1.13.0', at_ms: 0 }, now),
+    { lead: 'caller error', rest: '62% · jev-1.13.0 · 10m ago' },
+  )
+  assert.equal(triageFact({ kind: 'transient', confidence: 1, source: 'rule', at_ms: 0 }, now).rest, 'by rule · 10m ago')
+  assert.equal(triageFact(undefined, now).lead, 'pending')
 })

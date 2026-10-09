@@ -22,13 +22,16 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use sentinel::events::{Emitter, Subscribers};
 use sentinel::iii_runtime::harness::{IiiEngineWindow, IiiHarness};
-use sentinel::iii_runtime::{Checkouts, IiiDb, IiiRegistry, IiiTelemetry, IngestQueue, Runtime};
+use sentinel::iii_runtime::{
+    Checkouts, IiiDb, IiiJudge, IiiRegistry, IiiTelemetry, IngestQueue, Runtime,
+};
 use sentinel::ingest::{ring::PhantomRing, Ingest};
 use sentinel::investigation::proxies::Proxies;
 use sentinel::investigation::Investigations;
 use sentinel::registry::Registry;
 use sentinel::service::Service;
 use sentinel::store::Store;
+use sentinel::triage::Triage;
 use sentinel::triggers::Bindings;
 use sentinel::{configuration, dependencies, events, functions, manifest, Counters, IngestJob};
 use tokio::sync::RwLock;
@@ -39,6 +42,8 @@ const RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
 const JOIN_SWEEP_INTERVAL: Duration = Duration::from_millis(500);
 /// Parked logs promoted per sweep.
 const JOIN_SWEEP_BATCH: usize = 100;
+/// How often groups due for triage are looked at.
+const TRIAGE_INTERVAL: Duration = Duration::from_secs(60);
 /// Ingest jobs in flight. Four traces at a time keeps up with a burst
 /// without turning it into database contention.
 const INGEST_CONCURRENCY: u32 = 4;
@@ -134,6 +139,12 @@ async fn main() -> Result<()> {
         cell.clone(),
     ));
 
+    let triage = Arc::new(Triage::new(
+        store.clone(),
+        registry.clone(),
+        Arc::new(IiiJudge::new(runtime.clone())),
+    ));
+
     let deps = Arc::new(functions::Deps {
         config: cell.clone(),
         config_error: error_cell.clone(),
@@ -185,6 +196,7 @@ async fn main() -> Result<()> {
         queue.clone(),
         counters.clone(),
     ));
+    let triager = tokio::spawn(sweep_triage(triage, counters.clone(), cell.clone()));
 
     tracing::info!(
         config_id = configuration::config_id(),
@@ -193,6 +205,7 @@ async fn main() -> Result<()> {
     tokio::signal::ctrl_c().await?;
     readiness.abort();
     sweeper.abort();
+    triager.abort();
     iii.shutdown_async().await;
     Ok(())
 }
@@ -268,6 +281,28 @@ async fn sweep_parked_logs(
             } else {
                 counters.add_queued(1);
             }
+        }
+    }
+}
+
+/// Label the groups whose triage is due.
+async fn sweep_triage(
+    triage: Arc<Triage<IiiDb, IiiRegistry>>,
+    counters: Arc<Counters>,
+    config: sentinel::ConfigCell,
+) {
+    let mut interval = tokio::time::interval(TRIAGE_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        if !counters.is_ready() {
+            continue;
+        }
+        let snapshot = config.read().await.clone();
+        match triage.sweep(&snapshot, sentinel::ids::now_ms()).await {
+            Ok(0) => {}
+            Ok(labelled) => tracing::info!(labelled, "triaged groups"),
+            Err(error) => tracing::warn!(%error, "could not triage groups"),
         }
     }
 }

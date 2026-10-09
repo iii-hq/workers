@@ -3,7 +3,7 @@ import {
   Chip,
   DirectoryPicker,
   Input,
-  Selector,
+  ModelPicker,
   SettingsDeck,
   SettingsField,
   SettingsList,
@@ -16,7 +16,7 @@ import type { ConfigFormProps, Host } from '@iii-dev/console-ui'
 import { Folder, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { client } from '../api'
-import { catalogKey, modelGroups, splitKey } from './catalog.js'
+import { catalogKey, splitKey, withStoredModel } from './catalog.js'
 import {
   addRepository,
   normalize,
@@ -91,6 +91,7 @@ export function SentinelConfigForm({
     onChange(setPath(config, path, next) as ConfigFormProps['value'])
 
   const investigation = config.investigation as { model?: string; provider?: string }
+  const triage = config.triage as { enabled?: boolean; delay_ms?: number }
   const selectedModel = catalogKey(investigation.model, investigation.provider)
   // The two fields move together: a picked row knows its provider, and a
   // cleared field must not leave a provider pointing at nothing.
@@ -183,30 +184,39 @@ export function SentinelConfigForm({
             label="Model"
             description="Picked from what the router can actually serve. Empty means every investigation must name its own, which is the safe default: a model set here spends tokens the moment somebody clicks Investigate."
             renderControl={(props) => (
-              <Selector
-                {...props}
+              // The chat's own picker. It takes no id or label of its own, so
+              // the row's label names the group and deep links focus it.
+              <div
+                role="group"
                 aria-label="Investigation model"
-                value={selectedModel || undefined}
-                groups={modelGroups(catalog, selectedModel)}
-                loading={loading}
-                placeholder="every investigation names its own"
-                searchPlaceholder="model or provider"
-                emptyMessage="The router is serving no models. Configure a provider first."
-                allowEmpty
-                emptyLabel="every investigation names its own"
-                onClear={() => setModel('', '')}
-                // A raw id stays possible: a model the catalog has not caught
-                // up with is still a model the router may serve.
-                onCreate={(query) => {
-                  const { model, provider } = splitKey(query.trim())
-                  if (model) setModel(model, provider)
-                }}
-                createOptionLabel={(query) => `use ${query}`}
-                onChange={(next) => {
-                  const { model, provider } = splitKey(next)
-                  setModel(model, provider)
-                }}
-              />
+                aria-describedby={props['aria-describedby']}
+                data-field={props['data-field']}
+                tabIndex={-1}
+                className="sentinel-ui-model"
+              >
+                <ModelPicker
+                  value={selectedModel || null}
+                  options={withStoredModel(catalog, selectedModel)}
+                  // The investigation config stores a model, not an effort.
+                  thinkingLevel="default"
+                  onThinkingLevelChange={() => {}}
+                  showReasoningEffort={false}
+                  showRefresh={false}
+                  showProviderConfiguration={false}
+                  loading={loading}
+                  placeholder="every investigation names its own"
+                  className="sentinel-ui-model-picker"
+                  onChange={(next) => {
+                    const { model, provider } = splitKey(next)
+                    setModel(model, provider)
+                  }}
+                />
+                {selectedModel ? (
+                  <Button type="button" variant="ghost" size="sm" onClick={() => setModel('', '')}>
+                    No default
+                  </Button>
+                ) : null}
+              </div>
             )}
           />
         </SettingsList>
@@ -409,6 +419,40 @@ export function SentinelConfigForm({
                 onChange={(event) => update('enabled', event.target.checked)}
               />
             }
+          />
+        </SettingsList>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Triage"
+        description="Labels each group once, a few minutes after it is first seen, so the list can open on what needs attention: a deterministic rule first, then the judge chosen under Settings → Workers → judge. Without a judge installed only the rule labels. A label never resolves or ignores anything."
+      >
+        <SettingsList>
+          <SettingsRow
+            label="Triage groups"
+            description="Off stops labelling new groups. Groups already labelled keep their label; new ones show as relevant."
+            control={
+              <Switch
+                aria-label="Triage groups"
+                checked={Boolean(triage.enabled)}
+                onChange={(event) => update('triage.enabled', event.target.checked)}
+              />
+            }
+          />
+          <SettingsField
+            field="triage.delay_ms"
+            label="Wait before triage (minutes)"
+            description="Long enough for a restart to register what it was missing: a call that failed only during it is labelled transient, not sent to the judge."
+            renderControl={(props) => (
+              <Input
+                {...props}
+                type="number"
+                min={0}
+                disabled={!triage.enabled}
+                value={String((triage.delay_ms ?? 300_000) / 60_000)}
+                onChange={(next) => update('triage.delay_ms', Math.round(Number(next) * 60_000))}
+              />
+            )}
           />
         </SettingsList>
       </SettingsSection>

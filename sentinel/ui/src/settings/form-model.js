@@ -23,6 +23,7 @@ export const DEFAULTS = Object.freeze({
     cron: '0 0 3 * * *',
   },
   archive: { bucket: '' },
+  triage: { enabled: true, delay_ms: 300_000 },
 })
 
 /**
@@ -45,6 +46,7 @@ export function normalize(stored) {
     investigation: { ...DEFAULTS.investigation, ...(value.investigation ?? {}) },
     retention: { ...DEFAULTS.retention, ...(value.retention ?? {}) },
     archive: { ...DEFAULTS.archive, ...(value.archive ?? {}) },
+    triage: { ...DEFAULTS.triage, ...(value.triage ?? {}) },
     projects: Array.isArray(value.projects) ? value.projects : [],
   }
 }
@@ -102,6 +104,11 @@ export function problems(config) {
   }
   if (Number(retention.evidence_per_group) < 1) {
     out.push('keep at least one bundle per group')
+  }
+  /** @type {Record<string, any>} */
+  const triage = config.triage ?? {}
+  if (!(Number(triage.delay_ms) >= 0)) {
+    out.push('the wait before triage cannot be negative')
   }
   return out
 }

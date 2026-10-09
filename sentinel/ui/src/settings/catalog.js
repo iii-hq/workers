@@ -9,8 +9,6 @@
  * worker would have to split.
  */
 
-/** @typedef {{ key: string, id: string, provider: string, label: string }} CatalogModel */
-
 /**
  * Joins the two stored fields into the key the picker selects by.
  * @param {string | undefined | null} model
@@ -36,17 +34,18 @@ export function splitKey(key) {
 }
 
 /**
- * Rows from `router::models::list` into catalog entries, dropping anything
- * that cannot be addressed. An unreachable router yields nothing, and the
- * picker says it is empty rather than pretending.
+ * Rows from `router::models::list` as options for the console's
+ * `ModelPicker`, keyed like the stored pair, dropping anything that cannot
+ * be addressed. An unreachable router yields nothing, and the picker says it
+ * is empty rather than pretending.
  * @param {unknown} response
- * @returns {CatalogModel[]}
+ * @returns {import('@iii-dev/console-ui').ModelOption[]}
  */
 export function readCatalog(response) {
   const rows =
     response && typeof response === 'object' ? /** @type {any} */ (response).models : null
   if (!Array.isArray(rows)) return []
-  /** @type {CatalogModel[]} */
+  /** @type {import('@iii-dev/console-ui').ModelOption[]} */
   const models = []
   for (const raw of rows) {
     if (!raw || typeof raw !== 'object') continue
@@ -58,42 +57,28 @@ export function readCatalog(response) {
       typeof row.display_name === 'string' && row.display_name.trim()
         ? row.display_name.trim()
         : id
-    models.push({ key: `${provider}::${id}`, id, provider, label: display })
+    models.push({
+      id: `${provider}::${id}`,
+      label: display,
+      contextWindow: typeof row.context_window === 'number' ? row.context_window : undefined,
+      supportsThinking: typeof row.supports_thinking === 'boolean' ? row.supports_thinking : undefined,
+      supportsVision: typeof row.supports_vision === 'boolean' ? row.supports_vision : undefined,
+    })
   }
-  models.sort((left, right) => left.key.localeCompare(right.key))
+  models.sort((left, right) => left.id.localeCompare(right.id))
   return models
 }
 
 /**
- * The picker's groups, one per provider, plus a group of its own for a stored
- * model the catalog does not offer.
- * @param {CatalogModel[]} catalog
+ * The catalog plus the stored model when the router does not offer it. Kept
+ * on purpose: the picker shows only a value it has an option for, and a
+ * provider that is down, or an id typed into the configuration by hand, is
+ * still the operator's choice until they change it.
+ * @param {import('@iii-dev/console-ui').ModelOption[]} options
  * @param {string} selected The current `catalogKey`, possibly absent from the catalog.
  */
-export function modelGroups(catalog, selected) {
-  /** @type {Map<string, { label: string, options: { value: string, label: string, description?: string }[] }>} */
-  const byProvider = new Map()
-  for (const model of catalog) {
-    const group = byProvider.get(model.provider) ?? { label: model.provider, options: [] }
-    group.options.push({ value: model.key, label: model.label })
-    byProvider.set(model.provider, group)
-  }
-  const groups = [...byProvider.values()]
-  if (selected && !catalog.some((model) => model.key === selected)) {
-    // Kept on purpose: a provider that is down, or an id typed by hand, is
-    // still the operator's choice until they change it.
-    groups.unshift({
-      label: 'configured',
-      options: [
-        {
-          value: selected,
-          label: splitKey(selected).model || selected,
-          description: catalog.length
-            ? 'not offered by the router right now'
-            : 'the router catalog is not loaded',
-        },
-      ],
-    })
-  }
-  return groups
+export function withStoredModel(options, selected) {
+  if (!selected || options.some((option) => option.id === selected)) return options
+  const name = splitKey(selected).model || selected
+  return [...options, { id: selected, label: `${name} (not offered now)` }]
 }
