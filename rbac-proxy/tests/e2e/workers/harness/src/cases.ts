@@ -41,26 +41,32 @@ function rawInvoke(functionId: string, data: Json, timeoutMs = 10_000): Promise<
   const fragment = 1024 * 1024
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(PROXY_URL, { headers: { authorization: 'Bearer test-token' } })
-    const timer = setTimeout(() => {
+    const fail = (e: Error) => {
+      clearTimeout(timer)
       ws.terminate()
-      reject(new Error(`no result for ${functionId} within ${timeoutMs}ms`))
-    }, timeoutMs)
+      reject(e)
+    }
+    const timer = setTimeout(() => fail(new Error(`no result for ${functionId} within ${timeoutMs}ms`)), timeoutMs)
     ws.on('open', () => {
       for (let i = 0; i < frame.length; i += fragment) {
         ws.send(frame.slice(i, i + fragment), { fin: i + fragment >= frame.length })
       }
     })
     ws.on('message', (raw) => {
-      const msg: Json = JSON.parse(String(raw))
+      let msg: Json
+      try {
+        msg = JSON.parse(String(raw))
+      } catch (e) {
+        return fail(e as Error)
+      }
       if (msg?.type !== 'invocationresult' || msg.invocation_id !== invocationId) return
       clearTimeout(timer)
       ws.close()
       resolve(msg)
     })
-    ws.on('error', (e) => {
-      clearTimeout(timer)
-      reject(e)
-    })
+    ws.on('error', fail)
+    // After a result this rejects an already-settled promise, a no-op.
+    ws.on('close', (code) => fail(new Error(`socket closed (${code}) before the result for ${functionId}`)))
   })
 }
 
