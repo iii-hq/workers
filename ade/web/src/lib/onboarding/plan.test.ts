@@ -3,6 +3,7 @@ import { envFileName } from '@/lib/secrets'
 import { JUDGE_OPTIONS, workerSource } from './catalog'
 import { shouldAutoOpenOnboarding } from './open'
 import {
+  activeJudge,
   connectPlan,
   describeStep,
   judgePlan,
@@ -385,6 +386,22 @@ describe('connectPlan', () => {
     expect(
       connectPlan([{ choice: extra }], new Set()).map((s) => s.kind),
     ).toEqual(['add-workers'])
+  })
+})
+
+describe('activeJudge', () => {
+  const both = new Set(['judge', 'judge-typesafe', 'judge-openai'])
+
+  it('is the option the hub answers with, not the first installed one', () => {
+    expect(activeJudge(both, 'openai')?.id).toBe('openai')
+    expect(activeJudge(both, 'typesafe')?.id).toBe('typesafe')
+  })
+
+  it('falls back to the first installed option without a usable provider', () => {
+    expect(activeJudge(both, null)?.id).toBe('typesafe')
+    // The hub names a judge whose worker is gone.
+    expect(activeJudge(both, 'clef')?.id).toBe('typesafe')
+    expect(activeJudge(new Set(['judge']), 'openai')).toBeUndefined()
   })
 })
 

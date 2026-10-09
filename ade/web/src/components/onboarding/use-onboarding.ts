@@ -4,6 +4,7 @@ import {
   installedWorkerNames,
   readableError,
   readConsoleConfig,
+  readJudgeProvider,
   readProviderStates,
   runStep,
   scanMachine,
@@ -66,6 +67,8 @@ export interface MachineSnapshot {
   /** The secrets worker's env file, by name (`.env` unless configured). */
   envFile: string
   installed: ReadonlySet<string>
+  /** The judge hub's `provider`, `null` when Judge is not set up or unread. */
+  judgeProvider: string | null
   consoleConfig: Record<string, unknown> | null
   /**
    * Chromium where the browser worker runs; `null` when no browser worker
@@ -83,6 +86,7 @@ const EMPTY: MachineSnapshot = {
   detections: null,
   envFile: envFileName(null),
   installed: new Set(),
+  judgeProvider: null,
   consoleConfig: null,
   browser: null,
   browserError: null,
@@ -175,7 +179,7 @@ export function useOnboarding(
       readConsoleConfig(),
     ])
     const names = installed.value ?? new Set<string>()
-    const [detections, secrets, browser] = await Promise.all([
+    const [detections, secrets, browser, judgeProvider] = await Promise.all([
       names.has(SECRETS_WORKER)
         ? settle(detectKeys(DETECTED_KEY_NAMES))
         : { value: null, error: null },
@@ -185,6 +189,7 @@ export function useOnboarding(
       names.has(BROWSER_WORKER)
         ? settle(readChromiumState())
         : { value: null, error: null },
+      names.has(JUDGE_HUB_WORKER) ? readJudgeProvider() : null,
     ])
     if (browser.value) setChromiumMissing(chromiumMissing(browser.value))
     setSnapshot({
@@ -197,6 +202,7 @@ export function useOnboarding(
       detections: detections.value,
       envFile: envFileName(secrets.value?.env_file),
       installed: names,
+      judgeProvider,
       consoleConfig,
       browser: browser.value,
       browserError: browser.error,

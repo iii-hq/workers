@@ -15,7 +15,7 @@ import { getIiiClient } from '@/lib/iii-client'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { isMissingFunction, storeKey } from '@/lib/secrets'
 import { fetchEngineWorkersList } from '@/pages/Workers/api/workers'
-import { workerSource } from './catalog'
+import { JUDGE_HUB_WORKER, workerSource } from './catalog'
 import { type Done, type WakeTrigger, waitForEvents } from './event-wait'
 import type { PlanStep, ProviderState, ToolScan } from './plan'
 import { setPath } from './plan'
@@ -196,6 +196,22 @@ export async function readConsoleConfig(): Promise<Record<
 > | null> {
   try {
     return await fetchConsoleConfigValue()
+  } catch {
+    return null
+  }
+}
+
+/** The `provider` the judge hub answers with, or null when it is not set up or unreadable. */
+export async function readJudgeProvider(): Promise<string | null> {
+  try {
+    const id = await configurationId(JUDGE_HUB_WORKER)
+    if (!id) return null
+    const client = await getIiiClient()
+    const entry = await client.trigger<{ value?: unknown }>(
+      'configuration::get',
+      { id },
+    )
+    return asString(asRecord(entry?.value)?.provider) ?? null
   } catch {
     return null
   }
