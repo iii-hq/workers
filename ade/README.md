@@ -311,7 +311,7 @@ removes it from the entry.
 |---|---|
 | `GET /` | Embedded `index.html` (SPA shell, hash-routed client-side). `Cache-Control: no-cache, must-revalidate` |
 | `GET /assets/*` | Embedded JS / CSS, content-hashed filenames. `Cache-Control: public, max-age=31536000, immutable` |
-| `GET /runtime` | Runtime connection settings for the SPA, including the console worker namespace. `Cache-Control: no-store` |
+| `GET /runtime` | Runtime settings for the SPA: the console worker namespace and the [usage reporting](#anonymous-usage-reporting) settings. `Cache-Control: no-store` |
 | `GET /ui` | Injected-asset manifest JSON (same shape as `console::ui-manifest`). `no-cache` |
 | `GET /ui/*` | Current bytes for a registered injected UI asset. `no-cache` + `ETag: "<hash>"` (304 on `If-None-Match`) |
 | `GET /vendor/*` | Shared-dep ESM shims for injected scripts (react, `@iii-dev/console-ui`), generated at web build time. `no-cache` |
@@ -319,6 +319,39 @@ removes it from the entry.
 | anything else | `404 Not Found` |
 
 The SPA bundle is embedded into the binary at compile time via [`rust-embed`](https://docs.rs/rust-embed) — the released `console` has no separate `dist/` directory, no side-car asset server, and no runtime filesystem dependency for the UI.
+
+## Anonymous usage reporting
+
+The console sends anonymous product events from the browser to PostHog. It
+sends these events:
+
+- `setup_wizard_step`, one time for each setup wizard step on a device. It
+  carries the step id and the choice of that step: the provider ids, whether
+  Chromium is installed, or the judge id.
+- `$pageview`, when the screens of the active workspace change. It carries the
+  screen kinds, for example `chat` and `traces`.
+- `ade_usage`, a batched report. It carries the last 25 command palette
+  commands and, for each screen kind, how many times it opened and how long it
+  was visible. A visit reports at 15, 30, 45 and 60 minutes, then one time each
+  hour, and one time when the page closes. Right after setup completes on a
+  device, the reports go at 30 seconds, 1, 5, 30 and 60 minutes, then one time
+  each hour. Each report carries only the data since the report before it. An
+  empty report is not sent.
+
+The events carry no text that a user wrote. A palette command that can hold a
+file path, a chat or a function id is reported by its kind only, and a chat
+screen is reported as `chat`. Session replay masks all text and inputs and
+blocks images and other media. Autocapture is off. Heatmaps, web vitals and
+exceptions are on.
+
+The events use the engine's device id from `~/.iii/telemetry.yaml`, so they
+join the same PostHog person as the engine and harness events.
+
+To stop the reports, set `III_TELEMETRY_ENABLED=false` in the environment of
+the console worker. The console also stops in a CI environment, with
+`III_TELEMETRY_DEV=true`, or when `~/.iii/telemetry_dev_optout` exists, the
+same as the engine. `POSTHOG_PROJECT_API_KEY` (or `POSTHOG_API_KEY`) and
+`POSTHOG_HOST` change the PostHog project and host.
 
 ## Injectable UI
 
