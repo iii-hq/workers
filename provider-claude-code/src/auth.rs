@@ -94,29 +94,83 @@ fn read_file_credential() -> Option<Value> {
     credential_from_credentials_json(&root)
 }
 
-/// macOS: the `claude` CLI stores the same JSON as `.credentials.json` as the
-/// password of the "Claude Code-credentials" login Keychain item.
+/// The login name, as the `claude` CLI takes it: `$USER`, else the OS's.
+// ponytail: $LOGNAME stands in for getpwuid (std has none); add libc if a
+// process ever runs with both unset.
 #[cfg(target_os = "macos")]
-fn read_keychain_credential() -> Option<Value> {
-    let out = std::process::Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            "Claude Code-credentials",
-            "-w",
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let root: Value = serde_json::from_slice(&out.stdout).ok()?;
+fn login_name() -> Option<String> {
+    ["USER", "LOGNAME"]
+        .into_iter()
+        .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()))
+}
+
+/// The Keychain account the `claude` CLI files its login under: the login
+/// name, or `claude-code-user` when that is unset or not a plain name.
+#[cfg(any(target_os = "macos", test))]
+fn keychain_account(login: Option<String>) -> String {
+    login
+        .filter(|u| {
+            !u.is_empty()
+                && u.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        })
+        .unwrap_or_else(|| "claude-code-user".to_string())
+}
+
+/// The Keychain item's password → vault credential. The error names what is
+/// missing, never what is there.
+#[cfg(any(target_os = "macos", test))]
+fn credential_from_keychain_password(password: &[u8]) -> Result<Value, String> {
+    let root: Value =
+        serde_json::from_slice(password).map_err(|_| "item is not JSON".to_string())?;
     credential_from_credentials_json(&root)
+        .ok_or_else(|| "item has no claudeAiOauth.accessToken".to_string())
+}
+
+/// `security`'s exit status for errSecItemNotFound.
+#[cfg(target_os = "macos")]
+const ITEM_NOT_FOUND: i32 = 44;
+
+/// `Err(None)` when there is no such item, `Err(Some(why))` for anything else.
+#[cfg(target_os = "macos")]
+fn keychain_lookup(account_args: &[&str]) -> Result<Value, Option<String>> {
+    let out = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", "Claude Code-credentials"])
+        .args(account_args)
+        .arg("-w")
+        .output()
+        .map_err(|e| Some(format!("security did not run: {e}")))?;
+    match out.status.code() {
+        Some(0) => credential_from_keychain_password(&out.stdout).map_err(Some),
+        Some(ITEM_NOT_FOUND) => Err(None),
+        code => Err(Some(format!("security exit {}", code.unwrap_or(-1)))),
+    }
+}
+
+/// macOS: the `claude` CLI stores the same JSON as `.credentials.json` as the
+/// password of the "Claude Code-credentials" login Keychain item, under the
+/// account `$USER`. Without `-a` macOS returns whichever item with that service
+/// it finds first — possibly a stale one with no login in it — so the CLI's
+/// account is tried first. Only a missing item falls through to any account: a
+/// locked keychain or a refused prompt would just fail (or prompt) again.
+#[cfg(target_os = "macos")]
+fn read_keychain_credential() -> Result<Value, String> {
+    let account = keychain_account(login_name());
+    match keychain_lookup(&["-a", &account]) {
+        Ok(cred) => Ok(cred),
+        Err(Some(why)) => Err(format!("account {account}: {why}")),
+        Err(None) => keychain_lookup(&[]).map_err(|why| {
+            format!(
+                "no item for account {account}; any account: {}",
+                why.unwrap_or_else(|| "no item".to_string())
+            )
+        }),
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn read_keychain_credential() -> Option<Value> {
-    None
+fn read_keychain_credential() -> Result<Value, String> {
+    Err("not macOS".to_string())
 }
 
 const FILE_SOURCE: &str = "~/.claude/.credentials.json";
@@ -134,17 +188,26 @@ fn freshest(candidates: Vec<(Value, &'static str)>) -> Option<(Value, &'static s
 /// auth-credentials vault is running) from `~/.claude/.credentials.json` or the
 /// macOS Keychain, whichever expires later, with its source label. Read-only —
 /// the CLI owns refresh; this provider never writes either store. None when
-/// neither store holds a `claudeAiOauth` block (e.g. a sandboxed home).
+/// neither store holds a `claudeAiOauth` block (e.g. a sandboxed home), and
+/// then the Keychain's reason goes to stderr.
 pub fn read_claude_home_credential() -> Option<(Value, &'static str)> {
-    freshest(
-        [
-            read_file_credential().map(|c| (c, FILE_SOURCE)),
-            read_keychain_credential().map(|c| (c, KEYCHAIN_SOURCE)),
-        ]
-        .into_iter()
-        .flatten()
-        .collect(),
-    )
+    let (keychain, keychain_miss) = match read_keychain_credential() {
+        Ok(cred) => (Some((cred, KEYCHAIN_SOURCE)), None),
+        Err(why) => (None, Some(why)),
+    };
+    let found = freshest(
+        [read_file_credential().map(|c| (c, FILE_SOURCE)), keychain]
+            .into_iter()
+            .flatten()
+            .collect(),
+    );
+    if let (None, Some(why)) = (&found, keychain_miss) {
+        eprintln!(
+            "[provider-claude-code] no Claude Code login in {FILE_SOURCE} or the \
+             {KEYCHAIN_SOURCE} ({why})"
+        );
+    }
+    found
 }
 
 /// Fetch a usable credential for either streaming or model discovery.
@@ -196,7 +259,7 @@ pub async fn import_claude_home_if_absent(iii: &IIIClient) {
         return;
     }
     let Some((cred, source)) = read_claude_home_credential() else {
-        return; // not signed in locally / sandboxed home — silent, expected
+        return; // not signed in locally / sandboxed home (reason already logged)
     };
     match router_client::set_token_if_available(iii, PROVIDER_ID, cred).await {
         Ok(true) => println!(
@@ -246,6 +309,30 @@ mod tests {
             &json!({ "claudeAiOauth": { "accessToken": "   " } })
         )
         .is_none());
+    }
+
+    #[test]
+    fn keychain_account_matches_the_claude_cli() {
+        assert_eq!(keychain_account(Some("ana.b-1_x".into())), "ana.b-1_x");
+        assert_eq!(keychain_account(None), "claude-code-user");
+        assert_eq!(keychain_account(Some(String::new())), "claude-code-user");
+        assert_eq!(keychain_account(Some("ana b".into())), "claude-code-user");
+    }
+
+    #[test]
+    fn keychain_item_without_a_login_is_rejected_without_its_content() {
+        // a stale item holding only MCP tokens (what a bare lookup returned)
+        let stale = br#"{"mcpOAuth":{"srv":{"accessToken":"secret-mcp"}}}"#;
+        let err = credential_from_keychain_password(stale).unwrap_err();
+        assert!(err.contains("claudeAiOauth") && !err.contains("secret"));
+        assert!(credential_from_keychain_password(b"secret-not-json")
+            .unwrap_err()
+            .contains("not JSON"));
+        let live = br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-x"}}"#;
+        assert_eq!(
+            credential_from_keychain_password(live).unwrap()["access_token"],
+            "sk-ant-oat01-x"
+        );
     }
 
     #[test]

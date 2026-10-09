@@ -736,22 +736,67 @@ fn sign_in_verdict(tool_id: &str, root: &Value) -> SignIn {
     }
 }
 
+/// The login name, as the `claude` CLI takes it: `$USER`, else the OS's.
+// ponytail: $LOGNAME stands in for getpwuid (std has none); add libc if a
+// process ever runs with both unset.
+fn login_name() -> Option<String> {
+    ["USER", "LOGNAME"]
+        .into_iter()
+        .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()))
+}
+
+/// The Keychain account the `claude` CLI files its login under: the login
+/// name, or `claude-code-user` when that is unset or not a plain name.
+fn keychain_account(login: Option<String>) -> String {
+    login
+        .filter(|u| {
+            !u.is_empty()
+                && u.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        })
+        .unwrap_or_else(|| "claude-code-user".to_string())
+}
+
+/// `security`'s exit status for errSecItemNotFound.
+const KEYCHAIN_ITEM_NOT_FOUND: i32 = 44;
+
 /// The macOS CLI keeps its login in the Keychain once it stops updating the
-/// file. `security` without `-w` reports the item's existence, not its secret.
+/// file, under the account `$USER`. Read it the way `provider-claude-code`
+/// does — that account first, then any account only when that item is missing
+/// — keeping only the verdict, so an item without a login in it (a stale one
+/// holding only MCP tokens, say) does not count as signed in.
 async fn macos_keychain_has_claude() -> bool {
     if !cfg!(target_os = "macos") {
         return false;
     }
+    let account = keychain_account(login_name());
+    match keychain_claude_login(&["-a", &account]).await {
+        Some(signed_in) => signed_in,
+        None => keychain_claude_login(&[]).await == Some(true),
+    }
+}
+
+/// None when there is no such item; otherwise whether it holds a usable login
+/// (a locked keychain, a refused prompt or a timeout reads as `false`).
+async fn keychain_claude_login(account_args: &[&str]) -> Option<bool> {
     let mut command = tokio::process::Command::new("security");
     command
         .args(["find-generic-password", "-s", "Claude Code-credentials"])
+        .args(account_args)
+        .arg("-w")
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
-    matches!(
-        tokio::time::timeout(VERSION_TIMEOUT, command.status()).await,
-        Ok(Ok(status)) if status.success()
+    let Ok(Ok(output)) = tokio::time::timeout(VERSION_TIMEOUT, command.output()).await else {
+        return Some(false);
+    };
+    if output.status.code() == Some(KEYCHAIN_ITEM_NOT_FOUND) {
+        return None;
+    }
+    Some(
+        output.status.success()
+            && serde_json::from_slice::<Value>(&output.stdout)
+                .is_ok_and(|root| sign_in_verdict("claude-code", &root) == SignIn::SignedIn),
     )
 }
 
@@ -854,6 +899,21 @@ mod tests {
             sign_in_verdict("claude-code", &json!({})),
             SignIn::Unusable(_)
         ));
+        // a Keychain item holding only MCP tokens is not a Claude Code login
+        assert!(matches!(
+            sign_in_verdict(
+                "claude-code",
+                &json!({ "mcpOAuth": { "srv": { "accessToken": "a" } } })
+            ),
+            SignIn::Unusable(_)
+        ));
+    }
+
+    #[test]
+    fn keychain_account_matches_the_claude_cli() {
+        assert_eq!(keychain_account(Some("ana.b-1_x".into())), "ana.b-1_x");
+        assert_eq!(keychain_account(None), "claude-code-user");
+        assert_eq!(keychain_account(Some("ana b".into())), "claude-code-user");
     }
 
     #[test]

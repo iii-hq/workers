@@ -162,6 +162,10 @@ pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<u
         .as_ref()
         .and_then(extract_access_token)
     else {
+        eprintln!(
+            "[provider-claude-code] no Claude Code login found (vault, \
+             ~/.claude/.credentials.json, macOS Keychain); listing no models"
+        );
         router_client::reconcile(iii, vec![], token.as_deref()).await?;
         return Ok(0);
     };
