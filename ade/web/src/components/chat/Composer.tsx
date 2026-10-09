@@ -220,10 +220,11 @@ interface ComposerProps {
   submitBlocked?: boolean
   /**
    * Claims a send someone already decided for this chat's draft (see
-   * `sendDraftWhenReady`); asked whenever the composer can send, and the
-   * draft goes when it answers true.
+   * `sendDraftWhenReady`), answering the text it was decided for. Asked the
+   * first time the composer can send; the draft goes only if it still holds
+   * that text.
    */
-  claimDraftSend?: () => boolean
+  claimDraftSend?: () => string | undefined
   /** Placeholder while `blocked` is true. */
   blockedPlaceholder?: string
   /**
@@ -519,11 +520,15 @@ export function Composer({
   ])
 
   // A draft whose send was decided before the chat opened goes the moment
-  // the composer can send it.
+  // the composer can send it — with a model, or the send would be refused
+  // after the editor was already cleared. The editor reports no change for
+  // its seeded text, so a different text means the user edited the draft
+  // meanwhile: it is theirs to send.
   useEffect(() => {
-    if (submitDisabled || !textRef.current.trim()) return
-    if (claimDraftSend?.()) handleSubmit()
-  }, [submitDisabled, claimDraftSend, handleSubmit])
+    if (submitDisabled || !model) return
+    const decided = claimDraftSend?.()
+    if (decided?.trim() && decided === textRef.current) handleSubmit()
+  }, [submitDisabled, model, claimDraftSend, handleSubmit])
 
   const handleAttach = useCallback(
     (next: Attachment[]) => {

@@ -140,10 +140,26 @@ export function ChatPanel({
     [],
   )
 
-  // Header-level actions can create/select a conversation outside this
-  // component. On phones, follow that new active id into the chat page.
+  // Header-level actions (the setup wizard's examples, a page that started a
+  // turn) can create/select a conversation outside this component. On
+  // phones, follow that new active id into the chat page. In a narrow
+  // desktop pane, follow only a switch away from a chat that still exists:
+  // deleting the open chat from the list keeps the list, and a resize alone
+  // never moves the page (the narrow flag is read, not watched).
+  const narrowRef = useRef(narrow)
+  narrowRef.current = narrow
+  const conversationsRef = useRef(conversations)
+  conversationsRef.current = conversations
+  const previousIdRef = useRef(displayedId)
   useEffect(() => {
-    if (mobileViewport && displayedId) setNarrowView('chat')
+    const previous = previousIdRef.current
+    previousIdRef.current = displayedId
+    if (!displayedId) return
+    const switched =
+      narrowRef.current &&
+      previous !== displayedId &&
+      conversationsRef.current.some((c) => c.id === previous)
+    if (mobileViewport || switched) setNarrowView('chat')
   }, [displayedId, mobileViewport])
 
   const handleSelect = useCallback(
