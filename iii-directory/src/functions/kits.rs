@@ -20,7 +20,7 @@ use crate::config::{SharedConfig, SkillsConfig};
 use crate::functions::skills::RegisteredWorkersCache;
 use crate::kits::apply::{ApplyTiming, DecisionInput};
 use crate::kits::compose::EngineCompose;
-use crate::kits::plan::{KitsEnv, PlanKind};
+use crate::kits::plan::{KitsEnv, Plan, PlanContents, PlanKind};
 use crate::kits::registry::HttpKitRegistry;
 use crate::kits::service::{self, KitPlanResponse, PlanStatus};
 use crate::kits::store::{self, ApplyProgress};
@@ -125,6 +125,41 @@ pub struct ListInput {}
 pub struct DiscardOutput {
     pub plan_id: String,
     pub discarded: bool,
+}
+
+/// Response of `directory::kits::check-updates`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CheckUpdatesOutput {
+    pub checked_at: Option<String>,
+    /// Installed kits with an update to offer.
+    pub available: usize,
+    pub kits: Vec<KitUpdateEntry>,
+    /// Why the last check could not reach the registry, if it could not.
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct KitUpdateEntry {
+    pub kit: String,
+    #[serde(flatten)]
+    pub update: service::KitUpdate,
+}
+
+/// Response of `directory::kits::plan`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PlanGetOutput {
+    pub plan: Plan,
+    pub progress: Option<ApplyProgress>,
+    /// File bodies the plan refers to; only with `contents=true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contents: Option<PlanContents>,
+}
+
+/// Response of `directory::kits::ignore`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct IgnoreOutput {
+    pub kit: String,
+    pub ignored_versions: Vec<String>,
 }
 
 /// The registry client, rebuilt only when `registry_url` changes so its blob
@@ -541,11 +576,11 @@ pub fn register(
                             req.plan_id
                         ))
                     })?;
-                let mut out = json!({ "plan": record.plan, "progress": record.progress });
-                if req.contents.unwrap_or(false) {
-                    out["contents"] = json!(record.contents);
-                }
-                Ok::<_, Error>(out)
+                Ok::<_, Error>(PlanGetOutput {
+                    contents: req.contents.unwrap_or(false).then_some(record.contents),
+                    plan: record.plan,
+                    progress: record.progress,
+                })
             }
         })
         .description(
@@ -599,7 +634,10 @@ pub fn register(
                     }
                 }
                 ctx.emit(json!({ "op": "updates", "kit": req.kit })).await;
-                Ok::<_, Error>(json!({ "kit": req.kit, "ignored_versions": ignored }))
+                Ok::<_, Error>(IgnoreOutput {
+                    kit: req.kit,
+                    ignored_versions: ignored,
+                })
             }
         })
         .description(
@@ -644,25 +682,55 @@ pub fn register(
     });
 }
 
-fn updates_output(cache: &service::UpdatesCache) -> Value {
-    let kits: Vec<Value> = cache
-        .kits
-        .iter()
-        .map(|(kit, u)| {
-            let mut v = json!(u);
-            v["kit"] = json!(kit);
-            v
-        })
-        .collect();
-    let available = cache
-        .kits
-        .values()
-        .filter(|u| u.available.is_some())
-        .count();
-    json!({
-        "checked_at": cache.checked_at,
-        "available": available,
-        "kits": kits,
-        "error": cache.error,
-    })
+fn updates_output(cache: &service::UpdatesCache) -> CheckUpdatesOutput {
+    CheckUpdatesOutput {
+        checked_at: cache.checked_at.clone(),
+        available: cache
+            .kits
+            .values()
+            .filter(|u| u.available.is_some())
+            .count(),
+        kits: cache
+            .kits
+            .iter()
+            .map(|(kit, update)| KitUpdateEntry {
+                kit: kit.clone(),
+                update: update.clone(),
+            })
+            .collect(),
+        error: cache.error.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kits::service::{FileSides, KitInfo, KitsListing};
+
+    /// The interface boot smoke rejects the permissive `AnyValue` schema an
+    /// untyped `serde_json::Value` response produces, so every kit function
+    /// answers with a type that derives `JsonSchema`.
+    #[test]
+    fn kit_responses_have_typed_schemas() {
+        let schemas = [
+            ("KitPlanResponse", schemars::schema_for!(KitPlanResponse)),
+            (
+                "CheckUpdatesOutput",
+                schemars::schema_for!(CheckUpdatesOutput),
+            ),
+            ("KitsListing", schemars::schema_for!(KitsListing)),
+            ("KitInfo", schemars::schema_for!(KitInfo)),
+            ("DiscardOutput", schemars::schema_for!(DiscardOutput)),
+            ("PlanGetOutput", schemars::schema_for!(PlanGetOutput)),
+            ("IgnoreOutput", schemars::schema_for!(IgnoreOutput)),
+            ("FileSides", schemars::schema_for!(FileSides)),
+        ];
+        for (name, schema) in schemas {
+            let schema = serde_json::to_value(schema).expect("schema serializes");
+            assert!(
+                schema.get("type").is_some() || schema.get("properties").is_some(),
+                "{name}: untyped response schema {schema}"
+            );
+        }
+    }
 }

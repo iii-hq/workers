@@ -806,12 +806,25 @@ pub async fn get(
 }
 
 /// `directory::kits::diff`: the base the kit installed and the file on disk.
+/// Response of `directory::kits::diff`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FileSides {
+    pub kit: String,
+    pub path: String,
+    /// What the kit installed (the lock's base), from the registry; `null`
+    /// when the registry does not have it.
+    pub base: Option<String>,
+    /// The file on disk, `null` when it is missing.
+    pub local: Option<String>,
+    pub state: FileState,
+}
+
 pub async fn file_sides(
     env: &KitsEnv,
     registry: &dyn KitRegistry,
     kit: &str,
     path: &str,
-) -> Result<serde_json::Value, String> {
+) -> Result<FileSides, String> {
     let lock = env.read_lock()?;
     let locked = lock.kits.get(kit).ok_or_else(|| not_installed(kit))?;
     let entry = locked
@@ -820,13 +833,20 @@ pub async fn file_sides(
         .ok_or_else(|| format!("D510 not_found: {path} is not a file of {kit}."))?;
     let base = registry.blob(&entry.sha256).await?;
     let local = env.abs(path).and_then(|p| std::fs::read_to_string(p).ok());
-    Ok(serde_json::json!({
-        "kit": kit,
-        "path": path,
-        "base": base,
-        "local": local,
-        "state": file_state(entry, local.as_deref().map(|t| super::lock::sha256_hex(t.as_bytes())).as_deref()),
-    }))
+    let state = file_state(
+        entry,
+        local
+            .as_deref()
+            .map(|t| super::lock::sha256_hex(t.as_bytes()))
+            .as_deref(),
+    );
+    Ok(FileSides {
+        kit: kit.to_string(),
+        path: path.to_string(),
+        base,
+        local,
+        state,
+    })
 }
 
 /// Kit namespaces (`<handle>/<kit>`) from the project's lock, for the skill

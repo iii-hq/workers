@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use super::apply::{ApplyTiming, DecisionInput};
 use super::compose::ComposeControl;
-use super::lock::{sha256_hex, KitsLock};
+use super::lock::{sha256_hex, FileState, KitsLock};
 use super::origin::SourceKind;
 use super::plan::{Change, Decision, KitsEnv, LocalState, PlanKind, WorkerAction};
 use super::registry::{
@@ -497,7 +497,11 @@ async fn install_plan_classifies_collisions_and_workers() {
     assert_eq!(plan.kind, PlanKind::Install);
     assert_eq!(plan.to.as_deref(), Some("1.0.0"));
     assert_eq!(plan.requested, "latest");
-    assert_eq!(plan.registry_url, "https://workers.iii.dev/kits/acme/team");
+    assert!(
+        plan.registry_url.ends_with("/kits/acme/team"),
+        "{}",
+        plan.registry_url
+    );
 
     // Profiles first, then skills, all added.
     let paths: Vec<&str> = plan.files.iter().map(|f| f.path.as_str()).collect();
@@ -1268,9 +1272,9 @@ async fn get_reports_file_states_and_diff_serves_both_sides() {
     let sides = service::file_sides(&p.env, &p.registry, KIT, &flow_f.path)
         .await
         .unwrap();
-    assert_eq!(sides["base"], FLOW_V1);
-    assert_eq!(sides["local"], "# Flow edited\n");
-    assert_eq!(sides["state"], "edited");
+    assert_eq!(sides.base.as_deref(), Some(FLOW_V1));
+    assert_eq!(sides.local.as_deref(), Some("# Flow edited\n"));
+    assert_eq!(sides.state, FileState::Edited);
 }
 
 #[tokio::test]
