@@ -59,6 +59,7 @@ pub fn make_provider_list(
                         .clone()
                         .unwrap_or_else(|| rec.declaration.id.clone()),
                     credential_env_var: rec.declaration.credential_env_var.clone(),
+                    discovery: rec.discovery.clone(),
                     configured: resolved.resolved.configured,
                     available: rec.available,
                     supports_model_listing: rec.declaration.supports_model_listing.unwrap_or(false),
@@ -482,6 +483,7 @@ mod tests {
             configured: false,
             available: true,
             supports_model_listing: true,
+            discovery: None,
             icon_svg: None,
             default_model: None,
             default_thinking_level: None,

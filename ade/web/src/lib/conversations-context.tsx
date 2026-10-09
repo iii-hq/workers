@@ -43,6 +43,7 @@ import {
   type ProviderListEntry,
   preferredStartingModel,
   refreshProviderModels,
+  retryXaiModels,
 } from '@/lib/models-catalog'
 import { type ConversationAdapter, startUiLoader } from '@/lib/ui-loader'
 import type { ModelOption } from '@/types/chat'
@@ -68,7 +69,7 @@ interface ConversationsContextValue extends ConversationsApi {
    * upstream model list, then re-read the catalog so the picker reflects the
    * refreshed models.
    */
-  refreshModels: () => Promise<void>
+  refreshModels: (providerId?: string) => Promise<void>
   refreshingModels: boolean
   /**
    * Presence of the `harness` worker plus the in-app install lifecycle.
@@ -188,24 +189,28 @@ export function ConversationsProvider({
   )
 
   const [refreshingModels, setRefreshingModels] = useState(false)
-  const refreshModels = useCallback(async () => {
-    if (!harnessAvailable) return
-    setRefreshingModels(true)
-    try {
-      if (backend.id === 'real') {
-        // Refresh the present providers that can list models. With no present
-        // providers this is a no-op for discovery; the catalog re-read below
-        // still runs.
-        const ids = presentProviders
-          .filter((p) => p.supports_model_listing)
-          .map((p) => p.id)
-        await refreshProviderModels(ids)
+  const refreshModels = useCallback(
+    async (providerId?: string) => {
+      if (!harnessAvailable) return
+      setRefreshingModels(true)
+      try {
+        if (backend.id === 'real') {
+          // Refresh the present providers that can list models. With no present
+          // providers this is a no-op for discovery; the catalog re-read below
+          // still runs.
+          const ids = presentProviders
+            .filter((p) => p.supports_model_listing)
+            .map((p) => p.id)
+          if (providerId === 'xai') await retryXaiModels()
+          else await refreshProviderModels(providerId ? [providerId] : ids)
+        }
+        await refresh()
+      } finally {
+        setRefreshingModels(false)
       }
-      await refresh()
-    } finally {
-      setRefreshingModels(false)
-    }
-  }, [harnessAvailable, refresh, presentProviders])
+    },
+    [harnessAvailable, refresh, presentProviders],
+  )
 
   const selectConversationRef = useRef(api.select)
   selectConversationRef.current = api.select

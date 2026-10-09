@@ -11,7 +11,10 @@ use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 use llm_router::types::model::Model;
-use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
+use llm_router::types::router::{
+    DiscoveryCode, DiscoveryOutcome, DiscoveryRefreshResponse, DiscoveryReport,
+    RefreshModelsRequest, RefreshModelsResponse,
+};
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -93,10 +96,78 @@ pub fn parse_live_models(json: &Value) -> Vec<Model> {
         .collect()
 }
 
-enum FetchOutcome {
-    Ok(Vec<Model>),
-    AuthFailed,
-    Transient(String),
+#[derive(Debug)]
+struct FetchOutcome {
+    models: Vec<Model>,
+    outcome: DiscoveryOutcome,
+    http_status: Option<u16>,
+    code: Option<DiscoveryCode>,
+}
+
+impl FetchOutcome {
+    fn failure(
+        outcome: DiscoveryOutcome,
+        http_status: Option<u16>,
+        code: Option<DiscoveryCode>,
+    ) -> Self {
+        Self {
+            models: vec![],
+            outcome,
+            http_status,
+            code,
+        }
+    }
+}
+
+/// Inspect bounded upstream data locally; emit only enums from the allowlist.
+fn classify_error(status: u16, body: &Value) -> FetchOutcome {
+    let error = body.get("error").unwrap_or(body);
+    let code = error
+        .get("code")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("code").and_then(Value::as_str))
+        .or_else(|| error.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("message").and_then(Value::as_str))
+        .or_else(|| error.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let safe_code = match code.as_str() {
+        "permission-denied" | "permission_denied" => Some(DiscoveryCode::PermissionDenied),
+        "invalid-api-key" | "invalid_api_key" => Some(DiscoveryCode::InvalidApiKey),
+        "insufficient-credits" | "insufficient_credits" => Some(DiscoveryCode::InsufficientCredits),
+        "spending-limit-exceeded" | "spending_limit_exceeded" => {
+            Some(DiscoveryCode::SpendingLimitExceeded)
+        }
+        "rate-limit-exceeded" | "rate_limit_exceeded" => Some(DiscoveryCode::RateLimitExceeded),
+        _ => None,
+    };
+    let billing = matches!(
+        safe_code,
+        Some(DiscoveryCode::InsufficientCredits | DiscoveryCode::SpendingLimitExceeded)
+    ) || [
+        "no credits",
+        "out of credits",
+        "insufficient credits",
+        "credits exhausted",
+        "used all available credits",
+        "spending limit",
+        "spend limit",
+    ]
+    .iter()
+    .any(|term| message.contains(term));
+    let outcome = match status {
+        401 => DiscoveryOutcome::Authentication,
+        402 | 403 if billing => DiscoveryOutcome::Billing,
+        403 => DiscoveryOutcome::Permission,
+        429 => DiscoveryOutcome::RateLimit,
+        _ => DiscoveryOutcome::Unavailable,
+    };
+    FetchOutcome::failure(outcome, Some(status), safe_code)
 }
 
 async fn fetch_live_models(
@@ -104,75 +175,232 @@ async fn fetch_live_models(
     url: &str,
     credential_value: &str,
 ) -> FetchOutcome {
-    let req = http
+    let mut resp = match http
         .get(url)
-        .header("authorization", format!("Bearer {credential_value}"));
-    let resp = match req.send().await {
-        Ok(r) => r,
-        Err(e) => return FetchOutcome::Transient(format!("models fetch failed: {e}")),
+        .header("authorization", format!("Bearer {credential_value}"))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(_) => return FetchOutcome::failure(DiscoveryOutcome::Unavailable, None, None),
     };
     let status = resp.status().as_u16();
-    if status == 401 || status == 403 {
-        return FetchOutcome::AuthFailed;
+    // Bound buffering, including malicious compatible endpoints. Never log body or URL.
+    let mut bytes = Vec::new();
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) if bytes.len() + chunk.len() <= 1_048_576 => {
+                bytes.extend_from_slice(&chunk)
+            }
+            Ok(None) => break,
+            Ok(Some(_)) => {
+                return FetchOutcome::failure(DiscoveryOutcome::InvalidResponse, Some(status), None)
+            }
+            Err(_) => {
+                return FetchOutcome::failure(DiscoveryOutcome::Unavailable, Some(status), None)
+            }
+        }
     }
+    let json = serde_json::from_slice::<Value>(&bytes);
     if !(200..300).contains(&status) {
-        return FetchOutcome::Transient(format!("models fetch http {status}"));
+        return classify_error(status, &json.unwrap_or(Value::Null));
     }
-    match resp.json::<Value>().await {
-        Ok(v) => FetchOutcome::Ok(parse_live_models(&v)),
-        Err(e) => FetchOutcome::Transient(format!("models response not json: {e}")),
+    let Ok(json) = json else {
+        return FetchOutcome::failure(DiscoveryOutcome::InvalidResponse, Some(status), None);
+    };
+    let valid = json
+        .get("data")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| {
+            rows.iter().all(|row| {
+                row.get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+            })
+        });
+    if !valid {
+        return FetchOutcome::failure(DiscoveryOutcome::InvalidResponse, Some(status), None);
+    }
+    let models = parse_live_models(&json);
+    FetchOutcome {
+        outcome: if models.is_empty() {
+            DiscoveryOutcome::Empty
+        } else {
+            DiscoveryOutcome::Success
+        },
+        models,
+        http_status: Some(status),
+        code: None,
     }
 }
 
-/// The refresh flow; returns the reconciled slice size.
-pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<usize, Error> {
+pub async fn refresh_models(
+    iii: &IIIClient,
+    http: &reqwest::Client,
+) -> Result<DiscoveryRefreshResponse, Error> {
     let token = state::load_token(iii).await;
-    let resolved = router_client::resolve(iii, token.as_deref()).await?;
-
-    let Some(credential) = resolved.credential else {
-        // Key removed: prune the slice so the picker reflects removal
-        // instead of showing stale, unusable rows.
-        router_client::reconcile(iii, vec![], token.as_deref()).await?;
-        return Ok(0);
+    let (resolved, attempt) = router_client::begin_discovery(iii, token.as_deref()).await?;
+    let fetched = if let Some(credential) = resolved.credential {
+        let url = models_url(resolved.api_url.as_deref().unwrap_or(DEFAULT_API_URL));
+        fetch_live_models(http, &url, crate::config::credential_parts(&credential)).await
+    } else {
+        FetchOutcome::failure(DiscoveryOutcome::NotConfigured, None, None)
     };
-    let credential_value = crate::config::credential_parts(&credential);
-
-    let url = models_url(resolved.api_url.as_deref().unwrap_or(DEFAULT_API_URL));
-    match fetch_live_models(http, &url, credential_value).await {
-        FetchOutcome::Ok(models) => {
-            let count = models.len();
-            router_client::reconcile(iii, models, token.as_deref()).await?;
-            Ok(count)
+    let outcome = fetched.outcome;
+    let count = if let Some(attempt) = attempt {
+        router_client::complete_discovery(
+            iii,
+            fetched.models,
+            DiscoveryReport {
+                attempt,
+                outcome,
+                http_status: fetched.http_status,
+                code: fetched.code,
+            },
+            token.as_deref(),
+        )
+        .await?
+    } else {
+        // Rolling-upgrade fallback: older routers cannot store diagnostics. Do not
+        // disguise a failure as empty success or destroy their last good catalog.
+        if outcome.preserves_catalog() {
+            return Err(upstream_unavailable(format!(
+                "model discovery: {outcome:?}"
+            )));
         }
-        FetchOutcome::AuthFailed => {
-            // Revoked/invalid key: the models are genuinely unusable.
-            router_client::reconcile(iii, vec![], token.as_deref()).await?;
-            Ok(0)
-        }
-        // Blip: keep the previous slice (spec § reconcile-to-empty guidance).
-        FetchOutcome::Transient(msg) => Err(upstream_unavailable(msg)),
-    }
+        let count = fetched.models.len();
+        router_client::reconcile(iii, fetched.models, token.as_deref()).await?;
+        count
+    };
+    Ok(DiscoveryRefreshResponse {
+        refreshed: RefreshModelsResponse {
+            ok: outcome.is_success(),
+            count,
+        },
+        discovery: outcome,
+    })
 }
 
 pub fn make_refresh_models(
     iii: IIIClient,
     http: reqwest::Client,
-) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, Error>>
+) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<DiscoveryRefreshResponse, Error>>
        + Send
        + Sync
        + 'static {
-    move |_req: RefreshModelsRequest| {
+    move |_req| {
         let (iii, http) = (iii.clone(), http.clone());
-        Box::pin(async move {
-            let count = refresh_models(&iii, &http).await?;
-            Ok(RefreshModelsResponse { ok: true, count })
-        })
+        Box::pin(async move { refresh_models(&iii, &http).await })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifies_without_exposing_upstream_data() {
+        use serde_json::json;
+        let cases = [
+            (
+                403,
+                json!({"code":"permission-denied", "error":"Your team team-SENSITIVE has no credits or has reached its monthly spending limit"}),
+                DiscoveryOutcome::Billing,
+            ),
+            (
+                403,
+                json!({"error":{"code":"permission-denied", "message":"Team team-SENSITIVE has used all available credits; key sk-SENSITIVE https://sensitive.invalid"}}),
+                DiscoveryOutcome::Billing,
+            ),
+            (
+                403,
+                json!({"error":{"code":"permission-denied", "message":"Forbidden"}}),
+                DiscoveryOutcome::Permission,
+            ),
+            (
+                401,
+                json!({"error":{"code":"invalid_api_key"}}),
+                DiscoveryOutcome::Authentication,
+            ),
+            (
+                429,
+                json!({"error":{"code":"rate_limit_exceeded"}}),
+                DiscoveryOutcome::RateLimit,
+            ),
+            (
+                503,
+                json!({"error":"private upstream details"}),
+                DiscoveryOutcome::Unavailable,
+            ),
+        ];
+        for (status, body, expected) in cases {
+            let fetched = classify_error(status, &body);
+            assert_eq!(fetched.outcome, expected);
+            let report = DiscoveryReport {
+                attempt: "test".into(),
+                outcome: fetched.outcome,
+                http_status: fetched.http_status,
+                code: fetched.code,
+            };
+            let wire = serde_json::to_string(&report).unwrap();
+            for secret in ["SENSITIVE", "https://", "private upstream"] {
+                assert!(!wire.contains(secret));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn real_http_empty_invalid_success_and_transport_are_distinct() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        for (body, expected) in [
+            ("{\"data\":[]}", DiscoveryOutcome::Empty),
+            ("{}", DiscoveryOutcome::InvalidResponse),
+            ("not json", DiscoveryOutcome::InvalidResponse),
+            ("{\"data\":[{}]}", DiscoveryOutcome::InvalidResponse),
+            (
+                "{\"data\":[{\"id\":\"grok-4\"}]}",
+                DiscoveryOutcome::Success,
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(&mut socket);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    assert!(reader.read_line(&mut line).await.unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            });
+            let fetched = fetch_live_models(
+                &reqwest::Client::new(),
+                &format!("http://{addr}/models"),
+                "fixture-key",
+            )
+            .await;
+            assert_eq!(fetched.outcome, expected);
+            server.await.unwrap();
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        assert_eq!(
+            fetch_live_models(
+                &reqwest::Client::new(),
+                &format!("http://{addr}/models"),
+                "fixture-key"
+            )
+            .await
+            .outcome,
+            DiscoveryOutcome::Unavailable
+        );
+    }
 
     #[test]
     fn models_url_derives_from_completions_endpoint() {

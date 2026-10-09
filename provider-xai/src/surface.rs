@@ -9,8 +9,8 @@
 //! registration emits.
 
 use llm_router::types::router::{
-    ProviderAbortRequest, ProviderAbortResponse, ProviderReadyAck, ProviderStreamInput,
-    ProviderStreamOutput, RefreshModelsRequest, RefreshModelsResponse, RouterReadyEvent,
+    DiscoveryRefreshResponse, ProviderAbortRequest, ProviderAbortResponse, ProviderReadyAck,
+    ProviderStreamInput, ProviderStreamOutput, RefreshModelsRequest, RouterReadyEvent,
 };
 
 pub const STREAM_ID: &str = "provider::xai::stream";
@@ -23,7 +23,7 @@ pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request
 
 pub const REFRESH_MODELS_ID: &str = "provider::xai::refresh_models";
 pub const REFRESH_MODELS_DESC: &str = "Refresh the xAI catalog slice from GET /v1/models and \
-     reconcile it through the router; returns the model count written.";
+     reconcile it through the router; returns ok, retained model count and safe discovery outcome.";
 
 pub const COUNT_TOKENS_ID: &str = "provider::xai::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
@@ -67,7 +67,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
     vec![
         spec::<ProviderStreamInput, ProviderStreamOutput>(STREAM_ID, STREAM_DESC),
         spec::<ProviderAbortRequest, ProviderAbortResponse>(ABORT_ID, ABORT_DESC),
-        spec::<RefreshModelsRequest, RefreshModelsResponse>(REFRESH_MODELS_ID, REFRESH_MODELS_DESC),
+        spec::<RefreshModelsRequest, DiscoveryRefreshResponse>(
+            REFRESH_MODELS_ID,
+            REFRESH_MODELS_DESC,
+        ),
         spec::<RouterReadyEvent, ProviderReadyAck>(ON_ROUTER_READY_ID, ON_ROUTER_READY_DESC),
         spec::<crate::count_tokens::CountTokensRequest, crate::count_tokens::CountTokensResponse>(
             COUNT_TOKENS_ID,
