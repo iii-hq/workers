@@ -439,7 +439,9 @@ pub async fn resolve_visible_skills(
     let global_root = cfg.resolved_skills_folder();
     let local_root = cfg.local_skills_folder();
     let agents_roots = cfg.resolved_agents_skills_roots();
-    let (merged, _skipped) = fs_source::scan_skills_merged(&global_root, &local_root);
+    let kit_ns = crate::kits::service::kit_namespaces();
+    let (merged, _skipped) =
+        fs_source::scan_skills_merged_with_kits(&global_root, &local_root, &kit_ns);
 
     let filtered = if !cfg.filter_unregistered {
         merged
@@ -459,7 +461,7 @@ pub async fn resolve_visible_skills(
                     .iter()
                     .flat_map(|root| fs_source::agents_namespaces(root))
                     .collect();
-                filter_to_registered(merged, &registered, &agents_ns)
+                filter_to_registered(merged, &registered, &agents_ns, &kit_ns)
             }
             None => {
                 tracing::info!(
@@ -498,17 +500,25 @@ pub const ENGINE_NAMESPACE: &str = "iii";
 ///    not workers, so `compose::status` never contains them. Matching by
 ///    NAME (not path) keeps a manual global-root copy of an agents
 ///    skill visible as well.
+/// 6. Its first TWO segments are an installed kit's namespace
+///    (`<handle>/<kit>`, from `kits.lock`): kits are not workers either.
 ///
 /// Everything else (skills from uninstalled workers) is dropped.
 pub(crate) fn filter_to_registered(
     merged: Vec<FsSkill>,
     registered: &HashSet<String>,
     agents_ns: &[String],
+    kit_ns: &[String],
 ) -> Vec<FsSkill> {
     merged
         .into_iter()
         .filter(|s| {
             let top_seg = s.id.split('/').next().unwrap_or("");
+            let in_kit = kit_ns.iter().any(|ns| {
+                s.id.len() > ns.len()
+                    && s.id.starts_with(ns.as_str())
+                    && s.id.as_bytes()[ns.len()] == b'/'
+            });
             // Single-segment ids (no `/`) are root/bundle docs — always keep.
             !s.id.contains('/')
                 // The iii-directory worker's own docs namespace.
@@ -519,6 +529,8 @@ pub(crate) fn filter_to_registered(
                 || registered.contains(top_seg)
                 // A system-installed agents skill namespace.
                 || agents_ns.iter().any(|ns| ns == top_seg)
+                // An installed kit's two-segment namespace.
+                || in_kit
         })
         .collect()
 }
@@ -3061,6 +3073,31 @@ First paragraph.
 
     // ── filter_to_registered ──────────────────────────────────────────
 
+    #[test]
+    fn filter_keeps_installed_kit_namespaces() {
+        let merged = vec![
+            FsSkill {
+                id: "acme/team/flow".into(),
+                abs_path: Default::default(),
+            },
+            FsSkill {
+                id: "acme/teamx/flow".into(),
+                abs_path: Default::default(),
+            },
+            FsSkill {
+                id: "acme/flow".into(),
+                abs_path: Default::default(),
+            },
+        ];
+        let registered = HashSet::new();
+        let kits = vec!["acme/team".to_string()];
+        let ids: Vec<String> = filter_to_registered(merged, &registered, &[], &kits)
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, vec!["acme/team/flow"]);
+    }
+
     fn fs_skill(id: &str) -> FsSkill {
         FsSkill {
             id: id.into(),
@@ -3072,7 +3109,7 @@ First paragraph.
     fn filter_keeps_root_doc_without_namespace() {
         let registered = HashSet::from(["resend".to_string()]);
         let merged = vec![fs_skill("index")];
-        let result = filter_to_registered(merged, &registered, &[]);
+        let result = filter_to_registered(merged, &registered, &[], &[]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "index");
     }
@@ -3081,7 +3118,7 @@ First paragraph.
     fn filter_keeps_directory_namespace_docs() {
         let registered = HashSet::new(); // nothing registered
         let merged = vec![fs_skill("directory/engine/functions/info")];
-        let result = filter_to_registered(merged, &registered, &[]);
+        let result = filter_to_registered(merged, &registered, &[], &[]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "directory/engine/functions/info");
     }
@@ -3138,7 +3175,7 @@ First paragraph.
     fn filter_keeps_engine_namespace_docs() {
         let registered = HashSet::new(); // nothing registered; `iii` is not a worker
         let merged = vec![fs_skill("iii/index"), fs_skill("iii/SKILL")];
-        let result = filter_to_registered(merged, &registered, &[]);
+        let result = filter_to_registered(merged, &registered, &[], &[]);
         let ids: Vec<&str> = result.iter().map(|s| s.id.as_str()).collect();
         assert!(ids.contains(&"iii/index"));
         assert!(ids.contains(&"iii/SKILL"));
@@ -3156,7 +3193,7 @@ First paragraph.
             fs_skill("impeccable/notes"),
             fs_skill("orphan/index"),
         ];
-        let result = filter_to_registered(merged, &registered, &agents_ns);
+        let result = filter_to_registered(merged, &registered, &agents_ns, &[]);
         let ids: Vec<&str> = result.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec!["impeccable/index", "impeccable/notes"]);
     }
@@ -3421,7 +3458,7 @@ First paragraph.
     fn filter_keeps_registered_worker_skills() {
         let registered = HashSet::from(["resend".to_string()]);
         let merged = vec![fs_skill("resend/index"), fs_skill("resend/emails/send")];
-        let result = filter_to_registered(merged, &registered, &[]);
+        let result = filter_to_registered(merged, &registered, &[], &[]);
         assert_eq!(result.len(), 2);
     }
 
@@ -3434,7 +3471,7 @@ First paragraph.
             fs_skill("index"),
             fs_skill("directory/skills/list"),
         ];
-        let result = filter_to_registered(merged, &registered, &[]);
+        let result = filter_to_registered(merged, &registered, &[], &[]);
         let ids: Vec<&str> = result.iter().map(|s| s.id.as_str()).collect();
         assert!(ids.contains(&"resend/index"));
         assert!(ids.contains(&"index"));
@@ -3446,7 +3483,7 @@ First paragraph.
     fn filter_drops_resend_when_not_registered() {
         let registered = HashSet::from(["agent-memory".to_string()]);
         let merged = vec![fs_skill("resend/index"), fs_skill("agent-memory/index")];
-        let result = filter_to_registered(merged, &registered, &[]);
+        let result = filter_to_registered(merged, &registered, &[], &[]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "agent-memory/index");
     }

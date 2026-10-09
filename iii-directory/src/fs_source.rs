@@ -964,16 +964,72 @@ pub fn scan_skills_merged(
     global_root: &Path,
     local_root: &Path,
 ) -> (Vec<FsSkill>, Vec<SkipReason>) {
-    let local_ns = top_level_namespaces(local_root);
+    scan_skills_merged_with_kits(global_root, local_root, &[])
+}
+
+/// [`scan_skills_merged`] aware of installed kits. A kit's skills live
+/// under the TWO-segment namespace `<handle>/<kit>` (`kit_namespaces`, from
+/// `kits.lock`), so its local override is `<local_root>/<handle>/<kit>/` and
+/// shadows that kit only — never the handle's other kits. A kit's install
+/// directory that happens to sit inside `local_root` (the default
+/// `local_skills_folder` is `skills/iii`, so a kit by handle `iii` installs
+/// there) is the kit itself, not a local override.
+pub fn scan_skills_merged_with_kits(
+    global_root: &Path,
+    local_root: &Path,
+    kit_namespaces: &[String],
+) -> (Vec<FsSkill>, Vec<SkipReason>) {
+    let kit_dirs: Vec<PathBuf> = kit_namespaces
+        .iter()
+        .map(|ns| global_root.join(ns))
+        .collect();
+    let in_kit_dir = |path: &Path| kit_dirs.iter().any(|d| path.starts_with(d));
+    let handles: Vec<&str> = kit_namespaces
+        .iter()
+        .filter_map(|ns| ns.split('/').next())
+        .collect();
+
+    // Whole namespaces (worker-style) and kit namespaces overridden locally.
+    let mut local_ns: Vec<String> = Vec::new();
+    let mut local_kit_ns: Vec<String> = Vec::new();
+    for top in top_level_namespaces(local_root) {
+        let dir = local_root.join(&top);
+        if handles.contains(&top.as_str()) {
+            for ns in kit_namespaces {
+                if ns.split('/').next() == Some(top.as_str()) {
+                    let override_dir = local_root.join(ns);
+                    if override_dir.is_dir() && !in_kit_dir(&override_dir) {
+                        local_kit_ns.push(ns.clone());
+                    }
+                }
+            }
+            continue;
+        }
+        if in_kit_dir(&dir) || kit_dirs.iter().any(|d| d.starts_with(&dir)) {
+            continue;
+        }
+        local_ns.push(top);
+    }
+    let shadowed = |id: &str| -> bool {
+        let mut segs = id.split('/');
+        let top = segs.next().unwrap_or("");
+        if local_ns.iter().any(|ns| ns == top) {
+            return true;
+        }
+        match segs.next() {
+            Some(second) if id.matches('/').count() >= 2 => {
+                let two = format!("{top}/{second}");
+                local_kit_ns.contains(&two)
+            }
+            _ => false,
+        }
+    };
 
     // Scan global, filtering out namespaces that are shadowed locally.
     let (global_skills, mut global_skipped) = scan_skills(global_root);
     let global_filtered: Vec<FsSkill> = global_skills
         .into_iter()
-        .filter(|s| {
-            let top_seg = s.id.split('/').next().unwrap_or("");
-            !local_ns.contains(&top_seg.to_string())
-        })
+        .filter(|s| !shadowed(&s.id))
         .collect();
 
     // Also filter global skipped diagnostics for shadowed namespaces.
@@ -988,8 +1044,13 @@ pub fn scan_skills_merged(
         !local_ns.contains(&rel.to_string())
     });
 
-    // Scan local.
-    let (local_skills, local_skipped) = scan_skills(local_root);
+    // Scan local; a kit's own install directory is not an override.
+    let (local_skills, mut local_skipped) = scan_skills(local_root);
+    let local_skills: Vec<FsSkill> = local_skills
+        .into_iter()
+        .filter(|s| !in_kit_dir(&s.abs_path))
+        .collect();
+    local_skipped.retain(|s| !in_kit_dir(&s.path));
 
     // Merge: local skills first (they won any shadowed namespace),
     // then global-only namespaces. Re-sort by id for deterministic order.
@@ -1735,6 +1796,50 @@ mod tests {
         std::fs::write(&path, "---\ntitle: x\n---\n").unwrap();
         let err = read_skill_with_frontmatter(&path).unwrap_err();
         assert!(err.contains("empty body"), "got: {err}");
+    }
+
+    // ── scan_skills_merged_with_kits ────────────────────────────────
+
+    #[test]
+    fn kit_namespaces_override_per_kit_not_per_handle() {
+        let global = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+        write_fixture(global.path(), "acme/team/flow.md", "# global team\n");
+        write_fixture(global.path(), "acme/other/x.md", "# other kit\n");
+        write_fixture(local.path(), "acme/team/flow.md", "# local team\n");
+        let kits = vec!["acme/team".to_string(), "acme/other".to_string()];
+
+        let (skills, _) = scan_skills_merged_with_kits(global.path(), local.path(), &kits);
+        let ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["acme/other/x", "acme/team/flow"]);
+        let team = skills.iter().find(|s| s.id == "acme/team/flow").unwrap();
+        assert!(
+            team.abs_path.starts_with(local.path()),
+            "local override wins"
+        );
+        // Without the kit list the old whole-namespace rule would hide acme/other.
+        let (plain, _) = scan_skills_merged(global.path(), local.path());
+        assert!(plain.iter().all(|s| s.id != "acme/other/x"));
+    }
+
+    #[test]
+    fn kit_installed_inside_the_local_root_is_not_an_override() {
+        // Default layout: local_skills_folder = skills/iii, and a kit by handle
+        // `iii` installs to skills/iii/<kit>/.
+        let root = tempfile::tempdir().unwrap();
+        let global = root.path().join("skills");
+        let local = global.join("iii");
+        write_fixture(&global, "iii/SKILL.md", "# engine\n");
+        write_fixture(&global, "iii/kanban-team/tickets/flow.md", "# kit\n");
+        write_fixture(&global, "kanban-team/x.md", "# a worker namespace\n");
+        let kits = vec!["iii/kanban-team".to_string()];
+
+        let (skills, _) = scan_skills_merged_with_kits(&global, &local, &kits);
+        let ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&"iii/kanban-team/tickets/flow"), "{ids:?}");
+        assert!(!ids.contains(&"kanban-team/tickets/flow"), "{ids:?}");
+        // The kit dir does not shadow a same-named single-segment namespace.
+        assert!(ids.contains(&"kanban-team/x"), "{ids:?}");
     }
 
     // ── scan_skills_merged ──────────────────────────────────────────

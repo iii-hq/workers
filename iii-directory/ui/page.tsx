@@ -44,7 +44,7 @@ export default function setup(host: Host) {
 
   registerDirectoryPalette(host)
 
-  host.functionTriggers.register(createDirectoryTriggerRenderer())
+  host.functionTriggers.register(createDirectoryTriggerRenderer(host))
   host.functionTriggers.register(createSearchTriggerRenderer())
 
   host.configForms.register('iii-directory', DirectoryConfigForm)

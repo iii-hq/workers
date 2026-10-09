@@ -361,6 +361,7 @@ async fn main() -> Result<()> {
         skills: registered.skills.clone(),
         system_prompts: registered.system_prompts.clone(),
         agents: registered.agents.clone(),
+        kits: registered.kits.clone(),
     };
     let rt = tokio::runtime::Handle::current();
     let _fs_watch = match iii_directory::watch::spawn_fs_watch(watch_roots, move |kind| {

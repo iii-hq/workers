@@ -1,6 +1,6 @@
 //! Custom trigger types this worker publishes.
 //!
-//! Three trigger types exist:
+//! Four trigger types exist:
 //!
 //! - `directory::skills::on-change`  — fires after every successful
 //!   `directory::skills::download` that wrote at least one skill
@@ -15,6 +15,9 @@
 //! - `directory::agents::on-change` — fires after every successful
 //!   download or direct create, update, delete, or external edit of an
 //!   agent profile.
+//! - `directory::kits::on-change` — fires when a kit plan is created or
+//!   discarded, while an apply runs (step progress) and when it lands, and
+//!   when an update check changes the set of available kit updates.
 //!
 //! The `mcp` worker (and any other interested subscriber) registers a
 //! trigger instance of these types via
@@ -42,6 +45,7 @@ use serde_json::Value;
 pub const SKILLS_ON_CHANGE: &str = "directory::skills::on-change";
 pub const SYSTEM_PROMPTS_ON_CHANGE: &str = "directory::system-prompts::on-change";
 pub const AGENTS_ON_CHANGE: &str = "directory::agents::on-change";
+pub const KITS_ON_CHANGE: &str = "directory::kits::on-change";
 
 /// Thread-safe subscriber registry keyed by trigger-instance id. Cloned
 /// into both the `TriggerHandler` (which mutates on register /
@@ -119,6 +123,7 @@ pub struct RegisteredTriggerTypes {
     pub skills: SubscriberSet,
     pub system_prompts: SubscriberSet,
     pub agents: SubscriberSet,
+    pub kits: SubscriberSet,
 }
 
 pub fn register_all(iii: &Arc<IIIClient>) -> RegisteredTriggerTypes {
@@ -161,10 +166,24 @@ pub fn register_all(iii: &Arc<IIIClient>) -> RegisteredTriggerTypes {
     ));
     tracing::info!(trigger_type = AGENTS_ON_CHANGE, "registered trigger type");
 
+    let kits = SubscriberSet::new();
+    let _ = iii.register_trigger_type(RegisterTriggerType::new(
+        KITS_ON_CHANGE.to_string(),
+        "Fires when kit state changes: a plan is created or discarded \
+         ({ op: \"plan\" | \"discard\", kit, plan_id }), an apply makes progress or \
+         finishes ({ op: \"progress\", plan_id, steps } / { op: \"apply\", kit, plan_id }), \
+         or an update check finds a different set of available updates \
+         ({ op: \"updates\" })."
+            .to_string(),
+        SkillsTriggerHandler::new(KITS_ON_CHANGE, kits.clone()),
+    ));
+    tracing::info!(trigger_type = KITS_ON_CHANGE, "registered trigger type");
+
     RegisteredTriggerTypes {
         skills,
         system_prompts,
         agents,
+        kits,
     }
 }
 

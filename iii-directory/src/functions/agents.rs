@@ -52,6 +52,7 @@ use crate::functions::prompts::validate_name;
 use crate::functions::skills::{
     find_fs_skill_in, resolve_visible_skills, RegisteredWorkersCache, SKILL_BODY_MAX_BYTES,
 };
+use crate::kits::origin::{AgentSource, OriginIndex, SourceKind};
 use crate::sources::{mark_self_write, write_file_atomic};
 use crate::trigger_types;
 
@@ -131,6 +132,11 @@ pub struct AgentEntry {
     /// harness refuses to run it until the chain is fixed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inheritance_error: Option<String>,
+    /// Where the file came from: an installed kit (`kits.lock`), a worker's
+    /// skills bundle (its completion marker), the project itself (`local`),
+    /// the user-global root (`global`) or the worker binary (`builtin`).
+    /// `modified` says whether a kit's or worker's file was edited here.
+    pub source: AgentSource,
     /// File mtime as RFC 3339; empty for a bundled profile.
     pub modified_at: String,
 }
@@ -218,6 +224,8 @@ pub struct AgentGetOutput {
     /// excluded). Present only when the request set `raw: true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<String>,
+    /// Where the file came from (see `list`).
+    pub source: AgentSource,
     /// File mtime as RFC 3339; empty for a bundled profile.
     pub modified_at: String,
 }
@@ -322,7 +330,8 @@ fn register_list(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
         .description(
             "List agent profiles (id, name, description, logo, icon, color, model, \
              reasoning_effort, skill_count, function_count, extends, hidden, composer_placeholder, \
-             modified_at) from the agents folder plus the bundled ones (`builtin: true`). \
+             source, modified_at) from the agents folder plus the bundled ones (`builtin: true`). \
+             `source` says where each file came from: kit, worker, local, global or builtin. \
              Inherited fields resolve through `extends` (composer_placeholder never inherits); skill_count null means no preloaded skills, \
              function_count counts the preloaded functions (contracts injected into new sessions).",
         ),
@@ -720,8 +729,27 @@ fn compose_prompt(chain: &[&FsAgent]) -> Result<String, String> {
     Ok(prompt.unwrap_or_default())
 }
 
+/// Origin index for `source`: the project's `kits.lock` plus worker markers.
+fn origin_index(cfg: &SkillsConfig) -> OriginIndex {
+    OriginIndex::load(
+        crate::kits::lock::KitsLock::read_lenient(&crate::kits::paths::kits_lock()),
+        &cfg.resolved_skills_folder(),
+    )
+}
+
+fn agent_source(cfg: &SkillsConfig, index: &OriginIndex, agent: &FsAgent) -> AgentSource {
+    if agent.builtin {
+        return AgentSource::simple(SourceKind::Builtin);
+    }
+    if !agent.abs_path.starts_with(cfg.resolved_agents_folder()) {
+        return AgentSource::simple(SourceKind::Global);
+    }
+    index.classify_project_agent(&agent.name, &agent.abs_path)
+}
+
 pub fn list_agents(cfg: &SkillsConfig) -> ListAgentsOutput {
     let catalog = catalog(cfg);
+    let origins = origin_index(cfg);
     let agents = catalog
         .iter()
         .map(|a| {
@@ -744,6 +772,7 @@ pub fn list_agents(cfg: &SkillsConfig) -> ListAgentsOutput {
                 composer_placeholder: a.composer_placeholder.clone(),
                 builtin: a.builtin,
                 inheritance_error,
+                source: agent_source(cfg, &origins, a),
             }
         })
         .collect();
@@ -802,6 +831,7 @@ pub fn get_agent(
         builtin: agent.builtin,
         inheritance_error,
         raw,
+        source: agent_source(cfg, &origin_index(cfg), agent),
     })
 }
 

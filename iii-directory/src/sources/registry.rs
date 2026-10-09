@@ -20,13 +20,16 @@
 //! `agents/<id>.md` entries are routed to the agent profile root. A
 //! structured registry `prompts` field is ignored.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Deserialize;
 
 use crate::functions::prompts::validate_name;
 
-use super::{build_http_client, validate_relative_path, write_file_atomic, DownloadResult};
+use super::{
+    build_http_client, validate_relative_path, write_file_atomic, DownloadResult, SkippedAgent,
+};
 
 /// Specifier for which version of a worker's skills to pull.
 ///
@@ -66,7 +69,6 @@ struct WorkerSkillsResponse {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     version: Option<String>,
     #[serde(default)]
     skills: Vec<SkillEntry>,
@@ -108,6 +110,10 @@ pub enum RegistryDownloadOutcome {
 /// HTTP GET the worker's directory bundle, parse the response, and route
 /// skills and agent profiles to their configured roots. The HTTP request
 /// and file writes are bounded by `timeout_ms` collectively.
+///
+/// `kit_agents` maps agent ids owned by an installed kit to that kit: those
+/// profiles are never overwritten by a worker bundle and are reported in
+/// `agents_skipped` instead.
 pub async fn download(
     registry_base: &str,
     worker: &str,
@@ -115,6 +121,7 @@ pub async fn download(
     skills_folder: &Path,
     agents_folder: &Path,
     timeout_ms: u64,
+    kit_agents: &BTreeMap<String, String>,
 ) -> Result<DownloadResult, String> {
     match download_typed(
         registry_base,
@@ -123,6 +130,7 @@ pub async fn download(
         skills_folder,
         agents_folder,
         timeout_ms,
+        kit_agents,
     )
     .await?
     {
@@ -144,6 +152,7 @@ pub async fn download_typed(
     skills_folder: &Path,
     agents_folder: &Path,
     timeout_ms: u64,
+    kit_agents: &BTreeMap<String, String>,
 ) -> Result<RegistryDownloadOutcome, String> {
     validate_worker_name(worker)?;
 
@@ -193,7 +202,7 @@ pub async fn download_typed(
         }
     }
 
-    let result = write_response(worker, parsed, skills_folder, agents_folder)?;
+    let result = write_response(worker, parsed, skills_folder, agents_folder, kit_agents)?;
     Ok(RegistryDownloadOutcome::Ok(result))
 }
 
@@ -224,6 +233,7 @@ fn write_response(
     mut response: WorkerSkillsResponse,
     skills_folder: &Path,
     agents_folder: &Path,
+    kit_agents: &BTreeMap<String, String>,
 ) -> Result<DownloadResult, String> {
     let dest_root = skills_folder.join(worker);
     std::fs::create_dir_all(&dest_root)
@@ -232,6 +242,7 @@ fn write_response(
     dedupe_stale_overview(&mut response.skills);
 
     let mut result = DownloadResult::new(worker);
+    result.version = response.version.clone();
 
     for skill in response.skills {
         // Drop the redundant leading `skills/` packaging prefix so files land at
@@ -243,11 +254,23 @@ fn write_response(
             if validate_name(id).is_err() {
                 continue;
             }
+            // Kit profiles take precedence over the ones workers ship.
+            if let Some(kit) = kit_agents.get(id) {
+                result.agents_skipped.push(SkippedAgent {
+                    id: id.to_string(),
+                    owned_by: kit.clone(),
+                });
+                continue;
+            }
             write_file_atomic(
                 &agents_folder.join(format!("{id}.md")),
                 skill.content.as_bytes(),
             )?;
             result.agents_written.push(id.to_string());
+            result.agent_shas.insert(
+                id.to_string(),
+                crate::kits::lock::sha256_hex(skill.content.as_bytes()),
+            );
             continue;
         }
         let Some(kind) = crate::fs_source::classify_rel_path(&rel) else {
@@ -333,7 +356,8 @@ mod tests {
             }"##,
         )
         .unwrap();
-        let result = write_response("resend", response, tmp.path(), tmp.path()).unwrap();
+        let result =
+            write_response("resend", response, tmp.path(), tmp.path(), &BTreeMap::new()).unwrap();
         assert_eq!(result.namespace, "resend");
         assert_eq!(result.skills_written.len(), 2);
         assert!(!tmp.path().join("resend/prompts/send-email.md").exists());
@@ -365,7 +389,8 @@ mod tests {
                 },
             ],
         };
-        let result = write_response("resend", response, tmp.path(), tmp.path()).unwrap();
+        let result =
+            write_response("resend", response, tmp.path(), tmp.path(), &BTreeMap::new()).unwrap();
         assert_eq!(result.skills_written, vec!["index.md".to_string()]);
         assert_eq!(result.system_prompts_written, vec!["reviewer".to_string()]);
 
@@ -389,11 +414,67 @@ mod tests {
             }],
         };
 
-        let result = write_response("harness", response, skills.path(), agents.path()).unwrap();
+        let result = write_response(
+            "harness",
+            response,
+            skills.path(),
+            agents.path(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(result.agents_written, vec!["reviewer"]);
         assert!(agents.path().join("reviewer.md").is_file());
         assert!(!skills.path().join("harness/agents/reviewer.md").exists());
+    }
+
+    #[test]
+    fn write_response_skips_kit_owned_agents_and_records_shas() {
+        let skills = tempfile::tempdir().unwrap();
+        let agents = tempfile::tempdir().unwrap();
+        std::fs::write(agents.path().join("reviewer.md"), "kit version").unwrap();
+        let response = WorkerSkillsResponse {
+            name: Some("kanban".into()),
+            version: Some("1.6.1".into()),
+            skills: vec![
+                SkillEntry {
+                    path: "agents/reviewer.md".into(),
+                    content: "---\nname: Reviewer\n---\nWorker body.\n".into(),
+                },
+                SkillEntry {
+                    path: "agents/triager.md".into(),
+                    content: "---\nname: Triager\n---\nBody.\n".into(),
+                },
+            ],
+        };
+        let kit_agents = BTreeMap::from([("reviewer".to_string(), "acme/team".to_string())]);
+
+        let result = write_response(
+            "kanban",
+            response,
+            skills.path(),
+            agents.path(),
+            &kit_agents,
+        )
+        .unwrap();
+
+        assert_eq!(result.agents_written, vec!["triager"]);
+        assert_eq!(
+            result.agents_skipped,
+            vec![SkippedAgent {
+                id: "reviewer".into(),
+                owned_by: "acme/team".into()
+            }]
+        );
+        assert_eq!(
+            std::fs::read_to_string(agents.path().join("reviewer.md")).unwrap(),
+            "kit version"
+        );
+        assert_eq!(result.version.as_deref(), Some("1.6.1"));
+        assert_eq!(
+            result.agent_shas.get("triager").map(String::as_str),
+            Some(crate::kits::lock::sha256_hex(b"---\nname: Triager\n---\nBody.\n").as_str())
+        );
     }
 
     #[test]
@@ -409,7 +490,14 @@ mod tests {
             }],
         };
 
-        let result = write_response("harness", response, skills.path(), agents.path()).unwrap();
+        let result = write_response(
+            "harness",
+            response,
+            skills.path(),
+            agents.path(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         assert!(result.agents_written.is_empty());
         assert!(!agents.path().join("Bad-Id.md").exists());
@@ -428,7 +516,14 @@ mod tests {
             }],
         };
 
-        let result = write_response("harness", response, skills.path(), agents.path()).unwrap();
+        let result = write_response(
+            "harness",
+            response,
+            skills.path(),
+            agents.path(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(result.total_files(), 0);
         assert!(!agents.path().join("review/reviewer.md").exists());
@@ -468,7 +563,8 @@ mod tests {
                 content: "# skill\n".into(),
             }],
         };
-        let result = write_response("iii", response, tmp.path(), tmp.path()).unwrap();
+        let result =
+            write_response("iii", response, tmp.path(), tmp.path(), &BTreeMap::new()).unwrap();
         // Lands at iii/SKILL.md, NOT iii/skills/SKILL.md.
         assert!(tmp.path().join("iii/SKILL.md").is_file());
         assert!(!tmp.path().join("iii/skills/SKILL.md").exists());
@@ -493,7 +589,14 @@ mod tests {
                 },
             ],
         };
-        let result = write_response("iii-directory", response, tmp.path(), tmp.path()).unwrap();
+        let result = write_response(
+            "iii-directory",
+            response,
+            tmp.path(),
+            tmp.path(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert!(tmp.path().join("iii-directory/SKILL.md").is_file());
         assert!(!tmp.path().join("iii-directory/index.md").exists());
         assert_eq!(
@@ -514,7 +617,8 @@ mod tests {
                 content: "x".into(),
             }],
         };
-        let err = write_response("resend", response, tmp.path(), tmp.path()).unwrap_err();
+        let err = write_response("resend", response, tmp.path(), tmp.path(), &BTreeMap::new())
+            .unwrap_err();
         assert!(err.contains("invalid skill path"), "got: {err}");
     }
 }

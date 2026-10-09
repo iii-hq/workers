@@ -618,7 +618,8 @@ pub fn create_skill_in(
             id: id.clone(),
             abs_path: std::path::PathBuf::new(),
         };
-        if filter_to_registered(vec![candidate], registered, &agents_ns).is_empty() {
+        let kit_ns = crate::kits::service::kit_namespaces();
+        if filter_to_registered(vec![candidate], registered, &agents_ns, &kit_ns).is_empty() {
             return Err(invalid_input_message(
                 "D115",
                 &format!(

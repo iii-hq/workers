@@ -1,7 +1,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { expect, it, vi } from 'vitest'
 import { resolveBrowserPaneVisibility } from './browser'
-import { agentsAdapter, COLLECTIONS } from './index'
+import { agentOrigin, agentsAdapter, COLLECTIONS, kitsRouteFromContext, originLabel } from './index'
 
 vi.mock('@iii-dev/console-ui', () => ({
   Button: () => null,
@@ -57,8 +57,8 @@ it('lists the bundled base agent as an editable copy-on-write row', async () => 
 /* System prompts are NOT a collection here: they have no authoring surface in
    the console (the chat picker only reads them). Pinned so the tab cannot
    quietly come back. */
-it('browses skills and agent profiles only', () => {
-  expect(COLLECTIONS.map((c) => c.value)).toEqual(['skills', 'agents'])
+it('browses skills, agent profiles and kits only', () => {
+  expect(COLLECTIONS.map((c) => c.value)).toEqual(['skills', 'agents', 'kits'])
 })
 
 it('shows only the creation form when a narrow browser starts a new entry', () => {
@@ -93,4 +93,26 @@ it('shows only the creation form when a narrow browser starts a new entry', () =
       creating: true,
     }),
   ).toEqual({ showSide: true, showDoc: true })
+})
+
+it('opens a kit plan or an installed kit from a panel context', () => {
+  expect(kitsRouteFromContext({ plan_id: 'kp_1' })).toEqual({ view: 'plan', planId: 'kp_1' })
+  expect(kitsRouteFromContext({ kit: 'acme/team' })).toEqual({ view: 'kit', kit: 'acme/team' })
+  expect(kitsRouteFromContext({})).toEqual({ view: 'home' })
+})
+
+it('labels each profile with where it came from', () => {
+  const row = { id: 'x', name: 'X', description: '', logo: null, icon: null, color: null, modified_at: '' }
+  expect(agentOrigin({ ...row, source: { kind: 'kit', kit: 'acme/team', modified: true } })).toMatch(/^kit acme\/team · edited/)
+  expect(agentOrigin({ ...row, source: { kind: 'worker', worker: 'kanban' } })).toMatch(/^worker kanban/)
+  expect(agentOrigin({ ...row, source: { kind: 'local' } })).toMatch(/^local/)
+  expect(agentOrigin({ ...row, builtin: true, source: { kind: 'builtin' } })).toBe('Built-in · edits save a local override')
+})
+
+it('gives profile rows a short origin label', () => {
+  const row = { id: 'x', name: 'X', description: '', logo: null, icon: null, color: null, modified_at: '' }
+  expect(originLabel({ ...row, source: { kind: 'kit', kit: 'acme/team', modified: true } })).toBe('kit acme/team · edited')
+  expect(originLabel({ ...row, source: { kind: 'worker', worker: 'kanban' } })).toBe('worker kanban')
+  expect(originLabel({ ...row, builtin: true })).toBe('built-in')
+  expect(originLabel(row)).toBeUndefined()
 })
