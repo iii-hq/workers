@@ -53,6 +53,7 @@ function controller(
       detections: null,
       envFile: '.env',
       installed,
+      judgeProvider: null,
       consoleConfig: null,
       browser: null,
       browserError: null,
