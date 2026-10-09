@@ -2307,9 +2307,20 @@ async fn complete_validated(
     value: Value,
 ) -> Result<TurnStepResult, HarnessError> {
     match deps.hooks.run_post_turn(record, record.step, &value).await {
-        Ok(()) => finalize_completed(deps, session, record, Some(value)).await,
+        // Both tails contain large async states. Inlining them propagates
+        // through the output-contract and dispatch futures, exhausting the
+        // SDK thread's debug stack when completion reads or resolves a parent.
+        Ok(()) => Box::pin(finalize_completed(deps, session, record, Some(value))).await,
         Err(deny) => {
-            retry_or_giveup_with(deps, session, record, &deny.reason, value, deny.prompt).await
+            Box::pin(retry_or_giveup_with(
+                deps,
+                session,
+                record,
+                &deny.reason,
+                value,
+                deny.prompt,
+            ))
+            .await
         }
     }
 }
@@ -4175,6 +4186,9 @@ impl Clone for SessionStreamSink {
         }
     }
 }
+
+#[cfg(test)]
+mod stack_tests;
 
 #[cfg(test)]
 mod tests {
