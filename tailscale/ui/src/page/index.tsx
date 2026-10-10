@@ -871,7 +871,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
                   </Field>
                 </div>
                 <Field label="What to publish" hint="Empty publishes the ADE. Otherwise a local port, a loopback URL, or an absolute directory.">
-                  <Input value={target} onChange={setTarget} placeholder={configuration ? `${configuration.console_url} (the ADE)` : 'the ADE'} aria-label="Target" />
+                  <Input value={target} onChange={setTarget} placeholder={configuration?.console_url ? `${configuration.console_url} (the ADE)` : 'the ADE'} aria-label="Target" />
                 </Field>
                 <p className="ts-note">
                   {mode === 'serve'

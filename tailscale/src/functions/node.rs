@@ -165,7 +165,7 @@ pub struct StatusOutput {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ConfigurationOutput {
-    /// Local Console URL the Console share routes proxy to.
+    /// Local Console URL the Console share routes proxy to; empty asks this project's ADE (`console::status`) at share time.
     pub console_url: String,
     /// HTTPS port used when a share request omits one.
     pub default_https_port: u16,

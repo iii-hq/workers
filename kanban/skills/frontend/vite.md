@@ -88,15 +88,18 @@ Dev proxy:
 ```ts
 server: {
   proxy: {
-    '/api': { target: 'http://127.0.0.1:3111', changeOrigin: true, rewrite: (p) => p.replace(/^\/api/, '') },
-    '/ws': { target: 'ws://127.0.0.1:3111', ws: true },
+    // III_HTTP_URL in .env.local: the `url` http::status answers (http://127.0.0.1:3111 by
+    // default). Unset, every /api request fails: never default it to a guessed port.
+    '/api': { target: env.III_HTTP_URL, changeOrigin: true, rewrite: (p) => p.replace(/^\/api/, '') },
   },
 }
 ```
 
-`changeOrigin: true` fixes Host-header rejection; `ws: true` is required for WebSocket
-upgrades. Proxying only exists in dev — production needs a real reverse proxy with the same
-routes, so keep the paths identical and say so in the README.
+`changeOrigin: true` fixes Host-header rejection; `ws: true` is required on an entry that
+carries WebSocket upgrades. `iii-browser-sdk` needs no entry: it connects straight to the
+public RBAC listener (`VITE_III_WS_URL`), never to the `http` worker, which serves no WebSocket.
+Proxying only exists in dev — production needs a real reverse proxy with the same routes, so
+keep the paths identical and say so in the README.
 
 ## Dependency pre-bundling (`optimizeDeps`)
 

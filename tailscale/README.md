@@ -51,7 +51,7 @@ Settings live in the `configuration` worker under the id `tailscale`; edit them 
 
 ```yaml
 tailscale_binary: tailscale          # CLI name or absolute path
-console_url: http://127.0.0.1:3113   # loopback Console root that tailscale::share publishes
+console_url: ""                      # loopback Console root that tailscale::share publishes; empty asks this project's ADE
 default_https_port: 443              # port used when a publish request omits one
 allow_funnel: false                  # operator lock for public Funnel routes
 command_timeout_ms: 20000            # per CLI invocation

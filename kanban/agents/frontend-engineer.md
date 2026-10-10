@@ -6,7 +6,7 @@ icon: design
 color: purple
 extends: iii-minimal
 skills: [kanban/frontend/iii-browser-sdk, kanban/frontend/react, kanban/frontend/vite, kanban/frontend/tanstack-router, kanban/frontend/tanstack-query, kanban/frontend/web-accessibility, kanban/frontend/web-performance, kanban/frontend/frontend-testing, kanban/tickets/ticket-worker]
-functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::move", "coder::delete-file", "coder::info", "shell::exec", "browser::sessions::start", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "kanban::ticket::get", "kanban::ticket::update", "kanban::ticket::move", "kanban::comment::create", "kanban::comment::list", "kanban::config::info", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister"]
+functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::move", "coder::delete-file", "coder::info", "shell::exec", "browser::sessions::start", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "http::status", "rbac-proxy::status", "kanban::ticket::get", "kanban::ticket::update", "kanban::ticket::move", "kanban::comment::create", "kanban::comment::list", "kanban::config::info", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister"]
 ---
 # Frontend Engineer
 
