@@ -6,9 +6,11 @@
 //! the schema rejects that is a string holding JSON of another type
 //! (`"true"`, `"[\"a\"]"`, `"{\"name\":…}"`) is parsed in place. That repair
 //! is lossless — the model wrote the right value in the wrong JSON encoding —
-//! so it needs no judgement. The validator is the schema oracle: a parse is
-//! kept only when the violation at that path disappears, so `$ref`, `anyOf`
-//! and `Option<T>` shapes need no hand resolution.
+//! so it needs no judgement, and its result note only names what was parsed,
+//! once per function and path in a turn. The validator is the
+//! schema oracle: a parse is kept only when the violation at that path
+//! disappears, so `$ref`, `anyOf` and `Option<T>` shapes need no hand
+//! resolution.
 //!
 //! Layer B (`judge`, only when `judge::evaluate` is deployed): the remaining
 //! violations whose candidate repairs can be enumerated are put to the judge
@@ -33,7 +35,7 @@
 //! failing judge, or a call nothing here can fix dispatch exactly as the
 //! model wrote them (after any lossless layer-A repair).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use jsonschema::error::ValidationErrorKind;
 use jsonschema::JSONSchema;
@@ -100,6 +102,12 @@ pub struct Reconciled {
     pub arguments: Value,
     pub changes: Vec<Change>,
 }
+
+/// `(function_id, argument path)` pairs whose lossless parse a result has
+/// already reported this turn ([`TurnRecord::noted_parses`]).
+///
+/// [`TurnRecord::noted_parses`]: crate::types::turn::TurnRecord::noted_parses
+pub type NotedParses = BTreeSet<(String, String)>;
 
 /// Reconcile `arguments` for `function_id`, or `None` when nothing changed.
 /// `description` is the call's stated purpose (the `agent_trigger` wrapper's
@@ -253,18 +261,25 @@ pub fn looks_like_argument_error(data: &ResultData) -> bool {
     }
 }
 
-/// Note applied repairs on the result (so the model learns) and on the
-/// entry origin. An `engine::functions::info` result stays byte-identical to
-/// its contract, because the contract ledger digests it.
+/// Note applied repairs on the result (so the model sees what ran) and on
+/// the entry origin. An `engine::functions::info` result stays byte-identical
+/// to its contract, because the contract ledger digests it. `noted` is the
+/// turn's record of parses already reported (see [`note`]): a call left with
+/// nothing to say keeps only the `reconciled` annotation.
 pub fn note_result(
     data: &mut ResultData,
     annotations: &mut Map<String, Value>,
     changes: &[Change],
     function_id: &str,
+    noted: &mut NotedParses,
 ) {
     annotations.insert("reconciled".into(), json!(changes));
-    if function_id != FUNCTIONS_INFO_ID {
-        data.content.push(ContentBlock::text(note(changes)));
+    if function_id == FUNCTIONS_INFO_ID {
+        return;
+    }
+    let text = note(changes, function_id, noted);
+    if !text.is_empty() {
+        data.content.push(ContentBlock::text(text));
     }
 }
 
@@ -272,6 +287,7 @@ pub fn note_result(
 /// dispatch and, when the target rejected the arguments as malformed, name
 /// the schema violations by path. Every path that appends a target's result
 /// (turn loop, spawn, deferred release) goes through here.
+#[allow(clippy::too_many_arguments)]
 pub async fn settle_result(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -280,9 +296,10 @@ pub async fn settle_result(
     changes: Option<&[Change]>,
     function_id: &str,
     arguments: &Value,
+    noted: &mut NotedParses,
 ) {
     if let Some(changes) = changes {
-        note_result(data, annotations, changes, function_id);
+        note_result(data, annotations, changes, function_id, noted);
     }
     if function_id != FUNCTIONS_INFO_ID && looks_like_argument_error(data) {
         let target_error = ContentBlock::join_text(&data.content);
@@ -813,9 +830,36 @@ fn diagnosis(
     ))
 }
 
-/// The one-line notice appended to the function result, so the model sees
-/// what ran and learns the contract (history is never rewritten).
-pub fn note(changes: &[Change]) -> String {
+/// The notice appended to the function result, so the model sees what ran
+/// (history is never rewritten):
+/// - a call with a repair that changed what the model asked for (renamed,
+///   replaced, dropped) lists every repair, with the contract to follow;
+/// - otherwise lossless parses get one short line naming the paths not yet
+///   reported this turn, and nothing once all were: the parse lost nothing
+///   (the result itself says whether the call ran), and repeating the notice
+///   does not change what a model that stringifies arrays sends.
+///
+/// Every parsed path is recorded in `noted`. Empty when nothing is left to
+/// say.
+pub fn note(changes: &[Change], function_id: &str, noted: &mut NotedParses) -> String {
+    let mut fresh: Vec<&Change> = Vec::new();
+    for change in changes.iter().filter(|c| c.kind == ChangeKind::Parsed) {
+        if noted.insert((function_id.to_string(), change.path.clone())) {
+            fresh.push(change);
+        }
+    }
+    if changes
+        .iter()
+        .any(|change| change.kind != ChangeKind::Parsed)
+    {
+        return repaired_note(changes);
+    }
+    parsed_note(&fresh).unwrap_or_default()
+}
+
+/// The line listing every repair with the contract to follow, for a call
+/// whose repairs include one that changed what the model asked for.
+fn repaired_note(changes: &[Change]) -> String {
     let parts: Vec<String> = changes
         .iter()
         .map(|change| {
@@ -839,6 +883,46 @@ pub fn note(changes: &[Change]) -> String {
          match the function's schema: its parameter names, allowed values and JSON types.",
         parts.join("; ")
     )
+}
+
+/// The line reporting lossless parses by path and parsed JSON type, without
+/// value previews or an instruction; `None` when there is none to report.
+fn parsed_note(parsed: &[&Change]) -> Option<String> {
+    if parsed.is_empty() {
+        return None;
+    }
+    let paths: Vec<String> = parsed
+        .iter()
+        .map(|change| {
+            format!(
+                "`{}` ({})",
+                display_path(&change.path),
+                json_type(&change.to)
+            )
+        })
+        .collect();
+    let arrived = if parsed.len() == 1 {
+        "arrived as a JSON string and was"
+    } else {
+        "arrived as JSON strings and were"
+    };
+    Some(format!(
+        "[harness] {} {arrived} parsed before dispatch.",
+        paths.join(", ")
+    ))
+}
+
+/// The JSON type name of `value`, as a request schema would spell it.
+fn json_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(n) if n.is_f64() => "number",
+        Value::Number(_) => "integer",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 fn display_path(path: &str) -> String {
@@ -1233,22 +1317,49 @@ mod tests {
         };
         let mut annotations = Map::new();
 
-        note_result(&mut data, &mut annotations, &changes, "coder::search");
+        let mut noted = NotedParses::new();
+        note_result(
+            &mut data,
+            &mut annotations,
+            &changes,
+            "coder::search",
+            &mut noted,
+        );
         assert_eq!(data.content.len(), 2);
         assert!(annotations["reconciled"][0]["path"] == "/regex");
+
+        // The same lossless repair later in the turn: annotated, no notice.
+        let mut again = ResultData {
+            content: vec![ContentBlock::text("ok".to_string())],
+            is_error: false,
+            details: Value::Null,
+        };
+        let mut again_annotations = Map::new();
+        note_result(
+            &mut again,
+            &mut again_annotations,
+            &changes,
+            "coder::search",
+            &mut noted,
+        );
+        assert_eq!(again.content.len(), 1);
+        assert!(again_annotations["reconciled"][0]["path"] == "/regex");
 
         let mut info = ResultData {
             content: vec![ContentBlock::text("{}".to_string())],
             is_error: false,
             details: Value::Null,
         };
+        let mut info_noted = NotedParses::new();
         note_result(
             &mut info,
             &mut Map::new(),
             &changes,
             "engine::functions::info",
+            &mut info_noted,
         );
         assert_eq!(info.content.len(), 1);
+        assert!(info_noted.is_empty());
     }
 
     #[test]
@@ -1333,26 +1444,30 @@ mod tests {
 
     #[test]
     fn the_note_names_each_repair_compactly() {
-        let note = note(&[
-            Change {
-                path: "/regex".into(),
-                kind: ChangeKind::Parsed,
-                from: json!("true"),
-                to: json!(true),
-            },
-            Change {
-                path: "/function_ids".into(),
-                kind: ChangeKind::Renamed,
-                from: json!("function_ids"),
-                to: json!("function_id"),
-            },
-            Change {
-                path: "/seed".into(),
-                kind: ChangeKind::Dropped,
-                from: json!(7),
-                to: Value::Null,
-            },
-        ]);
+        let note = note(
+            &[
+                Change {
+                    path: "/regex".into(),
+                    kind: ChangeKind::Parsed,
+                    from: json!("true"),
+                    to: json!(true),
+                },
+                Change {
+                    path: "/function_ids".into(),
+                    kind: ChangeKind::Renamed,
+                    from: json!("function_ids"),
+                    to: json!("function_id"),
+                },
+                Change {
+                    path: "/seed".into(),
+                    kind: ChangeKind::Dropped,
+                    from: json!(7),
+                    to: Value::Null,
+                },
+            ],
+            "coder::search",
+            &mut NotedParses::new(),
+        );
 
         assert!(note.contains("`regex` \"true\" → true"), "{note}");
         assert!(
@@ -1361,6 +1476,78 @@ mod tests {
         );
         assert!(note.contains("`seed` dropped"), "{note}");
         assert!(note.starts_with("[harness]"));
+        assert!(note.contains(SCHEMA_INSTRUCTION), "{note}");
+    }
+
+    const SCHEMA_INSTRUCTION: &str = "Send arguments that match the function's schema";
+
+    fn parsed(path: &str, from: &str, to: Value) -> Change {
+        Change {
+            path: path.into(),
+            kind: ChangeKind::Parsed,
+            from: json!(from),
+            to,
+        }
+    }
+
+    #[test]
+    fn a_lossless_parse_is_noted_once_per_function_and_path_without_an_instruction() {
+        let args = [parsed("/args", "[\"-c\", \"ls\"]", json!(["-c", "ls"]))];
+        let mut noted = NotedParses::new();
+
+        let first = note(&args, "shell::exec", &mut noted);
+        assert_eq!(
+            first,
+            "[harness] `args` (array) arrived as a JSON string and was parsed before \
+             dispatch."
+        );
+        // The same repair again this turn: nothing more to say.
+        assert_eq!(note(&args, "shell::exec", &mut noted), "");
+        // Another function's `args` is its own first time.
+        assert!(!note(&args, "shell::spawn", &mut noted).is_empty());
+        // Only the paths not yet reported are listed.
+        let mixed = [
+            parsed("/args", "[]", json!([])),
+            parsed("/timeout_ms", "5", json!(5)),
+            parsed("/env", "{}", json!({})),
+        ];
+        let text = note(&mixed, "shell::exec", &mut noted);
+        assert_eq!(
+            text,
+            "[harness] `timeout_ms` (integer), `env` (object) arrived as JSON strings and were \
+             parsed before dispatch."
+        );
+        // A new turn starts with an empty set and notes again.
+        assert_eq!(note(&args, "shell::exec", &mut NotedParses::new()), first);
+    }
+
+    #[test]
+    fn a_repair_that_changes_meaning_keeps_the_full_note_after_its_parses_were_noted() {
+        let mut noted = NotedParses::new();
+        let regex = parsed("/regex", "true", json!(true));
+        assert!(!note(std::slice::from_ref(&regex), "coder::search", &mut noted).is_empty());
+
+        let renamed = Change {
+            path: "/q".into(),
+            kind: ChangeKind::Renamed,
+            from: json!("q"),
+            to: json!("query"),
+        };
+        let text = note(&[regex, renamed], "coder::search", &mut noted);
+        assert!(text.contains("`q` renamed to `query`"), "{text}");
+        assert!(text.contains("`regex` \"true\" → true"), "{text}");
+        assert!(text.contains(SCHEMA_INSTRUCTION), "{text}");
+
+        for kind in [ChangeKind::Replaced, ChangeKind::Dropped] {
+            let change = Change {
+                path: "/mode".into(),
+                kind,
+                from: json!("fastest"),
+                to: json!("fast"),
+            };
+            let text = note(&[change], "coder::search", &mut noted);
+            assert!(text.contains(SCHEMA_INSTRUCTION), "{kind:?}: {text}");
+        }
     }
 
     #[test]
