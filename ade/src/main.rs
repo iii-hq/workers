@@ -178,10 +178,12 @@ async fn main() -> Result<()> {
         (None, None)
     };
 
+    // console::status is agent-callable: never hand out URL credentials.
+    let engine_url_redacted = redact_url(&engine_url);
     functions::register_all(
         &iii,
         port.clone(),
-        &engine_url,
+        &engine_url_redacted,
         ui.clone(),
         workspace.clone(),
     );
@@ -201,7 +203,6 @@ async fn main() -> Result<()> {
         );
     }
 
-    let engine_url_redacted = redact_url(&engine_url);
     let state = server::AppState::new(Arc::new(engine_url), iii.namespace(), ui, Some(iii.clone()));
     let server_handle = server::start(cfg.http_port, state.clone()).await?;
     let apply_lock: configuration::ApplyLock = Arc::new(tokio::sync::Mutex::new(()));
@@ -283,6 +284,8 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
 /// `tracing` output. Falls back to the original string on parse failure.
 fn redact_url(s: &str) -> String {
     match url::Url::parse(s) {
+        // Nothing to hide: keep the address exactly as given.
+        Ok(u) if u.username().is_empty() && u.password().is_none() => s.to_string(),
         Ok(mut u) => {
             let _ = u.set_username("");
             let _ = u.set_password(None);
@@ -320,7 +323,7 @@ mod tests {
 
     #[test]
     fn redact_url_strips_userinfo_only() {
-        assert_eq!(redact_url("ws://127.0.0.1:49134"), "ws://127.0.0.1:49134/");
+        assert_eq!(redact_url("ws://127.0.0.1:49134"), "ws://127.0.0.1:49134");
         assert_eq!(
             redact_url("wss://user:secret@iii.example.com:1234/path"),
             "wss://iii.example.com:1234/path"
