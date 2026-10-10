@@ -7,6 +7,7 @@ import {
   useConversations,
 } from '@/hooks/use-conversations'
 import type { AgentEntry } from '@/lib/backend/directory-prompts'
+import { claimDraftSend } from '@/lib/composer-insert'
 import { getIiiClient } from '@/lib/iii-client'
 import type { ExamplePrompt } from '@/lib/onboarding/prompts'
 import { fetchTranscriptTail, listSessions } from '@/lib/sessions/api'
@@ -42,7 +43,7 @@ const MODELS: ModelOption[] = [
 
 const BUILDER: AgentEntry = {
   id: 'ade-worker-builder',
-  name: 'Create an app or tool',
+  name: 'Onboarding',
   description: 'Builds a worker',
   logo: null,
   icon: 'code',
@@ -86,7 +87,10 @@ async function open(
   prompt: ExamplePrompt,
   agents: AgentEntry[] = [BUILDER],
   models: ModelOption[] = MODELS,
+  // A rest slot, so an explicit `undefined` (lookup unfinished) is kept.
+  ...folder: [workingDir?: string | null]
 ) {
+  const workingDir = folder.length > 0 ? folder[0] : '/home/me/shop'
   const shown: string[] = []
   let id = ''
   await act(async () => {
@@ -101,6 +105,7 @@ async function open(
       },
       prompt,
       agents,
+      workingDir,
     )
   })
   const chat = api.conversations.find((conversation) => conversation.id === id)
@@ -133,17 +138,21 @@ afterEach(async () => {
 })
 
 describe('openExamplePrompt', () => {
-  it('opens a new chat with the prompt waiting to be sent, its profile and the first model this machine has', async () => {
+  it('opens a new chat that sends the prompt, with its profile and the first model this machine has', async () => {
     const { chat, shown } = await open(TODO)
     expect(chat).toMatchObject({
       draft: true,
       messages: [],
       model: 'anthropic::claude-sonnet-5-5',
       thinkingLevel: 'medium',
-      agentProfile: { id: 'ade-worker-builder', name: 'Create an app or tool' },
+      agentProfile: { id: 'ade-worker-builder', name: 'Onboarding' },
+      // Set before the send, which does not wait for the chat's own lookup.
+      workingDir: '/home/me/shop',
     })
-    // In the message box, not sent.
+    // The composer sends the draft once it can, and only once.
     expect(api.getDraftText(chat.id)).toBe(TODO.prompt)
+    expect(claimDraftSend(chat.id)).toBe(TODO.prompt)
+    expect(claimDraftSend(chat.id)).toBeUndefined()
     expect(api.activeId).toBe(chat.id)
     expect(shown).toEqual([chat.id])
   })
@@ -169,9 +178,32 @@ describe('openExamplePrompt', () => {
     expect(chat.thinkingLevel).not.toBe('high')
   })
 
-  it('selects no profile the Directory does not serve, and still prefills the text', async () => {
+  it('leaves the prompt waiting when the Directory does not serve its profile', async () => {
     const { chat } = await open(TODO, [])
     expect(chat.agentProfile).toBeUndefined()
+    // Sent as is, it would run under another agent.
     expect(api.getDraftText(chat.id)).toBe(TODO.prompt)
+    expect(claimDraftSend(chat.id)).toBeUndefined()
+  })
+
+  it('leaves the prompt waiting when the folder lookup did not finish', async () => {
+    const { chat } = await open(TODO, [BUILDER], MODELS, undefined)
+    expect(chat.workingDir).toBeFalsy()
+    expect(claimDraftSend(chat.id)).toBeUndefined()
+  })
+
+  it('sends without a folder when the lookup found none, as a manual send would', async () => {
+    const { chat } = await open(TODO, [BUILDER], MODELS, null)
+    expect(claimDraftSend(chat.id)).toBe(TODO.prompt)
+  })
+
+  it('voids the send when "New chat" hands the unsent example back as a blank chat', async () => {
+    const { chat } = await open(TODO)
+    let reused = ''
+    await act(async () => {
+      reused = api.createNew()
+    })
+    expect(reused).toBe(chat.id)
+    expect(claimDraftSend(chat.id)).toBeUndefined()
   })
 })

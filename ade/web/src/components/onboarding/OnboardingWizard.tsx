@@ -30,6 +30,7 @@ import {
   fetchExamplePrompts,
 } from '@/lib/onboarding/prompts'
 import { cn } from '@/lib/utils'
+import { fetchNewChatWorkingDir } from '@/lib/working-dir'
 import { BrowserStep } from './BrowserStep'
 import { openExamplePrompt } from './example-prompt'
 import { JudgeStep } from './JudgeStep'
@@ -38,6 +39,23 @@ import type { StepPosition } from './parts'
 import { ReadyStep } from './ReadyStep'
 import { connectedModelCount, useOnboarding } from './use-onboarding'
 import { WelcomeStep } from './WelcomeStep'
+
+/**
+ * The longest an example waits for its profile or folder lookup once the
+ * wizard has closed. Past it the chat opens with what is known, and the
+ * prompt waits for a manual send (see `openExamplePrompt`) while the chat
+ * looks up its folder itself.
+ */
+const LOOKUP_WAIT_MS = 3000
+
+function withinLookupWait<T>(lookup: Promise<T>, fallback: T): Promise<T> {
+  return Promise.race([
+    lookup,
+    new Promise<T>((resolve) =>
+      window.setTimeout(() => resolve(fallback), LOOKUP_WAIT_MS),
+    ),
+  ])
+}
 
 const STEPS: { id: WizardStepId; title: string; optional?: boolean }[] = [
   { id: 'welcome', title: 'Welcome' },
@@ -80,8 +98,8 @@ export function stepPosition(
  * Ready ends setup with Finish, and — once a model is connected — offers
  * the example prompts the project's template declares (`onboarding.yaml`,
  * read through `console::onboarding::prompts`): a click finishes setup and
- * opens a new chat with the prompt waiting in the composer, its agent
- * profile and model chosen (see `openExamplePrompt`).
+ * opens a new chat that sends the prompt, its agent profile and model
+ * chosen (see `openExamplePrompt`).
  */
 export function OnboardingWizardHost() {
   const ctx = useConversationsCtxOptional()
@@ -261,18 +279,36 @@ export function OnboardingWizardHost() {
     window.requestAnimationFrame(requestComposerFocus)
   }, [finish])
 
+  // One example per visit: a second click while the dialog animates out
+  // would start (and send) a second chat.
+  const starting = useRef(false)
+  useEffect(() => {
+    if (open) starting.current = false
+  }, [open])
+
   const startPrompt = useCallback(
     async (prompt: ExamplePrompt) => {
+      if (starting.current) return
+      starting.current = true
       finish()
-      // Profiles still loading (a quick click): ask for them once more.
-      const profiles =
+      const [profiles, workingDir] = await Promise.all([
+        // Profiles still loading (a quick click): ask for them once more.
         agents ??
-        (await getIiiClient()
-          .then(listAgents)
-          .catch(() => []))
+          withinLookupWait(
+            getIiiClient()
+              .then(listAgents)
+              .catch(() => []),
+            [],
+          ),
+        // `undefined` = the lookup did not finish (not: it found none).
+        withinLookupWait<string | null | undefined>(
+          fetchNewChatWorkingDir().catch(() => null),
+          undefined,
+        ),
+      ])
       const api = ctxRef.current
       if (!api) return
-      openExamplePrompt(api, prompt, profiles)
+      openExamplePrompt(api, prompt, profiles, workingDir)
       window.requestAnimationFrame(requestComposerFocus)
     },
     [agents, finish],
