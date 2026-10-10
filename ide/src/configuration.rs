@@ -354,6 +354,14 @@ pub(crate) async fn try_get_value(
     id: &str,
     raw: bool,
 ) -> Result<Option<Value>, String> {
+    if !raw {
+        // A plain read is schema-validated, so an entry persisted as null comes
+        // back SCHEMA_INVALID; get_value_with reads that as absent, not fatal.
+        return initialization::get_value_with(id, |function, payload| {
+            trigger_configuration_with_retry(iii, function, payload)
+        })
+        .await;
+    }
     match trigger_configuration_with_retry(
         iii,
         "configuration::get",
@@ -686,20 +694,28 @@ mod tests {
         prepare_config(&ShellConfig::seed_default()).expect("seed_default boots");
     }
 
-    /// Run `register_config` against an in-process engine whose active value
-    /// for the `ide` entry is already an object (what Compose injects from the
-    /// package's shipped default on the first boot) and return the payload the
-    /// worker sent to `configuration::ensure`. The fake engine's persisted base
-    /// is empty, so `ensure` would seed from `initial_value` if one is sent.
-    async fn ensure_payload_with_injected_active_value(seed: Option<ShellConfig>) -> Value {
+    /// One scripted reply of the in-process engine: a result, or a remote
+    /// `(code, message)` error.
+    type Reply = Result<Value, (&'static str, &'static str)>;
+
+    /// Serve `handler` over a local websocket as the engine and return its URL
+    /// plus a channel carrying every `(function_id, payload)` invocation.
+    /// Fire-and-forget invocations (null id) get no reply.
+    fn spawn_fake_engine(
+        handler: impl Fn(&str, &Value) -> Reply + Send + 'static,
+    ) -> (
+        String,
+        tokio::sync::mpsc::UnboundedReceiver<(String, Value)>,
+    ) {
         use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let injected = ShellConfig::seed_default().to_json();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
             let (stream, _) = listener.accept().await.unwrap();
             let mut socket = accept_async(stream).await.unwrap();
             let registered = json!({"type": "workerregistered", "worker_id": "register-test"});
@@ -712,45 +728,62 @@ mod tests {
                     continue;
                 };
                 let frame: Value = serde_json::from_str(&text).unwrap();
-                // Fire-and-forget invocations carry a null id and expect no reply.
                 if frame["type"] != "invokefunction" || !frame["invocation_id"].is_string() {
                     continue;
                 }
                 let function_id = frame["function_id"].as_str().unwrap().to_owned();
-                let result = match function_id.as_str() {
-                    // Raw reads see the runtime-injected active value; the
-                    // pre-rename `shell` entry holds nothing.
-                    "configuration::get" if frame["data"]["id"] == LEGACY_CONFIG_ID => {
-                        json!({"value": null})
-                    }
-                    "configuration::get" => json!({"value": injected}),
-                    "configuration::ensure" => {
-                        tx.send(frame["data"].clone()).unwrap();
-                        json!({"action": "seeded"})
-                    }
-                    _ => json!({}),
-                };
-                let reply = json!({
+                let data = frame["data"].clone();
+                let reply = handler(&function_id, &data);
+                tx.send((function_id.clone(), data)).unwrap();
+                let mut response = json!({
                     "type": "invocationresult",
                     "invocation_id": frame["invocation_id"],
                     "function_id": function_id,
-                    "result": result,
                 });
+                match reply {
+                    Ok(result) => response["result"] = result,
+                    Err((code, message)) => {
+                        response["error"] = json!({"code": code, "message": message});
+                    }
+                }
                 socket
-                    .send(Message::Text(reply.to_string().into()))
+                    .send(Message::Text(response.to_string().into()))
                     .await
                     .unwrap();
             }
         });
+        (url, rx)
+    }
 
+    /// Run `register_config` against an in-process engine whose active value
+    /// for the `ide` entry is already an object (what Compose injects from the
+    /// package's shipped default on the first boot) and return the payload the
+    /// worker sent to `configuration::ensure`. The fake engine's persisted base
+    /// is empty, so `ensure` would seed from `initial_value` if one is sent.
+    async fn ensure_payload_with_injected_active_value(seed: Option<ShellConfig>) -> Value {
+        let injected = ShellConfig::seed_default().to_json();
+        let (url, mut rx) = spawn_fake_engine(move |function_id, data| match function_id {
+            // Raw reads see the runtime-injected active value; the
+            // pre-rename `shell` entry holds nothing.
+            "configuration::get" if data["id"] == LEGACY_CONFIG_ID => Ok(json!({"value": null})),
+            "configuration::get" => Ok(json!({"value": injected})),
+            "configuration::ensure" => Ok(json!({"action": "seeded"})),
+            _ => Ok(json!({})),
+        });
         let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());
         register_config(&iii, seed.as_ref())
             .await
             .expect("register_config succeeds");
-        tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .expect("ensure was called")
-            .expect("ensure payload")
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some((function_id, data)) = rx.recv().await {
+                if function_id == "configuration::ensure" {
+                    return data;
+                }
+            }
+            panic!("ensure was never called");
+        })
+        .await
+        .expect("ensure was called")
     }
 
     /// Regression: on a fresh project the first boot found Compose's injected
@@ -767,6 +800,70 @@ mod tests {
             payload["initial_value"],
             ShellConfig::seed_default().to_json()
         );
+    }
+
+    /// Engine whose `ide` entry was persisted as `stored`. A plain get is
+    /// schema-validated, so a null answers SCHEMA_INVALID; a raw get returns
+    /// the stored value as is. `ensure` seeds `initial_value` over a null base.
+    fn engine_with_stored_entry(
+        stored: Value,
+    ) -> (
+        String,
+        tokio::sync::mpsc::UnboundedReceiver<(String, Value)>,
+    ) {
+        let stored = std::sync::Mutex::new(stored);
+        spawn_fake_engine(move |function_id, data| {
+            let mut stored = stored.lock().unwrap();
+            match function_id {
+                "configuration::get" if data["id"] == LEGACY_CONFIG_ID => {
+                    Ok(json!({"value": null}))
+                }
+                "configuration::get" if data["raw"] == true => Ok(json!({"value": *stored})),
+                "configuration::get" if stored.is_null() || !stored.is_object() => Err((
+                    "SCHEMA_INVALID",
+                    "null is not of type object",
+                )),
+                "configuration::get" => Ok(json!({"value": *stored})),
+                "configuration::ensure" => {
+                    if stored.is_null() {
+                        *stored = data["initial_value"].clone();
+                    }
+                    Ok(json!({"action": "seeded"}))
+                }
+                _ => Ok(json!({})),
+            }
+        })
+    }
+
+    /// Regression: the second boot of a fresh install found the entry
+    /// persisted as null, the plain read answered SCHEMA_INVALID, and the
+    /// worker exited. It must seed its default and boot.
+    #[tokio::test]
+    async fn boot_seeds_over_an_entry_persisted_as_null() {
+        let (url, _rx) = engine_with_stored_entry(Value::Null);
+        let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());
+        register_config(&iii, None).await.expect("register_config");
+        let cfg = fetch_config(&iii).await.expect("boot read survives a null");
+        assert_eq!(cfg.to_json(), ShellConfig::seed_default().to_json());
+    }
+
+    /// A plain read of a null entry is "nothing stored", not a failure.
+    #[tokio::test]
+    async fn plain_read_of_a_null_entry_is_absent() {
+        let (url, _rx) = engine_with_stored_entry(Value::Null);
+        let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());
+        let value = try_get_value(&iii, config_id(), false).await;
+        assert_eq!(value, Ok(None));
+    }
+
+    /// A real value the schema rejects is an operator error: it must still
+    /// fail closed rather than be read as "use the defaults".
+    #[tokio::test]
+    async fn invalid_stored_value_still_fails_the_boot_read() {
+        let (url, _rx) = engine_with_stored_entry(json!("not an object"));
+        let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());
+        let err = fetch_config(&iii).await.expect_err("invalid value rejected");
+        assert!(err.contains("SCHEMA_INVALID"), "{err}");
     }
 
     #[tokio::test]
