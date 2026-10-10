@@ -189,14 +189,16 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime,
 /// built-in seed is `ShellConfig::seed_default()`, a bootable permissive dev
 /// default.
 ///
-/// The candidate seed is installed atomically by `configuration::ensure`
-/// ONLY against an absent/null entry, so a stored operator/Compose value (or
-/// a runtime `configuration::set`) is preserved without a client-side
-/// read-then-register race. The `--config`/legacy candidate is only COMPUTED
-/// and validated when nothing is stored yet, but the seed decision itself is
-/// the engine's — forwarding a candidate can never clobber a stored value. The
-/// null case is a boot that previously could not seed (MOT-4252): ensure
-/// repairs it instead of leaving the worker in a crash loop.
+/// The candidate seed is forwarded unconditionally, as `http` does:
+/// `configuration::ensure` installs it atomically ONLY against an absent/null
+/// stored entry, so a stored operator/Compose value (or a runtime
+/// `configuration::set`) is preserved without a client-side read-then-register
+/// race. Deciding here instead — on what `configuration::get` returns — read the
+/// ACTIVE value, which includes Compose's in-memory package defaults: on a fresh
+/// project's first start the entry was registered without a seed, the engine
+/// persisted a null, and the next start failed `configuration::get` (MOT-5355).
+/// The null case is also a boot that previously could not seed (MOT-4252):
+/// ensure repairs it instead of leaving the worker in a crash loop.
 pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Result<(), String> {
     iii_console_ui::register_configuration_identity(iii, "ide", config_id());
     let mut payload = json!({
@@ -206,33 +208,31 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
         "schema": ShellConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
-    if stored_value_absent(iii).await? {
-        // The entry was `shell` until the worker's UI/configuration rename to
-        // `ide`: a value stored there is carried over once so the jail and
-        // denylist survive the rename. It beats a `--config` seed the way any
-        // live value beats the seed once an entry exists.
-        let legacy = if config_id() == DEFAULT_CONFIG_ID {
-            legacy_stored_value(iii).await
-        } else {
-            None
-        };
-        let candidate = match (legacy, seed) {
-            (Some(carried), _) => carried,
-            (None, Some(s)) => s.clone(),
-            (None, None) => ShellConfig::seed_default(),
-        };
-        // Validate with the SAME checks build_runtime uses (denylist regex
-        // compile, fs-jail rule, host_roots/denylist reachability) BEFORE
-        // persisting: a one-line typo in --config — or an unbootable built-in
-        // seed — would become a persistent outage. If invalid, register the
-        // schema only and let the worker fail closed with a clear error.
-        match build_runtime(&candidate, iii) {
-            Ok(_) => payload["initial_value"] = candidate.to_json(),
-            Err(e) => tracing::error!(
-                error = %e,
-                "ignoring invalid config seed; not registering it as initial_value"
-            ),
-        }
+    // The entry was `shell` until the worker's UI/configuration rename to
+    // `ide`: a value stored there is carried over once so the jail and
+    // denylist survive the rename. It beats a `--config` seed the way any
+    // live value beats the seed once an entry exists.
+    let legacy = if config_id() == DEFAULT_CONFIG_ID {
+        legacy_stored_value(iii).await
+    } else {
+        None
+    };
+    let candidate = match (legacy, seed) {
+        (Some(carried), _) => carried,
+        (None, Some(s)) => s.clone(),
+        (None, None) => ShellConfig::seed_default(),
+    };
+    // Validate with the SAME checks build_runtime uses (denylist regex
+    // compile, fs-jail rule, host_roots/denylist reachability) BEFORE
+    // persisting: a one-line typo in --config — or an unbootable built-in
+    // seed — would become a persistent outage. If invalid, register the
+    // schema only and let the worker fail closed with a clear error.
+    match build_runtime(&candidate, iii) {
+        Ok(_) => payload["initial_value"] = candidate.to_json(),
+        Err(e) => tracing::error!(
+            error = %e,
+            "ignoring invalid config seed; not registering it as initial_value"
+        ),
     }
     ensure_configuration(iii, payload).await
 }
@@ -271,23 +271,6 @@ async fn legacy_stored_value(iii: &IIIClient) -> Option<ShellConfig> {
             tracing::warn!(error = %e, "ignoring the legacy `shell` configuration value");
             None
         }
-    }
-}
-
-/// True when no usable value is stored yet (entry missing or value null) —
-/// the only state in which a boot seed may be installed.
-///
-/// The probe uses `raw: true`: the engine validates the stored value against
-/// the registered schema on a plain `configuration::get`, so a stored null —
-/// exactly the state left behind by a boot that could not seed — surfaces as
-/// a SCHEMA_INVALID error instead of a readable null, and treating that error
-/// as fatal is what kept broken installs in a permanent crash loop
-/// (MOT-4252). `raw` skips validation (and env expansion, which is fine: only
-/// nullness is inspected here).
-async fn stored_value_absent(iii: &IIIClient) -> Result<bool, String> {
-    match try_get_value(iii, config_id(), true).await? {
-        None => Ok(true),
-        Some(value) => Ok(value.is_null()),
     }
 }
 
