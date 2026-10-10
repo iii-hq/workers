@@ -262,6 +262,10 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
         .await
         .expect("console::status failed after rebind");
     assert_eq!(status["http_port"], REBOUND_HTTP_PORT);
+    assert_eq!(
+        status["url"],
+        format!("http://127.0.0.1:{REBOUND_HTTP_PORT}")
+    );
 
     let old_deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
