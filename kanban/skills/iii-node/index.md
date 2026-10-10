@@ -752,7 +752,7 @@ The first `pnpm dev` run restarts the worker once or twice while the watchers wr
 10. Add the coordinated `scripts/dev.mjs` loop.
 11. Add or update `iii.worker.yaml`.
 12. Manually add or update the `worker-compose.yaml` block.
-13. Validate static builds, runtime registration, asset delivery, hot reload, and real rendering. Drive the real Console through the `browser` worker (`browser::sessions::start` on the console URL, then `browser::snapshot`, `browser::act`, `browser::evaluate`, `browser::screenshot`) so both light and dark themes, narrow and wide panes, and the chat renderer are checked with screenshots, not assumptions.
+13. Validate static builds, runtime registration, asset delivery, hot reload, and real rendering. Drive the real Console through the `browser` worker (`browser::sessions::start` on the `url` from `console::status` (an older console answers only `http_port`: use `http://127.0.0.1:<http_port>`; never `engine_url`), never an assumed 3113, then `browser::snapshot`, `browser::act`, `browser::evaluate`, `browser::screenshot`) so both light and dark themes, narrow and wide panes, and the chat renderer are checked with screenshots, not assumptions.
 
 ## Validation checklist
 
@@ -770,7 +770,7 @@ Before declaring the worker complete:
 - `dist/ui/page.js` and `dist/ui/styles.css` are non-empty and React remains external.
 - The UI content function serves both registered paths and rejects unknown ones.
 - Asset paths, CSS scope, worker name, function prefix, and configuration id are internally consistent.
-- The Console manifest (`GET http://127.0.0.1:<console port>/ui`, or `console::ui-manifest`) contains both assets, reports no CSS warnings, and changes hashes after a UI edit.
+- The Console manifest (`GET <console url>/ui` with the `url` from `console::status`, or `console::ui-manifest`) contains both assets, reports no CSS warnings, and changes hashes after a UI edit.
 - A real harness call to the worker (e.g. the agent fetching one record) renders through the worker's chat renderer — the result arrives as a `{ content, details }` envelope and must be unwrapped (see the designer's `console-injectable-ui`); confirm a `[data-iii-ui="<worker-name>"]` wrapper exists inside the chat DOM.
 - Live updates reach an open page without a reload: mutate through a function from outside the UI and watch the page change.
 - A record opens as its own pane in the same workspace tab through `host.panels.open`, and the collection page adapts when the tab splits (narrow mode).
