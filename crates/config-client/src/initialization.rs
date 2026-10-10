@@ -86,7 +86,10 @@ where
     .await;
     match raw {
         Ok(response) if response.get("value").is_some_and(Value::is_null) => {
-            tracing::warn!(id, "stored configuration value is null; treating it as absent");
+            tracing::warn!(
+                id,
+                "stored configuration value is null; treating it as absent"
+            );
             Ok(None)
         }
         _ => Err(error),

@@ -282,11 +282,8 @@ async fn read_case(
 #[tokio::test]
 async fn read_returns_the_stored_value_untouched() {
     for value in [json!({"a": 1}), json!(false), json!(null)] {
-        let (result, calls) = read_case(
-            Ok(json!({"value": value})),
-            Err("must not read raw".into()),
-        )
-        .await;
+        let (result, calls) =
+            read_case(Ok(json!({"value": value})), Err("must not read raw".into())).await;
         assert_eq!(result.unwrap(), Some(value));
         assert_eq!(calls, vec![json!({"id": "read-contract"})]);
     }
@@ -294,11 +291,8 @@ async fn read_returns_the_stored_value_untouched() {
 
 #[tokio::test]
 async fn read_treats_a_stored_null_the_engine_rejects_as_absent() {
-    let (result, calls) = read_case(
-        Err(SCHEMA_INVALID_NULL.into()),
-        Ok(json!({"value": null})),
-    )
-    .await;
+    let (result, calls) =
+        read_case(Err(SCHEMA_INVALID_NULL.into()), Ok(json!({"value": null}))).await;
     assert_eq!(result.unwrap(), None);
     assert_eq!(
         calls,

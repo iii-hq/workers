@@ -819,10 +819,9 @@ mod tests {
                     Ok(json!({"value": null}))
                 }
                 "configuration::get" if data["raw"] == true => Ok(json!({"value": *stored})),
-                "configuration::get" if stored.is_null() || !stored.is_object() => Err((
-                    "SCHEMA_INVALID",
-                    "null is not of type object",
-                )),
+                "configuration::get" if stored.is_null() || !stored.is_object() => {
+                    Err(("SCHEMA_INVALID", "null is not of type object"))
+                }
                 "configuration::get" => Ok(json!({"value": *stored})),
                 "configuration::ensure" => {
                     if stored.is_null() {
@@ -862,7 +861,9 @@ mod tests {
     async fn invalid_stored_value_still_fails_the_boot_read() {
         let (url, _rx) = engine_with_stored_entry(json!("not an object"));
         let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());
-        let err = fetch_config(&iii).await.expect_err("invalid value rejected");
+        let err = fetch_config(&iii)
+            .await
+            .expect_err("invalid value rejected");
         assert!(err.contains("SCHEMA_INVALID"), "{err}");
     }
 
