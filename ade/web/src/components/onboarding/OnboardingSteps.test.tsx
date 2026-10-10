@@ -2,9 +2,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { ToolScan } from '@/lib/onboarding/plan'
 import type { ExamplePrompt } from '@/lib/onboarding/prompts'
-import { JudgeStep } from './JudgeStep'
 import { ModelsStep } from './ModelsStep'
-import { ReadyStep } from './ReadyStep'
+import { ReadyStep, type TourState } from './ReadyStep'
 import {
   type ActivityEntry,
   type MachineSnapshot,
@@ -53,8 +52,8 @@ function controller(
       detections: null,
       envFile: '.env',
       installed,
-      judgeProvider: null,
       consoleConfig: null,
+      judgeProvider: null,
       browser: null,
       browserError: null,
       ...snapshot,
@@ -66,52 +65,110 @@ function controller(
     run: async () => true,
     judgeInstalled: installed.has('judge'),
     checkChromium: async () => null,
-    installChromium: async () => ({ ok: true }),
+    installChromium: async () => ({ ok: true as const }),
     chromiumProgress: null,
   }
 }
 
 const noop = () => undefined
 
+/** The harness template's four, as `console::onboarding::prompts` serves them. */
+const PROMPTS: ExamplePrompt[] = [
+  'Build a link shortener',
+  'Build an expense tracker',
+  'Create a test reviewer agent',
+  'Explain this project',
+].map((title, index) => ({
+  title,
+  description: `${title}, described`,
+  agent: index === 3 ? 'default' : 'ade-worker-builder',
+  prompt: `${title}.`,
+  models: [{ provider: 'claude-code', model: 'claude-sonnet-5-5' }],
+}))
+
 describe('ModelsStep', () => {
-  it('reports each coding agent without its sign-in file or CLI details', () => {
+  it('shows real marks for every built-in provider before workers are installed', () => {
     const html = renderToStaticMarkup(
       <ModelsStep
-        onboarding={controller({ installed: new Set(['llm-router']) })}
+        onboarding={controller({ tools: [] })}
         onBack={noop}
         onNext={noop}
       />,
     )
-    expect(html).toContain('Recommended for this machine')
-    expect(html).not.toContain('Sign-in at')
-    expect(html).not.toContain('~/.claude/.credentials.json')
-    expect(html).not.toContain('~/.local/bin/claude')
-    expect(html).not.toContain('2.1.288')
-    // Installed but not signed in: beside the recommendations, saying why.
-    expect(html).toContain('Not signed in')
-    expect(html).toContain('not a ChatGPT account')
+    // Nine catalog providers plus GitHub Copilot, which signs in from here.
+    expect(html.match(/data-provider-icon="mark"/g)).toHaveLength(10)
+    expect(html).not.toContain('data-provider-icon="initial"')
   })
 
-  it('recommends the signed-in agent, says which worker it adds, and shows the plan before anything runs', () => {
+  it('reports each coding agent with where its sign-in lives, never what is in it', () => {
     const html = renderToStaticMarkup(
       <ModelsStep
         onboarding={controller({ installed: new Set(['llm-router']) })}
-        position={{ index: 1, total: 2 }}
         onBack={noop}
         onNext={noop}
       />,
     )
-    expect(html).toContain('Step 1 of 2')
-    expect(html).toContain('uses your Claude Pro or Max plan, no API key')
-    expect(html).toContain('Adds a new worker: ')
-    expect(html).toContain('What happens when you continue')
+    expect(html).toContain('Subscriptions')
+    expect(html).toContain('Sign-in at')
+    expect(html).toContain('~/.claude/.credentials.json')
+    // Installed but not signed in: in its place, saying why and how.
+    expect(html).toContain('Not signed in')
+    expect(html).toContain('not a ChatGPT account')
+    expect(html).toContain('codex login')
+  })
+
+  it('shows how to install and sign in to a coding agent that is missing', () => {
+    const html = renderToStaticMarkup(
+      <ModelsStep
+        onboarding={controller({ tools: [] })}
+        onBack={noop}
+        onNext={noop}
+      />,
+    )
+    expect(html).toContain('Not installed')
+    expect(html).toContain('npm install -g @anthropic-ai/claude-code')
+    expect(html).toContain('then type /login')
+  })
+
+  it('keeps a connected provider in its place, checked, with its models', () => {
+    const html = renderToStaticMarkup(
+      <ModelsStep
+        onboarding={controller({
+          installed: new Set(['llm-router', 'provider-claude-code']),
+          providers: [
+            {
+              id: 'claude-code',
+              title: 'Claude Code',
+              configured: false,
+              available: true,
+              modelCount: 11,
+            },
+          ],
+        })}
+        onBack={noop}
+        onNext={noop}
+      />,
+    )
+    expect(html).toContain('11 models')
+    expect(html).not.toContain('>Connected<')
+    // Nothing left to change: straight on.
+    expect(html).toContain('Continue')
+  })
+
+  it('recommends the signed-in agent and shows the plan before anything runs', () => {
+    const html = renderToStaticMarkup(
+      <ModelsStep
+        onboarding={controller({ installed: new Set(['llm-router']) })}
+        onBack={noop}
+        onNext={noop}
+      />,
+    )
+    expect(html).toContain('Connect a model')
+    expect(html).toContain('Uses your Claude Pro or Max plan.')
+    expect(html).toContain('Engine log')
+    expect(html).toContain('2 queued')
     expect(html).toContain('Add the provider-claude-code worker')
-    expect(html).toContain('Check that Claude Code models are ready')
-    expect(html).toContain('iii is composable')
-    // No function ids or versions.
-    expect(html).not.toContain('router::models::list')
-    expect(html).not.toContain('compose::add')
-    expect(html).not.toMatch(/provider-claude-code@/)
+    expect(html).toContain('router::models::list provider=claude-code')
   })
 
   it('holds the choices behind a skeleton until the machine is scanned', () => {
@@ -123,7 +180,7 @@ describe('ModelsStep', () => {
       />,
     )
     expect(html).toContain('Looking at this machine')
-    expect(html).not.toContain('Recommended for this machine')
+    expect(html).not.toContain('Subscriptions')
     expect(html).not.toContain('Add secrets worker and check for keys')
   })
 
@@ -134,7 +191,7 @@ describe('ModelsStep', () => {
     expect(html).not.toContain('Keys you already have')
     expect(html).not.toContain('Add secrets worker')
     // Nothing was looked for, so nothing is claimed about keys either.
-    expect(html).not.toContain('No provider keys')
+    expect(html).not.toContain('none found')
   })
 
   it('says so when the secrets worker found no provider key', () => {
@@ -148,7 +205,7 @@ describe('ModelsStep', () => {
         onNext={noop}
       />,
     )
-    expect(html).toContain('No provider keys in your shell profile')
+    expect(html).toContain('none found in your shell profile or .env')
     expect(html).not.toContain('Add secrets worker and check for keys')
   })
 
@@ -177,15 +234,13 @@ describe('ModelsStep', () => {
         onNext={noop}
       />,
     )
+    expect(html).toContain('Key found')
     expect(html).toContain('Use the key from this project&#x27;s .env')
     expect(html).toContain('sk-ant…9f2c')
     expect(html).toContain(
       'Stored encrypted on this machine. It never lands in a file you commit.',
     )
-    expect(html).toContain('Store your Anthropic key encrypted on this machine')
-    expect(html).toContain('Connect Anthropic with that key')
     expect(html).not.toContain('secret://')
-    expect(html).not.toContain('llm-router')
     // llm-router reads env:// too, so the key may stay a variable instead.
     expect(html).toContain('role="radiogroup"')
     expect(html).toContain('Encrypted')
@@ -198,8 +253,8 @@ const CONNECTED: MachineSnapshot['providers'] = [
     id: 'claude-code',
     title: 'Claude Code',
     configured: false,
-    ownsAuthentication: true,
     available: true,
+    ownsAuthentication: true,
     modelCount: 11,
   },
   {
@@ -212,59 +267,51 @@ const CONNECTED: MachineSnapshot['providers'] = [
   },
 ]
 
-const PROMPTS: ExamplePrompt[] = [
-  {
-    title: 'Build a TODO app',
-    description: 'A todo list with notes',
-    agent: 'ade-worker-builder',
-    prompt: 'Build a TODO app.',
-    models: [{ provider: 'claude-code', model: 'claude-sonnet-5-5' }],
-  },
-  {
-    title: 'Explain this project',
-    agent: 'default',
-    prompt: 'Explain this project.',
-    models: [],
-  },
-]
-
 function ready(
   snapshot: Partial<MachineSnapshot>,
+  tour: TourState = { kind: 'idle' },
   activity: ActivityEntry[] = [],
-  prompts: ExamplePrompt[] | null = PROMPTS,
+  prompts: readonly ExamplePrompt[] | null = [],
 ) {
   return renderToStaticMarkup(
     <ReadyStep
       onboarding={controller(snapshot, activity)}
-      judge={null}
+      judges={[]}
       prompts={prompts}
       agentNames={new Map([['ade-worker-builder', 'Create an app or tool']])}
       onPrompt={noop}
-      onFinish={noop}
+      tour={tour}
+      onStartTour={noop}
+      onStart={noop}
     />,
   )
 }
 
 describe('ReadyStep', () => {
-  it('sums up what is connected and every worker setup added, saying iii is composable', () => {
-    const html = ready({ providers: CONNECTED }, [
+  it('sums up what is connected and every worker setup added', () => {
+    const html = ready({ providers: CONNECTED }, { kind: 'idle' }, [
       {
         id: 1,
         group: 'models',
-        title: 'Add 2 workers: secrets and provider-claude-code',
+        title: 'Add 2 workers',
+        detail: 'compose::add secrets provider-claude-code',
         status: 'done',
         workers: ['secrets', 'provider-claude-code'],
       },
     ])
     expect(html).toContain('Your harness is ready')
     expect(html).toContain('Claude Code connected')
-    expect(html).toContain('Workers added to your project (2)')
-    expect(html).toContain('iii is composable: each worker adds new behavior')
-    expect(html).toContain('worker-compose.yaml')
+    expect(html).toContain('11 models')
+    // Where the keys live is not a summary line: it reads as jargon here.
+    expect(html).not.toContain('secret://')
+    expect(html).not.toContain('Your keys stay out of git')
+    expect(html).not.toContain('configuration holds only')
+    expect(html).toContain('Workers added')
     expect(html).toContain('provider-claude-code')
+    expect(html).not.toContain('ready in every chat')
   })
 
-  it('never shows key references', () => {
+  it('says where the keys are when one stays an environment variable', () => {
     const html = ready({
       providers: [
         ...(CONNECTED ?? []),
@@ -280,58 +327,60 @@ describe('ReadyStep', () => {
     })
     expect(html).toContain('OpenAI connected')
     expect(html).toContain('4 models')
-    expect(html).not.toContain('secret://')
     expect(html).not.toContain('env://')
   })
 
-  it('offers the example prompts and Finish, not the tour', () => {
+  it('offers the guided tour in place of starter prompts, without naming its worker', () => {
     const html = ready({ providers: CONNECTED })
-    expect(html).toContain('Try an example')
-    expect(html).toContain('aria-label="Start a chat: Build a TODO app"')
-    expect(html).toContain('A todo list with notes')
-    // Each card names the agent profile it runs with, as the gallery does.
-    expect(html).toContain('Create an app or tool')
-    expect(html).toContain('Default')
-    expect(html).not.toContain('ade-worker-builder')
-    expect(html).toContain('Finish')
-    expect(html).not.toContain('Start the tour')
-    expect(html).not.toContain('guided tour')
+    expect(html).toContain('Keep going with a guided tour')
+    expect(html).toContain('Start the tour')
+    expect(html).toContain('Skip the tour')
+    expect(html).not.toContain('Try one of these first')
+    expect(html).not.toContain('onboarding worker')
   })
 
-  it('holds the cards behind a skeleton while the prompts are read', () => {
-    const html = ready({ providers: CONNECTED }, [], null)
-    expect(html).toContain('Loading example prompts')
-    expect(html).not.toContain('Build a TODO app')
-  })
-
-  it('shows no examples section when the project declares none', () => {
-    const html = ready({ providers: CONNECTED }, [], [])
-    expect(html).not.toContain('Try an example')
-    expect(html).toContain('Finish')
-  })
-
-  it('offers no prompts without a model to answer them', () => {
-    const html = ready({ providers: [] })
-    expect(html).not.toContain('Try an example')
-    expect(html).toContain('Finish')
-  })
-})
-
-describe('JudgeStep', () => {
-  it('says which workers each choice adds, in plain words', () => {
-    const html = renderToStaticMarkup(
-      <JudgeStep
-        onboarding={controller({ installed: new Set(['secrets']) })}
-        onBack={noop}
-        onNext={noop}
-      />,
+  it('shows the tour getting ready, and why it could not start', () => {
+    expect(ready({ providers: CONNECTED }, { kind: 'preparing' })).toContain(
+      'Preparing the tour…',
     )
-    expect(html).toContain('Adds new workers: ')
-    expect(html).toContain('judge-typesafe')
-    expect(html).toContain('Have Judge answer with Jev by TypeSafe')
-    expect(html).not.toContain('judge::models::list')
-    expect(html).not.toContain('secret://')
-    expect(html).not.toContain('GGUF')
+    const failed = ready(
+      { providers: CONNECTED },
+      { kind: 'failed', error: 'compose is not running' },
+    )
+    expect(failed).toContain('The tour could not start: compose is not running')
+    expect(failed).toContain('Try again')
+  })
+
+  it('offers the four example prompts as chats to start, each with its agent', () => {
+    const html = ready({ providers: CONNECTED }, { kind: 'idle' }, [], PROMPTS)
+    expect(html).toContain('Try an example')
+    expect(html).toContain('aria-label="Start a chat: Build a link shortener"')
+    expect(html).toContain('Build an expense tracker')
+    expect(html).toContain('Create a test reviewer agent')
+    expect(html).toContain('Explain this project')
+    expect(html).toContain('Create an app or tool')
+    expect(html).toContain('>Default<')
+    // The message itself waits for the click; the card never shows it.
+    expect(html).not.toContain('link-shortener')
+  })
+
+  it('shows placeholders while the prompts are read, and nothing for a project without any', () => {
+    expect(
+      ready({ providers: CONNECTED }, { kind: 'idle' }, [], null),
+    ).toContain('Loading example prompts')
+    expect(
+      ready({ providers: CONNECTED }, { kind: 'idle' }, [], []),
+    ).not.toContain('Try an example')
+    // No model, no prompt to answer it.
+    expect(
+      ready({ providers: [] }, { kind: 'idle' }, [], PROMPTS),
+    ).not.toContain('Try an example')
+  })
+
+  it('offers no tour without a model to run it', () => {
+    const html = ready({ providers: [] })
+    expect(html).not.toContain('Keep going with a guided tour')
+    expect(html).toContain('Start building')
   })
 })
 
@@ -361,5 +410,43 @@ describe('withWorkerPresence', () => {
     // Unknown worker name: the router's word stands.
     expect(cursor.modelCount).toBe(2)
     expect(withWorkerPresence(providers, null)[0].modelCount).toBe(11)
+  })
+})
+
+describe('JudgeStep', () => {
+  it('says what Judge does and what to do, with the recommended strategy ticked', async () => {
+    const { JudgeStep } = await import('./JudgeStep')
+    const html = renderToStaticMarkup(
+      <JudgeStep onboarding={controller({})} onBack={noop} onNext={noop} />,
+    )
+    expect(html).toContain('What Judge does')
+    expect(html).toContain('Function search')
+    expect(html).toContain('Chooses what to click on a page')
+    expect(html).toContain('Choose who answers')
+    expect(html).toContain('the first answers by default')
+    expect(html).toContain('Recommended')
+    expect(html).toMatch(
+      /aria-label="Answer with Jev by TypeSafe"[^>]*checked=""/,
+    )
+    expect(html).toContain('Set up Judge')
+    expect(html).toContain('Skip')
+  })
+
+  it('shows running strategies as running and offers to apply changes', async () => {
+    const { JudgeStep } = await import('./JudgeStep')
+    const html = renderToStaticMarkup(
+      <JudgeStep
+        onboarding={controller({
+          installed: new Set(['judge', 'judge-typesafe']),
+          judgeProvider: 'typesafe',
+        })}
+        onBack={noop}
+        onNext={noop}
+      />,
+    )
+    expect(html).toContain('Running')
+    expect(html).not.toContain('Recommended')
+    expect(html).toContain('tick to add, untick to remove')
+    expect(html).toContain('Continue')
   })
 })

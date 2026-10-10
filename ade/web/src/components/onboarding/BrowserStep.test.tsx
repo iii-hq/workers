@@ -331,11 +331,13 @@ describe('ReadyStep after a Chromium download', () => {
           snapshot: { browser: READY },
           activity: [downloadEntry('done')],
         })}
-        judge={null}
+        judges={[]}
         prompts={[]}
         agentNames={new Map()}
         onPrompt={noop}
-        onFinish={noop}
+        tour={{ kind: 'idle' }}
+        onStartTour={noop}
+        onStart={noop}
       />,
     )
     expect(out).toContain('Chromium is ready for agents')
@@ -347,11 +349,13 @@ describe('ReadyStep after a Chromium download', () => {
     const out = renderToStaticMarkup(
       <ReadyStep
         onboarding={controller({ snapshot: { browser: READY } })}
-        judge={null}
+        judges={[]}
         prompts={[]}
         agentNames={new Map()}
         onPrompt={noop}
-        onFinish={noop}
+        tour={{ kind: 'idle' }}
+        onStartTour={noop}
+        onStart={noop}
       />,
     )
     expect(out).not.toContain('Chromium')

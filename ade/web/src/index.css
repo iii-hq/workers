@@ -1,3 +1,6 @@
+@import "@fontsource/geist/400.css";
+@import "@fontsource/geist/500.css";
+@import "@fontsource/geist/600.css";
 @import "@fontsource/inter/400.css";
 @import "@fontsource/inter/500.css";
 @import "@fontsource/inter/600.css";
@@ -10,9 +13,11 @@
 @import "tailwindcss";
 @import "./styles/ui-recipes.css";
 
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 @theme {
   --font-sans:
-    "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+    "Geist", "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
     "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --font-mono:
     "Geist Mono", "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
@@ -34,24 +39,24 @@
      `paper-2` is the legacy alias for panel-raised. `card-highlight` is the
      special borderless inset for related content inside a card; it is not an
      interaction or selection state. */
-  --color-bg: #f2f0ed;
+  --color-bg: #f5f5f5;
   --color-sidebar: #f2f2f2;
   --color-panel: lab(98.26% 0 0);
-  --color-panel-raised: #f7f5f2;
-  --color-paper-2: #ebe8e3;
-  --color-surface: rgba(20, 16, 8, 0.055);
+  --color-panel-raised: #fafafa;
+  --color-paper-2: #ededed;
+  --color-surface: rgba(24, 24, 24, 0.055);
   --color-card-highlight: #dbdbdb63;
-  --color-surface-hover: rgba(20, 16, 8, 0.085);
-  --color-surface-selected: rgba(20, 16, 8, 0.12);
-  --color-surface-active: rgba(20, 16, 8, 0.12);
+  --color-surface-hover: rgba(24, 24, 24, 0.085);
+  --color-surface-selected: rgba(24, 24, 24, 0.12);
+  --color-surface-active: rgba(24, 24, 24, 0.12);
 
   /* ── Ink ramp ──────────────────────────────────────────────────────── */
   --color-ink: #0a0a0a;
-  --color-ink-faint: #6b6865;
-  --color-muted-foreground: #6b6865;
+  --color-ink-faint: #6b6b6b;
+  --color-muted-foreground: #6b6b6b;
   --color-trigger-running: #57534f;
-  --color-ink-ghost: #a3a09c;
-  --color-ink-disabled: #b8b4ae;
+  --color-ink-ghost: #909090;
+  --color-ink-disabled: #b5b5b5;
 
   /* ── Border ramp ──────────────────────────────────────────────────────
      The system draws no lines: rule/rule-2/rule-strong resolve to
@@ -63,22 +68,19 @@
   --color-rule: transparent;
   --color-rule-2: transparent;
   --color-rule-strong: transparent;
-  --color-rule-focus: rgba(184, 66, 15, 0.6);
+  --color-rule-focus: rgba(64, 64, 64, 0.6);
 
   /* The one structural stroke the system keeps: a VERY subtle edge on the
      main workspace panels (the tab columns), so the floating panels
      read against the canvas. Never used inside a panel. */
-  --color-edge: #14100829;
+  --color-edge: #18181829;
 
-  /* Darker burnt orange so accent text on cream passes WCAG AA at 11px
-     (≈4.83:1 vs. previous ≈2.74:1 for #ff5a1f). Visually still firmly in
-     the iii Schematic warm-fiery family; dark mode swaps to the blue
-     accent below. */
-  --color-accent: #b8420f;
-  --color-accent-fg: #f2f0ed;
-  --color-accent-hover: #a53a0c;
-  --color-accent-muted: rgba(184, 66, 15, 0.1);
-  --color-accent-border: rgba(184, 66, 15, 0.35);
+  /* Neutral actions and focus; semantic status colors remain distinct. */
+  --color-accent: #383838;
+  --color-accent-fg: #f5f5f5;
+  --color-accent-hover: #262626;
+  --color-accent-muted: rgba(64, 64, 64, 0.1);
+  --color-accent-border: rgba(64, 64, 64, 0.35);
 
   /* The error color — every error surface (text-alert, StatusDot,
      SPAN_STATUS_COLORS in the trace charts) resolves through this token.
@@ -118,36 +120,35 @@
   --color-ring: color-mix(in oklab, var(--foreground) 5%, transparent);
 
   /* ── Radii ────────────────────────────────────────────────────────────
-     One radius everywhere: every step of the Tailwind scale resolves to
-     6px, so badges, buttons, cards, panels, and modals share the same
-     corner. Only `none` (main columns' outer frame edge cases) and `full`
-     (dots, round action buttons) differ. */
+     Compact chrome uses 6px; larger controls and cards use 8px (lg),
+     while panels and dialogs use 12px (xl). `none` keeps frame edges
+     square and `full` is reserved for dots and round action buttons. */
   --radius-none: 0px;
   --radius-xs: 6px;
   --radius-sm: 6px;
   --radius-md: 6px;
-  --radius-lg: 6px;
-  --radius-xl: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
   --radius-full: 9999px;
 
   /* ── Elevation ──────────────────────────────────────────────────────
      Light mode keeps elevation quiet — a contact shadow plus an ambient
-     falloff, both in the same warm black (#141008 @ ~10%) the edge and
+     falloff, both in the same neutral black (#181818 @ ~10%) the edge and
      surface ramps are built on. Note: this tint must live IN these
      tokens — Tailwind registers --tw-shadow-color per-element
      (non-inheriting), so a :root override can't reach the utilities.
      Dark mode re-strengthens these (see the [data-theme="dark"] block):
      there the shadow is the only depth cue, so it carries more weight. */
-  --shadow-raised: 0 1px 2px #1410081a, 0 4px 12px #1410081a;
-  --shadow-floating: 0 2px 4px #1410081a, 0 10px 24px #1410081a;
+  --shadow-raised: 0 1px 2px #1818181a, 0 4px 12px #1818181a;
+  --shadow-floating: 0 2px 4px #1818181a, 0 10px 24px #1818181a;
   /* `lift` is the crisp-edged instrument surface (the chat composer): a lit
      inset top edge, an inset hairline ring, a 1px outer edge, and two tight
      drops. The ingredients are theme tokens so the composed value below
      stays a single source; the dark block only re-tints them. */
   --iii-ui-lift-highlight: rgba(255, 255, 255, 0.7);
-  --iii-ui-lift-ring: rgba(20, 16, 8, 0.04);
-  --iii-ui-lift-edge: rgba(20, 16, 8, 0.1);
-  --iii-ui-lift-drop: rgba(20, 16, 8, 0.08);
+  --iii-ui-lift-ring: rgba(24, 24, 24, 0.04);
+  --iii-ui-lift-edge: rgba(24, 24, 24, 0.1);
+  --iii-ui-lift-drop: rgba(24, 24, 24, 0.08);
   --shadow-lift:
     inset 0 1px 0 0 var(--iii-ui-lift-highlight),
     inset 0 0 0 1px var(--iii-ui-lift-ring),
@@ -246,13 +247,13 @@
   --color-rule: transparent;
   --color-rule-2: transparent;
   --color-rule-strong: transparent;
-  --color-rule-focus: rgba(40, 168, 247, 0.7);
+  --color-rule-focus: rgba(212, 212, 212, 0.7);
   --color-edge: rgba(255, 255, 255, 0.07);
-  --color-accent: #28a8f7;
+  --color-accent: #dedede;
   --color-accent-fg: #070909;
-  --color-accent-hover: #46b6fa;
-  --color-accent-muted: rgba(40, 168, 247, 0.12);
-  --color-accent-border: rgba(40, 168, 247, 0.35);
+  --color-accent-hover: #f5f5f5;
+  --color-accent-muted: rgba(212, 212, 212, 0.12);
+  --color-accent-border: rgba(212, 212, 212, 0.35);
   --color-alert: #f05d68;
   --color-alert-muted: rgba(240, 93, 104, 0.12);
   --color-warn: #f5a524;
@@ -820,51 +821,6 @@
 @utility wordmark-assemble-dot {
   transform-box: fill-box;
   animation: wordmark-assemble-dot 360ms var(--motion-ease-enter) both;
-
-  @media (prefers-reduced-motion: reduce) {
-    animation: none;
-  }
-}
-
-/* Setup wizard rows: arrive with a short rise, staggered by an inline
-   animation-delay; the success checks pop in after their row. */
-@keyframes onboarding-rise {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes onboarding-pop {
-  0% {
-    opacity: 0;
-    transform: scale(0.4);
-  }
-  70% {
-    opacity: 1;
-    transform: scale(1.12);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@utility onboarding-rise {
-  animation: onboarding-rise var(--motion-duration-panel)
-    var(--motion-ease-enter) both;
-
-  @media (prefers-reduced-motion: reduce) {
-    animation: none;
-  }
-}
-
-@utility onboarding-pop {
-  animation: onboarding-pop 320ms var(--motion-ease-enter) both;
 
   @media (prefers-reduced-motion: reduce) {
     animation: none;

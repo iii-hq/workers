@@ -323,6 +323,26 @@ export function getExtTriggerActivityRenderers(): readonly RegisteredTriggerActi
   return triggerActivityRenderersStore.get()
 }
 
+/**
+ * Resolves `true` once a page with `id` is registered — at once when it
+ * already is — or `false` after `timeoutMs`. A worker that just connected
+ * registers its pages only when the console has loaded its script.
+ */
+export function whenExtPage(id: string, timeoutMs: number): Promise<boolean> {
+  if (getExtPage(id)) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    const finish = (found: boolean) => {
+      clearTimeout(timer)
+      unsubscribe()
+      resolve(found)
+    }
+    const unsubscribe = pagesStore.subscribe(() => {
+      if (getExtPage(id)) finish(true)
+    })
+    const timer = setTimeout(() => finish(false), timeoutMs)
+  })
+}
+
 /** Last registration wins for duplicate ids. */
 export function getExtPage(id: string): RegisteredPage | undefined {
   const pages = pagesStore.get()

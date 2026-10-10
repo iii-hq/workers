@@ -701,3 +701,63 @@ describe('checkProviderKey', () => {
     expect(calls('router::provider::list')).toBe(3)
   })
 })
+
+describe('runStep add-workers: the compose file', () => {
+  const FILE = '/repo/harness/worker-compose.yaml'
+  const addStep: PlanStep = {
+    kind: 'add-workers',
+    workers: ['provider-claude-code'],
+    why: { 'provider-claude-code': 'Claude Code' },
+  }
+  const answer = (listing: () => unknown) => async (fn: string) => {
+    if (fn === 'compose::list') return listing()
+    if (fn === 'compose::add') {
+      // The worker is up by the time compose answers, with no operation to follow.
+      connected.add('provider-claude-code')
+      return {}
+    }
+    return null
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    resetBus()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('names the file the daemon loaded, not whatever is in its working directory', async () => {
+    trigger.mockImplementation(
+      answer(() => ({ projects: [{ file: FILE, namespace: 'my-project' }] })),
+    )
+    await expect(runStep(addStep, context)).resolves.toEqual({
+      note: 'provider-claude-code running',
+    })
+    expect(trigger).toHaveBeenCalledWith(
+      'compose::add',
+      expect.objectContaining({
+        file: FILE,
+        workers: ['provider-claude-code'],
+      }),
+      expect.anything(),
+    )
+  })
+
+  it('lets compose keep its default when the daemon cannot say', async () => {
+    trigger.mockImplementation(
+      answer(() => {
+        throw new Error('function_not_found')
+      }),
+    )
+    await expect(runStep(addStep, context)).resolves.toEqual({
+      note: 'provider-claude-code running',
+    })
+    const payload = trigger.mock.calls.find(
+      ([fn]) => fn === 'compose::add',
+    )?.[1]
+    expect(payload).toMatchObject({ workers: ['provider-claude-code'] })
+    expect(payload).not.toHaveProperty('file')
+  })
+})

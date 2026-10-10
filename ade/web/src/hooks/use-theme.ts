@@ -4,7 +4,7 @@ export type Theme = 'light' | 'dark'
 
 const KEY = 'iii-theme'
 const THEME_COLORS: Record<Theme, string> = {
-  light: '#f2f0ed',
+  light: '#f5f5f5',
   dark: '#0a0a0a',
 }
 

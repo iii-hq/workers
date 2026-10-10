@@ -1,39 +1,28 @@
-import { ArrowRight, Boxes, Check, MessageSquareText } from 'lucide-react'
-import { useEffect, useId, useState } from 'react'
+import {
+  ArrowRight,
+  Check,
+  Compass,
+  LoaderCircle,
+  MessageSquareText,
+} from 'lucide-react'
+import { useId } from 'react'
 import { DEFAULT_AGENT_ID } from '@/components/chat/agent-defaults'
-import { Button } from '@/components/ui/Button'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Wordmark } from '@/components/ui/Wordmark'
 import type { JudgeOption } from '@/lib/onboarding/catalog'
 import { servesUsableModels } from '@/lib/onboarding/plan'
 import type { ExamplePrompt } from '@/lib/onboarding/prompts'
-import { Section, StatusChip, StepLayout } from './parts'
+import { Button } from './controls'
+import { ProviderMark } from './ProviderMark'
+import { Disclosure, Rows, Section, StatusChip, StepLayout } from './parts'
 import type { OnboardingController } from './use-onboarding'
 
-/** Counts up to `target` once; lands on it at once under reduced motion. */
-function useCountUp(target: number, durationMs = 900): number {
-  const [value, setValue] = useState(0)
-  useEffect(() => {
-    const reduce =
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (reduce || target === 0) {
-      setValue(target)
-      return
-    }
-    let frame = 0
-    const start = performance.now()
-    const tick = (now: number) => {
-      const t = Math.min(1, (now - start) / durationMs)
-      // ease-out cubic: fast start, gentle landing
-      setValue(Math.round(target * (1 - (1 - t) ** 3)))
-      if (t < 1) frame = window.requestAnimationFrame(tick)
-    }
-    frame = window.requestAnimationFrame(tick)
-    return () => window.cancelAnimationFrame(frame)
-  }, [target, durationMs])
-  return value
-}
+/** The guided tour offered once a model is connected. */
+export type TourState =
+  | { kind: 'idle' }
+  /** Getting the tour ready: adding its worker, waiting for its page. */
+  | { kind: 'preparing' }
+  | { kind: 'failed'; error: string }
 
 /** The name the new-chat gallery shows for an agent profile, when known. */
 function agentLabel(
@@ -44,29 +33,34 @@ function agentLabel(
 }
 
 /**
- * The last step: what setup connected, every worker it added (iii is
- * composable, so each one is new behavior in the project), and the
- * project's example prompts — one click opens a new chat with the prompt
- * ready to send, its agent profile and its model chosen.
+ * The last step: what setup connected, the project's example prompts — one
+ * click opens a new chat with the prompt ready to send, its agent profile
+ * and its model chosen — and the guided tour.
  */
 export function ReadyStep({
   onboarding,
-  judge,
+  judges,
   prompts,
   agentNames,
   onPrompt,
-  onFinish,
+  tour,
+  onStartTour,
+  onStart,
 }: {
   onboarding: OnboardingController
-  judge: JudgeOption | null
+  /** The strategies Judge answers with, default first. */
+  judges: readonly JudgeOption[]
   /** The project's example prompts; `null` while they are being read. */
   prompts: readonly ExamplePrompt[] | null
   /** Agent profile display names by id, for each prompt's chip. */
   agentNames: ReadonlyMap<string, string>
   /** Close the wizard and open a new chat with this prompt in the composer. */
   onPrompt: (prompt: ExamplePrompt) => void
+  tour: TourState
+  /** Accept the tour: the wizard gets it ready, then opens it. */
+  onStartTour: () => void
   /** Close the wizard and hand the composer the focus. */
-  onFinish: () => void
+  onStart: () => void
 }) {
   const { snapshot, activity } = onboarding
   const ids = useId()
@@ -75,7 +69,6 @@ export function ReadyStep({
     (sum, provider) => sum + provider.modelCount,
     0,
   )
-  const counted = useCountUp(totalModels)
   const added = [
     ...new Set(
       activity
@@ -87,12 +80,10 @@ export function ReadyStep({
   const chromium = activity.some(
     (entry) => entry.group === 'browser' && entry.status === 'done',
   )
-    ? { version: snapshot.browser?.version }
-    : null
-
-  const lines: { title: string; detail?: string }[] = [
+  const lines: { title: string; detail?: string; providerId?: string }[] = [
     ...connected.map((provider) => ({
       title: `${provider.title} connected`,
+      providerId: provider.id,
       detail: `${provider.modelCount} ${provider.modelCount === 1 ? 'model' : 'models'}`,
     })),
     ...(chromium
@@ -103,48 +94,87 @@ export function ReadyStep({
           },
         ]
       : []),
-    ...(judge
+    ...(judges.length > 0
       ? [
           {
-            title: `Judge answers with ${judge.title}`,
-            detail: 'the small decisions agents make along the way',
+            title: `Judge answers with ${judges[0].title}`,
+            detail:
+              judges.length > 1
+                ? `${judges
+                    .slice(1)
+                    .map((option) => option.title)
+                    .join(' and ')} also available`
+                : 'function search, argument repair, browser decisions',
           },
         ]
       : []),
   ]
 
+  // The tour's first stage is a message to the agent: it needs a model.
+  const offerTour = connected.length > 0
+  const preparing = tour.kind === 'preparing'
   // A prompt needs a model to answer it.
   const offerPrompts = connected.length > 0 && prompts?.length !== 0
 
   return (
     <StepLayout
+      centered
       footer={
         <>
-          <span className="hidden font-sans text-[13px] text-ink @2xl:inline">
-            Reopen this from the command palette: Set up the harness.
+          <span className="hidden font-sans text-xs text-neutral-500 dark:text-neutral-400 @lg:inline">
+            Reopen setup any time from the command palette.
           </span>
-          <Button className="ml-auto" onClick={() => onFinish()}>
-            Finish
-            <ArrowRight aria-hidden />
-          </Button>
+          {offerTour ? (
+            <span className="ml-auto flex items-center gap-2">
+              <Button
+                variant="ghost"
+                onClick={() => onStart()}
+                disabled={preparing}
+              >
+                Skip the tour
+              </Button>
+              <Button onClick={onStartTour} disabled={preparing}>
+                {preparing ? (
+                  <LoaderCircle
+                    className="animate-spin motion-reduce:animate-none"
+                    aria-hidden
+                  />
+                ) : null}
+                {preparing
+                  ? 'Preparing the tour…'
+                  : tour.kind === 'failed'
+                    ? 'Try again'
+                    : 'Start the tour'}
+                {preparing ? null : <ArrowRight aria-hidden />}
+              </Button>
+            </span>
+          ) : (
+            <Button className="ml-auto" onClick={() => onStart()}>
+              Start building
+              <ArrowRight aria-hidden />
+            </Button>
+          )}
         </>
       }
     >
-      <div className="flex flex-col items-center gap-4 pt-2 text-center">
-        <Wordmark appearance="assemble" className="size-14" />
-        <div className="flex flex-col items-center gap-1.5">
-          <h2 className="onboarding-rise font-sans text-[24px] font-semibold tracking-[-0.01em] text-ink [animation-delay:520ms]">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <Wordmark appearance="assemble" className="size-9" />
+        <div className="flex flex-col items-center gap-1">
+          <h2 className="font-sans text-lg font-semibold leading-7 tracking-[-0.01em] text-ink">
             {connected.length > 0 ? 'Your harness is ready' : 'You’re all set'}
           </h2>
-          <p className="onboarding-rise font-sans text-[14px] text-ink [animation-delay:600ms]">
+          <p className="max-w-[48ch] text-pretty font-sans text-sm leading-5 text-neutral-600 dark:text-neutral-400">
             {connected.length > 0 ? (
               <>
-                <span className="font-mono text-[16px] font-medium tabular-nums text-ink">
-                  {counted}
+                <span className="font-medium tabular-nums text-ink">
+                  {totalModels}
                 </span>{' '}
-                {totalModels === 1 ? 'model' : 'models'} from {connected.length}{' '}
-                {connected.length === 1 ? 'provider' : 'providers'}, ready in
-                every chat.
+                {totalModels === 1 ? 'model' : 'models'} from{' '}
+                <span className="font-medium tabular-nums text-ink">
+                  {connected.length}
+                </span>{' '}
+                {connected.length === 1 ? 'provider' : 'providers'} are
+                connected.
               </>
             ) : (
               'Connect a model any time from the model picker in the composer.'
@@ -154,74 +184,56 @@ export function ReadyStep({
       </div>
 
       {lines.length > 0 ? (
-        <ul className="flex flex-col gap-2 rounded-md bg-surface px-4 py-3">
-          {lines.map((line, index) => (
+        <Rows as="ul">
+          {lines.map((line) => (
             <li
               key={line.title}
-              className="onboarding-rise flex items-start gap-3"
-              style={{ animationDelay: `${700 + index * 110}ms` }}
+              className="flex items-start gap-3 px-3.5 py-2.5"
             >
-              <span
-                className="onboarding-pop mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-ok-muted text-ok"
-                style={{ animationDelay: `${760 + index * 110}ms` }}
-              >
-                <Check className="size-4" aria-hidden />
+              <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
+                {line.providerId ? (
+                  <ProviderMark
+                    id={line.providerId}
+                    label={line.title}
+                    className="size-4 text-ink"
+                  />
+                ) : (
+                  <Check
+                    className="size-4 text-ok"
+                    strokeWidth={2.25}
+                    aria-hidden
+                  />
+                )}
               </span>
-              <span className="flex min-w-0 flex-col">
-                <span className="font-sans text-[14px] font-medium text-ink">
+              <span className="flex min-w-0 flex-col gap-px">
+                <span className="font-sans text-[13px] font-medium leading-5 text-ink">
                   {line.title}
                 </span>
                 {line.detail ? (
-                  <span className="font-sans text-[13px] text-ink">
+                  <span className="break-words font-sans text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
                     {line.detail}
                   </span>
                 ) : null}
               </span>
             </li>
           ))}
-        </ul>
-      ) : null}
-
-      {added.length > 0 ? (
-        <Section title={`Workers added to your project (${added.length})`}>
-          <div className="flex gap-3 rounded-md bg-card-highlight px-4 py-3">
-            <Boxes className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden />
-            <div className="flex min-w-0 flex-col gap-2">
-              <p className="text-pretty font-sans text-[13px] leading-relaxed text-ink">
-                iii is composable: each worker adds new behavior to your
-                project. They live in{' '}
-                <span className="font-mono">worker-compose.yaml</span>, so the
-                project starts with them every time.
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {added.map((worker) => (
-                  <span
-                    key={worker}
-                    className="rounded-sm bg-surface px-2 py-1 font-mono text-[12px] text-ink"
-                  >
-                    {worker}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
-        </Section>
+        </Rows>
       ) : null}
 
       {offerPrompts ? (
-        <Section title="Try an example">
+        <Section title="Try an example" hint="opens a new chat, ready to send">
           {prompts === null ? (
             <div
               role="status"
               aria-label="Loading example prompts"
-              className="grid gap-2 @2xl:grid-cols-2"
+              className="grid gap-2 @md:grid-cols-2"
             >
-              {[0, 1].map((key) => (
-                <Skeleton key={key} className="h-24 rounded-md" />
+              {[0, 1, 2, 3].map((key) => (
+                <Skeleton key={key} className="h-[76px] rounded-lg" />
               ))}
             </div>
           ) : (
-            <ul className="grid gap-2 @2xl:grid-cols-2">
+            <ul className="grid gap-2 @md:grid-cols-2">
               {prompts.map((prompt, index) => {
                 const agent = agentLabel(prompt.agent, agentNames)
                 const described = `${ids}-prompt-${index}`
@@ -229,28 +241,28 @@ export function ReadyStep({
                   <li
                     // biome-ignore lint/suspicious/noArrayIndexKey: the list is read whole; two prompts may share a title
                     key={index}
-                    className="onboarding-rise flex min-w-0"
-                    style={{ animationDelay: `${900 + index * 80}ms` }}
+                    className="flex min-w-0"
                   >
                     <button
                       type="button"
                       aria-label={`Start a chat: ${prompt.title}`}
                       aria-describedby={described}
                       onClick={() => onPrompt(prompt)}
-                      className="group flex w-full min-w-0 flex-col gap-1.5 rounded-md bg-surface px-3 py-3 text-left hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus"
+                      className="flex w-full min-w-0 flex-col gap-1.5 rounded-lg border border-neutral-200 bg-transparent px-3 py-2.5 text-left transition-[background-color,border-color] duration-150 ease-[var(--motion-ease-standard)] hover:bg-neutral-50 focus-visible:outline-none dark:hover:bg-neutral-900 focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-offset-2 focus-visible:ring-offset-white active:scale-[0.99] dark:border-neutral-800 dark:focus-visible:ring-offset-neutral-950"
                     >
                       <span className="flex items-start gap-2">
                         <MessageSquareText
                           className="mt-0.5 size-4 shrink-0 text-ink"
+                          strokeWidth={1.75}
                           aria-hidden
                         />
-                        <span className="min-w-0 flex-1 font-sans text-[14px] font-medium text-ink">
+                        <span className="min-w-0 flex-1 font-sans text-[13px] font-medium leading-5 text-ink">
                           {prompt.title}
                         </span>
                       </span>
                       <span id={described} className="flex flex-col gap-1.5">
                         {prompt.description ? (
-                          <span className="text-pretty pl-6 font-sans text-[13px] leading-relaxed text-ink">
+                          <span className="text-pretty pl-6 font-sans text-xs leading-4 text-neutral-600 dark:text-neutral-400">
                             {prompt.description}
                           </span>
                         ) : null}
@@ -266,10 +278,55 @@ export function ReadyStep({
               })}
             </ul>
           )}
-          <p className="font-sans text-[13px] leading-relaxed text-ink">
-            Opens a new chat with the message ready for you to send.
-          </p>
         </Section>
+      ) : null}
+
+      {added.length > 0 ? (
+        <Disclosure label="Workers added" summary={`${added.length} installed`}>
+          <ul className="grid gap-x-4 gap-y-1 rounded-lg border border-neutral-200 bg-neutral-50 px-3.5 py-2.5 font-mono text-xs leading-5 dark:border-neutral-800 dark:bg-neutral-900 @md:grid-cols-2">
+            {added.map((worker) => (
+              <li key={worker} className="flex min-w-0 items-center gap-2">
+                <span
+                  aria-hidden
+                  className="select-none text-neutral-500 dark:text-neutral-400"
+                >
+                  +
+                </span>
+                <span className="truncate text-ink">{worker}</span>
+              </li>
+            ))}
+          </ul>
+        </Disclosure>
+      ) : null}
+
+      {offerTour ? (
+        <section
+          aria-label="Guided tour"
+          className="flex gap-3 rounded-lg border border-neutral-200 bg-neutral-50 px-3.5 py-3 dark:border-neutral-800 dark:bg-neutral-900"
+        >
+          <Compass
+            className="mt-0.5 size-4 shrink-0 text-ink"
+            strokeWidth={1.75}
+            aria-hidden
+          />
+          <span className="flex min-w-0 flex-col gap-0.5">
+            <h3 className="font-sans text-[13px] font-medium leading-5 text-ink">
+              Keep going with a guided tour
+            </h3>
+            <p className="text-pretty font-sans text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+              Send your first message and see your agent use tools, react to
+              events, and trace its work. We’ll show you around as you go.
+            </p>
+            {tour.kind === 'failed' ? (
+              <p
+                role="alert"
+                className="mt-1 font-sans text-[13px] leading-5 text-alert-strong"
+              >
+                The tour could not start: {tour.error}
+              </p>
+            ) : null}
+          </span>
+        </section>
       ) : null}
     </StepLayout>
   )

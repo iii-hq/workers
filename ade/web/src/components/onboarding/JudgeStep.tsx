@@ -1,110 +1,154 @@
-import { useState } from 'react'
-import { Button } from '@/components/ui/Button'
+import type { LucideIcon } from 'lucide-react'
+import {
+  Cloud,
+  Cpu,
+  LoaderCircle,
+  MousePointerClick,
+  SearchCode,
+  Wrench,
+} from 'lucide-react'
+import type * as React from 'react'
+import { useId, useState } from 'react'
 import {
   JUDGE_OPTIONS,
   JUDGE_USES,
   type JudgeOption,
+  type JudgeUseId,
 } from '@/lib/onboarding/catalog'
 import {
-  activeJudge,
+  type JudgeSelection,
   judgePlan,
-  judgeWorkers,
   type KeyInput,
 } from '@/lib/onboarding/plan'
 import { cn } from '@/lib/utils'
+import { Button, Checkbox } from './controls'
 import {
-  ActivityLog,
   defaultKeyInput,
+  EngineLog,
   KeyField,
   keyInputReady,
-  NewWorkerNote,
-  PlanPreview,
-  Rows,
   Section,
   StatusChip,
   StepHeader,
   StepLayout,
-  type StepPosition,
-  stepEyebrow,
 } from './parts'
 import type { OnboardingController } from './use-onboarding'
 
+const USE_ICONS: Record<JudgeUseId, LucideIcon> = {
+  search: SearchCode,
+  repair: Wrench,
+  browser: MousePointerClick,
+}
+
+/**
+ * Judge, optional. Any number of strategies can answer; the hub sends a
+ * request to its default — the one it is configured with when that is
+ * still checked, otherwise the first checked — and a request may still
+ * name another. Running strategies start checked and unchecking one
+ * removes it, the same as a provider in the models step.
+ *
+ * The step reads top to bottom as: what Judge does (three uses, one line
+ * each), then the one thing to do here — tick the strategies that should
+ * answer — then the button that makes it so.
+ */
 export function JudgeStep({
   onboarding,
-  position,
   onBack,
   onNext,
 }: {
   onboarding: OnboardingController
-  /** Its place among the setup steps, for the "Step N of M" line. */
-  position?: StepPosition
   onBack: () => void
-  /** `judge` is the option set up, `null` when skipped. */
-  onNext: (judge: JudgeOption | null) => void
+  /** The strategies answering, default first; empty when skipped. */
+  onNext: (judges: JudgeOption[]) => void
 }) {
   const { snapshot, activity, running, run } = onboarding
-  const installedOption = activeJudge(
-    snapshot.installed,
-    snapshot.judgeProvider,
-  )
-  const [changing, setChanging] = useState(false)
-  const log = activity.filter((entry) => entry.group === 'judge')
-  // Right after a failed attempt the workers are up but the answer was no:
-  // keep the choices (and the key field) on screen to fix it.
-  const lastFailed = log[log.length - 1]?.status === 'failed'
-  const alreadySetUp =
-    onboarding.judgeInstalled &&
-    installedOption !== undefined &&
-    !changing &&
-    !lastFailed
-  const [selected, setSelected] = useState<JudgeOption>(
-    installedOption ?? JUDGE_OPTIONS[0],
-  )
+  const installed = (option: JudgeOption) =>
+    onboarding.judgeInstalled && snapshot.installed.has(option.worker)
+  const anyInstalled = JUDGE_OPTIONS.some(installed)
+  const [drafts, setDrafts] = useState<ReadonlyMap<string, boolean>>(new Map())
   const [keys, setKeys] = useState<ReadonlyMap<string, KeyInput>>(new Map())
-  const [done, setDone] = useState(false)
-
-  const detection =
-    snapshot.detections?.find((entry) => entry.name === selected.envVar) ?? null
-  const key = selected.envVar
-    ? (keys.get(selected.id) ?? defaultKeyInput(detection))
-    : undefined
-  const plan = judgePlan(selected, key, snapshot.installed)
+  const log = activity.filter((entry) => entry.group === 'judge')
   const busy = running !== null
-  const incomplete = selected.envVar !== undefined && !keyInputReady(key)
 
-  const setUp = async () => {
-    if (await run('judge', plan)) setDone(true)
+  // Running strategies start checked; on a fresh setup, the recommended one.
+  const checked = (option: JudgeOption) =>
+    drafts.get(option.id) ??
+    (anyInstalled ? installed(option) : option.recommended === true)
+  const keyFor = (option: JudgeOption) => {
+    if (!option.envVar || installed(option)) return undefined
+    const detection =
+      snapshot.detections?.find((entry) => entry.name === option.envVar) ?? null
+    return keys.get(option.id) ?? defaultKeyInput(detection)
+  }
+
+  const chosen = JUDGE_OPTIONS.filter(checked)
+  const current = snapshot.judgeProvider
+  const primary =
+    chosen.find((option) => option.id === current) ?? chosen[0] ?? null
+  const ordered = primary
+    ? [primary, ...chosen.filter((option) => option !== primary)]
+    : []
+  const selections: JudgeSelection[] = ordered.map((option) => ({
+    option,
+    key: keyFor(option),
+  }))
+  const removals = JUDGE_OPTIONS.filter(
+    (option) => installed(option) && !checked(option),
+  )
+  const plan = judgePlan(selections, snapshot.installed, {
+    removals,
+    currentDefault: current,
+  })
+  const incomplete = selections.some(
+    ({ option, key }) =>
+      option.envVar !== undefined && !installed(option) && !keyInputReady(key),
+  )
+
+  const apply = async () => {
+    if (await run('judge', plan)) {
+      setDrafts(new Map())
+      setKeys(new Map())
+    }
   }
 
   return (
     <StepLayout
       footer={
         <>
-          <Button variant="ghost" onClick={onBack} disabled={busy}>
+          <Button variant="outline" onClick={onBack} disabled={busy}>
             Back
           </Button>
           <span className="flex items-center gap-2">
-            {done || alreadySetUp ? (
-              <Button
-                onClick={() => onNext(installedOption ?? selected)}
-                disabled={busy}
-              >
-                Continue
+            {plan.length === 0 ? (
+              <Button onClick={() => onNext(ordered)} disabled={busy}>
+                {ordered.length > 0 ? 'Continue' : 'Skip'}
               </Button>
             ) : (
               <>
+                {!anyInstalled ? (
+                  <Button
+                    variant="ghost"
+                    onClick={() => onNext([])}
+                    disabled={busy}
+                  >
+                    Skip
+                  </Button>
+                ) : null}
                 <Button
-                  variant="ghost"
-                  onClick={() => onNext(null)}
-                  disabled={busy}
-                >
-                  Skip
-                </Button>
-                <Button
-                  onClick={() => void setUp()}
+                  onClick={() => void apply()}
                   disabled={busy || incomplete}
                 >
-                  {running === 'judge' ? 'Setting up…' : 'Set up Judge'}
+                  {running === 'judge' ? (
+                    <LoaderCircle
+                      className="animate-spin motion-reduce:animate-none"
+                      aria-hidden
+                    />
+                  ) : null}
+                  {running === 'judge'
+                    ? 'Setting up…'
+                    : anyInstalled
+                      ? 'Apply changes'
+                      : 'Set up Judge'}
                 </Button>
               </>
             )}
@@ -113,121 +157,178 @@ export function JudgeStep({
       }
     >
       <StepHeader
-        eyebrow={stepEyebrow(position, true)}
-        title="Let Judge make the small decisions"
-        lead="Agents make many tiny choices along the way. Judge answers them with a model trained only for typed decisions, so your main model spends its tokens on the work itself."
+        title="Add a judge"
+        badge="Optional"
+        lead="A small, fast model that takes the harness's little decisions off your main model's plate."
       />
 
-      <Section title="Where the harness asks Judge">
-        <Rows>
-          {JUDGE_USES.map((use) => (
-            <div key={use.where} className="flex flex-col gap-0.5 px-3 py-2.5">
-              <span className="font-sans text-[14px] font-medium text-ink">
-                {use.where}
-              </span>
-              <span className="text-pretty font-sans text-[13px] leading-relaxed text-ink">
-                {use.what}
-              </span>
-            </div>
-          ))}
-        </Rows>
-        <p className="font-sans text-[13px] leading-relaxed text-ink">
-          Without Judge, function search falls back to keyword matching and
-          broken tool calls go back to the main model.
+      <section
+        aria-label="What Judge does"
+        className="rounded-lg border border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900"
+      >
+        <ul className="grid divide-y divide-neutral-200 @md:grid-cols-3 @md:divide-x @md:divide-y-0 dark:divide-neutral-800">
+          {JUDGE_USES.map((use) => {
+            const Icon = USE_ICONS[use.id]
+            return (
+              <li key={use.id} className="flex gap-2.5 px-3.5 py-3">
+                <Icon
+                  className="mt-0.5 size-4 shrink-0 text-ink"
+                  strokeWidth={1.75}
+                  aria-hidden
+                />
+                <span className="flex min-w-0 flex-col gap-px">
+                  <span className="text-[13px] font-medium leading-5 text-ink">
+                    {use.where}
+                  </span>
+                  <span className="text-pretty text-xs leading-4 text-neutral-600 dark:text-neutral-400">
+                    {use.short}
+                  </span>
+                </span>
+              </li>
+            )
+          })}
+        </ul>
+        <p className="border-t border-neutral-200 px-3.5 py-2 text-xs leading-4 text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+          Without Judge, function search falls back to keyword matching and a
+          broken tool call goes back to the main model.
         </p>
+      </section>
+
+      <Section
+        title="Choose who answers"
+        hint={
+          anyInstalled
+            ? 'tick to add, untick to remove'
+            : 'tick one or more; the first answers by default'
+        }
+      >
+        <div className="flex flex-col gap-2">
+          {JUDGE_OPTIONS.map((option) => (
+            <JudgeRow
+              key={option.id}
+              option={option}
+              checked={checked(option)}
+              running={installed(option)}
+              isDefault={primary === option && chosen.length > 1}
+              showRecommended={!anyInstalled}
+              disabled={busy}
+              onToggle={(next) =>
+                setDrafts((current) => new Map(current).set(option.id, next))
+              }
+              keyField={
+                checked(option) && option.envVar && !installed(option) ? (
+                  <KeyField
+                    envVar={option.envVar}
+                    detection={
+                      snapshot.detections?.find(
+                        (entry) => entry.name === option.envVar,
+                      ) ?? null
+                    }
+                    value={keyFor(option)}
+                    onChange={(next) =>
+                      setKeys((current) =>
+                        new Map(current).set(option.id, next),
+                      )
+                    }
+                    keysUrl={option.keysUrl}
+                    className="border-t border-neutral-200 px-3.5 py-3 dark:border-neutral-800"
+                  />
+                ) : null
+              }
+            />
+          ))}
+        </div>
       </Section>
 
-      {alreadySetUp ? (
-        <div className="flex items-center justify-between gap-3 rounded-md bg-ok-muted px-3 py-2">
-          <p className="font-sans text-[14px] text-ink">
-            Judge is already running with {installedOption?.title}.
-          </p>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setChanging(true)}
-            disabled={busy}
-          >
-            Change
-          </Button>
-        </div>
-      ) : (
-        <Section title="Who answers">
-          <div
-            role="radiogroup"
-            aria-label="Judge"
-            className="flex flex-col gap-2"
-          >
-            {JUDGE_OPTIONS.map((option) => {
-              const checked = option.id === selected.id
-              return (
-                <div
-                  key={option.id}
-                  className={cn(
-                    'flex flex-col rounded-md bg-surface',
-                    checked && 'bg-surface-selected',
-                  )}
-                >
-                  <label className="flex cursor-pointer items-start gap-3 px-3 py-3">
-                    <input
-                      type="radio"
-                      name="judge-option"
-                      checked={checked}
-                      disabled={busy || done}
-                      onChange={() => setSelected(option)}
-                      className="mt-1 size-4 shrink-0 accent-[var(--color-accent)]"
-                    />
-                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className="flex flex-wrap items-center gap-2">
-                        <span className="font-sans text-[14px] font-medium text-ink">
-                          {option.title}
-                        </span>
-                        {option.recommended ? (
-                          <StatusChip tone="neutral">Recommended</StatusChip>
-                        ) : null}
-                      </span>
-                      <span className="text-pretty font-sans text-[13px] leading-relaxed text-ink">
-                        {option.summary}
-                      </span>
-                      <span className="font-sans text-[13px] text-ink">
-                        {option.runs}
-                      </span>
-                      {done ? null : (
-                        <NewWorkerNote
-                          workers={Object.keys(
-                            judgeWorkers(option, snapshot.installed),
-                          )}
-                        />
-                      )}
-                    </span>
-                  </label>
-                  {checked && option.envVar && !done ? (
-                    <KeyField
-                      envVar={option.envVar}
-                      detection={detection}
-                      value={key}
-                      onChange={(next) =>
-                        setKeys((current) =>
-                          new Map(current).set(option.id, next),
-                        )
-                      }
-                      keysUrl={option.keysUrl}
-                    />
-                  ) : null}
-                </div>
-              )
-            })}
-          </div>
-        </Section>
-      )}
-
-      {!done && !alreadySetUp && running !== 'judge' ? (
-        <PlanPreview steps={plan} />
-      ) : null}
-      <ActivityLog
-        entries={log}
-        title={running === 'judge' ? 'Setting up Judge' : 'What setup did'}
-      />
+      <EngineLog plan={plan} entries={log} running={running === 'judge'} />
     </StepLayout>
+  )
+}
+
+/**
+ * One strategy to tick: the box leads the row so the choice reads as a
+ * choice, the title and its state follow, and where it runs sits under the
+ * summary with a glyph for hosted or local.
+ */
+function JudgeRow({
+  option,
+  checked,
+  running,
+  isDefault,
+  showRecommended,
+  disabled,
+  onToggle,
+  keyField,
+}: {
+  option: JudgeOption
+  checked: boolean
+  running: boolean
+  isDefault: boolean
+  showRecommended: boolean
+  disabled: boolean
+  onToggle: (checked: boolean) => void
+  keyField: React.ReactNode
+}) {
+  const id = useId()
+  const RunsIcon = option.envVar ? Cloud : Cpu
+  return (
+    <div
+      data-selected={checked || undefined}
+      className={cn(
+        'flex flex-col rounded-lg border transition-[background-color,border-color] duration-150 ease-[var(--motion-ease-standard)]',
+        checked
+          ? 'border-neutral-400 bg-neutral-100 dark:border-neutral-600 dark:bg-neutral-900'
+          : 'border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950',
+        !disabled &&
+          !checked &&
+          'hover:bg-neutral-50 dark:hover:bg-neutral-900',
+      )}
+    >
+      <div className="flex items-start gap-3 px-3.5 py-3">
+        <Checkbox
+          id={id}
+          aria-label={`Answer with ${option.title}`}
+          checked={checked}
+          disabled={disabled}
+          onChange={(event) => onToggle(event.currentTarget.checked)}
+          className="h-5"
+        />
+        <label
+          htmlFor={id}
+          className={cn(
+            'flex min-w-0 flex-1 flex-col gap-1',
+            !disabled && 'cursor-pointer',
+          )}
+        >
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="font-sans text-[13px] font-medium leading-5 text-ink">
+              {option.title}
+            </span>
+            {running ? (
+              <StatusChip tone={checked ? 'ok' : 'warn'}>
+                {checked ? 'Running' : 'Will be removed'}
+              </StatusChip>
+            ) : showRecommended && option.recommended ? (
+              <StatusChip tone="neutral">Recommended</StatusChip>
+            ) : null}
+            {isDefault ? (
+              <StatusChip tone="neutral">Answers by default</StatusChip>
+            ) : null}
+          </span>
+          <span className="text-pretty font-sans text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+            {option.summary}
+          </span>
+          <span className="flex items-center gap-1.5 text-xs leading-4 text-neutral-500 dark:text-neutral-400">
+            <RunsIcon
+              className="size-4 shrink-0"
+              strokeWidth={1.75}
+              aria-hidden
+            />
+            {option.runs}
+          </span>
+        </label>
+      </div>
+      {keyField}
+    </div>
   )
 }

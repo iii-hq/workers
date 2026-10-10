@@ -1,10 +1,9 @@
-import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { LoaderCircle } from 'lucide-react'
+import type * as React from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import { DeviceSignIn } from '@/components/chat/DeviceSignIn'
-import { ProviderIcon } from '@/components/chat/ProviderIcon'
-import { Button } from '@/components/ui/Button'
-import { Checkbox } from '@/components/ui/Checkbox'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { KEY_PROVIDERS, SUBSCRIPTION_PROVIDERS } from '@/lib/onboarding/catalog'
 import {
   connectPlan,
   type KeyInput,
@@ -13,27 +12,30 @@ import {
   providerChoices,
   type RegistryProviderRow,
   registryChoices,
+  type SubscriptionChoice,
 } from '@/lib/onboarding/plan'
 import { cn } from '@/lib/utils'
 import { fetchRegistryProviders } from '@/lib/workers-registry'
+import { Button, Checkbox } from './controls'
+import { ProviderMark } from './ProviderMark'
 import {
-  ActivityLog,
+  CommandLine,
   defaultKeyInput,
+  EngineLog,
   KeyField,
   keyInputReady,
-  NewWorkerNote,
-  PlanPreview,
   Rows,
   Section,
   StatusChip,
   StepHeader,
   StepLayout,
-  type StepPosition,
-  stepEyebrow,
+  Terminal,
 } from './parts'
+import { ScanButton } from './ScanButton'
 import type { OnboardingController } from './use-onboarding'
 
 interface Draft {
+  /** Wanted connected: a connected provider unchecked is removed. */
   selected: boolean
   key?: KeyInput
 }
@@ -45,27 +47,25 @@ interface Draft {
 const ROUTER_KEY_STORES = ['vault', 'env'] as const
 
 /**
- * The one step that gets a model connected. It starts from what this
- * machine already has — a coding agent signed in, a key already exported —
- * and recommends exactly that, so most of the time there is nothing to type.
+ * The one step that gets a model connected. Every provider has one place,
+ * grouped by how it is paid for — a subscription a signed-in coding agent
+ * already has, or an API key — and keeps that place whatever its state:
+ * connected ones are simply checked, and unchecking one removes it. What
+ * this machine already has starts checked, so most of the time there is
+ * nothing to type.
  */
 export function ModelsStep({
   onboarding,
-  position,
   onBack,
   onNext,
 }: {
   onboarding: OnboardingController
-  /** Its place among the setup steps, for the "Step N of M" line. */
-  position?: StepPosition
   onBack: () => void
   onNext: () => void
 }) {
   const { snapshot, scanning, refresh, activity, running, run } = onboarding
   const [registry, setRegistry] = useState<RegistryProviderRow[]>([])
   const [drafts, setDrafts] = useState<ReadonlyMap<string, Draft>>(new Map())
-  const [showMore, setShowMore] = useState(true)
-  const [connected, setConnected] = useState(false)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -88,13 +88,39 @@ export function ModelsStep({
     () => registryChoices(registry, snapshot.installed, choices),
     [registry, snapshot.installed, choices],
   )
+  const subscriptions = useMemo(
+    () =>
+      catalogOrder(choices.filter((choice) => choice.kind === 'subscription')),
+    [choices],
+  )
+  const keyed = useMemo(
+    () => catalogOrder(choices.filter((choice) => choice.kind === 'key')),
+    [choices],
+  )
+  // Providers that sign in from here (GitHub Copilot), and any other running
+  // provider the router already serves models from.
+  const devices = useMemo(
+    () => choices.filter((choice) => choice.kind === 'device'),
+    [choices],
+  )
+  const connectedOthers = useMemo(
+    () => choices.filter((choice) => choice.kind === 'registry'),
+    [choices],
+  )
+  const all = [
+    ...subscriptions,
+    ...keyed,
+    ...devices,
+    ...connectedOthers,
+    ...extra,
+  ]
 
-  // Recommended choices start selected until a provider is connected; the
-  // user's own clicks win after.
+  // Connected choices start checked, and recommended ones until the first
+  // provider is connected; the user's own clicks win after.
   const nothingConnected = !choices.some((choice) => choice.ready)
   const draftFor = (choice: ProviderChoice): Draft =>
     resolveDraft(drafts.get(choice.providerId), {
-      selected: preselected(choice, nothingConnected),
+      selected: choice.ready || preselected(choice, nothingConnected),
       key:
         choice.kind === 'key' ? defaultKeyInput(choice.detection) : undefined,
     })
@@ -104,156 +130,81 @@ export function ModelsStep({
     )
 
   const firstScan = snapshot.tools === null
-  const ready = choices.filter((choice) => choice.ready)
-  const recommended = choices.filter(
-    (choice) => !choice.ready && (choice.recommended || oneSignInAway(choice)),
-  )
-  const others: ProviderChoice[] = [
-    ...choices.filter(
-      (choice) =>
-        !choice.ready && !choice.recommended && !oneSignInAway(choice),
-    ),
-    ...extra,
-  ]
-  const keysFound = choices.some(
+  const keysFound = keyed.some(
     (choice) =>
       choice.kind === 'key' &&
       choice.detection !== null &&
       (choice.detection.stored || choice.detection.sources.length > 0),
   )
-
-  const selections: ProviderSelection[] = [...choices, ...extra]
+  const selections: ProviderSelection[] = all
     .filter((choice) => !choice.ready && draftFor(choice).selected)
     .map((choice) => ({ choice, key: draftFor(choice).key }))
+  const removals = all.filter(
+    (choice) => choice.ready && !draftFor(choice).selected,
+  )
   const incomplete = selections.some(
     ({ choice, key }) => choice.kind === 'key' && !keyInputReady(key),
   )
-  const plan = connectPlan(selections, snapshot.installed, snapshot.envFile)
+  const plan = connectPlan(
+    selections,
+    snapshot.installed,
+    snapshot.envFile,
+    removals,
+  )
   const log = activity.filter((entry) => entry.group === 'models')
   const busy = running !== null
-  const anyReady = ready.length > 0
-  // Once something is connected or recommended, the long tail waits behind
-  // a toggle instead of pushing the result down.
-  const collapsible = anyReady || recommended.length > 0
+  const anyReady = all.some((choice) => choice.ready)
+  const changes = selections.length + removals.length
+  const needsKey = selections.filter(({ choice }) => choice.kind === 'key') as {
+    choice: Extract<ProviderChoice, { kind: 'key' }>
+    key?: KeyInput
+  }[]
 
-  const connect = async () => {
-    const ok = await run('models', plan)
-    if (ok) {
-      setConnected(true)
-      setDrafts(draftsAfterConnect)
-    }
+  const apply = async () => {
+    if (await run('models', plan)) setDrafts(draftsAfterConnect(drafts))
   }
 
-  const renderChoice = (choice: ProviderChoice) => {
-    const draft = draftFor(choice)
-    const disabled = busy || !usable(choice)
-    const tool = choice.kind === 'subscription' ? choice.tool : null
-    return (
-      <div key={choice.providerId} className="flex flex-col">
-        <div
-          className={cn(
-            'flex items-start gap-3 px-3 py-3',
-            !usable(choice) && 'opacity-60',
-          )}
-        >
-          {choice.kind === 'device' ? (
-            // Signs in on its own below, not through Connect.
-            <span className="mt-1.5 size-4 shrink-0" aria-hidden />
-          ) : (
-            <Checkbox
-              aria-label={`Connect ${choice.title}`}
-              checked={draft.selected}
-              disabled={disabled}
-              onChange={(event) =>
-                update(choice, { selected: event.currentTarget.checked })
-              }
-              className="mt-1.5"
-            />
-          )}
-          <ProviderIcon
-            label={choice.title}
-            className="mt-1.5 size-4 text-ink"
-          />
-          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="flex flex-wrap items-center gap-2">
-              <span className="font-sans text-[14px] font-medium text-ink">
-                {choice.title}
-              </span>
-              {tool?.installed && !tool.signed_in ? (
-                <StatusChip tone="warn">Not signed in</StatusChip>
-              ) : choice.kind === 'subscription' || choice.kind === 'device' ? (
-                <StatusChip tone="neutral">No API key</StatusChip>
-              ) : null}
-            </span>
-            <span className="text-pretty font-sans text-[13px] leading-relaxed text-ink">
-              {choice.reason}
-            </span>
-            {/* The device sign-in says it adds its worker itself. */}
-            {!choice.installed && choice.kind !== 'device' ? (
-              <NewWorkerNote workers={[choice.worker]} />
-            ) : null}
-          </span>
-        </div>
-        {choice.kind === 'device' ? (
-          <div className="px-3 pb-3 pl-10">
-            <DeviceSignIn
-              provider={choice.provider}
-              installed={choice.installed}
-              onConnected={() =>
-                void run('models', [
-                  {
-                    kind: 'wait-models',
-                    providerId: choice.providerId,
-                    title: choice.title,
-                  },
-                ])
-              }
-            />
-          </div>
-        ) : null}
-        {draft.selected && choice.kind === 'key' ? (
-          <KeyField
-            envVar={choice.provider.envVar}
-            detection={choice.detection}
-            value={draft.key}
-            onChange={(key) => update(choice, { key })}
-            keysUrl={choice.provider.keysUrl}
-            stores={ROUTER_KEY_STORES}
-            envFile={snapshot.envFile}
-          />
-        ) : null}
-      </div>
-    )
-  }
+  const renderTile = (choice: ProviderChoice) => (
+    <ProviderTile
+      key={choice.providerId}
+      choice={choice}
+      selected={draftFor(choice).selected}
+      disabled={busy || !usable(choice)}
+      onToggle={(selected) => update(choice, { selected })}
+    />
+  )
 
-  const primary = connected || (selections.length === 0 && anyReady)
   return (
     <StepLayout
       footer={
         <>
-          <Button variant="ghost" onClick={onBack} disabled={busy}>
+          <Button variant="outline" onClick={onBack} disabled={busy}>
             Back
           </Button>
           <span className="flex items-center gap-2">
-            {!primary && !anyReady && selections.length === 0 ? (
+            {changes === 0 && !anyReady ? (
               <Button variant="ghost" onClick={onNext} disabled={busy}>
                 Skip for now
               </Button>
             ) : null}
-            {primary ? (
+            {changes === 0 && anyReady ? (
               <Button onClick={onNext} disabled={busy}>
                 Continue
               </Button>
             ) : (
               <Button
-                onClick={() => void connect()}
-                disabled={busy || selections.length === 0 || incomplete}
+                onClick={() => void apply()}
+                disabled={busy || changes === 0 || incomplete}
               >
+                {running === 'models' ? (
+                  <LoaderCircle
+                    className="animate-spin motion-reduce:animate-none"
+                    aria-hidden
+                  />
+                ) : null}
                 {running === 'models'
                   ? 'Connecting…'
-                  : selections.length > 1
-                    ? `Connect ${selections.length} providers`
-                    : 'Connect'}
+                  : connectLabel(selections.length, removals.length)}
               </Button>
             )}
           </span>
@@ -261,122 +212,142 @@ export function ModelsStep({
       }
     >
       <StepHeader
-        eyebrow={stepEyebrow(position)}
         title="Connect a model"
-        lead="Pick at least one. Recommended ones use what this machine already has: a coding agent you're signed in to needs no API key."
+        lead="Bring a subscription you already use, or connect with an API key."
         action={
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void refresh()}
-            disabled={scanning || busy}
-          >
-            <RefreshCw
-              className={scanning ? 'iii-ui-spin' : undefined}
-              aria-hidden
-            />
-            Scan again
-          </Button>
+          <ScanButton
+            scanning={scanning}
+            disabled={busy}
+            onScan={() => void refresh()}
+          />
         }
       />
 
       {snapshot.toolsError ? (
-        <p className="font-sans text-[13px] text-alert-strong">
-          Could not scan this machine: {snapshot.toolsError}
+        <p
+          role="alert"
+          className="rounded-lg border border-alert/30 bg-alert-muted px-3 py-2 font-sans text-[13px] text-ink"
+        >
+          Unable to scan this machine: {snapshot.toolsError}
         </p>
       ) : null}
-
-      {ready.length > 0 ? (
-        <Section title="Connected">
-          <Rows>
-            {ready.map((choice) => (
-              <div
-                key={choice.providerId}
-                className="flex items-center gap-3 px-3 py-2.5"
-              >
-                <ProviderIcon
-                  label={choice.title}
-                  className="size-4 text-ink"
-                />
-                <span className="flex-1 font-sans text-[14px] text-ink">
-                  {choice.title}
-                </span>
-                <StatusChip tone="ok">
-                  {choice.modelCount}{' '}
-                  {choice.modelCount === 1 ? 'model' : 'models'}
-                </StatusChip>
-              </div>
-            ))}
-          </Rows>
-        </Section>
-      ) : null}
-
-      {/* While it runs, and once it has, the log stands where the plan was:
-          the same steps, now with what actually happened. */}
-      <ActivityLog
-        entries={log}
-        title={running === 'models' ? 'Connecting' : 'What setup did'}
-      />
 
       {firstScan ? (
         <Section title="Looking at this machine">
           <Rows>
             {[0, 1].map((key) => (
-              <div key={key} className="flex items-center gap-3 px-3 py-3">
-                <Skeleton className="size-4" />
-                <Skeleton className="h-4 flex-1" />
+              <div key={key} className="flex h-11 items-center gap-3 px-3.5">
+                <Skeleton className="size-4 rounded-sm" />
+                <Skeleton className="h-3.5 w-40 max-w-[50%]" />
               </div>
             ))}
           </Rows>
         </Section>
-      ) : recommended.length > 0 ? (
-        <Section title="Recommended for this machine">
-          <Rows>{recommended.map(renderChoice)}</Rows>
-        </Section>
-      ) : null}
+      ) : (
+        <>
+          <Section title="Subscriptions" hint="uses your plan, no API key">
+            <Rows>
+              {subscriptions.map((choice) =>
+                choice.kind === 'subscription' ? (
+                  <SubscriptionRow
+                    key={choice.providerId}
+                    choice={choice}
+                    selected={draftFor(choice).selected}
+                    disabled={busy || !usable(choice)}
+                    onToggle={(selected) => update(choice, { selected })}
+                    scanning={scanning}
+                    onScan={() => void refresh()}
+                  />
+                ) : null,
+              )}
+            </Rows>
+          </Section>
 
-      {!firstScan && snapshot.detections !== null && !keysFound ? (
-        <p className="rounded-md bg-surface px-3 py-3 font-sans text-[14px] text-ink">
-          No provider keys in your shell profile or this project's{' '}
-          {snapshot.envFile}. Paste one below, or sign in to a coding agent and
-          scan again.
-        </p>
-      ) : null}
-
-      {!firstScan && others.length > 0 ? (
-        <Section
-          title={
-            anyReady
-              ? 'Add another provider'
-              : recommended.length > 0
-                ? 'Other providers'
-                : 'Providers'
-          }
-          aside={
-            collapsible ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setShowMore((value) => !value)}
-                aria-expanded={showMore}
-              >
-                {showMore ? (
-                  <ChevronDown aria-hidden />
-                ) : (
-                  <ChevronRight aria-hidden />
+          {devices.length > 0 ? (
+            <Section
+              title="Sign in from here"
+              hint="uses your plan, no API key"
+            >
+              <Rows>
+                {devices.map((choice) =>
+                  choice.kind === 'device' ? (
+                    <DeviceRow
+                      key={choice.providerId}
+                      choice={choice}
+                      selected={draftFor(choice).selected}
+                      disabled={busy}
+                      onToggle={(selected) => update(choice, { selected })}
+                      onConnected={() =>
+                        void run('models', [
+                          {
+                            kind: 'wait-models',
+                            providerId: choice.providerId,
+                            title: choice.title,
+                          },
+                        ])
+                      }
+                    />
+                  ) : null,
                 )}
-                {showMore ? 'Hide' : `Show ${others.length}`}
-              </Button>
-            ) : null
-          }
-        >
-          {showMore || !collapsible ? (
-            <Rows>{others.map(renderChoice)}</Rows>
+              </Rows>
+            </Section>
           ) : null}
-        </Section>
-      ) : null}
 
-      {running !== 'models' ? <PlanPreview steps={plan} /> : null}
+          <Section
+            title="API keys"
+            hint={
+              snapshot.detections !== null && !keysFound
+                ? `none found in your shell profile or ${snapshot.envFile}`
+                : 'billed by the provider'
+            }
+          >
+            <div className="grid gap-2 @sm:grid-cols-2">
+              {[...keyed, ...connectedOthers].map(renderTile)}
+            </div>
+            {needsKey.map(({ choice, key }) => (
+              <div
+                key={choice.providerId}
+                className="flex flex-col rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950"
+              >
+                <span className="flex h-9 items-center gap-2 border-b border-neutral-200 px-3.5 font-sans text-[13px] font-medium text-ink dark:border-neutral-800">
+                  <ProviderMark
+                    id={choice.providerId}
+                    label={choice.title}
+                    className="size-4 text-ink"
+                  />
+                  {choice.title} key
+                  <span className="ml-auto font-mono text-[11px] font-normal text-neutral-500 dark:text-neutral-400">
+                    {choice.provider.envVar}
+                  </span>
+                </span>
+                <KeyField
+                  envVar={choice.provider.envVar}
+                  detection={choice.detection}
+                  value={key}
+                  onChange={(next) => update(choice, { key: next })}
+                  keysUrl={choice.provider.keysUrl}
+                  stores={ROUTER_KEY_STORES}
+                  envFile={snapshot.envFile}
+                  className="px-3.5 py-3"
+                />
+              </div>
+            ))}
+          </Section>
+
+          {extra.length > 0 ? (
+            <Section
+              title="More providers"
+              hint="adds the worker; finish setup in the model picker"
+            >
+              <div className="grid gap-2 @sm:grid-cols-2">
+                {extra.map(renderTile)}
+              </div>
+            </Section>
+          ) : null}
+        </>
+      )}
+
+      <EngineLog plan={plan} entries={log} running={running === 'models'} />
     </StepLayout>
   )
 }
@@ -384,7 +355,7 @@ export function ModelsStep({
 /**
  * After Connect: every checkbox stays as the person left it — a recommended
  * choice they unchecked must not come back checked — and typed keys are
- * dropped, so a key is not kept in memory once stored.
+ * dropped so a key is not kept in memory once stored.
  */
 export function draftsAfterConnect(
   drafts: ReadonlyMap<string, Draft>,
@@ -415,21 +386,289 @@ export function preselected(
   )
 }
 
-/** A subscription provider needs its CLI signed in on this machine. */
-function usable(choice: ProviderChoice): boolean {
-  return choice.kind !== 'subscription' || choice.usable
+/**
+ * A provider that signs in from here with a device code (GitHub Copilot):
+ * the sign-in stands where the checkbox goes until it lands.
+ */
+function DeviceRow({
+  choice,
+  selected,
+  disabled,
+  onToggle,
+  onConnected,
+}: {
+  choice: Extract<ProviderChoice, { kind: 'device' }>
+  selected: boolean
+  disabled: boolean
+  onToggle: (selected: boolean) => void
+  onConnected: () => void
+}) {
+  const id = useId()
+  return (
+    <div
+      className={cn(
+        'flex flex-col gap-1 px-3.5 py-2.5 transition-colors duration-150 ease-[var(--motion-ease-standard)]',
+        selected && choice.ready && 'bg-neutral-100 dark:bg-neutral-900',
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <ProviderMark
+          id={choice.providerId}
+          label={choice.title}
+          className="mt-0.5 size-4 shrink-0 text-ink"
+        />
+        <label
+          htmlFor={id}
+          className={cn(
+            'flex min-w-0 flex-1 flex-col gap-px',
+            !disabled && choice.ready && 'cursor-pointer',
+          )}
+        >
+          <span className="font-sans text-[13px] font-medium leading-5 text-ink">
+            {choice.title}
+          </span>
+          <span className="text-pretty font-sans text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+            {choice.reason}
+          </span>
+        </label>
+        <span className="flex h-5 items-center gap-3">
+          <ChoiceStatus choice={choice} selected={selected} />
+          {choice.ready ? (
+            <Checkbox
+              id={id}
+              aria-label={`Connect ${choice.title}`}
+              checked={selected}
+              disabled={disabled}
+              onChange={(event) => onToggle(event.currentTarget.checked)}
+            />
+          ) : null}
+        </span>
+      </div>
+      {choice.ready ? null : (
+        <div className="pl-7">
+          <DeviceSignIn
+            provider={choice.provider}
+            installed={choice.installed}
+            onConnected={onConnected}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function connectLabel(adds: number, removes: number): string {
+  if (removes === 0) {
+    return adds > 1 ? `Connect ${adds} providers` : 'Connect'
+  }
+  if (adds === 0) {
+    return removes > 1 ? `Remove ${removes} providers` : 'Remove provider'
+  }
+  return `Apply ${adds + removes} changes`
 }
 
 /**
- * A coding agent installed here but not signed in, or a provider that signs
- * in from here (GitHub Copilot): one sign-in from usable, so it stays beside
- * the recommendations, saying what to do, instead of in the long tail.
+ * The provider's state, said in the place the provider already is: its
+ * model count once connected, what unchecking will do, a key that was
+ * found.
  */
-function oneSignInAway(choice: ProviderChoice): boolean {
-  if (choice.kind === 'device') return true
+function ChoiceStatus({
+  choice,
+  selected,
+}: {
+  choice: ProviderChoice
+  selected: boolean
+}) {
+  if (choice.ready) {
+    return selected ? (
+      <StatusChip tone="ok">
+        {choice.modelCount} {choice.modelCount === 1 ? 'model' : 'models'}
+      </StatusChip>
+    ) : (
+      <StatusChip tone="warn">Will be removed</StatusChip>
+    )
+  }
+  if (choice.kind === 'subscription') {
+    if (choice.usable) return <StatusChip tone="neutral">Signed in</StatusChip>
+    return choice.tool?.installed ? (
+      <StatusChip tone="warn">Not signed in</StatusChip>
+    ) : (
+      <StatusChip tone="neutral">Not installed</StatusChip>
+    )
+  }
+  if (choice.kind === 'key' && choice.recommended) {
+    return <StatusChip tone="neutral">Key found</StatusChip>
+  }
+  return null
+}
+
+/**
+ * A compact provider: the whole tile toggles it, the checkbox stays the
+ * accessible control.
+ */
+function ProviderTile({
+  choice,
+  selected,
+  disabled,
+  onToggle,
+}: {
+  choice: ProviderChoice
+  selected: boolean
+  disabled: boolean
+  onToggle: (selected: boolean) => void
+}) {
   return (
-    choice.kind === 'subscription' &&
-    !choice.usable &&
-    choice.tool?.installed === true
+    <Checkbox
+      aria-label={`Connect ${choice.title}`}
+      title={choice.reason}
+      checked={selected}
+      disabled={disabled}
+      onChange={(event) => onToggle(event.currentTarget.checked)}
+      className={cn(
+        'flex h-10 flex-row-reverse rounded-lg border px-3 transition-[background-color,border-color] duration-150 ease-[var(--motion-ease-standard)]',
+        selected
+          ? 'border-neutral-400 bg-neutral-100 dark:border-neutral-600 dark:bg-neutral-900'
+          : 'border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950',
+        !disabled &&
+          !selected &&
+          'hover:bg-neutral-50 dark:hover:bg-neutral-900',
+      )}
+      label={
+        <span className="flex min-w-0 items-center gap-2.5">
+          <ProviderMark
+            id={choice.providerId}
+            label={choice.title}
+            className="size-4 shrink-0 text-ink"
+          />
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">
+            {choice.title}
+          </span>
+          <ChoiceStatus choice={choice} selected={selected} />
+        </span>
+      }
+    />
   )
+}
+
+/**
+ * A coding agent: what it pays with, and — until it is signed in on this
+ * machine — the exact commands that get it there.
+ */
+function SubscriptionRow({
+  choice,
+  selected,
+  disabled,
+  onToggle,
+  scanning,
+  onScan,
+}: {
+  choice: SubscriptionChoice
+  selected: boolean
+  disabled: boolean
+  onToggle: (selected: boolean) => void
+  scanning: boolean
+  onScan: () => void
+}) {
+  const { tool, provider } = choice
+  const id = useId()
+  const needsSetup = !choice.ready && !choice.usable
+  return (
+    <div
+      className={cn(
+        'flex flex-col gap-1 px-3.5 py-2.5 transition-colors duration-150 ease-[var(--motion-ease-standard)]',
+        selected && 'bg-neutral-100 dark:bg-neutral-900',
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <ProviderMark
+          id={choice.providerId}
+          label={choice.title}
+          className="mt-0.5 size-4 shrink-0 text-ink"
+        />
+        <label
+          htmlFor={id}
+          className={cn(
+            'flex min-w-0 flex-1 flex-col gap-px',
+            !disabled && 'cursor-pointer',
+          )}
+        >
+          <span className="font-sans text-[13px] font-medium leading-5 text-ink">
+            {choice.title}
+          </span>
+          <span className="text-pretty font-sans text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+            {subscriptionLine(choice)}
+          </span>
+          {tool?.signed_in && tool.credentials_path ? (
+            <span className="sr-only">
+              Sign-in at{' '}
+              <span className="font-mono text-xs">{tool.credentials_path}</span>
+            </span>
+          ) : null}
+        </label>
+        <span className="flex h-5 items-center gap-3">
+          <ChoiceStatus choice={choice} selected={selected} />
+          <Checkbox
+            id={id}
+            aria-label={`Connect ${choice.title}`}
+            checked={selected}
+            disabled={disabled}
+            onChange={(event) => onToggle(event.currentTarget.checked)}
+          />
+        </span>
+      </div>
+      {needsSetup ? (
+        <div className="mt-1.5 flex flex-col gap-1.5 pl-7">
+          <Terminal>
+            {!tool?.installed ? (
+              <CommandLine command={provider.install} />
+            ) : null}
+            <CommandLine command={provider.signIn} note={provider.signInNote} />
+          </Terminal>
+          <span className="flex min-h-7 flex-wrap items-center justify-between gap-x-3 gap-y-1 pl-1">
+            <span className="font-sans text-xs text-neutral-500 dark:text-neutral-400">
+              Run {tool?.installed ? 'this' : 'these'} in a terminal, then scan
+              again.
+            </span>
+            <ScanButton scanning={scanning} onScan={onScan} />
+          </span>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function subscriptionLine(choice: SubscriptionChoice): React.ReactNode {
+  const { tool, provider } = choice
+  if (choice.ready || choice.usable) return `Uses ${provider.plan}.`
+  if (!tool?.installed) {
+    return `Not on this machine yet. Install it and sign in to use ${provider.plan}.`
+  }
+  if (tool.sign_in_note) return `${sentence(tool.sign_in_note)}.`
+  return `Installed, but not signed in. Sign in to use ${provider.plan}.`
+}
+
+function sentence(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+const CATALOG_ORDER = new Map(
+  [...SUBSCRIPTION_PROVIDERS, ...KEY_PROVIDERS].map((provider, index) => [
+    provider.worker,
+    index,
+  ]),
+)
+
+/**
+ * Catalog order: `providerChoices` ranks connected ones first, which would
+ * move a provider the moment it connects.
+ */
+function catalogOrder(choices: ProviderChoice[]): ProviderChoice[] {
+  const index = (choice: ProviderChoice) =>
+    CATALOG_ORDER.get(choice.worker) ?? CATALOG_ORDER.size
+  return [...choices].sort((a, b) => index(a) - index(b))
+}
+
+/** A subscription provider needs its CLI signed in on this machine. */
+function usable(choice: ProviderChoice): boolean {
+  return choice.kind !== 'subscription' || choice.usable || choice.ready
 }

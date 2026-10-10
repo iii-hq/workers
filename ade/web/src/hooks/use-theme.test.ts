@@ -6,7 +6,7 @@ const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8')
 
 describe('installed app theme', () => {
   it('syncs theme-color, color-scheme and the root background on theme changes', () => {
-    expect(hook).toContain("light: '#f2f0ed'")
+    expect(hook).toContain("light: '#f5f5f5'")
     expect(hook).toContain("dark: '#0a0a0a'")
     expect(hook).toContain('root.style.colorScheme = theme')
     expect(hook).toContain('root.style.backgroundColor = color')

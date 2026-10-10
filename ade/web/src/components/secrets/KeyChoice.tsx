@@ -1,4 +1,4 @@
-import { ExternalLink } from 'lucide-react'
+import { ExternalLink, FileKey2, LockKeyhole } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Input } from '@/components/ui/Input'
 import { SegmentedControl } from '@/components/ui/ModeToggle'
@@ -16,9 +16,21 @@ import {
   sourceLabel,
 } from '@/lib/secrets'
 
-const STORE_OPTIONS: { value: KeyStore; label: string }[] = [
-  { value: 'vault', label: 'Encrypted' },
-  { value: 'env', label: 'Environment variable' },
+const STORE_OPTIONS: {
+  value: KeyStore
+  label: string
+  icon: ReactNode
+}[] = [
+  {
+    value: 'vault',
+    label: 'Encrypted',
+    icon: <LockKeyhole className="size-4" aria-hidden />,
+  },
+  {
+    value: 'env',
+    label: 'Environment variable',
+    icon: <FileKey2 className="size-4" aria-hidden />,
+  },
 ]
 
 /**
@@ -282,7 +294,7 @@ function PasteInput({
           rel="noreferrer"
           className="inline-flex w-fit items-center gap-1 rounded-sm font-sans text-[12px] text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
         >
-          Create a key
+          Create an API key
           <ExternalLink className="size-4" aria-hidden />
         </a>
       ) : null}

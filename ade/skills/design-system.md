@@ -6,8 +6,8 @@ description: The iii Schematic design system — tokens, type, the numbers table
 # iii Schematic — design system
 
 The console reads as an engineering document, not a SaaS dashboard: hierarchy comes from
-layered surfaces (one background step per region), the chrome draws no lines, every corner is
-the same 6px, and a single rationed accent marks live state and primary actions. Sans for
+layered surfaces (one background step per region), the chrome draws no lines, corners use
+a 6/8/12px scale, and a single rationed accent marks live state and primary actions. Sans for
 humans, mono for machines. The code is the spec: tokens in `ade/web/src/index.css`, public CSS
 recipes in `ade/web/src/styles/ui-recipes.css`, components in `ade/web/src/components/ui`
 exported through `packages/console-ui` (`index.d.ts`, `component-names.mjs`, `ui-classes.mjs`,
@@ -21,20 +21,46 @@ annotations) is documented in `ade/web/README.md`, not here.
   divider. Three strokes exist, each with one job: `rule-focus` (focus), `edge` (the hairline
   frame of floating workspace panels and the `PageBody` gap), and an optional neutral `edge`
   rail on a selected row or card. `rule`, `rule-2`, `rule-strong` are transparent legacy names.
-- **One radius.** Every Tailwind radius step resolves to 6px; only `none` and `full` differ.
-- **Accent rationing.** `accent` (burnt orange on cream, electric blue on dark) is for focused
+- **Consistent corners.** Compact chrome uses 6px; `rounded-lg` is 8px for cards and controls,
+  and `rounded-xl` is 12px for panels and dialogs. `none` and `full` keep their standard roles.
+- **Accent rationing.** `accent` (charcoal on light, soft white on dark) is for focused
   controls, live/running state, primary actions and semantic data. Never for selection, body
   text, large fills or decoration.
 - **Neutral selection.** Selected = `surface-selected` fill + `ink` text (+ optional `edge`
   rail), identical in both themes. Status arrives through `ok`/`warn`/`alert` on a dot, a mark
   or a `-muted` tint, never a solid background or a stripe.
-- **Sans for humans, mono for machines.** Inter for copy and controls; Geist Mono for IDs,
+- **Sans for humans, mono for machines.** Geist for copy and controls (Inter fallback); Geist Mono for IDs,
   timestamps, metrics, function names; the code font only on editor, terminal, `pre`/`code`.
 - **Motion communicates, never decorates.** Shared duration/ease tokens only; streaming, logs,
   drag and resize update instantly; `prefers-reduced-motion` zeroes every token.
 - **Density is deliberate.** Panels, traces, code and forms share a surface without a
   hierarchy contest; the trace timeline is the most colourful area and the only one that draws
   data lines (alpha-ink fills such as `bg-ink/15`).
+
+## Setup dialog
+
+Setup is a 760×620px dialog (`rounded-xl`, 1px neutral frame, `shadow-floating`):
+a 200px `neutral-50` rail on the left with the wordmark and a vertical stepper,
+then a scrolling body over a 56px footer with the step's actions. The stepper
+(`Stepper.tsx`) is 24px numbered dots joined by a hairline that fills as steps
+complete — finished steps show a check and go back on click, the current one
+carries `aria-current="step"`, the ones ahead are plain text, and each step has
+a one-line description in the rail. Below the `@lg` container width the rail
+gives way to a one-row header stepper whose labels collapse to the current step.
+The console's sans (Geist, Inter fallback): 16px step titles, 14px leads, 13px
+rows and labels, 12px captions and 11px chips. One 24px gutter (16px below
+`@md`); `rounded-lg` cards with `divide-y` hairlines, 4px checkboxes, and pill
+(`rounded-full`) buttons and chips — solid ink primary, soft neutral fill
+secondary, ghost tertiary, all with semibold 13px labels. Small controls (rail steps,
+ghost buttons, disclosures) hover with `surface-hover`. Large fills — cards,
+rows, strips, the code surface, the soft secondary button — use the neutral
+palette one step per theme (`neutral-50`/`100` on white, `neutral-900`/`800`
+on `neutral-950`), because the alpha surface ramp reads as a grey slab across a
+whole card in the light theme; a checked card is `neutral-100` with a
+`neutral-400` stroke (`neutral-900` with `neutral-600` in the dark theme). All setup
+presentation uses Tailwind utilities in `ade/web/src/components/onboarding`,
+with no custom setup stylesheet. Short Motion step transitions honor reduced
+motion. Provider choices remain visible and stable as their state changes.
 
 ## Tokens
 
@@ -46,15 +72,15 @@ everything else below is console-only and may change.
 
 | Token | Light | Dark | Use |
 | --- | --- | --- | --- |
-| `bg` | `#f2f0ed` | `#0a0a0a` | Application canvas, the deepest layer |
+| `bg` | `#f5f5f5` | `#0a0a0a` | Application canvas, the deepest layer |
 | `sidebar` | `#f2f2f2` | `#0e0e0e` | Navigation columns (`PageSidebar`) |
 | `panel` | `lab(98.26% 0 0)` | `#111111` | Main columns (`PageShell`, `PageMain`) |
-| `panel-raised` | `#f7f5f2` | `#171717` | Headers, cards, popovers, composer, tool cards |
-| `paper-2` | `#ebe8e3` | `#171717` | Legacy alias of `panel-raised`; do not add uses |
-| `surface` | `rgba(20,16,8,.055)` | `rgba(255,255,255,.055)` | Inputs, controls, chips, secondary cards |
-| `surface-hover` | `rgba(20,16,8,.085)` | `rgba(255,255,255,.085)` | Hover on rows, items, ghost controls |
-| `surface-selected` | `rgba(20,16,8,.12)` | `rgba(255,255,255,.12)` | Selected row, card, tab, chip, segment |
-| `surface-active` | `rgba(20,16,8,.12)` | `rgba(255,255,255,.12)` | Pressed / strong active |
+| `panel-raised` | `#fafafa` | `#171717` | Headers, cards, popovers, composer, tool cards |
+| `paper-2` | `#ededed` | `#171717` | Legacy alias of `panel-raised`; do not add uses |
+| `surface` | `rgba(24,24,24,.055)` | `rgba(255,255,255,.055)` | Inputs, controls, chips, secondary cards |
+| `surface-hover` | `rgba(24,24,24,.085)` | `rgba(255,255,255,.085)` | Hover on rows, items, ghost controls |
+| `surface-selected` | `rgba(24,24,24,.12)` | `rgba(255,255,255,.12)` | Selected row, card, tab, chip, segment |
+| `surface-active` | `rgba(24,24,24,.12)` | `rgba(255,255,255,.12)` | Pressed / strong active |
 | `card-highlight` | `#dbdbdb63` | `#0d0d0e63` | Borderless inset inside a card; never a state |
 
 The `surface*` fills are alpha, so one step reads the same over any base layer.
@@ -64,16 +90,16 @@ The `surface*` fills are alpha, so one step reads the same over any base layer.
 | Token | Light | Dark | Use |
 | --- | --- | --- | --- |
 | `ink` | `#0a0a0a` | `#ededed` | Primary text, primary buttons, wordmark |
-| `ink-faint` | `#6b6865` | `#a6a6a6` | Secondary copy, captions, inactive navigation |
-| `ink-ghost` | `#a3a09c` | `#6f6f6f` | Placeholders, timestamps, line numbers |
-| `ink-disabled` | `#b8b4ae` | `#4d4d4d` | Disabled labels (paired with `opacity-40`) |
-| `muted-foreground` | `#6b6865` | `#b8b8b8` | Legacy alias of `ink-faint` (dark one step brighter) |
+| `ink-faint` | `#6b6b6b` | `#a6a6a6` | Secondary copy, captions, inactive navigation |
+| `ink-ghost` | `#909090` | `#6f6f6f` | Placeholders, timestamps, line numbers |
+| `ink-disabled` | `#b5b5b5` | `#4d4d4d` | Disabled labels (paired with `opacity-40`) |
+| `muted-foreground` | `#6b6b6b` | `#b8b8b8` | Legacy alias of `ink-faint` (dark one step brighter) |
 | `trigger-running` | `#57534f` | `#a6a6a6` | In-flight function description shimmer base |
 | `rule`, `rule-2`, `rule-strong` | transparent | transparent | Legacy; `border-rule*` is an inert 1px |
-| `rule-focus` | `rgba(184,66,15,.6)` | `rgba(40,168,247,.7)` | The focus stroke on inputs and controls |
-| `edge` | `#14100829` | `rgba(255,255,255,.07)` | Panel frame, `PageBody` gap, selected rail |
-| `accent` / `accent-fg` | `#b8420f` / `#f2f0ed` | `#28a8f7` / `#070909` | Live state, focus ring, primary action |
-| `accent-hover` | `#a53a0c` | `#46b6fa` | Hover on accent fills |
+| `rule-focus` | `rgba(64,64,64,.6)` | `rgba(212,212,212,.7)` | The focus stroke on inputs and controls |
+| `edge` | `#18181829` | `rgba(255,255,255,.07)` | Panel frame, `PageBody` gap, selected rail |
+| `accent` / `accent-fg` | `#383838` / `#f5f5f5` | `#dedede` / `#070909` | Live state, focus ring, primary action |
+| `accent-hover` | `#262626` | `#f5f5f5` | Hover on accent fills |
 | `accent-muted` / `accent-border` | 10% / 35% alpha | 12% / 35% alpha | Accent tint / legacy accent stroke |
 | `alert` / `alert-muted` | `#ff0026` / 8% | `#f05d68` / 12% | Errors, failed calls |
 | `warn` / `warn-muted` | `#a87a00` / 12% | `#f5a524` / 12% | Warnings, pending approval |
@@ -106,7 +132,9 @@ Ligatures are off on every mono/code surface (`liga clig calt dlig 0`). Do not a
 
 | Token | Value |
 | --- | --- |
-| `radius-xs` … `radius-xl` | 6px, all of them; `radius-none` 0; `radius-full` 9999px |
+| `radius-xs` … `radius-md` | 6px |
+| `radius-lg` / `radius-xl` | 8px / 12px |
+| `radius-none` / `radius-full` | 0 / 9999px |
 | `shadow-raised` (light) | `0 1px 2px #1410081a, 0 4px 12px #1410081a` |
 | `shadow-raised` (dark) | `0 1px 0 rgba(255,255,255,.025) inset, 0 8px 24px rgba(0,0,0,.18)` |
 | `shadow-floating` (light) | `0 2px 4px #1410081a, 0 10px 24px #1410081a` |
@@ -355,7 +383,7 @@ The six hooks are `@iii-dev/console-ui/hooks`; the formatters are `@iii-dev/cons
 - Build every page from `PageShell` → `PageHeader` → `PageBody` → (`PageSidebar`) + `PageMain`.
 - Step the background one level to make a region; reach for `edge` only on the panel frame, the
   `PageBody` gap and a selected rail.
-- Use Inter for copy and controls, Geist Mono for machine values, the code font for code.
+- Use Geist for copy and controls (Inter fallback), Geist Mono for machine values, the code font for code.
 - Keep every number `tabular-nums`; keep authored case; `Eyebrow` is the one uppercase.
 - Ration the accent to focus, live/running state, primary actions and semantic data.
 - Lay panes out with `@container` and `@2xl:` / `@3xl:` / `@5xl:`; reserve the 640px viewport

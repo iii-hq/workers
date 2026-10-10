@@ -34,6 +34,7 @@ import {
   type PlanStep,
   type ProviderState,
   servesUsableModels,
+  stepDetail,
   type ToolScan,
 } from '@/lib/onboarding/plan'
 import { envFileName, getSecretsStatus } from '@/lib/secrets'
@@ -46,6 +47,8 @@ export interface ActivityEntry {
   group: ActivityGroup
   /** One plain sentence (`describeStep`). */
   title: string
+  /** The engine operation behind it (`stepDetail`), shown in mono. */
+  detail?: string
   status: 'running' | 'done' | 'failed'
   /** Live progress line while running; the outcome once finished. */
   note?: string
@@ -253,6 +256,7 @@ export function useOnboarding(
             id,
             group,
             title: describeStep(step),
+            detail: stepDetail(step),
             status: 'running',
             workers: step.kind === 'add-workers' ? step.workers : undefined,
           },

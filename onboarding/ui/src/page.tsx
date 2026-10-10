@@ -1,6 +1,5 @@
 import {
   Button,
-  Chip,
   type Host,
   Input,
   PageHeader,
@@ -8,24 +7,26 @@ import {
   type PageRenderProps,
   PageShell,
   Skeleton,
-  StatusDot,
   StatusPanel,
   uiClasses,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
-import { ChevronRight } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { bindCondition, type Condition, type Fired } from './conditions'
 import { disposeSpotlight, hideSpotlight, showSpotlight, waitForAnchor } from './spotlight'
 
 /**
- * One list, one open step.
+ * One vertical stepper, one open step.
  *
- * Built from the shared components and the `uiClasses` recipes (`card`,
- * `listItem*`, `motionPanel`), so the page inherits the house spacing, edges
- * and hover states. The stylesheet next door carries only what those cannot
- * express — the spotlight box, the progress bar, and the tour's own layout.
+ * The list reads top to bottom as a path: a numbered dot per step on a
+ * hairline that fills as steps complete, the title beside it, and — for the
+ * step that is open — what to read and the one thing to do, in a panel that
+ * grows under the title. Reached steps open and close in place; steps ahead
+ * of the front are plain text until they are reached, so nothing is given
+ * away early. The stylesheet next door carries the stepper, the spotlight
+ * box and the page's own layout; controls come from the shared components.
  */
 
 /**
@@ -37,11 +38,6 @@ import { disposeSpotlight, hideSpotlight, showSpotlight, waitForAnchor } from '.
  * deliberating over instructions that are already explicit, which is time the
  * operator spends watching a spinner. The console owns the setting — the page
  * asks, and a console too old to be asked simply is not.
- *
- * `lowest`, not a named level: models start their effort ladders in
- * different places (Codex has no `minimal`), so the harness picks the
- * model's lowest effort and the console shows what it chose. A console that
- * predates `lowest` refuses the request and the tour runs at the usual level.
  */
 const FIRST_STEP_ID = 'message'
 const TOUR_THINKING_LEVEL = 'lowest'
@@ -93,17 +89,14 @@ type StepRecords = Record<string, StepRecord | undefined>
 interface ProgressResponse {
   tours: Record<string, { steps?: StepRecords } | undefined>
   next_tour_id: string | null
-  /** When this subject signed up for updates; absent on an older worker. */
+  /** When the operator signed up for product updates; never the address. */
   subscribed_at?: number | null
 }
 
 type StepState = 'complete' | 'active' | 'pending'
 
-const DOT_TONE: Record<StepState, 'ok' | 'accent' | 'ink'> = { complete: 'ok', active: 'accent', pending: 'ink' }
-
 /** Guide initial setup and react to the console's workspace layout changes. */
 export function OnboardingPage({ host, onRequestClose, conversationId }: { host: Host } & PageRenderProps) {
-  const removeButton = <RemoveOnboarding host={host} onClose={onRequestClose} />
   const [tour, setTour] = useState<Tour | null>(null)
   const [records, setRecords] = useState<StepRecords>({})
   const [open, setOpen] = useState<string | null>(null)
@@ -122,7 +115,9 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
   // of looking like the click was missed.
   const [opening, setOpening] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Signed up for product updates, now or on an earlier visit.
   const [subscribed, setSubscribed] = useState(false)
+  const removeButton = <RemoveOnboarding host={host} onClose={onRequestClose} />
 
   useEffect(() => {
     let live = true
@@ -398,35 +393,41 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
   if (!tour) {
     return (
       <Frame onClose={onRequestClose} footer={removeButton}>
-        <Skeleton className="ob-skeleton" />
-        <Skeleton className="ob-skeleton" />
-        <Skeleton className="ob-skeleton" />
+        <div className="ob-loading" role="status" aria-busy="true" aria-label="Loading the tour">
+          <Skeleton className="ob-skeleton ob-skeleton--bar" />
+          <Skeleton className="ob-skeleton" />
+          <Skeleton className="ob-skeleton" />
+          <Skeleton className="ob-skeleton" />
+        </div>
       </Frame>
     )
   }
 
   const active = firstIncomplete(tour, records)
+  const total = tour.steps.length
   const done = tour.steps.filter((step) => records[step.id]?.status === 'complete').length
+  const activeIndex = active ? tour.steps.indexOf(active) : -1
 
   return (
     <Frame title={tour.title} description={tour.description} onClose={onRequestClose} footer={removeButton}>
-      <div className="ob-progress">
-        <div
-          className="ob-bar"
-          role="progressbar"
-          aria-valuenow={done}
-          aria-valuemin={0}
-          aria-valuemax={tour.steps.length}
-        >
-          <span style={{ width: `${(done / tour.steps.length) * 100}%` }} />
-        </div>
-        <span className="ob-count">
-          {done} of {tour.steps.length} done
-        </span>
-        <Button variant="ghost" size="sm" onClick={reset} disabled={done === 0}>
+      <header className="ob-head">
+        <p className="ob-head-count" role="status">
+          {done === total ? (
+            'All steps done'
+          ) : (
+            <>
+              Step <span className="ob-num">{activeIndex + 1}</span> of <span className="ob-num">{total}</span>
+            </>
+          )}
+          <span className="ob-head-done">
+            {' · '}
+            <span className="ob-num">{done}</span> done
+          </span>
+        </p>
+        <Button variant="ghost" size="sm" className="ob-ghost" onClick={reset} disabled={done === 0}>
           Restart
         </Button>
-      </div>
+      </header>
 
       <ol className="ob-steps">
         {tour.steps.map((step, index) => {
@@ -435,93 +436,111 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
             record?.status === 'complete' ? 'complete' : step.id === active?.id ? 'active' : 'pending'
           // A step opens once it is reached. Reading ahead would give away a
           // box the operator has not been shown yet.
-          const locked = state === 'pending'
-          const isOpen = open === step.id
+          const reached = state !== 'pending'
+          const isOpen = reached && open === step.id
+          const last = index === total - 1
+          const indicator = (
+            <span className="ob-indicator" data-state={state} aria-hidden="true">
+              <span className="ob-indicator-num">{index + 1}</span>
+              <Check className="ob-indicator-check" strokeWidth={2.5} />
+              {state === 'active' ? <span className={`ob-indicator-pulse ${uiClasses.pulse}`} /> : null}
+            </span>
+          )
           return (
             <li
               key={step.id}
-              className={`ob-step ${uiClasses.card}`}
+              className="ob-step"
               data-state={state}
-              data-selected={state === 'active' || undefined}
+              data-open={isOpen || undefined}
+              aria-current={state === 'active' ? 'step' : undefined}
             >
-              <button
-                type="button"
-                className={uiClasses.listItem}
-                aria-expanded={isOpen}
-                disabled={locked}
-                onClick={() => setOpen(isOpen ? null : step.id)}
-              >
-                <StatusDot className="ob-dot" tone={DOT_TONE[state]} pulse={state === 'active'} data-state={state} />
-                <span className="ob-index">{index + 1}</span>
-                <span className={uiClasses.listItemContent}>
-                  <span className={uiClasses.listItemTitle}>{step.title}</span>
-                </span>
-                <span className={uiClasses.listItemMeta}>{stateLabel(state, step)}</span>
-              </button>
-              {isOpen ? (
-                <div className={`ob-open ${uiClasses.motionPanel}`}>
-                  <p className="ob-body">{step.body}</p>
-                  {step.condition?.prompt && state !== 'complete' ? (
-                    <Copyable label="or ask the agent" text={step.condition.prompt} />
-                  ) : null}
-                  {step.id === 'stay-in-touch' ? (
-                    // Signed up: the step says so. Otherwise (first visit, or
-                    // reopened after a Skip) the form with both buttons; on a
-                    // done step Skip just folds the step away.
-                    <StayInTouch
-                      host={host}
-                      subscribed={subscribed}
-                      onSubscribed={() => {
-                        setSubscribed(true)
-                        if (state !== 'complete') complete(step.id)
-                      }}
-                      onSkip={() => (state === 'complete' ? setOpen(null) : complete(step.id))}
-                    />
-                  ) : null}
-                  {step.on_closed && closed === step.on_closed.screen ? (
-                    <p className="ob-note" role="status">
-                      {step.on_closed.body}
-                    </p>
-                  ) : null}
-                  {step.ask && state !== 'complete' ? (
-                    <div className="ob-stack">
-                      <Button className="ob-start" onClick={() => ask(step)}>
-                        {step.ask.label}
-                      </Button>
-                      <pre className="ob-pre">{step.ask.text}</pre>
-                    </div>
-                  ) : null}
-                  {state !== 'complete' && !step.condition && !step.ask && step.id !== 'stay-in-touch' ? (
-                    step.screen && opened !== step.id ? (
-                      <Button className="ob-start" disabled={opening === step.id} onClick={() => openScreen(step)}>
-                        {opening === step.id ? 'Opening…' : `Open ${step.screen}`}
-                      </Button>
-                    ) : (
-                      // Once the panel is up, the button changes colour, so
-                      // the operator sees that it is now the way onward and
-                      // not the way back.
-                      <Button
-                        className={`ob-start${step.screen ? ' ob-continue' : ''}`}
-                        onClick={() => complete(step.id)}
-                      >
-                        {step.screen ? 'Continue' : 'Got it'}
-                      </Button>
-                    )
-                  ) : null}
+              {last ? null : (
+                <span className="ob-line" data-done={state === 'complete' || undefined} aria-hidden="true" />
+              )}
+              {reached ? (
+                <button
+                  type="button"
+                  className="ob-row"
+                  aria-expanded={isOpen}
+                  onClick={() => setOpen(isOpen ? null : step.id)}
+                >
+                  {indicator}
+                  <span className="ob-title">{step.title}</span>
+                  <StateChip state={state} step={step} record={record} />
+                  <ChevronDown className={`ob-chevron ${uiClasses.icon}`} aria-hidden="true" />
+                </button>
+              ) : (
+                <div className="ob-row">
+                  {indicator}
+                  <span className="ob-title">{step.title}</span>
+                  <span className="ob-sr">not reached yet</span>
                 </div>
-              ) : null}
-              {/* A step's trigger appears once the step is reached, and stays
-                  after it is done. Ahead of the front it is hidden: the row
-                  would give away what the step is about to ask for. */}
-              {step.condition && state !== 'pending' ? (
-                <ol className="ob-conditions">
-                  <ConditionRow
-                    condition={step.condition}
-                    fired={record?.fired ?? null}
-                    open={openSub === step.id}
-                    onToggle={() => setOpenSub(openSub === step.id ? null : step.id)}
-                  />
-                </ol>
+              )}
+              {reached ? (
+                // Mounted while the step is reached and folded with a grid
+                // track, so opening is a transition that can reverse midway
+                // rather than an entrance that restarts from nothing.
+                <div className="ob-panel" data-open={isOpen || undefined} inert={!isOpen}>
+                  <div className="ob-panel-clip">
+                    <div className="ob-panel-body ob-card">
+                      <p className="ob-body">{step.body}</p>
+                      {step.on_closed && closed === step.on_closed.screen ? (
+                        <p className="ob-note" role="status">
+                          {step.on_closed.body}
+                        </p>
+                      ) : null}
+                      {step.condition?.prompt && state !== 'complete' ? (
+                        <Copyable label="Or ask the agent" text={step.condition.prompt} />
+                      ) : null}
+                      {step.id === 'stay-in-touch' ? (
+                        <StayInTouch
+                          host={host}
+                          subscribed={subscribed}
+                          onSubscribed={() => {
+                            setSubscribed(true)
+                            if (state !== 'complete') complete(step.id)
+                          }}
+                          onSkip={() => (state === 'complete' ? setOpen(null) : complete(step.id))}
+                        />
+                      ) : null}
+                      {step.ask && state !== 'complete' ? (
+                        <div className="ob-ask">
+                          <div className="ob-actions">
+                            <Button className="ob-action" onClick={() => ask(step)}>
+                              {step.ask.label}
+                            </Button>
+                          </div>
+                          <Prompt text={step.ask.text} />
+                        </div>
+                      ) : null}
+                      {state !== 'complete' && !step.condition && !step.ask && step.id !== 'stay-in-touch' ? (
+                        <div className="ob-actions">
+                          {step.screen && opened !== step.id ? (
+                            <Button
+                              className="ob-action"
+                              disabled={opening === step.id}
+                              onClick={() => openScreen(step)}
+                            >
+                              {opening === step.id ? 'Opening…' : `Open ${step.screen}`}
+                            </Button>
+                          ) : (
+                            <Button className="ob-action" onClick={() => complete(step.id)}>
+                              {step.screen ? 'Continue' : 'Got it'}
+                            </Button>
+                          )}
+                        </div>
+                      ) : null}
+                      {step.condition ? (
+                        <ConditionRow
+                          condition={step.condition}
+                          fired={record?.fired ?? null}
+                          open={openSub === step.id}
+                          onToggle={() => setOpenSub(openSub === step.id ? null : step.id)}
+                        />
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
               ) : null}
             </li>
           )
@@ -532,41 +551,45 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
 }
 
 /**
- * Leave the tour for good from any step: remove the onboarding worker from
- * the compose project (its page and functions go with it), then close this
- * pane. The same move the Clean up step asks the agent for, without the
- * agent. A failed removal keeps the pane open and says why.
+ * What a step's button sends, shown as the message it is: a label, then the
+ * text. The operator reads it before pressing, and never has to type it.
  */
-function RemoveOnboarding({ host, onClose }: { host: Host; onClose?: () => void }) {
-  const [removing, setRemoving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const remove = useCallback(async () => {
-    setRemoving(true)
-    setError(null)
-    try {
-      await host.iii.trigger('compose::remove', { workers: ['onboarding'] })
-    } catch (err) {
-      setError(`Could not remove the onboarding worker: ${errorMessage(err)}`)
-      setRemoving(false)
-      return
-    }
-    if (onClose) onClose()
-    else await host.iii.trigger('console::workspace::close', { screen: 'ext:onboarding' }).catch(() => undefined)
-  }, [host, onClose])
+function Prompt({ text }: { text: string }) {
   return (
-    <>
-      {error ? <StatusPanel variant="alert" headline={error} role="alert" /> : null}
-      <Button variant="ghost" size="sm" onClick={remove} disabled={removing}>
-        {removing ? 'Removing…' : 'Close and Remove Onboarding'}
-      </Button>
-    </>
+    <div className="ob-prompt">
+      <span className="ob-prompt-head">
+        <span className="ob-prompt-label">Message to the agent</span>
+      </span>
+      <p className="ob-prompt-text">{text}</p>
+    </div>
+  )
+}
+
+/** The row's trailing state, as the dialog's chips: a dot for a live one. */
+function StateChip({ state, step, record }: { state: StepState; step: Step; record: StepRecord | undefined }) {
+  if (state === 'pending') return null
+  if (state === 'complete') {
+    return (
+      <span className="ob-chip" data-tone="ok">
+        <Check className="ob-chip-mark" strokeWidth={2.5} aria-hidden="true" />
+        {record ? `Done ${when(record.at)}` : 'Done'}
+      </span>
+    )
+  }
+  return (
+    <span className="ob-chip" data-tone={step.condition ? 'live' : 'now'}>
+      {step.condition ? <span className={`ob-chip-dot ${uiClasses.pulse}`} aria-hidden="true" /> : null}
+      {step.condition ? 'Waiting' : 'Now'}
+    </span>
   )
 }
 
 /**
- * A step's condition as its own row under the step: the trigger, its state,
- * and — once it fires — the payload the engine delivered, the way the harness
- * shows a function call. Collapsed until the operator wants the detail.
+ * What the step is waiting on, as one line at the foot of its panel: the
+ * state, the trigger, and — once it fires — when. Expanding it shows the
+ * binding and the payload the engine delivered, the way the harness shows a
+ * function call. It opens when the operator opens it: a trigger that fires
+ * does not throw its payload over whatever is being read.
  */
 function ConditionRow({
   condition,
@@ -581,36 +604,76 @@ function ConditionRow({
 }) {
   const hasConfig = Object.keys(condition.config ?? {}).length > 0
   return (
-    <li className={uiClasses.card}>
-      <button type="button" className={uiClasses.listItem} aria-expanded={open} onClick={onToggle}>
+    <div className="ob-condition" data-fired={fired ? 'true' : undefined}>
+      <button type="button" className="ob-disclosure" aria-expanded={open} onClick={onToggle}>
         <ChevronRight className={`ob-caret ${uiClasses.icon}`} data-open={open || undefined} aria-hidden="true" />
-        <Chip tone={fired ? 'success' : 'accent'}>
-          {fired ? null : <StatusDot tone="accent" pulse />}
-          {fired ? 'trigger fired' : 'waiting'}
-        </Chip>
-        <code className="ob-code">{fired?.trigger_type ?? condition.type}</code>
-        <span className={uiClasses.listItemContent}>
-          <span className={uiClasses.listItemDescription}>{fired ? when(fired.at) : condition.label}</span>
-        </span>
-      </button>
-      {open ? (
-        <div className={`ob-open ${uiClasses.motionPanel}`}>
-          {hasConfig ? (
-            <p className="ob-note">
-              binding <code className="ob-code">{JSON.stringify(condition.config)}</code>
-            </p>
-          ) : null}
+        <span className="ob-disclosure-label">Trigger</span>
+        <span className="ob-disclosure-summary">
           {fired ? (
-            <pre className="ob-pre">{format(fired.payload)}</pre>
+            <>
+              <Check className="ob-chip-mark" strokeWidth={2.5} aria-hidden="true" />
+              Fired {when(fired.at)}
+            </>
           ) : (
             <>
-              <p className="ob-note">{condition.label}</p>
-              {condition.hint ? <pre className="ob-pre">{condition.hint}</pre> : null}
+              <span className={`ob-chip-dot ${uiClasses.pulse}`} aria-hidden="true" />
+              {condition.label}
             </>
           )}
+        </span>
+      </button>
+      <div className="ob-panel ob-panel--inner" data-open={open || undefined} inert={!open}>
+        <div className="ob-panel-clip">
+          <div className="ob-panel-body ob-terminal">
+            <span className="ob-terminal-line">
+              <span className="ob-terminal-prompt">$</span> {fired?.trigger_type ?? condition.type}
+              {hasConfig ? <span className="ob-terminal-dim"> {JSON.stringify(condition.config)}</span> : null}
+            </span>
+            {fired ? (
+              <pre className="ob-pre">{format(fired.payload)}</pre>
+            ) : (
+              <span className="ob-terminal-dim"># {condition.hint ?? condition.label}</span>
+            )}
+          </div>
         </div>
-      ) : null}
-    </li>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The way out, under the scroller on every step: take the tour's worker out
+ * of the project and close the pane. The compose file is named from what
+ * the daemon loaded, so a daemon started elsewhere still finds its project.
+ */
+function RemoveOnboarding({ host, onClose }: { host: Host; onClose?: () => void }) {
+  const [removing, setRemoving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const remove = useCallback(async () => {
+    setRemoving(true)
+    setError(null)
+    try {
+      const list = await host.iii.trigger<{ projects?: { file?: string }[] }>('compose::list', {}).catch(() => null)
+      const file = list?.projects?.find((project) => project.file)?.file
+      await host.iii.trigger('compose::remove', {
+        ...(file ? { file } : {}),
+        workers: ['onboarding'],
+      })
+    } catch (err) {
+      setError(`Could not remove the onboarding worker: ${errorMessage(err)}`)
+      setRemoving(false)
+      return
+    }
+    if (onClose) onClose()
+    else await host.iii.trigger('console::workspace::close', { screen: 'ext:onboarding' }).catch(() => undefined)
+  }, [host, onClose])
+  return (
+    <>
+      {error ? <StatusPanel variant="alert" headline={error} role="alert" /> : null}
+      <Button variant="ghost" size="sm" className="ob-ghost" onClick={remove} disabled={removing}>
+        {removing ? 'Removing…' : 'Close and remove the tour'}
+      </Button>
+    </>
   )
 }
 
@@ -642,11 +705,6 @@ const SOCIALS: { label: string; href: string; path: string }[] = [
 /**
  * The signup box, then the same places as links. The worker does the POST —
  * the page only carries the address the operator typed.
- */
-/**
- * The signup step's own way onward: `Sign me up` subscribes and closes the
- * step, `Skip` closes it without an email. It replaces the generic `Got it`.
- * Once the worker has a signup on record the step only says so.
  */
 function StayInTouch({
   host,
@@ -697,18 +755,18 @@ function StayInTouch({
             aria-label="Email address for product updates"
             className="ob-grow"
           />
-          <Button type="submit" disabled={status === 'sending'}>
+          <Button type="submit" className="ob-action" disabled={status === 'sending'}>
             {status === 'sending' ? 'Sending…' : 'Sign me up'}
           </Button>
-          <Button type="button" variant="ghost" onClick={onSkip} disabled={status === 'sending'}>
+          <Button type="button" variant="ghost" className="ob-ghost" onClick={onSkip} disabled={status === 'sending'}>
             Skip
           </Button>
         </form>
       )}
       {status === 'failed' ? <StatusPanel variant="alert" headline={message} role="alert" /> : null}
-      <div className="ob-row">
+      <div className="ob-links">
         {SOCIALS.map((social) => (
-          <Button key={social.label} asChild variant="icon" size="icon">
+          <Button key={social.label} asChild variant="icon" size="icon" className="ob-link">
             <a href={social.href} target="_blank" rel="noreferrer" aria-label={social.label} title={social.label}>
               {/* Brand marks lucide does not ship. lint-allow no-inline-svg */}
               <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={uiClasses.icon}>
@@ -727,14 +785,25 @@ function StayInTouch({
 function Copyable({ label, text }: { label: string; text: string }) {
   const { state, copy } = useCopyFlash(text)
   return (
-    <div className="ob-stack">
-      <div className="ob-row">
-        <span className="ob-note">{label}</span>
-        <Button variant="ghost" size="sm" onClick={copy}>
-          {state === 'copied' ? 'copied' : 'copy'}
+    <div className="ob-prompt">
+      <div className="ob-prompt-head">
+        <span className="ob-prompt-label">{label}</span>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="ob-ghost"
+          onClick={copy}
+          aria-label={state === 'copied' ? 'Copied' : 'Copy'}
+        >
+          {state === 'copied' ? (
+            <Check className={uiClasses.icon} aria-hidden="true" />
+          ) : (
+            <Copy className={uiClasses.icon} aria-hidden="true" />
+          )}
+          {state === 'copied' ? 'Copied' : 'Copy'}
         </Button>
       </div>
-      <pre className="ob-pre">{text}</pre>
+      <p className="ob-prompt-text">{text}</p>
     </div>
   )
 }
@@ -751,7 +820,7 @@ function Frame({
   /** The console's own pane close, from `PageRenderProps.onRequestClose`.
       Absent when the page is not rendered in a closable pane. */
   onClose?: () => void
-  /** Pinned under the scroller, so it stays in view on every step. */
+  /** Pinned under the scroller, right-aligned: the way out. */
   footer?: React.ReactNode
   children: React.ReactNode
 }) {
@@ -781,14 +850,8 @@ function firstIncomplete(tour: Tour, records: StepRecords): Step | undefined {
   return tour.steps.find((step) => records[step.id]?.status !== 'complete')
 }
 
-function stateLabel(state: StepState, step: Step): string {
-  if (state === 'complete') return 'complete'
-  if (state === 'pending') return 'not reached'
-  return step.condition ? 'waiting' : 'in progress'
-}
-
 function when(at: number): string {
-  return new Date(at).toLocaleTimeString()
+  return new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
 function format(payload: unknown): string {

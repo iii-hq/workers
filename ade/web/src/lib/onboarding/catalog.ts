@@ -20,6 +20,12 @@ export interface SubscriptionProvider {
   title: string
   /** What the user pays with, in their words. */
   plan: string
+  /** Installs the CLI when it is not on this machine. */
+  install: string
+  /** Signs the CLI in to the subscription. */
+  signIn: string
+  /** What to do once `signIn` is running, when it is not the whole story. */
+  signInNote?: string
 }
 
 export const SUBSCRIPTION_PROVIDERS: readonly SubscriptionProvider[] = [
@@ -29,6 +35,9 @@ export const SUBSCRIPTION_PROVIDERS: readonly SubscriptionProvider[] = [
     worker: 'provider-claude-code',
     title: 'Claude Code',
     plan: 'your Claude Pro or Max plan',
+    install: 'npm install -g @anthropic-ai/claude-code',
+    signIn: 'claude',
+    signInNote: 'then type /login',
   },
   {
     toolId: 'codex',
@@ -36,6 +45,8 @@ export const SUBSCRIPTION_PROVIDERS: readonly SubscriptionProvider[] = [
     worker: 'provider-openai-codex',
     title: 'Codex',
     plan: 'your ChatGPT plan',
+    install: 'npm install -g @openai/codex',
+    signIn: 'codex login',
   },
 ]
 
@@ -203,17 +214,31 @@ export { SECRETS_WORKER } from '@/lib/secrets'
 export const ROUTER_CONFIGURATION = 'llm-router'
 
 /** Where Judge already works for the harness once it is installed. */
-export const JUDGE_USES: readonly { where: string; what: string }[] = [
+export type JudgeUseId = 'search' | 'repair' | 'browser'
+
+export const JUDGE_USES: readonly {
+  id: JudgeUseId
+  where: string
+  /** The one-line version, for the setup step. */
+  short: string
+  what: string
+}[] = [
   {
+    id: 'search',
     where: 'Function search',
+    short: 'Picks the right function for a call',
     what: 'picks the right function among everything your backend registers, instead of stuffing every schema into the prompt',
   },
   {
+    id: 'repair',
     where: 'Argument repair',
+    short: 'Fixes a broken tool call before it fails',
     what: 'fixes a malformed tool call before it fails, without another round trip to the model',
   },
   {
-    where: 'Browser automation',
+    id: 'browser',
+    where: 'Browser actions',
+    short: 'Chooses what to click on a page',
     what: 'chooses which element on a page an agent should act on',
   },
 ]
@@ -221,7 +246,7 @@ export const JUDGE_USES: readonly { where: string; what: string }[] = [
 export type PillarId =
   | 'extensible'
   | 'discoverable'
-  | 'optimized'
+  | 'observable'
   | 'composable'
   | 'reactive'
 
@@ -236,29 +261,37 @@ export const PILLARS: readonly Pillar[] = [
   {
     id: 'extensible',
     title: 'Extensible',
-    line: 'The harness builds tools for itself — a kanban board for its own work, a stories view to review your UI.',
+    line: 'Your agent builds the tools it needs, from kanban boards to UI previews.',
   },
   {
     id: 'discoverable',
     title: 'Discoverable',
-    line: 'It runs inside your backend: it knows every function your workers register and can call them directly.',
+    line: 'Every function in your backend is a tool your agent can find and use.',
   },
   {
-    id: 'optimized',
-    title: 'Optimized',
-    line: 'Judge finds the function or skill that matters for each step, so prompts stay small and precise.',
+    id: 'observable',
+    title: 'Observable',
+    line: 'Follow every model turn, function call, and trigger in one place.',
   },
   {
     id: 'composable',
     title: 'Composable',
-    line: 'Most things already exist in the registry at workers.iii.dev — add a worker instead of building it.',
+    line: 'Add ready-made workers from the registry at workers.iii.dev.',
   },
   {
     id: 'reactive',
     title: 'Reactive',
-    line: 'Agents subscribe to triggers and wake the moment something happens — no polling loops.',
+    line: 'Agents respond to events as they happen, without polling loops.',
   },
 ]
+
+/**
+ * The guided tour that follows setup: the `onboarding` worker's page walks
+ * through the ADE stage by stage, with the models just connected. The Ready
+ * step adds the worker when the tour is accepted, then opens its page.
+ */
+export const TOUR_WORKER = 'onboarding'
+export const TOUR_PAGE = 'onboarding'
 
 /** The console configuration key that overrides worker sources (development). */
 export const WORKER_SOURCES_KEY = 'onboarding'

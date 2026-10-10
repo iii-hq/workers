@@ -1,10 +1,17 @@
-import { Boxes, Check, CircleAlert, LoaderCircle } from 'lucide-react'
+import {
+  Check,
+  ChevronRight,
+  Circle,
+  CircleAlert,
+  Copy,
+  LoaderCircle,
+} from 'lucide-react'
+import { useReducedMotion } from 'motion/react'
 import type * as React from 'react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { KeyChoice } from '@/components/secrets/KeyChoice'
-import { Chip } from '@/components/ui/Chip'
-import { Eyebrow } from '@/components/ui/Eyebrow'
-import { describeStep, type PlanStep } from '@/lib/onboarding/plan'
+import { copyTextToClipboard } from '@/lib/clipboard'
+import { describeStep, type PlanStep, stepDetail } from '@/lib/onboarding/plan'
 import {
   DEFAULT_ENV_FILE,
   defaultKeyInput,
@@ -24,7 +31,11 @@ export interface StepPosition {
   total: number
 }
 
-/** `Step 2 of 3 · Optional`, from the wizard's actual list of steps. */
+/**
+ * `Step 2 of 3 · Optional`, from the wizard's actual list of steps. The rail
+ * already shows the position, so the header keeps only the "Optional" part
+ * (as its badge); the function stays for steps written against it.
+ */
 export function stepEyebrow(
   position: StepPosition | undefined,
   optional = false,
@@ -36,32 +47,35 @@ export function stepEyebrow(
   return parts.length > 0 ? parts.join(' · ') : undefined
 }
 
+/** The step's title, one line under it, and a small action at its right. */
 export function StepHeader({
   eyebrow,
   title,
+  badge,
   lead,
   action,
 }: {
+  /** A `stepEyebrow`; only its "Optional" survives, as the badge. */
   eyebrow?: string
   title: string
+  /** A short tag beside the title: "Optional". */
+  badge?: React.ReactNode
   lead?: React.ReactNode
   action?: React.ReactNode
 }) {
+  const tag = badge ?? (eyebrow?.includes('Optional') ? 'Optional' : null)
   return (
-    <header className="flex flex-col gap-2">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-1.5">
-          {eyebrow ? (
-            <Eyebrow className="text-[12px] text-ink">{eyebrow}</Eyebrow>
-          ) : null}
-          <h2 className="text-pretty font-sans text-[22px] font-semibold leading-tight tracking-[-0.01em] text-ink">
-            {title}
-          </h2>
-        </div>
+    <header className="flex flex-col gap-1">
+      <div className="flex min-h-8 items-center justify-between gap-3">
+        <h2 className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-balance font-sans text-base font-semibold leading-6 tracking-[-0.01em] text-ink">
+          {eyebrow ? <span className="sr-only">{eyebrow}. </span> : null}
+          {title}
+          {tag ? <StatusChip tone="neutral">{tag}</StatusChip> : null}
+        </h2>
         {action}
       </div>
       {lead ? (
-        <p className="max-w-[60ch] text-pretty font-sans text-[14px] leading-relaxed text-ink">
+        <p className="max-w-[60ch] text-pretty font-sans text-sm leading-5 text-neutral-600 dark:text-neutral-400">
           {lead}
         </p>
       ) : null}
@@ -71,18 +85,26 @@ export function StepHeader({
 
 export function Section({
   title,
+  hint,
   aside,
   children,
 }: {
   title: string
+  /** One quiet line beside the title. */
+  hint?: React.ReactNode
   aside?: React.ReactNode
   children: React.ReactNode
 }) {
   return (
     <section className="flex flex-col gap-2" aria-label={title}>
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="font-sans text-[13px] font-semibold text-ink">
-          {title}
+      <div className="flex min-h-5 flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+        <h3 className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 font-sans text-[13px] font-medium leading-5 text-ink">
+          <span className="shrink-0">{title}</span>
+          {hint ? (
+            <span className="truncate text-xs font-normal text-neutral-500 dark:text-neutral-400">
+              {hint}
+            </span>
+          ) : null}
         </h3>
         {aside}
       </div>
@@ -91,35 +113,34 @@ export function Section({
   )
 }
 
-/** A quiet framed group of rows: one background step, no outline. */
+/** A bordered group of rows with a hairline between each. */
 export function Rows({
   children,
   className,
+  as: Tag = 'div',
 }: {
   children: React.ReactNode
   className?: string
+  as?: 'div' | 'ul'
 }) {
   return (
-    <div
+    <Tag
       className={cn(
-        'flex flex-col overflow-hidden rounded-md bg-surface [&>*+*]:shadow-[0_-1px_0_var(--color-edge)]',
+        'flex flex-col divide-y divide-neutral-200 overflow-hidden rounded-lg border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-950',
         className,
       )}
     >
       {children}
-    </div>
+    </Tag>
   )
 }
 
 export type Tone = 'ok' | 'warn' | 'neutral' | 'accent'
 
-const CHIP_TONE = {
-  ok: 'success',
-  warn: 'warning',
-  neutral: 'neutral',
-  accent: 'accent',
-} as const
-
+/**
+ * A small status: a bordered tag, with a dot for `ok` and `warn` so the
+ * state reads from the shape before the text.
+ */
 export function StatusChip({
   tone,
   children,
@@ -128,181 +149,284 @@ export function StatusChip({
   children: React.ReactNode
 }) {
   return (
-    <Chip tone={CHIP_TONE[tone]} className="shrink-0">
-      {children}
-    </Chip>
-  )
-}
-
-/**
- * A worker setup adds, said plainly every time: iii is composable, and each
- * new worker brings new behavior to the project.
- */
-export function NewWorkerNote({
-  workers,
-  className,
-}: {
-  workers: readonly string[]
-  className?: string
-}) {
-  if (workers.length === 0) return null
-  return (
     <span
-      className={cn(
-        'flex items-start gap-1.5 font-sans text-[13px] leading-5 text-ink',
-        className,
-      )}
+      data-tone={tone}
+      className="inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-neutral-200 bg-neutral-50 px-2 font-sans text-[11px] font-medium leading-none text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300"
     >
-      <Boxes className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden />
-      <span>
-        {workers.length === 1 ? 'Adds a new worker: ' : 'Adds new workers: '}
-        {workers.map((worker, index) => (
-          <span key={worker}>
-            {index > 0 ? ', ' : null}
-            <span className="font-mono text-[12px] font-medium">{worker}</span>
-          </span>
-        ))}
-      </span>
+      {tone === 'ok' || tone === 'warn' ? (
+        <span
+          aria-hidden
+          className={cn(
+            'size-1.5 rounded-full',
+            tone === 'ok' ? 'bg-ok' : 'bg-warn',
+          )}
+        />
+      ) : null}
+      {children}
     </span>
   )
 }
 
-/** What a plan will do, read before the button is pressed. */
-export function PlanPreview({
-  steps,
-  title = 'What happens when you continue',
+/**
+ * A section that starts folded: the label and a one-line summary stay in
+ * view, the body grows open below. Detail that helps a curious reader but
+ * is not needed to finish setup lives in one of these.
+ */
+export function Disclosure({
+  label,
+  summary,
+  open: openProp,
+  defaultOpen = false,
+  onOpenChange,
+  children,
 }: {
-  steps: readonly PlanStep[]
-  title?: string
+  label: React.ReactNode
+  /** Trailing one-liner, visible while folded. */
+  summary?: React.ReactNode
+  open?: boolean
+  defaultOpen?: boolean
+  onOpenChange?: (open: boolean) => void
+  children: React.ReactNode
 }) {
-  if (steps.length === 0) return null
+  const [ownOpen, setOwnOpen] = useState(defaultOpen)
+  const open = openProp ?? ownOpen
+  const body = useId()
+  const toggle = () => {
+    setOwnOpen(!open)
+    onOpenChange?.(!open)
+  }
   return (
-    <Section title={title}>
-      <ol className="flex flex-col gap-2 rounded-md bg-card-highlight px-3 py-3">
-        {steps.map((step, index) => (
-          <li
-            // biome-ignore lint/suspicious/noArrayIndexKey: a plan is rebuilt whole; its order is its identity
-            key={index}
-            className="flex gap-3 font-sans text-[14px] text-ink"
-          >
-            <span className="w-4 shrink-0 text-right font-mono text-[12px] leading-5 tabular-nums text-ink">
-              {index + 1}
-            </span>
-            <span className="flex min-w-0 flex-col gap-1">
-              <span className="leading-5">{describeStep(step)}</span>
-              {step.kind === 'add-workers' ? (
-                <span className="flex flex-col gap-0.5">
-                  {step.workers.map((worker) => (
-                    <span
-                      key={worker}
-                      className="text-[13px] leading-relaxed text-ink"
-                    >
-                      <span className="font-mono text-[12px] font-medium">
-                        {worker}
-                      </span>
-                      {step.why[worker] ? ` — ${step.why[worker]}` : null}
-                    </span>
-                  ))}
-                </span>
-              ) : null}
-            </span>
-          </li>
-        ))}
-      </ol>
-      {steps.some((step) => step.kind === 'add-workers') ? (
-        <p className="font-sans text-[13px] leading-relaxed text-ink">
-          iii is composable: each worker adds new behavior to your project, and
-          stays listed in <span className="font-mono">worker-compose.yaml</span>
-          .
-        </p>
-      ) : null}
-    </Section>
+    <div className="flex flex-col">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={body}
+        onClick={toggle}
+        className="group -mx-1.5 flex h-8 items-center gap-1.5 rounded-md px-1.5 text-left font-sans text-[13px] font-medium text-neutral-600 transition-colors duration-150 hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus dark:text-neutral-400"
+      >
+        <ChevronRight
+          aria-hidden
+          className={cn(
+            'size-4 shrink-0 transition-transform duration-200 ease-[var(--motion-ease-standard)] motion-reduce:transition-none',
+            open && 'rotate-90',
+          )}
+        />
+        <span className="shrink-0">{label}</span>
+        {summary ? (
+          <span className="ml-auto flex min-w-0 items-center gap-1.5 pl-3 text-xs font-normal">
+            {summary}
+          </span>
+        ) : null}
+      </button>
+      <div
+        id={body}
+        className="grid grid-rows-[0fr] opacity-0 transition-[grid-template-rows,opacity] duration-200 ease-[var(--motion-ease-standard)] data-open:grid-rows-[1fr] data-open:opacity-100 motion-reduce:transition-none"
+        data-open={open || undefined}
+        inert={!open}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <div className="pt-1.5">{children}</div>
+        </div>
+      </div>
+    </div>
   )
 }
 
 /**
- * Every action the wizard ran in this part of setup, live: the worker being
- * added, the key stored, the check that it answers. The log is `role="log"`
- * so assistive tech hears each line as it lands.
+ * Everything the engine does for this step, as a terminal would print it:
+ * the operations that ran (live while they run), then the ones queued for
+ * the button. Folded by default with the latest line as its summary, so
+ * the status stays visible without the detail crowding the choices; it
+ * opens by itself when something fails.
  */
-export function ActivityLog({
+export function EngineLog({
+  plan,
   entries,
-  title = 'Activity',
+  running,
 }: {
+  /** Operations the primary action will run, not started yet. */
+  plan: readonly PlanStep[]
   entries: readonly ActivityEntry[]
-  title?: string
+  running: boolean
 }) {
-  const list = useRef<HTMLOListElement>(null)
+  const reduceMotion = useReducedMotion()
   const last = entries[entries.length - 1]
+  const failed = last?.status === 'failed'
+  const [open, setOpen] = useState(false)
+  const list = useRef<HTMLOListElement>(null)
   const moving = last ? `${last.id}:${last.status}` : ''
-  // Keep the line that is moving in view: a worker being added is the thing
-  // to watch, not the form above it.
   useEffect(() => {
-    if (!moving) return
+    if (failed) setOpen(true)
+  }, [failed])
+  // Keep the line that is moving in view while the log is open.
+  useEffect(() => {
+    if (!moving || !open) return
     list.current?.lastElementChild?.scrollIntoView({
       block: 'nearest',
-      behavior: 'smooth',
+      behavior: reduceMotion ? 'instant' : 'smooth',
     })
-  }, [moving])
-  if (entries.length === 0) return null
+  }, [moving, open, reduceMotion])
+  const queued = running ? [] : plan
+  if (entries.length === 0 && queued.length === 0) return null
+
+  const doneCount = entries.filter((entry) => entry.status === 'done').length
+  const summary =
+    running && last ? (
+      <>
+        <LogGlyph status="running" />
+        <span className="truncate text-ink">{last.title}</span>
+      </>
+    ) : failed && last ? (
+      <>
+        <LogGlyph status="failed" />
+        <span className="truncate text-ink">{last.title}</span>
+      </>
+    ) : queued.length > 0 ? (
+      <span className="font-mono tabular-nums text-neutral-500 dark:text-neutral-400">
+        {queued.length} queued
+      </span>
+    ) : (
+      <>
+        <LogGlyph status="done" />
+        <span className="font-mono tabular-nums text-neutral-500 dark:text-neutral-400">
+          {doneCount} done
+        </span>
+      </>
+    )
+
   return (
-    <Section title={title}>
+    <Disclosure
+      label="Engine log"
+      summary={summary}
+      open={open}
+      onOpenChange={setOpen}
+    >
       <ol
         ref={list}
         role="log"
         aria-live="polite"
-        className="flex flex-col gap-1 rounded-md bg-bg px-3 py-2.5"
+        aria-label="Engine log"
+        className={cn(TERMINAL_SURFACE, 'gap-3 text-[13px] leading-5')}
       >
         {entries.map((entry) => (
-          <li
-            key={entry.id}
-            className="onboarding-rise flex items-start gap-2.5 py-1"
-          >
-            <ActivityIcon status={entry.status} />
-            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <span className="flex items-baseline justify-between gap-3">
-                <span
-                  className={cn(
-                    'font-sans text-[14px]',
-                    entry.status === 'failed'
-                      ? 'text-alert-strong'
-                      : 'text-ink',
-                  )}
-                >
-                  {entry.title}
-                </span>
-                {typeof entry.progress === 'number' ? (
-                  <span className="shrink-0 font-mono text-[12px] tabular-nums text-ink">
-                    {Math.round(entry.progress * 100)}%
-                  </span>
-                ) : null}
-              </span>
+          <li key={entry.id} className="flex gap-2.5">
+            <LogGlyph status={entry.status} terminal />
+            <LogLine
+              title={entry.title}
+              command={entry.detail}
+              tone={entry.status === 'failed' ? 'failed' : 'ink'}
+              trailing={
+                typeof entry.progress === 'number'
+                  ? `${Math.round(entry.progress * 100)}%`
+                  : undefined
+              }
+            >
               {entry.note ? (
                 <span
                   className={cn(
-                    'break-words font-sans text-[13px]',
+                    'break-words',
                     entry.status === 'failed'
-                      ? 'text-alert-strong'
-                      : 'text-ink',
+                      ? 'text-rose-700 dark:text-rose-300'
+                      : 'text-neutral-600 dark:text-neutral-400',
                   )}
                 >
+                  {entry.status === 'failed' ? '✗ ' : '→ '}
                   {entry.note}
                 </span>
               ) : null}
-            </span>
+            </LogLine>
           </li>
         ))}
+        {queued.map((step, index) => {
+          const title = describeStep(step)
+          const detail = stepDetail(step)
+          return (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a plan is rebuilt whole; its order is its identity
+            <li key={`queued-${index}`} className="flex gap-2.5">
+              <LogGlyph status="queued" terminal />
+              <LogLine title={title} command={detail} tone="queued">
+                {step.kind === 'add-workers'
+                  ? step.workers.map((worker) => (
+                      <span key={worker} className="text-neutral-500">
+                        # {worker}: {step.why[worker]}
+                      </span>
+                    ))
+                  : null}
+              </LogLine>
+            </li>
+          )
+        })}
       </ol>
-    </Section>
+    </Disclosure>
   )
 }
 
-function ActivityIcon({ status }: { status: ActivityEntry['status'] }) {
+function LogLine({
+  title,
+  command,
+  tone,
+  trailing,
+  children,
+}: {
+  title: string
+  command?: string
+  tone: 'ink' | 'queued' | 'failed'
+  trailing?: string
+  children?: React.ReactNode
+}) {
+  return (
+    <span className="flex min-w-0 flex-1 flex-col">
+      <span className="flex items-baseline justify-between gap-3">
+        <span
+          className={cn(
+            'font-sans text-[13px] font-medium',
+            tone === 'queued'
+              ? 'text-neutral-500 dark:text-neutral-400'
+              : 'text-ink',
+          )}
+        >
+          {title}
+        </span>
+        {trailing ? (
+          <span className="shrink-0 tabular-nums text-neutral-500">
+            {trailing}
+          </span>
+        ) : null}
+      </span>
+      {command ? (
+        <span className="break-all text-neutral-600 dark:text-neutral-400">
+          <span aria-hidden className="select-none text-neutral-500">
+            ${' '}
+          </span>
+          {command}
+        </span>
+      ) : null}
+      {children}
+    </span>
+  )
+}
+
+/**
+ * The status mark: theme ink on the disclosure row, fixed colours on the
+ * terminal surface (`terminal`), which is dark in both themes.
+ */
+function LogGlyph({
+  status,
+  terminal = false,
+}: {
+  status: ActivityEntry['status'] | 'queued'
+  terminal?: boolean
+}) {
+  const className = 'mt-0.5 size-4 shrink-0'
   if (status === 'running') {
     return (
       <LoaderCircle
         aria-label="running"
-        className="iii-ui-spin mt-0.5 size-4 shrink-0 text-accent"
+        className={cn(
+          className,
+          'animate-spin motion-reduce:animate-none',
+          'text-ink',
+        )}
       />
     )
   }
@@ -310,17 +434,160 @@ function ActivityIcon({ status }: { status: ActivityEntry['status'] }) {
     return (
       <CircleAlert
         aria-label="failed"
-        className="mt-0.5 size-4 shrink-0 text-alert"
+        className={cn(
+          className,
+          terminal ? 'text-rose-700 dark:text-rose-400' : 'text-alert',
+        )}
       />
     )
   }
-  return <Check aria-label="done" className="mt-0.5 size-4 shrink-0 text-ok" />
+  if (status === 'queued') {
+    return (
+      <Circle
+        aria-label="queued"
+        className={cn(
+          className,
+          'p-[3px]',
+          terminal
+            ? 'text-neutral-600'
+            : 'text-neutral-400 dark:text-neutral-500',
+        )}
+      />
+    )
+  }
+  return (
+    <Check
+      aria-label="done"
+      className={cn(
+        className,
+        terminal ? 'text-emerald-700 dark:text-emerald-400' : 'text-ink',
+      )}
+    />
+  )
 }
 
 /**
- * The wizard's key chooser: the console's shared `KeyChoice`, then one plain
- * line on where the key goes, so storing it is never a surprise.
+ * What a step did, for steps written against upstream's `ActivityLog`: the
+ * engine log with nothing queued.
  */
+export function ActivityLog({
+  entries,
+}: {
+  entries: readonly ActivityEntry[]
+  title?: string
+}) {
+  return (
+    <EngineLog
+      plan={[]}
+      entries={entries}
+      running={entries.some((entry) => entry.status === 'running')}
+    />
+  )
+}
+
+/**
+ * A terminal block: one or more shell commands to run elsewhere, on the
+ * neutral code surface (a light panel in the light theme, a raised dark one
+ * in the dark theme), with the program, its flags and a trailing comment
+ * coloured the way a shell would. Each line has a round copy button
+ * that shows a check for a moment once the command is on the clipboard.
+ */
+export function Terminal({ children }: { children: React.ReactNode }) {
+  return (
+    <div className={cn(TERMINAL_SURFACE, 'gap-1.5 text-sm leading-6')}>
+      {children}
+    </div>
+  )
+}
+
+/** The code surface: one neutral step off the dialog in either theme. */
+const TERMINAL_SURFACE =
+  'flex flex-col rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 font-code text-ink dark:border-neutral-800 dark:bg-neutral-900'
+
+export function CommandLine({
+  command,
+  note,
+}: {
+  command: string
+  /** What to do after the command, as a shell comment. */
+  note?: string
+}) {
+  const [copied, setCopied] = useState(false)
+  const timer = useRef<number | null>(null)
+  useEffect(
+    () => () => {
+      if (timer.current != null) window.clearTimeout(timer.current)
+    },
+    [],
+  )
+  const copy = () => {
+    void copyTextToClipboard(command).then((ok) => {
+      if (!ok) return
+      setCopied(true)
+      if (timer.current != null) window.clearTimeout(timer.current)
+      timer.current = window.setTimeout(() => setCopied(false), 1500)
+    })
+  }
+  const [program, ...rest] = command.split(' ')
+  return (
+    <div className="flex min-w-0 items-center gap-3 h-4">
+      <code className="min-w-0 flex-1 truncate">
+        <span aria-hidden className="select-none text-neutral-500">
+          ${' '}
+        </span>
+        <span className="font-medium text-emerald-700 dark:text-emerald-400">
+          {program}
+        </span>
+        {rest.map((token, index) => (
+          <span
+            // biome-ignore lint/suspicious/noArrayIndexKey: tokens of one fixed string
+            key={index}
+            className={
+              token.startsWith('-')
+                ? 'text-sky-700 dark:text-sky-300'
+                : 'text-ink'
+            }
+          >
+            {' '}
+            {token}
+          </span>
+        ))}
+        {note ? (
+          <span className="text-neutral-500">
+            {'  '}# {note}
+          </span>
+        ) : null}
+      </code>
+      <button
+        type="button"
+        onClick={copy}
+        aria-label={`Copy ${command}`}
+        className="relative -my-1 flex size-8 shrink-0 items-center justify-center rounded-full text-neutral-500 transition-colors duration-150 hover:bg-neutral-200/70 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-50 dark:text-neutral-400 dark:hover:bg-white/10 dark:focus-visible:ring-offset-neutral-900"
+      >
+        <Copy
+          aria-hidden
+          className={cn(
+            'absolute size-4 transition-[opacity,transform] duration-150 ease-[var(--motion-ease-standard)] motion-reduce:transition-none',
+            copied ? 'scale-25 opacity-0' : 'scale-100 opacity-100',
+          )}
+        />
+        <Check
+          aria-hidden
+          strokeWidth={2.5}
+          className={cn(
+            'absolute size-4 text-emerald-700 transition-[opacity,transform] duration-150 ease-[var(--motion-ease-standard)] motion-reduce:transition-none dark:text-emerald-400',
+            copied ? 'scale-100 opacity-100' : 'scale-25 opacity-0',
+          )}
+        />
+        <span role="status" className="sr-only">
+          {copied ? 'Copied' : ''}
+        </span>
+      </button>
+    </div>
+  )
+}
+
+/** The wizard's key chooser: the console's shared `KeyChoice`. */
 export function KeyField({
   envVar,
   detection,
@@ -329,6 +596,7 @@ export function KeyField({
   keysUrl,
   stores,
   envFile,
+  className,
 }: {
   envVar: string
   detection: KeyDetection | null
@@ -339,9 +607,15 @@ export function KeyField({
   stores?: readonly KeyStore[]
   /** The secrets worker's env file, by name. */
   envFile?: string
+  className?: string
 }) {
   return (
-    <div className="flex flex-col gap-2 px-3 pb-3">
+    <div
+      className={cn(
+        'flex flex-col gap-2.5 text-[13px] [&_a]:text-[13px] [&_button]:text-[13px] [&_fieldset]:gap-2 [&_input]:rounded-md [&_input]:border-neutral-200 [&_input]:bg-white [&_input]:font-sans dark:[&_input]:border-neutral-800 dark:[&_input]:bg-neutral-950',
+        className,
+      )}
+    >
       <KeyChoice
         name={envVar}
         detection={detection}
@@ -351,7 +625,7 @@ export function KeyField({
         stores={stores}
         envFile={envFile}
       />
-      <p className="font-sans text-[12px] leading-relaxed text-ink-faint">
+      <p className="font-sans text-xs leading-4 text-neutral-500 dark:text-neutral-400">
         {keyStore(value ?? defaultKeyInput(detection)) === 'env'
           ? `Kept in this project's ${envFile ?? DEFAULT_ENV_FILE} file.`
           : 'Stored encrypted on this machine. It never lands in a file you commit.'}
@@ -366,18 +640,29 @@ export { defaultKeyInput, keyInputReady }
 export function StepLayout({
   children,
   footer,
+  centered = false,
 }: {
   children: React.ReactNode
   footer: React.ReactNode
+  /** Sit a short step in the middle of the dialog instead of at the top. */
+  centered?: boolean
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 @2xl:px-8">
-        <div className="mx-auto flex max-w-[640px] flex-col gap-6">
+      <div
+        data-setup-scroll
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-5 pb-5 [scrollbar-gutter:stable] [scrollbar-width:thin] @md:px-6 @lg:pt-1"
+      >
+        <div
+          className={cn(
+            'flex w-full flex-col gap-5',
+            centered && 'min-h-full justify-center',
+          )}
+        >
           {children}
         </div>
       </div>
-      <footer className="flex shrink-0 items-center justify-between gap-2 bg-panel-raised px-5 py-3 shadow-[0_-1px_0_var(--color-edge)] @2xl:px-8">
+      <footer className="flex h-14 shrink-0 items-center justify-between gap-2 border-t border-neutral-200 bg-white px-4 dark:border-neutral-800 dark:bg-neutral-950 @md:px-5">
         {footer}
       </footer>
     </div>
