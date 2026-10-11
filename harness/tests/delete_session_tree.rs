@@ -1998,9 +1998,14 @@ async fn finalized_turn_records_drop_what_only_a_running_turn_reads() {
     // finalize_cancelled: a stop on a parked turn with no external call.
     ordinary_stop(&stack, "parent").await;
     // finalize_failed: an unexpected step error.
-    harness::turn_loop::fail_turn(&stack.deps, "child1", "t_child1", "boom")
-        .await
-        .unwrap();
+    harness::turn_loop::fail_turn(
+        &stack.deps,
+        "child1",
+        "t_child1",
+        &harness::error::HarnessError::Internal("boom".into()),
+    )
+    .await
+    .unwrap();
     for (id, status) in [
         ("parent", "cancelled"),
         ("child1", "failed"),
@@ -2381,14 +2386,9 @@ async fn stopped_and_failed_steps_finalize_without_the_prompt_body() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("missing prompt body"), "{error}");
-    harness::turn_loop::fail_turn(
-        &stack.deps,
-        "grandchild1",
-        "t_grandchild1",
-        &error.to_string(),
-    )
-    .await
-    .unwrap();
+    harness::turn_loop::fail_turn(&stack.deps, "grandchild1", "t_grandchild1", &error)
+        .await
+        .unwrap();
     assert_eq!(turn(&stack, "grandchild1")["status"], "failed");
     for id in ["child1", "grandchild1"] {
         assert_eq!(
