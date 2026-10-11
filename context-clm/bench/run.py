@@ -2,6 +2,7 @@
 
   python run.py grid regression|long-pilot|long > episodes.json
   python run.py estimate episodes.json [--prior RUN ...]
+  python run.py verify-long RUN
   python run.py run RUN episodes.json --yes [--workers 6] [--prior RUN ...]
 
 Episode: {arm: clm|sum|base|default, task, level, seed, model, budget?, effort?, max_cost_usd?, tag?}.
@@ -14,6 +15,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -47,6 +49,75 @@ SHELL_HINT = (
     "shell::exec runs no shell and starts in your working directory: pass cwd for a subdirectory, and for pipes, "
     'redirection or heredocs run {"command":"bash","args":["-c","<command>"]}.'
 )
+LONG = {
+    "http-brace": {
+        "base": "e5775dbf9",
+        "fix": "6183f131d",
+        "paths": ["http", "crates", "rust-toolchain.toml"],
+        "tests": ["http/src/trigger.rs", "http/tests/e2e_routing.rs", "http/tests/webhook_listener.rs"],
+        "restore": ["http/tests/e2e_routing.rs", "http/tests/webhook_listener.rs"],
+        "solution": ["http/src/types.rs"],
+        "required": [
+            "trigger::tests::register_trigger_with_brace_parameters_normalizes_and_matches",
+            "trigger::tests::register_trigger_with_multiple_brace_parameters_extracts_all_params",
+            "trigger::tests::register_trigger_brace_and_colon_routes_conflict",
+            "trigger::tests::register_trigger_with_brace_parameters_unregisters_cleanly",
+        ],
+        "cwd": "http",
+        "grade": [
+            ["cargo", "test", "--locked", "--lib"],
+            ["cargo", "test", "--locked", "--test", "webhook_listener", "--test", "e2e_routing"],
+        ],
+        "prompt": (
+            "Your working directory contains `http/`, the Rust source of the iii HTTP worker, and `crates/`, shared "
+            "crates it builds against. HTTP triggers register a route from `api_path` in the trigger config; a path "
+            "parameter is written `:name` (for example `/tasks/:tid`). Add support for the OpenAPI spelling: a whole "
+            "path segment `{name}` must behave exactly like `:name` (`/tasks/{tid}` registers, conflicts and matches "
+            "like `/tasks/:tid`, and the parameter is extracted as `tid`). A segment that is not exactly `{name}` "
+            "(such as `{tid`, `tid}`, `{}` or `{a{b}`) stays a literal. Tests describing this are already in the tree "
+            "and fail today: `register_trigger_with_brace_parameters_*`, `register_trigger_with_multiple_brace_*` and "
+            "`register_trigger_brace_and_colon_routes_conflict` in `http/src/trigger.rs`, and "
+            "`brace_parameter_route_serves_and_extracts_path_params` in `http/tests/webhook_listener.rs`. Do not "
+            "change those tests. Run tests from `http/` with `cargo test --locked` (a cold build takes about a "
+            "minute). When `cargo test --locked --lib` and `cargo test --locked --test webhook_listener` pass, reply "
+            "with a short summary of your change."
+        ),
+    },
+    "ide-update-op": {
+        "base": "0466e008a",
+        "fix": "325a19129",
+        "paths": ["ide", "crates", "rust-toolchain.toml"],
+        "exclude": ["ide/ui"],
+        "stubs": ["ide/ui/dist/page.js", "ide/ui/dist/styles.css", "ide/ui/dist/xterm.js"],
+        "tests": ["ide/tests/code_update_ops.rs", "ide/tests/code_golden_errors.rs"],
+        "restore": ["ide/tests/code_update_ops.rs", "ide/tests/code_golden_errors.rs"],
+        "solution": [
+            "ide/src/code/functions/create_file.rs",
+            "ide/src/code/functions/mod.rs",
+            "ide/src/code/functions/update_file.rs",
+        ],
+        "required": [],
+        "cwd": "ide",
+        "grade": [
+            ["cargo", "test", "--locked", "--test", "code_update_ops", "--test", "code_golden_errors"],
+            ["cargo", "test", "--locked", "--lib", "update_file"],
+        ],
+        "prompt": (
+            "Your working directory contains `ide/`, the Rust source of the iii ide worker, and `crates/`, shared "
+            "crates it builds against. Bug report: models sometimes leave out the `op` tag on an entry of `ops[]` in "
+            "a `coder::update-file` request, and the whole request is rejected. Fix it: when an op has no `op` key, "
+            "infer the op only if its keys fit exactly one `UpdateOp` variant (every required key of that variant "
+            "present and no key outside it); otherwise reject the request with an error that names the entry as "
+            "`ops[i]`. Record the inferred ops on `UpdateFileSpec` as `inferred_ops` and report them in that file's "
+            "result as `notice`. The failing tests are `ide/tests/code_update_ops.rs` (its "
+            "`missing_op_is_inferred_through_the_handler` pins the exact notice text) and "
+            "`ide/tests/code_golden_errors.rs`; both fail to compile today. Do not change those tests. From `ide/`, "
+            "`cargo test --locked --test code_update_ops --test code_golden_errors` must pass and "
+            "`cargo test --locked --lib update_file` must keep passing. When they do, reply with a short summary of "
+            "your change."
+        ),
+    },
+}
 # Mean cost per episode in the spike's run-03 report, keyed arm|task|level|model.
 PRIORS = {
     f"{arm}|{task}|{level}|{model}": cost
@@ -288,6 +359,54 @@ def untar(blob, root, exclude=()):
     subprocess.run(["tar", "-x", "-C", str(root), *[f"--exclude={x}" for x in exclude]], input=blob, check=True)
 
 
+def build_snapshot(name, root):
+    t = LONG[name]
+    untar(git("archive", t["base"], *t["paths"]), root, t.get("exclude", ()))
+    for f in t["tests"]:
+        (root / f).write_bytes(git("show", f"{t['fix']}:{f}"))
+    for f in t.get("stubs", ()):
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).touch()
+
+
+def grade_code(name, root):
+    """Restore the protected tests, then run the grading commands: (passed, missing required tests, log)."""
+    t = LONG[name]
+    for f in t["restore"]:
+        (root / f).write_bytes(git("show", f"{t['fix']}:{f}"))
+    cwd, log = root / t["cwd"], []
+    missing = []
+    if t["required"]:
+        listed = subprocess.run(
+            ["cargo", "test", "--locked", "--lib", "--", "--list"], cwd=cwd, capture_output=True, text=True, timeout=900
+        ).stdout
+        missing = [n for n in t["required"] if f"{n}: test" not in listed]
+    ok = not missing
+    for cmd in t["grade"]:
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=900)
+        log.append(f"$ {' '.join(cmd)} -> {r.returncode}\n{(r.stdout + r.stderr)[-3000:]}")
+        ok = ok and r.returncode == 0
+    return ok, missing, "\n".join(log)
+
+
+def verify_long(run):
+    good = True
+    for name, t in LONG.items():
+        root = run / "verify" / name
+        shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True)
+        build_snapshot(name, root)
+        before, _, log_before = grade_code(name, root)
+        for f in t["solution"]:
+            (root / f).write_bytes(git("show", f"{t['fix']}:{f}"))
+        after, missing, log_after = grade_code(name, root)
+        print(json.dumps({"task": name, "fails_before": not before, "passes_after": after, "missing": missing}))
+        if before or not after:
+            good = False
+            print(log_before if before else log_after)
+    return 0 if good else 1
+
+
 def episode(run, ep):
     arm, task, model, level = ep["arm"], ep["task"], ep["model"], ep.get("level", 0)
     sid = sid_of(ep)
@@ -331,7 +450,8 @@ def episode(run, ep):
         fns = " ".join(sorted(t["id"] for t in truth))
         msgs = [FIELDS_TASK.format(dirs=top, what=what, n=len(truth), fns=fns) + "\n\n" + SHELL_HINT]
     else:
-        raise ValueError(f"{sid}: unknown task {task!r}")
+        build_snapshot(task, root)
+        msgs = [LONG[task]["prompt"] + "\n\n" + SHELL_HINT]
 
     turns, stops, status, err = [], [], "completed", None
     for i, m in enumerate(msgs):
@@ -381,6 +501,10 @@ def episode(run, ep):
                 text = "".join(b.get("text", "") for b in m.get("content") or [] if b.get("type") == "text").strip()
                 final = text or final
         out.update(score_fields(final, truth))
+    else:
+        passed, missing, log = grade_code(task, root)
+        out.update({"score": 1.0 if passed else 0.0, "missing_tests": missing})
+        (run / "results" / f"{sid}.grade.log").write_text(log)
 
     usage = [(e.get("message") or {}).get("usage") or {} for e in entries]
     usage = [u for u in usage if u]
@@ -414,6 +538,7 @@ def main(argv):
     e = sub.add_parser("estimate")
     e.add_argument("episodes")
     e.add_argument("--prior", nargs="*", default=[])
+    sub.add_parser("verify-long").add_argument("run")
     r = sub.add_parser("run")
     r.add_argument("run")
     r.add_argument("episodes")
@@ -424,6 +549,8 @@ def main(argv):
     if a.cmd == "grid":
         print(json.dumps(grid(a.name), indent=1))
         return 0
+    if a.cmd == "verify-long":
+        return verify_long(Path(a.run).resolve())
     eps = json.loads(Path(a.episodes).read_text())
     if a.cmd == "run":  # episodes with a result are skipped, so they are not priced either
         done = {p.stem for p in Path(a.run, "results").glob("*.json")}

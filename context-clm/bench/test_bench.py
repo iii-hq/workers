@@ -126,6 +126,22 @@ def test_strategy_status_reads_the_nested_shape():
         run.call = real
 
 
+def test_long_snapshots():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        run.build_snapshot("http-brace", root)
+        assert "normalize_api_path" not in (root / "http/src/types.rs").read_text()
+        assert "fn register_trigger_brace_and_colon_routes_conflict" in (root / "http/src/trigger.rs").read_text()
+        assert (root / "crates/config-client/src/initialization.rs").exists()
+        assert (root / "rust-toolchain.toml").exists()
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        run.build_snapshot("ide-update-op", root)
+        assert "inferred_ops" in (root / "ide/tests/code_update_ops.rs").read_text()
+        assert "inferred_ops" not in (root / "ide/src/code/functions/update_file.rs").read_text()
+        assert (root / "ide/ui/dist/page.js").exists() and not (root / "ide/ui/package.json").exists()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
