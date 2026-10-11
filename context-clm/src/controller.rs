@@ -46,9 +46,23 @@ pub struct Cfg {
 }
 
 impl Cfg {
+    /// A session override at or below the reserve leaves no room (limit 0 would
+    /// silently disable every budget action), so it is ignored and logged.
     pub fn from_config(c: &ClmConfig, budget_override: Option<u64>) -> Cfg {
+        let budget = match budget_override {
+            Some(x) if x <= c.reserve_tokens => {
+                tracing::warn!(
+                    budget_override = x,
+                    reserve_tokens = c.reserve_tokens,
+                    "ignoring the session budget override: it leaves no room above the reserve"
+                );
+                c.budget_tokens
+            }
+            Some(x) => x,
+            None => c.budget_tokens,
+        };
         Cfg {
-            budget: budget_override.unwrap_or(c.budget_tokens),
+            budget,
             reserve: c.reserve_tokens,
             nudge_ratios: c.nudge_ratios.clone(),
             persistent: c.persistent_nudge,
@@ -349,6 +363,25 @@ fn head_tail(s: &str, head: usize, tail: usize) -> Option<(&str, &str, usize)> {
     Some((&s[..at(head)], &s[at(n - tail)..], n - head - tail))
 }
 
+/// Like [`head_tail`] but `head` and `tail` are byte budgets: the head ends on
+/// a char boundary at or below `head`, the tail starts on one at or above
+/// `s.len() - tail`. The elided count is still in chars (the cap note says
+/// "characters").
+fn head_tail_bytes(s: &str, head: usize, tail: usize) -> Option<(&str, &str, usize)> {
+    if s.len() <= head + tail {
+        return None;
+    }
+    let mut h = head;
+    while !s.is_char_boundary(h) {
+        h -= 1;
+    }
+    let mut t = s.len() - tail;
+    while !s.is_char_boundary(t) {
+        t += 1;
+    }
+    Some((&s[..h], &s[t..], s[h..t].chars().count()))
+}
+
 /// Output longer than `max_chars` keeps 5000 chars of head and tail (half of
 /// `max_chars` each when that is smaller) behind the too-long hint.
 pub fn truncate_observation(out: &str, max_chars: usize) -> String {
@@ -362,16 +395,18 @@ pub fn truncate_observation(out: &str, max_chars: usize) -> String {
 }
 
 /// Cap the newest tool output to the room left under the limit (`room` is in
-/// ruler tokens and may be negative). Text that does not fit keeps a head and
-/// a tail sized to the room, never less than 256 chars each. `limit` is the
-/// enforced limit (`Cfg::limit()`), the figure the cut note shows the model.
+/// ruler tokens and may be negative). The fit check and the cut both count
+/// UTF-8 bytes (the unit of `raw_count`), so multi-byte text honours the room
+/// too. Text that does not fit keeps a head and a tail sized to the room,
+/// never less than 256 bytes each. `limit` is the enforced limit
+/// (`Cfg::limit()`), the figure the cut note shows the model.
 pub fn cap_newest(text: &str, room: i64, limit: u64) -> String {
     if (text.len() as i64 + 1) / 4 <= room {
         return text.to_string();
     }
     let keep = (room.max(128) - 48).max(128) as usize;
     let half = (keep * 4).max(256) / 2;
-    match head_tail(text, half, half) {
+    match head_tail_bytes(text, half, half) {
         Some((head, tail, elided)) => {
             format!("{head}\n\n{}\n\n{tail}", prompt::cap_note(elided, limit))
         }
@@ -435,6 +470,15 @@ mod tests {
             ..clm()
         };
         assert_eq!(tiny.limit(), 0);
+    }
+
+    #[test]
+    fn an_override_at_or_below_the_reserve_is_ignored() {
+        let c = ClmConfig::default();
+        assert_eq!(Cfg::from_config(&c, Some(2048)).budget, 65536);
+        assert_eq!(Cfg::from_config(&c, Some(0)).budget, 65536);
+        let kept = Cfg::from_config(&c, Some(2049));
+        assert_eq!((kept.budget, kept.limit()), (2049, 1));
     }
 
     #[test]
@@ -766,5 +810,60 @@ mod tests {
             "b".repeat(256)
         );
         assert_eq!(starved, want);
+    }
+
+    #[test]
+    fn a_limit_equal_to_the_rollback_margin_goes_straight_to_final() {
+        // limit = 4096 - 2048 = 2048 = retry_margin: the guard is `limit > margin`
+        let edge = Cfg {
+            budget: 4096,
+            ..clm()
+        };
+        assert_eq!(edge.limit(), edge.retry_margin);
+        let mut ctl = Ctl::default();
+        assert!(matches!(
+            evaluate(&edge, &mut ctl, 3000, 0, 4, H),
+            Decision::Final(_)
+        ));
+        assert_eq!((ctl.n_retry, ctl.consec), (0, 0));
+        // one token of limit more and the same step rolls back
+        let above = Cfg {
+            budget: 4097,
+            ..clm()
+        };
+        assert_eq!(
+            evaluate(&above, &mut Ctl::default(), 3000, 0, 4, H),
+            Decision::Rollback
+        );
+    }
+
+    #[test]
+    fn cap_newest_honours_the_room_for_multibyte_text() {
+        let room = 200;
+        let cases = [
+            ("é", 5000),  // 2 bytes
+            ("日", 5000), // 3 bytes
+            ("🦀", 5000), // 4 bytes
+        ];
+        for (unit, n) in cases {
+            let text = unit.repeat(n);
+            let out = cap_newest(&text, room, 30720);
+            assert!(out.len() < text.len(), "{unit}: not cut");
+            // the same bound the fit check uses, the cap note included
+            assert!(
+                (out.len() as i64 + 1) / 4 <= room,
+                "{unit}: {} bytes exceed the room",
+                out.len()
+            );
+            assert!(out.contains("characters removed"), "{unit}: no cap note");
+            assert!(out.starts_with(unit) && out.ends_with(unit));
+        }
+        // mixed widths cut mid-sequence of the byte target still land on boundaries
+        let mixed: String = "aé日🦀".repeat(2000);
+        let out = cap_newest(&mixed, room, 30720);
+        assert!((out.len() as i64 + 1) / 4 <= room);
+        // the starved floor (512 bytes of text) holds for wide chars too
+        let out = cap_newest(&"日".repeat(5000), -500, 30720);
+        assert!(out.len() <= 512 + 4 + prompt::cap_note(15000, 30720).len());
     }
 }
