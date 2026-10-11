@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -32,6 +34,7 @@ use crate::store::{CachedOut, SessionState, Store};
 use crate::types::{AssembleRequest, AssembleResponse, Block, Msg};
 
 pub const ASSEMBLE_ID: &str = "context-clm::assemble";
+pub const ON_SESSION_DELETED_ID: &str = "context-clm::on-session-deleted";
 /// Every step is delegated here for the model limits and the final fit.
 pub const CONTEXT_ASSEMBLE_ID: &str = "context::assemble";
 /// The spike's ceiling for the delegated hop (a long window is serialized twice).
@@ -651,6 +654,49 @@ pub(crate) fn state_error(sid: &str, e: &std::io::Error) -> Error {
         "context-clm: session state for {sid} could not be read or written: {e}. \
          Remove `context_strategy` from the session metadata to use the default."
     ))
+}
+
+/// `session::deleted` payload (only the field we read).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SessionDeletedEvent {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SessionDeletedAck {
+    pub ok: bool,
+    /// Whether the session had CLM state to remove (an unreadable state counts).
+    pub removed: bool,
+}
+
+/// Remove a deleted session's mirror, state and step log, under the session
+/// lock so a step in flight cannot write them back. Cleanup is best effort
+/// past the lock: a mirror that cannot be removed (a planted `.clm` link, an
+/// unreadable state that names no root) is logged and the state and log are
+/// still deleted, so the ack stays `ok`.
+pub async fn on_session_deleted<D>(
+    deps: &Deps<D>,
+    event: SessionDeletedEvent,
+) -> Result<SessionDeletedAck, Error> {
+    let sid = event.session_id;
+    let lock = deps.locks.get(&sid);
+    let serialized = lock.lock().await;
+    let loaded = deps.store.load(&sid);
+    if let Err(e) = &loaded {
+        tracing::warn!(session_id = %sid, error = %e, "context-clm: unreadable state removed without its mirror");
+    }
+    let removed = !matches!(loaded, Ok(None));
+    if let Some(root) = loaded.ok().flatten().and_then(|s| s.root) {
+        if let Err(e) = remove_mirror(Path::new(&root), &sid) {
+            tracing::warn!(session_id = %sid, %root, error = %e, "context-clm: mirror removal failed; state and step log are removed anyway");
+        }
+    }
+    deps.store.remove(&sid).map_err(|e| state_error(&sid, &e))?;
+    // Forget the entry only after the guard is gone and the files are: a step
+    // holding the old mutex must not overlap one on a fresh mutex.
+    drop(serialized);
+    deps.locks.forget(&sid);
+    Ok(SessionDeletedAck { ok: true, removed })
 }
 
 #[cfg(test)]
@@ -1457,5 +1503,105 @@ mod tests {
             "mirror I/O stops; the projection is kept"
         );
         assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn session_deleted_removes_mirror_state_and_step_log() {
+        let (dir, root, d) = setup(ClmConfig::default());
+        assemble(&d, request(&[user("task")], Some(&root), 1))
+            .await
+            .unwrap();
+        let log = dir.path().join(format!("state/log/{}.jsonl", safe_id(SID)));
+        assert!(log.is_file());
+        assert!(read_mirror(&root, SID).unwrap().is_some());
+
+        let event = || SessionDeletedEvent {
+            session_id: SID.into(),
+        };
+        let ack = on_session_deleted(&d, event()).await.unwrap();
+        assert_eq!(
+            ack,
+            SessionDeletedAck {
+                ok: true,
+                removed: true
+            }
+        );
+        assert!(read_mirror(&root, SID).unwrap().is_none());
+        assert!(d.store.load(SID).unwrap().is_none());
+        assert!(!log.exists());
+        // A redelivery finds nothing and still acknowledges.
+        let again = on_session_deleted(&d, event()).await.unwrap();
+        assert_eq!(
+            again,
+            SessionDeletedAck {
+                ok: true,
+                removed: false
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_deleted_survives_a_planted_clm_link() {
+        let (dir, root, d) = setup(ClmConfig::default());
+        assemble(&d, request(&[user("task")], Some(&root), 1))
+            .await
+            .unwrap();
+        let log = dir.path().join(format!("state/log/{}.jsonl", safe_id(SID)));
+        // The agent swaps `.clm` for a link to a file it planted elsewhere.
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let name = Path::new(&mirror_rel(SID)).file_name().unwrap().to_owned();
+        let planted = elsewhere.join(name);
+        std::fs::write(&planted, "PLANTED").unwrap();
+        std::fs::remove_dir_all(root.join(".clm")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join(".clm")).unwrap();
+        assert!(
+            crate::mirror::remove_mirror(&root, SID).is_err(),
+            "the link makes mirror removal fail"
+        );
+
+        let ack = on_session_deleted(
+            &d,
+            SessionDeletedEvent {
+                session_id: SID.into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            ack,
+            SessionDeletedAck {
+                ok: true,
+                removed: true
+            }
+        );
+        assert!(d.store.load(SID).unwrap().is_none());
+        assert!(!log.exists());
+        assert_eq!(std::fs::read_to_string(&planted).unwrap(), "PLANTED");
+    }
+
+    #[tokio::test]
+    async fn session_deleted_removes_an_unreadable_state() {
+        let (dir, _root, d) = setup(ClmConfig::default());
+        let state = dir.path().join(format!("state/{}.json", safe_id(SID)));
+        std::fs::create_dir_all(state.parent().unwrap()).unwrap();
+        std::fs::write(&state, "{ torn").unwrap();
+        let ack = on_session_deleted(
+            &d,
+            SessionDeletedEvent {
+                session_id: SID.into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            ack,
+            SessionDeletedAck {
+                ok: true,
+                removed: true
+            }
+        );
+        assert!(!state.exists());
     }
 }
