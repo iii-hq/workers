@@ -633,6 +633,9 @@ async fn seed_child(
         // language the root session pinned. A parentless spawn has none to
         // copy; a reused child session keeps its own (`send::seed_new`).
         response_language: parent_record.and_then(|p| p.options.response_language.clone()),
+        // Sub-agents never inherit a context strategy: a child assembles
+        // with context-manager whatever its parent session runs.
+        context_strategy: None,
         max_validation_retries: req
             .options
             .as_ref()
@@ -1123,6 +1126,7 @@ mod tests {
                 seeded_contracts: None,
                 system_prompt_ref: None,
                 response_language: None,
+                context_strategy: None,
             },
             calls: Default::default(),
             parent: None,

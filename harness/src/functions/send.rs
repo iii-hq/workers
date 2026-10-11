@@ -1357,6 +1357,8 @@ fn build_options(
         seeded_contracts: None,
         // Resolved in `start` once the message is normalised.
         response_language: None,
+        // Read from session metadata in `start`; settled in `seed_new`.
+        context_strategy: None,
     }
 }
 
@@ -2556,6 +2558,7 @@ mod tests {
             seeded_contracts: None,
             system_prompt_ref: None,
             response_language: None,
+            context_strategy: None,
         }
     }
 
