@@ -19,8 +19,8 @@ use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
 use crate::types::model::{Model, ProviderDefaults, ThinkingLevel};
 use crate::types::output::OutputContract;
 use crate::types::turn::{
-    FunctionContractLedgerEntry, FunctionPolicy, IdemRecord, ParentLink, ResponseLanguage,
-    SkillContext, TurnOptions, TurnRecord, TurnStatus,
+    ContextStrategy, FunctionContractLedgerEntry, FunctionPolicy, IdemRecord, ParentLink,
+    ResponseLanguage, SkillContext, TurnOptions, TurnRecord, TurnStatus,
 };
 
 /// `message` is either a plain string (sugar for a user text message) or a
@@ -317,6 +317,14 @@ async fn start_with_delivery_lock(
         Some(session_id) => writable_session_metadata(&session, session_id).await?,
         None => None,
     };
+    // The session's own metadata: the stored object for an existing session,
+    // else what this send creates it with.
+    let session_metadata = existing_metadata.as_ref().or(req
+        .session
+        .as_ref()
+        .and_then(|init| init.metadata.as_ref())
+        .and_then(Value::as_object));
+    let context_strategy = context_strategy_from_metadata(session_metadata)?;
     let idempotent = match &req.idempotency_key {
         Some(key) => crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?,
         None => None,
@@ -401,6 +409,7 @@ async fn start_with_delivery_lock(
         options.thinking_level = provider_default_thinking(deps, &options, provider_defaults).await;
     }
     options.functions = functions;
+    options.context_strategy = context_strategy.map(Box::new);
     if let (true, Some(prev)) = (inherits_prompt, prev.as_ref()) {
         inherit_prior_system_prompt(&mut options, &prev.options);
     }
@@ -455,14 +464,7 @@ async fn start_with_delivery_lock(
     let message = normalize_message(req.message)?;
     tag_send_span_with_message(&message);
     options.response_language = resolve_response_language(
-        existing_metadata
-            .as_ref()
-            .or(req
-                .session
-                .as_ref()
-                .and_then(|init| init.metadata.as_ref())
-                .and_then(Value::as_object))
-            .and_then(crate::language::from_metadata),
+        session_metadata.and_then(crate::language::from_metadata),
         prev.as_ref().map(|record| &record.options),
         &message,
     );
@@ -1542,6 +1544,52 @@ fn apply_default_filesystem_root(
     if let Some(root) = default_root {
         options.set_filesystem_root(root);
     }
+}
+
+/// The session's context strategy from its metadata: `context_strategy` (a
+/// name matching `^[a-z0-9-]{1,64}$`; absent or `"default"` = context-manager)
+/// and `context_budget_tokens` (a positive integer, read only with a
+/// strategy). A bad value fails the send before anything is written, never a
+/// silent fallback to the default.
+fn context_strategy_from_metadata(
+    metadata: Option<&serde_json::Map<String, Value>>,
+) -> Result<Option<ContextStrategy>, HarnessError> {
+    let Some(metadata) = metadata else {
+        return Ok(None);
+    };
+    let name = match metadata.get("context_strategy") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(name)) if name == "default" => return Ok(None),
+        Some(Value::String(name)) if is_context_strategy_name(name) => name.clone(),
+        Some(other) => {
+            return Err(HarnessError::InvalidRequest(format!(
+                "session metadata `context_strategy` must be \"default\" or a name matching \
+                 ^[a-z0-9-]{{1,64}}$, got {other}"
+            )))
+        }
+    };
+    let budget_tokens = match metadata.get("context_budget_tokens") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_u64().filter(|tokens| *tokens > 0).ok_or_else(|| {
+            HarnessError::InvalidRequest(format!(
+                "session metadata `context_budget_tokens` must be a positive integer, got {value}"
+            ))
+        })?),
+    };
+    Ok(Some(ContextStrategy {
+        name,
+        budget_tokens,
+        // Settled per turn in `seed_new`, once the root and policy are final.
+        effective: false,
+        skipped_reason: None,
+    }))
+}
+
+fn is_context_strategy_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// The turn CAS + merge double-check (harness.md § Concurrency & steering).
@@ -3544,5 +3592,99 @@ mod tests {
         .expect("validation must run before profile RPC")
         .unwrap_err();
         assert_eq!(error.code(), "harness/invalid_request");
+    }
+
+    fn metadata(value: serde_json::Value) -> serde_json::Map<String, Value> {
+        value.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn context_strategy_metadata_absent_or_default_means_context_manager() {
+        assert_eq!(context_strategy_from_metadata(None).unwrap(), None);
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({ "context_strategy": null }),
+            serde_json::json!({ "context_strategy": "default", "context_budget_tokens": 4096 }),
+            // A budget alone selects nothing and is not read without a strategy.
+            serde_json::json!({ "context_budget_tokens": "lots" }),
+        ] {
+            assert_eq!(
+                context_strategy_from_metadata(Some(&metadata(value.clone()))).unwrap(),
+                None,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn context_strategy_metadata_freezes_a_validated_name_and_budget() {
+        let strategy = context_strategy_from_metadata(Some(&metadata(serde_json::json!({
+            "context_strategy": "clm",
+            "context_budget_tokens": 65536
+        }))))
+        .unwrap();
+        assert_eq!(
+            strategy,
+            Some(ContextStrategy {
+                name: "clm".into(),
+                budget_tokens: Some(65_536),
+                effective: false,
+                skipped_reason: None,
+            })
+        );
+        let unbudgeted = context_strategy_from_metadata(Some(&metadata(
+            serde_json::json!({ "context_strategy": "a-1" }),
+        )))
+        .unwrap()
+        .unwrap();
+        assert_eq!(unbudgeted.budget_tokens, None);
+        let longest = "a".repeat(64);
+        assert!(context_strategy_from_metadata(Some(&metadata(
+            serde_json::json!({ "context_strategy": longest }),
+        )))
+        .unwrap()
+        .is_some());
+    }
+
+    #[test]
+    fn context_strategy_metadata_rejects_bad_names_and_budgets() {
+        for value in [
+            serde_json::json!({ "context_strategy": "" }),
+            serde_json::json!({ "context_strategy": "CLM" }),
+            serde_json::json!({ "context_strategy": "clm::assemble" }),
+            serde_json::json!({ "context_strategy": "../clm" }),
+            serde_json::json!({ "context_strategy": "a".repeat(65) }),
+            serde_json::json!({ "context_strategy": 7 }),
+            serde_json::json!({ "context_strategy": "clm", "context_budget_tokens": 0 }),
+            serde_json::json!({ "context_strategy": "clm", "context_budget_tokens": -5 }),
+            serde_json::json!({ "context_strategy": "clm", "context_budget_tokens": 1.5 }),
+            serde_json::json!({ "context_strategy": "clm", "context_budget_tokens": "65536" }),
+        ] {
+            let error = context_strategy_from_metadata(Some(&metadata(value.clone()))).unwrap_err();
+            assert_eq!(error.code(), "harness/invalid_request", "{value}: {error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_send_with_a_bad_context_strategy_fails_before_any_rpc() {
+        // `start` reads the strategy straight off the new session's metadata,
+        // ahead of every state / session RPC: the disconnected bus never gets
+        // a chance to answer, so the typed rejection is the wiring's proof.
+        let deps = crate::functions::subscribe::tests::disconnected_deps();
+        let mut req = agent_send_request(SendOptions::default());
+        req.session = Some(SessionInit {
+            metadata: Some(serde_json::json!({ "context_strategy": "CLM" })),
+            ..Default::default()
+        });
+        let error = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            start_with_delivery_lock(&deps, req, false),
+        )
+        .await
+        .expect("strategy validation must run before any RPC")
+        .map(|_| ())
+        .unwrap_err();
+        assert_eq!(error.code(), "harness/invalid_request");
+        assert!(error.to_string().contains("context_strategy"), "{error}");
     }
 }
