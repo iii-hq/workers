@@ -1,7 +1,9 @@
-//! `context-clm` binary: connect to the engine and serve until SIGINT/SIGTERM.
+//! `context-clm` binary: connect, register and read the `context-clm`
+//! configuration entry, follow its changes, serve until SIGINT/SIGTERM.
 use std::sync::Arc;
 
 use clap::Parser;
+use context_clm::configuration;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 use tracing_subscriber::EnvFilter;
@@ -48,6 +50,21 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             ..InitOptions::default()
         },
     ));
+    // `configuration` is a required boot dependency: a failed register/fetch
+    // aborts startup instead of serving on guessed settings.
+    configuration::register_config(&iii)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let config = configuration::new_cell(
+        configuration::fetch_config(&iii)
+            .await
+            .map_err(anyhow::Error::msg)?,
+    );
+    configuration::register_identity(&iii);
+    // Bound last so the reload closes over fully built state.
+    configuration::register_config_trigger(&iii, config)?
+        .run()
+        .await;
     let result = wait_for_shutdown().await;
     // shutdown() joins the SDK's connection thread so pending telemetry can
     // flush before main returns.
