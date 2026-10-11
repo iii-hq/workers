@@ -120,6 +120,31 @@ pub struct ResponseLanguage {
     pub name: String,
 }
 
+/// A session's non-default context strategy, read from its
+/// `context_strategy` / `context_budget_tokens` metadata by `harness::send`
+/// and frozen onto the turn. The name only ever selects
+/// `context-<name>::assemble`; it is never used as a function id itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ContextStrategy {
+    /// Validated `^[a-z0-9-]{1,64}$`, never `default`.
+    pub name: String,
+    /// Per-session budget for the strategy; `None` = its configured default.
+    pub budget_tokens: Option<u64>,
+    /// Decided once as the turn is seeded: false when the turn has no
+    /// filesystem root or may not call `shell::exec`, and it then assembles
+    /// with `context::assemble`.
+    pub effective: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_reason: Option<String>,
+}
+
+impl ContextStrategy {
+    /// The assembly function this strategy names.
+    pub fn function_id(&self) -> String {
+        format!("context-{}::assemble", self.name)
+    }
+}
+
 /// Per-send options frozen onto the turn record when it is created; they
 /// apply unchanged until the turn ends (a merged send never changes them,
 /// except to adopt a first `response_language`).
@@ -195,6 +220,14 @@ pub struct TurnOptions {
     /// spawned children. `None` until a message is long enough to tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_language: Option<ResponseLanguage>,
+    /// The session's context strategy, frozen when the turn is seeded.
+    /// `None` (also on every record written before this field) assembles
+    /// with context-manager. Boxed: records ride by value through the
+    /// completion tail on the SDK's default-size thread stack
+    /// (`turn_loop::stack_tests`), and an inline field overflows it in debug
+    /// builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_strategy: Option<Box<ContextStrategy>>,
     /// Cap on output-contract validation retries before finalising with a
     /// best-effort result (harness.md § Output contract).
     #[serde(default = "default_max_validation_retries")]
@@ -226,6 +259,11 @@ impl TurnOptions {
             .and_then(Value::as_object)
             .and_then(|scope| scope.get(FS_SCOPE_ROOT_KEY))
             .and_then(Value::as_str)
+    }
+
+    /// The context strategy this turn runs, when it is effective.
+    pub fn effective_context_strategy(&self) -> Option<&ContextStrategy> {
+        self.context_strategy.as_deref().filter(|s| s.effective)
     }
 
     /// Adopt `incoming`'s response language when this turn has none yet — a
@@ -586,6 +624,7 @@ pub(crate) mod tests {
                 seeded_contracts: None,
                 system_prompt_ref: None,
                 response_language: None,
+                context_strategy: None,
             },
             calls: Default::default(),
             parent: None,
@@ -958,5 +997,50 @@ pub(crate) mod tests {
         no_scope.metadata = Some(json!({ "other": "/ignored" }));
         assert!(!existing.refresh_filesystem_root_from(&no_scope));
         assert_eq!(existing.filesystem_root(), Some("/new"));
+    }
+
+    fn clm(effective: bool) -> ContextStrategy {
+        ContextStrategy {
+            name: "clm".into(),
+            budget_tokens: Some(16_384),
+            effective,
+            skipped_reason: (!effective).then(|| "no filesystem root".to_string()),
+        }
+    }
+
+    #[test]
+    fn context_strategy_is_absent_on_old_records_and_round_trips_when_set() {
+        let value = serde_json::to_value(record()).unwrap();
+        assert!(
+            value["options"].get("context_strategy").is_none(),
+            "{value}"
+        );
+        let decoded: TurnRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.options.context_strategy, None);
+
+        let mut r = record();
+        r.options.context_strategy = Some(Box::new(clm(false)));
+        let wire = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            wire["options"]["context_strategy"],
+            json!({
+                "name": "clm",
+                "budget_tokens": 16384,
+                "effective": false,
+                "skipped_reason": "no filesystem root"
+            })
+        );
+        assert_eq!(serde_json::from_value::<TurnRecord>(wire).unwrap(), r);
+    }
+
+    #[test]
+    fn context_strategy_selects_its_namespaced_function_only_when_effective() {
+        assert_eq!(clm(true).function_id(), "context-clm::assemble");
+        let mut options = record().options;
+        assert_eq!(options.effective_context_strategy(), None);
+        options.context_strategy = Some(Box::new(clm(false)));
+        assert_eq!(options.effective_context_strategy(), None);
+        options.context_strategy = Some(Box::new(clm(true)));
+        assert_eq!(options.effective_context_strategy(), Some(&clm(true)));
     }
 }
