@@ -18,6 +18,9 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 const FUNCTIONS: &[&str] = &[
     "context-clm::on-config-change",
     "context-clm::configuration-id",
+    "context-clm::assemble",
+    "context-clm::status",
+    "context-clm::on-session-deleted",
 ];
 
 struct Worker(Child);
@@ -120,10 +123,16 @@ async fn boots_configures_registers_and_exits_cleanly_on_sigterm() {
 
     let expected: BTreeSet<String> = FUNCTIONS.iter().map(|id| id.to_string()).collect();
     timeout(Duration::from_secs(10), async {
-        let (mut registered, mut seeded, mut reload, mut identity) =
-            (false, false, false, false);
+        let (mut registered, mut seeded, mut reload, mut identity, mut session_deleted) =
+            (false, false, false, false, false);
         let mut functions = BTreeSet::new();
-        while !(registered && seeded && reload && identity && functions == expected) {
+        while !(registered
+            && seeded
+            && reload
+            && identity
+            && session_deleted
+            && functions == expected)
+        {
             let frame = frames.recv().await.expect("worker stays connected");
             match frame["type"].as_str().unwrap() {
                 "invokefunction" if frame["function_id"] == "engine::workers::register" => {
@@ -152,7 +161,10 @@ async fn boots_configures_registers_and_exits_cleanly_on_sigterm() {
                             "{id}.{field} must be typed"
                         );
                     }
-                    assert_eq!(frame["metadata"]["internal"], true, "{id} must be internal");
+                    // Status is for operators; iii-permissions denies it to agents.
+                    if id != "context-clm::status" {
+                        assert_eq!(frame["metadata"]["internal"], true, "{id} must be internal");
+                    }
                     functions.insert(id.to_owned());
                 }
                 "registertrigger" if frame["trigger_type"] == "configuration" => {
@@ -162,6 +174,11 @@ async fn boots_configures_registers_and_exits_cleanly_on_sigterm() {
                         json!({"configuration_id": "context-clm", "event_types": ["configuration:updated"]})
                     );
                     reload = true;
+                }
+                "registertrigger" if frame["trigger_type"] == "session::deleted" => {
+                    assert_eq!(frame["function_id"], "context-clm::on-session-deleted");
+                    assert_eq!(frame["config"], json!({}));
+                    session_deleted = true;
                 }
                 "invocationresult" if frame["function_id"] == "context-clm::configuration-id" => {
                     assert_eq!(frame["result"], json!({"id": "context-clm"}));
