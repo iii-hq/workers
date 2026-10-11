@@ -357,8 +357,6 @@ mod imp {
 /// fsync, rename. A stale or planted temp is unlinked first (unlinking a
 /// symlink never touches its target). Path-based: for the worker's own
 /// private data dir, not for the agent-writable root.
-// NOTE: unused on unix until store.rs lands.
-#[allow(dead_code)]
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = tmp_path(path);
     remove_if_exists(&tmp)?;
@@ -368,7 +366,6 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fs::rename(&tmp, path)
 }
 
-#[allow(dead_code)]
 pub(crate) fn remove_if_exists(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
