@@ -26,13 +26,13 @@ const CLM_SECTION: &str = r#"
 
 ## Your context file
 
-Your context is limited to {limit} tokens. Every command result ends with a readout such as `[context: ~1200/{limit} tokens]`.
+You have a limit of {limit} tokens of context. Each command result ends with a readout such as `[context: ~1200/{limit} tokens]`: the first number is your current size, the second is the limit. Every mention of "the limit" below means this number.
 
-Before each step, everything after the system prompt and the task is written to `{mirror}`. Whatever that file holds when the next step starts becomes your context from then on. The system prompt and the task are fixed and are not part of the file.
+Your context after the system prompt and the task is mirrored in the file `{mirror}` (a path relative to your working directory). The file is written before every step, and whatever it holds when the next step begins becomes your context from then on. The system prompt and the task are not in the file and cannot be edited.
 
-Layout: every turn starts with a header line such as `[[CTX_TURN 3 role=tool]]` (turn number, then role: user, assistant or tool), followed by its text. A turn whose text you delete (header left in place) disappears from your context. Never delete or alter the header line of a turn you want to keep. Changes apply on the next step, and the next result tells you whether your edit was applied.
+The file is a series of turns. Each turn starts with a header line such as `[[CTX_TURN 3 role=tool]]` (turn number, then the role: user, assistant or tool), followed by the turn's text. If you delete a turn's text and leave its header, the turn drops out of your context. Never remove or change the header of a turn you want to keep. Edits take effect on the next step, and the next command result tells you whether yours was applied.
 
-Change the file with a short script instead of typing its text back out. There is no need to print the file either: you are already reading its contents as your context. `shell::exec` does not start a shell: send a script as {"command":"bash","args":["-c","<script>"]}, which also makes heredocs work. For example, to replace the text of turn 4 with a note:
+Edit the file with a script. Do not retype its text, and do not print it: you are already reading it as your context. `shell::exec` does not start a shell, so pass the script as {"command":"bash","args":["-c","<script>"]}; heredocs work that way. Example, replacing the text of turn 4 with a note:
 
     python3 - <<'EOF'
     import re
@@ -44,12 +44,9 @@ Change the file with a short script instead of typing its text back out. There i
     open(path, "w").write(text)
     EOF
 
-Editing has a cost: every turn from the first one you change down to the end has to be processed again. So:
-- group your changes into one larger edit instead of many small ones;
-- favour condensing recent turns; touching an early turn means re-reading everything after it;
-- make summaries thorough; they are cheap compared with the text they stand in for.
+An edit makes every turn from the first one you changed to the end of the file get processed again, so a change early in the file costs more than a change late in it. Still, condense old or stale turns first: they are the ones you need least. Do it in one larger pass rather than several small ones, unless you are close to the limit.
 
-Never empty the whole file. A summary keeps the facts you found, what you already tried or ruled out, and your next step.
+Write compact summaries that keep your findings. A summary costs little next to the text it replaces. It should record what you found, what you tried or ruled out, and what you will do next. Never empty the whole file.
 "#;
 
 /// The section appended to the system prompt. Starts with a blank line so it
@@ -63,36 +60,39 @@ pub fn clm_section(mirror_rel: &str, limit: u64) -> String {
 /// How to condense; appended to the nudges, the ledger and the readout.
 pub fn compaction_hint(mirror_rel: &str) -> String {
     format!(
-        "To condense {mirror_rel}: locate stale turns from a script (their header line, e.g. `[[CTX_TURN 5 role=tool]]`, or a short line unique to where they begin and end) and swap them for summaries, without typing out the text being removed. Condense completed work; keep anything you still rely on."
+        "Condense {mirror_rel} from a script, without retyping the text you remove. Find old or stale turns by their header line (for example `[[CTX_TURN 5 role=tool]]`) or by a short line that is unique to where they start and end. Replace them with compact summaries that keep your findings. Leave alone any turn you still rely on."
     )
 }
 
-const LAST_TURN: &str = "Crossing the limit leaves exactly one more turn before the run stops.";
+/// What happens when the context goes over the limit. Shared by the nudges
+/// and the receipts so the model hears one description.
+const OVER_THE_LIMIT: &str = "Going over the limit rolls back your newest turns; if that keeps happening, the run ends after one final turn.";
 
-const CARRY_OVER: &str = "A summary that replaces old turns must carry over what they established: options you eliminated and why (so you do not try them again), commands and queries you already ran, important values and whether you confirmed them, and what you will do next.";
+/// What a replacement summary has to contain.
+const CARRY_OVER: &str = "Write each summary so you could carry on from it alone. Cover, in this order: what you will do next; the values you found and whether you verified them; the commands and queries you have already run; the options you ruled out, and why.";
 
 /// The one-shot nudge for a crossed tier (`frac` of the budget).
 pub fn tier_text(frac: f64, budget: u64, tokens: u64, hint: &str) -> String {
     let pct = py_round(frac * 100.0);
     let at = format!("Context use: {tokens} tokens, about {pct}% of the {budget}-token budget.");
     if frac <= 0.25 {
-        format!("[context note] {at} No action needed; keep track, in your notes, of which searches and files you have already checked.")
+        format!("[context note] {at} Nothing to do yet. Just avoid repeating searches and file reads you have already done.")
     } else if frac <= 0.5 {
-        format!("[context note] {at} Wrap up the current piece of work, then do a single condensing pass. {CARRY_OVER} {hint}")
+        format!("[context note] {at} Finish the piece of work you are on, then condense once: replace old or stale turns with compact summaries that keep your findings. {CARRY_OVER} {hint}")
     } else {
-        format!("[context warning] {at} The limit is near. Condense work that is finished, yet keep its substance: a replacement that throws away nearly everything tends to force the same work again. {CARRY_OVER} {LAST_TURN} {hint}")
+        format!("[context warning] {at} The limit is close. Condense finished work now, using compact summaries that keep your findings: a summary that drops almost everything makes you redo the work. {CARRY_OVER} {OVER_THE_LIMIT} {hint}")
     }
 }
 
 /// The repeating nudge once the room left is too small.
 pub fn persistent_text(tokens: u64, limit: u64, ratio: f64, hint: &str) -> String {
     let pct = py_round(ratio * 100.0);
-    format!("[context warning: act now] {tokens}/{limit} tokens used, beyond {pct}% of the hard limit. Do nothing this turn except condense your context: cut or summarise stale turns. {LAST_TURN} {hint}")
+    format!("[context warning: act now] Context is at {tokens}/{limit} tokens, {pct}% of the limit. Use this turn only to condense: replace old or stale turns with compact summaries that keep your findings, and start no other work first. {OVER_THE_LIMIT} {hint}")
 }
 
-/// The last turn granted after the limit is crossed.
-pub fn final_text(tokens: u64, budget: u64) -> String {
-    format!("[context limit reached: {tokens}/{budget} tokens] One turn remains, then the run stops. Use it to finish what you can, save results where the task expects them, and say briefly what is done and what is still open.")
+/// The last turn granted before the run ends. `limit` is the enforced limit.
+pub fn final_text(tokens: u64, limit: u64) -> String {
+    format!("[context limit reached: {tokens}/{limit} tokens] This is your last turn; the run stops after it. Spend it on finishing: save your results where the task expects them, and state what is done and what is still open.")
 }
 
 /// Inputs of the rollback ledger.
@@ -100,7 +100,6 @@ pub fn final_text(tokens: u64, budget: u64) -> String {
 pub struct LedgerArgs {
     pub retry: u32,
     pub max_retry: u32,
-    pub budget: u64,
     pub n_dropped: usize,
     pub n_rolled: usize,
     pub tokens_after: u64,
@@ -112,11 +111,11 @@ pub struct LedgerArgs {
 /// The note that replaces rolled-back turns.
 pub fn ledger_text(a: &LedgerArgs) -> String {
     let mut s = format!(
-        "[context limit exceeded, rollback {}/{}] Context grew past the {}-token limit. Your newest {} turn(s) were taken out and are gone for good ({} in total during this run). Current size: ~{}/{} tokens. Spend this turn condensing your context and nothing else: swap stale turns for brief summaries. {}",
+        "[context limit exceeded, rollback {}/{}] The context passed the {}-token limit, so your newest {} turn(s) were removed ({} in total during this run). Their content is gone. The context now stands at ~{}/{} tokens. Use this turn only to condense: replace old or stale turns with compact summaries that keep your findings. {}",
         a.retry, a.max_retry, a.limit, a.n_dropped, a.n_rolled, a.tokens_after, a.limit, a.hint
     );
     if !a.cmds.is_empty() {
-        s.push_str("\nThese commands produced the output that overflowed, which is why their turns were removed. Repeating them as-is will overflow again; if one is still required, rerun it with less output (head, grep -c, wc -l):");
+        s.push_str("\nThe output of these commands caused the overflow, and their turns are among those removed. Do not rerun them unchanged. If you still need one, first cut down what it prints (head, grep -c, wc -l):");
         for c in &a.cmds {
             s.push_str("\n  - ");
             s.push_str(c);
@@ -136,32 +135,34 @@ pub fn readout_text(tokens_now: u64, limit: u64, over_hint: Option<&str>) -> Str
 }
 
 pub fn receipt_grew(before: u64, after: u64) -> String {
-    format!("\n{RECEIPT_TAG} edit kept, but it made the context larger (~{before} -> ~{after} tokens); it is still under the limit. To shrink it, replace old text rather than adding new text.]")
+    format!("\n{RECEIPT_TAG} edit kept. The context grew from ~{before} to ~{after} tokens but is still under the limit. To shrink it, replace old text with shorter text instead of adding more.]")
 }
 
 pub fn receipt_still_over(before: u64, after: u64, limit: u64) -> String {
-    format!("\n{RECEIPT_TAG} edit kept (~{before} -> ~{after} tokens), yet the context is above the limit of ~{limit} tokens. Cut more right away; otherwise only one more turn is left before the run stops.]")
+    format!("\n{RECEIPT_TAG} edit kept. The context went from ~{before} to ~{after} tokens, which is still above the limit of ~{limit} tokens. Cut more now. {OVER_THE_LIMIT}]")
 }
 
 pub fn receipt_applied(before: u64, after: u64, n_turns: usize) -> String {
-    format!("\n{RECEIPT_TAG} edit kept; ~{before} -> ~{after} tokens across {n_turns} turns]")
+    format!("\n{RECEIPT_TAG} edit kept. The file now holds {n_turns} turns and ~{after} tokens (it was ~{before}).]")
 }
 
 pub fn receipt_rejected(baseline: u64, after: u64, before: u64, fit: bool, limit: u64) -> String {
     let rule = if fit && limit > 0 {
-        format!("Edits may grow the context only while it remains within {limit} tokens")
+        format!(
+            "An edit may make the context larger only if it still ends up within {limit} tokens"
+        )
     } else {
-        "Edits must reduce the context".to_string()
+        "An edit has to reduce the context".to_string()
     };
-    format!("\n{RECEIPT_TAG} edit discarded because it enlarged the context (~{baseline} -> ~{after} tokens); the context stays at ~{before}. {rule}. Swap old text for a more compact summary rather than appending.]")
+    format!("\n{RECEIPT_TAG} edit discarded. It would have grown the context from ~{baseline} to ~{after} tokens, so it stays at ~{before}. {rule}. Use a more compact summary instead of appending text.]")
 }
 
 pub fn receipt_no_change_exit(rc: i64, before: u64) -> String {
-    format!("\n{RECEIPT_TAG} no edit; the command failed with exit code {rc} (error shown above) and the context is unchanged at ~{before} tokens.]")
+    format!("\n{RECEIPT_TAG} no edit made. The command exited with code {rc} (its error is shown above), so the context is still ~{before} tokens.]")
 }
 
 pub fn receipt_no_change_matched(before: u64) -> String {
-    format!("\n{RECEIPT_TAG} no edit; nothing in the file matched, so the context is unchanged at ~{before} tokens. Target text you can actually see, or a real header line such as `[[CTX_TURN 8 role=tool]]` (number, then role).]")
+    format!("\n{RECEIPT_TAG} no edit made. Nothing in the file matched your script, so the context is still ~{before} tokens. Match text that is really there, or a real header line such as `[[CTX_TURN 8 role=tool]]` (turn number first, then role).]")
 }
 
 /// Leads a tool output that was cut for length.
@@ -180,8 +181,9 @@ pub fn observation_cut(head: &str, elided: usize, tail: &str) -> String {
 }
 
 /// Marks the middle cut out of the newest output to fit the room left.
-pub fn cap_note(elided: usize, budget: u64) -> String {
-    format!("[... {elided} characters removed here so the output fits within {budget} tokens of context; use a more selective command, or free space by condensing your context file ...]")
+/// `limit` is the enforced limit (budget minus reserve).
+pub fn cap_note(elided: usize, limit: u64) -> String {
+    format!("[... {elided} characters removed here so the output fits within the limit of {limit} tokens; use a more selective command, or free space by condensing your context file ...]")
 }
 
 /// One function call as shown in the mirror.
@@ -196,7 +198,11 @@ pub fn file_tag(name: &str) -> String {
 /// A turn the model rewrote under a role it may not author (tool, or
 /// assistant where no assistant turn was) becomes a user note.
 pub fn lowered_note(role: &str, body: &str) -> String {
-    let article = if role.starts_with('a') { "an" } else { "a" };
+    let article = if matches!(role.chars().next(), Some('a' | 'e' | 'i' | 'o' | 'u')) {
+        "an"
+    } else {
+        "a"
+    };
     format!("[your note, written as {article} {role} turn]\n{body}")
 }
 
@@ -254,10 +260,10 @@ mod tests {
         let p = persistent_text(25000, 30720, 0.725, "HINT");
         assert!(p.contains("25000/30720 tokens") && p.contains("72%") && p.ends_with("HINT"));
         assert!(final_text(31000, 32768).contains("31000/32768 tokens"));
+        assert!(final_text(31000, 32768).contains("last turn"));
         let mut a = LedgerArgs {
             retry: 2,
             max_retry: 50,
-            budget: 32768,
             n_dropped: 3,
             n_rolled: 7,
             tokens_after: 28000,
@@ -268,16 +274,68 @@ mod tests {
         let plain = ledger_text(&a);
         assert!(plain.contains("rollback 2/50") && plain.contains("30720-token"));
         assert!(
-            !plain.contains("32768"),
-            "ledger must name the enforced limit, not the raw budget"
-        );
-        assert!(
             plain.contains("newest 3 turn(s)") && plain.contains("(7 in total during this run)")
         );
         assert!(plain.contains("~28000/30720 tokens") && plain.ends_with("HINT"));
         a.cmds = vec!["cat big.log".into(), "ls -R".into()];
         assert!(ledger_text(&a).ends_with(":\n  - cat big.log\n  - ls -R"));
         assert!(ledger_text(&a).starts_with(&plain));
+    }
+
+    #[test]
+    fn crossing_the_limit_is_described_as_a_rollback_first() {
+        let texts = [
+            tier_text(0.75, 100, 80, "HINT"),
+            persistent_text(25000, 30720, 0.725, "HINT"),
+            receipt_still_over(300, 250, 200),
+        ];
+        for t in texts {
+            assert!(t.contains("rolls back your newest turns"), "{t}");
+            assert!(t.contains("one final turn"), "{t}");
+            assert!(!t.contains("one more turn"), "{t}");
+        }
+    }
+
+    #[test]
+    fn one_instruction_for_what_a_summary_is() {
+        let hint = compaction_hint(M);
+        let ledger = ledger_text(&LedgerArgs {
+            retry: 1,
+            max_retry: 50,
+            n_dropped: 1,
+            n_rolled: 1,
+            tokens_after: 10,
+            limit: 20,
+            hint: String::new(),
+            cmds: vec![],
+        });
+        let texts = [
+            hint,
+            ledger,
+            tier_text(0.5, 100, 60, ""),
+            tier_text(0.75, 100, 80, ""),
+            persistent_text(80, 100, 0.8, ""),
+            clm_section(M, 100),
+        ];
+        for t in texts {
+            assert!(
+                t.contains("compact summaries that keep your findings"),
+                "{t}"
+            );
+            assert!(
+                !t.contains("brief summar") && !t.contains("thorough"),
+                "{t}"
+            );
+        }
+    }
+
+    #[test]
+    fn section_defines_its_terms() {
+        let s = clm_section(M, 100);
+        assert!(s.contains("relative to your working directory"));
+        assert!(s.contains("unless you are close to the limit"));
+        assert!(s.contains("old or stale turns first"));
+        assert!(!s.contains("in your notes") && !s.contains("favour"));
     }
 
     #[test]
@@ -325,6 +383,8 @@ mod tests {
         assert_eq!(call_line("shell::exec", "{}"), "[call shell::exec {}]");
         assert!(lowered_note("tool", "x").ends_with("tool turn]\nx"));
         assert!(lowered_note("assistant", "x").contains("as an assistant turn"));
+        assert!(lowered_note("editor", "x").contains("as an editor turn"));
+        assert!(lowered_note("tool", "x").contains("as a tool turn"));
         assert!(user_side_assistant("done").ends_with(":]\ndone"));
         assert!(STRATEGY_STOP_REASON.contains("context_strategy"));
     }
