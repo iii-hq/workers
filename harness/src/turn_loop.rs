@@ -80,6 +80,16 @@ const BUDGET_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
     model: None,
 };
 
+const CONTEXT_STRATEGY_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
+    code: "harness.context_strategy_unavailable",
+    phase: "context_assembly",
+    retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
+};
+
 /// Provider adapters add framing outside the fields visible to the harness.
 /// Keep a small fixed reserve in addition to the deterministic JSON estimate.
 const PROVIDER_FRAMING_ALLOWANCE_TOKENS: u64 = 64;
@@ -2671,6 +2681,13 @@ fn failure_presentation(public_message: &str, failure: FailureInfo<'_>) -> Failu
             "The provider is busy right now.",
             &["Wait a moment, then retry the turn."],
         ),
+        "harness.context_strategy_unavailable" => (
+            public_message,
+            &[
+                "Start the worker that provides this context strategy, then retry the turn.",
+                "Or remove `context_strategy` from the session metadata to use the default.",
+            ],
+        ),
         "harness.context_overflow" => (
             "The conversation could not be compacted to fit the selected model.",
             &[
@@ -3051,7 +3068,7 @@ pub async fn fail_turn(
     deps: &Deps,
     session_id: &str,
     turn_id: &str,
-    reason: &str,
+    error: &HarnessError,
 ) -> Result<TurnStepResult, HarnessError> {
     let cfg = deps.cfg().await;
     let session = deps.session().await;
@@ -3066,9 +3083,20 @@ pub async fn fail_turn(
         crate::state::get_turn_unhydrated(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     match record {
         Some(mut rec) if rec.turn_id == turn_id && !rec.status.is_terminal() => {
-            finalize_failed(deps, &session, &mut rec, reason, INTERNAL_FAILURE).await
+            let (reason, failure) = step_failure(error);
+            finalize_failed(deps, &session, &mut rec, &reason, failure).await
         }
         _ => Ok(skipped(session_id)),
+    }
+}
+
+/// The public reason and failure class of a step error that ended the turn.
+fn step_failure(error: &HarnessError) -> (String, FailureInfo<'static>) {
+    match error {
+        HarnessError::ContextStrategyUnavailable(message) => {
+            (message.clone(), CONTEXT_STRATEGY_UNAVAILABLE_FAILURE)
+        }
+        other => (other.to_string(), INTERNAL_FAILURE),
     }
 }
 
@@ -3383,24 +3411,22 @@ async fn assemble_context(
         budget_tokens: strategy.and_then(|s| s.budget_tokens),
     };
 
-    let mut out = match context.assemble(params).await {
-        Ok(out) => out,
-        Err(error) if is_context_overflow_error(&error) => {
-            return Err(HarnessError::ContextOverflow(error));
-        }
-        Err(error) => return Err(HarnessError::Dependency(error)),
-    };
+    let function_id = params.function_id.clone();
+    let mut out = context
+        .assemble(params)
+        .await
+        .map_err(|error| assemble_error(error, strategy))?;
 
     if out.messages.is_empty() {
-        return Err(HarnessError::ContextOverflow(
-            "context::assemble returned an empty model-facing context".to_string(),
-        ));
+        return Err(HarnessError::ContextOverflow(format!(
+            "{function_id} returned an empty model-facing context"
+        )));
     }
     // `context::assemble.token_count` already includes tools and the supplied
     // request overhead; reject any response that violates its hard contract.
     if out.token_count > out.usable {
         return Err(HarnessError::ContextOverflow(format!(
-            "context::assemble returned an over-budget context: {} tokens > {} usable",
+            "{function_id} returned an over-budget context: {} tokens > {} usable",
             out.token_count, out.usable
         )));
     }
@@ -3591,6 +3617,33 @@ fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnc
 
 fn is_context_overflow_error(error: &str) -> bool {
     error.contains("context/overflow:")
+}
+
+/// Classify a failed assembly call. A strategy function that is not
+/// registered keeps the transient step retry, then fails the turn naming the
+/// strategy and the way back to the default: never a silent fallback.
+fn assemble_error(error: String, strategy: Option<&ContextStrategy>) -> HarnessError {
+    if is_context_overflow_error(&error) {
+        return HarnessError::ContextOverflow(error);
+    }
+    match strategy {
+        // Only the strategy function's own not-found. One nested in its error
+        // (context-manager down behind the strategy) is a plain dependency.
+        Some(strategy)
+            if error.starts_with(&format!(
+                "{}: remote error (function_not_found)",
+                strategy.function_id()
+            )) =>
+        {
+            HarnessError::ContextStrategyUnavailable(format!(
+                "context strategy `{}` is not available ({} is not registered). Remove \
+                 `context_strategy` from the session metadata to use the default.",
+                strategy.name,
+                strategy.function_id()
+            ))
+        }
+        _ => HarnessError::Dependency(error),
+    }
 }
 
 /// Fold the assembly the loop already performed into the session's context
@@ -5975,5 +6028,64 @@ mod tests {
         })
         .await;
         assert!(out.is_some(), "a dropped sender is not a stop");
+    }
+
+    fn strategy(name: &str) -> crate::types::turn::ContextStrategy {
+        crate::types::turn::ContextStrategy {
+            name: name.into(),
+            budget_tokens: None,
+            effective: true,
+            skipped_reason: None,
+        }
+    }
+
+    #[test]
+    fn a_missing_context_strategy_names_the_strategy_and_the_way_back() {
+        let missing =
+            "context-clm::assemble: remote error (function_not_found): Function not found";
+        let error = super::assemble_error(missing.into(), Some(&strategy("clm")));
+        let expected = "context strategy `clm` is not available (context-clm::assemble is not \
+                        registered). Remove `context_strategy` from the session metadata to use \
+                        the default.";
+        assert_eq!(
+            error,
+            HarnessError::ContextStrategyUnavailable(expected.into())
+        );
+        let (reason, failure) = super::step_failure(&error);
+        assert_eq!(reason, expected);
+        assert_eq!(failure.code, "harness.context_strategy_unavailable");
+        assert!(!failure.retryable);
+        let presentation = super::failure_presentation(&reason, failure);
+        assert_eq!(presentation.summary, expected);
+        assert!(presentation.next_actions[1].contains("context_strategy"));
+    }
+
+    #[test]
+    fn assembly_errors_outside_a_missing_strategy_keep_their_classes() {
+        let missing = "context::assemble: remote error (function_not_found): Function not found";
+        assert_eq!(
+            super::assemble_error(missing.into(), None),
+            HarnessError::Dependency(missing.into())
+        );
+        let overflow = "context-clm::assemble: handler failed: context/overflow: 101 > 100";
+        assert_eq!(
+            super::assemble_error(overflow.into(), Some(&strategy("clm"))),
+            HarnessError::ContextOverflow(overflow.into())
+        );
+        let nested = "context-clm::assemble: remote error (handler_error): context::assemble: \
+                      remote error (function_not_found): Function not found";
+        assert_eq!(
+            super::assemble_error(nested.into(), Some(&strategy("clm"))),
+            HarnessError::Dependency(nested.into()),
+            "context-manager missing behind the strategy is not the strategy missing"
+        );
+        let other = "context-clm::assemble: handler failed: boom";
+        assert_eq!(
+            super::assemble_error(other.into(), Some(&strategy("clm"))),
+            HarnessError::Dependency(other.into())
+        );
+        let (reason, failure) = super::step_failure(&HarnessError::Dependency("x".into()));
+        assert_eq!(reason, "harness/dependency: x");
+        assert_eq!(failure.code, "harness.turn_internal");
     }
 }

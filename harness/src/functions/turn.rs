@@ -98,6 +98,9 @@ const TRANSIENT_STEP_BACKOFF_MS: u64 = 500;
 /// would ack as stale and silently wedge the turn instead of failing it.
 fn is_transient_step_error(error: &HarnessError) -> bool {
     let message = match error {
+        // A strategy worker that is not registered yet is the same boot race
+        // as any other dependency; only exhaustion fails the turn.
+        HarnessError::ContextStrategyUnavailable(_) => return true,
         HarnessError::Dependency(m) => m.to_ascii_lowercase(),
         // Retrying a read from the top of the step is safe. Do not classify
         // state writes broadly: a lost acknowledgement after a successful
@@ -148,13 +151,7 @@ async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, Ha
                 // Keep failure finalization out of this future's inline state:
                 // its size propagates through every handler wrapper even on
                 // successful turns, exhausting the SDK thread's debug stack.
-                break Box::pin(turn_loop::fail_turn(
-                    deps,
-                    &session_id,
-                    &turn_id,
-                    &e.to_string(),
-                ))
-                .await?;
+                break Box::pin(turn_loop::fail_turn(deps, &session_id, &turn_id, &e)).await?;
             }
         }
     };
@@ -242,5 +239,14 @@ mod tests {
         assert!(!is_transient_step_error(&HarnessError::Internal(
             "function_not_found mentioned in an internal error".into()
         )));
+    }
+
+    #[test]
+    fn a_missing_context_strategy_retries_like_a_boot_race() {
+        assert!(is_transient_step_error(
+            &HarnessError::ContextStrategyUnavailable(
+                "context strategy `clm` is not available".into()
+            )
+        ));
     }
 }
