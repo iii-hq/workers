@@ -12,6 +12,53 @@ use serde_json::{json, Value};
 use crate::types::message::AgentMessage;
 use crate::types::model::{AgentFunction, ThinkingLevel};
 
+/// context-manager's assembly function: every turn without an effective
+/// context strategy assembles here.
+pub const CONTEXT_MANAGER_ASSEMBLE: &str = "context::assemble";
+
+/// The request body for [`ContextClient::assemble`]. Strategy workers read the
+/// turn identity and root keys; context-manager ignores the keys it does not
+/// know.
+fn assemble_payload(params: &AssembleParams) -> Value {
+    let mut model = json!({ "id": params.model_id });
+    if let Some(p) = &params.provider {
+        model["provider"] = json!(p);
+    }
+    let mut options = json!({
+        "lease_key": params.lease_key,
+        "request_overhead_tokens": params.request_overhead_tokens,
+        "session_id": params.session_id,
+        "turn_id": params.turn_id,
+        "step": params.step,
+        "filesystem_root": params.filesystem_root,
+    });
+    if let Some(s) = &params.previous_summary {
+        options["previous_summary"] = json!(s);
+    }
+    if let Some(tl) = &params.thinking_level {
+        options["thinking_level"] = serde_json::to_value(tl).unwrap_or(Value::Null);
+    }
+    if let Some(allow) = params.allow_prune {
+        options["allow_prune"] = json!(allow);
+    }
+    if let Some(budget) = params.budget_tokens {
+        options["budget_tokens"] = json!(budget);
+    }
+    let mut payload = json!({
+        "messages": params.messages,
+        "model": model,
+        "options": options,
+        "tools": params.tools,
+    });
+    if let Some(sp) = &params.system_prompt {
+        payload["system_prompt"] = json!(sp);
+    }
+    if let Some(parts) = &params.parts {
+        payload["parts"] = json!(parts);
+    }
+    payload
+}
+
 /// The budgeted context returned by `context::assemble`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AssembleOutput {
@@ -89,6 +136,16 @@ pub struct AssembleParams {
     /// `false` keeps earlier function results as they were sent (no aged
     /// pruning); `None` leaves context-manager's default.
     pub allow_prune: Option<bool>,
+    /// [`CONTEXT_MANAGER_ASSEMBLE`], or `context-<name>::assemble` for a turn
+    /// whose context strategy is effective.
+    pub function_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub step: u64,
+    /// The turn's `fs_scope.root`; sent as `null` when the turn is unscoped.
+    pub filesystem_root: Option<String>,
+    /// The effective strategy's per-session budget.
+    pub budget_tokens: Option<u64>,
 }
 
 pub struct CountTokensParams {
@@ -121,40 +178,12 @@ impl ContextClient {
     /// Assemble a model-ready context. The context manager is a required
     /// dependency: callers must never fall back to unbudgeted raw history.
     pub async fn assemble(&self, params: AssembleParams) -> Result<AssembleOutput, String> {
-        let mut model = json!({ "id": params.model_id });
-        if let Some(p) = &params.provider {
-            model["provider"] = json!(p);
-        }
-        let mut options = json!({
-            "lease_key": params.lease_key,
-            "request_overhead_tokens": params.request_overhead_tokens,
-        });
-        if let Some(s) = &params.previous_summary {
-            options["previous_summary"] = json!(s);
-        }
-        if let Some(tl) = &params.thinking_level {
-            options["thinking_level"] = serde_json::to_value(tl).unwrap_or(Value::Null);
-        }
-        if let Some(allow) = params.allow_prune {
-            options["allow_prune"] = json!(allow);
-        }
-        let mut payload = json!({
-            "messages": params.messages,
-            "model": model,
-            "options": options,
-            "tools": params.tools,
-        });
-        if let Some(sp) = &params.system_prompt {
-            payload["system_prompt"] = json!(sp);
-        }
-        if let Some(parts) = &params.parts {
-            payload["parts"] = json!(parts);
-        }
-
+        let payload = assemble_payload(&params);
+        let function_id = params.function_id;
         let resp = self
             .iii
             .trigger(TriggerRequest {
-                function_id: "context::assemble".into(),
+                function_id: function_id.clone(),
                 payload,
                 action: None,
                 timeout_ms: Some(self.timeout_ms),
@@ -163,8 +192,8 @@ impl ContextClient {
 
         match resp {
             Ok(v) => serde_json::from_value::<AssembleOutput>(v)
-                .map_err(|e| format!("context::assemble parse: {e}")),
-            Err(e) => Err(format!("context::assemble: {e}")),
+                .map_err(|e| format!("{function_id} parse: {e}")),
+            Err(e) => Err(format!("{function_id}: {e}")),
         }
     }
 
@@ -201,5 +230,61 @@ impl ContextClient {
                 .map_err(|e| format!("context::count-tokens parse: {e}")),
             Err(e) => Err(format!("context::count-tokens: {e}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(filesystem_root: Option<&str>, budget_tokens: Option<u64>) -> AssembleParams {
+        AssembleParams {
+            messages: vec![json!({ "role": "user", "content": [], "timestamp": 1 })],
+            model_id: "m".into(),
+            provider: Some("p".into()),
+            system_prompt: Some("sys".into()),
+            parts: None,
+            previous_summary: None,
+            lease_key: "s_1".into(),
+            thinking_level: None,
+            tools: Vec::new(),
+            request_overhead_tokens: 64,
+            allow_prune: Some(false),
+            function_id: "context-clm::assemble".into(),
+            session_id: "s_1".into(),
+            turn_id: "t_1".into(),
+            step: 3,
+            filesystem_root: filesystem_root.map(str::to_string),
+            budget_tokens,
+        }
+    }
+
+    #[test]
+    fn assemble_payload_carries_the_turn_identity_root_and_strategy_budget() {
+        let payload = assemble_payload(&params(Some("/work"), Some(16_384)));
+        assert_eq!(
+            payload["options"],
+            json!({
+                "lease_key": "s_1",
+                "request_overhead_tokens": 64,
+                "session_id": "s_1",
+                "turn_id": "t_1",
+                "step": 3,
+                "filesystem_root": "/work",
+                "allow_prune": false,
+                "budget_tokens": 16384
+            })
+        );
+        assert_eq!(payload["model"], json!({ "id": "m", "provider": "p" }));
+        assert_eq!(payload["system_prompt"], "sys");
+        assert_eq!(payload["messages"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn assemble_payload_sends_a_null_root_and_no_budget_when_unset() {
+        let payload = assemble_payload(&params(None, None));
+        let options = payload["options"].as_object().unwrap();
+        assert_eq!(options.get("filesystem_root"), Some(&Value::Null));
+        assert!(!options.contains_key("budget_tokens"));
     }
 }
