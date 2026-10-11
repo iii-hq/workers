@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::{ClmConfig, EditGate, PersistentNudge};
+use crate::prompt;
 use crate::types::{Block, Msg};
 
 /// Per-session controller state, persisted with the session.
@@ -198,6 +199,186 @@ pub fn real_edit(baseline: u64, after: u64, prefix_tokens: u64) -> bool {
     baseline.abs_diff(after) >= (baseline.saturating_sub(prefix_tokens).max(1) / 100).max(32)
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum Nudge {
+    Tier { tier: f64, text: String },
+    Persistent { text: String },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Decision {
+    Ok(Option<Nudge>),
+    Rollback,
+    Final(String),
+    Stop,
+}
+
+/// Token level of a tier: a share of the budget.
+fn level(budget: u64, ratio: f64) -> u64 {
+    (budget as f64 * ratio).floor() as u64
+}
+
+/// One controller step (`tc` and `obs_max` already calibrated). `obs_max` is
+/// the largest of the last three tool results since the last applied edit.
+/// Tiers are shares of the budget; every other figure the model sees is the
+/// enforced limit (budget minus reserve).
+pub fn evaluate(
+    cfg: &Cfg,
+    ctl: &mut Ctl,
+    tc: u64,
+    obs_max: u64,
+    proj_len: usize,
+    hint: &str,
+) -> Decision {
+    let limit = cfg.limit();
+    ctl.nudged.retain(|&f| tc >= level(cfg.budget, f));
+    if limit > 0 && tc > limit {
+        if ctl.n_retry < cfg.max_retry && limit > cfg.retry_margin && proj_len > 0 {
+            ctl.n_retry += 1;
+            ctl.consec += 1;
+            return Decision::Rollback;
+        }
+        if ctl.finalized {
+            return Decision::Stop;
+        }
+        ctl.finalized = true;
+        return Decision::Final(prompt::final_text(tc, limit));
+    }
+    ctl.finalized = false;
+    if limit == 0 {
+        return Decision::Ok(None);
+    }
+    match cfg.persistent {
+        PersistentNudge::Ratio(r) if tc >= (limit as f64 * r).floor() as u64 => {
+            let text = prompt::persistent_text(tc, limit, r, hint);
+            return Decision::Ok(Some(Nudge::Persistent { text }));
+        }
+        PersistentNudge::Adaptive => {
+            let by_ratio = limit / 10;
+            let by_obs = (cfg.obs_mult * obs_max as f64).floor() as u64;
+            let need = if by_obs <= by_ratio {
+                by_ratio
+            } else {
+                by_obs.min(limit / 2)
+            };
+            if limit - tc < need {
+                let ratio = (limit - need) as f64 / limit as f64;
+                let text = prompt::persistent_text(tc, limit, ratio, hint);
+                return Decision::Ok(Some(Nudge::Persistent { text }));
+            }
+        }
+        _ => {}
+    }
+    let mut crossed: Vec<f64> = cfg
+        .nudge_ratios
+        .iter()
+        .copied()
+        .filter(|&f| f > 0.0 && f < 1.0 && tc >= level(cfg.budget, f))
+        .collect();
+    crossed.sort_by(f64::total_cmp);
+    let Some(tier) = crossed
+        .iter()
+        .rev()
+        .copied()
+        .find(|f| !ctl.nudged.contains(f))
+    else {
+        return Decision::Ok(None);
+    };
+    for f in crossed {
+        if !ctl.nudged.contains(&f) {
+            ctl.nudged.push(f);
+        }
+    }
+    let text = prompt::tier_text(tier, cfg.budget, tc, hint);
+    Decision::Ok(Some(Nudge::Tier { tier, text }))
+}
+
+/// A `shell::exec` result rendered as `<output>\n\n(exit_code=N)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecBody {
+    pub body: String,
+    /// `None` when the result was not a `shell::exec` JSON payload.
+    pub rc: Option<i64>,
+    /// Neither stdout nor stderr printed anything.
+    pub silent: bool,
+}
+
+pub fn exec_body(text: &str, max_chars: usize) -> ExecBody {
+    if let Ok(Value::Object(j)) = serde_json::from_str::<Value>(text) {
+        if j.contains_key("exit_code") {
+            let stdout = j.get("stdout").map(plain).unwrap_or_default();
+            let stderr = j.get("stderr").map(plain).unwrap_or_default();
+            let joined = match (stdout.is_empty(), stderr.is_empty()) {
+                (_, true) => stdout.clone(),
+                (true, false) => stderr.clone(),
+                (false, false) => format!("{stdout}\n{stderr}"),
+            };
+            let out = joined.trim_end();
+            let rc = match j.get("exit_code").and_then(Value::as_i64) {
+                Some(rc) => rc,
+                None if j.get("timed_out").and_then(Value::as_bool) == Some(true) => 124,
+                None => -1,
+            };
+            let shown = if out.is_empty() {
+                prompt::NO_OUTPUT.to_string()
+            } else {
+                truncate_observation(out, max_chars)
+            };
+            return ExecBody {
+                body: format!("{shown}\n\n(exit_code={rc})"),
+                rc: Some(rc),
+                silent: stdout.trim().is_empty() && stderr.trim().is_empty(),
+            };
+        }
+    }
+    ExecBody {
+        body: truncate_observation(text, max_chars),
+        rc: None,
+        silent: false,
+    }
+}
+
+/// Head (`head` chars), tail (`tail` chars) and the number of chars between
+/// them; `None` when `s` is not longer than `head + tail`.
+fn head_tail(s: &str, head: usize, tail: usize) -> Option<(&str, &str, usize)> {
+    let n = s.chars().count();
+    if n <= head + tail {
+        return None;
+    }
+    let at = |k: usize| s.char_indices().nth(k).map_or(s.len(), |(i, _)| i);
+    Some((&s[..at(head)], &s[at(n - tail)..], n - head - tail))
+}
+
+/// Output longer than `max_chars` keeps 5000 chars of head and tail (half of
+/// `max_chars` each when that is smaller) behind the too-long hint.
+pub fn truncate_observation(out: &str, max_chars: usize) -> String {
+    let half = (max_chars / 2).min(5000);
+    match head_tail(out, half, half) {
+        Some((head, tail, elided)) if out.chars().count() > max_chars => {
+            prompt::observation_cut(head, elided, tail)
+        }
+        _ => out.to_string(),
+    }
+}
+
+/// Cap the newest tool output to the room left under the limit (`room` is in
+/// ruler tokens and may be negative). Text that does not fit keeps a head and
+/// a tail sized to the room, never less than 256 chars each. `limit` is the
+/// enforced limit (`Cfg::limit()`), the figure the cut note shows the model.
+pub fn cap_newest(text: &str, room: i64, limit: u64) -> String {
+    if (text.len() as i64 + 1) / 4 <= room {
+        return text.to_string();
+    }
+    let keep = (room.max(128) - 48).max(128) as usize;
+    let half = (keep * 4).max(256) / 2;
+    match head_tail(text, half, half) {
+        Some((head, tail, elided)) => {
+            format!("{head}\n\n{}\n\n{tail}", prompt::cap_note(elided, limit))
+        }
+        None => text.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +390,17 @@ mod tests {
 
     fn clm() -> Cfg {
         Cfg::from_config(&ClmConfig::default(), Some(32768))
+    }
+
+    const H: &str = "HINT";
+
+    fn base() -> Cfg {
+        Cfg {
+            nudge_ratios: vec![],
+            persistent: PersistentNudge::Off,
+            max_retry: 0,
+            ..clm()
+        }
     }
 
     fn call(ids: &[&str]) -> Msg {
@@ -339,5 +531,240 @@ mod tests {
                 "c3".into()
             ]
         );
+    }
+
+    #[test]
+    fn tiers_fire_once_and_rearm_below_their_level() {
+        let fixed = Cfg {
+            persistent: PersistentNudge::Off,
+            ..clm()
+        };
+        let mut ctl = Ctl::default();
+        assert_eq!(
+            evaluate(&fixed, &mut ctl, 5000, 0, 3, H),
+            Decision::Ok(None)
+        );
+        // 17000 crosses 0.25 (8192) and 0.5 (16384): only the highest fires.
+        let d1 = evaluate(&fixed, &mut ctl, 17000, 0, 3, H);
+        let want = prompt::tier_text(0.5, 32768, 17000, H);
+        assert_eq!(
+            d1,
+            Decision::Ok(Some(Nudge::Tier {
+                tier: 0.5,
+                text: want
+            }))
+        );
+        assert_eq!(
+            evaluate(&fixed, &mut ctl, 17500, 0, 3, H),
+            Decision::Ok(None)
+        );
+        evaluate(&fixed, &mut ctl, 1000, 0, 3, H); // condensed: both re-arm
+        assert!(ctl.nudged.is_empty());
+        let d3 = evaluate(&fixed, &mut ctl, 9000, 0, 3, H);
+        let want = prompt::tier_text(0.25, 32768, 9000, H);
+        assert!(!want.contains(H));
+        assert_eq!(
+            d3,
+            Decision::Ok(Some(Nudge::Tier {
+                tier: 0.25,
+                text: want
+            }))
+        );
+        let d4 = evaluate(&fixed, &mut ctl, 25000, 0, 3, H);
+        assert!(matches!(d4, Decision::Ok(Some(Nudge::Tier { tier, .. })) if tier == 0.75));
+    }
+
+    #[test]
+    fn adaptive_persistent_fires_when_room_is_below_twice_the_largest_result() {
+        let mut ctl = Ctl::default();
+        // limit 30720, room 5720 < need 2 x 4000
+        let d = evaluate(&clm(), &mut ctl, 25000, 4000, 3, H);
+        let want = prompt::persistent_text(25000, 30720, (30720.0 - 8000.0) / 30720.0, H);
+        assert!(want.contains("25000/30720 tokens"));
+        assert_eq!(d, Decision::Ok(Some(Nudge::Persistent { text: want })));
+        // small results: the band is 10% of the limit (3072); room 5720 is enough
+        let d = evaluate(&clm(), &mut Ctl::default(), 25000, 100, 3, H);
+        assert!(matches!(d, Decision::Ok(Some(Nudge::Tier { .. }))));
+        // a huge result is capped at half the limit (15360)
+        let d = evaluate(&clm(), &mut Ctl::default(), 16000, 50_000, 3, H);
+        assert!(matches!(d, Decision::Ok(Some(Nudge::Persistent { .. }))));
+        let d = evaluate(&clm(), &mut Ctl::default(), 15000, 50_000, 3, H);
+        assert!(matches!(d, Decision::Ok(Some(Nudge::Tier { .. }))));
+    }
+
+    #[test]
+    fn fixed_ratio_persistent_fires_at_its_threshold() {
+        let ratio = Cfg {
+            persistent: PersistentNudge::Ratio(0.9),
+            ..clm()
+        };
+        let d = evaluate(&ratio, &mut Ctl::default(), 27648, 0, 3, H);
+        let want = prompt::persistent_text(27648, 30720, 0.9, H);
+        assert_eq!(d, Decision::Ok(Some(Nudge::Persistent { text: want })));
+        let d = evaluate(&ratio, &mut Ctl::default(), 27647, 0, 3, H);
+        assert!(matches!(d, Decision::Ok(Some(Nudge::Tier { .. }))));
+    }
+
+    #[test]
+    fn over_the_limit_rolls_back_then_final_then_stop() {
+        let one = Cfg {
+            max_retry: 1,
+            ..clm()
+        };
+        let mut ctl = Ctl::default();
+        assert_eq!(evaluate(&one, &mut ctl, 31000, 0, 4, H), Decision::Rollback);
+        assert_eq!((ctl.n_retry, ctl.consec), (1, 1));
+        // one denominator: the final turn names the enforced limit, not the budget
+        let want = prompt::final_text(31000, 30720);
+        assert_eq!(
+            evaluate(&one, &mut ctl, 31000, 0, 4, H),
+            Decision::Final(want)
+        );
+        assert_eq!(evaluate(&one, &mut ctl, 31000, 0, 4, H), Decision::Stop);
+        let mut b = Ctl::default();
+        assert!(matches!(
+            evaluate(&base(), &mut b, 31000, 0, 4, H),
+            Decision::Final(_)
+        ));
+        assert_eq!(
+            evaluate(&base(), &mut b, 30000, 0, 4, H),
+            Decision::Ok(None)
+        );
+        assert!(matches!(
+            evaluate(&base(), &mut b, 31000, 0, 4, H),
+            Decision::Final(_)
+        ));
+        // nothing left to roll back: straight to the final turn
+        let mut e = Ctl::default();
+        assert!(matches!(
+            evaluate(&clm(), &mut e, 31000, 0, 0, H),
+            Decision::Final(_)
+        ));
+        // a limit below the rollback margin never rolls back
+        let small = Cfg {
+            budget: 4000,
+            ..clm()
+        };
+        assert!(matches!(
+            evaluate(&small, &mut Ctl::default(), 3000, 0, 4, H),
+            Decision::Final(_)
+        ));
+    }
+
+    #[test]
+    fn zero_limit_disables_the_controller() {
+        let off = Cfg {
+            budget: 1000,
+            ..clm()
+        };
+        assert_eq!(
+            evaluate(&off, &mut Ctl::default(), 999_999, 0, 3, H),
+            Decision::Ok(None)
+        );
+    }
+
+    #[test]
+    fn exec_results_render_as_output_and_exit_code() {
+        let ok = exec_body(
+            &json!({"stdout": "hi\n", "stderr": "", "exit_code": 0}).to_string(),
+            10000,
+        );
+        assert_eq!(
+            ok,
+            ExecBody {
+                body: "hi\n\n(exit_code=0)".into(),
+                rc: Some(0),
+                silent: false
+            }
+        );
+        let both = exec_body(
+            &json!({"stdout": "out", "stderr": "err\n", "exit_code": 2}).to_string(),
+            10000,
+        );
+        assert_eq!(both.body, "out\nerr\n\n(exit_code=2)");
+        let quiet = exec_body(
+            &json!({"stdout": "", "stderr": "", "exit_code": 0}).to_string(),
+            10000,
+        );
+        assert!(quiet.silent);
+        assert_eq!(
+            quiet.body,
+            format!("{}\n\n(exit_code=0)", prompt::NO_OUTPUT)
+        );
+        let timed = exec_body(
+            &json!({"stdout": "", "stderr": "", "exit_code": null, "timed_out": true}).to_string(),
+            10000,
+        );
+        assert_eq!(timed.rc, Some(124));
+        let killed = exec_body(
+            &json!({"stdout": "", "stderr": "", "exit_code": null}).to_string(),
+            10000,
+        );
+        assert_eq!(killed.rc, Some(-1));
+        let long = exec_body(
+            &json!({"stdout": "x".repeat(20000), "stderr": "", "exit_code": 1}).to_string(),
+            10000,
+        );
+        assert!(long.body.starts_with(prompt::too_long_hint()));
+        assert!(long.body.ends_with("(exit_code=1)"));
+        let other = exec_body("plain tool text", 10000);
+        assert_eq!(
+            other,
+            ExecBody {
+                body: "plain tool text".into(),
+                rc: None,
+                silent: false
+            }
+        );
+        let no_exit = exec_body(&json!({"stdout": "x"}).to_string(), 10000);
+        assert_eq!(no_exit.rc, None);
+    }
+
+    #[test]
+    fn truncate_observation_keeps_head_and_tail() {
+        assert_eq!(truncate_observation("short", 10000), "short");
+        let fits = "y".repeat(15000);
+        assert_eq!(truncate_observation(&fits, 20000), fits);
+        let text = format!("{}{}", "a".repeat(8000), "b".repeat(8000));
+        let cut = truncate_observation(&text, 10000);
+        assert_eq!(
+            cut,
+            prompt::observation_cut(&"a".repeat(5000), 6000, &"b".repeat(5000))
+        );
+        let small = truncate_observation(&text, 1000);
+        assert_eq!(
+            small,
+            prompt::observation_cut(&"a".repeat(500), 15000, &"b".repeat(500))
+        );
+        let wide = "é".repeat(30);
+        assert_eq!(
+            truncate_observation(&wide, 10),
+            prompt::observation_cut("ééééé", 20, "ééééé")
+        );
+    }
+
+    #[test]
+    fn cap_newest_keeps_fitting_text_and_cuts_the_rest() {
+        // the third argument is the enforced limit (budget - reserve)
+        assert_eq!(cap_newest("short", 100, 30720), "short");
+        let text = format!("{}{}", "a".repeat(5000), "b".repeat(5000));
+        let capped = cap_newest(&text, 200, 30720);
+        // keep = 200 - 48 = 152 tokens -> 608 chars -> 304 head + 304 tail
+        let want = format!(
+            "{}\n\n{}\n\n{}",
+            "a".repeat(304),
+            prompt::cap_note(9392, 30720),
+            "b".repeat(304)
+        );
+        assert_eq!(capped, want);
+        // no room at all still keeps 128 tokens: 256 chars of head and of tail
+        let starved = cap_newest(&text, -500, 30720);
+        let want = format!(
+            "{}\n\n{}\n\n{}",
+            "a".repeat(256),
+            prompt::cap_note(9488, 30720),
+            "b".repeat(256)
+        );
+        assert_eq!(starved, want);
     }
 }
