@@ -283,7 +283,8 @@ fn run_step(
             tracing::warn!(session_id = sid, error = %e, "context-clm: mirror read failed; keeping the projection");
             None
         });
-        let before = raw_count(&sys, &window(st, &st.proj, &[]));
+        // Receipts and the gate use the readout's unit: calibrated tokens.
+        let before = cal(&window(st, &st.proj, &[]));
         match mirror_change(now.as_deref(), &written) {
             change @ (MirrorChange::Edited | MirrorChange::Emptied) => {
                 let kind = if matches!(change, MirrorChange::Emptied) {
@@ -292,13 +293,13 @@ fn run_step(
                     "edited"
                 };
                 let cand = parse_mirror(now.as_deref().unwrap_or_default(), &st.proj, &model);
-                let after = raw_count(&sys, &window(st, &cand, &[]));
+                let after = cal(&window(st, &cand, &[]));
                 if gate_rejects(before, after, cfg.fit, limit) {
                     notes.push(receipt_rejected(before, after, before, cfg.fit, limit));
                     st.stats.edits_rejected += 1;
                     edit = json!({ "kind": kind, "gate": "rejected", "before": before, "after": after });
                 } else {
-                    let prefix_tokens = raw_count(&sys, &window(st, &[], &[]));
+                    let prefix_tokens = cal(&window(st, &[], &[]));
                     let turns = 1 + prefix_len(st) + cand.len();
                     notes.push(if after > before {
                         receipt_grew(before, after)
@@ -438,9 +439,16 @@ fn run_step(
         }
     }
     match &dec {
-        Decision::Final(text)
-        | Decision::Ok(Some(Nudge::Tier { text, .. } | Nudge::Persistent { text })) => {
-            st.proj.push(text_msg("user", text, &model));
+        // NOTE: an over-limit Final is delegated as a normal assemble. In a
+        // clamped session (limit ~ usable) it can overflow at context-manager,
+        // which is truthful: it does not fit the model. The harness's overflow
+        // retry then recomputes this step, which stops (preview_only).
+        Decision::Final(text) => st.proj.push(text_msg("user", text, &model)),
+        // The first run of this step already pushed its nudge.
+        Decision::Ok(Some(Nudge::Tier { text, .. } | Nudge::Persistent { text })) => {
+            if !recompute {
+                st.proj.push(text_msg("user", text, &model));
+            }
         }
         Decision::Stop => st.stats.stops += 1,
         Decision::Ok(None) | Decision::Rollback => {}
@@ -556,7 +564,10 @@ fn run_step(
 /// Delegate the outgoing request with compaction and pruning off (CLM owns
 /// the context). `applied` always comes back an object; when the controller
 /// stopped, the response is the deliberate stop the harness reports as
-/// `harness.context_budget_stop` (spec §4.4).
+/// `harness.context_budget_stop` (spec §4.4). A stop is over the limit by
+/// definition, so it goes as a `preview_only` assemble: otherwise
+/// context-manager reduces it ungated and throws `context/overflow`, which
+/// the harness would report as an overflow instead of the stop.
 async fn finish<D: Delegate>(
     delegate: &D,
     mut req: AssembleRequest,
@@ -566,6 +577,11 @@ async fn finish<D: Delegate>(
     req.options
         .rest
         .insert("allow_compaction".into(), Value::Bool(false));
+    if stopped {
+        req.options
+            .rest
+            .insert("preview_only".into(), Value::Bool(true));
+    }
     let mut resp = forward(delegate, &req).await?;
     if !resp.applied.is_object() {
         resp.applied = json!({});
@@ -642,7 +658,7 @@ mod tests {
     use super::*;
     use crate::config::PersistentNudge;
     use crate::mirror::safe_id;
-    use crate::prompt::cap_note;
+    use crate::prompt::{cap_note, persistent_text};
     use std::path::PathBuf;
 
     const SID: &str = "sess/1";
@@ -651,6 +667,9 @@ mod tests {
         calls: Mutex<Vec<Value>>,
         /// The `usable` room context-manager reports for the model.
         usable: u64,
+        /// Count the payload and fail with an overflow past `usable` unless
+        /// `preview_only` is set, as context-manager does.
+        strict: bool,
     }
 
     impl Default for Fake {
@@ -658,6 +677,7 @@ mod tests {
             Fake {
                 calls: Mutex::default(),
                 usable: 1_000_000,
+                strict: false,
             }
         }
     }
@@ -679,10 +699,22 @@ mod tests {
     impl Delegate for Fake {
         async fn assemble(&self, payload: Value) -> Result<Value, String> {
             self.calls.lock().unwrap().push(payload.clone());
+            let system = payload["system_prompt"].as_str().unwrap_or_default();
+            let mut token_count = 10;
+            if self.strict {
+                token_count = (system.len() + payload["messages"].to_string().len()) as u64 / 4;
+                let preview = payload["options"]["preview_only"] == true;
+                if token_count > self.usable && !preview {
+                    return Err(format!(
+                        "context/overflow: {token_count} tokens exceed the usable {}",
+                        self.usable
+                    ));
+                }
+            }
             Ok(json!({
-                "system_prompt": payload["system_prompt"].as_str().unwrap_or_default(),
+                "system_prompt": system,
                 "messages": payload["messages"],
-                "token_count": 10,
+                "token_count": token_count,
                 "usable": self.usable,
                 "effective_max_output_tokens": 4096,
                 "applied": { "compacted": false },
@@ -1237,6 +1269,165 @@ mod tests {
         assert_eq!(
             sent.last().unwrap()["content"][0]["text"],
             "again, with clm"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stop_in_a_clamped_session_is_the_stop_shape_not_an_overflow() {
+        let cfg = ClmConfig {
+            max_rollbacks: 0,
+            ..ClmConfig::default()
+        };
+        let (_dir, root, mut d) = setup(cfg);
+        d.delegate.usable = 3_000;
+        d.delegate.strict = true;
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+
+        // Over the clamped limit: the final turn is granted but does not fit
+        // the model, so context-manager reports the overflow (truthfully).
+        raw.extend([reply("working on it"), user(&"x".repeat(16_000))]);
+        let final_turn = assemble(&d, request(&raw, Some(&root), 2)).await;
+        assert!(final_turn.is_err(), "{final_turn:?}");
+        assert!(d.store.load(SID).unwrap().unwrap().ctl.finalized);
+
+        // The harness's overflow retry recomputes the step: that is the stop.
+        let mut retry = request(&raw, Some(&root), 2);
+        retry.options.request_overhead_tokens = Some(500);
+        let resp = assemble(&d, retry).await.unwrap();
+        assert_eq!(resp.token_count, resp.usable + 1);
+        assert_eq!(resp.applied["strategy_stop"], STRATEGY_STOP_REASON);
+        assert_eq!(d.delegate.last()["options"]["preview_only"], true);
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert!(st.stopped);
+        assert_eq!(st.stats.stops, 1);
+    }
+
+    #[tokio::test]
+    async fn a_replay_after_a_stop_serves_the_stop_and_changes_nothing() {
+        let cfg = ClmConfig {
+            budget_tokens: 3_000,
+            reserve_tokens: 0,
+            rollback_margin_tokens: 4_000,
+            ..ClmConfig::default()
+        };
+        let (dir, root, d) = setup(cfg);
+        let mut raw = vec![user(&"t".repeat(16_000))];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([reply("working on it"), user("continue")]);
+        let stop = assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        assert_eq!(stop.applied["strategy_stop"], STRATEGY_STOP_REASON);
+        let state = dir.path().join(format!("state/{}.json", safe_id(SID)));
+        let mirror = root.join(mirror_rel(SID));
+        let files = || {
+            (
+                std::fs::read(&state).unwrap(),
+                std::fs::read(&mirror).unwrap(),
+            )
+        };
+        let before = files();
+
+        for overhead in [0, 10_000] {
+            let mut again = request(&raw, Some(&root), 2);
+            again.options.request_overhead_tokens = Some(overhead);
+            let resp = assemble(&d, again).await.unwrap();
+            assert_eq!(resp.token_count, resp.usable + 1, "overhead {overhead}");
+            assert_eq!(resp.applied["strategy_stop"], STRATEGY_STOP_REASON);
+            assert_eq!(d.delegate.last()["options"]["preview_only"], true);
+            assert_eq!(
+                d.delegate.last()["messages"],
+                d.delegate.calls.lock().unwrap()[1]["messages"]
+            );
+        }
+        assert!(
+            files() == before,
+            "a replay writes neither state nor mirror"
+        );
+        assert_eq!(d.store.load(SID).unwrap().unwrap().stats.stops, 1);
+    }
+
+    #[tokio::test]
+    async fn a_recompute_does_not_push_its_nudge_twice() {
+        let cfg = ClmConfig {
+            nudge_ratios: vec![],
+            persistent_nudge: PersistentNudge::Ratio(0.5),
+            observation_max_chars: 100_000,
+            ..ClmConfig::default()
+        };
+        let (_dir, root, mut d) = setup(cfg);
+        d.delegate.usable = 20_000;
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "cat part"), result("c1", &"y".repeat(40_000))]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        let first = d.delegate.last();
+        let nudge = messages(&first).last().unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let hint = compaction_hint(&mirror_rel(SID));
+        let lead = persistent_text(0, 0, 0.0, &hint);
+        let lead = &lead[..=lead.find(']').unwrap()];
+        assert!(nudge.starts_with(lead), "{nudge}");
+
+        // Still over half of the smaller limit, but under it: no rollback.
+        let mut retry = request(&raw, Some(&root), 2);
+        retry.options.request_overhead_tokens = Some(2_000);
+        assemble(&d, retry).await.unwrap();
+        let again = messages(&d.delegate.last());
+        assert_eq!(d.store.load(SID).unwrap().unwrap().last_overhead, 2_000);
+        let nudges = again
+            .iter()
+            .filter(|m| {
+                m["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with(lead))
+            })
+            .count();
+        assert_eq!(nudges, 1, "{again:#?}");
+        assert_eq!(again, messages(&first));
+    }
+
+    #[tokio::test]
+    async fn receipts_and_the_gate_count_in_calibrated_tokens() {
+        let (dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "ls"), result("c1", &"a.txt\n".repeat(200))]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        let st = d.store.load(SID).unwrap().unwrap();
+        let window: Vec<Msg> = st.raw0.iter().chain(&st.proj).cloned().collect();
+        let raw_before = raw_count(&section(63_488), &window);
+
+        // The model condenses turn 2 (the listing) into a note.
+        let mirror = root.join(mirror_rel(SID));
+        let text = std::fs::read_to_string(&mirror).unwrap();
+        let at = text.find("[[CTX_TURN 2 ").expect("turn 2 header");
+        let header_end = at + text[at..].find('\n').unwrap();
+        std::fs::write(&mirror, format!("{}\nnote: 200 files", &text[..header_end])).unwrap();
+        // The provider counted twice the ruler for the request step 2 sent.
+        let mut c2 = call("c2", "echo done");
+        c2["usage"] = json!({ "input": 2 * st.raw_sent });
+        raw.extend([c2, result("c2", "done")]);
+        assemble(&d, request(&raw, Some(&root), 3)).await.unwrap();
+
+        let log =
+            std::fs::read_to_string(dir.path().join(format!("state/log/{}.jsonl", safe_id(SID))))
+                .unwrap();
+        let line: Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        let edit = &line["edit"];
+        assert_eq!(edit["gate"], "applied");
+        let (before, after) = (
+            edit["before"].as_u64().unwrap(),
+            edit["after"].as_u64().unwrap(),
+        );
+        assert_eq!(before, 2 * raw_before, "the readout's unit");
+        let sent = messages(&d.delegate.last());
+        let newest = sent.last().unwrap()["content"][0]["text"].as_str().unwrap();
+        // task + the two condensed turns + the c2 call and result
+        assert!(
+            newest.ends_with(&receipt_applied(before, after, 4)),
+            "{newest}"
         );
     }
 
