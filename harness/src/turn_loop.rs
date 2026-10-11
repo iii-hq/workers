@@ -90,6 +90,16 @@ const CONTEXT_STRATEGY_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
     model: None,
 };
 
+const CONTEXT_BUDGET_STOP_FAILURE: FailureInfo<'static> = FailureInfo {
+    code: "harness.context_budget_stop",
+    phase: "context_assembly",
+    retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
+};
+
 /// Provider adapters add framing outside the fields visible to the harness.
 /// Keep a small fixed reserve in addition to the deterministic JSON estimate.
 const PROVIDER_FRAMING_ALLOWANCE_TOKENS: u64 = 64;
@@ -773,6 +783,17 @@ async fn generate_step(
                     &mut record,
                     &reason,
                     CONTEXT_OVERFLOW_FAILURE,
+                )
+                .await
+                .map(PreparedStep::Finished);
+            }
+            Err(HarnessError::ContextBudgetStop(reason)) => {
+                return finalize_failed(
+                    deps,
+                    &session,
+                    &mut record,
+                    &reason,
+                    CONTEXT_BUDGET_STOP_FAILURE,
                 )
                 .await
                 .map(PreparedStep::Finished);
@@ -2681,6 +2702,13 @@ fn failure_presentation(public_message: &str, failure: FailureInfo<'_>) -> Failu
             "The provider is busy right now.",
             &["Wait a moment, then retry the turn."],
         ),
+        "harness.context_budget_stop" => (
+            public_message,
+            &[
+                "Start a new conversation, or raise `context_budget_tokens` in the session metadata.",
+                "Or remove `context_strategy` from the session metadata to use the default.",
+            ],
+        ),
         "harness.context_strategy_unavailable" => (
             public_message,
             &[
@@ -3417,6 +3445,9 @@ async fn assemble_context(
         .await
         .map_err(|error| assemble_error(error, strategy))?;
 
+    if let Some(reason) = strategy_stop(&out) {
+        return Err(HarnessError::ContextBudgetStop(reason.to_string()));
+    }
     if out.messages.is_empty() {
         return Err(HarnessError::ContextOverflow(format!(
             "{function_id} returned an empty model-facing context"
@@ -3431,6 +3462,13 @@ async fn assemble_context(
         )));
     }
 
+    if ignore_strategy_compaction(&mut out, strategy) {
+        tracing::warn!(
+            session_id = %record.session_id,
+            turn_id = %record.turn_id,
+            "context strategy reported a compaction; ignored, no compaction entry is written"
+        );
+    }
     if strip_compacted_thinking(&mut out, &record.options.model) {
         // The assembled count still holds the stripped blocks; an unchanged
         // request reuses it for the budget reservation and the snapshot, so
@@ -3644,6 +3682,29 @@ fn assemble_error(error: String, strategy: Option<&ContextStrategy>) -> HarnessE
         }
         _ => HarnessError::Dependency(error),
     }
+}
+
+/// A strategy's deliberate end of the run: an over-budget response that
+/// carries `applied.strategy_stop`. Without the field an over-budget
+/// response keeps today's overflow path.
+fn strategy_stop(out: &crate::clients::context::AssembleOutput) -> Option<&str> {
+    out.applied
+        .strategy_stop
+        .as_deref()
+        .filter(|_| out.token_count > out.usable)
+}
+
+/// A strategy owns its context, so a `compacted` flag from one never writes
+/// a compaction entry. True when it dropped one, for the caller's warning.
+fn ignore_strategy_compaction(
+    out: &mut crate::clients::context::AssembleOutput,
+    strategy: Option<&ContextStrategy>,
+) -> bool {
+    let ignored = strategy.is_some() && out.applied.compacted;
+    if ignored {
+        out.applied.compacted = false;
+    }
+    ignored
 }
 
 /// Fold the assembly the loop already performed into the session's context
@@ -6087,5 +6148,61 @@ mod tests {
         let (reason, failure) = super::step_failure(&HarnessError::Dependency("x".into()));
         assert_eq!(reason, "harness/dependency: x");
         assert_eq!(failure.code, "harness.turn_internal");
+    }
+
+    fn assembled(value: serde_json::Value) -> crate::clients::context::AssembleOutput {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn a_strategy_stop_ends_the_run_only_over_budget() {
+        let stop = assembled(serde_json::json!({
+            "messages": [], "token_count": 101, "usable": 100,
+            "effective_max_output_tokens": 10,
+            "applied": { "strategy_stop": "budget spent after the final turn" }
+        }));
+        assert_eq!(
+            super::strategy_stop(&stop),
+            Some("budget spent after the final turn")
+        );
+        let fits = assembled(serde_json::json!({
+            "token_count": 100, "usable": 100, "effective_max_output_tokens": 10,
+            "applied": { "strategy_stop": "ignored while it fits" }
+        }));
+        assert_eq!(super::strategy_stop(&fits), None);
+        let overflow = assembled(serde_json::json!({
+            "token_count": 101, "usable": 100, "effective_max_output_tokens": 10
+        }));
+        assert_eq!(
+            super::strategy_stop(&overflow),
+            None,
+            "plain overflow keeps today's path"
+        );
+
+        let failure = super::CONTEXT_BUDGET_STOP_FAILURE;
+        assert_eq!(failure.code, "harness.context_budget_stop");
+        assert!(!failure.retryable);
+        let presentation =
+            super::failure_presentation("budget spent after the final turn", failure);
+        assert_eq!(presentation.summary, "budget spent after the final turn");
+        assert!(presentation.next_actions[0].contains("context_budget_tokens"));
+    }
+
+    #[test]
+    fn a_compaction_reported_by_a_strategy_is_ignored() {
+        let compacted = serde_json::json!({
+            "messages": [], "token_count": 1, "usable": 100,
+            "effective_max_output_tokens": 10,
+            "applied": { "compacted": true, "summary": "s" }
+        });
+        let mut out = assembled(compacted.clone());
+        assert!(super::ignore_strategy_compaction(
+            &mut out,
+            Some(&strategy("clm"))
+        ));
+        assert!(!out.applied.compacted);
+        let mut out = assembled(compacted);
+        assert!(!super::ignore_strategy_compaction(&mut out, None));
+        assert!(out.applied.compacted, "context-manager compactions stand");
     }
 }

@@ -120,6 +120,11 @@ pub struct Applied {
     pub tokens_before: Option<u64>,
     #[serde(default)]
     pub summarized_head_tokens: Option<u64>,
+    /// A context strategy ended the run on purpose: sent together with
+    /// `token_count > usable`, it fails the turn with this text
+    /// (`harness.context_budget_stop`) instead of the overflow message.
+    #[serde(default)]
+    pub strategy_stop: Option<String>,
 }
 
 pub struct AssembleParams {
@@ -175,8 +180,10 @@ impl ContextClient {
         Self { iii, timeout_ms }
     }
 
-    /// Assemble a model-ready context. The context manager is a required
-    /// dependency: callers must never fall back to unbudgeted raw history.
+    /// Assemble a model-ready context with `params.function_id`: the context
+    /// manager's `context::assemble`, or the session's strategy function. The
+    /// assembly function is a required dependency: callers must never fall
+    /// back to unbudgeted raw history.
     pub async fn assemble(&self, params: AssembleParams) -> Result<AssembleOutput, String> {
         let payload = assemble_payload(&params);
         let function_id = params.function_id;
