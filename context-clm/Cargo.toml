@@ -1,0 +1,52 @@
+[workspace]
+
+[package]
+name = "context-clm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+description = "Model-managed context for the harness: the model edits a mirror of its own context under a token budget (context-clm::assemble)."
+
+[lib]
+name = "context_clm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "context-clm"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.23.0"
+iii-config-client = { path = "../crates/config-client" }
+iii-console-ui = { path = "../crates/console-ui" }
+iii-worker-paths = { path = "../crates/worker-paths" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Must stay on the same schemars major as iii-sdk so the derived schemas line up.
+schemars = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+anyhow = "1"
+# Per-message identity hashes (projection::msg_hash) and the raw prefix hash.
+sha2 = "0.10"
+
+[target.'cfg(unix)'.dependencies]
+# O_NOFOLLOW for mirror reads: the mirror lives in an agent-writable root.
+libc = "0.2"
+
+[dev-dependencies]
+futures-util = "0.3"
+tempfile = "3"
+tokio = { version = "1", features = ["net"] }
+tokio-tungstenite = "0.28"
+
+# Prioritize release binary size; retain the default feature set.
+[profile.release]
+opt-level = "z"
+strip = true
+lto = "fat"
+codegen-units = 1

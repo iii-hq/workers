@@ -1,0 +1,13 @@
+iii: v1
+name: context-clm
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: context-clm
+tags: [context, tokens, clm, harness, llm]
+description: Model-managed context as a harness strategy (context-clm::assemble). The model edits a mirror of its own context under a token budget, with tier nudges, rollback of the newest steps, one final turn and preserved-thinking safety; a session opts in with the context_strategy metadata key.
+
+dependencies:
+  configuration: "latest"
+  context-manager: "latest"
