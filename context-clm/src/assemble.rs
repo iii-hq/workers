@@ -4,17 +4,32 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
-use serde_json::Value;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::config::ClmConfig;
 use crate::configuration::ConfigCell;
-use crate::store::Store;
-use crate::types::{AssembleRequest, AssembleResponse};
+use crate::controller::{
+    cap_newest, evaluate, exec_body, gate_rejects, note_commands, pop_step, raw_count, real_edit,
+    rollback_target, Cfg, Ctl, Decision, Nudge,
+};
+use crate::mirror::{mirror_rel, read_mirror, remove_mirror, write_mirror};
+use crate::projection::{
+    mirror_change, msg_hash, parse_mirror, render_mirror, strip_thinking, text_msg, MirrorChange,
+};
+use crate::prompt::{
+    clm_section, compaction_hint, final_text, ledger_text, readout_text, receipt_applied,
+    receipt_grew, receipt_no_change_exit, receipt_no_change_matched, receipt_rejected,
+    receipt_still_over, user_side_assistant, LedgerArgs, STRATEGY_STOP_REASON,
+};
+use crate::store::{CachedOut, SessionState, Store};
+use crate::types::{AssembleRequest, AssembleResponse, Block, Msg};
 
 pub const ASSEMBLE_ID: &str = "context-clm::assemble";
 /// Every step is delegated here for the model limits and the final fit.
@@ -71,13 +86,495 @@ pub struct Deps<D> {
     pub locks: Locks,
 }
 
-/// One harness step. Without a filesystem root (or a session id to key state
-/// by) the call is context-manager's, unchanged.
+/// One harness step. Without an absolute filesystem root (or a session id to
+/// key state by) the call is context-manager's, unchanged.
 pub async fn assemble<D: Delegate>(
     deps: &Deps<D>,
-    req: AssembleRequest,
+    mut req: AssembleRequest,
 ) -> Result<AssembleResponse, Error> {
-    forward(&deps.delegate, &req).await
+    let sid = req
+        .options
+        .session_id
+        .clone()
+        .or_else(|| req.options.lease_key.clone());
+    let (Some(root), Some(sid)) = (req.options.filesystem_root.clone(), sid) else {
+        return forward(&deps.delegate, &req).await;
+    };
+    if req.messages.is_empty() {
+        return forward(&deps.delegate, &req).await;
+    }
+    if !Path::new(&root).is_absolute() {
+        // A relative or `~` root would resolve against this worker's cwd, where
+        // the model's execs never see the mirror.
+        tracing::warn!(session_id = %sid, %root, "context-clm: filesystem root is not absolute; passing the step through");
+        return forward(&deps.delegate, &req).await;
+    }
+    // Every store call below (load, quarantine, save, append_log) runs under
+    // this guard: the store's temp file name is per session.
+    let lock = deps.locks.get(&sid);
+    let _serialized = lock.lock().await;
+    let config = deps.config.read().await.clone();
+    let mut st = match deps.store.load(&sid) {
+        Ok(st) => st.unwrap_or_default(),
+        // A torn write or a state from an incompatible worker version must not
+        // wedge the session: set it aside and rebuild from the window (the
+        // rebuilt path strips thinking). Other I/O errors stay fatal.
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            tracing::warn!(session_id = %sid, error = %e, "context-clm: unreadable session state set aside as .json.corrupt; rebuilding from the window");
+            if let Err(e) = deps.store.quarantine(&sid) {
+                tracing::warn!(session_id = %sid, error = %e, "context-clm: could not set the unreadable state aside; this step's save replaces it");
+            }
+            SessionState::default()
+        }
+        Err(e) => return Err(state_error(&sid, &e)),
+    };
+
+    // 1. Idempotency: a re-assembly of the step already served resends it
+    // unchanged. The harness's one-shot overflow recovery re-assembles the
+    // same step with a larger request overhead: that one is recomputed against
+    // the smaller room, unless the step stopped the run.
+    let key = req.options.turn_id.clone().zip(req.options.step);
+    let overhead = req.options.request_overhead_tokens.unwrap_or(0);
+    let same_step = key.is_some() && st.last_step == key;
+    if same_step && (st.stopped || st.last_overhead == overhead) {
+        if let Some(cached) = st.last_out.take() {
+            req.messages = cached.messages;
+            req.system_prompt = Some(cached.system_prompt);
+            return finish(&deps.delegate, req, st.stopped).await;
+        }
+    }
+    run_step(
+        &config,
+        &deps.store,
+        &sid,
+        &root,
+        &mut st,
+        &mut req,
+        same_step,
+    )?;
+    let resp = finish(&deps.delegate, req, st.stopped).await?;
+    // The model's usable room bounds the next step's limit; one extra write,
+    // only when it moves (first step, model change).
+    if resp.usable != st.last_usable {
+        st.last_usable = resp.usable;
+        deps.store
+            .save(&sid, &st)
+            .map_err(|e| state_error(&sid, &e))?;
+    }
+    Ok(resp)
+}
+
+/// Spec §5.2 steps 2–8: rewrite `req` into this step's outgoing projection,
+/// write the mirror and persist the session state. `recompute` = the step
+/// already served, assembled again (it is not counted as a new step).
+fn run_step(
+    config: &ClmConfig,
+    store: &Store,
+    sid: &str,
+    root: &str,
+    st: &mut SessionState,
+    req: &mut AssembleRequest,
+    recompute: bool,
+) -> Result<(), Error> {
+    let raw = std::mem::take(&mut req.messages);
+    let model = req.model.clone();
+    let overhead = req.options.request_overhead_tokens.unwrap_or(0);
+    let mut cfg = Cfg::from_config(config, req.options.budget_tokens);
+    if st.last_usable > 0 {
+        // Never plan past the model: the room context-manager reported last
+        // step, less what it also counts against that room (tools, request
+        // overhead). The limit becomes min(budget - reserve, that room).
+        let tools = (serde_json::to_string(&req.tools).map_or(0, |s| s.len()) as u64 + 1) / 4;
+        let room = st.last_usable.saturating_sub(tools + overhead);
+        cfg.budget = cfg.budget.min(room.saturating_add(cfg.reserve));
+    }
+    st.budget = cfg.budget;
+    let limit = cfg.limit();
+    // The system prompt is part of the preserved-thinking prefix, so the
+    // section states the session's first limit for good; a later clamp shows
+    // in the readout, receipts and ledger only.
+    if st.section_limit == 0 {
+        st.section_limit = limit;
+    }
+    let rel = mirror_rel(sid);
+    let hint = compaction_hint(&rel);
+    let sys = format!(
+        "{}{}",
+        req.system_prompt.as_deref().unwrap_or_default(),
+        clm_section(&rel, st.section_limit)
+    );
+
+    // 2. A rewritten raw prefix (fork, external compaction, edited history)
+    // rebuilds the projection from the window.
+    if raw.len() < st.covered
+        || (!st.prefix_hash.is_empty() && window_hash(&raw[..st.covered]) != st.prefix_hash)
+    {
+        let old = std::mem::take(st);
+        *st = SessionState {
+            ratio: old.ratio,
+            raw_sent: old.raw_sent,
+            sent_hashes: old.sent_hashes,
+            root: old.root,
+            stats: old.stats,
+            budget: old.budget,
+            last_usable: old.last_usable,
+            section_limit: old.section_limit,
+            ..SessionState::default()
+        };
+    }
+    // A stop ended the previous turn (a replay of it was served above): this
+    // step starts a new run with a fresh controller.
+    if st.stopped {
+        st.ctl = Ctl::default();
+    }
+    let is_new = st.raw0.is_none();
+    if is_new {
+        st.raw0 = Some(raw[0].clone());
+        st.covered = 1;
+    }
+    // A projection built from a window the provider saw in another shape (a
+    // reset, or a session that opted in mid-way): strip everything after the task.
+    let rebuilt = is_new && raw.len() > 1;
+    let fresh = raw[st.covered..].to_vec();
+    if !recompute {
+        st.stats.steps += 1;
+    }
+
+    // Calibrate the ruler against the provider's count of the previous request (§5.6).
+    let usage = fresh
+        .iter()
+        .rev()
+        .filter(|m| m.role == "assistant")
+        .find_map(|m| m.rest.get("usage"));
+    if let (Some(usage), true) = (usage, st.raw_sent > 0) {
+        let n = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
+        let r = (n("input") + n("cache_read") + n("cache_write")) as f64 / st.raw_sent as f64;
+        // The range also keeps NaN/inf out of the persisted state.
+        if (0.5..=3.0).contains(&r) {
+            st.ratio = r;
+        }
+    }
+    let ratio = st.ratio;
+    let cal = |msgs: &[Msg]| (raw_count(&sys, msgs) as f64 * ratio) as u64;
+
+    // The newest call and its result: this step's receipt and readout land there.
+    let last_call = fresh.iter().rev().find(|m| m.is_assistant_call());
+    let call_ids = last_call.map(Msg::call_ids).unwrap_or_default();
+    let last_res = fresh.iter().rposition(|m| {
+        m.role == "function_result"
+            && m.function_call_id()
+                .is_some_and(|id| call_ids.iter().any(|c| c == id))
+    });
+    let exec = last_res.map(|i| exec_body(&fresh[i].result_text(), cfg.observation_max_chars));
+    let cmd_text = last_call
+        .and_then(|m| m.content.iter().find(|b| b.kind == "function_call"))
+        .and_then(|b| b.rest.get("arguments"))
+        .map(Value::to_string)
+        .unwrap_or_default();
+
+    // 3. Read back the model's edit of the mirror (from the previous root when it moved).
+    let read_root = st.root.clone().unwrap_or_else(|| root.to_owned());
+    let mut notes: Vec<String> = Vec::new();
+    let mut edit = json!({ "kind": "none" });
+    if let Some(written) = st.written.clone() {
+        // An unreadable mirror (a planted `.clm` link, a hard-linked file)
+        // reads as missing: the projection is kept, the step goes on.
+        let now = read_mirror(Path::new(&read_root), sid).unwrap_or_else(|e| {
+            tracing::warn!(session_id = sid, error = %e, "context-clm: mirror read failed; keeping the projection");
+            None
+        });
+        let before = raw_count(&sys, &window(st, &st.proj, &[]));
+        match mirror_change(now.as_deref(), &written) {
+            change @ (MirrorChange::Edited | MirrorChange::Emptied) => {
+                let kind = if matches!(change, MirrorChange::Emptied) {
+                    "emptied"
+                } else {
+                    "edited"
+                };
+                let cand = parse_mirror(now.as_deref().unwrap_or_default(), &st.proj, &model);
+                let after = raw_count(&sys, &window(st, &cand, &[]));
+                if gate_rejects(before, after, cfg.fit, limit) {
+                    notes.push(receipt_rejected(before, after, before, cfg.fit, limit));
+                    st.stats.edits_rejected += 1;
+                    edit = json!({ "kind": kind, "gate": "rejected", "before": before, "after": after });
+                } else {
+                    let prefix_tokens = raw_count(&sys, &window(st, &[], &[]));
+                    let turns = 1 + prefix_len(st) + cand.len();
+                    notes.push(if after > before {
+                        receipt_grew(before, after)
+                    } else if limit > 0 && after > limit {
+                        receipt_still_over(before, after, limit)
+                    } else {
+                        receipt_applied(before, after, turns)
+                    });
+                    edit = json!({
+                        "kind": kind,
+                        "gate": "applied",
+                        "before": before,
+                        "after": after,
+                        "real": real_edit(before, after, prefix_tokens),
+                        "free": exec.as_ref().is_some_and(|e| e.silent && e.rc == Some(0)),
+                    });
+                    st.edit_mark = cand.len();
+                    st.proj = cand;
+                    st.ctl.consec = 0;
+                    st.stats.edits_applied += 1;
+                }
+            }
+            MirrorChange::Same if cmd_text.contains(".clm/") => {
+                notes.push(
+                    match exec.as_ref().and_then(|e| e.rc).filter(|rc| *rc != 0) {
+                        Some(rc) => receipt_no_change_exit(rc, before),
+                        None => receipt_no_change_matched(before),
+                    },
+                );
+                edit = json!({ "kind": "no-change" });
+            }
+            MirrorChange::Missing => edit = json!({ "kind": "missing" }),
+            MirrorChange::Same => {}
+        }
+    }
+
+    // 4. Ingest: results become `<output>\n\n(exit_code=N)`, capped to the room left.
+    // The room is in the controller's (calibrated) units and keeps space for
+    // the readout and receipts the newest result carries; +2 absorbs the
+    // ruler's per-piece rounding. Otherwise a capped output tips the step
+    // over the limit and the rollback drops the output it was cut to keep.
+    let tail =
+        (readout_text(limit, limit, None).len() + notes.iter().map(String::len).sum::<usize>()) / 4
+            + 2;
+    let raw_limit = (limit as f64 / ratio) as i64 - tail as i64;
+    let mut readout_at = None;
+    for (i, m) in fresh.iter().enumerate() {
+        if m.role != "function_result" {
+            st.proj.push(m.clone());
+            continue;
+        }
+        let body = exec_body(&m.result_text(), cfg.observation_max_chars).body;
+        let body = if limit > 0 {
+            let room = raw_limit - raw_count(&sys, &window(st, &st.proj, &[])) as i64;
+            cap_newest(&body, room, limit)
+        } else {
+            body
+        };
+        st.proj.push(with_text(m, &body));
+        if Some(i) == last_res {
+            readout_at = Some(st.proj.len() - 1);
+        }
+    }
+    st.covered = raw.len();
+    st.prefix_hash = window_hash(&raw);
+
+    // 5. Readout and receipts on the newest result.
+    if let Some(i) = readout_at.filter(|_| limit > 0) {
+        let tokens = cal(&window(st, &st.proj, &[]));
+        let text = format!(
+            "{}{}{}",
+            st.proj[i].result_text(),
+            readout_text(tokens, limit, Some(rel.as_str())),
+            notes.concat()
+        );
+        st.proj[i] = with_text(&st.proj[i], &text);
+    }
+
+    // 6. Budget controller: nudge, rollback (+ ledger), final turn, stop.
+    let tc = cal(&window(st, &st.proj, &[]));
+    let obs_max = st.proj[st.edit_mark.min(st.proj.len())..]
+        .iter()
+        .filter(|m| m.role == "function_result")
+        .rev()
+        .take(3)
+        .map(|m| (raw_count("", std::slice::from_ref(m)) as f64 * ratio) as u64)
+        .max()
+        .unwrap_or(0);
+    let mut dec = evaluate(&cfg, &mut st.ctl, tc, obs_max, st.proj.len(), &hint);
+    let mut rolled = Value::Null;
+    if matches!(dec, Decision::Rollback) {
+        let target = rollback_target(&cfg, &st.ctl);
+        // Never drop an operation the model has not seen yet: the trailing
+        // user messages (nothing answered them, in this step or in a
+        // recomputed replay) are held aside while rolling back.
+        let mut keep = Vec::new();
+        while st.proj.last().is_some_and(|m| m.role == "user") {
+            keep.extend(st.proj.pop());
+        }
+        keep.reverse();
+        let kept = keep.len();
+        let mut dropped = Vec::new();
+        while !st.proj.is_empty() && cal(&window(st, &st.proj, &keep)) > target {
+            dropped.extend(pop_step(&mut st.proj));
+        }
+        st.proj.append(&mut keep);
+        st.edit_mark = st.edit_mark.min(st.proj.len());
+        note_commands(&mut st.ctl, &dropped);
+        st.ctl.n_rolled += dropped.len();
+        let tokens_after = cal(&st.raw0.iter().chain(&st.proj).cloned().collect::<Vec<_>>());
+        let ledger = ledger_text(&LedgerArgs {
+            retry: st.ctl.n_retry,
+            max_retry: cfg.max_retry,
+            n_dropped: dropped.len(),
+            n_rolled: st.ctl.n_rolled,
+            tokens_after,
+            limit,
+            hint: hint.clone(),
+            cmds: st.ctl.cmds.clone(),
+        });
+        st.ledger = Some(text_msg("user", &ledger, &model));
+        st.stats.rollbacks += 1;
+        rolled = json!({
+            "dropped": dropped.len(),
+            "target": target,
+            "tokens_after": tokens_after,
+            "kept_ops": kept,
+        });
+        if tokens_after > limit {
+            // Only the unseen operation is left: degrade to the final-turn path.
+            dec = if st.ctl.finalized {
+                Decision::Stop
+            } else {
+                Decision::Final(final_text(tokens_after, limit))
+            };
+            st.ctl.finalized = true;
+        }
+    }
+    match &dec {
+        Decision::Final(text)
+        | Decision::Ok(Some(Nudge::Tier { text, .. } | Nudge::Persistent { text })) => {
+            st.proj.push(text_msg("user", text, &model));
+        }
+        Decision::Stop => st.stats.stops += 1,
+        Decision::Ok(None) | Decision::Rollback => {}
+    }
+    st.stopped = matches!(dec, Decision::Stop);
+    st.stats.peak_tc = st.stats.peak_tc.max(tc);
+
+    // 7. Preserved thinking: every block after the first changed message is
+    // bound to a prefix the provider will not see again.
+    let mut out = window(st, &st.proj, &[]);
+    let first_changed = (0..st.sent_hashes.len())
+        .find(|&i| out.get(i).map(msg_hash).as_ref() != Some(&st.sent_hashes[i]))
+        .unwrap_or(st.sent_hashes.len());
+    let changed = rebuilt || first_changed < st.sent_hashes.len();
+    let k = if rebuilt { 1 } else { first_changed };
+    let mut stripped = 0u64;
+    if config.strip_thinking && changed {
+        for m in out.iter_mut().skip(k) {
+            let bare = strip_thinking(m);
+            if bare != *m {
+                *m = bare;
+                stripped += 1;
+            }
+        }
+        // Persist the stripped copies so a later step cannot resurrect them.
+        if st.ledger.is_some() {
+            st.ledger = Some(out[1].clone());
+        }
+        st.proj = out[prefix_len(st)..].to_vec();
+    }
+    st.stats.stripped += stripped;
+    st.raw_sent = raw_count(&sys, &out);
+    // A trailing assistant turn cannot be prefilled on Claude: deliver its
+    // text user-side, on this request only.
+    if let Some(last) = out.last_mut().filter(|m| m.role == "assistant") {
+        let text: String = last
+            .content
+            .iter()
+            .filter(|b| b.kind == "text")
+            .filter_map(Block::text)
+            .collect();
+        *last = text_msg("user", &user_side_assistant(&text), &model);
+    }
+    st.sent_hashes = out.iter().map(msg_hash).collect();
+
+    // 8. Mirror for the next step (moved when the root changed), then persist.
+    // Mirror I/O failures never fail the step: the projection is kept and
+    // edits are read again once a write succeeds.
+    let rendered = render_mirror(&st.proj);
+    st.written = if Path::new(root).is_dir() {
+        match write_mirror(Path::new(root), sid, &rendered) {
+            Ok(()) => Some(rendered),
+            Err(e) => {
+                tracing::warn!(session_id = sid, error = %e, "context-clm: mirror write failed; edits are read again once a write succeeds");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if read_root != root {
+        // A previous root that is gone is fine (remove_mirror skips it).
+        if let Err(e) = remove_mirror(Path::new(&read_root), sid) {
+            tracing::warn!(session_id = sid, root = %read_root, error = %e, "context-clm: could not remove the mirror under the previous root");
+        }
+    }
+    st.root = Some(root.to_owned());
+    st.last_step = req.options.turn_id.clone().zip(req.options.step);
+    st.last_overhead = overhead;
+    st.last_out = Some(CachedOut {
+        messages: out.clone(),
+        system_prompt: sys.clone(),
+    });
+    store.save(sid, st).map_err(|e| state_error(sid, &e))?;
+    if config.step_log {
+        let action = match &dec {
+            Decision::Ok(_) => "ok",
+            Decision::Rollback => "rollback",
+            Decision::Final(_) => "final",
+            Decision::Stop => "stop",
+        };
+        let nudge = match &dec {
+            Decision::Ok(Some(Nudge::Tier { tier, .. })) => json!(tier),
+            Decision::Ok(Some(Nudge::Persistent { .. })) => json!("persistent"),
+            _ => Value::Null,
+        };
+        let line = json!({
+            "t": now_ms(),
+            "turn_id": req.options.turn_id,
+            "step": req.options.step,
+            "raw": raw.len(),
+            "proj": st.proj.len(),
+            "tc": tc,
+            "limit": limit,
+            "ratio": st.ratio,
+            "edit": edit,
+            "action": action,
+            "nudge": nudge,
+            "rolled": rolled,
+            "k": k,
+            "stripped": stripped,
+            "rebuilt": rebuilt,
+        });
+        if let Err(e) = store.append_log(sid, &line) {
+            tracing::warn!(session_id = sid, error = %e, "context-clm: step log append failed");
+        }
+    }
+    req.messages = out;
+    req.system_prompt = Some(sys);
+    Ok(())
+}
+
+/// Delegate the outgoing request with compaction and pruning off (CLM owns
+/// the context). `applied` always comes back an object; when the controller
+/// stopped, the response is the deliberate stop the harness reports as
+/// `harness.context_budget_stop` (spec §4.4).
+async fn finish<D: Delegate>(
+    delegate: &D,
+    mut req: AssembleRequest,
+    stopped: bool,
+) -> Result<AssembleResponse, Error> {
+    req.options.allow_prune = Some(false);
+    req.options
+        .rest
+        .insert("allow_compaction".into(), Value::Bool(false));
+    let mut resp = forward(delegate, &req).await?;
+    if !resp.applied.is_object() {
+        resp.applied = json!({});
+    }
+    if stopped {
+        resp.token_count = resp.usable.saturating_add(1);
+        resp.applied["strategy_stop"] = json!(STRATEGY_STOP_REASON);
+    }
+    Ok(resp)
 }
 
 async fn forward<D: Delegate>(
@@ -93,17 +590,76 @@ async fn forward<D: Delegate>(
         .map_err(|e| Error::Serde(format!("{CONTEXT_ASSEMBLE_ID} response: {e}")))
 }
 
+fn prefix_len(st: &SessionState) -> usize {
+    usize::from(st.raw0.is_some()) + usize::from(st.ledger.is_some())
+}
+
+/// The fixed prefix (task, ledger) followed by `body` and `tail`.
+// NOTE: clones per count, O(n²) in a deep rollback; count incrementally if a profile shows it.
+pub(crate) fn window(st: &SessionState, body: &[Msg], tail: &[Msg]) -> Vec<Msg> {
+    st.raw0
+        .iter()
+        .chain(&st.ledger)
+        .chain(body)
+        .chain(tail)
+        .cloned()
+        .collect()
+}
+
+fn with_text(m: &Msg, text: &str) -> Msg {
+    Msg {
+        content: vec![Block::new_text(text)],
+        ..m.clone()
+    }
+}
+
+/// Identity of a raw window prefix.
+// NOTE: rehashes the whole raw window twice a step; keep a running digest if it shows.
+fn window_hash(msgs: &[Msg]) -> String {
+    let mut h = Sha256::new();
+    for m in msgs {
+        h.update(msg_hash(m));
+    }
+    format!("{:x}", h.finalize())
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+pub(crate) fn state_error(sid: &str, e: &std::io::Error) -> Error {
+    Error::Handler(format!(
+        "context-clm: session state for {sid} could not be read or written: {e}. \
+         Remove `context_strategy` from the session metadata to use the default."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-    use std::path::Path;
+    use crate::config::PersistentNudge;
+    use crate::mirror::safe_id;
+    use crate::prompt::cap_note;
+    use std::path::PathBuf;
 
     const SID: &str = "sess/1";
 
-    #[derive(Default)]
     struct Fake {
         calls: Mutex<Vec<Value>>,
+        /// The `usable` room context-manager reports for the model.
+        usable: u64,
+    }
+
+    impl Default for Fake {
+        fn default() -> Self {
+            Fake {
+                calls: Mutex::default(),
+                usable: 1_000_000,
+            }
+        }
     }
 
     impl Fake {
@@ -115,6 +671,9 @@ mod tests {
                 .cloned()
                 .expect("delegate called")
         }
+        fn count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
     }
 
     impl Delegate for Fake {
@@ -124,7 +683,7 @@ mod tests {
                 "system_prompt": payload["system_prompt"].as_str().unwrap_or_default(),
                 "messages": payload["messages"],
                 "token_count": 10,
-                "usable": 1_000_000,
+                "usable": self.usable,
                 "effective_max_output_tokens": 4096,
                 "applied": { "compacted": false },
             }))
@@ -138,6 +697,14 @@ mod tests {
             config: crate::configuration::new_cell(cfg),
             locks: Locks::default(),
         }
+    }
+
+    fn setup(cfg: ClmConfig) -> (tempfile::TempDir, PathBuf, Deps<Fake>) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        let d = deps(dir.path(), cfg);
+        (dir, root, d)
     }
 
     fn request(raw: &[Value], root: Option<&Path>, step: u64) -> AssembleRequest {
@@ -162,6 +729,67 @@ mod tests {
         json!({ "role": "user", "content": [{ "type": "text", "text": text }], "timestamp": 1 })
     }
 
+    fn call(id: &str, cmd: &str) -> Value {
+        json!({
+            "role": "assistant",
+            "content": [
+                { "type": "thinking", "text": "plan the next command", "signature": "sig" },
+                { "type": "function_call", "id": id, "function_id": "shell::exec",
+                  "arguments": { "command": "bash", "args": ["-c", cmd] } },
+            ],
+            "stop_reason": "function_call",
+            "model": "claude-opus-5-5",
+            "provider": "anthropic",
+            "timestamp": 2,
+        })
+    }
+
+    fn result(id: &str, stdout: &str) -> Value {
+        let text = json!({ "exit_code": 0, "stdout": stdout, "stderr": "" }).to_string();
+        json!({
+            "role": "function_result",
+            "function_call_id": id,
+            "function_id": "shell::exec",
+            "content": [{ "type": "text", "text": text }],
+            "details": {},
+            "is_error": false,
+            "timestamp": 3,
+        })
+    }
+
+    fn reply(text: &str) -> Value {
+        json!({
+            "role": "assistant",
+            "content": [{ "type": "text", "text": text }],
+            "stop_reason": "end",
+            "model": "claude-opus-5-5",
+            "provider": "anthropic",
+            "timestamp": 4,
+        })
+    }
+
+    fn messages(payload: &Value) -> Vec<Value> {
+        payload["messages"].as_array().cloned().expect("messages")
+    }
+
+    fn has_thinking(m: &Value) -> bool {
+        m["content"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|b| b["type"] == "thinking"))
+    }
+
+    fn has_call(m: &Value, id: &str) -> bool {
+        m["content"].as_array().is_some_and(|c| {
+            c.iter()
+                .any(|b| b["type"] == "function_call" && b["id"] == id)
+        })
+    }
+
+    /// The system section a session keeps: the limit of its first CLM step.
+    fn section(limit: u64) -> String {
+        format!("BASE{}", clm_section(&mirror_rel(SID), limit))
+    }
+
     #[tokio::test]
     async fn passthrough_without_filesystem_root() {
         let dir = tempfile::tempdir().unwrap();
@@ -172,5 +800,471 @@ mod tests {
         assert_eq!(d.delegate.last(), expected);
         assert_eq!(resp.token_count, 10);
         assert!(d.store.load(SID).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn relative_root_passes_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = deps(dir.path(), ClmConfig::default());
+        for root in ["work/project", "~/project"] {
+            let req = request(&[user("task")], Some(Path::new(root)), 1);
+            let expected = serde_json::to_value(&req).unwrap();
+            assemble(&d, req).await.unwrap();
+            assert_eq!(d.delegate.last(), expected, "{root}");
+        }
+        assert!(d.store.load(SID).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn first_step_sends_the_task_with_the_clm_section_and_writes_the_mirror() {
+        let (_dir, root, d) = setup(ClmConfig::default());
+        let raw = vec![user("task")];
+        let resp = assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        let sent = d.delegate.last();
+        assert_eq!(sent["messages"], json!(raw));
+        let limit = Cfg::from_config(&ClmConfig::default(), None).limit();
+        assert_eq!(sent["system_prompt"], section(limit));
+        assert_eq!(sent["options"]["allow_compaction"], false);
+        assert_eq!(sent["options"]["allow_prune"], false);
+        assert_eq!(resp.token_count, 10);
+        assert!(read_mirror(&root, SID).unwrap().is_some());
+        assert!(root.join(".clm/.gitignore").is_file());
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!((st.covered, st.stats.steps), (1, 1));
+        assert_eq!((st.budget, st.last_usable), (65_536, 1_000_000));
+        assert_eq!(st.section_limit, limit);
+    }
+
+    #[tokio::test]
+    async fn append_only_steps_keep_every_thinking_block() {
+        let (_dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        raw.extend([call("c2", "cat a.txt"), result("c2", "hello")]);
+        assemble(&d, request(&raw, Some(&root), 3)).await.unwrap();
+        let sent = messages(&d.delegate.last());
+        assert_eq!(sent.len(), 5, "{sent:#?}");
+        assert!(has_thinking(&sent[1]) && has_thinking(&sent[3]));
+        let readout = sent[2]["content"][0]["text"].as_str().unwrap();
+        assert!(readout.contains("[context: ~"), "{readout}");
+        assert_eq!(d.store.load(SID).unwrap().unwrap().stats.stripped, 0);
+    }
+
+    #[tokio::test]
+    async fn an_applied_edit_strips_thinking_from_the_first_changed_message_on() {
+        let (_dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        raw.extend([
+            call("c2", "cat big.log"),
+            result("c2", &"log line\n".repeat(400)),
+        ]);
+        assemble(&d, request(&raw, Some(&root), 3)).await.unwrap();
+
+        // The model collapses turn 4 (the big result) into a one-line note.
+        let mirror = root.join(mirror_rel(SID));
+        let text = std::fs::read_to_string(&mirror).unwrap();
+        let at = text.find("[[CTX_TURN 4 ").expect("turn 4 header");
+        let header_end = at + text[at..].find('\n').unwrap();
+        let edited = format!("{}\nbig.log: 400 identical lines", &text[..header_end]);
+        std::fs::write(&mirror, edited).unwrap();
+
+        raw.extend([call("c3", "echo done"), result("c3", "done")]);
+        assemble(&d, request(&raw, Some(&root), 4)).await.unwrap();
+        let sent = messages(&d.delegate.last());
+        assert!(
+            has_thinking(&sent[1]),
+            "the turn before the edit keeps its thinking"
+        );
+        assert!(sent[3..].iter().all(|m| !has_thinking(m)), "{sent:#?}");
+        let c3 = sent
+            .iter()
+            .find(|m| has_call(m, "c3"))
+            .expect("c3 call kept");
+        assert_eq!(c3["role"], "assistant");
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!(st.stats.edits_applied, 1);
+        assert!(st.stats.stripped >= 1);
+    }
+
+    #[tokio::test]
+    async fn a_replayed_step_resends_the_cached_request_without_the_controller() {
+        let (_dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        let first = d.delegate.last();
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        let again = d.delegate.last();
+        assert_eq!(again["messages"], first["messages"]);
+        assert_eq!(again["system_prompt"], first["system_prompt"]);
+        assert_eq!(d.delegate.count(), 3);
+        assert_eq!(d.store.load(SID).unwrap().unwrap().stats.steps, 2);
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_state_file_rebuilds_instead_of_failing() {
+        let (dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        // A torn write (or a state from an incompatible worker version).
+        let state = dir.path().join(format!("state/{}.json", safe_id(SID)));
+        std::fs::write(&state, r#"{"covered": 3, "proj": [{"role": "us"#).unwrap();
+
+        raw.extend([call("c2", "cat a.txt"), result("c2", "hello")]);
+        let resp = assemble(&d, request(&raw, Some(&root), 3)).await.unwrap();
+        assert_eq!(resp.token_count, 10);
+        let sent = messages(&d.delegate.last());
+        assert_eq!(sent.len(), 5, "rebuilt from the whole window: {sent:#?}");
+        assert!(
+            sent[1..].iter().all(|m| !has_thinking(m)),
+            "the rebuilt path strips thinking after the task"
+        );
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!((st.covered, st.stats.steps), (5, 1));
+        let aside = dir
+            .path()
+            .join(format!("state/{}.json.corrupt", safe_id(SID)));
+        assert!(aside.is_file());
+        d.store.remove(SID).unwrap();
+        assert!(!aside.exists(), "the copy set aside goes with the session");
+    }
+
+    #[tokio::test]
+    async fn the_limit_never_exceeds_the_usable_room_the_delegate_reported() {
+        let cfg = ClmConfig {
+            observation_max_chars: 100_000,
+            ..ClmConfig::default()
+        };
+        let (_dir, root, mut d) = setup(cfg);
+        d.delegate.usable = 5_000;
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        let first = d.delegate.last();
+        assert_eq!(first["system_prompt"], section(63_488));
+        assert_eq!(d.store.load(SID).unwrap().unwrap().last_usable, 5_000);
+
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        let sent = d.delegate.last();
+        // The system section is part of the preserved-thinking prefix: it
+        // keeps the first step's limit; the clamp shows in the readout only.
+        assert_eq!(sent["system_prompt"], first["system_prompt"]);
+        let readout = messages(&sent)[2]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(readout.contains("/5000 tokens"), "{readout}");
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!((st.budget, st.section_limit), (5_000 + 2_048, 63_488));
+
+        // ~6000 tokens of output fit the configured 63488-token limit, not the model.
+        raw.extend([call("c2", "cat big.log"), result("c2", &"y".repeat(24_000))]);
+        assemble(&d, request(&raw, Some(&root), 3)).await.unwrap();
+        let sent = messages(&d.delegate.last());
+        assert!(
+            sent.iter().all(|m| m.to_string().len() < 24_000),
+            "{sent:#?}"
+        );
+        // The newest result survives, cut to the clamped room under its cap note.
+        let newest = sent
+            .iter()
+            .find(|m| m["function_call_id"] == "c2")
+            .expect("the newest result is kept");
+        let text = newest["content"][0]["text"].as_str().unwrap();
+        let note = cap_note(0, 5_000);
+        let note = &note[note.find(" characters").unwrap()..];
+        assert!(text.contains(note), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_capped_result_fits_the_calibrated_limit_and_is_not_rolled_back() {
+        let cfg = ClmConfig {
+            budget_tokens: 8_192,
+            observation_max_chars: 100_000,
+            ..ClmConfig::default()
+        };
+        let (_dir, root, d) = setup(cfg);
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        // The provider counted twice the ruler for the request step 2 sent.
+        let raw_sent = d.store.load(SID).unwrap().unwrap().raw_sent;
+        let mut c2 = call("c2", "cat big.log");
+        c2["usage"] = json!({ "input": 2 * raw_sent });
+        raw.extend([c2, result("c2", &"y".repeat(40_000))]);
+        assemble(&d, request(&raw, Some(&root), 3)).await.unwrap();
+
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!((st.ratio, st.stats.rollbacks), (2.0, 0));
+        let sent = messages(&d.delegate.last());
+        let newest = sent
+            .iter()
+            .find(|m| m["function_call_id"] == "c2")
+            .expect("the capped result is kept");
+        let text = newest["content"][0]["text"].as_str().unwrap();
+        let note = cap_note(0, 6_144);
+        assert!(
+            text.contains(&note[note.find(" characters").unwrap()..]),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_replay_with_a_larger_request_overhead_is_recomputed() {
+        let cfg = ClmConfig {
+            nudge_ratios: vec![],
+            persistent_nudge: PersistentNudge::Off,
+            observation_max_chars: 100_000,
+            ..ClmConfig::default()
+        };
+        let (_dir, root, mut d) = setup(cfg);
+        d.delegate.usable = 20_000;
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        for i in 1..=3u64 {
+            let id = format!("c{i}");
+            raw.extend([call(&id, "cat part"), result(&id, &"y".repeat(16_000))]);
+            assemble(&d, request(&raw, Some(&root), 1 + i))
+                .await
+                .unwrap();
+        }
+        raw.extend([reply("checkpoint"), user("unseen")]);
+        assemble(&d, request(&raw, Some(&root), 5)).await.unwrap();
+        let first = d.delegate.last();
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!((st.stats.rollbacks, st.stats.steps), (0, 5));
+
+        // The harness's one-shot overflow recovery: same (turn_id, step), more overhead.
+        let mut retry = request(&raw, Some(&root), 5);
+        retry.options.request_overhead_tokens = Some(10_000);
+        assemble(&d, retry.clone()).await.unwrap();
+        let again = d.delegate.last();
+        assert_ne!(again["messages"], first["messages"]);
+        // The 10000-token room drives the rollback; the section keeps the first limit.
+        assert_eq!(again["system_prompt"], first["system_prompt"]);
+        assert_eq!(again["system_prompt"], section(63_488));
+        let sent = messages(&again);
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!((st.stats.rollbacks, st.last_overhead), (1, 10_000));
+        assert_eq!(st.stats.steps, 5, "a recompute is not a new step");
+        assert_eq!(
+            sent[1],
+            serde_json::to_value(st.ledger.as_ref().unwrap()).unwrap()
+        );
+        assert_eq!(sent.last().unwrap()["content"][0]["text"], "unseen");
+
+        // Replayed again with that overhead: the recomputed step is the cache.
+        let calls = d.delegate.count();
+        assemble(&d, retry).await.unwrap();
+        assert_eq!(d.delegate.count(), calls + 1);
+        assert_eq!(d.delegate.last()["messages"], again["messages"]);
+    }
+
+    #[tokio::test]
+    async fn a_rollback_keeps_the_user_message_the_model_has_not_seen() {
+        let cfg = ClmConfig {
+            budget_tokens: 20_000,
+            reserve_tokens: 0,
+            rollback_margin_tokens: 2_000,
+            observation_max_chars: 100_000,
+            ..ClmConfig::default()
+        };
+        let (_dir, root, d) = setup(cfg);
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        for i in 1..=4u64 {
+            let id = format!("c{i}");
+            raw.extend([call(&id, "cat part"), result(&id, &"y".repeat(12_000))]);
+            assemble(&d, request(&raw, Some(&root), 1 + i))
+                .await
+                .unwrap();
+        }
+        assert_eq!(d.store.load(SID).unwrap().unwrap().stats.rollbacks, 0);
+        let unseen = "z".repeat(32_000);
+        raw.extend([reply("checkpoint"), user(&unseen)]);
+        assemble(&d, request(&raw, Some(&root), 6)).await.unwrap();
+
+        let sent = messages(&d.delegate.last());
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!(st.stats.rollbacks, 1);
+        assert_eq!(sent.last().unwrap()["content"][0]["text"], unseen.as_str());
+        assert_eq!(
+            sent[1],
+            serde_json::to_value(st.ledger.as_ref().unwrap()).unwrap()
+        );
+        assert!(
+            !sent.iter().any(|m| has_call(m, "c4")),
+            "the newest call was rolled back"
+        );
+    }
+
+    #[tokio::test]
+    async fn opting_in_on_a_long_session_rolls_back_with_a_ledger_and_never_stops() {
+        let cfg = ClmConfig {
+            budget_tokens: 16_384,
+            observation_max_chars: 100_000,
+            ..ClmConfig::default()
+        };
+        let (_dir, root, d) = setup(cfg);
+        // ~40k tokens of history from before the session opted in.
+        let mut raw = vec![user("task")];
+        for i in 1..=10 {
+            let id = format!("c{i}");
+            raw.extend([call(&id, "cat part"), result(&id, &"y".repeat(16_000))]);
+        }
+        raw.extend([reply("checkpoint"), user("next: summarize the parts")]);
+        let history: Vec<Msg> = serde_json::from_value(json!(raw)).unwrap();
+        assert!(raw_count("", &history) > 40_000);
+
+        let resp = assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        assert_eq!(resp.token_count, 10, "served, not stopped");
+        assert!(resp.applied.get("strategy_stop").is_none());
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert!(!st.stopped);
+        assert_eq!((st.stats.rollbacks, st.stats.stops), (1, 0));
+        let sent = messages(&d.delegate.last());
+        assert_eq!(
+            sent[1],
+            serde_json::to_value(st.ledger.as_ref().unwrap()).unwrap()
+        );
+        assert_eq!(
+            sent.last().unwrap()["content"][0]["text"],
+            "next: summarize the parts"
+        );
+        assert!(sent[1..].iter().all(|m| !has_thinking(m)), "{sent:#?}");
+    }
+
+    #[tokio::test]
+    async fn over_budget_after_the_final_turn_returns_the_stop_response() {
+        let cfg = ClmConfig {
+            budget_tokens: 3_000,
+            reserve_tokens: 0,
+            rollback_margin_tokens: 4_000,
+            ..ClmConfig::default()
+        };
+        let (_dir, root, d) = setup(cfg);
+        let mut raw = vec![user(&"t".repeat(16_000))];
+        let first = assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        assert_eq!(first.token_count, 10, "the final turn is still served");
+        raw.extend([reply("working on it"), user("continue")]);
+        let resp = assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        assert_eq!(resp.token_count, resp.usable + 1);
+        assert_eq!(resp.applied["strategy_stop"], STRATEGY_STOP_REASON);
+        assert_eq!(resp.applied["compacted"], false);
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert!(st.stopped);
+        assert_eq!(st.stats.stops, 1);
+    }
+
+    #[tokio::test]
+    async fn a_turn_after_a_stop_gets_a_final_turn_before_stopping_again() {
+        let cfg = ClmConfig {
+            budget_tokens: 3_000,
+            reserve_tokens: 0,
+            rollback_margin_tokens: 4_000,
+            ..ClmConfig::default()
+        };
+        let (_dir, root, d) = setup(cfg);
+        let mut raw = vec![user(&"t".repeat(16_000))];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([reply("working on it"), user("continue")]);
+        let stop = assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        assert_eq!(stop.applied["strategy_stop"], STRATEGY_STOP_REASON);
+
+        // Opted out for a turn on context-manager, then back in: a new turn.
+        raw.extend([
+            user("plain turn"),
+            reply("done without clm"),
+            user("with clm again"),
+        ]);
+        let mut next = request(&raw, Some(&root), 1);
+        next.options.turn_id = Some("turn-2".into());
+        let resp = assemble(&d, next).await.unwrap();
+        assert!(resp.applied.get("strategy_stop").is_none(), "{resp:?}");
+        assert_eq!(resp.token_count, 10);
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert!(
+            !st.stopped && st.ctl.finalized,
+            "a fresh run took its final turn"
+        );
+        assert_eq!(st.stats.stops, 1);
+    }
+
+    #[tokio::test]
+    async fn an_opt_in_after_a_rewritten_history_rebuilds_and_strips_from_the_task_on() {
+        let (_dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        // The run had stopped before the user opted out.
+        let mut old = d.store.load(SID).unwrap().unwrap();
+        old.stopped = true;
+        old.ctl.finalized = true;
+        old.ctl.n_retry = 50;
+        d.store.save(SID, &old).unwrap();
+
+        // While opted out, context-manager rewrote a covered message; turns went on.
+        let rewritten = vec![
+            user("task"),
+            call("c1", "ls"),
+            result("c1", "a.txt (output pruned)"),
+            call("c2", "cat a.txt"),
+            result("c2", "hello"),
+            reply("done"),
+            user("again, with clm"),
+        ];
+        let mut req = request(&rewritten, Some(&root), 1);
+        req.options.turn_id = Some("turn-2".into());
+        let resp = assemble(&d, req).await.unwrap();
+        assert!(resp.applied.get("strategy_stop").is_none());
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert!(!st.stopped);
+        assert_eq!((st.ctl.n_retry, st.ctl.finalized), (0, false));
+        assert_eq!(st.covered, rewritten.len());
+        let sent = messages(&d.delegate.last());
+        assert_eq!(sent.len(), rewritten.len(), "{sent:#?}");
+        assert!(sent[1..].iter().all(|m| !has_thinking(m)), "{sent:#?}");
+        assert_eq!(
+            sent.last().unwrap()["content"][0]["text"],
+            "again, with clm"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_planted_clm_link_stops_mirror_io_without_failing_the_step() {
+        let (dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        // The agent swaps `.clm` for a link to a mirror it planted elsewhere.
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let name = Path::new(&mirror_rel(SID)).file_name().unwrap().to_owned();
+        std::fs::write(elsewhere.join(name), "[[CTX_TURN 1 role=user]]\nPLANTED").unwrap();
+        std::fs::remove_dir_all(root.join(".clm")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join(".clm")).unwrap();
+
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        let resp = assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        assert_eq!(resp.token_count, 10, "the step is served");
+        let sent = messages(&d.delegate.last());
+        assert_eq!(sent.len(), 3, "{sent:#?}");
+        assert!(!sent.iter().any(|m| m.to_string().contains("PLANTED")));
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert!(
+            st.written.is_none(),
+            "mirror I/O stops; the projection is kept"
+        );
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 1);
     }
 }

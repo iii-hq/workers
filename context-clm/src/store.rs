@@ -45,6 +45,13 @@ pub struct SessionState {
     pub root: Option<String>,
     /// The run was ended by the controller.
     pub stopped: bool,
+    /// `usable` that context-manager reported on the last delegated step (0 = none yet).
+    pub last_usable: u64,
+    /// `request_overhead_tokens` of the step in `last_out`; a replay with another value is recomputed.
+    pub last_overhead: u64,
+    /// The limit the system section states, fixed on the session's first CLM
+    /// step so the section stays byte-stable (0 = not set yet).
+    pub section_limit: u64,
     /// Effective budget of the last step, in tokens (the session's
     /// `context_budget_tokens`, else the worker default, lowered to the
     /// model's usable room); 0 before any step.
@@ -70,6 +77,9 @@ impl Default for SessionState {
             last_out: None,
             root: None,
             stopped: false,
+            last_usable: 0,
+            last_overhead: 0,
+            section_limit: 0,
             budget: 0,
             stats: Stats::default(),
         }
@@ -111,6 +121,16 @@ impl Store {
         self.dir.join(format!("{}.json", safe_id(sid)))
     }
 
+    fn corrupt_path(&self, sid: &str) -> PathBuf {
+        self.dir.join(format!("{}.json.corrupt", safe_id(sid)))
+    }
+
+    /// Set an unreadable state file aside as `<safe>.json.corrupt`, replacing
+    /// an older one; `remove` deletes it with the session.
+    pub fn quarantine(&self, sid: &str) -> io::Result<()> {
+        fs::rename(self.state_path(sid), self.corrupt_path(sid))
+    }
+
     fn log_path(&self, sid: &str) -> PathBuf {
         self.dir.join("log").join(format!("{}.jsonl", safe_id(sid)))
     }
@@ -130,9 +150,10 @@ impl Store {
         write_private(&self.state_path(sid), &serde_json::to_vec(state)?)
     }
 
-    /// Delete the session's state and step log; missing files are fine.
+    /// Delete the session's state (and a copy set aside) and step log; missing files are fine.
     pub fn remove(&self, sid: &str) -> io::Result<()> {
         remove_if_exists(&self.state_path(sid))?;
+        remove_if_exists(&self.corrupt_path(sid))?;
         remove_if_exists(&self.log_path(sid))
     }
 

@@ -43,6 +43,9 @@ fn populated() -> SessionState {
         }),
         root: Some("/work".into()),
         stopped: false,
+        last_usable: 200_000,
+        last_overhead: 512,
+        section_limit: 30_720,
         budget: 32_768,
         stats: Stats {
             steps: 3,
