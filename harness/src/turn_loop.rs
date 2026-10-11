@@ -25,7 +25,8 @@ use crate::types::event::ErrorKind;
 use crate::types::message::{empty_assistant, AgentMessage, AssistantMessage};
 use crate::types::model::AgentFunction;
 use crate::types::turn::{
-    CallCheckpoint, CallState, ExposeMode, FunctionPolicy, ResponseLanguage, TurnRecord, TurnStatus,
+    CallCheckpoint, CallState, ContextStrategy, ExposeMode, FunctionPolicy, ResponseLanguage,
+    TurnRecord, TurnStatus,
 };
 
 #[derive(Clone, Copy)]
@@ -3380,6 +3381,7 @@ async fn assemble_context(
         .collect();
 
     let context = deps.context().await;
+    let strategy = record.options.effective_context_strategy();
     let params = crate::clients::AssembleParams {
         messages: candidate_values,
         model_id: record.options.model.clone(),
@@ -3401,6 +3403,15 @@ async fn assemble_context(
         // model that binds thinking to the prefix that drops the reasoning
         // of every later step. Compaction still bounds the window.
         allow_prune: crate::window::binds_thinking(&record.options.model).then_some(false),
+        function_id: strategy.map_or_else(
+            || crate::clients::context::CONTEXT_MANAGER_ASSEMBLE.to_string(),
+            ContextStrategy::function_id,
+        ),
+        session_id: record.session_id.clone(),
+        turn_id: record.turn_id.clone(),
+        step,
+        filesystem_root: record.options.filesystem_root().map(str::to_string),
+        budget_tokens: strategy.and_then(|s| s.budget_tokens),
     };
 
     let mut out = match context.assemble(params).await {
