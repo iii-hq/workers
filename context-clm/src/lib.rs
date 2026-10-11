@@ -6,3 +6,5 @@
 
 /// Worker identity: catalog slug, binary and registered worker name.
 pub const WORKER_NAME: &str = "context-clm";
+
+pub mod types;
