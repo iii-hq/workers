@@ -14,5 +14,6 @@ pub mod controller;
 pub mod mirror;
 pub mod projection;
 pub mod prompt;
+pub mod status;
 pub mod store;
 pub mod types;
