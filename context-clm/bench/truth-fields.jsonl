@@ -1,0 +1,40 @@
+{"id": "coder::change-diff", "scope": "ide", "fields": ["change_id"]}
+{"id": "coder::create-file", "scope": "ide", "fields": ["files"]}
+{"id": "coder::delete-file", "scope": "ide", "fields": ["paths", "recursive"]}
+{"id": "coder::info", "scope": "ide", "fields": []}
+{"id": "coder::list-folder", "scope": "ide", "fields": ["page", "page_size", "path"]}
+{"id": "coder::list-templates", "scope": "ide", "fields": ["refresh"]}
+{"id": "coder::move", "scope": "ide", "fields": ["files"]}
+{"id": "coder::read-file", "scope": "ide", "fields": ["encoding", "line_from", "line_to", "max_output_bytes", "numbered", "path", "paths", "stat"]}
+{"id": "coder::scaffold-worker", "scope": "ide", "fields": ["directory", "name", "operation_id", "start", "start_after", "template"]}
+{"id": "coder::search", "scope": "ide", "fields": ["context_lines_after", "context_lines_before", "exclude_globs", "fuzzy_paths", "ignore_case", "include_globs", "include_hidden", "max_line_bytes", "max_matches", "path", "query", "regex", "respect_gitignore", "search_content", "search_paths", "use_default_excludes"]}
+{"id": "coder::tree", "scope": "ide", "fields": ["include_hidden", "max_depth", "path", "per_folder_limit", "use_default_excludes"]}
+{"id": "coder::update-file", "scope": "ide", "fields": ["files"]}
+{"id": "shell::exec", "scope": "ide", "fields": ["args", "command", "cwd", "env", "stdin", "target", "timeout_ms"]}
+{"id": "shell::exec_bg", "scope": "ide", "fields": ["args", "command", "cwd", "env", "job_id", "stdin", "target", "timeout_ms"]}
+{"id": "shell::fs::chmod", "scope": "ide", "fields": ["gid", "mode", "path", "recursive", "target", "uid"]}
+{"id": "shell::fs::grep", "scope": "ide", "fields": ["exclude_glob", "ignore_case", "include_glob", "max_line_bytes", "max_matches", "path", "pattern", "recursive", "target"]}
+{"id": "shell::fs::ls", "scope": "ide", "fields": ["page", "page_size", "path", "target"]}
+{"id": "shell::fs::mkdir", "scope": "ide", "fields": ["mode", "parents", "path", "target"]}
+{"id": "shell::fs::mv", "scope": "ide", "fields": ["dst", "overwrite", "src", "target"]}
+{"id": "shell::fs::read", "scope": "ide", "fields": ["path", "target"]}
+{"id": "shell::fs::rm", "scope": "ide", "fields": ["path", "recursive", "target"]}
+{"id": "shell::fs::sed", "scope": "ide", "fields": ["exclude_glob", "files", "first_only", "ignore_case", "include_glob", "path", "pattern", "recursive", "regex", "replacement", "target"]}
+{"id": "shell::fs::stat", "scope": "ide", "fields": ["path", "target"]}
+{"id": "shell::fs::write", "scope": "ide", "fields": ["content", "files", "mode", "parents", "path", "target"]}
+{"id": "harness::ask", "scope": "harness", "fields": ["questions"]}
+{"id": "harness::context-policy", "scope": "harness", "fields": ["model"]}
+{"id": "harness::delete-session-tree-status", "scope": "harness", "fields": ["operation_id"]}
+{"id": "harness::delete-session-tree", "scope": "harness", "fields": ["session_id"]}
+{"id": "harness::function::resolve", "scope": "harness", "fields": ["action", "content", "details", "fs_scope", "function_call_id", "is_error", "session_id", "turn_id"]}
+{"id": "harness::function::trigger", "scope": "harness", "fields": ["call", "session_id"]}
+{"id": "harness::metrics", "scope": "harness", "fields": ["root_session_id", "session_id"]}
+{"id": "harness::send", "scope": "harness", "fields": ["idempotency_key", "message", "model", "options", "provider", "session", "session_id"]}
+{"id": "harness::session-tree", "scope": "harness", "fields": ["root_session_id"]}
+{"id": "harness::spawn", "scope": "harness", "fields": ["agent", "display", "model", "options", "parent_session_id", "provider", "session_id", "task"]}
+{"id": "harness::status", "scope": "harness", "fields": ["session_id", "verbose"]}
+{"id": "harness::stop", "scope": "harness", "fields": ["session_id", "turn_id"]}
+{"id": "harness::system-prompt::get", "scope": "harness", "fields": ["default_only", "filesystem_root", "selected_prompt", "session_id"]}
+{"id": "harness::triggers::list", "scope": "harness", "fields": ["session_id"]}
+{"id": "harness::triggers::unregister", "scope": "harness", "fields": ["session_id", "subscription_id"]}
+{"id": "harness::turn", "scope": "harness", "fields": ["depth", "message_preview", "session_id", "step", "turn_id"]}
