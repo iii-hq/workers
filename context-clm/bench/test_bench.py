@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import report
 import run
 from ctxbench import answer, answer_re, gen
 from skills import DROP_FILLER, OFFLOAD, answer_cmd, skill
@@ -140,6 +141,46 @@ def test_long_snapshots():
         assert "inferred_ops" in (root / "ide/tests/code_update_ops.rs").read_text()
         assert "inferred_ops" not in (root / "ide/src/code/functions/update_file.rs").read_text()
         assert (root / "ide/ui/dist/page.js").exists() and not (root / "ide/ui/package.json").exists()
+
+
+def test_report_checks():
+    base = {"level": 0, "seed": 0, "status": "completed", "llm_calls": 10, "drops": 0, "strategy": {}}
+    kv = {"arm": "clm", "task": "kv", "level": 1000, "ops_delivered": 34, "ops_total": 34}
+    rows = [
+        {**base, **kv, "model": run.S55, "score": 1.0, "cost_usd": 1.0, "peak_prompt": 30000},
+        {
+            **base,
+            "arm": "clm",
+            "task": "http-brace",
+            "model": run.S55,
+            "score": 1.0,
+            "cost_usd": 2.0,
+            "peak_prompt": 4e4,
+        },
+        {
+            **base,
+            "arm": "default",
+            "task": "http-brace",
+            "model": run.S55,
+            "score": 1.0,
+            "cost_usd": 3.0,
+            "peak_prompt": 9e4,
+        },
+    ]
+    assert all(ok for _, ok, _ in report.checks(rows)) and len(report.checks(rows)) == 5
+    stats = {"peak_tc": 28000, "edits_applied": 3, "rollbacks": 1}
+    rows[0]["strategy"] = {"found": True, "budget_tokens": 60621, "stats": stats}
+    row = "| kv 1000 clm | 1 | 1.00 | 1.00 | 1.00 | 30000 | 28000 | 0/1 | 3.0 | 1.0 | – | – | 0 | 1.00 |"
+    assert row in report.tables(rows)
+    rows[0]["drops"] = 2
+    rows[1]["cost_usd"] = 5.0
+    failed = [name for name, ok, _ in report.checks(rows) if not ok]
+    assert failed == ["zero thinking-drop events on clm", "long Sonnet 5.5: clm cost <= default"]
+    with tempfile.TemporaryDirectory() as d:
+        Path(d, "results").mkdir()
+        for i, r in enumerate(rows):
+            Path(d, "results", f"{i}.json").write_text(json.dumps(r))
+        assert report.main([d, "--check"]) == 1 and report.main([d]) == 0
 
 
 if __name__ == "__main__":
