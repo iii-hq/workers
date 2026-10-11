@@ -1,6 +1,6 @@
 // Bench-only comparison arms for context-clm (never shipped): `sum` = Codex-style summary at 75% of the budget,
 // `base` = no management (one final turn over the limit, then stop). Both use the same ruler, calibration,
-// observation rendering, caps and readout as the CLM arm, so every arm hits the same wall.
+// caps and readout as the CLM arm, so every arm hits the same wall.
 import { createHash } from 'node:crypto'
 
 export type Block = { type: string; [k: string]: any }
@@ -26,6 +26,9 @@ export type State = {
   stopped: boolean
   lastKey: string | null
   lastOut: Msg[] | null
+  lastTc: number
+  /** Calibrated size at the last summary attempt (sum arm), so a summary that stays big is not redone every step. */
+  sumTc: number
   budget: number
   stats: Stats
 }
@@ -50,8 +53,8 @@ export const SUMMARY_PREFIX = `Another language model started to solve this prob
 export const STOP_TEXT =
   'context budget exhausted: the final turn ended with the context still over the limit, so the run was stopped'
 
-export const finalText = (tokens: number, budget: number) =>
-  `[context budget reached: ~${tokens}/${budget} tokens] This is your final turn. Finish now: put your answer or ` +
+export const finalText = (tokens: number, limit: number) =>
+  `[context limit reached: ~${tokens}/${limit} tokens] This is your final turn. Finish now: put your answer or ` +
   'result where the task asks for it. The run ends after this turn.'
 
 export const readout = (tokens: number, limit: number) =>
@@ -68,6 +71,8 @@ export const newState = (): State => ({
   stopped: false,
   lastKey: null,
   lastOut: null,
+  lastTc: 0,
+  sumTc: 0,
   budget: 0,
   stats: { steps: 0, peak_tc: 0, stops: 0, summaries: 0, summary_failures: 0, summary_cost_usd: 0 },
 })
@@ -96,10 +101,10 @@ function pieces(blocks: Block[] = [], out: string[] = []): string[] {
   return out
 }
 
-/** Raw ruler: characters of the text pieces / 4 (the CLM arm's uncalibrated count). */
+/** Raw ruler: UTF-8 bytes of the text pieces / 4 (the CLM arm's uncalibrated count). */
 export function rawCount(system: string, msgs: Msg[]): number {
-  let n = system.length
-  for (const m of msgs) for (const p of pieces(m.content)) n += p.length
+  let n = Buffer.byteLength(system)
+  for (const m of msgs) for (const p of pieces(m.content)) n += Buffer.byteLength(p)
   return Math.floor((n + 1) / 4)
 }
 
@@ -128,11 +133,11 @@ export function execBody(text: string, max = OBS_MAX_CHARS): string {
 }
 
 /** Cut the middle of the newest result when it does not fit the room left under the limit. */
-export function capNewest(text: string, room: number, budget: number): string {
-  if (Math.floor((text.length + 1) / 4) <= room) return text
+export function capNewest(text: string, room: number, limit: number): string {
+  if (Math.floor((Buffer.byteLength(text) + 1) / 4) <= room) return text
   const half = Math.floor(Math.max((Math.max(room, 128) - 48) * 4, 512) / 2)
   if (text.length <= 2 * half) return text
-  return `${text.slice(0, half)}\n\n[${text.length - 2 * half} chars cut to stay inside the ${budget}-token context budget; run a narrower command]\n\n${text.slice(-half)}`
+  return `${text.slice(0, half)}\n\n[${text.length - 2 * half} chars cut to stay inside the ${limit}-token context limit; run a narrower command]\n\n${text.slice(-half)}`
 }
 
 export function renderMsg(m: Msg): string {
@@ -160,12 +165,15 @@ export async function step(
   key: string | null,
   summarize: Summarize,
 ): Promise<{ messages: Msg[]; stop: boolean; tc: number }> {
-  if (key && key === s.lastKey && s.lastOut) return { messages: s.lastOut, stop: s.stopped, tc: s.stats.peak_tc }
+  if (key && key === s.lastKey && s.lastOut) return { messages: s.lastOut, stop: s.stopped, tc: s.lastTc }
   const raw = req.messages
+  if (!raw.length) return { messages: raw, stop: false, tc: 0 }
   const limit = Math.max(cfg.budget - RESERVE, 0)
   s.budget = cfg.budget
   if (raw.length < s.covered || (s.hash && digest(raw.slice(0, s.covered)) !== s.hash))
-    Object.assign(s, { raw0: null, covered: 1, hash: '', proj: [], finalized: false })
+    Object.assign(s, { raw0: null, covered: 1, hash: '', proj: [], finalized: false, sumTc: 0 })
+  // A stop ended the previous turn: this step starts a new run (the CLM arm resets its controller the same way).
+  if (s.stopped) s.finalized = false
   if (!s.raw0) s.raw0 = raw[0]
   const head = s.raw0
   const cal = (msgs: Msg[]) => Math.floor(rawCount(req.system, msgs) * s.ratio)
@@ -185,8 +193,12 @@ export async function step(
       s.proj.push(m)
       continue
     }
-    const room = limit - rawCount(req.system, [head, ...s.proj])
-    s.proj.push(withText(m, capNewest(execBody(resultText(m)), room, cfg.budget)))
+    // Calibrated limit in raw units, less the readout this result will carry (same room as the CLM arm).
+    const room =
+      Math.floor(limit / s.ratio) -
+      (Math.floor(readout(limit, limit).length / 4) + 2) -
+      rawCount(req.system, [head, ...s.proj])
+    s.proj.push(withText(m, capNewest(execBody(resultText(m)), room, limit)))
     if (m === lastRes) readoutAt = s.proj.length - 1
   }
   s.covered = raw.length
@@ -194,12 +206,17 @@ export async function step(
 
   if (cfg.arm === 'sum') {
     const lone = s.proj.length === 1 && resultText(s.proj[0]).startsWith(SUMMARY_PREFIX)
-    if (s.proj.length && !lone && cal([head, ...s.proj]) >= Math.round(0.75 * cfg.budget)) {
+    const size = cal([head, ...s.proj])
+    const grew = !s.sumTc || size >= s.sumTc + Math.round(0.05 * cfg.budget)
+    if (s.proj.length && !lone && grew && size >= Math.round(0.75 * cfg.budget)) {
+      s.sumTc = size
       const r = await summarize(renderWindow([head, ...s.proj]))
       s.stats.summary_cost_usd += r.cost
       if (r.text) {
         s.proj = [textMsg('user', `${SUMMARY_PREFIX}\n${r.text}`)]
         s.stats.summaries++
+        // The next summary waits for the next crossing; only a failed attempt keeps the pre-summary size.
+        s.sumTc = cal([head, ...s.proj])
         readoutAt = -1
       } else s.stats.summary_failures++
     }
@@ -216,7 +233,7 @@ export async function step(
     if (s.finalized) stop = true
     else {
       s.finalized = true
-      s.proj.push(textMsg('user', finalText(tc, cfg.budget)))
+      s.proj.push(textMsg('user', finalText(tc, limit)))
     }
   } else s.finalized = false
   s.stats.steps++
@@ -227,5 +244,6 @@ export async function step(
   s.rawSent = rawCount(req.system, out)
   s.lastKey = key
   s.lastOut = out
+  s.lastTc = tc
   return { messages: out, stop, tc }
 }

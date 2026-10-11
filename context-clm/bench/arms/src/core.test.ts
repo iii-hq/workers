@@ -32,7 +32,7 @@ test('capNewest keeps text that fits and cuts the middle of text that does not',
   assert.equal(capNewest('abc', 10, 65536), 'abc')
   const cut = capNewest('x'.repeat(4000), 200, 65536)
   assert.ok(cut.length < 1000 && cut.startsWith('x'.repeat(304)) && cut.endsWith('x'.repeat(304)))
-  assert.match(cut, /3392 chars cut to stay inside the 65536-token context budget/)
+  assert.match(cut, /3392 chars cut to stay inside the 65536-token context limit/)
 })
 
 test('base: readout on the newest result, one final turn over the limit, then stop', async () => {
@@ -87,4 +87,51 @@ test('a rewritten history rebuilds the projection from the window', async () => 
   await step(s, { messages: [user('task'), user('one')], system: '' }, cfg, 't:0', noSum)
   const r = await step(s, { messages: [user('task'), user('two')], system: '' }, cfg, 't:1', noSum)
   assert.deepEqual(r.messages.map(resultText), ['task', 'two'])
+})
+
+test('with a calibration ratio above 1 the newest result is cut to fit the calibrated limit, not given a final turn', async () => {
+  const s = newState()
+  const cfg = { arm: 'base', budget: 16384 } as const
+  const raw: Msg[] = [user(`task ${'a'.repeat(34_000)}`), call('c1'), result('c1', 'out')]
+  await step(s, { messages: raw, system: '' }, cfg, 't:0', noSum)
+  raw.push({ ...call('c2'), usage: { input: Math.round(1.5 * s.rawSent) } }, result('c2', 'z'.repeat(9000)))
+  const r = await step(s, { messages: raw, system: '' }, cfg, 't:1', noSum)
+  assert.equal(s.ratio.toFixed(2), '1.50')
+  assert.match(resultText(r.messages.at(-1)!), /chars cut to stay inside the 14336-token context limit/)
+  assert.ok(r.tc <= 16384 - 2048, `tc ${r.tc}`)
+  assert.equal(s.finalized, false)
+})
+
+test('a new turn after a stop gets its own final turn, and a replay reports that step, not the peak', async () => {
+  const s = newState()
+  const cfg = { arm: 'base', budget: 4096 } as const
+  const raw = [user('task'), user('y'.repeat(9000))]
+  const r1 = await step(s, { messages: raw, system: '' }, cfg, 't1:0', noSum)
+  assert.match(resultText(r1.messages.at(-1)!), /This is your final turn/)
+  raw.push(call('c1'), result('c1', 'z'))
+  const r2 = await step(s, { messages: raw, system: '' }, cfg, 't1:1', noSum)
+  assert.equal(r2.stop, true)
+  const again = await step(s, { messages: raw, system: '' }, cfg, 't1:1', noSum)
+  assert.deepEqual([again.stop, again.tc], [true, r2.tc])
+  raw.push(user('next question'))
+  const r3 = await step(s, { messages: raw, system: '' }, cfg, 't2:0', noSum)
+  assert.equal(r3.stop, false)
+  assert.match(resultText(r3.messages.at(-1)!), /This is your final turn/)
+})
+
+test('sum: a summary that stays above 75% is not redone every step', async () => {
+  const s = newState()
+  const cfg = { arm: 'sum', budget: 16384 } as const
+  let calls = 0
+  const big = async () => {
+    calls++
+    return { text: 'S'.repeat(52_000), cost: 0 }
+  }
+  const raw = [user('task'), user('a'.repeat(50_000))]
+  await step(s, { messages: raw, system: '' }, cfg, 't:0', big)
+  for (let i = 1; i <= 3; i++) {
+    raw.push(user(`more ${i}`))
+    await step(s, { messages: raw, system: '' }, cfg, `t:${i}`, big)
+  }
+  assert.equal(calls, 1)
 })
