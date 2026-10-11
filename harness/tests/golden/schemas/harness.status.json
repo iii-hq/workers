@@ -490,6 +490,39 @@
         ],
         "type": "object"
       },
+      "ContextStrategy": {
+        "description": "A session's non-default context strategy, read from its `context_strategy` / `context_budget_tokens` metadata by `harness::send` and frozen onto the turn. The name only ever selects `context-<name>::assemble`; it is never used as a function id itself.",
+        "properties": {
+          "budget_tokens": {
+            "description": "Per-session budget for the strategy; `None` = its configured default.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "effective": {
+            "description": "Decided once as the turn is seeded: false when the turn has no filesystem root or may not call `shell::exec`, and it then assembles with `context::assemble`.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Validated `^[a-z0-9-]{1,64}$`, never `default`.",
+            "type": "string"
+          },
+          "skipped_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "effective",
+          "name"
+        ],
+        "type": "object"
+      },
       "CustomMessage": {
         "properties": {
           "content": {
@@ -792,6 +825,18 @@
             ],
             "default": null,
             "description": "The last generate step's context accounting (budget, categories, provider-exact usage once it lands) — what a UI meter should show instead of re-estimating the transcript. Verbose only; absent before the first generate."
+          },
+          "context_strategy": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ContextStrategy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The turn's context strategy (`context_strategy` session metadata) as frozen at turn start: whether it runs, or why it was skipped. Verbose only; absent when the session uses the default."
           },
           "depth": {
             "format": "uint32",

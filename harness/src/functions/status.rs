@@ -71,6 +71,11 @@ pub struct StatusReport {
     /// the first generate.
     #[serde(default)]
     pub context: Option<crate::context_snapshot::ContextSnapshotV1>,
+    /// The turn's context strategy (`context_strategy` session metadata) as
+    /// frozen at turn start: whether it runs, or why it was skipped. Verbose
+    /// only; absent when the session uses the default.
+    #[serde(default)]
+    pub context_strategy: Option<crate::types::turn::ContextStrategy>,
 }
 
 const LEAN_RESULT_CHAR_LIMIT: usize = 600;
@@ -130,6 +135,7 @@ impl Serialize for StatusReport {
             serialize_non_empty(&mut report, "armed_wakes", &self.armed_wakes)?;
             serialize_non_empty(&mut report, "queued", &self.queued)?;
             serialize_optional(&mut report, "context", &self.context)?;
+            serialize_optional(&mut report, "context_strategy", &self.context_strategy)?;
         }
 
         if let Some(result) = &self.result {
@@ -271,6 +277,10 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
         expects_wake,
         armed_wakes,
         context,
+        context_strategy: req
+            .verbose
+            .then(|| record.options.context_strategy.as_deref().cloned())
+            .flatten(),
     }))
 }
 
@@ -482,5 +492,40 @@ mod tests {
         assert_eq!(serialized, expected);
         assert_eq!(serialized["pending_function_calls"], json!([]));
         assert!(!serialized.as_object().unwrap().contains_key("result_error"));
+    }
+
+    #[test]
+    fn verbose_status_reports_the_context_strategy_and_lean_status_does_not() {
+        let strategy = json!({
+            "name": "clm",
+            "budget_tokens": 16384,
+            "effective": false,
+            "skipped_reason": "shell::exec not allowed"
+        });
+        let fixture = json!({
+            "session_id": "s_parent",
+            "turn_id": "t_parent",
+            "status": "running",
+            "step": 1,
+            "turn_count": 1,
+            "max_turns": 12,
+            "validation_retries": 0,
+            "max_validation_retries": 2,
+            "transient_resumes": 0,
+            "max_transient_resumes": 3,
+            "partial_result_available": false,
+            "depth": 0,
+            "pending_function_calls": [],
+            "children": [],
+            "expects_wake": false,
+            "context_strategy": strategy
+        });
+        let report: StatusReport = serde_json::from_value(fixture.clone()).unwrap();
+        assert_eq!(serde_json::to_value(report).unwrap(), fixture);
+
+        let mut lean = lean_report(None);
+        lean.context_strategy = serde_json::from_value(strategy).unwrap();
+        let serialized = serde_json::to_value(lean).unwrap();
+        assert!(!keys(&serialized).contains("context_strategy"));
     }
 }
