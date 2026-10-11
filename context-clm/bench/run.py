@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -55,7 +56,7 @@ LONG = {
         "fix": "6183f131d",
         "paths": ["http", "crates", "rust-toolchain.toml"],
         "tests": ["http/src/trigger.rs", "http/tests/e2e_routing.rs", "http/tests/webhook_listener.rs"],
-        "restore": ["http/tests/e2e_routing.rs", "http/tests/webhook_listener.rs"],
+        "splice_tests": ["http/src/trigger.rs"],
         "solution": ["http/src/types.rs"],
         "required": [
             "trigger::tests::register_trigger_with_brace_parameters_normalizes_and_matches",
@@ -90,13 +91,92 @@ LONG = {
         "exclude": ["ide/ui"],
         "stubs": ["ide/ui/dist/page.js", "ide/ui/dist/styles.css", "ide/ui/dist/xterm.js"],
         "tests": ["ide/tests/code_update_ops.rs", "ide/tests/code_golden_errors.rs"],
-        "restore": ["ide/tests/code_update_ops.rs", "ide/tests/code_golden_errors.rs"],
         "solution": [
             "ide/src/code/functions/create_file.rs",
             "ide/src/code/functions/mod.rs",
             "ide/src/code/functions/update_file.rs",
         ],
-        "required": [],
+        # NOTE: the 6 protected integration tests plus the 71 `update_file` unit tests that pass at both the base and
+        # the fix commit. The 8 unit tests the fix adds live in the solution files, so they are not required.
+        "required": [
+            "batch_with_mix_of_success_and_failure_preserves_originals",
+            "bottom_up_application_e2e",
+            "crlf_line_endings_preserved_after_update",
+            "error_message_formats_match_golden",
+            "missing_op_is_inferred_through_the_handler",
+            "regex_replace_e2e",
+            "code::functions::read_window::tests::count_lines_matches_update_file_convention",
+            "code::functions::update_file::handler_tests::a1_multiline_collapsing_regex_does_not_panic",
+            "code::functions::update_file::handler_tests::a2_regex_sites_report_post_apply_positions",
+            "code::functions::update_file::handler_tests::a3_sequential_regex_ops_attribute_sites_to_own_input",
+            "code::functions::update_file::handler_tests::a4_insert_echo_shifts_through_regex_deltas",
+            "code::functions::update_file::handler_tests::c211_wording_identical_for_missing_and_glob_denied",
+            "code::functions::update_file::handler_tests::echo_budget_truncation_sets_flag",
+            "code::functions::update_file::handler_tests::echo_insert_appears_in_handler_result",
+            "code::functions::update_file::handler_tests::echo_insert_correct_post_apply_region",
+            "code::functions::update_file::handler_tests::echo_pathological_1000_line_op_stays_bounded",
+            "code::functions::update_file::handler_tests::echo_regex_replace_site_appears_in_result",
+            "code::functions::update_file::handler_tests::echo_remove_shows_context_around_gap",
+            "code::functions::update_file::handler_tests::echo_two_line_ops_offset_correctness",
+            "code::functions::update_file::handler_tests::echo_update_lines_correct_content_and_position",
+            "code::functions::update_file::handler_tests::empty_files_array_rejected",
+            "code::functions::update_file::handler_tests::end_to_end_regex_replace",
+            "code::functions::update_file::handler_tests::end_to_end_single_file_update_lines_writes_atomically",
+            "code::functions::update_file::handler_tests::jail_escape_aborts_batch_with_top_level_c215",
+            "code::functions::update_file::handler_tests::mixed_update_lines_then_regex_replace",
+            "code::functions::update_file::handler_tests::non_accessible_path_yields_per_file_error_without_failing_batch",
+            "code::functions::update_file::handler_tests::original_file_untouched_when_ops_invalid",
+            "code::functions::update_file::handler_tests::pattern_snippet_truncates_long_patterns",
+            "code::functions::update_file::handler_tests::r1_dollar_dollar_escape_writes_literal_dollar",
+            "code::functions::update_file::handler_tests::r1_production_repro_template_literal_ref_rejected_pre_write",
+            "code::functions::update_file::handler_tests::r1_unbraced_longest_run_gotcha_dollar_1a",
+            "code::functions::update_file::handler_tests::r1_undefined_ref_rejected_even_with_expect_matches_zero",
+            "code::functions::update_file::handler_tests::r1_valid_capture_rewrites_still_apply",
+            "code::functions::update_file::handler_tests::r4_multiline_replace_echo_shows_first_and_last_lines",
+            "code::functions::update_file::handler_tests::r4_single_line_replace_echo_unchanged",
+            "code::functions::update_file::handler_tests::r4_two_line_replace_echo_shows_both_lines_no_elision",
+            "code::functions::update_file::handler_tests::regex_replace_introducing_newline_updates_line_count",
+            "code::functions::update_file::handler_tests::s3_dot_default_false_multiline_pattern_matches_nothing",
+            "code::functions::update_file::handler_tests::s3_dot_matches_newline_replaces_region_with_correct_echoes",
+            "code::functions::update_file::handler_tests::s3_expect_matches_assert_absent_mismatch_routes_to_search",
+            "code::functions::update_file::handler_tests::s3_expect_matches_exact_count_applies",
+            "code::functions::update_file::handler_tests::s3_expect_matches_mismatch_fails_file_other_file_applies",
+            "code::functions::update_file::handler_tests::s3_expect_matches_zero_actual_routes_to_search",
+            "code::functions::update_file::handler_tests::s3_second_op_expect_mismatch_rolls_back_whole_file",
+            "code::functions::update_file::handler_tests::success_includes_echo_not_full_body",
+            "code::functions::update_file::handler_tests::times_pluralizes_match_counts",
+            "code::functions::update_file::handler_tests::wire_always_emits_echo_fields",
+            "code::functions::update_file::tests::bottom_up_apply_preserves_original_line_numbers",
+            "code::functions::update_file::tests::build_line_echo_clamps_out_of_range_regions",
+            "code::functions::update_file::tests::build_line_echo_elides_large_regions",
+            "code::functions::update_file::tests::build_site_echo_clamps_out_of_range_regions",
+            "code::functions::update_file::tests::duplicate_insert_at_same_line_rejected",
+            "code::functions::update_file::tests::empty_ops_rejected",
+            "code::functions::update_file::tests::insert_at_1_prepends",
+            "code::functions::update_file::tests::insert_at_end_plus_one_appends",
+            "code::functions::update_file::tests::insert_inside_remove_range_rejected",
+            "code::functions::update_file::tests::insert_multiline",
+            "code::functions::update_file::tests::map_through_events_sequential_frames",
+            "code::functions::update_file::tests::map_through_events_shifts_only_positions_at_or_below",
+            "code::functions::update_file::tests::out_of_range_remove_rejected",
+            "code::functions::update_file::tests::overlapping_remove_and_update_lines_rejected",
+            "code::functions::update_file::tests::r1_validator_matches_expand_semantics",
+            "code::functions::update_file::tests::regex_dot_does_not_cross_newlines_by_default",
+            "code::functions::update_file::tests::regex_dot_matches_newline_crosses_lines",
+            "code::functions::update_file::tests::regex_expect_matches_exact_count_ok",
+            "code::functions::update_file::tests::regex_expect_matches_mismatch_is_c210",
+            "code::functions::update_file::tests::regex_replace_all_matches",
+            "code::functions::update_file::tests::regex_replace_capture_groups",
+            "code::functions::update_file::tests::regex_replace_empty_pattern_rejected",
+            "code::functions::update_file::tests::regex_replace_ignore_case",
+            "code::functions::update_file::tests::regex_replace_invalid_pattern_rejected",
+            "code::functions::update_file::tests::regex_replace_no_match_is_noop",
+            "code::functions::update_file::tests::remove_range",
+            "code::functions::update_file::tests::split_file_detects_crlf",
+            "code::functions::update_file::tests::split_file_no_trailing_newline_preserved",
+            "code::functions::update_file::tests::update_lines_range_multiline",
+            "code::functions::update_file::tests::zero_line_rejected",
+        ],
         "cwd": "ide",
         "grade": [
             ["cargo", "test", "--locked", "--test", "code_update_ops", "--test", "code_golden_errors"],
@@ -356,7 +436,8 @@ def git(*args):
 
 
 def untar(blob, root, exclude=()):
-    subprocess.run(["tar", "-x", "-C", str(root), *[f"--exclude={x}" for x in exclude]], input=blob, check=True)
+    # -m: files get the extraction time, not the commit time, so cargo never reuses a build of an edited file
+    subprocess.run(["tar", "-x", "-m", "-C", str(root), *[f"--exclude={x}" for x in exclude]], input=blob, check=True)
 
 
 def build_snapshot(name, root):
@@ -369,24 +450,78 @@ def build_snapshot(name, root):
         (root / f).touch()
 
 
+TEST_MOD = "#[cfg(test)]\nmod tests"
+
+
+def splice_test_module(current, fix):
+    """The fix's `mod tests` (through the end of the file) after the solution's own prefix."""
+    tail = fix[fix.index(TEST_MOD) :]
+    i = current.find(TEST_MOD)
+    head = current[:i] if i >= 0 else current + ("" if current.endswith("\n") or not current else "\n")
+    return head + tail
+
+
+def missing_tests(stdout, required):
+    """Required tests without a `test <name> ... ok` line (failed, ignored and absent tests are all missing)."""
+    ok = set(re.findall(r"^test (.+?)(?: - should panic)? \.\.\. ok$", stdout, re.M))
+    return [n for n in required if n not in ok]
+
+
+def run_cargo(cmd, cwd, timeout=900):
+    """(returncode, stdout, stderr). A timeout kills the whole process group and returns 124."""
+    env = {**os.environ, "CARGO_TARGET_DIR": str(cwd / "target")}
+    p = subprocess.Popen(
+        cmd, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
+    )
+    try:
+        out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        out, err = p.communicate()
+        return 124, out or "", err or ""
+    return p.returncode, out, err
+
+
+def restore_protected(t, root):
+    """Put back what steers the graded tests (unit-test modules, tests/, manifests, build.rs) from the fix commit and
+    drop `.cargo/` dirs and `build.rs` files that the fix commit does not have."""
+    fix, crate = t["fix"], t["cwd"]
+    for f in t.get("splice_tests", ()):
+        cur = (root / f).read_text() if (root / f).exists() else ""
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(splice_test_module(cur, git("show", f"{fix}:{f}").decode()))
+    in_fix = set(git("ls-tree", "-r", "-z", "--name-only", fix, *t["paths"]).decode().split("\0"))
+    files = [f for f in (f"{crate}/Cargo.toml", f"{crate}/Cargo.lock", f"{crate}/build.rs") if f in in_fix]
+    untar(git("archive", fix, "--", f"{crate}/tests", *files), root)
+    for d, dirs, names in os.walk(root):
+        rel = Path(d).relative_to(root)
+        dirs[:] = [x for x in dirs if x != "target"]
+        for x in [x for x in dirs if x == ".cargo"]:
+            dirs.remove(x)
+            if not any(f.startswith(f"{rel / x}/") for f in in_fix):
+                gone = Path(d) / x
+                gone.unlink() if gone.is_symlink() else shutil.rmtree(gone)
+        if "build.rs" in names and str(rel / "build.rs") not in in_fix:
+            (Path(d) / "build.rs").unlink()
+
+
 def grade_code(name, root):
-    """Restore the protected tests, then run the grading commands: (passed, missing required tests, log)."""
+    """Restore the protected files, then run the grading commands: (passed, missing required tests, log)."""
     t = LONG[name]
-    for f in t["restore"]:
-        (root / f).write_bytes(git("show", f"{t['fix']}:{f}"))
-    cwd, log = root / t["cwd"], []
-    missing = []
-    if t["required"]:
-        listed = subprocess.run(
-            ["cargo", "test", "--locked", "--lib", "--", "--list"], cwd=cwd, capture_output=True, text=True, timeout=900
-        ).stdout
-        missing = [n for n in t["required"] if f"{n}: test" not in listed]
-    ok = not missing
+    restore_protected(t, root)
+    cwd, log, stdout, ok = root / t["cwd"], [], "", True
     for cmd in t["grade"]:
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=900)
-        log.append(f"$ {' '.join(cmd)} -> {r.returncode}\n{(r.stdout + r.stderr)[-3000:]}")
-        ok = ok and r.returncode == 0
-    return ok, missing, "\n".join(log)
+        rc, out, err = run_cargo(cmd, cwd)
+        stdout += out
+        log.append(f"$ {' '.join(cmd)} -> rc={rc}{' (timeout)' if rc == 124 else ''}\n{(out + err)[-3000:]}")
+        ok = ok and rc == 0
+        if rc == 124:
+            break
+    missing = missing_tests(stdout, t["required"])
+    return ok and not missing, missing, "\n".join(log)
 
 
 def verify_long(run):

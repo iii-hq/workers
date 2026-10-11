@@ -183,6 +183,57 @@ def test_report_checks():
         assert report.main([d, "--check"]) == 1 and report.main([d]) == 0
 
 
+def test_missing_tests_needs_an_ok_line():
+    out = "\n".join(
+        [
+            "test a::passes ... ok",
+            "test a::fails ... FAILED",
+            "test a::skipped ... ignored",
+            "test a::skipped_with_reason ... ignored, slow",
+            "test a::long_name_extra ... ok",
+            "test a::panics - should panic ... ok",
+        ]
+    )
+    required = [
+        "a::passes",
+        "a::fails",
+        "a::skipped",
+        "a::skipped_with_reason",
+        "a::absent",
+        "a::long_name",
+        "a::panics",
+    ]
+    assert run.missing_tests(out, required) == [
+        "a::fails",
+        "a::skipped",
+        "a::skipped_with_reason",
+        "a::absent",
+        "a::long_name",
+    ]
+    assert run.missing_tests(out, []) == []
+
+
+def test_splice_test_module_restores_the_fix_tests():
+    fix = "fn f() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn pins_f() {}\n}\n"
+    mine = "fn f() { /* mine */ }\nfn g() {}\n\n#[cfg(test)]\nmod tests {\n}\n"
+    got = run.splice_test_module(mine, fix)
+    assert got == "fn f() { /* mine */ }\nfn g() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn pins_f() {}\n}\n"
+    # a solution that dropped the module gets the fix's module appended
+    assert (
+        run.splice_test_module("fn f() {}", fix)
+        == "fn f() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn pins_f() {}\n}\n"
+    )
+    assert run.splice_test_module(got, fix) == got
+
+
+def test_run_cargo_timeout_kills_the_group():
+    with tempfile.TemporaryDirectory() as d:
+        rc, _, _ = run.run_cargo(["bash", "-c", "sleep 60 & wait"], Path(d), timeout=1)
+        assert rc == 124
+        rc, out, _ = run.run_cargo(["bash", "-c", "echo $CARGO_TARGET_DIR"], Path(d))
+        assert rc == 0 and out.strip() == f"{d}/target"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
