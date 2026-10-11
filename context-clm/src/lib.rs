@@ -9,4 +9,5 @@ pub const WORKER_NAME: &str = "context-clm";
 
 pub mod config;
 pub mod configuration;
+pub mod mirror;
 pub mod types;
