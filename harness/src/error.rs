@@ -37,6 +37,10 @@ pub enum HarnessError {
     #[error("harness/context_strategy_unavailable: {0}")]
     ContextStrategyUnavailable(String),
 
+    /// A context strategy ended the run on purpose (`applied.strategy_stop`).
+    #[error("harness/context_budget_stop: {0}")]
+    ContextBudgetStop(String),
+
     /// A state read/write backing the loop failed.
     #[error("harness/state: {0}")]
     State(String),
@@ -61,6 +65,7 @@ impl HarnessError {
             HarnessError::Dependency(_) => "harness/dependency",
             HarnessError::ContextOverflow(_) => "harness/context_overflow",
             HarnessError::ContextStrategyUnavailable(_) => "harness/context_strategy_unavailable",
+            HarnessError::ContextBudgetStop(_) => "harness/context_budget_stop",
             HarnessError::State(_) => "harness/state",
             HarnessError::ProjectStore(_) => "harness/project_store",
             HarnessError::Internal(_) => "harness/internal",
@@ -88,6 +93,7 @@ mod tests {
             HarnessError::Dependency("m".into()),
             HarnessError::ContextOverflow("m".into()),
             HarnessError::ContextStrategyUnavailable("m".into()),
+            HarnessError::ContextBudgetStop("m".into()),
             HarnessError::State("m".into()),
             HarnessError::ProjectStore("m".into()),
             HarnessError::Internal("m".into()),
