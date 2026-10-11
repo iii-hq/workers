@@ -17,7 +17,8 @@ import {
 
 const url = process.env.III_URL
 if (!url) throw new Error('set III_URL to the bench engine, e.g. ws://127.0.0.1:49250')
-const DIR = process.env.ARMS_DIR ?? '/tmp/context-arms'
+const DIR = process.env.ARMS_DIR
+if (!DIR) throw new Error('set ARMS_DIR to a directory under the bench run dir')
 const DEFAULT_BUDGET = Number(process.env.ARMS_BUDGET_TOKENS ?? 65536)
 mkdirSync(join(DIR, 'window'), { recursive: true, mode: 0o700 })
 
@@ -75,7 +76,18 @@ for (const arm of ['sum', 'base'] as Arm[]) {
       writeFileSync(join(DIR, 'window', `${safe(sid)}.txt`), renderWindow(r.messages), { mode: 0o600 })
       const res: any = await iii.trigger({
         function_id: 'context::assemble',
-        payload: { ...req, messages: r.messages, options: { ...o, allow_compaction: false, allow_prune: false } },
+        payload: {
+          ...req,
+          messages: r.messages,
+          options: {
+            ...o,
+            allow_compaction: false,
+            allow_prune: false,
+            // A stop only needs the counts: without preview_only context-manager may reduce or throw
+            // context/overflow, and the harness would report an overflow instead of the budget stop.
+            ...(r.stop ? { preview_only: true } : {}),
+          },
+        },
         timeoutMs: 300_000,
       })
       if (!r.stop) return res

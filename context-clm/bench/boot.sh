@@ -5,11 +5,12 @@ set -euo pipefail
 WT=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)  # this checkout: harness, context-clm, arms
 MAIN=${MAIN:-/home/anderson/project/iii/workers}          # unchanged workers' debug builds
 RUN=${RUN:?set RUN to a directory outside any git repo, e.g. /home/anderson/context-clm-runs/bench-01}
+case $RUN in /*) ;; *) echo "RUN must be an absolute path" >&2; exit 1 ;; esac
 PORT=49250
 III=${III_BIN:-$HOME/.local/bin/iii}
 : "${ANTHROPIC_API_KEY:?export ANTHROPIC_API_KEY (provider-anthropic reads it)}"
 export III_URL=ws://127.0.0.1:$PORT III_TELEMETRY_ENABLED=false NO_COLOR=1  # NO_COLOR: log scans match plain text (ruling C7)
-unset III_COMPOSE_DIR III_NAMESPACE III_CONFIG_NAME III_COMPOSE_FILE III_ENGINE_PORT
+unset III_COMPOSE_DIR III_COMPOSE_NAMESPACE III_NAMESPACE III_CONFIG_NAME III_COMPOSE_FILE III_ENGINE_PORT
 
 if [ -s "$RUN/pids" ]; then echo "$RUN/pids exists: run down.sh first" >&2; exit 1; fi
 mkdir -p "$RUN"/{bin,logs,workspace,configuration,sessions,queue,context-leases}
@@ -51,6 +52,8 @@ default_filesystem_root: $RUN/workspace
 EOF
 
 : >"$RUN/pids"
+# A boot that fails half-way stops what it already started.
+trap '"$(dirname "$0")/down.sh"' ERR
 start() { local n=$1; shift; (cd "$RUN" && exec "$@") >"$RUN/logs/$n.log" 2>&1 & echo $! >>"$RUN/pids"; }
 waitfn() {
   for _ in $(seq 240); do
