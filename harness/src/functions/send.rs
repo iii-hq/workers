@@ -1592,6 +1592,34 @@ fn is_context_strategy_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+/// Decide once, as the turn is seeded, whether its context strategy runs:
+/// the strategy mirrors the context to a file under the turn's root and the
+/// model edits that file with `shell::exec`. Without an absolute root or
+/// without exec, the turn keeps the choice, visibly skipped
+/// (`harness::status`), and assembles with context-manager: a deterministic
+/// rule, not a runtime fallback.
+fn settle_context_strategy(options: &mut TurnOptions) {
+    if options.context_strategy.is_none() {
+        return;
+    }
+    let root = options.filesystem_root();
+    let skipped_reason = if root.is_none() {
+        Some("no filesystem root")
+    } else if !root.is_some_and(|root| std::path::Path::new(root).is_absolute()) {
+        // The send path never checks the root: a relative or `~` root would put
+        // the mirror under the strategy worker's cwd, where exec never looks.
+        Some("filesystem root is not absolute")
+    } else if !policy::CompiledPolicy::from(options.functions.as_ref()).allows("shell::exec") {
+        Some("shell::exec not allowed")
+    } else {
+        None
+    };
+    if let Some(strategy) = options.context_strategy.as_mut() {
+        strategy.effective = skipped_reason.is_none();
+        strategy.skipped_reason = skipped_reason.map(str::to_string);
+    }
+}
+
 /// The turn CAS + merge double-check (harness.md § Concurrency & steering).
 async fn seed_or_merge(
     deps: &Deps,
@@ -1768,6 +1796,7 @@ pub(crate) async fn seed_new(
             options.response_language = prior.options.response_language.clone();
         }
     }
+    settle_context_strategy(&mut options);
     let lineage = lineage.for_seed(prior);
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
@@ -3686,5 +3715,105 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.code(), "harness/invalid_request");
         assert!(error.to_string().contains("context_strategy"), "{error}");
+    }
+
+    fn policy_of(allow: &[&str], deny: &[&str]) -> Option<FunctionPolicy> {
+        Some(FunctionPolicy {
+            allow: allow.iter().map(|id| id.to_string()).collect(),
+            deny: deny.iter().map(|id| id.to_string()).collect(),
+            expose: Default::default(),
+        })
+    }
+
+    fn with_clm(root: Option<&str>, functions: Option<FunctionPolicy>) -> TurnOptions {
+        let mut options = options_with(functions);
+        if let Some(root) = root {
+            options.set_filesystem_root(root);
+        }
+        options.context_strategy = Some(Box::new(ContextStrategy {
+            name: "clm".into(),
+            budget_tokens: None,
+            effective: false,
+            skipped_reason: None,
+        }));
+        options
+    }
+
+    #[test]
+    fn context_strategy_is_effective_only_with_a_root_and_shell_exec() {
+        let cases = [
+            (Some("/work"), policy_of(&["shell::*"], &[]), None),
+            (
+                None,
+                policy_of(&["shell::*"], &[]),
+                Some("no filesystem root"),
+            ),
+            (Some("/work"), None, Some("shell::exec not allowed")),
+            (
+                Some("/work"),
+                policy_of(&["*"], &["shell::exec"]),
+                Some("shell::exec not allowed"),
+            ),
+            (None, None, Some("no filesystem root")),
+            (
+                Some("work"),
+                policy_of(&["shell::*"], &[]),
+                Some("filesystem root is not absolute"),
+            ),
+        ];
+        for (root, functions, reason) in cases {
+            let mut options = with_clm(root, functions);
+            settle_context_strategy(&mut options);
+            let strategy = options.context_strategy.unwrap();
+            assert_eq!(strategy.effective, reason.is_none(), "{root:?} {reason:?}");
+            assert_eq!(strategy.skipped_reason.as_deref(), reason);
+        }
+    }
+
+    #[test]
+    fn context_strategy_never_runs_on_a_root_the_exec_cannot_see() {
+        // The mirror would land under the strategy worker's cwd, not the
+        // model's: every edit misses and the context only grows to the stop.
+        for root in ["~/work", "./work", "../work", "work/sub"] {
+            let mut options = with_clm(Some(root), policy_of(&["*"], &[]));
+            settle_context_strategy(&mut options);
+            let strategy = options.context_strategy.unwrap();
+            assert!(!strategy.effective, "{root}");
+            assert_eq!(
+                strategy.skipped_reason.as_deref(),
+                Some("filesystem root is not absolute"),
+                "{root}"
+            );
+        }
+        // The root is reported before the policy: fixing the policy alone
+        // would still not run the strategy.
+        let mut options = with_clm(Some("work"), None);
+        settle_context_strategy(&mut options);
+        assert_eq!(
+            options.context_strategy.unwrap().skipped_reason.as_deref(),
+            Some("filesystem root is not absolute")
+        );
+    }
+
+    #[test]
+    fn context_strategy_settling_is_recomputed_per_seed_and_leaves_none_alone() {
+        // A reseed carries the prior turn's options: a root that is gone by
+        // then turns the strategy off for the new turn.
+        let mut options = with_clm(Some("/work"), policy_of(&["*"], &[]));
+        settle_context_strategy(&mut options);
+        assert!(options.context_strategy.as_ref().unwrap().effective);
+        options.metadata = None;
+        settle_context_strategy(&mut options);
+        let strategy = options.context_strategy.unwrap();
+        assert!(!strategy.effective);
+        assert_eq!(
+            strategy.skipped_reason.as_deref(),
+            Some("no filesystem root")
+        );
+
+        let mut plain = options_with(policy_of(&["*"], &[]));
+        plain.set_filesystem_root("/work");
+        settle_context_strategy(&mut plain);
+        assert_eq!(plain.context_strategy, None);
     }
 }
