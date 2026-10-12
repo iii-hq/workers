@@ -505,27 +505,36 @@ def run_cargo(cmd, cwd, timeout=900):
     return p.returncode, out, err
 
 
+TOOLCHAIN = ("rust-toolchain", "rust-toolchain.toml")  # rustup reads either, in the cwd and every parent
+
+
 def restore_protected(t, root):
-    """Put back what steers the graded tests (unit-test modules, tests/, manifests, build.rs) from the fix commit and
-    drop `.cargo/` dirs and `build.rs` files that the fix commit does not have."""
+    """Put back what steers the graded tests (unit-test modules, tests/, manifests, build.rs, the toolchain file) from
+    the fix commit and drop `.cargo/` dirs, `build.rs` and toolchain files that the fix commit does not have. Returns
+    the cargo config files (`.cargo/config{,.toml}`) the snapshot held that the fix commit does not have."""
     fix, crate = t["fix"], t["cwd"]
     for f in t.get("splice_tests", ()):
         cur = (root / f).read_text() if (root / f).exists() else ""
         (root / f).parent.mkdir(parents=True, exist_ok=True)
         (root / f).write_text(splice_test_module(cur, git("show", f"{fix}:{f}").decode()))
     in_fix = set(git("ls-tree", "-r", "-z", "--name-only", fix, *t["paths"]).decode().split("\0"))
-    files = [f for f in (f"{crate}/Cargo.toml", f"{crate}/Cargo.lock", f"{crate}/build.rs") if f in in_fix]
+    files = [f for f in (f"{crate}/Cargo.toml", f"{crate}/Cargo.lock", f"{crate}/build.rs", *TOOLCHAIN) if f in in_fix]
     untar(git("archive", fix, "--", f"{crate}/tests", *files), root)
+    planted = []
     for d, dirs, names in os.walk(root):
         rel = Path(d).relative_to(root)
         dirs[:] = [x for x in dirs if x != "target"]
         for x in [x for x in dirs if x == ".cargo"]:
             dirs.remove(x)
+            here = Path(d) / x
+            config = [str(rel / x / n) for n in ("config", "config.toml") if (here / n).exists()]
+            planted += [f for f in config if f not in in_fix]
             if not any(f.startswith(f"{rel / x}/") for f in in_fix):
-                gone = Path(d) / x
-                gone.unlink() if gone.is_symlink() else shutil.rmtree(gone)
-        if "build.rs" in names and str(rel / "build.rs") not in in_fix:
-            (Path(d) / "build.rs").unlink()
+                here.unlink() if here.is_symlink() else shutil.rmtree(here)
+        for x in ("build.rs", *TOOLCHAIN):
+            if x in names and str(rel / x) not in in_fix:
+                (Path(d) / x).unlink()
+    return planted
 
 
 CONFIG_CHANGED = "~/.cargo/config{,.toml} changed since the run started"
@@ -539,11 +548,13 @@ def refuse(why, log=()):
 def grade_code(name, root):
     """Restore the protected files, then run the grading commands: (passed, missing required tests, log, refusal).
     `refusal` (None when graded) says why the episode was not graded: the user's cargo config differs from the one the
-    run started with, before cargo runs or after it (a parallel episode may write it meanwhile)."""
+    run started with, before cargo runs or after it (a parallel episode may write it meanwhile), or the snapshot held
+    a cargo config the fix commit does not have (restore_protected deleted it; the attempt is still not graded)."""
     if cargo_config() != CARGO_CONFIG:
         return refuse(CONFIG_CHANGED)
     t = LONG[name]
-    restore_protected(t, root)
+    if planted := restore_protected(t, root):
+        return refuse(f"the snapshot holds cargo config the fix commit does not have: {', '.join(planted)}")
     cwd, log, stdout, ok = root / t["cwd"], [], "", True
     for cmd in t["grade"]:
         rc, out, err = run_cargo(cmd, cwd)

@@ -345,6 +345,25 @@ def test_grader_runs_with_a_minimal_env_and_refuses_a_changed_cargo_config():
             os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
 
 
+def test_restore_puts_back_the_toolchain_and_refuses_a_planted_cargo_config():
+    t = run.LONG["http-brace"]
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        run.build_snapshot("http-brace", root)
+        fake = '[toolchain]\npath = "/tmp/fake"\n'
+        stray = ["rust-toolchain", "http/rust-toolchain.toml", "http/.cargo/config.toml", ".cargo/credentials.toml"]
+        for f in ["rust-toolchain.toml", *stray]:
+            (root / f).parent.mkdir(parents=True, exist_ok=True)
+            (root / f).write_text(fake)
+        assert run.restore_protected(t, root) == ["http/.cargo/config.toml"]
+        assert (root / "rust-toolchain.toml").read_bytes() == run.git("show", f"{t['fix']}:rust-toolchain.toml")
+        assert not [f for f in [*stray, "http/.cargo", ".cargo"] if (root / f).exists()]
+        (root / ".cargo").mkdir()
+        (root / ".cargo" / "config").write_text("[build]\n")
+        ok, missing, log, refused = run.grade_code("http-brace", root)  # refuses before cargo runs
+        assert (ok, missing) == (False, []) and refused.endswith("the fix commit does not have: .cargo/config"), log
+
+
 def test_run_refuses_the_live_engine():
     for url in ("ws://127.0.0.1:49134", "ws://localhost"):
         env = {**os.environ, "BENCH_ENGINE": url}

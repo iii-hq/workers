@@ -73,14 +73,15 @@ cd context-clm/bench
 | `ide-update-op` (bug fix) | `325a19129` (#1321) | `0466e008a:{ide,crates}` minus `ide/ui` + the PR's tests | `cargo test --locked --test code_update_ops --test code_golden_errors` and `--lib update_file` in `ide/` |
 | `fields` level 40 (code reading) | — | `d3f9bcb8a:{ide,harness}/src` | exact answer vs `truth-fields.jsonl` |
 
-Before cargo runs, the grader puts back from the fix commit everything that steers the graded tests (the spliced unit-test
-modules, the crate's `tests/`, `Cargo.toml`, `Cargo.lock` and `build.rs`) and deletes `.cargo/` dirs and `build.rs`
-files the fix commit does not have, so editing them does not help. Cargo then runs with a minimal environment (`PATH`,
-`HOME`, `CARGO_HOME`, `RUSTUP_HOME`, `LANG`, no API keys). An episode is not graded when `~/.cargo/config` or
-`config.toml` differs from the one `run.py` started with, before cargo runs or after it (a parallel episode may change
-it meanwhile). Its result then has score 0 and `grade_refused: true` with the reason, also in its
-`results/<sid>.grade.log`. `report.py` counts refused grades in their own column. Check that each coding task fails
-before its fix and passes after it (about two minutes, no API calls):
+Before cargo runs, the grader puts back from the fix commit everything that steers the graded tests (the spliced
+unit-test modules, the crate's `tests/`, `Cargo.toml`, `Cargo.lock`, `build.rs` and `rust-toolchain.toml`) and deletes
+`.cargo/` dirs, `build.rs` and `rust-toolchain{,.toml}` files the fix commit does not have, so editing them does not
+help. Cargo then runs with a minimal environment (`PATH`, `HOME`, `CARGO_HOME`, `RUSTUP_HOME`, `LANG`, no API keys).
+An episode is not graded when its snapshot held a `.cargo/config` or `config.toml` that the fix commit does not have,
+or when `~/.cargo/config` or `config.toml` differs from the one `run.py` started with, before cargo runs or after it
+(a parallel episode may change it meanwhile). Its result then has score 0 and `grade_refused: true` with the reason,
+also in its `results/<sid>.grade.log`. `report.py` counts refused grades in their own column. Check that each coding
+task fails before its fix and passes after it (about two minutes, no API calls):
 
 ```bash
 .venv/bin/python run.py verify-long $RUN
