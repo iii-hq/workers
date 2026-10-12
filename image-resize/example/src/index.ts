@@ -1,4 +1,5 @@
-import { http, Logger } from 'iii-sdk'
+import { http } from '@iii-dev/helpers/http'
+import { createChannel } from 'iii-sdk/helpers'
 import { useApi } from './hooks'
 import { iii } from './iii'
 
@@ -35,8 +36,8 @@ async function processImage(
   opts: { format: string; outputFormat: string; width: number; height: number; strategy: string },
 ): Promise<{ thumbnail: Buffer; metadata: Record<string, unknown> }> {
   // Create two channels: one for sending the image, one for receiving the thumbnail
-  const inputChannel = await iii.createChannel()
-  const outputChannel = await iii.createChannel()
+  const inputChannel = await createChannel(iii)
+  const outputChannel = await createChannel(iii)
 
   // Write image bytes to the input channel, then close it.
   // The SDK's ChannelWriter flushes all data before sending the close frame.
@@ -190,7 +191,7 @@ const MIME_TYPES: Record<string, string> = {
   webp: 'image/webp',
 }
 
-const imageLogger = new Logger(undefined, 'api::get::/image')
+const imageLogger = console
 
 function sendJsonError(
   res: {
