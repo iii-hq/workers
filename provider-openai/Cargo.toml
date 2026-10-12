@@ -22,7 +22,7 @@ path = "src/lib.rs"
 llm-router = { path = "../llm-router", default-features = false }
 # Must match llm-router's pin (one iii-sdk per graph). The SDK provides the
 # live span-start push used to render `provider::openai::stream` output.
-iii-sdk = "=0.22.1-alpha.25"
+iii-sdk = "=0.24.6-rc.4"
 # Injected console UI (the image::generate chat card); see src/ui.rs.
 iii-console-ui = { path = "../crates/console-ui", optional = true }
 serde = { version = "1", features = ["derive"] }
