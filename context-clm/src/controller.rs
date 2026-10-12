@@ -264,7 +264,7 @@ pub fn evaluate(
     }
     match cfg.persistent {
         PersistentNudge::Ratio(r) if tc >= (limit as f64 * r).floor() as u64 => {
-            let text = prompt::persistent_text(tc, limit, r, hint);
+            let text = prompt::persistent_text(tc, limit, hint);
             return Decision::Ok(Some(Nudge::Persistent { text }));
         }
         PersistentNudge::Adaptive => {
@@ -276,8 +276,7 @@ pub fn evaluate(
                 by_obs.min(limit / 2)
             };
             if limit - tc < need {
-                let ratio = (limit - need) as f64 / limit as f64;
-                let text = prompt::persistent_text(tc, limit, ratio, hint);
+                let text = prompt::persistent_text(tc, limit, hint);
                 return Decision::Ok(Some(Nudge::Persistent { text }));
             }
         }
@@ -623,7 +622,7 @@ mod tests {
         let mut ctl = Ctl::default();
         // limit 30720, room 5720 < need 2 x 4000
         let d = evaluate(&clm(), &mut ctl, 25000, 4000, 3, H);
-        let want = prompt::persistent_text(25000, 30720, (30720.0 - 8000.0) / 30720.0, H);
+        let want = prompt::persistent_text(25000, 30720, H);
         assert!(want.contains("25000/30720 tokens"));
         assert_eq!(d, Decision::Ok(Some(Nudge::Persistent { text: want })));
         // small results: the band is 10% of the limit (3072); room 5720 is enough
@@ -643,7 +642,7 @@ mod tests {
             ..clm()
         };
         let d = evaluate(&ratio, &mut Ctl::default(), 27648, 0, 3, H);
-        let want = prompt::persistent_text(27648, 30720, 0.9, H);
+        let want = prompt::persistent_text(27648, 30720, H);
         assert_eq!(d, Decision::Ok(Some(Nudge::Persistent { text: want })));
         let d = evaluate(&ratio, &mut Ctl::default(), 27647, 0, 3, H);
         assert!(matches!(d, Decision::Ok(Some(Nudge::Tier { .. }))));

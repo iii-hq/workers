@@ -26,7 +26,7 @@ const CLM_SECTION: &str = r#"
 
 ## Your context file
 
-You have a limit of {limit} tokens of context. Each command result ends with a readout such as `[context: ~1200/{limit} tokens]`: the first number is your current size, the second is the limit. Every mention of "the limit" below means this number.
+You have a limit of {limit} tokens of context. Each command result ends with a readout such as `[context: ~1200/{limit} tokens]`: the first number is your current size, the second is the limit in force. The limit can later drop below {limit} (after a switch to a model with less room, for example), so go by the newest readout. Every mention of "the limit" below means its second number.
 
 Your context after the system prompt and the task is mirrored in the file `{mirror}` (a path relative to your working directory). The file is written before every step, and whatever it holds when the next step begins becomes your context from then on. The system prompt and the task are not in the file and cannot be edited.
 
@@ -84,9 +84,10 @@ pub fn tier_text(frac: f64, budget: u64, tokens: u64, hint: &str) -> String {
     }
 }
 
-/// The repeating nudge once the room left is too small.
-pub fn persistent_text(tokens: u64, limit: u64, ratio: f64, hint: &str) -> String {
-    let pct = py_round(ratio * 100.0);
+/// The repeating nudge once the room left is too small; states the current
+/// share of the limit, whatever threshold fired it.
+pub fn persistent_text(tokens: u64, limit: u64, hint: &str) -> String {
+    let pct = py_round(tokens as f64 * 100.0 / limit.max(1) as f64);
     format!("[context warning: act now] Context is at {tokens}/{limit} tokens, {pct}% of the limit. Use this turn only to condense: replace old or stale turns with compact summaries that keep your findings, and start no other work first. {OVER_THE_LIMIT} {hint}")
 }
 
@@ -198,7 +199,7 @@ pub fn file_tag(name: &str) -> String {
 /// A turn the model rewrote under a role it may not author (tool, or
 /// assistant where no assistant turn was) becomes a user note.
 pub fn lowered_note(role: &str, body: &str) -> String {
-    let article = if matches!(role.chars().next(), Some('a' | 'e' | 'i' | 'o' | 'u')) {
+    let article = if matches!(role.chars().next(), Some('a' | 'e' | 'i' | 'o')) {
         "an"
     } else {
         "a"
@@ -240,6 +241,8 @@ mod tests {
         assert!(s.starts_with("\n\n"));
         assert!(s.contains(&format!("`{M}`")) && s.contains(&format!("path = \"{M}\"")));
         assert!(s.contains("63488 tokens") && s.contains("[context: ~1200/63488 tokens]"));
+        // A later clamp shows only in the readout: it is named as the live limit.
+        assert!(s.contains("the newest readout"), "{s}");
         assert!(s.contains(r#"{"command":"bash","args":["-c","<script>"]}"#));
         assert!(!s.contains("{mirror}") && !s.contains("{limit}"));
         assert_eq!(s, clm_section(M, 63488));
@@ -257,8 +260,10 @@ mod tests {
 
     #[test]
     fn persistent_final_and_ledger_carry_their_numbers() {
-        let p = persistent_text(25000, 30720, 0.725, "HINT");
-        assert!(p.contains("25000/30720 tokens") && p.contains("72%") && p.ends_with("HINT"));
+        // The share is the current one (81%), not the threshold that fired (72.5%).
+        let p = persistent_text(25000, 30720, "HINT");
+        assert!(p.contains("25000/30720 tokens, 81% of the limit") && p.ends_with("HINT"));
+        assert!(persistent_text(29000, 30720, "").contains("94% of the limit"));
         assert!(final_text(31000, 32768).contains("31000/32768 tokens"));
         assert!(final_text(31000, 32768).contains("last turn"));
         let mut a = LedgerArgs {
@@ -286,7 +291,7 @@ mod tests {
     fn crossing_the_limit_is_described_as_a_rollback_first() {
         let texts = [
             tier_text(0.75, 100, 80, "HINT"),
-            persistent_text(25000, 30720, 0.725, "HINT"),
+            persistent_text(25000, 30720, "HINT"),
             receipt_still_over(300, 250, 200),
         ];
         for t in texts {
@@ -314,7 +319,7 @@ mod tests {
             ledger,
             tier_text(0.5, 100, 60, ""),
             tier_text(0.75, 100, 80, ""),
-            persistent_text(80, 100, 0.8, ""),
+            persistent_text(80, 100, ""),
             clm_section(M, 100),
         ];
         for t in texts {
@@ -385,6 +390,7 @@ mod tests {
         assert!(lowered_note("assistant", "x").contains("as an assistant turn"));
         assert!(lowered_note("editor", "x").contains("as an editor turn"));
         assert!(lowered_note("tool", "x").contains("as a tool turn"));
+        assert!(lowered_note("user", "x").contains("as a user turn"));
         assert!(user_side_assistant("done").ends_with(":]\ndone"));
         assert!(STRATEGY_STOP_REASON.contains("context_strategy"));
     }

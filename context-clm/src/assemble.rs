@@ -266,7 +266,7 @@ fn model_key(m: &ModelRef) -> String {
 fn nudge_allowance(hint: &str) -> u64 {
     let longest = tier_text(1.0, u64::MAX, u64::MAX, hint)
         .len()
-        .max(persistent_text(u64::MAX, u64::MAX, 1.0, hint).len());
+        .max(persistent_text(u64::MAX, u64::MAX, hint).len());
     longest as u64 / 4 + 8
 }
 
@@ -1904,7 +1904,7 @@ mod tests {
             .unwrap()
             .to_owned();
         let hint = compaction_hint(&mirror_rel(SID));
-        let lead = persistent_text(0, 0, 0.0, &hint);
+        let lead = persistent_text(0, 0, &hint);
         let lead = &lead[..=lead.find(']').unwrap()];
         assert!(nudge.starts_with(lead), "{nudge}");
 
