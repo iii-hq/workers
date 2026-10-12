@@ -131,27 +131,6 @@ mod imp {
         }
     }
 
-    /// Whether `name` exists in `dir` as anything, a symlink included.
-    fn exists_at(dir: &File, name: &str) -> io::Result<bool> {
-        let name = cstr(name)?;
-        // SAFETY: an all-zero `stat` is a valid out-parameter.
-        let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        // SAFETY: live fd, NUL-terminated name, `st` is writable.
-        let ret = unsafe {
-            libc::fstatat(
-                dir.as_raw_fd(),
-                name.as_ptr(),
-                &mut st,
-                libc::AT_SYMLINK_NOFOLLOW,
-            )
-        };
-        match check(ret) {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(e),
-        }
-    }
-
     /// The root is the operator-set trust anchor: it is followed like any
     /// path, but only as a directory and never created.
     fn open_root(root: &Path) -> io::Result<File> {
@@ -217,8 +196,18 @@ mod imp {
     pub fn write(root: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
         let root_fd = open_root(root)?;
         let dir = open_clm(&root_fd, root, true)?;
-        if !exists_at(&dir, GITIGNORE)? {
-            write_atomic(&dir, GITIGNORE, b"*\n")?;
+        // Created in place with `O_EXCL`, not through a temp: sessions on one
+        // root hold different locks, so their first steps can race here, and
+        // the loser finds it there. Anything already in its place (a symlink
+        // too, never followed) is left alone.
+        let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW;
+        match open_at(&dir, GITIGNORE, flags, 0o600) {
+            Ok(mut ignore) => {
+                ignore.set_permissions(Permissions::from_mode(0o600))?;
+                ignore.write_all(b"*\n")?;
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
         }
         write_atomic(&dir, name, bytes)
     }
@@ -333,6 +322,13 @@ mod imp {
             Err(e) => return Err(e),
         }
         let file = OpenOptions::new().read(true).open(&path)?;
+        // Swapped between the check above and the open.
+        if !file.metadata()?.is_file() {
+            return Err(invalid_data(format!(
+                "{} is not a regular file",
+                path.display()
+            )));
+        }
         let mut bytes = Vec::new();
         file.take(MAX_MIRROR_BYTES + 1).read_to_end(&mut bytes)?;
         if bytes.len() as u64 > MAX_MIRROR_BYTES {

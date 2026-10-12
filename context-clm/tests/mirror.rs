@@ -63,6 +63,35 @@ fn mirror_and_directory_are_private() {
 }
 
 #[test]
+fn first_writes_of_many_sessions_on_one_root_all_succeed() {
+    // Chats on one root hold different session locks, so their first steps
+    // can create `.clm/.gitignore` at the same moment.
+    for _ in 0..20 {
+        let root = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|s| {
+            let writers: Vec<_> = (0..8)
+                .map(|i| {
+                    let (root, barrier) = (root.path(), &barrier);
+                    s.spawn(move || {
+                        barrier.wait();
+                        write_mirror(root, &format!("s_{i}"), "x")
+                    })
+                })
+                .collect();
+            for w in writers {
+                w.join().unwrap().unwrap();
+            }
+        });
+        assert_eq!(
+            fs::read_to_string(root.path().join(".clm/.gitignore")).unwrap(),
+            "*\n"
+        );
+        assert!(!root.path().join(".clm/.gitignore.tmp").exists());
+    }
+}
+
+#[test]
 fn missing_root_is_not_created() {
     let parent = tempfile::tempdir().unwrap();
     let root = parent.path().join("gone");
