@@ -674,9 +674,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.23.0"
+version = "0.24.6-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e654538584cf6feec82f4f9e773d4b9f8c84bba5085e49a585aebe7227f8af8c"
+checksum = "31fcea00c220195c6e2bb837a3aa919c37b5467bd7e50e8c47f3fe4eb1e8f85a"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -695,9 +695,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.23.0"
+version = "0.24.6-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3952d1ac84c88304fa27fef8ce0a9350585abe9e9b9f7513730497e72918186f"
+checksum = "9ee9c4f5d9c9ad650e6cae28d5ad8b7b40898da8698b23126c57c58af6ff1fb2"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -866,9 +866,9 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "opentelemetry"
-version = "0.31.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b84bcd6ae87133e903af7ef497404dda70c60d0ea14895fc8a5e6722754fc2a0"
+checksum = "b0142c63252a9e054e68a4c61a5778f7b14f576274d593f8ce883d191a099682"
 dependencies = [
  "futures-core",
  "futures-sink",
@@ -880,28 +880,28 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry-http"
-version = "0.31.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7a6d09a73194e6b66df7c8f1b680f156d916a1a942abf2de06823dd02b7855d"
+checksum = "5683015d09e2df236ef005b17f6f196f0d5f6313c4fa43a7b6a53b52776e4331"
 dependencies = [
  "async-trait",
  "bytes",
  "http",
  "opentelemetry",
- "reqwest",
 ]
 
 [[package]]
 name = "opentelemetry_sdk"
-version = "0.31.0"
+version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e14ae4f5991976fd48df6d843de219ca6d31b01daaab2dad5af2badeded372bd"
+checksum = "9b59f80e1ac4d5ff7a2db8fb6c80badb7f0f3f858211fba08dd9aaec750894f9"
 dependencies = [
  "futures-channel",
  "futures-executor",
  "futures-util",
  "opentelemetry",
  "percent-encoding",
+ "portable-atomic",
  "rand 0.9.5",
  "thiserror",
  "tokio",
@@ -919,6 +919,12 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "portable-atomic"
+version = "1.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "potential_utf"
