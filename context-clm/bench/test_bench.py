@@ -167,11 +167,13 @@ def test_report_checks():
             "peak_prompt": 9e4,
         },
     ]
-    assert all(ok for _, ok, _ in report.checks(rows)) and len(report.checks(rows)) == 5
+    assert all(ok for _, ok, _ in report.checks(rows)) and len(report.checks(rows)) == 7
     stats = {"peak_tc": 28000, "edits_applied": 3, "rollbacks": 1}
     rows[0]["strategy"] = {"found": True, "budget_tokens": 60621, "stats": stats}
-    row = "| kv 1000 clm | 1 | 1.00 | 1.00 | 1.00 | 30000 | 28000 | 0/1 | 3.0 | 1.0 | – | – | 0 | 1.00 |"
+    row = "| kv 1000 clm | 1 | 1.00 | 1.00 | 1.00 | 30000 | 28000 | 0/1 | 3.0 | 1.0 | – | – | – | 0 | 1.00 |"
     assert row in report.tables(rows)
+    sums = [{**rows[0], "arm": "sum", "strategy": {"stats": {"summary_cost_unknown": n}}} for n in (1, 2)]
+    assert any(line.startswith("| kv 1000 sum | 2 |") and "| 3 | 0 |" in line for line in report.tables(sums))
     rows[0]["drops"] = 2
     rows[1]["cost_usd"] = 5.0
     failed = [name for name, ok, _ in report.checks(rows) if not ok]
@@ -181,6 +183,34 @@ def test_report_checks():
         for i, r in enumerate(rows):
             Path(d, "results", f"{i}.json").write_text(json.dumps(r))
         assert report.main([d, "--check"]) == 1 and report.main([d]) == 0
+
+
+def test_report_check_fails_without_clm_results():
+    base = {"level": 1000, "seed": 0, "status": "completed", "llm_calls": 10, "drops": 0, "strategy": {}}
+    row = {**base, "arm": "clm", "task": "kv", "model": run.S55, "score": 1.0, "cost_usd": 1.0, "peak_prompt": 3e4}
+    row["ops_delivered"] = row["ops_total"] = 34
+
+    def failed(rows, crashed=()):
+        return [name for name, ok, _ in report.checks(rows, crashed) if not ok]
+
+    assert failed([row]) == []
+    # every clm episode of a group crashed while another arm finished
+    assert failed([{**row, "arm": "sum"}]) == ["clm rows graded", "regression kv 1000 Sonnet 5.5"]
+    # a clm row whose provider log was not found is not zero drops
+    assert failed([{**row, "drops": None}]) == ["zero thinking-drop events on clm"]
+    long = {**row, "arm": "default", "task": "http-brace", "level": 0}
+    assert failed([long]) == ["clm rows graded", "long Sonnet 5.5: clm and default graded"]
+    assert failed([row], ["clm-kv1000-s0-s55"]) == ["no crashed episodes"]
+    with tempfile.TemporaryDirectory() as d:
+        Path(d, "results").mkdir()
+        Path(d, "results", "clm-kv1000-s1-s55.json").write_text(json.dumps({**row, "sid": "clm-kv1000-s1-s55"}))
+        assert report.main([d, "--check"]) == 0
+        crash = {"episode": {}, "sid": "clm-kv1000-s0-s55", "crash": "RuntimeError('strategy not effective')"}
+        Path(d, "episodes.out").write_text(json.dumps(crash) + "\n")
+        assert report.main([d, "--check"]) == 1
+        # a crash whose episode was rerun to a result no longer counts
+        Path(d, "results", "clm-kv1000-s0-s55.json").write_text(json.dumps({**row, "sid": "clm-kv1000-s0-s55"}))
+        assert report.main([d, "--check"]) == 0
 
 
 def test_missing_tests_needs_an_ok_line():

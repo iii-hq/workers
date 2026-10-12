@@ -703,7 +703,7 @@ def main(argv):
         try:
             return episode(run, ep)
         except Exception as ex:  # one broken episode must not stop the batch
-            return {"episode": ep, "crash": repr(ex)[:500]}
+            return {"episode": ep, "sid": sid_of(ep), "crash": repr(ex)[:500]}
 
     with ThreadPoolExecutor(a.workers) as pool, (run / "episodes.out").open("a") as log:
         for res in pool.map(safe, eps):

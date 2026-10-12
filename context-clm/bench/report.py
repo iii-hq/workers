@@ -2,7 +2,9 @@
 
   python report.py RUN [RUN ...] [--check]
 
---check exits 1 when a pass check fails or nothing was graded.
+--check exits 1 when a pass check fails or nothing was graded. A crashed episode (a `crash` line in RUN/episodes.out
+with no result since), a group with rows for another arm but none for clm, and a clm row without a provider log all
+fail it: a missing result never passes as a good one.
 """
 
 import json
@@ -60,6 +62,11 @@ def st(x, k):
     return ((x.get("strategy") or {}).get("stats") or {}).get(k)
 
 
+def total(xs, k):
+    v = [st(x, k) for x in xs if st(x, k) is not None]
+    return str(sum(v)) if v else "–"
+
+
 COMMON = [
     ("score", lambda xs: fmt(mean([x["score"] for x in xs]))),
     ("cost $", lambda xs: fmt(mean([x["cost_usd"] for x in xs]))),
@@ -74,7 +81,10 @@ COMMON = [
     ("rollbacks", lambda xs: fmt(mean([st(x, "rollbacks") for x in xs]), 1)),
     ("summaries", lambda xs: fmt(mean([st(x, "summaries") for x in xs]), 1)),
     ("summary fails", lambda xs: fmt(mean([st(x, "summary_failures") for x in xs]), 1)),
-    ("drops", lambda xs: str(sum(x.get("drops") or 0 for x in xs))),
+    # summary calls that timed out or failed: billed or not, their cost is missing from "cost $"
+    ("summary cost unknown", lambda xs: total(xs, "summary_cost_unknown")),
+    # "+?": some rows have no provider log, so their drops are unknown
+    ("drops", lambda xs: f"{sum(x.get('drops') or 0 for x in xs)}{'+?' * any(x.get('drops') is None for x in xs)}"),
 ]
 
 
@@ -103,27 +113,37 @@ def tables(rows):
     return out
 
 
-def checks(rows):
-    """[(name, ok, detail)] for spec §7.1 (regression) and §7.2 (long tasks), over whatever rows are present."""
-    out = []
+def checks(rows, crashed=()):
+    """[(name, ok, detail)] for spec §7.1 (regression) and §7.2 (long tasks), over whatever rows are present.
+    `crashed`: session ids of episodes that crashed without a result."""
+    out = [("no crashed episodes", not crashed, ", ".join(sorted(crashed)[:10]) or "none")]
     clm = [r for r in rows if r["arm"] == "clm"]
+    out.append(("clm rows graded", bool(clm), f"{len(clm)} rows"))
     for (task, level, model), spike in SPIKE_CLM.items():
-        xs = [r["score"] for r in clm if (r["task"], r["level"], r["model"]) == (task, level, model)]
+        group = [r for r in rows if (r["task"], r["level"], r["model"]) == (task, level, model)]
+        xs = [r["score"] for r in group if r["arm"] == "clm"]
+        name = f"regression {task} {level} {NAME[model]}"
         if xs:
             got = statistics.mean(xs)
-            out.append(
-                (f"regression {task} {level} {NAME[model]}", got >= spike, f"clm {got:.2f} vs spike {spike:.2f}")
-            )
-    drops = sum(r.get("drops") or 0 for r in clm)
+            out.append((name, got >= spike, f"clm {got:.2f} vs spike {spike:.2f}"))
+        elif group:
+            out.append((name, False, "no clm rows (other arms have some)"))
     if clm:
-        out.append(("zero thinking-drop events on clm", drops == 0, f"{drops} events"))
+        drops = sum(r.get("drops") or 0 for r in clm)
+        unknown = sum(1 for r in clm if r.get("drops") is None)
+        detail = f"{drops} events" + (f"; {unknown} rows without a provider log" if unknown else "")
+        out.append(("zero thinking-drop events on clm", drops == 0 and not unknown, detail))
     long = [r for r in rows if r["task"] in CODE or (r["task"] == "fields" and r["level"] == 40)]
     for model in NAME:
         by = defaultdict(list)
         for r in long:
             if r["model"] == model:
                 by[(r["arm"], r["task"])].append(r)
-        if not any(a == "clm" for a, _ in by) or not any(a == "default" for a, _ in by):
+        has = {a for a, _ in by}
+        if not has & {"clm", "default"}:
+            continue
+        if not {"clm", "default"} <= has:
+            out.append((f"long {NAME[model]}: clm and default graded", False, f"only {sorted(has)}"))
             continue
 
         def solved(arm, by=by):
@@ -141,11 +161,23 @@ def checks(rows):
     return out
 
 
+def crashes(runs, loaded):
+    """Session ids that crashed (RUN/episodes.out `crash` lines, results without a score) and have no result since."""
+    graded = {r.get("sid") for r in loaded if "score" in r}
+    out = {r.get("sid") or "?" for r in loaded if "score" not in r}
+    for r in runs:
+        p = Path(r, "episodes.out")
+        lines = p.read_text().splitlines() if p.exists() else []
+        out |= {c.get("sid") or "?" for c in map(json.loads, lines) if "crash" in c and c.get("sid") not in graded}
+    return sorted(out)
+
+
 def main(argv):
     runs = [a for a in argv if a != "--check"]
-    rows = [r for r in load(runs) if "score" in r]
+    loaded = load(runs)
+    rows = [r for r in loaded if "score" in r]
     print("\n".join(tables(rows)))
-    res = checks(rows)
+    res = checks(rows, crashes(runs, loaded))
     print("\n### Pass checks\n")
     for name, ok, detail in res:
         print(f"- [{'x' if ok else ' '}] {name}: {detail}")
