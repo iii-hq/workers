@@ -3,7 +3,7 @@
 //! their original message; edited turns become plain text. Behaviour follows
 //! the CLM spike (`clm/src/projection.ts`).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -168,14 +168,19 @@ pub fn strip_thinking(m: &Msg) -> Msg {
 /// message; anything else becomes a text turn (assistant only where an
 /// assistant turn was, user otherwise). Call/result pairs stay whole and in
 /// order: if either side was edited, dropped or moved, both become text. A
-/// kept pair need not stay adjacent (a turn the model inserted between them
-/// stays there): llm-router's `reorder_displaced_results` moves each result up
-/// to its call before every provider request. CRLF line ends read as LF.
+/// turn the model inserted between a kept call and its results moves below
+/// them, as llm-router's `reorder_displaced_results` does: not every provider
+/// runs that pass (openrouter, kimi and github-copilot drop a displaced
+/// result). CRLF line ends read as LF, in the mirror and in the originals
+/// alike; a kept turn is still the original, CRLF and all.
 pub fn parse_mirror(text: &str, proj: &[Msg], model: &ModelRef) -> Vec<Msg> {
     let text = &text.replace("\r\n", "\n");
     // Each original as the mirror shows it, rendered once: the number of
     // headers is bounded only by the mirror's size.
-    let shown: Vec<String> = proj.iter().map(|o| esc(&render_msg(o))).collect();
+    let shown: Vec<String> = proj
+        .iter()
+        .map(|o| esc(&render_msg(o)).replace("\r\n", "\n"))
+        .collect();
     // (header start, body start, n, role) for every header line
     let mut heads: Vec<(usize, usize, usize, &str)> = Vec::new();
     let mut pos = 0;
@@ -288,7 +293,28 @@ pub fn parse_mirror(text: &str, proj: &[Msg], model: &ModelRef) -> Vec<Msg> {
             textualize(&mut out, &mut kept, o);
         }
     }
-    out
+    // 4. each kept result moves up to directly follow its call (the stable
+    // sort keeps the results of one call in order, everything else in place)
+    let mut owner: HashMap<String, usize> = HashMap::new();
+    for i in kept_idx(&kept) {
+        for id in out[i].call_ids() {
+            owner.insert(id, i);
+        }
+    }
+    let mut keyed: Vec<((usize, bool), Msg)> = out
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let at = owner.get(&result_id(&m)).copied();
+            let key = match at {
+                Some(o) if kept[i] && m.role == "function_result" => (o, true),
+                _ => (i, false),
+            };
+            (key, m)
+        })
+        .collect();
+    keyed.sort_by_key(|(key, _)| *key);
+    keyed.into_iter().map(|(_, m)| m).collect()
 }
 
 /// What happened to the mirror since it was written. An edit exists iff the
@@ -565,9 +591,31 @@ mod tests {
     }
 
     #[test]
+    fn a_crlf_turn_stays_kept_on_an_lf_or_a_crlf_mirror() {
+        let mut thought = call();
+        thought.content.insert(
+            0,
+            serde_json::from_value(json!({"type": "thinking", "text": "plan", "signature": "s"}))
+                .unwrap(),
+        );
+        let mut http = result();
+        http.content[0] = Block::new_text("HTTP/1.1 200 OK\r\nServer: x");
+        let p = vec![thought, http, note()];
+        let lf = render_mirror(&p);
+        let crlf = lf.replace("\r\n", "\n").replace('\n', "\r\n");
+        for mirror in [lf, crlf] {
+            assert_eq!(parse_mirror(&mirror, &p, &model()), p, "{mirror:?}");
+            let edited = mirror.replace("keep going", "carry on");
+            let out = parse_mirror(&edited, &p, &model());
+            assert_eq!(out[..2], p[..2], "{mirror:?}");
+            assert_eq!(text_of(&out[2]), "carry on");
+        }
+    }
+
+    #[test]
     fn a_turn_inserted_between_a_call_and_its_result_keeps_the_pair() {
-        // The pair stays structured with the note between them; llm-router's
-        // reorder_displaced_results moves the result up before the provider.
+        // The pair stays structured and the result moves up to its call:
+        // not every provider reorders a displaced result.
         let p = proj();
         let mirror = render_mirror(&p);
         let turns: Vec<&str> = mirror.split("\n\n").collect();
@@ -580,10 +628,10 @@ mod tests {
         let out = parse_mirror(&inserted.join("\n\n"), &p, &model());
         assert_eq!(
             roles(&out),
-            vec!["assistant", "user", "function_result", "user"]
+            vec!["assistant", "function_result", "user", "user"]
         );
-        assert_eq!((&out[0], &out[2], &out[3]), (&p[0], &p[1], &p[2]));
-        assert_eq!(text_of(&out[1]), "note to self");
+        assert_eq!((&out[0], &out[1], &out[3]), (&p[0], &p[1], &p[2]));
+        assert_eq!(text_of(&out[2]), "note to self");
     }
 
     #[test]
