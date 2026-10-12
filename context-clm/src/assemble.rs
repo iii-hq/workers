@@ -510,16 +510,35 @@ fn run_step(
         (readout_text(limit, limit, None).len() + notes.iter().map(String::len).sum::<usize>()) / 4
             + 2;
     let raw_limit = (limit as f64 / ratio) as i64 - tail as i64;
+    let mut bodies: Vec<Option<String>> = fresh
+        .iter()
+        .map(|m| {
+            (m.role == "function_result")
+                .then(|| exec_body(&m.result_text(), cfg.observation_max_chars).body)
+        })
+        .collect();
     let mut readout_at = None;
+    // Cap rooms of the result batch being ingested, its last result first.
+    let mut rooms: Vec<i64> = Vec::new();
     for (i, m) in fresh.iter().enumerate() {
-        if m.role != "function_result" {
+        if bodies[i].is_none() {
             st.proj.push(m.clone());
             continue;
         }
-        let body = exec_body(&m.result_text(), cfg.observation_max_chars).body;
-        let body = if limit > 0 {
+        if limit > 0 && rooms.is_empty() {
+            // The results of one parallel call share the room left.
+            let sizes: Vec<i64> = bodies[i..]
+                .iter()
+                .map_while(Option::as_ref)
+                .map(|b| (b.len() as i64 + 1) / 4)
+                .collect();
             let room = raw_limit - raw_count(&sys, &window(st, &st.proj, &[])) as i64;
-            cap_newest(&body, room, limit)
+            rooms = split_room(&sizes, room);
+            rooms.reverse();
+        }
+        let body = bodies[i].take().unwrap_or_default();
+        let body = if limit > 0 {
+            cap_newest(&body, rooms.pop().unwrap_or(0), limit)
         } else {
             body
         };
@@ -574,18 +593,29 @@ fn run_step(
         st.edit_mark = st.edit_mark.min(st.proj.len());
         note_commands(&mut st.ctl, &dropped);
         st.ctl.n_rolled += dropped.len();
-        let tokens_after = cal(&st.raw0.iter().chain(&st.proj).cloned().collect::<Vec<_>>());
-        let ledger = ledger_text(&LedgerArgs {
+        let args = LedgerArgs {
             retry: st.ctl.n_retry,
             max_retry: cfg.max_retry,
             n_dropped: dropped.len(),
             n_rolled: st.ctl.n_rolled,
-            tokens_after,
+            tokens_after: 0,
             limit,
             hint: hint.clone(),
             cmds: st.ctl.cmds.clone(),
-        });
-        st.ledger = Some(text_msg("user", &ledger, &model));
+        };
+        // The ledger goes out with the request, so the figure it states and
+        // the degrade check below count it: measured with the ledger in
+        // place, once more after the figure's digits changed its length.
+        st.ledger = None;
+        let mut tokens_after = cal(&window(st, &st.proj, &[]));
+        for _ in 0..2 {
+            let text = ledger_text(&LedgerArgs {
+                tokens_after,
+                ..args.clone()
+            });
+            st.ledger = Some(text_msg("user", &text, &model));
+            tokens_after = cal(&window(st, &st.proj, &[]));
+        }
         st.stats.rollbacks += 1;
         rolled = json!({
             "dropped": dropped.len(),
@@ -754,6 +784,22 @@ fn strip_all(msgs: &mut [Msg]) -> u64 {
         }
     }
     n
+}
+
+/// Split `room` (ruler tokens) among a batch of results sized `sizes`: a
+/// result that fits an even share is kept whole and leaves the rest of its
+/// share to the larger ones, which split what is left evenly.
+fn split_room(sizes: &[i64], room: i64) -> Vec<i64> {
+    let mut order: Vec<usize> = (0..sizes.len()).collect();
+    order.sort_by_key(|&i| sizes[i]);
+    let (mut room, mut left) = (room, sizes.len() as i64);
+    let mut rooms = vec![0; sizes.len()];
+    for i in order {
+        rooms[i] = room / left;
+        room -= sizes[i].min(rooms[i]).max(0);
+        left -= 1;
+    }
+    rooms
 }
 
 fn prefix_len(st: &SessionState) -> usize {
@@ -1543,6 +1589,99 @@ mod tests {
             !sent.iter().any(|m| has_call(m, "c4")),
             "the newest call was rolled back"
         );
+    }
+
+    #[tokio::test]
+    async fn the_rollback_figure_counts_the_ledger_it_sends() {
+        let cfg = ClmConfig {
+            budget_tokens: 20_000,
+            reserve_tokens: 0,
+            rollback_margin_tokens: 2_000,
+            observation_max_chars: 100_000,
+            strip_thinking: false,
+            ..ClmConfig::default()
+        };
+        let (dir, root, d) = setup(cfg);
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        for i in 1..=4u64 {
+            let id = format!("c{i}");
+            raw.extend([call(&id, "cat part"), result(&id, &"y".repeat(12_000))]);
+            assemble(&d, request(&raw, Some(&root), 1 + i))
+                .await
+                .unwrap();
+        }
+        raw.extend([reply("checkpoint"), user(&"z".repeat(32_000))]);
+        assemble(&d, request(&raw, Some(&root), 6)).await.unwrap();
+
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!(st.stats.rollbacks, 1);
+        let log =
+            std::fs::read_to_string(dir.path().join(format!("state/log/{}.jsonl", safe_id(SID))))
+                .unwrap();
+        let line: Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        let sent: Vec<Msg> = st
+            .raw0
+            .iter()
+            .chain(&st.ledger)
+            .chain(&st.proj)
+            .cloned()
+            .collect();
+        assert_eq!(
+            line["rolled"]["tokens_after"],
+            raw_count(&section(st.section_limit), &sent)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_results_of_a_parallel_call_share_the_cap_room() {
+        let cfg = ClmConfig {
+            budget_tokens: 8_192,
+            observation_max_chars: 100_000,
+            ..ClmConfig::default()
+        };
+        let (_dir, root, d) = setup(cfg);
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        let mut batch = call("p1", "cat part");
+        for id in ["p2", "p3"] {
+            let block = call(id, "cat part")["content"][1].clone();
+            batch["content"].as_array_mut().unwrap().push(block);
+        }
+        let big = "y".repeat(16_000);
+        raw.extend([
+            batch,
+            result("p1", &big),
+            result("p2", &big),
+            result("p3", &big),
+        ]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+
+        assert_eq!(d.store.load(SID).unwrap().unwrap().stats.rollbacks, 0);
+        let sent = messages(&d.delegate.last());
+        let note = cap_note(0, 6_144);
+        let note = &note[note.find(" characters").unwrap()..];
+        let texts: Vec<usize> = ["p1", "p2", "p3"]
+            .iter()
+            .map(|id| {
+                let r = sent.iter().find(|m| m["function_call_id"] == *id).unwrap();
+                let text = r["content"][0]["text"].as_str().unwrap();
+                assert!(text.contains(note), "{id}: {text}");
+                text.len()
+            })
+            .collect();
+        // Even shares: none of them took the room from the others.
+        assert!(
+            texts[0] < 2 * texts[1] && texts[1] < 2 * texts[0],
+            "{texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_batch_room_keeps_small_results_whole_and_splits_the_rest() {
+        assert_eq!(split_room(&[10, 1_000, 1_000], 610), [203, 300, 300]);
+        assert_eq!(split_room(&[1_000, 10], 610), [600, 305]);
+        assert!(split_room(&[100, 100], -10).iter().all(|&r| r <= 0));
     }
 
     #[tokio::test]
