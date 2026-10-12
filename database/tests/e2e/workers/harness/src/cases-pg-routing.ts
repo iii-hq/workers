@@ -20,7 +20,7 @@
  * event fires when it only looks real.
  */
 
-import type { ISdk } from 'iii-sdk'
+import type { IIIClient } from 'iii-sdk'
 import type { TestCase } from './cases.ts'
 import { expect, expectEqual } from './cases.ts'
 
@@ -53,7 +53,7 @@ function sink(events: RowChangedEvent[], label: string) {
   }
 }
 
-async function awaitRegistration(iii: ISdk, functionId: string): Promise<void> {
+async function awaitRegistration(iii: IIIClient, functionId: string): Promise<void> {
   const registered = await iii.trigger<
     Record<string, never>,
     { registered_triggers: Array<{ trigger_type: string; function_id: string }> }

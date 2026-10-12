@@ -11,7 +11,7 @@
  * covering it here fails the suite.
  */
 
-import type { ISdk } from 'iii-sdk'
+import type { IIIClient } from 'iii-sdk'
 import type { TestCase, CaseContext } from './cases.ts'
 import { expect, expectEqual } from './cases.ts'
 
@@ -59,7 +59,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
  * register the two functions the worker calls, then wait until the engine
  * routes to them before exercising the handlers that depend on them.
  */
-function registerMockState(iii: ISdk): { unregister: () => void } {
+function registerMockState(iii: IIIClient): { unregister: () => void } {
   const store = new Map<string, unknown>()
   const k = (p: { scope: string; key: string }) => `${p.scope}/${p.key}`
   const getRef = iii.registerFunction(

@@ -34,7 +34,7 @@ async function triggerWithRetry(
       return await iii.trigger({
         function_id: functionId,
         payload,
-        timeout_ms: CONFIG_TIMEOUT_MS,
+        timeoutMs: CONFIG_TIMEOUT_MS,
       });
     } catch (e) {
       lastErr = e;

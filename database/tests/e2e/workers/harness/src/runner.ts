@@ -1,6 +1,6 @@
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
-import type { ISdk } from 'iii-sdk'
+import type { IIIClient } from 'iii-sdk'
 import { DRIVER_KEYS, dialects, type DriverKey } from './dialect.ts'
 import { SCHEMA_RESET, FUNCTION_CASES, type CaseContext, type TestCase } from './cases.ts'
 import { BOUNDARY_CASES } from './cases-boundary.ts'
@@ -37,7 +37,7 @@ interface CaseResult {
 export type RunnerMode = 'full' | 'no-bypass' | 'bypass-only'
 
 export interface RunnerOptions {
-  iii: ISdk
+  iii: IIIClient
   reportPath: string
   filterDriver?: DriverKey
   mode?: RunnerMode
