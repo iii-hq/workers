@@ -95,16 +95,32 @@ fn partial_state_files_fill_in_defaults() {
 fn a_state_written_by_another_version_still_loads() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path().to_path_buf());
-    // A key this version does not know (a newer worker wrote it), and a
-    // cached request from before `system_prompt` was stored.
+    // A key this version does not know (a newer worker wrote it).
     fs::write(
         dir.path().join("s_1.json"),
-        r#"{"covered": 2, "future_field": {"x": 1}, "last_out": {"messages": []}}"#,
+        r#"{"covered": 2, "future_field": {"x": 1}}"#,
     )
     .unwrap();
-    let state = store.load("s_1").unwrap().unwrap();
-    assert_eq!(state.covered, 2);
-    assert_eq!(state.last_out, Some(CachedOut::default()));
+    assert_eq!(store.load("s_1").unwrap().unwrap().covered, 2);
+}
+
+#[test]
+fn a_partial_cached_request_is_invalid_data() {
+    // Never replayed (no system prompt, or no messages): the state is set
+    // aside and rebuilt from the window instead.
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().to_path_buf());
+    for partial in [
+        r#"{"covered": 2, "last_out": {"messages": []}}"#,
+        r#"{"covered": 2, "last_out": {"system_prompt": "sp"}}"#,
+    ] {
+        fs::write(dir.path().join("s_1.json"), partial).unwrap();
+        assert_eq!(
+            store.load("s_1").unwrap_err().kind(),
+            io::ErrorKind::InvalidData,
+            "{partial}"
+        );
+    }
 }
 
 #[test]

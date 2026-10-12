@@ -101,8 +101,9 @@ impl Default for SessionState {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+/// Both fields are required: a partial cache must fail the load (the state is
+/// set aside and rebuilt), never be replayed as an empty request.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CachedOut {
     pub messages: Vec<Msg>,
     pub system_prompt: String,
