@@ -167,7 +167,9 @@ pub async fn assemble<D: Delegate>(
     let learned = match &resp {
         // A stop's request is never sent (preview_only, its count replaced).
         _ if st.stopped => false,
-        Ok(r) => learn(&mut st, &model, overhead, r) | note_rewrite(&mut st, &r.messages),
+        Ok(r) => {
+            learn(&mut st, &model, overhead, r) | note_rewrite(&mut st, &r.messages, line.is_some())
+        }
         // An overflow's count is what is left after context-manager's own
         // reductions; a preview of the same request counts what CLM sent,
         // so the next step plans against the model's room.
@@ -241,21 +243,44 @@ fn learn(st: &mut SessionState, model: &ModelRef, overhead: u64, resp: &Assemble
     changed
 }
 
-/// context-manager returned what CLM sent with a message rewritten (an
-/// emergency reduction, a result cap): mark the first changed one, so the
-/// next step strips thinking from there on. True when the state changed.
-fn note_rewrite(st: &mut SessionState, returned: &[Msg]) -> bool {
+/// context-manager returned what CLM sent with messages rewritten (an
+/// emergency reduction, a result cap, an image marker). Its copies replace
+/// CLM's own (the task, the ledger or the projection entry at that index), so
+/// the next request carries what the provider saw and a rewrite repeated on
+/// every request changes the prefix only once. The first changed message is
+/// marked, so the next step strips thinking from there on. `mirror`: the
+/// mirror text is written after this (`commit`), so render it again. True
+/// when the state changed.
+fn note_rewrite(st: &mut SessionState, returned: &[Msg], mirror: bool) -> bool {
+    let p = prefix_len(st);
     let Some(sent) = &st.last_out else {
         return false;
     };
-    let k = sent
-        .messages
-        .iter()
-        .zip(returned)
-        .position(|(a, b)| a.content != b.content)
-        .unwrap_or(returned.len());
+    let (mut first, mut adopted) = (None, false);
+    for (i, (a, b)) in sent.messages.iter().zip(returned).enumerate() {
+        if a.content == b.content {
+            continue;
+        }
+        first.get_or_insert(i);
+        let slot = match i {
+            0 => st.raw0.as_mut(),
+            1 if p == 2 => st.ledger.as_mut(),
+            _ => i.checked_sub(p).and_then(|j| st.proj.get_mut(j)),
+        };
+        // Not the user-side copy of a trailing assistant turn: CLM holds the turn.
+        if let Some(slot) = slot.filter(|m| *m == a) {
+            slot.content.clone_from(&b.content);
+            adopted = true;
+        }
+    }
+    if adopted && mirror {
+        if let Some(written) = &mut st.written {
+            *written = render_mirror(&st.proj);
+        }
+    }
+    let k = first.unwrap_or(returned.len());
     if !st.sent_hashes.get(k).is_some_and(|h| !h.is_empty()) {
-        return false;
+        return adopted;
     }
     // An empty hash never matches.
     st.sent_hashes.truncate(k);
@@ -1597,6 +1622,38 @@ mod tests {
         let sent = messages(&d.delegate.last());
         assert!(has_thinking(&sent[1]), "before the rewrite: {sent:#?}");
         assert!(sent[2..].iter().all(|m| !has_thinking(m)), "{sent:#?}");
+    }
+
+    #[tokio::test]
+    async fn a_rewrite_context_manager_repeats_is_a_change_only_once() {
+        let (_dir, root, mut d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        // From here on context-manager rewrites the c1 result on every
+        // request (as `normalize_media` replaces an image with a marker).
+        d.delegate.rewrite = Some(2);
+        for (step, id) in [(3, "c2"), (4, "c3"), (5, "c4")] {
+            raw.extend([call(id, "cat a.txt"), result(id, "hello")]);
+            assemble(&d, request(&raw, Some(&root), step))
+                .await
+                .unwrap();
+            // The mirror shows the copy CLM now holds, so it reads as unedited.
+            let mirror = read_mirror(&root, SID).unwrap().unwrap();
+            assert!(mirror.contains("(output pruned)"), "step {step}: {mirror}");
+        }
+        let sent = messages(&d.delegate.last());
+        // CLM sends the copy the provider saw...
+        assert_eq!(sent[2]["content"][0]["text"], "(output pruned)");
+        // ...so only the first rewrite (step 3) stripped, once, at step 4:
+        // c4, the reply to the second rewritten request, keeps its thinking.
+        assert!(has_thinking(&sent[1]), "{sent:#?}");
+        assert!(sent[3..7].iter().all(|m| !has_thinking(m)), "{sent:#?}");
+        assert!(
+            has_call(&sent[7], "c4") && has_thinking(&sent[7]),
+            "{sent:#?}"
+        );
     }
 
     #[tokio::test]
