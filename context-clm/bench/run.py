@@ -528,11 +528,20 @@ def restore_protected(t, root):
             (Path(d) / "build.rs").unlink()
 
 
+CONFIG_CHANGED = "~/.cargo/config{,.toml} changed since the run started"
+
+
+def refuse(why, log=()):
+    """grade_code's answer for an episode it does not grade."""
+    return False, [], "\n".join([*log, f"not graded: {why}"]), why
+
+
 def grade_code(name, root):
-    """Restore the protected files, then run the grading commands: (passed, missing required tests, log). Refuses
-    (not passed) when the user's cargo config changed since the run started."""
+    """Restore the protected files, then run the grading commands: (passed, missing required tests, log, refusal).
+    `refusal` (None when graded) says why the episode was not graded: the user's cargo config differs from the one the
+    run started with, before cargo runs or after it (a parallel episode may write it meanwhile)."""
     if cargo_config() != CARGO_CONFIG:
-        return False, [], "not graded: ~/.cargo/config{,.toml} changed since the run started (an episode can write it)"
+        return refuse(CONFIG_CHANGED)
     t = LONG[name]
     restore_protected(t, root)
     cwd, log, stdout, ok = root / t["cwd"], [], "", True
@@ -543,8 +552,10 @@ def grade_code(name, root):
         ok = ok and rc == 0
         if rc == 124:
             break
+    if cargo_config() != CARGO_CONFIG:
+        return refuse(f"{CONFIG_CHANGED}, during this grade", log)
     missing = missing_tests(stdout, t["required"])
-    return ok and not missing, missing, "\n".join(log)
+    return ok and not missing, missing, "\n".join(log), None
 
 
 def verify_long(run):
@@ -554,10 +565,10 @@ def verify_long(run):
         shutil.rmtree(root, ignore_errors=True)
         root.mkdir(parents=True)
         build_snapshot(name, root)
-        before, _, log_before = grade_code(name, root)
+        before, _, log_before, _ = grade_code(name, root)
         for f in t["solution"]:
             (root / f).write_bytes(git("show", f"{t['fix']}:{f}"))
-        after, missing, log_after = grade_code(name, root)
+        after, missing, log_after, _ = grade_code(name, root)
         print(json.dumps({"task": name, "fails_before": not before, "passes_after": after, "missing": missing}))
         if before or not after:
             good = False
@@ -660,8 +671,10 @@ def episode(run, ep):
                 final = text or final
         out.update(score_fields(final, truth))
     else:
-        passed, missing, log = grade_code(task, root)
+        passed, missing, log, refused = grade_code(task, root)
         out.update({"score": 1.0 if passed else 0.0, "missing_tests": missing})
+        if refused:  # not a failure of the arm: report.py counts it apart and --check fails on it
+            out.update({"grade_refused": True, "grade_refused_reason": refused})
         (run / "results" / f"{sid}.grade.log").write_text(log)
 
     usage = [(e.get("message") or {}).get("usage") or {} for e in entries]

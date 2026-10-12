@@ -76,10 +76,11 @@ cd context-clm/bench
 Before cargo runs, the grader puts back from the fix commit everything that steers the graded tests (the spliced unit-test
 modules, the crate's `tests/`, `Cargo.toml`, `Cargo.lock` and `build.rs`) and deletes `.cargo/` dirs and `build.rs`
 files the fix commit does not have, so editing them does not help. Cargo then runs with a minimal environment (`PATH`,
-`HOME`, `CARGO_HOME`, `RUSTUP_HOME`, `LANG`, no API keys). An episode is not graded (score 0, reason in its
-`results/<sid>.grade.log`) when `~/.cargo/config` or `config.toml` changed after `run.py` started, since episodes may
-write `~/.cargo`. Check that each coding task fails before its fix and passes after it (about two minutes, no API
-calls):
+`HOME`, `CARGO_HOME`, `RUSTUP_HOME`, `LANG`, no API keys). An episode is not graded when `~/.cargo/config` or
+`config.toml` differs from the one `run.py` started with, before cargo runs or after it (a parallel episode may change
+it meanwhile). Its result then has score 0 and `grade_refused: true` with the reason, also in its
+`results/<sid>.grade.log`. `report.py` counts refused grades in their own column. Check that each coding task fails
+before its fix and passes after it (about two minutes, no API calls):
 
 ```bash
 .venv/bin/python run.py verify-long $RUN
@@ -106,10 +107,10 @@ result in `$RUN/results`, so the pilot episodes are not paid twice):
   still fails the check; say "not like-for-like" when you report it.
 - §7.2, per model: `clm` solves at least as many tasks as `default` minus one (a task is solved when most of its
   seeds pass), with a lower mean peak prompt and a mean cost no higher than `default`.
-- `report.py --check` also fails on a crashed episode with no result since, on a group or long-task model with rows for
-  another arm but none for `clm`, and on a `clm` row whose provider log was not found (its drops are unknown). `run`
-  refuses to rerun a crashed sid, so rerun the episode with a new `tag`: a result with the same arm, task, level, seed
-  and model clears the crash.
+- `report.py --check` also fails on a crashed episode with no result since, on a refused grade, on a group or long-task
+  model with rows for another arm but none for `clm`, and on a `clm` row whose provider log was not found (its drops
+  are unknown). `run` refuses to rerun a crashed sid, so rerun the episode with a new `tag`: a result with the same
+  arm, task, level, seed and model clears the crash.
 
 ## Live dogfooding (spec §7.3, after both PRs merge)
 

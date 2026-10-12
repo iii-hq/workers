@@ -206,7 +206,13 @@ def test_report_checks():
             "peak_prompt": 9e4,
         },
     ]
-    assert all(ok for _, ok, _ in report.checks(rows)) and len(report.checks(rows)) == 7
+    assert all(ok for _, ok, _ in report.checks(rows)) and len(report.checks(rows)) == 8
+    # a refused grade (run.py did not grade the episode) fails the check and has its own column, apart from failures
+    refused = {**rows[1], "score": 0.0, "grade_refused": True, "grade_refused_reason": "cargo config changed"}
+    # (alone, "clm solves >= default - 1" would pass on 0 >= 1 - 1)
+    assert [n for n, ok, _ in report.checks([rows[0], refused, rows[2]]) if not ok] == ["no refused grades"]
+    code = [line for line in report.tables([refused, rows[1]]) if line.startswith("| http-brace Sonnet 5.5 clm |")]
+    assert code and code[0].startswith("| http-brace Sonnet 5.5 clm | 2 | 0.50 |") and code[0].endswith(" | 1 |")
     stats = {"peak_tc": 28000, "edits_applied": 3, "rollbacks": 1}
     rows[0]["strategy"] = {"found": True, "budget_tokens": 60621, "stats": stats}
     row = "| kv 1000 clm | 1 | 1.00 | 1.00 | 1.00 | 30000 | 28000 | 0/1 | 3.0 | 1.0 | – | – | – | 0 | 1.00 |"
@@ -311,7 +317,7 @@ def test_run_cargo_timeout_kills_the_group():
 
 def test_grader_runs_with_a_minimal_env_and_refuses_a_changed_cargo_config():
     saved = {k: os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "CARGO_HOME")}
-    baseline = run.CARGO_CONFIG
+    baseline, long, restore = run.CARGO_CONFIG, run.LONG, run.restore_protected
     try:
         with tempfile.TemporaryDirectory() as d:
             os.environ["ANTHROPIC_API_KEY"] = "secret"
@@ -320,11 +326,21 @@ def test_grader_runs_with_a_minimal_env_and_refuses_a_changed_cargo_config():
             os.environ["CARGO_HOME"] = d
             run.CARGO_CONFIG = run.cargo_config()
             Path(d, "config.toml").write_text('[build]\nrustflags = ["--cfg", "graded"]\n')
-            ok, missing, log = run.grade_code("http-brace", Path(d, "never-restored"))
-            assert (ok, missing) == (False, []) and log.startswith("not graded:"), log
+            ok, missing, log, refused = run.grade_code("http-brace", Path(d, "never-restored"))
+            assert (ok, missing) == (False, []) and "changed" in refused and log == f"not graded: {refused}", log
             assert not Path(d, "never-restored").exists()
+            # a config written while this grade's cargo runs (by a parallel episode) refuses this grade too
+            Path(d, "config.toml").unlink()
+            run.restore_protected = lambda t, root: []
+            poison = 'echo "test t ... ok"; echo "[build]" > "$CARGO_HOME/config.toml"'
+            run.LONG = {"x": {"cwd": ".", "grade": [["bash", "-c", poison]], "required": ["t"]}}
+            ok, _, log, refused = run.grade_code("x", Path(d))
+            assert not ok and "during" in refused and log.endswith(f"not graded: {refused}"), log
+            Path(d, "config.toml").unlink()
+            run.LONG["x"]["grade"] = [["echo", "test t ... ok"]]
+            assert run.grade_code("x", Path(d))[::3] == (True, None)
     finally:
-        run.CARGO_CONFIG = baseline
+        run.CARGO_CONFIG, run.LONG, run.restore_protected = baseline, long, restore
         for k, v in saved.items():
             os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
 

@@ -3,8 +3,9 @@
   python report.py RUN [RUN ...] [--check]
 
 --check exits 1 when a pass check fails or nothing was graded. A crashed episode (a `crash` line in RUN/episodes.out
-with no result for the same arm, task, level, seed and model since, under any tag), a group with rows for another arm
-but none for clm, and a clm row without a provider log all fail it: a missing result never passes as a good one.
+with no result for the same arm, task, level, seed and model since, under any tag), a refused grade (run.py did not
+grade it), a group with rows for another arm but none for clm, and a clm row without a provider log all fail it: a
+missing result never passes as a good one.
 """
 
 import json
@@ -107,8 +108,13 @@ def tables(rows):
     )
     code = [r for r in rows if r["task"] in CODE]
     calls = ("llm calls", lambda xs: fmt(mean([x["llm_calls"] for x in xs]), 0))
+    # rows run.py did not grade (score 0, not a failure of the arm; --check fails on them)
+    refused = ("grade refused", lambda xs: str(sum(1 for x in xs if x.get("grade_refused"))))
     out += table(
-        "Long coding tasks (cargo test)", lambda r: f"{r['task']} {NAME[r['model']]} {r['arm']}", code, [*COMMON, calls]
+        "Long coding tasks (cargo test)",
+        lambda r: f"{r['task']} {NAME[r['model']]} {r['arm']}",
+        code,
+        [*COMMON, calls, refused],
     )
     return out
 
@@ -117,6 +123,8 @@ def checks(rows, crashed=()):
     """[(name, ok, detail)] for spec §7.1 (regression) and §7.2 (long tasks), over whatever rows are present.
     `crashed`: session ids of episodes that crashed without a result."""
     out = [("no crashed episodes", not crashed, ", ".join(sorted(crashed)[:10]) or "none")]
+    refused = sorted(r.get("sid") or "?" for r in rows if r.get("grade_refused"))
+    out.append(("no refused grades", not refused, ", ".join(refused[:10]) or "none"))
     clm = [r for r in rows if r["arm"] == "clm"]
     out.append(("clm rows graded", bool(clm), f"{len(clm)} rows"))
     for (task, level, model), spike in SPIKE_CLM.items():
