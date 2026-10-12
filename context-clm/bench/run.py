@@ -426,11 +426,14 @@ def drop_events(run, sid):
 
 
 def strategy_status(arm, sid, budget):
-    """context-<arm>::status in the shape report.py reads; raises on anything else instead of grading blanks."""
+    """context-<arm>::status in the shape report.py reads; raises on anything else instead of grading blanks. clm may
+    enforce less than `budget`: it lowers the budget to the model's usable room (the row keeps the status)."""
     st = call(f"context-{arm}::status", {"session_id": sid})
-    stats = st.get("stats")
-    if not (st.get("found") and st.get("budget_tokens") == budget and isinstance(stats, dict) and "peak_tc" in stats):
-        raise RuntimeError(f"{sid}: context-{arm}::status is not {{found, budget_tokens: {budget}, stats}}: {st}")
+    stats, got = st.get("stats"), st.get("budget_tokens")
+    fits = isinstance(got, int) and 0 < got <= budget if arm == "clm" else got == budget
+    if not (st.get("found") and fits and isinstance(stats, dict) and "peak_tc" in stats):
+        want = f"0 < budget_tokens <= {budget}" if arm == "clm" else f"budget_tokens: {budget}"
+        raise RuntimeError(f"{sid}: context-{arm}::status is not {{found, {want}, stats}}: {st}")
     return st
 
 

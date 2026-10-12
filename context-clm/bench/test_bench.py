@@ -142,16 +142,26 @@ def test_harness_truth_matches_the_golden_schemas():
 def test_strategy_status_reads_the_nested_shape():
     good = {"found": True, "budget_tokens": 4096, "stopped": False, "stats": {"peak_tc": 3000, "rollbacks": 1}}
     flat = {"found": True, "budget_tokens": 4096, "peak_tokens": 3000, "rollbacks": 1}
-    other_budget = {**good, "budget_tokens": 65536}
+    clamped = {**good, "budget_tokens": 3000}  # clm lowers the budget to the model's usable room
     real = run.call
     try:
-        for reply, ok in [(good, True), (flat, False), (other_budget, False), ({"found": False}, False)]:
+        for arm, reply, ok in [
+            ("clm", good, True),
+            ("clm", clamped, True),
+            ("sum", good, True),
+            ("sum", clamped, False),  # the arms never clamp
+            ("clm", flat, False),
+            ("clm", {**good, "budget_tokens": 65536}, False),
+            ("clm", {**good, "budget_tokens": 0}, False),
+            ("clm", {**good, "budget_tokens": None}, False),
+            ("clm", {"found": False}, False),
+        ]:
             run.call = lambda fn, payload, reply=reply: reply
             try:
-                got = run.strategy_status("clm", "s", 4096)
+                got = run.strategy_status(arm, "s", 4096)
             except RuntimeError:
                 got = None
-            assert got == (reply if ok else None), reply
+            assert got == (reply if ok else None), (arm, reply)
     finally:
         run.call = real
 
