@@ -45,8 +45,17 @@ pub struct SessionState {
     pub root: Option<String>,
     /// The run was ended by the controller.
     pub stopped: bool,
-    /// `usable` that context-manager reported on the last delegated step (0 = none yet).
+    /// `usable` that context-manager last reported for `last_usable_model`
+    /// (0 = none yet).
     pub last_usable: u64,
+    /// The model (`provider/id`) `last_usable`, `last_cm_tokens` and
+    /// `last_cm_raw` were learned from; under another model they are unknown.
+    pub last_usable_model: String,
+    /// context-manager's count of the last request CLM sent, less its request
+    /// overhead (0 = none yet).
+    pub last_cm_tokens: u64,
+    /// CLM's raw ruler count of that same request.
+    pub last_cm_raw: u64,
     /// `request_overhead_tokens` of the step in `last_out`; a replay with another value is recomputed.
     pub last_overhead: u64,
     /// The limit the system section states, fixed on the session's first CLM
@@ -78,6 +87,9 @@ impl Default for SessionState {
             root: None,
             stopped: false,
             last_usable: 0,
+            last_usable_model: String::new(),
+            last_cm_tokens: 0,
+            last_cm_raw: 0,
             last_overhead: 0,
             section_limit: 0,
             budget: 0,

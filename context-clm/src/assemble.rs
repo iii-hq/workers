@@ -26,12 +26,13 @@ use crate::projection::{
     mirror_change, msg_hash, parse_mirror, render_mirror, strip_thinking, text_msg, MirrorChange,
 };
 use crate::prompt::{
-    clm_section, compaction_hint, final_text, ledger_text, readout_text, receipt_applied,
-    receipt_grew, receipt_no_change_exit, receipt_no_change_matched, receipt_rejected,
-    receipt_still_over, user_side_assistant, LedgerArgs, STRATEGY_STOP_REASON,
+    clm_section, compaction_hint, final_text, ledger_text, persistent_text, readout_text,
+    receipt_applied, receipt_grew, receipt_no_change_exit, receipt_no_change_matched,
+    receipt_rejected, receipt_still_over, tier_text, user_side_assistant, LedgerArgs,
+    STRATEGY_STOP_REASON,
 };
 use crate::store::{CachedOut, SessionState, Store};
-use crate::types::{AssembleRequest, AssembleResponse, Block, Msg};
+use crate::types::{AssembleRequest, AssembleResponse, Block, ModelRef, Msg};
 
 pub const ASSEMBLE_ID: &str = "context-clm::assemble";
 pub const ON_SESSION_DELETED_ID: &str = "context-clm::on-session-deleted";
@@ -144,29 +145,129 @@ pub async fn assemble<D: Delegate>(
     let same_step = key.is_some() && st.last_step == key;
     let same_window =
         || req.messages.len() == st.covered && window_hash(&req.messages) == st.prefix_hash;
-    if same_step && (st.stopped || (st.last_overhead == overhead && same_window())) {
-        if let Some(cached) = st.last_out.take() {
-            req.messages = cached.messages;
-            req.system_prompt = Some(cached.system_prompt);
-            return finish(&deps.delegate, req, st.stopped).await;
-        }
-    }
+    let replay = same_step && (st.stopped || (st.last_overhead == overhead && same_window()));
     let prev_root = st.root.clone();
-    let line = run_step(&config, sid.as_str(), &root, &mut st, &mut req, same_step);
-    let resp = finish(&deps.delegate, req, st.stopped).await;
-    // The model's usable room bounds the next step's limit.
-    if let Ok(resp) = &resp {
-        st.last_usable = resp.usable;
+    let line = match st.last_out.as_ref().filter(|_| replay) {
+        Some(cached) => {
+            req.messages = cached.messages.clone();
+            req.system_prompt = Some(cached.system_prompt.clone());
+            None
+        }
+        None => Some(run_step(&config, &sid, &root, &mut st, &mut req, same_step)),
+    };
+    let model = req.model.clone();
+    let resp = finish(&deps.delegate, &mut req, st.stopped).await;
+    let learned = match &resp {
+        // A stop's request is never sent (preview_only, its count replaced).
+        _ if st.stopped => false,
+        Ok(r) => learn(&mut st, &model, overhead, r) | note_rewrite(&mut st, &r.messages),
+        // An overflow's count is what is left after context-manager's own
+        // reductions; a preview of the same request counts what CLM sent,
+        // so the next step plans against the model's room.
+        Err(e) if e.to_string().contains("context/overflow:") => {
+            req.options
+                .rest
+                .insert("preview_only".into(), Value::Bool(true));
+            match forward(&deps.delegate, &req).await {
+                Ok(r) => learn(&mut st, &model, overhead, &r),
+                Err(e) => {
+                    tracing::warn!(session_id = %sid, error = %e, "context-clm: could not count the overflowing request; the model's room stays unknown");
+                    false
+                }
+            }
+        }
+        Err(_) => false,
+    };
+    match line {
+        Some(line) => commit(
+            &deps.store,
+            &sid,
+            &root,
+            prev_root.as_deref(),
+            &mut st,
+            config.step_log.then_some(line),
+        )?,
+        // A replay writes the state only when the delegated call taught something.
+        None if learned => deps
+            .store
+            .save(&sid, &st)
+            .map_err(|e| state_error(&sid, &e))?,
+        None => {}
     }
-    commit(
-        &deps.store,
-        &sid,
-        &root,
-        prev_root.as_deref(),
-        &mut st,
-        config.step_log.then_some(line),
-    )?;
     resp
+}
+
+/// Learn from a delegated call of the request CLM sent: the model's usable
+/// room, and context-manager's count of that request (`initial_token_count`,
+/// before its own reductions, less `overhead`, the request's) beside CLM's
+/// raw count of it. True when the state changed.
+fn learn(st: &mut SessionState, model: &ModelRef, overhead: u64, resp: &AssembleResponse) -> bool {
+    let tokens = resp
+        .applied
+        .get("initial_token_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(resp.token_count)
+        .saturating_sub(overhead);
+    let key = model_key(model);
+    let learned = (resp.usable, tokens, st.raw_sent);
+    let changed = (st.last_usable, st.last_cm_tokens, st.last_cm_raw) != learned
+        || st.last_usable_model != key;
+    (st.last_usable, st.last_cm_tokens, st.last_cm_raw) = learned;
+    st.last_usable_model = key;
+    changed
+}
+
+/// context-manager returned what CLM sent with a message rewritten (an
+/// emergency reduction, a result cap): mark the first changed one, so the
+/// next step strips thinking from there on. True when the state changed.
+fn note_rewrite(st: &mut SessionState, returned: &[Msg]) -> bool {
+    let Some(sent) = &st.last_out else {
+        return false;
+    };
+    let k = sent
+        .messages
+        .iter()
+        .zip(returned)
+        .position(|(a, b)| a.content != b.content)
+        .unwrap_or(returned.len());
+    if !st.sent_hashes.get(k).is_some_and(|h| !h.is_empty()) {
+        return false;
+    }
+    // An empty hash never matches.
+    st.sent_hashes.truncate(k);
+    st.sent_hashes.push(String::new());
+    true
+}
+
+/// The model's room for this request in CLM's raw ruler: context-manager's
+/// usable room, less this request's overhead, converted by the ratio of the
+/// two counts of the last request CLM sent to this model. That factor covers
+/// what context-manager counts and the ruler does not (JSON framing, ids,
+/// signatures, tools). `None` until a delegated call to this model taught it.
+fn room_raw(st: &SessionState, model: &ModelRef, overhead: u64) -> Option<u64> {
+    if st.last_usable == 0
+        || st.last_cm_tokens == 0
+        || st.last_cm_raw == 0
+        || st.last_usable_model != model_key(model)
+    {
+        return None;
+    }
+    let room = u128::from(st.last_usable.saturating_sub(overhead)) * u128::from(st.last_cm_raw)
+        / u128::from(st.last_cm_tokens);
+    Some(u64::try_from(room).unwrap_or(u64::MAX))
+}
+
+fn model_key(m: &ModelRef) -> String {
+    format!("{}/{}", m.provider.as_deref().unwrap_or_default(), m.id)
+}
+
+/// Ruler tokens of the longest nudge. A nudge is pushed after `tc` is
+/// measured, so a limit clamped to the model's room keeps this headroom.
+fn nudge_allowance(hint: &str) -> u64 {
+    let longest = tier_text(1.0, u64::MAX, u64::MAX, hint)
+        .len()
+        .max(persistent_text(u64::MAX, u64::MAX, 1.0, hint).len());
+    longest as u64 / 4 + 8
 }
 
 /// Persist the step, then write its mirror (moved when the root changed) and
@@ -219,30 +320,6 @@ fn run_step(
     let raw = std::mem::take(&mut req.messages);
     let model = req.model.clone();
     let overhead = req.options.request_overhead_tokens.unwrap_or(0);
-    let mut cfg = Cfg::from_config(config, req.options.budget_tokens);
-    if st.last_usable > 0 {
-        // Never plan past the model: the room context-manager reported last
-        // step, less what it also counts against that room (tools, request
-        // overhead). The limit becomes min(budget - reserve, that room).
-        let tools = (serde_json::to_string(&req.tools).map_or(0, |s| s.len()) as u64 + 1) / 4;
-        let room = st.last_usable.saturating_sub(tools + overhead);
-        cfg.budget = cfg.budget.min(room.saturating_add(cfg.reserve));
-    }
-    st.budget = cfg.budget;
-    let limit = cfg.limit();
-    // The system prompt is part of the preserved-thinking prefix, so the
-    // section states the session's first limit for good; a later clamp shows
-    // in the readout, receipts and ledger only.
-    if st.section_limit == 0 {
-        st.section_limit = limit;
-    }
-    let rel = mirror_rel(sid);
-    let hint = compaction_hint(&rel);
-    let sys = format!(
-        "{}{}",
-        req.system_prompt.as_deref().unwrap_or_default(),
-        clm_section(&rel, st.section_limit)
-    );
 
     // 2. A rewritten raw prefix (fork, external compaction, edited history)
     // rebuilds the projection from the window.
@@ -258,6 +335,9 @@ fn run_step(
             stats: old.stats,
             budget: old.budget,
             last_usable: old.last_usable,
+            last_usable_model: old.last_usable_model,
+            last_cm_tokens: old.last_cm_tokens,
+            last_cm_raw: old.last_cm_raw,
             section_limit: old.section_limit,
             ..SessionState::default()
         };
@@ -295,6 +375,33 @@ fn run_step(
         }
     }
     let ratio = st.ratio;
+
+    let rel = mirror_rel(sid);
+    let hint = compaction_hint(&rel);
+    let mut cfg = Cfg::from_config(config, req.options.budget_tokens);
+    let configured = cfg.limit();
+    if let Some(room) = room_raw(st, &model, overhead) {
+        // Never plan past the model: its room, less the nudge pushed after
+        // `tc` is measured, in the controller's (calibrated) unit. The limit
+        // becomes min(budget - reserve, that room); never 0, which would
+        // switch every budget action off.
+        let room = (room.saturating_sub(nudge_allowance(&hint)) as f64 * ratio) as u64;
+        cfg.budget = cfg.budget.min(room.max(1).saturating_add(cfg.reserve));
+    }
+    let clamped = cfg.limit() < configured;
+    st.budget = cfg.budget;
+    let limit = cfg.limit();
+    // The system prompt is part of the preserved-thinking prefix, so the
+    // section states the session's first limit for good; a later clamp shows
+    // in the readout, receipts and ledger only.
+    if st.section_limit == 0 {
+        st.section_limit = limit;
+    }
+    let sys = format!(
+        "{}{}",
+        req.system_prompt.as_deref().unwrap_or_default(),
+        clm_section(&rel, st.section_limit)
+    );
     let cal = |msgs: &[Msg]| (raw_count(&sys, msgs) as f64 * ratio) as u64;
 
     // The newest call and its result: this step's receipt and readout land there.
@@ -478,11 +585,14 @@ fn run_step(
             st.ctl.finalized = true;
         }
     }
+    // A clamped limit is the model's room: a final turn over it cannot be sent
+    // (context-manager would throw `context/overflow`, which the harness
+    // finalizes at once as an overflow), so the run stops here instead.
+    if clamped && matches!(dec, Decision::Final(_)) {
+        dec = Decision::Stop;
+    }
     match &dec {
-        // NOTE: an over-limit Final is delegated as a normal assemble. In a
-        // clamped session (limit ~ usable) it can overflow at context-manager,
-        // which is truthful: it does not fit the model. The harness's overflow
-        // retry then recomputes this step, which stops (preview_only).
+        // Over the configured limit only: the model's room still holds it.
         Decision::Final(text) => st.proj.push(text_msg("user", text, &model)),
         // The first run of this step already pushed its nudge.
         Decision::Ok(Some(Nudge::Tier { text, .. } | Nudge::Persistent { text })) => {
@@ -586,7 +696,7 @@ fn run_step(
 /// the harness would report as an overflow instead of the stop.
 async fn finish<D: Delegate>(
     delegate: &D,
-    mut req: AssembleRequest,
+    req: &mut AssembleRequest,
     stopped: bool,
 ) -> Result<AssembleResponse, Error> {
     req.options.allow_prune = Some(false);
@@ -598,7 +708,7 @@ async fn finish<D: Delegate>(
             .rest
             .insert("preview_only".into(), Value::Bool(true));
     }
-    let mut resp = forward(delegate, &req).await?;
+    let mut resp = forward(delegate, req).await?;
     if !resp.applied.is_object() {
         resp.applied = json!({});
     }
@@ -717,7 +827,7 @@ mod tests {
     use super::*;
     use crate::config::PersistentNudge;
     use crate::mirror::safe_id;
-    use crate::prompt::{cap_note, persistent_text};
+    use crate::prompt::cap_note;
     use std::path::PathBuf;
 
     const SID: &str = "sess/1";
@@ -726,9 +836,14 @@ mod tests {
         calls: Mutex<Vec<Value>>,
         /// The `usable` room context-manager reports for the model.
         usable: u64,
-        /// Count the payload and fail with an overflow past `usable` unless
+        /// context-manager's count per token of CLM's raw ruler, plus the
+        /// request overhead (0 = a fixed count of 10).
+        scale: u64,
+        /// Fail with context-manager's overflow past `usable` unless
         /// `preview_only` is set, as context-manager does.
         strict: bool,
+        /// Return this message rewritten (as an emergency reduction would).
+        rewrite: Option<usize>,
     }
 
     impl Default for Fake {
@@ -736,7 +851,9 @@ mod tests {
             Fake {
                 calls: Mutex::default(),
                 usable: 1_000_000,
+                scale: 0,
                 strict: false,
+                rewrite: None,
             }
         }
     }
@@ -759,24 +876,37 @@ mod tests {
         async fn assemble(&self, payload: Value) -> Result<Value, String> {
             self.calls.lock().unwrap().push(payload.clone());
             let system = payload["system_prompt"].as_str().unwrap_or_default();
-            let mut token_count = 10;
-            if self.strict {
-                token_count = (system.len() + payload["messages"].to_string().len()) as u64 / 4;
-                let preview = payload["options"]["preview_only"] == true;
-                if token_count > self.usable && !preview {
-                    return Err(format!(
-                        "context/overflow: {token_count} tokens exceed the usable {}",
-                        self.usable
-                    ));
+            let msgs: Vec<Msg> = serde_json::from_value(payload["messages"].clone()).unwrap();
+            let token_count = match self.scale {
+                0 => 10,
+                k => {
+                    let overhead = payload["options"]["request_overhead_tokens"]
+                        .as_u64()
+                        .unwrap_or(0);
+                    k * raw_count(system, &msgs) + overhead
                 }
+            };
+            let preview = payload["options"]["preview_only"] == true;
+            if self.strict && token_count > self.usable && !preview {
+                // Reported after its emergency reduction: what is left, not
+                // what was sent.
+                return Err(format!(
+                    "context/overflow: assembled context requires {} tokens but usable budget is {}",
+                    self.usable + 1,
+                    self.usable
+                ));
+            }
+            let mut messages = payload["messages"].clone();
+            if let Some(i) = self.rewrite {
+                messages[i]["content"] = json!([{ "type": "text", "text": "(output pruned)" }]);
             }
             Ok(json!({
                 "system_prompt": system,
-                "messages": payload["messages"],
+                "messages": messages,
                 "token_count": token_count,
                 "usable": self.usable,
                 "effective_max_output_tokens": 4096,
-                "applied": { "compacted": false },
+                "applied": { "compacted": false, "initial_token_count": token_count },
             }))
         }
     }
@@ -1057,7 +1187,7 @@ mod tests {
             ..ClmConfig::default()
         };
         let (_dir, root, mut d) = setup(cfg);
-        d.delegate.usable = 5_000;
+        (d.delegate.usable, d.delegate.scale) = (5_000, 1);
         let mut raw = vec![user("task")];
         assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
         let first = d.delegate.last();
@@ -1074,9 +1204,11 @@ mod tests {
             .as_str()
             .unwrap()
             .to_owned();
-        assert!(readout.contains("/5000 tokens"), "{readout}");
+        // The model's room, less the headroom for a nudge pushed after measuring.
+        let limit = 5_000 - nudge_allowance(&compaction_hint(&mirror_rel(SID)));
+        assert!(readout.contains(&format!("/{limit} tokens")), "{readout}");
         let st = d.store.load(SID).unwrap().unwrap();
-        assert_eq!((st.budget, st.section_limit), (5_000 + 2_048, 63_488));
+        assert_eq!((st.budget, st.section_limit), (limit + 2_048, 63_488));
 
         // ~6000 tokens of output fit the configured 63488-token limit, not the model.
         raw.extend([call("c2", "cat big.log"), result("c2", &"y".repeat(24_000))]);
@@ -1092,9 +1224,115 @@ mod tests {
             .find(|m| m["function_call_id"] == "c2")
             .expect("the newest result is kept");
         let text = newest["content"][0]["text"].as_str().unwrap();
-        let note = cap_note(0, 5_000);
+        let note = cap_note(0, limit);
         let note = &note[note.find(" characters").unwrap()..];
         assert!(text.contains(note), "{text}");
+    }
+
+    #[tokio::test]
+    async fn the_clamp_converts_context_managers_room_into_the_rulers_units() {
+        let mut limits = Vec::new();
+        for scale in [1, 2] {
+            let (_dir, root, mut d) = setup(ClmConfig::default());
+            (d.delegate.usable, d.delegate.scale) = (20_000, scale);
+            let mut raw = vec![user("task")];
+            assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+            raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+            assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+            limits.push(d.store.load(SID).unwrap().unwrap().budget - 2_048);
+        }
+        // context-manager counts twice the ruler: the room in ruler tokens halves.
+        let a = nudge_allowance(&compaction_hint(&mirror_rel(SID)));
+        assert_eq!(limits, [20_000 - a, 10_000 - a]);
+    }
+
+    #[tokio::test]
+    async fn a_model_switch_plans_without_the_previous_models_room() {
+        let (_dir, root, mut d) = setup(ClmConfig::default());
+        (d.delegate.usable, d.delegate.scale) = (5_000, 1);
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        assert!(d.store.load(SID).unwrap().unwrap().budget < 65_536);
+
+        // Another model: its room is unknown until context-manager reports it.
+        d.delegate.usable = 150_000;
+        raw.extend([call("c2", "pwd"), result("c2", "/work")]);
+        let mut next = request(&raw, Some(&root), 3);
+        next.model.id = "claude-sonnet-5-5".into();
+        assemble(&d, next).await.unwrap();
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!(st.budget, 65_536, "the configured budget, unclamped");
+        assert_eq!(st.last_usable, 150_000);
+        assert_eq!(st.last_usable_model, "anthropic/claude-sonnet-5-5");
+    }
+
+    #[tokio::test]
+    async fn an_overflow_teaches_the_room_so_the_next_turn_fits() {
+        let cfg = ClmConfig {
+            observation_max_chars: 100_000,
+            ..ClmConfig::default()
+        };
+        let (_dir, root, mut d) = setup(cfg);
+        (d.delegate.usable, d.delegate.scale, d.delegate.strict) = (20_000, 1, true);
+        // ~40k tokens from before the session opted in: under the configured
+        // limit, over the model, whose room CLM has not learned yet.
+        let mut raw = vec![user("task")];
+        for i in 1..=10 {
+            let id = format!("c{i}");
+            raw.extend([call(&id, "cat part"), result(&id, &"y".repeat(16_000))]);
+        }
+        let err = assemble(&d, request(&raw, Some(&root), 1))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("context/overflow"), "{err}");
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!(st.last_usable, 20_000);
+
+        raw.push(user("next"));
+        let mut next = request(&raw, Some(&root), 1);
+        next.options.turn_id = Some("turn-2".into());
+        assemble(&d, next).await.unwrap();
+        assert_eq!(d.store.load(SID).unwrap().unwrap().stats.rollbacks, 1);
+    }
+
+    #[tokio::test]
+    async fn the_nudge_pushed_after_measuring_still_fits_a_clamped_model() {
+        let cfg = ClmConfig {
+            observation_max_chars: 100_000,
+            ..ClmConfig::default()
+        };
+        let (_dir, root, mut d) = setup(cfg);
+        (d.delegate.usable, d.delegate.scale, d.delegate.strict) = (6_000, 1, true);
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        // The result is capped to fill the room, and the adaptive nudge fires on top.
+        raw.extend([call("c1", "cat big.log"), result("c1", &"y".repeat(40_000))]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        let sent = messages(&d.delegate.last());
+        let nudge = sent.last().unwrap()["content"][0]["text"].as_str().unwrap();
+        assert!(nudge.starts_with("[context warning: act now]"), "{nudge}");
+    }
+
+    #[tokio::test]
+    async fn a_result_context_manager_rewrote_strips_thinking_from_there_on() {
+        let (_dir, root, mut d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        // context-manager returned the c1 result rewritten.
+        d.delegate.rewrite = Some(2);
+        raw.extend([call("c2", "cat a.txt"), result("c2", "hello")]);
+        assemble(&d, request(&raw, Some(&root), 3)).await.unwrap();
+        d.delegate.rewrite = None;
+        raw.extend([call("c3", "wc a.txt"), result("c3", "1 1 6")]);
+        assemble(&d, request(&raw, Some(&root), 4)).await.unwrap();
+        let sent = messages(&d.delegate.last());
+        assert!(has_thinking(&sent[1]), "before the rewrite: {sent:#?}");
+        assert!(sent[2..].iter().all(|m| !has_thinking(m)), "{sent:#?}");
     }
 
     #[tokio::test]
@@ -1140,7 +1378,7 @@ mod tests {
             ..ClmConfig::default()
         };
         let (_dir, root, mut d) = setup(cfg);
-        d.delegate.usable = 20_000;
+        (d.delegate.usable, d.delegate.scale) = (20_000, 1);
         let mut raw = vec![user("task")];
         assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
         for i in 1..=3u64 {
@@ -1354,33 +1592,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stop_in_a_clamped_session_is_the_stop_shape_not_an_overflow() {
+    async fn a_final_turn_over_a_clamped_limit_stops_instead_of_overflowing() {
         let cfg = ClmConfig {
             max_rollbacks: 0,
             ..ClmConfig::default()
         };
         let (_dir, root, mut d) = setup(cfg);
-        d.delegate.usable = 3_000;
-        d.delegate.strict = true;
+        (d.delegate.usable, d.delegate.scale, d.delegate.strict) = (3_000, 1, true);
         let mut raw = vec![user("task")];
         assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
 
-        // Over the clamped limit: the final turn is granted but does not fit
-        // the model, so context-manager reports the overflow (truthfully).
+        // Over the clamped limit with no rollback left: the limit is the
+        // model's room, so a final turn could not be sent. The harness would
+        // finalize that overflow at once; the step is the stop instead.
         raw.extend([reply("working on it"), user(&"x".repeat(16_000))]);
-        let final_turn = assemble(&d, request(&raw, Some(&root), 2)).await;
-        assert!(final_turn.is_err(), "{final_turn:?}");
-        assert!(d.store.load(SID).unwrap().unwrap().ctl.finalized);
-
-        // The harness's overflow retry recomputes the step: that is the stop.
-        let mut retry = request(&raw, Some(&root), 2);
-        retry.options.request_overhead_tokens = Some(500);
-        let resp = assemble(&d, retry).await.unwrap();
+        let resp = assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
         assert_eq!(resp.token_count, resp.usable + 1);
         assert_eq!(resp.applied["strategy_stop"], STRATEGY_STOP_REASON);
         assert_eq!(d.delegate.last()["options"]["preview_only"], true);
         let st = d.store.load(SID).unwrap().unwrap();
-        assert!(st.stopped);
+        assert!(st.stopped && st.ctl.finalized);
         assert_eq!(st.stats.stops, 1);
     }
 
@@ -1436,7 +1667,7 @@ mod tests {
             ..ClmConfig::default()
         };
         let (_dir, root, mut d) = setup(cfg);
-        d.delegate.usable = 20_000;
+        (d.delegate.usable, d.delegate.scale) = (20_000, 1);
         let mut raw = vec![user("task")];
         assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
         raw.extend([call("c1", "cat part"), result("c1", &"y".repeat(40_000))]);
