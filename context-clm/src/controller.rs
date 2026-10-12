@@ -93,12 +93,16 @@ pub fn rollback_target(cfg: &Cfg, ctl: &Ctl) -> u64 {
     let margin = cfg
         .retry_margin
         .saturating_mul(depth)
-        .min((3 * limit / 4).max(cfg.retry_margin));
+        .min((limit.saturating_mul(3) / 4).max(cfg.retry_margin));
     limit.saturating_sub(margin)
 }
 
-/// Pop the newest step without orphaning a call: a result takes its sibling
-/// results and the assistant call that produced them. Returned oldest first.
+/// Pop the newest step: a result takes its sibling results and the assistant
+/// call that produced them. Returned oldest first. Never orphans a call as
+/// long as its results directly follow it, which is how the harness appends
+/// them. A message between two results of one call (a note injected
+/// mid-batch) ends the run: only the results after it go, and the call stays
+/// with the earlier ones, as in the spike.
 pub fn pop_step(proj: &mut Vec<Msg>) -> Vec<Msg> {
     let Some(last) = proj.pop() else {
         return Vec::new();
@@ -524,6 +528,53 @@ mod tests {
         assert_eq!(rollback_target(&clm(), &ctl), 30720 - 3 * 2048);
         ctl.consec = 40;
         assert_eq!(rollback_target(&clm(), &ctl), 30720 - 30720 * 3 / 4);
+    }
+
+    #[test]
+    fn rollback_target_edges() {
+        // A limit below the margin pops to zero (evaluate never rolls back there).
+        let small = Cfg {
+            budget: 3000,
+            ..clm()
+        };
+        assert_eq!(rollback_target(&small, &Ctl::default()), 0);
+        // A huge limit does not overflow the depth cap.
+        let huge = Cfg {
+            budget: u64::MAX,
+            reserve: 0,
+            ..clm()
+        };
+        let deep = Ctl {
+            consec: 40,
+            ..Ctl::default()
+        };
+        assert_eq!(rollback_target(&huge, &deep), u64::MAX - 2048 * 37);
+    }
+
+    #[test]
+    fn pop_step_takes_a_lone_result_and_splits_an_interrupted_run() {
+        let (u, a, r1, r2) = (user("q"), call(&["c1", "c2"]), result("c1"), result("c2"));
+        let mut lone = vec![u.clone(), r1.clone()];
+        assert_eq!(pop_step(&mut lone), vec![r1.clone()]);
+        assert_eq!(lone, vec![u.clone()]);
+        // The documented limit: a note between the results stops the run, so
+        // the call keeps r1 and loses r2.
+        let mut split = vec![a.clone(), r1.clone(), u.clone(), r2.clone()];
+        assert_eq!(pop_step(&mut split), vec![r2]);
+        assert_eq!(split, vec![a, r1, u]);
+    }
+
+    #[test]
+    fn small_ruler_edges() {
+        // A prefix larger than the baseline leaves the 32-token floor.
+        assert!(real_edit(100, 60, 500));
+        assert!(!real_edit(100, 70, 500));
+        // The ruler counts UTF-8 bytes, not chars.
+        assert_eq!(raw_count("", &[user("é")]), 0);
+        assert_eq!(raw_count("", &[user("日本語")]), 2);
+        assert_eq!(raw_count("日本語", &[]), 2);
+        let got: Vec<i64> = [-0.5, -1.5, -2.5, -2.6].into_iter().map(py_round).collect();
+        assert_eq!(got, vec![0, -2, -2, -3]);
     }
 
     #[test]
