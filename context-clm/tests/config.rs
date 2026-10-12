@@ -70,11 +70,15 @@ fn invalid_values_are_rejected() {
         json!({"nudge_ratios": [0.5, 1.0]}),
         json!({"nudge_ratios": [0.0]}),
         json!({"observation_max_chars": 0}),
+        // a rollback must land above zero: budget - reserve > margin
+        json!({"rollback_margin_tokens": 63488}),
+        json!({"budget_tokens": 4096, "reserve_tokens": 2048}),
         json!({"budget_tokens": "big"}),
         json!({"unknown_knob": true}),
     ] {
         assert!(ClmConfig::from_json(&bad).is_err(), "{bad}");
     }
+    assert!(ClmConfig::from_json(&json!({"rollback_margin_tokens": 63487})).is_ok());
 }
 
 #[test]
@@ -90,4 +94,30 @@ fn schema_describes_every_field_and_carries_the_defaults() {
         assert!(schema["properties"][field].is_object(), "{field}");
     }
     assert_eq!(schema["example"], ClmConfig::default().to_json());
+}
+
+#[test]
+fn schema_carries_the_single_field_bounds_validate_enforces() {
+    // So the configuration worker refuses at set time what boot would refuse.
+    let schema = ClmConfig::json_schema();
+    let items = &schema["properties"]["nudge_ratios"]["items"];
+    assert_eq!(
+        (&items["exclusiveMinimum"], &items["exclusiveMaximum"]),
+        (&json!(0), &json!(1))
+    );
+    assert_eq!(
+        schema["properties"]["observation_max_chars"]["minimum"],
+        json!(1.0)
+    );
+    let ratio: Vec<&Value> = schema["definitions"]["PersistentNudge"]["anyOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v["type"] == "number")
+        .collect();
+    assert_eq!(ratio.len(), 1);
+    assert_eq!(
+        (&ratio[0]["exclusiveMinimum"], &ratio[0]["maximum"]),
+        (&json!(0), &json!(1))
+    );
 }

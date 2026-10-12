@@ -5,7 +5,7 @@ use schemars::gen::SchemaGenerator;
 use schemars::schema::Schema;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 pub const CONFIG_ID: &str = "context-clm";
 pub const CONFIG_NAME: &str = "Context CLM";
@@ -100,6 +100,7 @@ pub struct ClmConfig {
     pub rollback_margin_tokens: u64,
     pub edit_gate: EditGate,
     /// Head/tail cap, in characters, on each tool output in the projection.
+    #[schemars(range(min = 1))]
     pub observation_max_chars: usize,
     /// Strip thinking from the first changed message on (preserved-thinking safety).
     pub strip_thinking: bool,
@@ -140,6 +141,13 @@ impl ClmConfig {
         if self.observation_max_chars == 0 {
             return Err("observation_max_chars must be at least 1".into());
         }
+        // Otherwise a rollback can never land under the limit, and the
+        // controller silently skips straight to the final turn.
+        if self.budget_tokens - self.reserve_tokens <= self.rollback_margin_tokens {
+            return Err(
+                "rollback_margin_tokens must be less than budget_tokens - reserve_tokens".into(),
+            );
+        }
         Ok(())
     }
 
@@ -160,10 +168,22 @@ impl ClmConfig {
         serde_json::to_value(self).expect("context-clm config serializes")
     }
 
-    /// The entry schema, with the shipped defaults attached as `example`.
+    /// The entry schema, with the shipped defaults attached as `example`. It
+    /// carries `validate()`'s single-field bounds (schemars has no exclusive
+    /// ones), so the configuration worker refuses a value at set time instead
+    /// of this worker at boot; the cross-field checks stay in `validate()`.
     pub fn json_schema() -> Value {
         let mut schema = serde_json::to_value(schemars::schema_for!(Self))
             .expect("context-clm schema serializes");
+        let ratio = &mut schema["properties"]["nudge_ratios"]["items"];
+        ratio["exclusiveMinimum"] = json!(0);
+        ratio["exclusiveMaximum"] = json!(1);
+        if let Some(variants) = schema["definitions"]["PersistentNudge"]["anyOf"].as_array_mut() {
+            for v in variants.iter_mut().filter(|v| v["type"] == "number") {
+                v["exclusiveMinimum"] = json!(0);
+                v["maximum"] = json!(1);
+            }
+        }
         schema["example"] = Self::default().to_json();
         schema
     }

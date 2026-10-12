@@ -112,7 +112,7 @@ is read at boot; restart the worker after changing it.
 | `nudge_ratios` | `[0.25, 0.5, 0.75]` | budget fractions that trigger a one-time nudge |
 | `persistent_nudge` | `"adaptive"` | urgent nudge: `"adaptive"` (next output would not fit), a fraction of the limit in (0, 1], or `"off"` |
 | `max_rollbacks` | `50` | rollbacks before the run gets its final turn |
-| `rollback_margin_tokens` | `2048` | how far below the limit a rollback lands |
+| `rollback_margin_tokens` | `2048` | how far below the limit a rollback lands; must be less than budget − reserve |
 | `edit_gate` | `"fit"` | `"fit"` rejects edits that leave the context over the limit and bigger; `"shrink"` rejects any growth |
 | `observation_max_chars` | `10000` | head/tail cap on each tool output |
 | `strip_thinking` | `true` | drop thinking blocks from the first changed message on (signatures bind the exact prefix) |
