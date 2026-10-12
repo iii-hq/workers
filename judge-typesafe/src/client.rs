@@ -129,6 +129,11 @@ impl JevClient {
         }
     }
 
+    /// Whether a call could authenticate: this snapshot holds a key.
+    pub fn has_key(&self) -> bool {
+        self.api_key.is_some()
+    }
+
     /// Bind operator limits without replacing the shared transport/permit pool.
     pub fn with_limits(&self, limits: ExecutionLimits) -> Self {
         Self {

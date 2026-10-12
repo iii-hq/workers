@@ -71,18 +71,25 @@ function engine(registered = ['typesafe', 'semif']) {
   const state = {
     registered: [...registered],
     models: { ...MODELS },
+    /** `judge-<provider>::status` replies; a provider absent here registers none. */
+    status: {} as Record<string, unknown>,
     addReply: { status: 'accepted' } as unknown,
     operation: { status: 'running' } as unknown,
   }
   const trigger = vi.fn(async (id: string, payload?: Record<string, unknown>) => {
     if (id === 'engine::functions::list') {
       return {
-        functions: state.registered.map((p) => ({ function_id: `judge-${p}::evaluate`, worker_name: `judge-${p}` })),
+        functions: state.registered.flatMap((p) => [
+          { function_id: `judge-${p}::evaluate`, worker_name: `judge-${p}` },
+          ...(p in state.status ? [{ function_id: `judge-${p}::status`, worker_name: `judge-${p}` }] : []),
+        ]),
       }
     }
     if (id === 'judge::configuration-id') return { id: 'judge' }
     const identity = /^(judge-[a-z0-9-]+)::configuration-id$/.exec(id)
     if (identity) return { id: identity[1] }
+    const status = /^judge-([a-z0-9-]+)::status$/.exec(id)
+    if (status) return state.status[status[1]]
     if (id === 'configuration::get') {
       return payload?.id === 'judge' ? { value: { provider: 'typesafe' } } : { value: { model: state.models[String(payload?.id)] } }
     }
@@ -270,6 +277,10 @@ describe('per-session judge provider', () => {
   it('keeps a stored provider that is not running selectable', async () => {
     const { option, view } = await mount({ [SESSION_PROVIDER_KEY]: 'laya' })
     expect(option('laya')?.textContent).toContain('Not running')
+    expect(option('laya')?.hasAttribute('data-warning')).toBe(true)
+    const trigger = view.querySelector('.judge-ui-session-trigger')
+    expect(trigger?.hasAttribute('data-warning')).toBe(true)
+    expect(trigger?.getAttribute('title')).toBe('judge-laya is not running')
     expect(option('laya')?.getAttribute('aria-pressed')).toBe('true')
     // Nothing answers for its settings, so there is nothing to configure.
     expect(view.querySelector('button[aria-label="Configure laya"]')).toBeNull()
@@ -482,7 +493,7 @@ describe('per-session judge provider', () => {
     expect(view.querySelector('[data-page="add"] .judge-ui-session-add-row button')?.textContent).toBe('Configure')
   })
 
-  it('never reads the judges on a timer, only on engine changes while the menu is open', async () => {
+  it('never reads the judges on a timer, only on engine changes while the picker is mounted', async () => {
     const iii = engine()
     const { view, labels } = await mount({}, { iii })
     vi.useFakeTimers()
@@ -510,9 +521,55 @@ describe('per-session judge provider', () => {
     })
     expect(lists()).toBe(before + 1)
     expect(labels()).toContain('qwen3.5-9b')
-    // Closing the menu unbinds both.
+    // Closing the menu keeps them: the trigger's warning follows the engine.
     await act(async () => view.querySelector<HTMLElement>('[data-close-menu]')!.click())
-    expect(iii.bindings.filter((entry) => entry.type !== 'compose-operation')).toEqual([])
+    expect(iii.bindings.map((entry) => entry.type).sort()).toEqual([
+      'configuration',
+      'engine::functions-available',
+      'secrets::changed',
+    ])
+    // Unmounting drops them.
+    act(() => root?.unmount())
+    root = null
+    expect(iii.bindings).toEqual([])
+  })
+
+  it('warns on the trigger and in the list when the chosen judge has no usable key, until it has one', async () => {
+    const iii = engine()
+    const reason = 'no API key: save one in the judge-typesafe settings, or export TYPESAFE_API_KEY in its process and restart it'
+    iii.state.status.typesafe = { configured: false, reason }
+    const { view, option } = await mount({ [SESSION_PROVIDER_KEY]: 'typesafe' }, { iii })
+    const trigger = () => view.querySelector('.judge-ui-session-trigger')
+    expect(trigger()?.textContent).toBe('judge · typesafe')
+    expect(trigger()?.hasAttribute('data-warning')).toBe(true)
+    expect(trigger()?.getAttribute('aria-label')).toBe(
+      `Judge provider for this session: typesafe. typesafe is not configured: ${reason}`,
+    )
+    expect(option('typesafe')?.textContent).toContain(`Not configured: ${reason}`)
+    expect(option('typesafe')?.hasAttribute('data-warning')).toBe(true)
+    // Default resolves to the same judge, so it says so too.
+    expect(option('default')?.textContent).toContain('typesafe, not configured')
+    expect(option('default')?.hasAttribute('data-warning')).toBe(true)
+    // A local judge registers no status and is never asked for one.
+    expect(option('semif')?.hasAttribute('data-warning')).toBe(false)
+    expect(iii.trigger.mock.calls.some(([id]) => id === 'judge-semif::status')).toBe(false)
+    // The key lands as a secret while the menu is closed: the trigger clears.
+    await act(async () => view.querySelector<HTMLElement>('[data-close-menu]')!.click())
+    iii.state.status.typesafe = { configured: true }
+    await act(async () => iii.emit('secrets::changed', { name: 'TYPESAFE_API_KEY' }))
+    await settle()
+    expect(trigger()?.hasAttribute('data-warning')).toBe(false)
+    expect(trigger()?.getAttribute('title')).toBe('Judge provider for this session')
+  })
+
+  it('warns when Default resolves to a judge without a usable key', async () => {
+    const iii = engine()
+    iii.state.status.typesafe = { configured: false }
+    const { view, option } = await mount({}, { iii })
+    expect(view.querySelector('.judge-ui-session-trigger')?.getAttribute('title')).toBe(
+      'typesafe is not configured: no usable key',
+    )
+    expect(option('default')?.textContent).toContain('typesafe, not configured')
   })
 
   it('says so when the registry is unreachable', async () => {

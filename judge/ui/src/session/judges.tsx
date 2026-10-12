@@ -1,5 +1,5 @@
 import { IconButton } from '@iii-dev/console-ui'
-import { Check, Plus, Scale } from 'lucide-react'
+import { Check, Plus, Scale, TriangleAlert } from 'lucide-react'
 import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { JudgeProvider, JudgeSettings } from './engine'
 
@@ -21,6 +21,8 @@ interface JudgeRow {
   value: string | undefined
   label: string
   description?: string
+  /** The description says why this choice would not be used. */
+  warning?: boolean
 }
 
 interface JudgeGroup {
@@ -70,11 +72,14 @@ function judgeGroups(
 ): JudgeGroup[] {
   const running = new Map((providers ?? []).map((entry) => [entry.provider, entry]))
   const fallback = settings?.provider
+  const fallbackEntry = fallback ? running.get(fallback) : undefined
   const fallbackDescription = !fallback
     ? 'From judge settings'
-    : providers && !running.has(fallback)
+    : providers && !fallbackEntry
       ? `${fallback}, not running`
-      : [fallback, running.get(fallback)?.model].filter(Boolean).join(' · ')
+      : fallbackEntry?.problem
+        ? `${fallback}, not configured`
+        : [fallback, fallbackEntry?.model].filter(Boolean).join(' · ')
   const names = [...running.keys()]
   if (stored && providers && !running.has(stored)) names.push(stored)
   return [
@@ -83,7 +88,15 @@ function judgeGroups(
       label: 'Judge settings',
       mark: <Scale size={16} aria-hidden />,
       configure: settings ? settingsTarget(settings) : undefined,
-      rows: [{ id: 'default', value: undefined, label: 'Default', description: fallbackDescription }],
+      rows: [
+        {
+          id: 'default',
+          value: undefined,
+          label: 'Default',
+          description: fallbackDescription,
+          warning: Boolean(fallback && providers && (!fallbackEntry || fallbackEntry.problem)),
+        },
+      ],
     },
     ...names.sort().map((name) => {
       const entry = running.get(name)
@@ -97,7 +110,8 @@ function judgeGroups(
             id: name,
             value: name,
             label: entry?.model ?? name,
-            description: entry ? undefined : 'Not running',
+            description: !entry ? 'Not running' : entry.problem ? `Not configured: ${entry.problem}` : undefined,
+            warning: !entry || Boolean(entry.problem),
           },
         ],
       }
@@ -327,13 +341,17 @@ export function JudgesPanel({ providers, settings, stored, listError, onChoose, 
                         aria-pressed={selected}
                         data-selected={selected || undefined}
                         data-highlighted={row === active || undefined}
+                        data-warning={row.warning || undefined}
                         onClick={() => onChoose(row.value)}
                         onMouseEnter={() => setActiveIndex(visible.indexOf(row))}
                       >
                         <span className="judge-ui-session-option-copy">
                           <span className="judge-ui-session-option-label">{row.label}</span>
                           {row.description ? (
-                            <span className="judge-ui-session-option-description">{row.description}</span>
+                            <span className="judge-ui-session-option-description" title={row.description}>
+                              {row.warning ? <TriangleAlert size={16} aria-hidden /> : null}
+                              {row.description}
+                            </span>
                           ) : null}
                         </span>
                         {selected ? <Check size={16} aria-hidden /> : null}

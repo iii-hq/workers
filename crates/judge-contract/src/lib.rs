@@ -21,6 +21,10 @@ use std::collections::BTreeMap;
 pub const FUNCTION_ID: &str = "judge::evaluate";
 pub const MODELS_FUNCTION_ID: &str = "judge::models::list";
 pub const CANCEL_FUNCTION_ID: &str = "judge::cancel";
+/// Read by the Console straight from `judge-<provider>::status` (the hub does
+/// not forward it): whether the provider holds what an evaluation needs.
+/// Providers that need nothing to answer (local models) may not register it.
+pub const STATUS_FUNCTION_ID: &str = "judge::status";
 /// The hub forwards each public function to `judge-<provider>::<surface>`;
 /// provider workers register exactly these ids, as internal functions.
 pub fn provider_function_id(provider: &str, public_id: &str) -> String {
@@ -210,6 +214,18 @@ pub enum ErrorCode {
     /// The selected `judge-<provider>` worker is not registered on the engine,
     /// or (a local provider) its model failed to load.
     ProviderUnavailable,
+}
+
+/// `judge-<provider>::status`, answered without network calls or model loads.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StatusResponse {
+    /// An evaluation would get past credentials: a hosted provider holds a
+    /// usable key. Says nothing about whether the upstream accepts it.
+    pub configured: bool,
+    /// Why not, naming the fix and never a value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

@@ -10,7 +10,7 @@ import {
   WorkerConfigurationDialog,
   type WorkerConfigurationPanelProps,
 } from '@iii-dev/console-ui'
-import { ArrowLeft, Info } from 'lucide-react'
+import { ArrowLeft, Info, TriangleAlert } from 'lucide-react'
 import {
   type ComponentType,
   type KeyboardEvent,
@@ -49,7 +49,7 @@ const LIVE_DEBOUNCE_MS = 300
 /** The hub's and every provider's configuration entry. */
 const JUDGE_CONFIGURATION = /^judge(-[a-z0-9-]{1,64})?$/
 
-/** Unique per open menu: two pickers never share a handler. */
+/** Unique per mounted picker: two pickers never share a handler. */
 let liveSeq = 0
 
 type Page = 'judges' | 'add' | 'configure'
@@ -157,7 +157,7 @@ export function JudgeSessionPicker({
   const [leaving, setLeaving] = useState<{ run(): void } | null>(null)
   // Consoles without the inline editor open the worker in Settings.
   const [settingsDialog, setSettingsDialog] = useState<string | null>(null)
-  // null = not listed yet; both load when the menu opens.
+  // null = not listed yet; both load on mount, for the trigger's warning.
   const [providers, setProviders] = useState<JudgeProvider[] | null>(null)
   const [listError, setListError] = useState<string | null>(null)
   const [settings, setSettings] = useState<JudgeSettings | null>(null)
@@ -210,16 +210,19 @@ export function JudgeSessionPicker({
     ),
   )
 
-  // While the menu is open the list follows the engine, never a timer: a
-  // judge registering or going away (an add landing, late or not) fires
+  // The list follows the engine, never a timer, while the picker is on
+  // screen: the trigger warns about a choice that would not be used. A judge
+  // registering or going away (an add landing, late or not) fires
   // `engine::functions-available`, a settings change the `configuration`
-  // trigger. The configuration binding names no id: an id-scoped binding
-  // holds the entry, and dropping it can start the entry's expiry.
+  // trigger, a key stored as a secret `secrets::changed`. The configuration
+  // binding names no id: an id-scoped binding holds the entry, and dropping
+  // it can start the entry's expiry.
   useEffect(() => {
-    if (!open) return
+    refresh()
     const seq = ++liveSeq
     const functionsHandler = `iii::judge-ui::session::functions-${seq}`
     const configurationHandler = `iii::judge-ui::session::configuration-${seq}`
+    const secretsHandler = `iii::judge-ui::session::secrets-${seq}`
     let timer: ReturnType<typeof setTimeout> | null = null
     const schedule = () => {
       if (timer !== null) clearTimeout(timer)
@@ -234,10 +237,12 @@ export function JudgeSessionPicker({
         const id = typeof event?.id === 'string' ? event.id : null
         if (id !== null && (JUDGE_CONFIGURATION.test(id) || watchedIds.current.has(id))) schedule()
       }),
+      iii.on(secretsHandler, schedule),
     ]
     const offTriggers = [
       { type: 'engine::functions-available', handler: functionsHandler },
       { type: 'configuration', handler: configurationHandler },
+      { type: 'secrets::changed', handler: secretsHandler },
     ].flatMap(({ type, handler }) => {
       try {
         return [iii.registerTrigger({ type, function_id: `${handler}::${iii.browserId}`, config: {} })]
@@ -256,7 +261,7 @@ export function JudgeSessionPicker({
         }
       }
     }
-  }, [open, iii, refresh])
+  }, [iii, refresh])
 
   // A page that left keeps its content until it has slid out.
   useEffect(() => {
@@ -356,6 +361,18 @@ export function JudgeSessionPicker({
     )
   }
 
+  // What this session's judge resolves to, and why it would not be used.
+  const effective = stored ?? settings?.provider
+  const effectiveEntry = providers?.find((entry) => entry.provider === effective)
+  const warning =
+    !effective || !providers || listError
+      ? null
+      : !effectiveEntry
+        ? `judge-${effective} is not running`
+        : effectiveEntry.problem
+          ? `${effective} is not configured: ${effectiveEntry.problem}`
+          : null
+
   const registered = new Set((providers ?? []).map((entry) => entry.provider))
   const targets = new Map(
     (providers ?? []).flatMap((entry) => {
@@ -375,9 +392,11 @@ export function JudgeSessionPicker({
       <DropdownMenu open={open} onOpenChange={onOpenChange}>
         <DropdownMenuTrigger
           className="judge-ui-session-trigger"
-          aria-label={`Judge provider for this session: ${stored ?? 'default'}`}
-          title="Judge provider for this session"
+          data-warning={warning ? true : undefined}
+          aria-label={`Judge provider for this session: ${stored ?? 'default'}${warning ? `. ${warning}` : ''}`}
+          title={warning ?? 'Judge provider for this session'}
         >
+          {warning ? <TriangleAlert size={16} aria-hidden /> : null}
           judge · {stored ?? 'default'}
         </DropdownMenuTrigger>
         <DropdownMenuContent side="top" align="end" className="judge-ui-session-menu" aria-label="Judge for this session">

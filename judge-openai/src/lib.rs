@@ -9,6 +9,7 @@ pub const PROVIDER: &str = "openai";
 pub const EVALUATE_ID: &str = "judge-openai::evaluate";
 pub const MODELS_ID: &str = "judge-openai::models::list";
 pub const CANCEL_ID: &str = "judge-openai::cancel";
+pub const STATUS_ID: &str = "judge-openai::status";
 /// Evicts a cached `secret://` key when the `secrets` worker changes it.
 pub const SECRET_CHANGED_ID: &str = "judge-openai::on-secret-change";
 pub mod client;

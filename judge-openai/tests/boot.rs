@@ -112,6 +112,7 @@ async fn check_boot(shutdown_signal: Option<&str>) {
             "judge-openai::evaluate".to_owned(),
             "judge-openai::models::list".to_owned(),
             "judge-openai::cancel".to_owned(),
+            "judge-openai::status".to_owned(),
             "judge-openai::on-config-change".to_owned(),
             "judge-openai::on-secret-change".to_owned(),
         ]);

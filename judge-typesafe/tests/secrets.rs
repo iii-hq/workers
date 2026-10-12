@@ -157,3 +157,31 @@ async fn a_malformed_reference_is_rejected_without_a_lookup_or_an_echo() {
     assert!(message.contains("malformed secret reference"), "{message}");
     assert!(!message.contains("pasted"), "{message}");
 }
+
+#[tokio::test]
+async fn status_follows_the_reference_and_never_falls_back_to_the_boot_key() {
+    let (result, _) = call_with_secret(
+        "judge-typesafe::status",
+        json!({}),
+        "secret://TYPESAFE_API_KEY",
+        Err(json!({"code": "SECRET_NOT_FOUND", "message": "no such secret"})),
+        JevClient::new(Some("boot-env-key".into())),
+    )
+    .await;
+    assert_eq!(
+        result,
+        json!({
+            "configured": false,
+            "reason": "secret TYPESAFE_API_KEY not found in the secrets worker; store it there or fix the reference"
+        })
+    );
+    let (result, _) = call_with_secret(
+        "judge-typesafe::status",
+        json!({}),
+        "secret://TYPESAFE_API_KEY",
+        Ok(json!({"name": "TYPESAFE_API_KEY", "value": "sk-from-secrets"})),
+        JevClient::new(None),
+    )
+    .await;
+    assert_eq!(result, json!({"configured": true}));
+}

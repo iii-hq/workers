@@ -31,6 +31,16 @@
   color: var(--color-ink);
 }
 
+/* The session's judge would not be used: not running, or no usable key. */
+[data-iii-ui='judge'] .judge-ui-session-trigger[data-warning] {
+  gap: 4px;
+  color: var(--color-warn);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-trigger > svg {
+  flex: 0 0 auto;
+}
+
 [data-iii-ui='judge'] .judge-ui-session-trigger:focus-visible {
   outline: 2px solid var(--color-rule-focus);
   outline-offset: 1px;
@@ -270,6 +280,15 @@
 [data-iii-ui='judge'] .judge-ui-session-option-description {
   color: var(--color-ink-faint);
   font-size: 12px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-option[data-warning] .judge-ui-session-option-description {
+  color: var(--color-warn);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-option-description > svg {
+  margin-right: 4px;
+  vertical-align: -4px;
 }
 
 [data-iii-ui='judge'] .judge-ui-session-empty,
