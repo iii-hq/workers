@@ -498,6 +498,10 @@ def test_report_on_another_provider():
     ]
     walled = {**row, "status": "failed", "error": {"code": "harness.context_budget_stop"}}
     assert dict((n, ok) for n, ok, _ in report.checks([walled, base]))["no upstream turn failures"]
+    # a rerun under a new tag replaces the upstream-failed row; a failed rerun keeps it
+    again = {**row, "tag": "-r2", "sid": "clm-r2"}
+    assert report.superseded([dead, again]) == [again]
+    assert report.superseded([dead, {**dead, "tag": "-r2"}]) == [dead, {**dead, "tag": "-r2"}]
     # no spike baseline is never a free pass: a clm score below base fails, and so does a group without base rows
     worse = {**row, "score": 0.0}
     assert ("regression kv 1000 gpt-a", False, "clm 0.00 vs base 0.50 (no spike baseline)") in report.checks(

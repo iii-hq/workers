@@ -153,7 +153,7 @@ def checks(rows, crashed=()):
     out.append(("clm rows graded", bool(clm), f"{len(clm)} rows"))
     # a turn may end at the wall (budget stop, overflow, max_turns, cost cap); anything else is an upstream failure
     # (expired login, rate limit, provider error) that would grade every arm 0 and pass the comparisons vacuously
-    upstream = [r for r in rows if r.get("status") == "failed" and not WALL.search(json.dumps(r.get("error")))]
+    upstream = [r for r in rows if upstream_failed(r)]
     out.append(
         ("no upstream turn failures", not upstream, ", ".join(r.get("sid", "?") for r in upstream[:5]) or "none")
     )
@@ -234,6 +234,17 @@ def episode_id(x):
     return (x.get("arm"), x.get("task"), x.get("level") or 0, x.get("seed"), x.get("model"))
 
 
+def upstream_failed(r):
+    """A failed turn whose error is not a wall: an upstream failure (overload, dropped stream, expired login)."""
+    return r.get("status") == "failed" and not WALL.search(json.dumps(r.get("error")))
+
+
+def superseded(rows):
+    """Drop upstream-failed rows that a rerun of the same episode (any tag) replaced with a real outcome."""
+    done = {episode_id(r) for r in rows if not upstream_failed(r)}
+    return [r for r in rows if not (upstream_failed(r) and episode_id(r) in done)]
+
+
 def crashes(runs, loaded):
     """Session ids that crashed (RUN/episodes.out `crash` lines, results without a score) with no graded result for
     the same episode (`episode_id`) since."""
@@ -250,7 +261,7 @@ def crashes(runs, loaded):
 def main(argv):
     runs = [a for a in argv if a != "--check"]
     loaded = load(runs)
-    rows = [r for r in loaded if "score" in r]
+    rows = superseded([r for r in loaded if "score" in r])
     print("\n".join(tables(rows)))
     res = checks(rows, crashes(runs, loaded))
     print("\n### Pass checks\n")
