@@ -48,10 +48,11 @@ const summarizer = (sid: string, model: any, system: string) => async (transcrip
       .map((b: any) => b.text)
       .join('')
       .trim()
-    const cost = Number(r?.usage?.cost_usd ?? r?.message?.usage?.cost_usd ?? 0)
-    return { text: r?.message?.stop_reason === 'end' ? text : '', cost }
+    const cost = r?.usage?.cost_usd ?? r?.message?.usage?.cost_usd
+    return { text: r?.message?.stop_reason === 'end' ? text : '', cost: cost == null ? null : Number(cost) }
   } catch {
-    return { text: '', cost: 0 }
+    // NOTE: a timeout does not abort the router stream, so the provider may still bill the call: unknown, not $0.
+    return { text: '', cost: null }
   }
 }
 

@@ -17,6 +17,14 @@ const result = (id: string, stdout: string): Msg => ({
   content: [{ type: 'text', text: JSON.stringify({ exit_code: 0, stdout, stderr: '' }) }],
   timestamp: 1,
 })
+const reply = (text: string): Msg => ({
+  role: 'assistant',
+  content: [{ type: 'text', text }],
+  stop_reason: 'end',
+  model: 'm',
+  provider: 'p',
+  timestamp: 1,
+})
 const noSum = async () => ({ text: '', cost: 0 })
 
 test('execBody renders output and exit code, and keeps head and tail of long output', () => {
@@ -55,7 +63,7 @@ test('base: readout on the newest result, one final turn over the limit, then st
 
 test('sum: summarises at 75% of the budget into one handoff message; a failed summary keeps the history', async () => {
   const cfg = { arm: 'sum', budget: 16384 } as const
-  const raw = [user('task'), user('a'.repeat(50_000))]
+  const raw = [user('task'), user('a'.repeat(50_000)), reply('ok')]
   const s = newState()
   let seen = ''
   const r = await step(s, { messages: raw, system: '' }, cfg, 't:0', async (t) => {
@@ -67,7 +75,7 @@ test('sum: summarises at 75% of the budget into one handoff message; a failed su
   assert.deepEqual([s.stats.summaries, s.stats.summary_cost_usd], [1, 0.5])
   const s2 = newState()
   const r2 = await step(s2, { messages: raw, system: '' }, cfg, 't:0', noSum)
-  assert.deepEqual(r2.messages.map(resultText), ['task', 'a'.repeat(50_000)])
+  assert.deepEqual(r2.messages.map(resultText), ['task', 'a'.repeat(50_000), 'ok'])
   assert.equal(s2.stats.summary_failures, 1)
 })
 
@@ -127,11 +135,38 @@ test('sum: a summary that stays above 75% is not redone every step', async () =>
     calls++
     return { text: 'S'.repeat(52_000), cost: 0 }
   }
-  const raw = [user('task'), user('a'.repeat(50_000))]
+  const raw = [user('task'), user('a'.repeat(50_000)), reply('ok')]
   await step(s, { messages: raw, system: '' }, cfg, 't:0', big)
   for (let i = 1; i <= 3; i++) {
     raw.push(user(`more ${i}`))
     await step(s, { messages: raw, system: '' }, cfg, `t:${i}`, big)
   }
   assert.equal(calls, 1)
+})
+
+test('sum: user messages the model has not seen yet stay out of the summary and follow it', async () => {
+  const cfg = { arm: 'sum', budget: 16384 } as const
+  let seen = ''
+  const sum = async (t: string) => {
+    seen = t
+    return { text: 'SUMMARY', cost: 0 }
+  }
+  const raw = [user('task'), user('a'.repeat(50_000)), reply('ok'), user('NEW OP')]
+  const r = await step(newState(), { messages: raw, system: '' }, cfg, 't:0', sum)
+  assert.ok(seen.includes('a'.repeat(100)) && !seen.includes('NEW OP'), seen.slice(-200))
+  assert.deepEqual(r.messages.map(resultText), ['task', `${SUMMARY_PREFIX}\nSUMMARY`, 'NEW OP'])
+  // Nothing seen yet: there is nothing to summarise, so the new message goes out whole.
+  seen = ''
+  const unseen = [user('task'), user('a'.repeat(50_000))]
+  const r2 = await step(newState(), { messages: unseen, system: '' }, cfg, 't:0', sum)
+  assert.equal(seen, '')
+  assert.deepEqual(r2.messages.map(resultText), ['task', 'a'.repeat(50_000)])
+})
+
+test('sum: a summary whose cost is unknown (timeout or error) is counted, not priced at $0', async () => {
+  const s = newState()
+  const cfg = { arm: 'sum', budget: 16384 } as const
+  const raw = [user('task'), user('a'.repeat(50_000)), reply('ok')]
+  await step(s, { messages: raw, system: '' }, cfg, 't:0', async () => ({ text: '', cost: null }))
+  assert.deepEqual([s.stats.summary_failures, s.stats.summary_cost_unknown, s.stats.summary_cost_usd], [1, 1, 0])
 })

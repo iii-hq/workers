@@ -14,6 +14,8 @@ export type Stats = {
   summaries: number
   summary_failures: number
   summary_cost_usd: number
+  /** Summary calls whose cost is not known (timeout or error): the provider may still have billed them. */
+  summary_cost_unknown: number
 }
 export type State = {
   raw0: Msg | null
@@ -32,7 +34,8 @@ export type State = {
   budget: number
   stats: Stats
 }
-export type Summarize = (transcript: string) => Promise<{ text: string; cost: number }>
+/** `cost: null` = unknown (the call timed out or failed after the provider may have billed it). */
+export type Summarize = (transcript: string) => Promise<{ text: string; cost: number | null }>
 
 export const RESERVE = 2048
 export const OBS_MAX_CHARS = 10_000
@@ -74,7 +77,15 @@ export const newState = (): State => ({
   lastTc: 0,
   sumTc: 0,
   budget: 0,
-  stats: { steps: 0, peak_tc: 0, stops: 0, summaries: 0, summary_failures: 0, summary_cost_usd: 0 },
+  stats: {
+    steps: 0,
+    peak_tc: 0,
+    stops: 0,
+    summaries: 0,
+    summary_failures: 0,
+    summary_cost_usd: 0,
+    summary_cost_unknown: 0,
+  },
 })
 
 export const textMsg = (role: 'user' | 'assistant', text: string): Msg => ({
@@ -205,15 +216,22 @@ export async function step(
   s.hash = digest(raw)
 
   if (cfg.arm === 'sum') {
-    const lone = s.proj.length === 1 && resultText(s.proj[0]).startsWith(SUMMARY_PREFIX)
+    // User messages that arrived after the last assistant turn have not been seen by the model: they stay out of
+    // the summary and follow it (the CLM arm never drops an unseen user turn either).
+    let cut = s.proj.length
+    while (cut > 0 && s.proj[cut - 1].role === 'user' && fresh.includes(s.proj[cut - 1])) cut--
+    const seen = s.proj.slice(0, cut)
+    const keep = s.proj.slice(cut)
+    const lone = seen.length === 1 && resultText(seen[0]).startsWith(SUMMARY_PREFIX)
     const size = cal([head, ...s.proj])
     const grew = !s.sumTc || size >= s.sumTc + Math.round(0.05 * cfg.budget)
-    if (s.proj.length && !lone && grew && size >= Math.round(0.75 * cfg.budget)) {
+    if (seen.length && !lone && grew && size >= Math.round(0.75 * cfg.budget)) {
       s.sumTc = size
-      const r = await summarize(renderWindow([head, ...s.proj]))
-      s.stats.summary_cost_usd += r.cost
+      const r = await summarize(renderWindow([head, ...seen]))
+      if (r.cost == null) s.stats.summary_cost_unknown++
+      else s.stats.summary_cost_usd += r.cost
       if (r.text) {
-        s.proj = [textMsg('user', `${SUMMARY_PREFIX}\n${r.text}`)]
+        s.proj = [textMsg('user', `${SUMMARY_PREFIX}\n${r.text}`), ...keep]
         s.stats.summaries++
         // The next summary waits for the next crossing; only a failed attempt keeps the pre-summary size.
         s.sumTc = cal([head, ...s.proj])
