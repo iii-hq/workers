@@ -11,7 +11,9 @@
 //!
 //! * `harness_session_progress` at root turn 1, 2, 5, 10, 25 and 50. Every
 //!   report is cumulative, so the last one supersedes the ones before it and
-//!   the histogram of milestones reached IS the drop-off curve.
+//!   the histogram of milestones reached IS the drop-off curve. It carries
+//!   the outcomes of the last [`RECENT_OUTCOMES`] root turns, oldest first and
+//!   ending with the turn that reached the milestone.
 //! * `harness_turn_failed` once per session per outcome (`failed`,
 //!   `cancelled`, `max_turns`), which keeps the reason a run stopped exact
 //!   even when it stopped between two milestones.
@@ -27,6 +29,8 @@
 //! Every step is best effort. A failed read, a failed publish, or a missing
 //! `queue` worker is logged at debug and the turn continues — usage reporting
 //! that can break a turn is worse than no usage reporting.
+
+use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -51,6 +55,9 @@ pub const FAILED_EVENT: &str = "harness_turn_failed";
 /// harness was tried once or actually used.
 pub const MILESTONES: [u64; 6] = [1, 2, 5, 10, 25, 50];
 
+/// How many root turn outcomes a session keeps and a progress report carries.
+pub const RECENT_OUTCOMES: usize = 10;
+
 /// Per-session reporting bookkeeping (`harness_usage/<session_id>`).
 ///
 /// Durable rather than in memory because it is what makes a report happen
@@ -67,10 +74,24 @@ pub struct UsageRow {
     /// Outcomes already announced, one announcement each.
     #[serde(default)]
     pub outcomes: Vec<String>,
+    /// Outcomes of the last root turns, oldest first, never more than
+    /// [`RECENT_OUTCOMES`].
+    #[serde(default)]
+    pub recent_outcomes: VecDeque<String>,
     /// When the first reported turn of this session ended, so a later report
     /// can carry the session's age without a transcript read.
     #[serde(default)]
     pub first_at: i64,
+}
+
+impl UsageRow {
+    /// Record one root turn's outcome, dropping the oldest past the cap.
+    fn remember(&mut self, outcome: &str) {
+        self.recent_outcomes.push_back(outcome.to_string());
+        while self.recent_outcomes.len() > RECENT_OUTCOMES {
+            self.recent_outcomes.pop_front();
+        }
+    }
 }
 
 /// The milestone this turn count reports at, if any.
@@ -110,6 +131,7 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
     };
     let now = AgentMessage::now_ms();
     row.turns += 1;
+    row.remember(outcome);
     if row.first_at == 0 {
         row.first_at = now;
     }
@@ -157,7 +179,7 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
                         "event": PROGRESS_EVENT,
                         "dedupe_key": format!("{session_id}:progress:{reached}"),
                         "turn_index": reached,
-                        "outcome": outcome,
+                        "recent_outcomes": row.recent_outcomes,
                         "model": record.options.model,
                         "sessions_total": totals.sessions,
                         "turns_total": totals.turns,
@@ -304,5 +326,22 @@ mod tests {
         assert_eq!(row.turns, 5);
         assert_eq!(row.reported, vec![1, 2, 5]);
         assert_eq!(row.outcomes, vec!["failed".to_string()]);
+        assert!(row.recent_outcomes.is_empty());
+    }
+
+    #[test]
+    fn recent_outcomes_keep_only_the_last_ten() {
+        // A stored row over the cap is trimmed on its next turn.
+        let mut row: UsageRow = serde_json::from_value(json!({
+            "recent_outcomes": vec!["failed"; RECENT_OUTCOMES + 3]
+        }))
+        .unwrap();
+        for t in 0..25 {
+            row.remember(if t == 24 { "max_turns" } else { "completed" });
+            assert!(row.recent_outcomes.len() <= RECENT_OUTCOMES);
+        }
+        assert_eq!(row.recent_outcomes.len(), RECENT_OUTCOMES);
+        assert_eq!(row.recent_outcomes.back().unwrap(), "max_turns");
+        assert!(row.recent_outcomes.iter().all(|o| o != "failed"));
     }
 }
