@@ -23,6 +23,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlparse
 
 from ctxbench import CLAUDE_PER_O200K, END, GEN, LIMIT, answer_re, gen
 from skills import skill
@@ -30,6 +31,8 @@ from skills import skill
 HERE = Path(__file__).resolve().parent
 REPO = Path(os.environ.get("BENCH_REPO") or HERE.parents[1])
 ENGINE = os.environ.get("BENCH_ENGINE", "ws://127.0.0.1:49250")
+if urlparse(ENGINE).port in (None, 49134):  # no port means the CLI's default, 49134
+    raise SystemExit(f"BENCH_ENGINE={ENGINE} is the live engine's port 49134; the bench stack listens on :49250")
 III = [os.environ.get("III_BIN", str(Path.home() / ".local/bin/iii")), "trigger", "--engine", ENGINE]
 S55, O55 = "claude-sonnet-5-5", "claude-opus-5-5"
 MTAG = {O55: "o55", S55: "s55"}
@@ -467,9 +470,23 @@ def missing_tests(stdout, required):
     return [n for n in required if n not in ok]
 
 
+# The grader runs model-written code (tests, build scripts) unconfined: it gets no API keys or other driver env.
+GRADE_ENV = ("PATH", "HOME", "CARGO_HOME", "RUSTUP_HOME", "LANG")
+
+
+def cargo_config():
+    """The user's cargo config files (None when absent). Episode execs may write ~/.cargo (boot.sh), and cargo would
+    apply a config written there (rustflags, runner, alias) to every later grade."""
+    home = Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo")
+    return {n: (home / n).read_bytes() if (home / n).is_file() else None for n in ("config", "config.toml")}
+
+
+CARGO_CONFIG = cargo_config()  # as the run started
+
+
 def run_cargo(cmd, cwd, timeout=900):
     """(returncode, stdout, stderr). A timeout kills the whole process group and returns 124."""
-    env = {**os.environ, "CARGO_TARGET_DIR": str(cwd / "target")}
+    env = {k: os.environ[k] for k in GRADE_ENV if k in os.environ} | {"CARGO_TARGET_DIR": str(cwd / "target")}
     p = subprocess.Popen(
         cmd, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
     )
@@ -509,7 +526,10 @@ def restore_protected(t, root):
 
 
 def grade_code(name, root):
-    """Restore the protected files, then run the grading commands: (passed, missing required tests, log)."""
+    """Restore the protected files, then run the grading commands: (passed, missing required tests, log). Refuses
+    (not passed) when the user's cargo config changed since the run started."""
+    if cargo_config() != CARGO_CONFIG:
+        return False, [], "not graded: ~/.cargo/config{,.toml} changed since the run started (an episode can write it)"
     t = LONG[name]
     restore_protected(t, root)
     cwd, log, stdout, ok = root / t["cwd"], [], "", True

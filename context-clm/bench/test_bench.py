@@ -1,8 +1,10 @@
 """Offline checks for the bench (no stack, no API calls). Run: python test_bench.py"""
 
 import json
+import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -289,6 +291,33 @@ def test_run_cargo_timeout_kills_the_group():
         assert rc == 124
         rc, out, _ = run.run_cargo(["bash", "-c", "echo $CARGO_TARGET_DIR"], Path(d))
         assert rc == 0 and out.strip() == f"{d}/target"
+
+
+def test_grader_runs_with_a_minimal_env_and_refuses_a_changed_cargo_config():
+    saved = {k: os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "CARGO_HOME")}
+    baseline = run.CARGO_CONFIG
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["ANTHROPIC_API_KEY"] = "secret"
+            rc, out, _ = run.run_cargo(["bash", "-c", "echo ${ANTHROPIC_API_KEY:-unset} ${HOME:-nohome}"], Path(d))
+            assert rc == 0 and out.split() == ["unset", os.environ["HOME"]]
+            os.environ["CARGO_HOME"] = d
+            run.CARGO_CONFIG = run.cargo_config()
+            Path(d, "config.toml").write_text('[build]\nrustflags = ["--cfg", "graded"]\n')
+            ok, missing, log = run.grade_code("http-brace", Path(d, "never-restored"))
+            assert (ok, missing) == (False, []) and log.startswith("not graded:"), log
+            assert not Path(d, "never-restored").exists()
+    finally:
+        run.CARGO_CONFIG = baseline
+        for k, v in saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+
+
+def test_run_refuses_the_live_engine():
+    for url in ("ws://127.0.0.1:49134", "ws://localhost"):
+        env = {**os.environ, "BENCH_ENGINE": url}
+        p = subprocess.run([sys.executable, "-c", "import run"], cwd=run.HERE, env=env, capture_output=True, text=True)
+        assert p.returncode != 0 and "49134" in p.stderr, (url, p.stderr)
 
 
 if __name__ == "__main__":
