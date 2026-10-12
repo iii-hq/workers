@@ -121,6 +121,14 @@ is read at boot; restart the worker after changing it.
 | `step_log` | `true` | append one JSON line per step to the step log |
 | `data_dir` | `data/context-clm` | per-session state and step logs, relative to the project; read at boot |
 
+The entry's schema checks each field alone; the worker also checks the
+cross-field rules (`budget_tokens` above `reserve_tokens`, and
+`rollback_margin_tokens` below their difference), which the schema cannot
+express. A stored value that breaks them is refused on hot reload (the
+previous settings stay live, with a warning in the worker log), and on
+purpose it stops the worker's next boot with that error instead of running
+on settings nobody chose. Fix the entry, then restart the worker.
+
 Files per session: the mirror `<root>/.clm/<session>.ctx` (mode 0600, in a
 0700 `.clm/` that ignores itself through `.gitignore`), the state
 `<data_dir>/<session>.json` and the step log
