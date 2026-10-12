@@ -1,11 +1,13 @@
 """Offline checks for the bench (no stack, no API calls). Run: python test_bench.py"""
 
+import io
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -431,6 +433,63 @@ def test_grader_refuses_a_symlinked_graded_path():
         assert why and why.endswith(": http/tests"), why
         assert {p.name: p.read_bytes() for p in (outside / "tests").iterdir() if p.is_file()} == before
         assert not (root / "http/src/trigger.rs").exists()  # nothing was spliced either
+
+
+def test_grid_on_another_provider():
+    """Sonnet slots take --model, Opus slots --model2; without --model2 the Opus groups are dropped (logged)."""
+    err = io.StringIO()
+    with redirect_stderr(err):
+        one = run.grid("regression", "openai-codex", "gpt-a")
+    assert len(one) == 65 - 17 and {(e["model"], e["provider"]) for e in one} == {("gpt-a", "openai-codex")}
+    assert "dropped 17 " in err.getvalue()
+    two = run.grid("regression", "openai-codex", "gpt-a", "gpt-b")
+    assert len(two) == 65 and {e["model"] for e in two if e.get("max_cost_usd") == 30} == {"gpt-b"}
+    assert len({run.sid_of(e) for e in two}) == 65 and run.sid_of(two[0]) == "clm-kv1000-s0-gpt-a"
+    assert run.grid("regression") == run.grid("regression", "anthropic", run.S55, run.O55)  # the default is unchanged
+    for bad in (("openai-codex",), ("openai-codex", "m", "m"), ("anthropic", None, "m")):
+        try:
+            run.grid("long", *bad)
+        except SystemExit:
+            continue
+        raise AssertionError(f"grid{bad} accepted")
+    out = io.StringIO()
+    with redirect_stdout(out), redirect_stderr(io.StringIO()):
+        assert run.main(["grid", "long-pilot", "--provider", "openai-codex", "--model", "gpt-a"]) == 0
+    assert [e["model"] for e in json.loads(out.getvalue())] == ["gpt-a"] * 6
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run.estimate(one[:1], run.PRIORS)
+    assert "max_turns" in out.getvalue()  # a subscription may report $0: the cap may never bind
+
+
+def test_budget_per_provider():
+    kv = {"arm": "clm", "task": "kv", "level": 1000, "seed": 0, "model": run.S55}
+    assert run.budget_of(kv) == round(32768 * 1.85)
+    assert run.budget_of({**kv, "provider": "openai-codex", "model": "gpt-a"}) == 32768  # o200k-native
+    assert run.budget_of({**kv, "task": "http-brace", "provider": "openai-codex"}) == 65536
+    assert run.budget_of({**kv, "budget": 16384, "provider": "openai-codex"}) == 16384
+
+
+def test_report_on_another_provider():
+    row = {"arm": "clm", "task": "kv", "level": 1000, "seed": 0, "status": "completed", "llm_calls": 10}
+    row.update(model="gpt-a", provider="openai-codex", drops=None, strategy={}, score=1.0, cost_usd=0.0)
+    row.update(peak_prompt=3e4, ops_delivered=34, ops_total=34)
+    long = [
+        {**row, "task": "http-brace", "level": 0, "arm": a, "peak_prompt": p}
+        for a, p in (("clm", 2e4), ("default", 3e4))
+    ]
+    res = report.checks([row, *long])
+    assert all(ok for _, ok, _ in res), res
+    assert ("regression kv 1000 gpt-a", True, "clm 1.00; no spike baseline") in res
+    assert any(n == "zero thinking-drop events on clm" and "n/a" in d for n, _, d in res)
+    assert {n for n, _, _ in res} >= {"long gpt-a: clm solves >= default - 1 task", "long gpt-a: clm peak lower"}
+    lines = report.tables([row, *long])
+    assert "\n### ContextBench-style — gpt-a\n" in lines
+    assert any(x.startswith("| kv 1000 clm | 1 |") and x.endswith(" | n/a | 1.00 |") for x in lines), lines
+    assert any(x.startswith("| http-brace gpt-a clm |") for x in lines)
+    # the same row on Anthropic still needs its provider log
+    claude = {**row, "model": run.S55, "provider": "anthropic"}
+    assert [n for n, ok, _ in report.checks([claude]) if not ok] == ["zero thinking-drop events on clm"]
 
 
 def test_run_refuses_the_live_engine():

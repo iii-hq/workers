@@ -1,11 +1,12 @@
 """Drive context-clm bench episodes through the isolated iii stack (boot.sh), grade them, estimate their cost.
 
-  python run.py grid regression|long-pilot|long > episodes.json
+  python run.py grid regression|long-pilot|long [--provider P --model M [--model2 M2]] > episodes.json
   python run.py estimate episodes.json [--prior RUN ...]
   python run.py verify-long RUN
   python run.py run RUN episodes.json --yes [--workers 6] [--prior RUN ...]
 
-Episode: {arm: clm|sum|base|default, task, level, seed, model, budget?, effort?, max_cost_usd?, tag?}.
+Episode: {arm: clm|sum|base|default, task, level, seed, model, provider?, budget?, effort?, max_cost_usd?, tag?}
+(provider defaults to anthropic).
 Tasks: kv|log|needle (ContextBench-style; level = size), fields (level 24 = ide functions, 40 = ide + harness),
 http-brace|ide-update-op (long coding tasks). A strategy arm opts its session in through session metadata
 {context_strategy, context_budget_tokens}; `default` sets neither. Results: RUN/results/<sid>.json.
@@ -239,11 +240,43 @@ def ep_key(ep):
     return f"{ep['arm']}|{ep['task']}|{ep.get('level', 0)}|{ep['model']}"
 
 
+def provider_of(ep):
+    return ep.get("provider", "anthropic")
+
+
+def budget_of(ep):
+    """The session's context budget. ContextBench limits are o200k tokens: Claude counts more tokens for the same text
+    (CLAUDE_PER_O200K), a non-Anthropic provider is taken as o200k-native (ratio 1.0)."""
+    if ep.get("budget"):
+        return ep["budget"]
+    if kind(ep["task"]) != "ctx":
+        return 65536
+    return round(LIMIT * CLAUDE_PER_O200K[ep["task"]]) if provider_of(ep) == "anthropic" else LIMIT
+
+
 def sid_of(ep):
-    return f"{ep['arm']}-{ep['task']}{ep.get('level', 0)}-s{ep['seed']}-{MTAG[ep['model']]}{ep.get('tag', '')}"
+    m = MTAG.get(ep["model"]) or re.sub(r"[^A-Za-z0-9.-]", "-", ep["model"])
+    return f"{ep['arm']}-{ep['task']}{ep.get('level', 0)}-s{ep['seed']}-{m}{ep.get('tag', '')}"
 
 
-def grid(name):
+def grid(name, provider="anthropic", model=None, model2=None):
+    """The named grid. With `model`, the Sonnet slots run `model` and the Opus slots `model2` (dropped without it)."""
+    eps = _grid(name)
+    if model is None:
+        if provider != "anthropic" or model2:
+            raise SystemExit("grid: --model is required with --model2 or a provider other than anthropic")
+        return eps
+    if model2 == model:
+        raise SystemExit("grid: --model2 must differ from --model (their episodes would share session ids)")
+    if model2 is None:
+        n = sum(ep["model"] == O55 for ep in eps)
+        print(f"grid {name}: no --model2, dropped {n} episodes of the Opus-only groups", file=sys.stderr)
+    slot = {S55: model, O55: model2}
+    extra = {} if provider == "anthropic" else {"provider": provider}
+    return [{**ep, "model": slot[ep["model"]], **extra} for ep in eps if slot[ep["model"]]]
+
+
+def _grid(name):
     eps = []
     if name == "regression":
         for seed in (0, 1):
@@ -308,6 +341,11 @@ def estimate(eps, priors):
         print(f"| {k} | {g['n']} | {prior} | {g['cap']:.0f} |")
     print(f"\nepisodes: {len(eps)}; expected ~${expected:.2f}; harness caps total ${cap:.0f}")
     print("The sum arm's summariser calls are outside the harness cap (its priors include them).")
+    if any(provider_of(ep) != "anthropic" for ep in eps):
+        print(
+            "A subscription provider may report cost_usd 0: the harness cap may then never bind, and max_turns is "
+            "what bounds those episodes."
+        )
     return expected, cap
 
 
@@ -628,11 +666,10 @@ def episode(run, ep):
     if root.exists():
         raise RuntimeError(f"{sid}: stale attempt (workspace exists, no result); use a new tag")
     root.mkdir(parents=True)
-    k = kind(task)
-    budget = ep.get("budget") or (round(LIMIT * CLAUDE_PER_O200K[task]) if k == "ctx" else 65536)
+    k, provider, budget = kind(task), provider_of(ep), budget_of(ep)
     meta = {} if arm == "default" else {"context_strategy": arm, "context_budget_tokens": budget}
     mirror = f".clm/{sid}.ctx"
-    first = {"model": model, "provider": "anthropic", "session": {"title": sid, "kind": "automation", "metadata": meta}}
+    first = {"model": model, "provider": provider, "session": {"title": sid, "kind": "automation", "metadata": meta}}
     per = {"max_turns": {"ctx": 40, "fields": 80, "code": 200}[k], "max_output_tokens": 16000}
     per["metadata"] = {"fs_scope": {"root": str(root)}}
     allow = ["shell::exec"] + {
@@ -684,6 +721,7 @@ def episode(run, ep):
 
     entries = messages(sid)
     out = {"sid": sid, **{x: ep.get(x) for x in ("arm", "task", "level", "seed", "model")}, "tag": ep.get("tag", "")}
+    out["provider"] = provider
     out.update({"status": status, "error": err, "budget": budget if arm != "default" else None})
     if k == "ctx":
         by_turn = {}
@@ -736,7 +774,8 @@ def episode(run, ep):
                 default=0,
             ),
             "strategy": strategy,
-            "drops": drop_events(run, sid),
+            # the thinking-drop warning is provider-anthropic's; other providers' drops are unknown (report: n/a)
+            "drops": drop_events(run, sid) if provider == "anthropic" else None,
             "wall_s": round(time.time() - t0),
         }
     )
@@ -747,7 +786,11 @@ def episode(run, ep):
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("grid").add_argument("name")
+    g = sub.add_parser("grid")
+    g.add_argument("name")
+    g.add_argument("--provider", default="anthropic")
+    g.add_argument("--model", help="runs the Sonnet slots (default: the Claude models as listed)")
+    g.add_argument("--model2", help="runs the Opus slots; without it they are dropped")
     e = sub.add_parser("estimate")
     e.add_argument("episodes")
     e.add_argument("--prior", nargs="*", default=[])
@@ -760,7 +803,7 @@ def main(argv):
     r.add_argument("--yes", action="store_true", help="spend money: run after printing the estimate")
     a = ap.parse_args(argv)
     if a.cmd == "grid":
-        print(json.dumps(grid(a.name), indent=1))
+        print(json.dumps(grid(a.name, a.provider, a.model, a.model2), indent=1))
         return 0
     if a.cmd == "verify-long":
         return verify_long(Path(a.run).resolve())

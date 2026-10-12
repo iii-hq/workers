@@ -1,7 +1,8 @@
 # context-clm bench
 
-Manual validation for the `context-clm` strategy (spec §7). Not run in CI: it needs an Anthropic API key and spends
-money. Every paid run prints a cost estimate first and refuses to start without `--yes`.
+Manual validation for the `context-clm` strategy (spec §7). Not run in CI: it needs an Anthropic API key (or a codex
+CLI login, see [Running on the Codex provider](#running-on-the-codex-provider)) and spends money. Every paid run prints
+a cost estimate first and refuses to start without `--yes`.
 
 | file | what |
 |---|---|
@@ -151,10 +152,45 @@ result in `$RUN/results`, so the pilot episodes are not paid twice):
 - §7.2, per model: `clm` solves at least as many tasks as `default` minus one (a task is solved when most of its
   seeds pass), with a lower mean peak prompt and a mean cost no higher than `default`.
 - `report.py --check` also fails on a crashed episode with no result since, on a refused grade, on a group or long-task
-  model with rows for another arm but none for `clm`, and on a `clm` row whose provider log was not found (its drops
-  are unknown). `run` refuses to rerun a crashed sid, so rerun the episode with a new `tag`: a result with the same
-  arm, task, level, seed and model clears the crash. A refused grade is cleared only by removing or regrading its row
-  (see Long coding tasks).
+  model with rows for another arm but none for `clm`, and on an Anthropic `clm` row whose provider log was not found
+  (its drops are unknown). `run` refuses to rerun a crashed sid, so rerun the episode with a new `tag`: a result with
+  the same arm, task, level, seed and model clears the crash. A refused grade is cleared only by removing or regrading
+  its row (see Long coding tasks).
+
+## Running on the Codex provider
+
+`PROVIDER=openai-codex` runs the stack on `provider-openai-codex` with the codex CLI's ChatGPT login instead of
+Anthropic (the default). The provider reads `${CODEX_HOME:-~/.codex}/auth.json` read-only and never copies or refreshes
+its tokens. Build it in this checkout (`boot.sh` takes it from here, never from `MAIN`):
+
+```bash
+(cd provider-openai-codex && cargo build --release --locked)
+```
+
+```bash
+export RUN=/home/anderson/context-clm-runs/codex-01 PROVIDER=openai-codex BENCH_MODEL=<model id>
+context-clm/bench/smoke.sh      # BENCH_MODEL may stay unset here: no smoke call needs the model
+context-clm/bench/boot.sh       # starts provider-openai-codex instead of provider-anthropic, waits for BENCH_MODEL
+cd context-clm/bench
+.venv/bin/python run.py grid regression --provider openai-codex --model <id> --model2 <id2> > $RUN/regression.json
+.venv/bin/python run.py run $RUN $RUN/regression.json --yes --workers 2
+.venv/bin/python report.py $RUN > $RUN/report.md; .venv/bin/python report.py $RUN --check
+```
+
+`grid NAME --provider P --model M [--model2 M2]` (any grid) puts `M` in the Sonnet slots and `M2` in the Opus slots,
+and writes `provider` into each episode. Without `--model2` the Opus-only groups are dropped (stderr says how many).
+
+- ContextBench budgets are the o200k limit as is (`LIMIT`, tokenizer ratio 1.0), not scaled by `CLAUDE_PER_O200K` as
+  on Anthropic. Code tasks keep 65536.
+- No thinking-drop check: that event is a provider-anthropic log line. Other providers' rows record `drops: null`, the
+  report shows `n/a`, and only Anthropic `clm` rows count toward "zero thinking-drop events".
+- No spike baseline: `SPIKE_CLM` was measured on Claude, so another model's regression groups print
+  "no spike baseline" instead of failing. The long-task checks (§7.2) apply to every model.
+- Cost may read 0: a subscription may report `cost_usd` 0, so the harness cap (`max_cost_usd`) may never bind and
+  `max_turns` is what bounds an episode. The estimate says so; `cost $` and `$/success` then mean nothing.
+- Rate limits: the subscription's limits are shared with your own codex use. Run `--workers 2` or fewer.
+- An expired access token needs a fresh `codex` CLI login (the provider never refreshes it). Log in again before you
+  boot the stack.
 
 ## Live dogfooding (spec §7.3, after both PRs merge)
 

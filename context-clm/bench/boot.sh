@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Isolated bench stack on :49250 — never touches the live engine (:49134).
 # Usage: RUN=/abs/dir/outside/any/repo ANTHROPIC_API_KEY=... context-clm/bench/boot.sh
+#        RUN=... PROVIDER=openai-codex [BENCH_MODEL=<id>] context-clm/bench/boot.sh   (ChatGPT login of the codex CLI)
+# Only the chosen provider starts. BENCH_MODEL: the model boot waits for in the router.
 set -euo pipefail
 WT=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)  # this checkout: harness, context-clm, arms
 MAIN=${MAIN:-/home/anderson/project/iii/workers}          # unchanged workers' debug builds
@@ -10,7 +12,22 @@ case $RUN in /*) ;; *) echo "RUN must be an absolute path" >&2; exit 1 ;; esac
 mkdir -p "$RUN" && RUN=$(cd "$RUN" && pwd -P)
 PORT=49250
 III=${III_BIN:-$HOME/.local/bin/iii}
-: "${ANTHROPIC_API_KEY:?export ANTHROPIC_API_KEY (provider-anthropic reads it)}"
+PROVIDER=${PROVIDER:-anthropic}
+case $PROVIDER in
+  anthropic)
+    : "${ANTHROPIC_API_KEY:?export ANTHROPIC_API_KEY (provider-anthropic reads it)}"
+    PBIN=$MAIN/provider-anthropic/target/debug/provider-anthropic
+    BUILD="(cd $MAIN/provider-anthropic && cargo build --locked)"
+    MODEL=${BENCH_MODEL:-claude-sonnet-5-5} ;;
+  openai-codex)
+    # The provider reads the codex CLI's login read-only (never copies or rotates its refresh token).
+    AUTH=${CODEX_HOME:-$HOME/.codex}/auth.json
+    [ -r "$AUTH" ] || { echo "$AUTH is not readable: log in with the codex CLI first" >&2; exit 1; }
+    PBIN=$WT/provider-openai-codex/target/release/provider-openai-codex
+    BUILD="(cd $WT/provider-openai-codex && cargo build --release --locked)"
+    MODEL=${BENCH_MODEL:-} ;;
+  *) echo "PROVIDER must be anthropic or openai-codex, not $PROVIDER" >&2; exit 1 ;;
+esac
 export III_URL=ws://127.0.0.1:$PORT III_TELEMETRY_ENABLED=false NO_COLOR=1  # NO_COLOR: log scans match plain text (ruling C7)
 unset III_COMPOSE_DIR III_COMPOSE_NAMESPACE III_NAMESPACE III_CONFIG_NAME III_COMPOSE_FILE III_ENGINE_PORT
 
@@ -20,10 +37,12 @@ if (: <>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
   echo "127.0.0.1:$PORT is already listening: stop that stack first (down.sh with its RUN)" >&2; exit 1
 fi
 mkdir -p "$RUN"/{bin,logs,workspace,configuration,sessions,queue,context-leases,shim}
-for w in state queue session-manager context-manager cron llm-router provider-anthropic ide; do
+for w in state queue session-manager context-manager cron llm-router ide; do
   [ -x "$MAIN/$w/target/debug/$w" ] || { echo "build $MAIN/$w first: cargo build --locked" >&2; exit 1; }
   cp "$MAIN/$w/target/debug/$w" "$RUN/bin/"
 done
+[ -x "$PBIN" ] || { echo "build $PBIN first: $BUILD" >&2; exit 1; }
+cp "$PBIN" "$RUN/bin/provider-$PROVIDER"
 for b in harness/target/release/harness context-clm/target/release/context-clm; do
   [ -x "$WT/$b" ] || { echo "build $WT/$b first: cargo build --release --locked" >&2; exit 1; }
   cp "$WT/$b" "$RUN/bin/"
@@ -90,11 +109,16 @@ start state "$RUN/bin/state" --url "$III_URL" --config "$RUN/state.yaml"; waitfn
 start queue "$RUN/bin/queue" --url "$III_URL" --config "$RUN/queue.yaml"; waitfn queue::define
 start session-manager "$RUN/bin/session-manager" --url "$III_URL" --config "$RUN/session-manager.yaml"; waitfn session::messages
 start llm-router "$RUN/bin/llm-router" --url "$III_URL"; waitfn router::models::get
-start provider-anthropic "$RUN/bin/provider-anthropic" --url "$III_URL"; waitfn provider::anthropic::stream
-for _ in $(seq 240); do
-  "$III" trigger router::models::get --engine "$III_URL" --json '{"provider":"anthropic","id":"claude-sonnet-5-5"}' 2>/dev/null |
-    jq -e '.model.id' >/dev/null && break; sleep 0.5
-done
+start "provider-$PROVIDER" "$RUN/bin/provider-$PROVIDER" --url "$III_URL"; waitfn "provider::$PROVIDER::stream"
+# Not fatal (as before): the episodes then fail at their first harness::send.
+if [ -n "$MODEL" ]; then
+  Q=$(jq -nc --arg p "$PROVIDER" --arg m "$MODEL" '{provider: $p, id: $m}')
+  for i in $(seq 240); do
+    "$III" trigger router::models::get --engine "$III_URL" --json "$Q" 2>/dev/null | jq -e '.model.id' >/dev/null && break
+    [ "$i" = 240 ] && echo "warning: the router has no model $Q after 120 s (a bad key or an expired login lists none)" >&2
+    sleep 0.5
+  done
+fi
 start context-manager "$RUN/bin/context-manager" --url "$III_URL" --config "$RUN/context-manager.yaml"; waitfn context::assemble
 start cron "$RUN/bin/cron" --url "$III_URL"
 start ide env PATH="$RUN/shim:$PATH" "$RUN/bin/ide" --url "$III_URL" --config "$RUN/ide.yaml"; waitfn shell::exec

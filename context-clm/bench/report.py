@@ -4,8 +4,9 @@
 
 --check exits 1 when a pass check fails or nothing was graded. A crashed episode (a `crash` line in RUN/episodes.out
 with no result for the same arm, task, level, seed and model since, under any tag), a refused grade (run.py did not
-grade it), a group with rows for another arm but none for clm, and a clm row without a provider log all fail it: a
-missing result never passes as a good one.
+grade it), a group with rows for another arm but none for clm, and an Anthropic clm row without a provider log all
+fail it: a missing result never passes as a good one. Rows of other models have no spike baseline, and rows of other
+providers no thinking-drop count (n/a).
 """
 
 import json
@@ -31,6 +32,28 @@ SPIKE_CLM = {
     ("fields", 24, O55): 1.0,
 }
 CODE = ("http-brace", "ide-update-op")
+REGRESSION = {(t, lv) for t, lv, _ in SPIKE_CLM}  # the §7.1 groups
+
+
+def name(model):
+    return NAME.get(model, model)
+
+
+def models(rows):
+    """The Claude models, then every other model the rows have."""
+    return [*NAME, *sorted({r["model"] for r in rows} - NAME.keys())]
+
+
+def anthropic(r):
+    return r.get("provider", "anthropic") == "anthropic"
+
+
+def drops(xs):
+    """Thinking-drop events (provider-anthropic's log only); "+?" when some rows have no log, n/a on other providers."""
+    xs = [x for x in xs if anthropic(x)]
+    if not xs:
+        return "n/a"
+    return f"{sum(x.get('drops') or 0 for x in xs)}{'+?' * any(x.get('drops') is None for x in xs)}"
 
 
 def mean(xs):
@@ -84,8 +107,7 @@ COMMON = [
     ("summary fails", lambda xs: fmt(mean([st(x, "summary_failures") for x in xs]), 1)),
     # summary calls that timed out or failed: billed or not, their cost is missing from "cost $"
     ("summary cost unknown", lambda xs: total(xs, "summary_cost_unknown")),
-    # "+?": some rows have no provider log, so their drops are unknown
-    ("drops", lambda xs: f"{sum(x.get('drops') or 0 for x in xs)}{'+?' * any(x.get('drops') is None for x in xs)}"),
+    ("drops", drops),
 ]
 
 
@@ -93,16 +115,16 @@ def tables(rows):
     out = []
     ctx = [r for r in rows if r["task"] in ("kv", "log", "needle")]
     ops = ("ops done", lambda xs: fmt(mean([x["ops_delivered"] / x["ops_total"] for x in xs])))
-    for model in NAME:
+    for model in models(ctx):
         sel = [r for r in ctx if r["model"] == model]
         out += table(
-            f"ContextBench-style — {NAME[model]}", lambda r: f"{r['task']} {r['level']} {r['arm']}", sel, [*COMMON, ops]
+            f"ContextBench-style — {name(model)}", lambda r: f"{r['task']} {r['level']} {r['arm']}", sel, [*COMMON, ops]
         )
     fields = [r for r in rows if r["task"] == "fields"]
     recall = ("recall", lambda xs: fmt(mean([x.get("recall") for x in xs])))
     out += table(
         "Code reading (exact answer)",
-        lambda r: f"fields{r['level']} {NAME[r['model']]} {r['arm']}",
+        lambda r: f"fields{r['level']} {name(r['model'])} {r['arm']}",
         fields,
         [*COMMON, recall],
     )
@@ -112,7 +134,7 @@ def tables(rows):
     refused = ("grade refused", lambda xs: str(sum(1 for x in xs if x.get("grade_refused"))))
     out += table(
         "Long coding tasks (cargo test)",
-        lambda r: f"{r['task']} {NAME[r['model']]} {r['arm']}",
+        lambda r: f"{r['task']} {name(r['model'])} {r['arm']}",
         code,
         [*COMMON, calls, refused],
     )
@@ -127,22 +149,31 @@ def checks(rows, crashed=()):
     out.append(("no refused grades", not refused, ", ".join(refused[:10]) or "none"))
     clm = [r for r in rows if r["arm"] == "clm"]
     out.append(("clm rows graded", bool(clm), f"{len(clm)} rows"))
-    for (task, level, model), spike in SPIKE_CLM.items():
+    # the spike's groups first, then the regression groups of models the spike never ran (no baseline to fail)
+    other = sorted({(r["task"], r["level"], r["model"]) for r in rows if (r["task"], r["level"]) in REGRESSION})
+    other = [k for k in other if k not in SPIKE_CLM]
+    for task, level, model in [*SPIKE_CLM, *other]:
         group = [r for r in rows if (r["task"], r["level"], r["model"]) == (task, level, model)]
         xs = [r["score"] for r in group if r["arm"] == "clm"]
-        name = f"regression {task} {level} {NAME[model]}"
-        if xs:
+        label, spike = f"regression {task} {level} {name(model)}", SPIKE_CLM.get((task, level, model))
+        if xs and spike is None:
+            out.append((label, True, f"clm {statistics.mean(xs):.2f}; no spike baseline"))
+        elif xs:
             got = statistics.mean(xs)
-            out.append((name, got >= spike, f"clm {got:.2f} vs spike {spike:.2f}"))
+            out.append((label, got >= spike, f"clm {got:.2f} vs spike {spike:.2f}"))
         elif group:
-            out.append((name, False, "no clm rows (other arms have some)"))
+            out.append((label, False, "no clm rows (other arms have some)"))
     if clm:
-        drops = sum(r.get("drops") or 0 for r in clm)
-        unknown = sum(1 for r in clm if r.get("drops") is None)
-        detail = f"{drops} events" + (f"; {unknown} rows without a provider log" if unknown else "")
-        out.append(("zero thinking-drop events on clm", drops == 0 and not unknown, detail))
+        # only provider-anthropic logs the event: other providers' clm rows are n/a, never a failure
+        ant = [r for r in clm if anthropic(r)]
+        n = sum(r.get("drops") or 0 for r in ant)
+        unknown = sum(1 for r in ant if r.get("drops") is None)
+        detail = f"{n} events" + (f"; {unknown} rows without a provider log" if unknown else "")
+        if len(ant) < len(clm):
+            detail += f"; n/a on {len(clm) - len(ant)} rows of other providers"
+        out.append(("zero thinking-drop events on clm", n == 0 and not unknown, detail))
     long = [r for r in rows if r["task"] in CODE or (r["task"] == "fields" and r["level"] == 40)]
-    for model in NAME:
+    for model in models(long):
         by = defaultdict(list)
         for r in long:
             if r["model"] == model:
@@ -151,7 +182,7 @@ def checks(rows, crashed=()):
         if not has & {"clm", "default"}:
             continue
         if not {"clm", "default"} <= has:
-            out.append((f"long {NAME[model]}: clm and default graded", False, f"only {sorted(has)}"))
+            out.append((f"long {name(model)}: clm and default graded", False, f"only {sorted(has)}"))
             continue
 
         def solved(arm, by=by):
@@ -161,11 +192,11 @@ def checks(rows, crashed=()):
             return statistics.mean(x[key] for (a, _), xs in by.items() if a == arm for x in xs)
 
         c, d = solved("clm"), solved("default")
-        out.append((f"long {NAME[model]}: clm solves >= default - 1 task", c >= d - 1, f"clm {c} vs default {d}"))
+        out.append((f"long {name(model)}: clm solves >= default - 1 task", c >= d - 1, f"clm {c} vs default {d}"))
         cp, dp = avg("clm", "peak_prompt"), avg("default", "peak_prompt")
-        out.append((f"long {NAME[model]}: clm peak lower", cp < dp, f"clm {cp:.0f} vs default {dp:.0f}"))
+        out.append((f"long {name(model)}: clm peak lower", cp < dp, f"clm {cp:.0f} vs default {dp:.0f}"))
         cc, dc = avg("clm", "cost_usd"), avg("default", "cost_usd")
-        out.append((f"long {NAME[model]}: clm cost <= default", cc <= dc, f"clm ${cc:.2f} vs default ${dc:.2f}"))
+        out.append((f"long {name(model)}: clm cost <= default", cc <= dc, f"clm ${cc:.2f} vs default ${dc:.2f}"))
     return out
 
 
