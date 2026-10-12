@@ -91,6 +91,36 @@ fn partial_state_files_fill_in_defaults() {
 }
 
 #[test]
+fn a_state_written_by_another_version_still_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().to_path_buf());
+    // A key this version does not know (a newer worker wrote it), and a
+    // cached request from before `system_prompt` was stored.
+    fs::write(
+        dir.path().join("s_1.json"),
+        r#"{"covered": 2, "future_field": {"x": 1}, "last_out": {"messages": []}}"#,
+    )
+    .unwrap();
+    let state = store.load("s_1").unwrap().unwrap();
+    assert_eq!(state.covered, 2);
+    assert_eq!(state.last_out, Some(CachedOut::default()));
+}
+
+#[test]
+fn an_empty_or_truncated_state_is_invalid_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().to_path_buf());
+    for torn in ["", r#"{"covered": 3, "proj": [{"role": "us"#] {
+        fs::write(dir.path().join("s_1.json"), torn).unwrap();
+        assert_eq!(
+            store.load("s_1").unwrap_err().kind(),
+            io::ErrorKind::InvalidData,
+            "{torn:?}"
+        );
+    }
+}
+
+#[test]
 fn corrupt_state_is_an_error_not_a_reset() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path().to_path_buf());
@@ -131,16 +161,28 @@ fn step_log_appends_lines_and_remove_clears_everything() {
     assert!(!dir.path().join("log/s_1.jsonl").exists());
 }
 
+#[test]
+fn a_multi_line_string_stays_one_log_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().to_path_buf());
+    let line = json!({"edit": "line one\nline two\r\n", "step": 1});
+    store.append_log("s_1", &line).unwrap();
+    let log = fs::read_to_string(dir.path().join("log/s_1.jsonl")).unwrap();
+    assert_eq!(log.lines().count(), 1, "{log}");
+    assert_eq!(serde_json::from_str::<Value>(log.trim_end()).unwrap(), line);
+}
+
 #[cfg(unix)]
 #[test]
 fn state_and_log_are_private() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path().to_path_buf());
+    // The store creates its own folder, as on a first boot.
+    let store = Store::new(dir.path().join("state"));
     store.save("s_1", &populated()).unwrap();
     store.append_log("s_1", &json!({"step": 1})).unwrap();
     let mode = |p: &str| {
-        fs::metadata(dir.path().join(p))
+        fs::metadata(dir.path().join("state").join(p))
             .unwrap()
             .permissions()
             .mode()
@@ -148,6 +190,7 @@ fn state_and_log_are_private() {
     };
     assert_eq!(mode("s_1.json"), 0o600);
     assert_eq!(mode("log/s_1.jsonl"), 0o600);
+    assert_eq!((mode("."), mode("log")), (0o700, 0o700));
 }
 
 #[cfg(unix)]

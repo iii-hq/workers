@@ -2,7 +2,7 @@
 //! step log `<dir>/log/<safe(sid)>.jsonl`.
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -99,6 +99,7 @@ impl Default for SessionState {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CachedOut {
     pub messages: Vec<Msg>,
     pub system_prompt: String,
@@ -158,7 +159,7 @@ impl Store {
     }
 
     pub fn save(&self, sid: &str, state: &SessionState) -> io::Result<()> {
-        fs::create_dir_all(&self.dir)?;
+        create_private_dir(&self.dir)?;
         write_private(&self.state_path(sid), &serde_json::to_vec(state)?)
     }
 
@@ -172,7 +173,7 @@ impl Store {
     /// Append one JSON line to the session's step log (0600, never through a symlink).
     pub fn append_log(&self, sid: &str, line: &Value) -> io::Result<()> {
         let path = self.log_path(sid);
-        fs::create_dir_all(self.dir.join("log"))?;
+        create_private_dir(&self.dir.join("log"))?;
         let mut options = OpenOptions::new();
         options.create(true).append(true);
         #[cfg(unix)]
@@ -184,4 +185,17 @@ impl Store {
         bytes.push(b'\n');
         options.open(path)?.write_all(&bytes)
     }
+}
+
+/// Create a folder (and missing parents) 0700 on unix: state and step logs
+/// hold transcript text. An existing folder keeps its mode.
+fn create_private_dir(path: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)
 }
