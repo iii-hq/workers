@@ -46,15 +46,17 @@ pub struct Cfg {
 }
 
 impl Cfg {
-    /// A session override at or below the reserve leaves no room (limit 0 would
-    /// silently disable every budget action), so it is ignored and logged.
+    /// A session override that leaves no more than the rollback margin above
+    /// the reserve is ignored and logged: the controller would silently skip
+    /// every rollback (and at limit 0 every budget action).
     pub fn from_config(c: &ClmConfig, budget_override: Option<u64>) -> Cfg {
         let budget = match budget_override {
-            Some(x) if x <= c.reserve_tokens => {
+            Some(x) if x <= c.reserve_tokens.saturating_add(c.rollback_margin_tokens) => {
                 tracing::warn!(
                     budget_override = x,
                     reserve_tokens = c.reserve_tokens,
-                    "ignoring the session budget override: it leaves no room above the reserve"
+                    rollback_margin_tokens = c.rollback_margin_tokens,
+                    "ignoring the session budget override: it leaves no room for a rollback above the reserve"
                 );
                 c.budget_tokens
             }
@@ -476,12 +478,14 @@ mod tests {
     }
 
     #[test]
-    fn an_override_at_or_below_the_reserve_is_ignored() {
+    fn an_override_with_no_room_for_a_rollback_is_ignored() {
+        // reserve 2048 + rollback margin 2048
         let c = ClmConfig::default();
-        assert_eq!(Cfg::from_config(&c, Some(2048)).budget, 65536);
-        assert_eq!(Cfg::from_config(&c, Some(0)).budget, 65536);
-        let kept = Cfg::from_config(&c, Some(2049));
-        assert_eq!((kept.budget, kept.limit()), (2049, 1));
+        for ignored in [0, 2048, 2049, 4096] {
+            assert_eq!(Cfg::from_config(&c, Some(ignored)).budget, 65536);
+        }
+        let kept = Cfg::from_config(&c, Some(4097));
+        assert_eq!((kept.budget, kept.limit()), (4097, 2049));
     }
 
     #[test]

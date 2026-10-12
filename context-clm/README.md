@@ -109,7 +109,7 @@ is read at boot; restart the worker after changing it.
 
 | field | default | meaning |
 |---|---|---|
-| `budget_tokens` | `65536` | context budget; a session's `context_budget_tokens` overrides it |
+| `budget_tokens` | `65536` | context budget; a session's `context_budget_tokens` overrides it, unless the override is at most reserve + rollback margin (ignored with a warning) |
 | `reserve_tokens` | `2048` | kept free; the limit is budget − reserve |
 | `nudge_ratios` | `[0.25, 0.5, 0.75]` | budget fractions that trigger a one-time nudge |
 | `persistent_nudge` | `"adaptive"` | urgent nudge: `"adaptive"` (next output would not fit), a fraction of the limit in (0, 1], or `"off"` |
