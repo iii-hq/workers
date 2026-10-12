@@ -3124,6 +3124,7 @@ fn step_failure(error: &HarnessError) -> (String, FailureInfo<'static>) {
         HarnessError::ContextStrategyUnavailable(message) => {
             (message.clone(), CONTEXT_STRATEGY_UNAVAILABLE_FAILURE)
         }
+        HarnessError::ContextBudgetStop(message) => (message.clone(), CONTEXT_BUDGET_STOP_FAILURE),
         other => (other.to_string(), INTERNAL_FAILURE),
     }
 }
@@ -3445,7 +3446,7 @@ async fn assemble_context(
         .await
         .map_err(|error| assemble_error(error, strategy))?;
 
-    if let Some(reason) = strategy_stop(&out) {
+    if let Some(reason) = strategy_stop(&out, strategy) {
         return Err(HarnessError::ContextBudgetStop(reason.to_string()));
     }
     if out.messages.is_empty() {
@@ -3685,13 +3686,16 @@ fn assemble_error(error: String, strategy: Option<&ContextStrategy>) -> HarnessE
 }
 
 /// A strategy's deliberate end of the run: an over-budget response that
-/// carries `applied.strategy_stop`. Without the field an over-budget
-/// response keeps today's overflow path.
-fn strategy_stop(out: &crate::clients::context::AssembleOutput) -> Option<&str> {
+/// carries `applied.strategy_stop`. Without the field, or without an
+/// effective strategy, an over-budget response keeps today's overflow path.
+fn strategy_stop<'a>(
+    out: &'a crate::clients::context::AssembleOutput,
+    strategy: Option<&ContextStrategy>,
+) -> Option<&'a str> {
     out.applied
         .strategy_stop
         .as_deref()
-        .filter(|_| out.token_count > out.usable)
+        .filter(|_| strategy.is_some() && out.token_count > out.usable)
 }
 
 /// A strategy owns its context, so a `compacted` flag from one never writes
@@ -6156,29 +6160,40 @@ mod tests {
 
     #[test]
     fn a_strategy_stop_ends_the_run_only_over_budget() {
+        let clm = strategy("clm");
         let stop = assembled(serde_json::json!({
             "messages": [], "token_count": 101, "usable": 100,
             "effective_max_output_tokens": 10,
             "applied": { "strategy_stop": "budget spent after the final turn" }
         }));
         assert_eq!(
-            super::strategy_stop(&stop),
+            super::strategy_stop(&stop, Some(&clm)),
             Some("budget spent after the final turn")
+        );
+        assert_eq!(
+            super::strategy_stop(&stop, None),
+            None,
+            "context-manager cannot end the run through the strategy field"
         );
         let fits = assembled(serde_json::json!({
             "token_count": 100, "usable": 100, "effective_max_output_tokens": 10,
             "applied": { "strategy_stop": "ignored while it fits" }
         }));
-        assert_eq!(super::strategy_stop(&fits), None);
+        assert_eq!(super::strategy_stop(&fits, Some(&clm)), None);
         let overflow = assembled(serde_json::json!({
             "token_count": 101, "usable": 100, "effective_max_output_tokens": 10
         }));
         assert_eq!(
-            super::strategy_stop(&overflow),
+            super::strategy_stop(&overflow, Some(&clm)),
             None,
             "plain overflow keeps today's path"
         );
 
+        let (reason, failure) = super::step_failure(&HarnessError::ContextBudgetStop(
+            "budget spent after the final turn".into(),
+        ));
+        assert_eq!(reason, "budget spent after the final turn");
+        assert_eq!(failure.code, "harness.context_budget_stop");
         let failure = super::CONTEXT_BUDGET_STOP_FAILURE;
         assert_eq!(failure.code, "harness.context_budget_stop");
         assert!(!failure.retryable);
