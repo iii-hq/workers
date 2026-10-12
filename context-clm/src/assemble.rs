@@ -256,12 +256,18 @@ fn note_rewrite(st: &mut SessionState, returned: &[Msg], mirror: bool) -> bool {
     let Some(sent) = &st.last_out else {
         return false;
     };
+    // context-manager rewrites in place (prune and compaction are off); a
+    // list of another length is never mapped back by index.
+    let aligned = sent.messages.len() == returned.len();
     let (mut first, mut adopted) = (None, false);
     for (i, (a, b)) in sent.messages.iter().zip(returned).enumerate() {
         if a.content == b.content {
             continue;
         }
         first.get_or_insert(i);
+        if !aligned {
+            break;
+        }
         let slot = match i {
             0 => st.raw0.as_mut(),
             1 if p == 2 => st.ledger.as_mut(),
@@ -1661,6 +1667,29 @@ mod tests {
             has_call(&sent[7], "c4") && has_thinking(&sent[7]),
             "{sent:#?}"
         );
+    }
+
+    #[test]
+    fn a_returned_list_of_another_length_is_flagged_but_never_adopted() {
+        let msg = |v: Value| -> Msg { serde_json::from_value(v).unwrap() };
+        let (task, a, b) = (msg(user("task")), msg(user("a")), msg(user("b")));
+        let sent = vec![task.clone(), a.clone(), b.clone()];
+        let mut st = SessionState {
+            raw0: Some(task.clone()),
+            proj: vec![a.clone(), b],
+            sent_hashes: sent.iter().map(msg_hash).collect(),
+            last_out: Some(CachedOut {
+                messages: sent,
+                system_prompt: "sys".into(),
+            }),
+            ..SessionState::default()
+        };
+        let proj = st.proj.clone();
+        // One message gone: index 1 now holds what was index 2.
+        assert!(note_rewrite(&mut st, &[task, msg(user("b"))], true));
+        assert_eq!(st.proj, proj);
+        assert_eq!(st.sent_hashes.len(), 2);
+        assert!(st.sent_hashes[1].is_empty());
     }
 
     #[tokio::test]
