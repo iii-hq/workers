@@ -23,7 +23,9 @@ pub struct StatusResponse {
     pub found: bool,
     /// Messages in the editable projection (after the task and the ledger).
     pub projection_messages: usize,
-    /// Calibrated size of task + ledger + projection (no system prompt, no tools).
+    /// Calibrated size of task + ledger + projection. The system prompt and
+    /// the tools are not counted, so it reads below `stats.peak_tc`, which
+    /// counts the system prompt.
     pub projection_tokens: u64,
     /// Budget enforced on the session's last step: its `context_budget_tokens`
     /// or the worker default, lowered to the model's usable room.
@@ -115,6 +117,8 @@ mod tests {
         };
         let err = status(&d, req).await.unwrap_err().to_string();
         assert!(err.contains("session state for s"), "{err}");
+        // Leaving the strategy is advice for a failed step, not for a read.
+        assert!(!err.contains("context_strategy"), "{err}");
         // Status only reads: the next step quarantines it.
         assert_eq!(std::fs::read(&path).unwrap(), b"{ torn");
     }

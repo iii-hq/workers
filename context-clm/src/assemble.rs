@@ -78,6 +78,13 @@ impl Locks {
             .clone()
     }
 
+    /// Drop a session's entry. Call while holding that session's lock, once
+    /// its files are gone: a step that arrives later gets a fresh mutex and
+    /// finds nothing, and none can run between the cleanup and the forget.
+    // NOTE: a step that fetched the old mutex earlier and is parked on it
+    // still runs once the guard drops, possibly beside a step on a fresh
+    // mutex. harness::delete-session-tree stops a session's turns before it
+    // deletes the session, so none should be parked.
     pub fn forget(&self, sid: &str) {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).remove(sid);
     }
@@ -130,7 +137,7 @@ pub async fn assemble<D: Delegate>(
             }
             SessionState::default()
         }
-        Err(e) => return Err(state_error(&sid, &e)),
+        Err(e) => return Err(step_state_error(&sid, &e)),
     };
 
     // 1. Idempotency: a re-assembly of the step already served, over the
@@ -191,7 +198,7 @@ pub async fn assemble<D: Delegate>(
         None if learned => deps
             .store
             .save(&sid, &st)
-            .map_err(|e| state_error(&sid, &e))?,
+            .map_err(|e| step_state_error(&sid, &e))?,
         None => {}
     }
     resp
@@ -283,7 +290,7 @@ fn commit(
     st: &mut SessionState,
     line: Option<Value>,
 ) -> Result<(), Error> {
-    let save = |st: &SessionState| store.save(sid, st).map_err(|e| state_error(sid, &e));
+    let save = |st: &SessionState| store.save(sid, st).map_err(|e| step_state_error(sid, &e));
     save(st)?;
     if let Some(text) = &st.written {
         if let Err(e) = write_mirror(Path::new(root), sid, text) {
@@ -842,11 +849,22 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// A session state that could not be read or written (`status`, cleanup).
 pub(crate) fn state_error(sid: &str, e: &std::io::Error) -> Error {
+    Error::Handler(state_text(sid, e))
+}
+
+/// The same failure on an assemble step, which fails the turn: name the way
+/// back to the default strategy.
+fn step_state_error(sid: &str, e: &std::io::Error) -> Error {
     Error::Handler(format!(
-        "context-clm: session state for {sid} could not be read or written: {e}. \
-         Remove `context_strategy` from the session metadata to use the default."
+        "{} Remove `context_strategy` from the session metadata to use the default.",
+        state_text(sid, e)
     ))
+}
+
+fn state_text(sid: &str, e: &std::io::Error) -> String {
+    format!("context-clm: session state for {sid} could not be read or written: {e}.")
 }
 
 /// `session::deleted` payload (only the field we read).
@@ -876,7 +894,7 @@ pub async fn on_session_deleted<D>(
     let serialized = lock.lock().await;
     let loaded = deps.store.load(&sid);
     if let Err(e) = &loaded {
-        tracing::warn!(session_id = %sid, error = %e, "context-clm: unreadable state removed without its mirror");
+        tracing::warn!(session_id = %sid, error = %e, "context-clm: unreadable state; its mirror cannot be located");
     }
     let removed = !matches!(loaded, Ok(None));
     if let Some(root) = loaded.ok().flatten().and_then(|s| s.root) {
@@ -885,10 +903,11 @@ pub async fn on_session_deleted<D>(
         }
     }
     deps.store.remove(&sid).map_err(|e| state_error(&sid, &e))?;
-    // Forget the entry only after the guard is gone and the files are: a step
-    // holding the old mutex must not overlap one on a fresh mutex.
-    drop(serialized);
+    // Forget under the guard: a step arriving between a release and a later
+    // forget would take the old mutex and could then overlap one on a fresh
+    // mutex.
     deps.locks.forget(&sid);
+    drop(serialized);
     Ok(SessionDeletedAck { ok: true, removed })
 }
 
@@ -1085,12 +1104,88 @@ mod tests {
     async fn passthrough_without_filesystem_root() {
         let dir = tempfile::tempdir().unwrap();
         let d = deps(dir.path(), ClmConfig::default());
-        let req = request(&[user("task")], None, 1);
-        let expected = serde_json::to_value(&req).unwrap();
+        // Compared with the payload as the harness sent it, not with a
+        // re-serialized request: what the types do not model must survive.
+        let payload = json!({
+            "messages": [{
+                "role": "user",
+                "content": [{ "type": "text", "text": "task" }],
+                "parts": [{ "kind": "attachment", "id": "a1" }],
+                "timestamp": 1,
+            }],
+            "model": { "id": "claude-opus-5-5", "provider": "anthropic" },
+            "system_prompt": "BASE",
+            "tools": [],
+            "options": { "session_id": SID, "step": 1, "future_option": { "on": true } },
+        });
+        let req = serde_json::from_value(payload.clone()).unwrap();
         let resp = assemble(&d, req).await.unwrap();
-        assert_eq!(d.delegate.last(), expected);
+        assert_eq!(d.delegate.last(), payload);
         assert_eq!(resp.token_count, 10);
+        assert_eq!(
+            resp.applied,
+            json!({ "compacted": false, "initial_token_count": 10 })
+        );
         assert!(d.store.load(SID).unwrap().is_none());
+    }
+
+    /// A delegate that always fails with one text.
+    struct Failing(&'static str);
+
+    impl Delegate for Failing {
+        async fn assemble(&self, _: Value) -> Result<Value, String> {
+            Err(self.0.to_owned())
+        }
+    }
+
+    #[tokio::test]
+    async fn delegate_errors_keep_the_text_the_harness_classifies() {
+        // The harness's assemble_error: an overflow anywhere in the text is
+        // `context_overflow`; only a text that *starts* with the strategy's
+        // own not-found is `context_strategy_unavailable`, so a nested one
+        // (context-manager down behind CLM) must carry a prefix.
+        let overflow =
+            "context/overflow: assembled context requires 9 tokens but usable budget is 8";
+        let missing = "remote error (function_not_found): Function context::assemble not found";
+        for root in [false, true] {
+            for text in [overflow, missing] {
+                let dir = tempfile::tempdir().unwrap();
+                let d = Deps {
+                    delegate: Failing(text),
+                    store: Store::new(dir.path().join("state")),
+                    config: crate::configuration::new_cell(ClmConfig::default()),
+                    locks: Locks::default(),
+                };
+                let req = request(&[user("task")], root.then_some(dir.path()), 1);
+                let err = assemble(&d, req).await.unwrap_err();
+                let Error::Handler(got) = &err else {
+                    panic!("not a handler error: {err:?}");
+                };
+                assert_eq!(got, &format!("{CONTEXT_ASSEMBLE_ID}: {text}"));
+            }
+        }
+    }
+
+    #[test]
+    fn locks_hand_out_one_mutex_per_session_until_forgotten() {
+        let locks = Locks::default();
+        let a = locks.get("a");
+        assert!(Arc::ptr_eq(&a, &locks.get("a")));
+        assert!(!Arc::ptr_eq(&a, &locks.get("b")));
+        locks.forget("a");
+        assert!(!Arc::ptr_eq(&a, &locks.get("a")));
+        locks.forget("never-seen");
+    }
+
+    #[tokio::test]
+    async fn a_state_that_cannot_be_read_fails_the_step_with_the_way_out() {
+        let (dir, root, d) = setup(ClmConfig::default());
+        let state = dir.path().join(format!("state/{}.json", safe_id(SID)));
+        std::fs::create_dir_all(state).unwrap();
+        let req = request(&[user("task")], Some(&root), 1);
+        let err = assemble(&d, req).await.unwrap_err().to_string();
+        assert!(err.contains(&format!("session state for {SID}")), "{err}");
+        assert!(err.contains("Remove `context_strategy`"), "{err}");
     }
 
     #[tokio::test]
