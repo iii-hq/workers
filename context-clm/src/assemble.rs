@@ -132,14 +132,19 @@ pub async fn assemble<D: Delegate>(
         Err(e) => return Err(state_error(&sid, &e)),
     };
 
-    // 1. Idempotency: a re-assembly of the step already served resends it
-    // unchanged. The harness's one-shot overflow recovery re-assembles the
-    // same step with a larger request overhead: that one is recomputed against
-    // the smaller room, unless the step stopped the run.
+    // 1. Idempotency: a re-assembly of the step already served, over the
+    // window it was served from, resends it unchanged. The harness's one-shot
+    // overflow recovery re-assembles the same step with a larger request
+    // overhead: that one is recomputed against the smaller room, unless the
+    // step stopped the run. So is a redelivery whose window grew (the reply
+    // and the results of calls that already ran, notices persisted between
+    // attempts): resending the cached request would hide them.
     let key = req.options.turn_id.clone().zip(req.options.step);
     let overhead = req.options.request_overhead_tokens.unwrap_or(0);
     let same_step = key.is_some() && st.last_step == key;
-    if same_step && (st.stopped || st.last_overhead == overhead) {
+    let same_window =
+        || req.messages.len() == st.covered && window_hash(&req.messages) == st.prefix_hash;
+    if same_step && (st.stopped || (st.last_overhead == overhead && same_window())) {
         if let Some(cached) = st.last_out.take() {
             req.messages = cached.messages;
             req.system_prompt = Some(cached.system_prompt);
@@ -983,6 +988,28 @@ mod tests {
         assert_eq!(again["system_prompt"], first["system_prompt"]);
         assert_eq!(d.delegate.count(), 3);
         assert_eq!(d.store.load(SID).unwrap().unwrap().stats.steps, 2);
+    }
+
+    #[tokio::test]
+    async fn a_replayed_step_whose_window_grew_is_recomputed_with_the_new_messages() {
+        let (_dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        // The attempt died after the reply's call ran: the redelivered step
+        // carries the reply and its result.
+        raw.extend([call("c2", "touch b.txt"), result("c2", "")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        let sent = messages(&d.delegate.last());
+        assert!(sent.iter().any(|m| has_call(m, "c2")), "{sent:#?}");
+        assert!(sent.iter().any(|m| m["function_call_id"] == "c2"));
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!(
+            (st.covered, st.stats.steps),
+            (5, 2),
+            "a recompute is not a new step"
+        );
     }
 
     #[tokio::test]
