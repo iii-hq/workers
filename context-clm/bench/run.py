@@ -236,6 +236,19 @@ def cap_of(ep):
     return ep.get("max_cost_usd") or {"ctx": 15, "fields": 5, "code": 10}[kind(ep["task"])]
 
 
+UPSTREAM_RETRIES = 4
+CONTINUE = (
+    "(The model provider failed while answering the last request; nothing in this conversation caused it. "
+    "Continue exactly where you left off.)"
+)
+WALL = re.compile(r"context_budget_stop|context_overflow|context budget|max_turns|max_cost|budget")
+
+
+def upstream_error(st):
+    """A failed turn whose error is not a wall: the provider failed (overload, a dropped stream, a lost login)."""
+    return st.get("status") == "failed" and not WALL.search(str(st.get("result_error") or ""))
+
+
 def cost_cap(ep):
     """The harness spend cap for an episode. The harness refuses max_cost_usd for a model without catalog pricing
     (every openai-codex model), so only Anthropic episodes carry one; max_turns bounds the rest."""
@@ -707,10 +720,20 @@ def episode(run, ep):
         build_snapshot(task, root)
         msgs = [LONG[task]["prompt"] + "\n\n" + SHELL_HINT]
 
-    turns, stops, status, err = [], [], "completed", None
+    turns, stops, status, err, retries = [], [], "completed", None, 0
     for i, m in enumerate(msgs):
         r = send(sid, m, opts if i == 0 else per, first if i == 0 else None)
         st = wait(sid, r["turn_id"], deadline_s=1800 if k == "ctx" else 5400)
+        # A provider failure that is not a wall (overload, a stream cut before any content) is neither the arm's nor
+        # the model's doing, and neither the router nor the harness retries it once the stream has started. Resume
+        # the episode with a continue message, the same way for every arm, and record how often it happened.
+        while upstream_error(st) and retries < UPSTREAM_RETRIES:
+            retries += 1
+            turns.append(r["turn_id"])
+            stops.append(st.get("stop_reason"))
+            time.sleep(30 * retries)
+            r = send(sid, CONTINUE, per)
+            st = wait(sid, r["turn_id"], deadline_s=1800 if k == "ctx" else 5400)
         if i == 0:
             cs = st.get("context_strategy") or {}
             if arm != "default" and not cs.get("effective"):
@@ -729,6 +752,7 @@ def episode(run, ep):
     out = {"sid": sid, **{x: ep.get(x) for x in ("arm", "task", "level", "seed", "model")}, "tag": ep.get("tag", "")}
     out["provider"] = provider
     out.update({"status": status, "error": err, "budget": budget if arm != "default" else None})
+    out["upstream_retries"] = retries
     if k == "ctx":
         by_turn = {}
         for e in entries:

@@ -517,6 +517,23 @@ def test_report_on_another_provider():
     assert [n for n, ok, _ in report.checks([claude]) if not ok] == ["zero thinking-drop events on clm"]
 
 
+def test_upstream_errors_are_retried_and_walls_are_not():
+    assert run.upstream_error(
+        {"status": "failed", "result_error": "The provider temporarily failed while generating a response."}
+    )
+    assert run.upstream_error(
+        {"status": "failed", "result_error": "The provider disconnected before completing the response."}
+    )
+    stop = (
+        "context budget exhausted: the final turn ended with the context still over the limit, so the run was stopped"
+    )
+    assert not run.upstream_error({"status": "failed", "result_error": stop})
+    assert not run.upstream_error(
+        {"status": "failed", "result_error": "context-clm budget stop: harness.context_budget_stop"}
+    )
+    assert not run.upstream_error({"status": "completed"})
+
+
 def test_codex_episodes_carry_no_cost_cap():
     ep = {"arm": "clm", "task": "http-brace", "level": 0, "seed": 0, "model": "gpt-a", "provider": "openai-codex"}
     assert run.cost_cap(ep) == {}
