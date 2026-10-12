@@ -34,6 +34,7 @@ vi.mock('./ChatView', () => ({
 }))
 
 import { TooltipProvider } from '@/components/ui/Tooltip'
+import { requestChatShown } from '@/lib/chat-requests'
 import { ChatPanel } from './ChatPanel'
 
 // A fresh element each time, so a re-render reads the mocked context again.
@@ -55,7 +56,7 @@ function conversation(id: string): Conversation {
   }
 }
 
-function ctx(ids: string[], activeId: string) {
+function ctx(ids: string[], activeId: string | null) {
   const conversations = ids.map(conversation)
   return {
     conversations,
@@ -106,22 +107,42 @@ async function onTheList(ids: string[], activeId: string) {
   expect(host.querySelector('[data-chat-conversation-id]')).toBeNull()
 }
 
-async function rerender(ids: string[], activeId: string) {
+async function rerender(ids: string[], activeId: string | null) {
   mocks.useConversationsCtx.mockReturnValue(ctx(ids, activeId))
   await act(async () => root?.render(panel()))
 }
 
+/** What an outside open does: select the chat and ask for it to be shown. */
+async function openFromOutside(ids: string[], activeId: string) {
+  mocks.useConversationsCtx.mockReturnValue(ctx(ids, activeId))
+  await act(async () => {
+    requestChatShown(activeId)
+    root?.render(panel())
+  })
+}
+
+const shown = (id: string) =>
+  host.querySelector(`[data-chat-conversation-id="${id}"]`) !== null
+
 describe('ChatPanel in a narrow desktop pane', () => {
   it('follows a chat opened from outside (a setup wizard example) out of the list', async () => {
     await onTheList(['older', 'current'], 'current')
-    await rerender(['example', 'older', 'current'], 'example')
-    expect(
-      host.querySelector('[data-chat-conversation-id="example"]'),
-    ).not.toBeNull()
+    await openFromOutside(['example', 'older', 'current'], 'example')
+    expect(shown('example')).toBe(true)
+  })
+
+  it('follows it even when every chat was deleted first (no previous chat)', async () => {
+    await onTheList(['current'], 'current')
+    await rerender([], null)
+    expect(host.querySelector('[data-chat-conversation-id]')).toBeNull()
+    await openFromOutside(['example'], 'example')
+    expect(shown('example')).toBe(true)
   })
 
   it('stays on the list when the open chat is deleted from it', async () => {
     await onTheList(['older', 'current'], 'current')
+    // A deletion clears the active chat, then the next one is picked.
+    await rerender(['older'], null)
     await rerender(['older'], 'older')
     expect(host.querySelector('[data-chat-conversation-id]')).toBeNull()
   })

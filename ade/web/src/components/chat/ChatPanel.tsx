@@ -13,6 +13,7 @@ import { PageHeader, PageSidebar } from '@/components/ui/PageChrome'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { onChatShownRequest } from '@/lib/chat-requests'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
 import {
@@ -140,27 +141,21 @@ export function ChatPanel({
     [],
   )
 
-  // Header-level actions (the setup wizard's examples, a page that started a
-  // turn) can create/select a conversation outside this component. On
-  // phones, follow that new active id into the chat page. In a narrow
-  // desktop pane, follow only a switch away from a chat that still exists:
-  // deleting the open chat from the list keeps the list, and a resize alone
-  // never moves the page (the narrow flag is read, not watched).
-  const narrowRef = useRef(narrow)
-  narrowRef.current = narrow
-  const conversationsRef = useRef(conversations)
-  conversationsRef.current = conversations
-  const previousIdRef = useRef(displayedId)
+  // Header-level actions can create/select a conversation outside this
+  // component. On phones, follow that new active id into the chat page.
   useEffect(() => {
-    const previous = previousIdRef.current
-    previousIdRef.current = displayedId
-    if (!displayedId) return
-    const switched =
-      narrowRef.current &&
-      previous !== displayedId &&
-      conversationsRef.current.some((c) => c.id === previous)
-    if (mobileViewport || switched) setNarrowView('chat')
+    if (mobileViewport && displayedId) setNarrowView('chat')
   }, [displayedId, mobileViewport])
+
+  // An outside request to show a chat (a setup wizard example, a page that
+  // started a turn, a @session pill) also moves a narrow desktop pane off its
+  // list. A new active id alone does not: deleting the open chat from the list
+  // keeps the list, and so does a resize.
+  useEffect(
+    () =>
+      pinned ? undefined : onChatShownRequest(() => setNarrowView('chat')),
+    [pinned],
+  )
 
   const handleSelect = useCallback(
     (id: string) => {

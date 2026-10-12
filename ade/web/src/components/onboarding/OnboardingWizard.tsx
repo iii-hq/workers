@@ -300,9 +300,10 @@ export function OnboardingWizardHost() {
               .catch(() => []),
             [],
           ),
-        // `undefined` = the lookup did not finish (not: it found none).
+        // `undefined` = the lookup did not finish, timed out or failed (not:
+        // it found none).
         withinLookupWait<string | null | undefined>(
-          fetchNewChatWorkingDir().catch(() => null),
+          fetchNewChatWorkingDir().catch(() => undefined),
           undefined,
         ),
       ])

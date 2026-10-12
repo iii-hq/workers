@@ -36,6 +36,7 @@ import {
 import type { ChatBackend } from '@/lib/backend'
 import { getDefaultBackend } from '@/lib/backend'
 import { hasWorkingConversation } from '@/lib/chat-activity'
+import { requestChatShown } from '@/lib/chat-requests'
 import { requestComposerFocus } from '@/lib/composer-insert'
 import type { IiiClient } from '@/lib/iii-client'
 import { setMentionSessionOpener } from '@/lib/mentions/open-session'
@@ -229,6 +230,7 @@ export function ConversationsProvider({
     // Standalone/story renders have no workspace controller; retain the old
     // selectable-chat behavior as a graceful fallback.
     selectConversationRef.current(id)
+    requestChatShown(id)
     conversationRequestedRef.current?.(id)
   }, [])
   const conversationAdapterRef = useRef<ConversationAdapter | null>(null)
@@ -240,10 +242,12 @@ export function ConversationsProvider({
         selectConversationRef.current(id)
         // Selecting is only half of it: a page that started a turn wants the
         // operator to see it, and the chat pane may not be on screen at all.
+        requestChatShown(id)
         conversationRequestedRef.current?.(id)
       },
       openDraft(draft) {
         const id = createNewRef.current(draft)
+        requestChatShown(id)
         conversationRequestedRef.current?.(id)
         window.requestAnimationFrame(requestComposerFocus)
       },
