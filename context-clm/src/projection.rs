@@ -246,22 +246,25 @@ pub fn parse_mirror(text: &str, proj: &[Msg], model: &ModelRef) -> Vec<Msg> {
     let kept_idx = |kept: &[bool]| -> Vec<usize> { (0..kept.len()).filter(|&i| kept[i]).collect() };
     let result_id = |m: &Msg| m.function_call_id().unwrap_or("").to_string();
 
-    // 1. a kept call whose result was edited or dropped loses its structure
-    let had_result: HashSet<String> = proj
-        .iter()
-        .filter(|m| m.role == "function_result")
-        .map(result_id)
-        .collect();
-    let kept_result: HashSet<String> = kept_idx(&kept)
-        .into_iter()
-        .filter(|&i| out[i].role == "function_result")
-        .map(|i| result_id(&out[i]))
-        .collect();
+    // 1. a kept call whose result was edited or dropped loses its structure.
+    // Results are counted per id: call ids can repeat across replies.
+    // NOTE: a lost result of a reused id textualizes every call with that id
+    // (step 2 then takes their results); pairing by position would keep the
+    // untouched pairs structured.
+    let count = |ms: &mut dyn Iterator<Item = &Msg>| {
+        let mut n: HashMap<String, usize> = HashMap::new();
+        for m in ms.filter(|m| m.role == "function_result") {
+            *n.entry(result_id(m)).or_default() += 1;
+        }
+        n
+    };
+    let had_result = count(&mut proj.iter());
+    let kept_result = count(&mut kept_idx(&kept).into_iter().map(|i| &out[i]));
     for i in kept_idx(&kept) {
         let orphaned = out[i]
             .call_ids()
             .iter()
-            .any(|id| had_result.contains(id) && !kept_result.contains(id));
+            .any(|id| had_result.get(id) > kept_result.get(id));
         if orphaned {
             textualize(&mut out, &mut kept, i);
         }
@@ -294,25 +297,24 @@ pub fn parse_mirror(text: &str, proj: &[Msg], model: &ModelRef) -> Vec<Msg> {
         }
     }
     // 4. each kept result moves up to directly follow its call (the stable
-    // sort keeps the results of one call in order, everything else in place)
+    // sort keeps the results of one call in order, everything else in place).
+    // Its call is the nearest kept one above it with its id: call ids can
+    // repeat across replies.
     let mut owner: HashMap<String, usize> = HashMap::new();
-    for i in kept_idx(&kept) {
-        for id in out[i].call_ids() {
-            owner.insert(id, i);
+    let mut keys: Vec<(usize, bool)> = Vec::with_capacity(out.len());
+    for (i, m) in out.iter().enumerate() {
+        let at = owner.get(&result_id(m)).copied();
+        keys.push(match at {
+            Some(o) if kept[i] && m.role == "function_result" => (o, true),
+            _ => (i, false),
+        });
+        if kept[i] {
+            for id in m.call_ids() {
+                owner.insert(id, i);
+            }
         }
     }
-    let mut keyed: Vec<((usize, bool), Msg)> = out
-        .into_iter()
-        .enumerate()
-        .map(|(i, m)| {
-            let at = owner.get(&result_id(&m)).copied();
-            let key = match at {
-                Some(o) if kept[i] && m.role == "function_result" => (o, true),
-                _ => (i, false),
-            };
-            (key, m)
-        })
-        .collect();
+    let mut keyed: Vec<((usize, bool), Msg)> = keys.into_iter().zip(out).collect();
     keyed.sort_by_key(|(key, _)| *key);
     keyed.into_iter().map(|(_, m)| m).collect()
 }
@@ -632,6 +634,35 @@ mod tests {
         );
         assert_eq!((&out[0], &out[1], &out[3]), (&p[0], &p[1], &p[2]));
         assert_eq!(text_of(&out[2]), "note to self");
+    }
+
+    #[test]
+    fn a_call_id_reused_across_replies_keeps_each_result_after_its_own_call() {
+        let mut call2 = call();
+        call2.content[0] = serde_json::from_value(json!({"type": "function_call", "id": "c1",
+            "function_id": "shell::exec", "arguments": {"command": "pwd"}}))
+        .unwrap();
+        let mut result2 = result();
+        result2.content[0] = serde_json::from_value(json!({"type": "text", "text": "/w"})).unwrap();
+        let p = vec![call(), result(), call2, result2];
+        let mirror = render_mirror(&p);
+        assert_eq!(parse_mirror(&mirror, &p, &model()), p);
+        // A note inserted between the second call and its result moves below
+        // that result; the result never jumps up to the first call.
+        let turns: Vec<&str> = mirror.split("\n\n").collect();
+        let inserted = [
+            turns[0],
+            turns[1],
+            turns[2],
+            "[[CTX_TURN 9 role=user]]\nnote to self",
+            turns[3],
+        ];
+        let out = parse_mirror(&inserted.join("\n\n"), &p, &model());
+        assert_eq!(out[..4], p[..]);
+        assert_eq!(text_of(&out[4]), "note to self");
+        // Dropping the first result never leaves the first call without one.
+        let out = parse_mirror(&[turns[0], turns[2], turns[3]].join("\n\n"), &p, &model());
+        assert!(!structured(&out), "{:?}", roles(&out));
     }
 
     #[test]
