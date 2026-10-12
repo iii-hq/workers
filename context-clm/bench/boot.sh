@@ -6,6 +6,8 @@ WT=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)  # this checkout: harne
 MAIN=${MAIN:-/home/anderson/project/iii/workers}          # unchanged workers' debug builds
 RUN=${RUN:?set RUN to a directory outside any git repo, e.g. /home/anderson/context-clm-runs/bench-01}
 case $RUN in /*) ;; *) echo "RUN must be an absolute path" >&2; exit 1 ;; esac
+# Canonical, as /proc/<pid>/cwd and the scope roots run.py resolves are (no trailing slash, no symlink).
+mkdir -p "$RUN" && RUN=$(cd "$RUN" && pwd -P)
 PORT=49250
 III=${III_BIN:-$HOME/.local/bin/iii}
 : "${ANTHROPIC_API_KEY:?export ANTHROPIC_API_KEY (provider-anthropic reads it)}"
@@ -13,7 +15,11 @@ export III_URL=ws://127.0.0.1:$PORT III_TELEMETRY_ENABLED=false NO_COLOR=1  # NO
 unset III_COMPOSE_DIR III_COMPOSE_NAMESPACE III_NAMESPACE III_CONFIG_NAME III_COMPOSE_FILE III_ENGINE_PORT
 
 if [ -s "$RUN/pids" ]; then echo "$RUN/pids exists: run down.sh first" >&2; exit 1; fi
-mkdir -p "$RUN"/{bin,logs,workspace,configuration,sessions,queue,context-leases}
+# Another engine on the port (another RUN's stack) would answer every wait below while ours fails to bind.
+if (: <>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
+  echo "127.0.0.1:$PORT is already listening: stop that stack first (down.sh with its RUN)" >&2; exit 1
+fi
+mkdir -p "$RUN"/{bin,logs,workspace,configuration,sessions,queue,context-leases,shim}
 for w in state queue session-manager context-manager cron llm-router provider-anthropic ide; do
   [ -x "$MAIN/$w/target/debug/$w" ] || { echo "build $MAIN/$w first: cargo build --locked" >&2; exit 1; }
   cp "$MAIN/$w/target/debug/$w" "$RUN/bin/"
@@ -46,6 +52,17 @@ fs:
   exec_confinement: landlock
   exec_writable: [/tmp, /dev, ~/.cargo, ~/.rustup]
 EOF
+# ide execs see this shim first on PATH, so an `iii` they run reaches only this stack's engine, never the live
+# :49134 (the iii CLI defaults to it, and execs get no III_URL).
+# NOTE: a model can still bypass it (the real binary by path, a raw socket); Landlock confines writes, not connects.
+cat >"$RUN/shim/iii" <<EOF
+#!/bin/sh
+[ "\$1" = trigger ] || { echo "iii: only 'iii trigger' works here (bench engine $III_URL)" >&2; exit 2; }
+shift
+for a; do case \$a in --engine*|--address*|--port*) echo "iii: the engine is pinned to $III_URL" >&2; exit 2 ;; esac; done
+exec "$III" trigger --engine $III_URL "\$@"
+EOF
+chmod 755 "$RUN/shim/iii"
 cat >"$RUN/harness.yaml" <<EOF
 filesystem_boundary: workspace
 default_filesystem_root: $RUN/workspace
@@ -65,7 +82,9 @@ waitfn() {
 }
 
 start engine "$III" -c "$RUN/engine.yaml" --no-update-check
+ENGINE_PID=$(cat "$RUN/pids")
 for _ in $(seq 120); do "$III" trigger engine::workers::list --engine "$III_URL" >/dev/null 2>&1 && break; sleep 0.5; done
+kill -0 "$ENGINE_PID" 2>/dev/null || { echo "the engine exited: see $RUN/logs/engine.log" >&2; false; }
 start state "$RUN/bin/state" --url "$III_URL" --config "$RUN/state.yaml"; waitfn state::get
 start queue "$RUN/bin/queue" --url "$III_URL" --config "$RUN/queue.yaml"; waitfn queue::define
 start session-manager "$RUN/bin/session-manager" --url "$III_URL" --config "$RUN/session-manager.yaml"; waitfn session::messages
@@ -77,7 +96,7 @@ for _ in $(seq 240); do
 done
 start context-manager "$RUN/bin/context-manager" --url "$III_URL" --config "$RUN/context-manager.yaml"; waitfn context::assemble
 start cron "$RUN/bin/cron" --url "$III_URL"
-start ide "$RUN/bin/ide" --url "$III_URL" --config "$RUN/ide.yaml"; waitfn shell::exec
+start ide env PATH="$RUN/shim:$PATH" "$RUN/bin/ide" --url "$III_URL" --config "$RUN/ide.yaml"; waitfn shell::exec
 start context-clm "$RUN/bin/context-clm" --url "$III_URL"; waitfn context-clm::assemble
 start context-arms env ARMS_DIR="$RUN/arms" node "$WT/context-clm/bench/arms/src/index.ts"
 waitfn context-sum::assemble; waitfn context-base::assemble

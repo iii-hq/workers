@@ -20,4 +20,9 @@ S='{"messages":[{"role":"user","content":[{"type":"text","text":"'"$X"'"}],"time
 S+='"model":{"id":"claude-sonnet-5-5","provider":"anthropic"},"system_prompt":"sys","options":{"session_id":"smoke-stop","turn_id":"t1",'
 t context-base::assemble "$S"'"step":0,"budget_tokens":2100}}' | jq -e '.applied.strategy_stop == null' >/dev/null
 t context-base::assemble "$S"'"step":1,"budget_tokens":2100}}' | jq -e '.applied.strategy_stop != null and .token_count > .usable' >/dev/null
+# Execs find the iii shim first; it reaches this stack (context-base::status exists nowhere else) and nothing else.
+SHIM=$(cd "$RUN" && pwd -P)/shim/iii
+t shell::exec '{"command":"sh","args":["-c","command -v iii"]}' | jq -e --arg s "$SHIM" '.stdout == $s + "\n"' >/dev/null
+"$SHIM" trigger context-base::status --json '{"session_id":"none"}' | jq -e '.found == false' >/dev/null
+if "$SHIM" trigger --engine ws://127.0.0.1:1 engine::workers::list 2>/dev/null; then echo "shim let --engine through" >&2; exit 1; fi
 echo "smoke ok"

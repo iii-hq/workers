@@ -51,6 +51,10 @@ context-clm/bench/boot.sh                      # logs in $RUN/logs, sessions in 
 context-clm/bench/down.sh                      # when done
 ```
 
+`boot.sh` refuses to start while something listens on `:49250` (another run's stack: stop it with `down.sh` and its
+`RUN`). ide execs find `$RUN/shim/iii` first on `PATH`: it runs only `iii trigger`, pinned to the bench engine, so an
+exec never reaches the live `:49134` through the CLI's default URL. `run.py` refuses a `BENCH_ENGINE` on `:49134`.
+
 ## Regression bench (spec §7.1)
 
 ```bash
@@ -69,8 +73,13 @@ cd context-clm/bench
 | `ide-update-op` (bug fix) | `325a19129` (#1321) | `0466e008a:{ide,crates}` minus `ide/ui` + the PR's tests | `cargo test --locked --test code_update_ops --test code_golden_errors` and `--lib update_file` in `ide/` |
 | `fields` level 40 (code reading) | — | `d3f9bcb8a:{ide,harness}/src` | exact answer vs `truth-fields.jsonl` |
 
-The grader restores the protected test files before running cargo, so editing them does not help. Check that each
-coding task fails before its fix and passes after it (about two minutes, no API calls):
+Before cargo runs, the grader puts back from the fix commit everything that steers the graded tests (the spliced unit-test
+modules, the crate's `tests/`, `Cargo.toml`, `Cargo.lock` and `build.rs`) and deletes `.cargo/` dirs and `build.rs`
+files the fix commit does not have, so editing them does not help. Cargo then runs with a minimal environment (`PATH`,
+`HOME`, `CARGO_HOME`, `RUSTUP_HOME`, `LANG`, no API keys). An episode is not graded (score 0, reason in its
+`results/<sid>.grade.log`) when `~/.cargo/config` or `config.toml` changed after `run.py` started, since episodes may
+write `~/.cargo`. Check that each coding task fails before its fix and passes after it (about two minutes, no API
+calls):
 
 ```bash
 .venv/bin/python run.py verify-long $RUN
@@ -97,6 +106,8 @@ result in `$RUN/results`, so the pilot episodes are not paid twice):
   still fails the check; say "not like-for-like" when you report it.
 - §7.2, per model: `clm` solves at least as many tasks as `default` minus one (a task is solved when most of its
   seeds pass), with a lower mean peak prompt and a mean cost no higher than `default`.
+- `report.py --check` also fails on a crashed episode with no result since, on a group or long-task model with rows for
+  another arm but none for `clm`, and on a `clm` row whose provider log was not found (its drops are unknown).
 
 ## Live dogfooding (spec §7.3, after both PRs merge)
 
