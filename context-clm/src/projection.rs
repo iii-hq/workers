@@ -167,7 +167,10 @@ pub fn strip_thinking(m: &Msg) -> Msg {
 /// match an original turn and whose text is unchanged keeps the original
 /// message; anything else becomes a text turn (assistant only where an
 /// assistant turn was, user otherwise). Call/result pairs stay whole and in
-/// order: if either side was edited, dropped or moved, both become text. A
+/// order. A result pairs with the nearest call above it in the projection
+/// that carries its id, so a call id may repeat across replies. If either
+/// side of a pair was edited or dropped, or the result moved above its call,
+/// both become text; a result moved further down goes back up to its call. A
 /// turn the model inserted between a kept call and its results moves below
 /// them, as llm-router's `reorder_displaced_results` does: not every provider
 /// runs that pass (openrouter, kimi and github-copilot drop a displaced
@@ -193,13 +196,13 @@ pub fn parse_mirror(text: &str, proj: &[Msg], model: &ModelRef) -> Vec<Msg> {
     }
 
     let mut out: Vec<Msg> = Vec::new();
-    // kept[i]: out[i] is an original message carried over unchanged
-    let mut kept: Vec<bool> = Vec::new();
+    // src[i]: the projection turn out[i] carries over unchanged (None: text)
+    let mut src: Vec<Option<usize>> = Vec::new();
     let mut used: HashSet<usize> = HashSet::new();
     let lead = unesc(text[..heads.first().map_or(text.len(), |h| h.0)].trim());
     if !lead.is_empty() {
         out.push(text_msg("user", &lead, model));
-        kept.push(false);
+        src.push(None);
     }
     for (k, &(_, body_at, n, role)) in heads.iter().enumerate() {
         let end = heads.get(k + 1).map_or(text.len(), |h| h.0);
@@ -213,7 +216,7 @@ pub fn parse_mirror(text: &str, proj: &[Msg], model: &ModelRef) -> Vec<Msg> {
         {
             used.insert(n);
             out.push(o.clone());
-            kept.push(true);
+            src.push(Some(n - 1));
             continue;
         }
         // Only a turn that was the model's own may stay assistant; anything
@@ -230,10 +233,10 @@ pub fn parse_mirror(text: &str, proj: &[Msg], model: &ModelRef) -> Vec<Msg> {
             &text,
             model,
         ));
-        kept.push(false);
+        src.push(None);
     }
 
-    let textualize = |out: &mut Vec<Msg>, kept: &mut Vec<bool>, i: usize| {
+    let textualize = |out: &mut Vec<Msg>, src: &mut Vec<Option<usize>>, i: usize| {
         let m = &out[i];
         let (role, text) = match m.role.as_str() {
             "assistant" => ("assistant", render_msg(m)),
@@ -241,79 +244,73 @@ pub fn parse_mirror(text: &str, proj: &[Msg], model: &ModelRef) -> Vec<Msg> {
             _ => ("user", render_msg(m)),
         };
         out[i] = text_msg(role, &text, model);
-        kept[i] = false;
+        src[i] = None;
     };
-    let kept_idx = |kept: &[bool]| -> Vec<usize> { (0..kept.len()).filter(|&i| kept[i]).collect() };
-    let result_id = |m: &Msg| m.function_call_id().unwrap_or("").to_string();
+    // at[j]: where projection turn j landed in out; live(j) while still kept
+    let mut at: Vec<Option<usize>> = vec![None; proj.len()];
+    for (i, s) in src.iter().enumerate() {
+        if let Some(j) = *s {
+            at[j] = Some(i);
+        }
+    }
+    let live = |src: &[Option<usize>], j: usize| at[j].filter(|&i| src[i].is_some());
+    // pair[j]: the call projection result j answers, the nearest call above it
+    // in the projection with its id.
+    // NOTE: pairing is by position, never by id alone: a provider may reuse a
+    // call id across replies. A result with no call above it pairs with
+    // nothing and becomes text.
+    let mut last: HashMap<String, usize> = HashMap::new();
+    let mut pair: Vec<Option<usize>> = Vec::with_capacity(proj.len());
+    for (j, m) in proj.iter().enumerate() {
+        let id = m.function_call_id().unwrap_or("");
+        pair.push(
+            last.get(id)
+                .copied()
+                .filter(|_| m.role == "function_result"),
+        );
+        for id in m.call_ids() {
+            last.insert(id, j);
+        }
+    }
+    let call_of = |src: &[Option<usize>], i: usize| src[i].and_then(|j| pair[j]);
 
-    // 1. a kept call whose result was edited or dropped loses its structure.
-    // Results are counted per id: call ids can repeat across replies.
-    // NOTE: a lost result of a reused id textualizes every call with that id
-    // (step 2 then takes their results); pairing by position would keep the
-    // untouched pairs structured.
-    let count = |ms: &mut dyn Iterator<Item = &Msg>| {
-        let mut n: HashMap<String, usize> = HashMap::new();
-        for m in ms.filter(|m| m.role == "function_result") {
-            *n.entry(result_id(m)).or_default() += 1;
-        }
-        n
-    };
-    let had_result = count(&mut proj.iter());
-    let kept_result = count(&mut kept_idx(&kept).into_iter().map(|i| &out[i]));
-    for i in kept_idx(&kept) {
-        let orphaned = out[i]
-            .call_ids()
-            .iter()
-            .any(|id| had_result.get(id) > kept_result.get(id));
-        if orphaned {
-            textualize(&mut out, &mut kept, i);
-        }
-    }
-    // 2. a kept result whose call is no longer structured loses its structure
-    let kept_calls: HashSet<String> = kept_idx(&kept)
-        .into_iter()
-        .flat_map(|i| out[i].call_ids())
-        .collect();
-    for i in kept_idx(&kept) {
-        if out[i].role == "function_result" && !kept_calls.contains(&result_id(&out[i])) {
-            textualize(&mut out, &mut kept, i);
-        }
-    }
-    // 3. a kept result above its call (a reorder) would be a provider error
-    for i in kept_idx(&kept) {
-        if !kept[i] || out[i].role != "function_result" {
-            continue;
-        }
-        let id = result_id(&out[i]);
-        let owner = (0..out.len()).find(|&j| kept[j] && out[j].call_ids().contains(&id));
-        if let Some(o) = owner.filter(|&o| o > i) {
-            let ids = out[o].call_ids();
-            for r in kept_idx(&kept) {
-                if out[r].role == "function_result" && ids.contains(&result_id(&out[r])) {
-                    textualize(&mut out, &mut kept, r);
-                }
+    // 1. a kept call whose result was edited or dropped loses its structure
+    for (j, c) in pair.iter().enumerate() {
+        if let Some(o) = c.and_then(|c| live(&src, c)) {
+            if live(&src, j).is_none() {
+                textualize(&mut out, &mut src, o);
             }
-            textualize(&mut out, &mut kept, o);
         }
+    }
+    // 2. a kept result whose call is no longer kept loses its structure
+    for i in 0..out.len() {
+        let result = src[i].is_some_and(|j| proj[j].role == "function_result");
+        if result && call_of(&src, i).and_then(|c| live(&src, c)).is_none() {
+            textualize(&mut out, &mut src, i);
+        }
+    }
+    // 3. a kept result above its call (a reorder) would be a provider error:
+    // the call and all its results become text
+    for i in 0..out.len() {
+        let Some(c) = call_of(&src, i) else { continue };
+        let Some(o) = live(&src, c).filter(|&o| o > i) else {
+            continue;
+        };
+        for r in 0..out.len() {
+            if call_of(&src, r) == Some(c) {
+                textualize(&mut out, &mut src, r);
+            }
+        }
+        textualize(&mut out, &mut src, o);
     }
     // 4. each kept result moves up to directly follow its call (the stable
-    // sort keeps the results of one call in order, everything else in place).
-    // Its call is the nearest kept one above it with its id: call ids can
-    // repeat across replies.
-    let mut owner: HashMap<String, usize> = HashMap::new();
-    let mut keys: Vec<(usize, bool)> = Vec::with_capacity(out.len());
-    for (i, m) in out.iter().enumerate() {
-        let at = owner.get(&result_id(m)).copied();
-        keys.push(match at {
-            Some(o) if kept[i] && m.role == "function_result" => (o, true),
-            _ => (i, false),
-        });
-        if kept[i] {
-            for id in m.call_ids() {
-                owner.insert(id, i);
-            }
-        }
-    }
+    // sort keeps the results of one call in order, everything else in place)
+    let keys: Vec<(usize, bool)> = (0..out.len())
+        .map(|i| match call_of(&src, i).and_then(|c| live(&src, c)) {
+            Some(o) => (o, true),
+            None => (i, false),
+        })
+        .collect();
     let mut keyed: Vec<((usize, bool), Msg)> = keys.into_iter().zip(out).collect();
     keyed.sort_by_key(|(key, _)| *key);
     keyed.into_iter().map(|(_, m)| m).collect()
@@ -660,9 +657,59 @@ mod tests {
         let out = parse_mirror(&inserted.join("\n\n"), &p, &model());
         assert_eq!(out[..4], p[..]);
         assert_eq!(text_of(&out[4]), "note to self");
-        // Dropping the first result never leaves the first call without one.
-        let out = parse_mirror(&[turns[0], turns[2], turns[3]].join("\n\n"), &p, &model());
-        assert!(!structured(&out), "{:?}", roles(&out));
+        let parse = |order: &[&str]| {
+            let out = parse_mirror(&order.join("\n\n"), &p, &model());
+            assert!(pairs_whole(&out), "{:?}", roles(&out));
+            out
+        };
+        // Dropping the first result never leaves the first call without one;
+        // the second pair is untouched and stays structured.
+        let out = parse(&[turns[0], turns[2], turns[3]]);
+        assert_eq!(text_of(&out[0]), render_msg(&p[0]));
+        assert_eq!(out[1..], p[2..]);
+        // Dropping the whole first pair keeps the second one as it was.
+        assert_eq!(parse(&[turns[2], turns[3]]), p[2..]);
+        // Dropping the second call never hands its result to the first.
+        let out = parse(&[turns[0], turns[1], turns[3]]);
+        assert_eq!((&out[..2], out[2].role.as_str()), (&p[..2], "user"));
+        // Editing the second call leaves no structured result attached to it.
+        let edited = mirror.replace(&render_msg(&p[2]), "I printed the directory.");
+        let out = parse(&edited.split("\n\n").collect::<Vec<_>>());
+        assert_eq!(out[..2], p[..2]);
+        assert_eq!(text_of(&out[2]), "I printed the directory.");
+        assert_eq!(text_of(&out[3]), prompt::lowered_note("tool", "/w"));
+        // The second call moved below its result: that pair becomes text.
+        let out = parse(&[turns[0], turns[1], turns[3], turns[2]]);
+        assert_eq!(out[..2], p[..2]);
+        assert_eq!(roles(&out[2..]), vec!["user", "assistant"]);
+        assert_eq!(text_of(&out[3]), render_msg(&p[2]));
+        // The first result moved below the second call goes back up to its own.
+        assert_eq!(parse(&[turns[0], turns[2], turns[1], turns[3]]), p);
+        // The first result moved above its call: that pair becomes text.
+        let out = parse(&[turns[1], turns[0], turns[2], turns[3]]);
+        assert_eq!(roles(&out[..2]), vec!["user", "assistant"]);
+        assert_eq!(text_of(&out[1]), render_msg(&p[0]));
+        assert_eq!(out[2..], p[2..]);
+    }
+
+    /// Every structured call is followed directly by exactly its results, and
+    /// every structured result follows its own call.
+    fn pairs_whole(out: &[Msg]) -> bool {
+        let mut owed: Vec<String> = Vec::new();
+        for m in out {
+            if m.role == "function_result" {
+                let id = m.function_call_id().unwrap_or("");
+                match owed.iter().position(|o| o == id) {
+                    Some(k) => drop(owed.remove(k)),
+                    None => return false,
+                }
+            } else if owed.is_empty() {
+                owed = m.call_ids();
+            } else {
+                return false;
+            }
+        }
+        owed.is_empty()
     }
 
     #[test]
