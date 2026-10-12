@@ -108,7 +108,7 @@ def tables(rows):
     )
     code = [r for r in rows if r["task"] in CODE]
     calls = ("llm calls", lambda xs: fmt(mean([x["llm_calls"] for x in xs]), 0))
-    # rows run.py did not grade (score 0, not a failure of the arm; --check fails on them)
+    # rows run.py did not grade (score 0 until cleared, see the README; --check fails on them)
     refused = ("grade refused", lambda xs: str(sum(1 for x in xs if x.get("grade_refused"))))
     out += table(
         "Long coding tasks (cargo test)",

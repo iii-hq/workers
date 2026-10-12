@@ -331,7 +331,7 @@ def test_grader_runs_with_a_minimal_env_and_refuses_a_changed_cargo_config():
             assert not Path(d, "never-restored").exists()
             # a config written while this grade's cargo runs (by a parallel episode) refuses this grade too
             Path(d, "config.toml").unlink()
-            run.restore_protected = lambda t, root: []
+            run.restore_protected = lambda t, root: None
             poison = 'echo "test t ... ok"; echo "[build]" > "$CARGO_HOME/config.toml"'
             run.LONG = {"x": {"cwd": ".", "grade": [["bash", "-c", poison]], "required": ["t"]}}
             ok, _, log, refused = run.grade_code("x", Path(d))
@@ -355,13 +355,41 @@ def test_restore_puts_back_the_toolchain_and_refuses_a_planted_cargo_config():
         for f in ["rust-toolchain.toml", *stray]:
             (root / f).parent.mkdir(parents=True, exist_ok=True)
             (root / f).write_text(fake)
-        assert run.restore_protected(t, root) == ["http/.cargo/config.toml"]
+        assert run.restore_protected(t, root).endswith("the fix commit does not have: http/.cargo/config.toml")
         assert (root / "rust-toolchain.toml").read_bytes() == run.git("show", f"{t['fix']}:rust-toolchain.toml")
         assert not [f for f in [*stray, "http/.cargo", ".cargo"] if (root / f).exists()]
         (root / ".cargo").mkdir()
         (root / ".cargo" / "config").write_text("[build]\n")
         ok, missing, log, refused = run.grade_code("http-brace", root)  # refuses before cargo runs
         assert (ok, missing) == (False, []) and refused.endswith("the fix commit does not have: .cargo/config"), log
+
+
+def test_grader_refuses_a_symlinked_graded_path():
+    """A graded path (or a parent dir) linked out of the snapshot would let the unconfined grader write through it."""
+    t = run.LONG["http-brace"]
+    with tempfile.TemporaryDirectory() as d:
+        root, outside = Path(d, "ws"), Path(d, "outside")
+        root.mkdir()
+        outside.mkdir()
+        run.build_snapshot("http-brace", root)
+        victim = outside / "victim.rs"
+        victim.write_text("mine\n")
+        (root / "http/src/trigger.rs").unlink()
+        (root / "http/src/trigger.rs").symlink_to(victim)
+        why = run.restore_protected(t, root)
+        assert victim.read_text() == "mine\n" and (root / "http/src/trigger.rs").is_symlink()
+        assert why and why.endswith(": http/src/trigger.rs"), why
+        ok, missing, log, refused = run.grade_code("http-brace", root)  # refuses before cargo runs
+        assert (ok, missing) == (False, []) and refused == why and log == f"not graded: {why}", log
+        # a linked parent dir (the restored tests/) is refused too, before anything is written
+        (root / "http/src/trigger.rs").unlink()
+        (root / "http/tests").rename(outside / "tests")
+        (root / "http/tests").symlink_to(outside / "tests")
+        before = {p.name: p.read_bytes() for p in (outside / "tests").iterdir() if p.is_file()}
+        why = run.restore_protected(t, root)
+        assert why and why.endswith(": http/tests"), why
+        assert {p.name: p.read_bytes() for p in (outside / "tests").iterdir() if p.is_file()} == before
+        assert not (root / "http/src/trigger.rs").exists()  # nothing was spliced either
 
 
 def test_run_refuses_the_live_engine():

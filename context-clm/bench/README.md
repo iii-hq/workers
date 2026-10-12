@@ -58,10 +58,15 @@ context-clm/bench/down.sh                      # when done
 exec never reaches the live `:49134` through the CLI's default URL. `run.py` refuses a `BENCH_ENGINE` on `:49134`.
 
 An episode's execs are Landlock-confined to its workspace plus `/tmp`, `/dev`, `~/.cargo/registry` and `~/.cargo/git`
-(cargo's download caches). The rest of `~/.cargo` (`bin/`, `config.toml`) and `~/.rustup` are read-only to them, so an
-episode cannot plant a `cargo`, a cargo config or a toolchain that the grader or your own builds would run. Ceiling: an
-episode can still edit crate sources that cargo extracted under `~/.cargo/registry/src`. Cargo does not check them
-again, so the unconfined grader and your later builds compile the edited copy.
+(cargo's download caches). The rest of `~/.cargo` (`bin/`, `config.toml`) and `~/.rustup` are read-only to them. That
+is all this protects: the episode's shell cannot plant a `cargo`, a cargo config or a toolchain. Grading is not
+confined. `run.py` runs `cargo test` on model-written code (the solution files and their unit tests, and the
+path-dependency crates under `crates/` with their build scripts) with your privileges, outside Landlock. A `#[test]`
+or build script there can write `~/.cargo/bin`, `~/.rustup` or anything else you can write, and the later grades and
+your own builds then run what it wrote. Only `~/.cargo/config{,.toml}` is checked (a changed one refuses the grade).
+The execs can also edit the crate sources cargo extracted under `~/.cargo/registry/src` or checked out under
+`~/.cargo/git/checkouts`. Cargo does not check them again, so the grader and your later builds compile the edited
+copy. Run paid grids as a user (or in a VM) whose cargo and rustup state you can afford to rebuild.
 
 ## Regression bench (spec §7.1)
 
@@ -85,11 +90,35 @@ Before cargo runs, the grader puts back from the fix commit everything that stee
 unit-test modules, the crate's `tests/`, `Cargo.toml`, `Cargo.lock`, `build.rs` and `rust-toolchain.toml`) and deletes
 `.cargo/` dirs, `build.rs` and `rust-toolchain{,.toml}` files the fix commit does not have, so editing them does not
 help. Cargo then runs with a minimal environment (`PATH`, `HOME`, `CARGO_HOME`, `RUSTUP_HOME`, `LANG`, no API keys).
-An episode is not graded when its snapshot held a `.cargo/config` or `config.toml` that the fix commit does not have,
-or when `~/.cargo/config` or `config.toml` differs from the one `run.py` started with, before cargo runs or after it
-(a parallel episode may change it meanwhile). Its result then has score 0 and `grade_refused: true` with the reason,
-also in its `results/<sid>.grade.log`. `report.py` counts refused grades in their own column. Check that each coding
-task fails before its fix and passes after it (about two minutes, no API calls):
+An episode is not graded when a path the grader writes (or one of its parent dirs) is a symlink, when its snapshot
+held a `.cargo/config` or `config.toml` that the fix commit does not have, or when `~/.cargo/config` or `config.toml`
+differs from the one `run.py` started with, before cargo runs or after it (a parallel episode may change it
+meanwhile). Its result then has score 0 and `grade_refused: true` with the reason, also in its
+`results/<sid>.grade.log`. `report.py` shows refused grades in their own column and counts them as score 0 in the
+others, and `--check` fails until each one is cleared:
+
+- Fix the cause first: put `~/.cargo/config*` back. A link or a planted config in the workspace is the episode's
+  own doing.
+- Rerun it: delete `results/<sid>.json` and `results/<sid>.grade.log` (the episode's line in `episodes.out` keeps
+  the audit trail), then rerun the episode under a new `tag`. `run` will not reuse a sid whose workspace exists.
+- Or, when the cause was outside the episode, regrade its workspace by hand, which rewrites the row:
+
+```bash
+.venv/bin/python - $RUN/results/<sid>.json <<'EOF'
+import json, sys, run
+from pathlib import Path
+p = Path(sys.argv[1]); r = json.loads(p.read_text())
+ok, missing, log, why = run.grade_code(r["task"], p.parent.parent / "workspace" / r["sid"])
+p.with_suffix(".grade.log").write_text(log)
+assert not why, why
+r.update(score=1.0 if ok else 0.0, missing_tests=missing)
+for k in ("grade_refused", "grade_refused_reason"):
+    r.pop(k)
+p.write_text(json.dumps(r, indent=1))
+EOF
+```
+
+Check that each coding task fails before its fix and passes after it (about two minutes, no API calls):
 
 ```bash
 .venv/bin/python run.py verify-long $RUN
@@ -119,7 +148,8 @@ result in `$RUN/results`, so the pilot episodes are not paid twice):
 - `report.py --check` also fails on a crashed episode with no result since, on a refused grade, on a group or long-task
   model with rows for another arm but none for `clm`, and on a `clm` row whose provider log was not found (its drops
   are unknown). `run` refuses to rerun a crashed sid, so rerun the episode with a new `tag`: a result with the same
-  arm, task, level, seed and model clears the crash.
+  arm, task, level, seed and model clears the crash. A refused grade is cleared only by removing or regrading its row
+  (see Long coding tasks).
 
 ## Live dogfooding (spec §7.3, after both PRs merge)
 

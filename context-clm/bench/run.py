@@ -508,17 +508,33 @@ def run_cargo(cmd, cwd, timeout=900):
 TOOLCHAIN = ("rust-toolchain", "rust-toolchain.toml")  # rustup reads either, in the cwd and every parent
 
 
+def first_link(root, f):
+    """The first path from `root` down to `root / f` that is a symlink (lstat: never followed), or None."""
+    p = root
+    for part in Path(f).parts:
+        p = p / part
+        if p.is_symlink():
+            return str(p.relative_to(root))
+    return None
+
+
 def restore_protected(t, root):
     """Put back what steers the graded tests (unit-test modules, tests/, manifests, build.rs, the toolchain file) from
     the fix commit and drop `.cargo/` dirs, `build.rs` and toolchain files that the fix commit does not have. Returns
-    the cargo config files (`.cargo/config{,.toml}`) the snapshot held that the fix commit does not have."""
+    why the attempt must not be graded, or None: a path it would write (or a parent dir) is a symlink, so it writes
+    nothing, or the snapshot held cargo config files (`.cargo/config{,.toml}`) that the fix commit does not have."""
     fix, crate = t["fix"], t["cwd"]
+    in_fix = set(git("ls-tree", "-r", "-z", "--name-only", fix, *t["paths"]).decode().split("\0"))
+    files = [f for f in (f"{crate}/Cargo.toml", f"{crate}/Cargo.lock", f"{crate}/build.rs", *TOOLCHAIN) if f in in_fix]
+    tests = [f for f in in_fix if f.startswith(f"{crate}/tests/")]
+    restored = {*t.get("splice_tests", ()), *t["tests"], *files, *tests}
+    # the grader runs unconfined: a link would let it read and write files outside the snapshot
+    if linked := sorted({x for f in restored if (x := first_link(root, f))}):
+        return f"the snapshot links graded paths out of place: {', '.join(linked)}"
     for f in t.get("splice_tests", ()):
         cur = (root / f).read_text() if (root / f).exists() else ""
         (root / f).parent.mkdir(parents=True, exist_ok=True)
         (root / f).write_text(splice_test_module(cur, git("show", f"{fix}:{f}").decode()))
-    in_fix = set(git("ls-tree", "-r", "-z", "--name-only", fix, *t["paths"]).decode().split("\0"))
-    files = [f for f in (f"{crate}/Cargo.toml", f"{crate}/Cargo.lock", f"{crate}/build.rs", *TOOLCHAIN) if f in in_fix]
     untar(git("archive", fix, "--", f"{crate}/tests", *files), root)
     planted = []
     for d, dirs, names in os.walk(root):
@@ -534,7 +550,7 @@ def restore_protected(t, root):
         for x in ("build.rs", *TOOLCHAIN):
             if x in names and str(rel / x) not in in_fix:
                 (Path(d) / x).unlink()
-    return planted
+    return f"the snapshot holds cargo config the fix commit does not have: {', '.join(planted)}" if planted else None
 
 
 CONFIG_CHANGED = "~/.cargo/config{,.toml} changed since the run started"
@@ -548,13 +564,13 @@ def refuse(why, log=()):
 def grade_code(name, root):
     """Restore the protected files, then run the grading commands: (passed, missing required tests, log, refusal).
     `refusal` (None when graded) says why the episode was not graded: the user's cargo config differs from the one the
-    run started with, before cargo runs or after it (a parallel episode may write it meanwhile), or the snapshot held
-    a cargo config the fix commit does not have (restore_protected deleted it; the attempt is still not graded)."""
+    run started with, before cargo runs or after it (a parallel episode may write it meanwhile), or restore_protected
+    refused the snapshot (a graded path linked out of place, or a planted cargo config, which it deleted)."""
     if cargo_config() != CARGO_CONFIG:
         return refuse(CONFIG_CHANGED)
     t = LONG[name]
-    if planted := restore_protected(t, root):
-        return refuse(f"the snapshot holds cargo config the fix commit does not have: {', '.join(planted)}")
+    if why := restore_protected(t, root):
+        return refuse(why)
     cwd, log, stdout, ok = root / t["cwd"], [], "", True
     for cmd in t["grade"]:
         rc, out, err = run_cargo(cmd, cwd)
@@ -684,7 +700,7 @@ def episode(run, ep):
     else:
         passed, missing, log, refused = grade_code(task, root)
         out.update({"score": 1.0 if passed else 0.0, "missing_tests": missing})
-        if refused:  # not a failure of the arm: report.py counts it apart and --check fails on it
+        if refused:  # not graded: report.py counts it apart and --check fails until it is cleared (README)
             out.update({"grade_refused": True, "grade_refused_reason": refused})
         (run / "results" / f"{sid}.grade.log").write_text(log)
 
