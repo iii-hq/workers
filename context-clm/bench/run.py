@@ -459,10 +459,30 @@ def score_fields(final, truth):
     }
 
 
-def answer_score(by_turn, op_turn, first_query_op, pairs, attr):
+def by_message(entries, sent):
+    """The agent's entries grouped by the driver message they answer: [0] the task, [i] the op `sent[i - 1]`.
+    A user message that is not the next driver message (a continue message after an upstream failure, the harness's
+    own transient-resume nudge) does not open a group: what follows it still answers the message before it."""
+    groups, nxt = [], 0
+    for e in entries:
+        m = e.get("message") or {}
+        if m.get("role") == "user":
+            text = "".join(b.get("text", "") for b in m.get("content") or [] if b.get("type") == "text")
+            if not groups:
+                groups.append([])
+            elif nxt < len(sent) and text == sent[nxt]:
+                groups.append([])
+                nxt += 1
+        elif groups:
+            groups[-1].append(e)
+    return groups
+
+
+def answer_score(groups, first_query_op, pairs, attr):
     ok = 0
     for q, (key, val) in enumerate(pairs):
-        text = turn_text(by_turn.get(op_turn(first_query_op + q), []))
+        i = first_query_op + q + 1
+        text = turn_text(groups[i] if i < len(groups) else [])
         got = re.findall(answer_re(attr, key), text, flags=re.S)
         ok += any(x.strip() == val for x in got)
     return ok / len(pairs)
@@ -657,6 +677,46 @@ def grade_code(name, root):
     return ok and not missing, missing, "\n".join(log), None
 
 
+def session_entries(run, sid):
+    """A session's entries in log order from its JSONL file (newest revision of each id), the stack not needed."""
+    order, latest = [], {}
+    for line in (run / "sessions" / f"{sid}.jsonl").read_text().splitlines():
+        r = json.loads(line)
+        e = r.get("entry") or {}
+        if r.get("type") in ("append", "entry") and e.get("kind") == "message":
+            if e["id"] not in latest:
+                order.append(e["id"])
+            if e["id"] not in latest or e.get("revision", 0) >= latest[e["id"]].get("revision", 0):
+                latest[e["id"]] = e
+    return [latest[i] for i in order]
+
+
+def regrade(run):
+    """Recompute the ContextBench scores of every result from its session log (answers grouped by driver message)."""
+    n = 0
+    for p in sorted((run / "results").glob("*.json")):
+        if p.name.endswith(".grade.json"):
+            continue
+        r = json.loads(p.read_text())
+        if kind(r.get("task", "")) != "ctx" or r["task"] == "needle" or "score" not in r:
+            continue
+        g = gen(r["task"], r["level"], r["seed"])
+        groups = by_message(session_entries(run, r["sid"]), [*g["ops"], END])
+        t = g["truth"]
+        pairs, attr = (t["gets"], "key") if t["kind"] == "kv" else (t["answers"], "qid")
+        score = round(answer_score(groups, t["first_query_op"], pairs, attr), 4)
+        new = {"score": score, "end_sent": len(groups) == len(g["ops"]) + 2}
+        new["ops_delivered"] = min(max(0, len(groups) - 1), len(g["ops"]))
+        if any(r.get(k) != v for k, v in new.items()):
+            print(
+                f"{r['sid']}: score {r.get('score')} -> {score}; ops {r.get('ops_delivered')} -> {new['ops_delivered']}"
+            )
+            p.write_text(json.dumps({**r, **new}))
+            n += 1
+    print(f"regraded {n} results")
+    return 0
+
+
 def verify_long(run):
     good = True
     for name, t in LONG.items():
@@ -729,8 +789,6 @@ def episode(run, ep):
         # the episode with a continue message, the same way for every arm, and record how often it happened.
         while upstream_error(st) and retries < UPSTREAM_RETRIES:
             retries += 1
-            turns.append(r["turn_id"])
-            stops.append(st.get("stop_reason"))
             time.sleep(30 * retries)
             r = send(sid, CONTINUE, per)
             st = wait(sid, r["turn_id"], deadline_s=1800 if k == "ctx" else 5400)
@@ -754,23 +812,17 @@ def episode(run, ep):
     out.update({"status": status, "error": err, "budget": budget if arm != "default" else None})
     out["upstream_retries"] = retries
     if k == "ctx":
-        by_turn = {}
-        for e in entries:
-            by_turn.setdefault((e.get("origin") or {}).get("turn_id"), []).append(e)
-
-        def op_turn(op):
-            return turns[op + 1] if op + 1 < len(turns) else None
-
+        groups = by_message(entries, msgs[1:])
         t = g["truth"]
         if t["kind"] == "kv":
-            score = answer_score(by_turn, op_turn, t["first_query_op"], t["gets"], "key")
+            score = answer_score(groups, t["first_query_op"], t["gets"], "key")
         elif t["kind"] == "log":
-            score = answer_score(by_turn, op_turn, t["first_query_op"], t["answers"], "qid")
+            score = answer_score(groups, t["first_query_op"], t["answers"], "qid")
         else:
             window = root / mirror if arm == "clm" else run / "arms" / "window" / f"{sid}.txt"
             score = needle_score(window.read_text(errors="replace"), t["needles"])
-        out.update({"score": round(score, 4), "ops_total": len(g["ops"]), "end_sent": len(turns) == len(msgs)})
-        out["ops_delivered"] = min(max(0, len(turns) - 1), len(g["ops"]))
+        out.update({"score": round(score, 4), "ops_total": len(g["ops"]), "end_sent": len(groups) == len(msgs)})
+        out["ops_delivered"] = min(max(0, len(groups) - 1), len(g["ops"]))
         out["max_turns_hits"] = sum(1 for x in stops if x == "max_turns")
     elif k == "fields":
         final = ""
@@ -825,6 +877,7 @@ def main(argv):
     e.add_argument("episodes")
     e.add_argument("--prior", nargs="*", default=[])
     sub.add_parser("verify-long").add_argument("run")
+    sub.add_parser("regrade").add_argument("run")
     r = sub.add_parser("run")
     r.add_argument("run")
     r.add_argument("episodes")
@@ -835,6 +888,8 @@ def main(argv):
     if a.cmd == "grid":
         print(json.dumps(grid(a.name, a.provider, a.model, a.model2), indent=1))
         return 0
+    if a.cmd == "regrade":
+        return regrade(Path(a.run).resolve())
     if a.cmd == "verify-long":
         return verify_long(Path(a.run).resolve())
     eps = json.loads(Path(a.episodes).read_text())

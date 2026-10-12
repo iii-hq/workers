@@ -116,7 +116,14 @@ def test_graders():
     assert run.score_fields('{"a::x": ["p", "z"]}', truth) == {"score": 0.0, "precision": 0.5, "recall": 0.5}
     assert run.needle_score("[[user]]\nx\n[n1] a.  \n", ["[n1] a.", "[n2] b."]) == 0.5
     entries = [{"message": {"role": "assistant", "content": [{"type": "text", "text": answer("key", "K1", "v1")}]}}]
-    assert run.answer_score({"t1": entries}, lambda op: "t1", 0, [["K1", "v1"]], "key") == 1.0
+    user = lambda text: {"message": {"role": "user", "content": [{"type": "text", "text": text}]}}  # noqa: E731
+    groups = run.by_message([user("task"), user("op 0"), *entries], ["op 0"])
+    assert run.answer_score(groups, 0, [["K1", "v1"]], "key") == 1.0
+    # an answer given after an upstream failure and a continue message still counts for the op it answers
+    nudge = user("The provider/router ended transiently after streaming the previous partial response")
+    seq = [user("task"), user("op 0"), user(run.CONTINUE), nudge, *entries, user("op 1")]
+    resumed = run.by_message(seq, ["op 0", "op 1"])
+    assert len(resumed) == 3 and run.answer_score(resumed, 0, [["K1", "v1"]], "key") == 1.0
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "logs").mkdir()
         Path(d, "logs", "provider-anthropic.log").write_text(
