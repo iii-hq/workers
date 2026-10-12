@@ -107,7 +107,9 @@ result in `$RUN/results`, so the pilot episodes are not paid twice):
 - §7.2, per model: `clm` solves at least as many tasks as `default` minus one (a task is solved when most of its
   seeds pass), with a lower mean peak prompt and a mean cost no higher than `default`.
 - `report.py --check` also fails on a crashed episode with no result since, on a group or long-task model with rows for
-  another arm but none for `clm`, and on a `clm` row whose provider log was not found (its drops are unknown).
+  another arm but none for `clm`, and on a `clm` row whose provider log was not found (its drops are unknown). `run`
+  refuses to rerun a crashed sid, so rerun the episode with a new `tag`: a result with the same arm, task, level, seed
+  and model clears the crash.
 
 ## Live dogfooding (spec §7.3, after both PRs merge)
 

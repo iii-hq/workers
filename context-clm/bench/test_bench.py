@@ -232,14 +232,20 @@ def test_report_check_fails_without_clm_results():
     assert failed([row], ["clm-kv1000-s0-s55"]) == ["no crashed episodes"]
     with tempfile.TemporaryDirectory() as d:
         Path(d, "results").mkdir()
-        Path(d, "results", "clm-kv1000-s1-s55.json").write_text(json.dumps({**row, "sid": "clm-kv1000-s1-s55"}))
+        s1 = {**row, "seed": 1, "sid": "clm-kv1000-s1-s55"}
+        Path(d, "results", "clm-kv1000-s1-s55.json").write_text(json.dumps(s1))
         assert report.main([d, "--check"]) == 0
-        crash = {"episode": {}, "sid": "clm-kv1000-s0-s55", "crash": "RuntimeError('strategy not effective')"}
+        ep = {"arm": "clm", "task": "kv", "level": 1000, "seed": 0, "model": run.S55}
+        crash = {"episode": ep, "sid": "clm-kv1000-s0-s55", "crash": "RuntimeError('strategy not effective')"}
         Path(d, "episodes.out").write_text(json.dumps(crash) + "\n")
-        assert report.main([d, "--check"]) == 1
-        # a crash whose episode was rerun to a result no longer counts
-        Path(d, "results", "clm-kv1000-s0-s55.json").write_text(json.dumps({**row, "sid": "clm-kv1000-s0-s55"}))
+        assert report.main([d, "--check"]) == 1  # seed 1's result is another episode
+        # run.py refuses to rerun the crashed sid (its workspace exists), so the rerun gets a new tag and a new sid
+        rerun = {**row, "sid": "clm-kv1000-s0-s55r2", "tag": "r2"}
+        Path(d, "results", "clm-kv1000-s0-s55r2.json").write_text(json.dumps(rerun))
         assert report.main([d, "--check"]) == 0
+        # a crash line without its episode is never cleared
+        Path(d, "episodes.out").write_text(json.dumps({**crash, "episode": {}}) + "\n")
+        assert report.main([d, "--check"]) == 1
 
 
 def test_missing_tests_needs_an_ok_line():

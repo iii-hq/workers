@@ -3,8 +3,8 @@
   python report.py RUN [RUN ...] [--check]
 
 --check exits 1 when a pass check fails or nothing was graded. A crashed episode (a `crash` line in RUN/episodes.out
-with no result since), a group with rows for another arm but none for clm, and a clm row without a provider log all
-fail it: a missing result never passes as a good one.
+with no result for the same arm, task, level, seed and model since, under any tag), a group with rows for another arm
+but none for clm, and a clm row without a provider log all fail it: a missing result never passes as a good one.
 """
 
 import json
@@ -161,14 +161,21 @@ def checks(rows, crashed=()):
     return out
 
 
+def episode_id(x):
+    """What a rerun keeps: the sid without its tag. run.py refuses to rerun a crashed sid, so a rerun has a new tag."""
+    return (x.get("arm"), x.get("task"), x.get("level") or 0, x.get("seed"), x.get("model"))
+
+
 def crashes(runs, loaded):
-    """Session ids that crashed (RUN/episodes.out `crash` lines, results without a score) and have no result since."""
-    graded = {r.get("sid") for r in loaded if "score" in r}
-    out = {r.get("sid") or "?" for r in loaded if "score" not in r}
+    """Session ids that crashed (RUN/episodes.out `crash` lines, results without a score) with no graded result for
+    the same episode (`episode_id`) since."""
+    graded = {episode_id(r) for r in loaded if "score" in r}
+    out = {r.get("sid") or "?" for r in loaded if "score" not in r and episode_id(r) not in graded}
     for r in runs:
         p = Path(r, "episodes.out")
         lines = p.read_text().splitlines() if p.exists() else []
-        out |= {c.get("sid") or "?" for c in map(json.loads, lines) if "crash" in c and c.get("sid") not in graded}
+        crashed = [c for c in map(json.loads, lines) if "crash" in c]
+        out |= {c.get("sid") or "?" for c in crashed if episode_id(c.get("episode") or {}) not in graded}
     return sorted(out)
 
 
