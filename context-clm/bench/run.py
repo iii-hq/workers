@@ -12,6 +12,7 @@ http-brace|ide-update-op (long coding tasks). A strategy arm opts its session in
 """
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -487,9 +488,9 @@ def cargo_config():
 CARGO_CONFIG = cargo_config()  # as the run started
 
 
-def run_cargo(cmd, cwd, timeout=900):
-    """(returncode, stdout, stderr). A timeout kills the whole process group and returns 124."""
-    env = {k: os.environ[k] for k in GRADE_ENV if k in os.environ} | {"CARGO_TARGET_DIR": str(cwd / "target")}
+def run_cargo(cmd, cwd, target, timeout=900):
+    """(returncode, stdout, stderr), building in `target`. A timeout kills the whole process group and returns 124."""
+    env = {k: os.environ[k] for k in GRADE_ENV if k in os.environ} | {"CARGO_TARGET_DIR": str(target)}
     p = subprocess.Popen(
         cmd, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
     )
@@ -572,13 +573,26 @@ def grade_code(name, root):
     if why := restore_protected(t, root):
         return refuse(why)
     cwd, log, stdout, ok = root / t["cwd"], [], "", True
-    for cmd in t["grade"]:
-        rc, out, err = run_cargo(cmd, cwd)
-        stdout += out
-        log.append(f"$ {' '.join(cmd)} -> rc={rc}{' (timeout)' if rc == 124 else ''}\n{(out + err)[-3000:]}")
-        ok = ok and rc == 0
-        if rc == 124:
-            break
+    # root is <RUN>/workspace/<sid> or <RUN>/verify/<task>. Cargo builds in a dir the episode's Landlock scope cannot
+    # write, never in the <crate>/target the episode built (a binary planted there would run as the graded test).
+    target = root.parents[1] / "grade-target" / name
+    target.mkdir(parents=True, exist_ok=True)
+    with (target / "grade.lock").open("w") as lock:
+        # Grades of a task share the dir, one at a time. Cargo reuses a build whose sources are older than it (an
+        # episode that started earlier has older files), so date this workspace's files now: cargo then rebuilds
+        # its crates and reuses only the registry deps.
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for d, dirs, names in os.walk(root):
+            dirs[:] = [x for x in dirs if x != "target"]
+            for x in names:
+                os.utime(Path(d) / x, follow_symlinks=False)
+        for cmd in t["grade"]:
+            rc, out, err = run_cargo(cmd, cwd, target)
+            stdout += out
+            log.append(f"$ {' '.join(cmd)} -> rc={rc}{' (timeout)' if rc == 124 else ''}\n{(out + err)[-3000:]}")
+            ok = ok and rc == 0
+            if rc == 124:
+                break
     if cargo_config() != CARGO_CONFIG:
         return refuse(f"{CONFIG_CHANGED}, during this grade", log)
     missing = missing_tests(stdout, t["required"])

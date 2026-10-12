@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 import report
 import run
@@ -309,20 +310,16 @@ def test_splice_test_module_restores_the_fix_tests():
 
 def test_run_cargo_timeout_kills_the_group():
     with tempfile.TemporaryDirectory() as d:
-        rc, _, _ = run.run_cargo(["bash", "-c", "sleep 60 & wait"], Path(d), timeout=1)
+        rc, _, _ = run.run_cargo(["bash", "-c", "sleep 60 & wait"], Path(d), Path(d, "t"), timeout=1)
         assert rc == 124
-        rc, out, _ = run.run_cargo(["bash", "-c", "echo $CARGO_TARGET_DIR"], Path(d))
-        assert rc == 0 and out.strip() == f"{d}/target"
 
 
-def test_grader_runs_with_a_minimal_env_and_refuses_a_changed_cargo_config():
+def test_grader_refuses_a_changed_cargo_config():
     saved = {k: os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "CARGO_HOME")}
     baseline, long, restore = run.CARGO_CONFIG, run.LONG, run.restore_protected
     try:
         with tempfile.TemporaryDirectory() as d:
             os.environ["ANTHROPIC_API_KEY"] = "secret"
-            rc, out, _ = run.run_cargo(["bash", "-c", "echo ${ANTHROPIC_API_KEY:-unset} ${HOME:-nohome}"], Path(d))
-            assert rc == 0 and out.split() == ["unset", os.environ["HOME"]]
             os.environ["CARGO_HOME"] = d
             run.CARGO_CONFIG = run.cargo_config()
             Path(d, "config.toml").write_text('[build]\nrustflags = ["--cfg", "graded"]\n')
@@ -334,15 +331,59 @@ def test_grader_runs_with_a_minimal_env_and_refuses_a_changed_cargo_config():
             run.restore_protected = lambda t, root: None
             poison = 'echo "test t ... ok"; echo "[build]" > "$CARGO_HOME/config.toml"'
             run.LONG = {"x": {"cwd": ".", "grade": [["bash", "-c", poison]], "required": ["t"]}}
-            ok, _, log, refused = run.grade_code("x", Path(d))
+            root = Path(d, "workspace", "s")
+            root.mkdir(parents=True)
+            ok, _, log, refused = run.grade_code("x", root)
             assert not ok and "during" in refused and log.endswith(f"not graded: {refused}"), log
             Path(d, "config.toml").unlink()
             run.LONG["x"]["grade"] = [["echo", "test t ... ok"]]
-            assert run.grade_code("x", Path(d))[::3] == (True, None)
+            assert run.grade_code("x", root)[::3] == (True, None)
     finally:
         run.CARGO_CONFIG, run.LONG, run.restore_protected = baseline, long, restore
         for k, v in saved.items():
             os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+
+
+def test_grader_builds_in_its_own_target_dir_with_a_minimal_env():
+    """Cargo gets no API keys and builds in <RUN>/grade-target/<task>, never in the episode's own <crate>/target."""
+    long, restore = run.LONG, run.restore_protected
+    try:
+        run.restore_protected = lambda t, root: None
+        run.LONG = {"x": {"cwd": "c", "grade": [["env"]], "required": []}}
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, ANTHROPIC_API_KEY="secret"):
+            root = Path(d, "workspace", "s")
+            (root / "c").mkdir(parents=True)
+            ok, _, log, refused = run.grade_code("x", root)
+            assert ok and refused is None, log
+            env = dict(line.split("=", 1) for line in log.splitlines()[1:] if "=" in line)
+            assert set(env) <= {*run.GRADE_ENV, "CARGO_TARGET_DIR"}, env
+            assert env["CARGO_TARGET_DIR"] == f"{d}/grade-target/x" and env["HOME"] == os.environ["HOME"], env
+    finally:
+        run.LONG, run.restore_protected = long, restore
+
+
+def test_grades_of_one_task_never_reuse_each_others_build():
+    """Two workspaces share their task's grade target dir. Cargo reuses a build whose sources are older than it, so
+    the workspace graded second (with older files, as an episode that started earlier has) must still be built."""
+    lib = "pub fn v() -> u32 {{ {} }}\n#[test]\nfn t() {{ assert_eq!(v(), 2); }}\n"
+    long, restore = run.LONG, run.restore_protected
+    try:
+        run.restore_protected = lambda t, root: None
+        run.LONG = {"x": {"cwd": "c", "grade": [["cargo", "test", "--offline", "--lib"]], "required": ["t"]}}
+        with tempfile.TemporaryDirectory() as d:
+            for sid, v in (("a", 2), ("b", 1)):
+                Path(d, "workspace", sid, "c", "src").mkdir(parents=True)
+                Path(d, "workspace", sid, "c", "Cargo.toml").write_text(
+                    '[package]\nname = "c"\nversion = "0.1.0"\nedition = "2021"\n'
+                )
+                Path(d, "workspace", sid, "c", "src", "lib.rs").write_text(lib.format(v))
+            for f in Path(d, "workspace", "b").rglob("*"):
+                os.utime(f, (1, 1))
+            assert run.grade_code("x", Path(d, "workspace", "a"))[0]
+            ok, missing, log, _ = run.grade_code("x", Path(d, "workspace", "b"))
+            assert not ok and missing == ["t"], log
+    finally:
+        run.LONG, run.restore_protected = long, restore
 
 
 def test_restore_puts_back_the_toolchain_and_refuses_a_planted_cargo_config():

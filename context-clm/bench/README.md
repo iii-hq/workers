@@ -89,7 +89,12 @@ cd context-clm/bench
 Before cargo runs, the grader puts back from the fix commit everything that steers the graded tests (the spliced
 unit-test modules, the crate's `tests/`, `Cargo.toml`, `Cargo.lock`, `build.rs` and `rust-toolchain.toml`) and deletes
 `.cargo/` dirs, `build.rs` and `rust-toolchain{,.toml}` files the fix commit does not have, so editing them does not
-help. Cargo then runs with a minimal environment (`PATH`, `HOME`, `CARGO_HOME`, `RUSTUP_HOME`, `LANG`, no API keys).
+help. Cargo then runs with a minimal environment (`PATH`, `HOME`, `CARGO_HOME`, `RUSTUP_HOME`, `LANG`, no API keys)
+and builds in `$RUN/grade-target/<task>`, which the episode's execs cannot write (keep `RUN` out of `/tmp`). It never
+uses the `<crate>/target` the episode built, where a planted test binary with future-dated files would run as the
+graded tests. Grades of one task take turns on that dir, and each first dates its workspace's files now: cargo then
+rebuilds the workspace crates (an episode that started earlier has files older than the last grade's build) and
+reuses only the registry deps.
 An episode is not graded when a path the grader writes (or one of its parent dirs) is a symlink, when its snapshot
 held a `.cargo/config` or `config.toml` that the fix commit does not have, or when `~/.cargo/config` or `config.toml`
 differs from the one `run.py` started with, before cargo runs or after it (a parallel episode may change it
