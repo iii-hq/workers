@@ -38,12 +38,13 @@ READOUT = "\n- The [context: ~N/M tokens] readout rises by the size of each {uni
 
 def answer_cmd(files):
     return (
-        "grep -h '^SET K00042 = ' " + files + " | head -1 | "
+        "grep -h '^SET K99999 = ' " + files + " | head -1 | "
         "sed 's/^SET \\([^ ]*\\) = \\(.*\\)$/#### ANSWER key=\\1\\n\\2\\n#### ANSWER DONE/'"
     )
 
 
 def skill(arm, task, mirror, budget):
+    assert arm in ("clm", "sum", "base", "default") and task in ("kv", "log", "needle"), (arm, task)
     summary_mech = SUMMARY_MECH.format(at=0.75 * budget / 1000, budget=budget)
     if task == "kv":
         if arm == "clm":
@@ -52,7 +53,7 @@ def skill(arm, task, mirror, budget):
                 f"block out of your context and onto disk with this one command, then run echo READY_FOR_NEXT_OP:\n"
                 f"{OFFLOAD.format(mirror=mirror, block='SET-BATCH', file='kv.txt')}\n"
                 f"- Each GET: print the ANSWER block with this one command (with the queried key in place of "
-                f"K00042):\n{answer_cmd('offload/kv.txt')}\n"
+                f"K99999):\n{answer_cmd('offload/kv.txt')}\n"
                 "- Check: after an offload the [context: ~N/M tokens] readout should drop by about the size of the "
                 "batch; if it did not, the batch is still in your context."
             )
@@ -63,7 +64,7 @@ def skill(arm, task, mirror, budget):
                 "that file matches the number of SET lines in the block, then run echo READY_FOR_NEXT_OP.\n"
                 "- Write the summary as a pointer, not an inventory: say that every batch so far is stored under "
                 "store/ and how to look a key up.\n- Each GET: print the ANSWER block with this one command (with "
-                f"the queried key in place of K00042):\n{answer_cmd('store/*.txt')}"
+                f"the queried key in place of K99999):\n{answer_cmd('store/*.txt')}"
             )
         else:
             body = (

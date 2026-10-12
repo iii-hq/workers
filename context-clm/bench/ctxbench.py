@@ -23,7 +23,7 @@ LIMIT, RESERVE = 32768, 2048
 # Claude tokens per o200k token, measured with router::count_tokens on each family's ops (Sonnet/Opus 5.5 tokenize
 # identically here). The wall counts Claude tokens, so budget = LIMIT * scale keeps the paper's o200k pressure.
 CLAUDE_PER_O200K = {"kv": 1.85, "log": 1.37, "needle": 1.67}
-OP_CAP, RETAIN_CAP = int(0.9 * (LIMIT - RESERVE) / 5), int(0.9 * (LIMIT - RESERVE) / 2)  # 5,530 and 13,824
+OP_CAP, RETAIN_CAP = int(0.9 * (LIMIT - RESERVE) / 5), int(0.9 * (LIMIT - RESERVE) / 2)  # 5,529 and 13,824
 
 PROTOCOL = (
     "Each operation arrives as a new user message in this conversation. When you have handled an operation, "
@@ -53,8 +53,9 @@ def answer(attr, key, value):
 
 
 def answer_re(attr, key):
-    """Regex for the ANSWER block of one key or qid (graders); group 1 is the answer."""
-    return rf"#### ANSWER {attr}={re.escape(str(key))}\s*\n(.*?)\n\s*#### ANSWER DONE"
+    """Regex for the ANSWER block of one key or qid (graders); group 1 is the answer. The header starts a line and the
+    answer never runs across another `#### ANSWER` line, so an unclosed block cannot swallow the next good one."""
+    return rf"(?ms)^#### ANSWER {attr}={re.escape(str(key))}\s*\n((?:(?!^#### ANSWER).)*?)\n\s*#### ANSWER DONE"
 
 
 def kv(level, seed):
@@ -81,8 +82,8 @@ def kv(level, seed):
     instruction = (
         "TASK: key-value store. First come SET batches, each with 100 lines of the form `SET <key> = <value>`; then "
         "come GET queries. Reply to each `GET <key>` with the value that key was set to, character for character "
-        f"(its #hash suffix included), in this form:\n{answer('key', 'K00042', '<value>')}\n(put the queried key "
-        "where K00042 is). " + GRADED + PROTOCOL
+        f"(its #hash suffix included), in this form:\n{answer('key', 'K99999', '<value>')}\n(put the queried key "
+        "where K99999 is). " + GRADED + PROTOCOL
     )
     truth = {"kind": "kv", "gets": [[k, vals[k]] for k in gets], "first_query_op": len(batches)}
     return {"instruction": instruction, "ops": ops, "truth": truth}
@@ -128,7 +129,7 @@ def log(level, seed):
         truth.append([q, ans])
     instruction = (
         "TASK: log triage. First come batches of service log lines; then come questions about those lines. Reply to "
-        f"each question in exactly this form:\n{answer('qid', 7, '<answer>')}\n(put the question's qid where 7 is; "
+        f"each question in exactly this form:\n{answer('qid', 99, '<answer>')}\n(put the question's qid where 99 is; "
         "a count is a plain integer and a service is just its name). " + GRADED + PROTOCOL
     )
     truth = {"kind": "log", "answers": truth, "first_query_op": len(batches)}

@@ -35,10 +35,37 @@ def test_offload_and_answer_commands_work_on_a_mirror():
         left = mirror.read_text()
         assert "SET K00000" not in left and "[SET-BATCH 0000#" in left and "offloaded to offload/kv.txt" in left
         out = subprocess.run(
-            ["bash", "-c", answer_cmd("offload/kv.txt").replace("K00042", key)], cwd=d, capture_output=True, text=True
+            ["bash", "-c", answer_cmd("offload/kv.txt").replace("K99999", key)], cwd=d, capture_output=True, text=True
         ).stdout
         assert out == answer("key", key, val) + "\n"
         assert re.findall(answer_re("key", key), out, flags=re.S) == [val]
+
+
+def test_answer_re_takes_only_a_whole_block_for_that_key():
+    good = answer("key", "K1", "v1")
+
+    def got(text):
+        return [x.strip() for x in re.findall(answer_re("key", "K1"), text, flags=re.S)]
+
+    assert got(good) == ["v1"]
+    # an unclosed block before a good one does not swallow it
+    assert got("#### ANSWER key=K1\nhalf an answer\n\n" + good) == ["v1"]
+    assert got(answer("key", "K10", "v10")) == [] and got(answer("qid", "K1", "q")) == []
+    assert got("the answer is #### ANSWER key=K1\nv1\n#### ANSWER DONE") == []  # not on a line of its own
+    assert got("#### ANSWER key=K1\nv1\n#### ANSWER key=K2\nv2\n#### ANSWER DONE") == []
+
+
+def test_examples_use_keys_no_task_has():
+    kv, lg = gen("kv", 4000, 0), gen("log", 3200, 0)
+    assert "key=K99999" in kv["instruction"] and "K00042" not in kv["instruction"]
+    assert "qid=99" in lg["instruction"] and max(q for q, _ in lg["truth"]["answers"]) < 99
+    assert "SET K99999 = " in skill("clm", "kv", ".clm/s.ctx", 60621)
+    for bad in (("nope", "kv"), ("clm", "nope")):
+        try:
+            skill(*bad, ".clm/s.ctx", 60621)
+        except AssertionError:
+            continue
+        raise AssertionError(f"skill{bad} accepted")
 
 
 def test_drop_filler_keeps_needles():
