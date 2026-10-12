@@ -151,39 +151,71 @@ pub async fn assemble<D: Delegate>(
             return finish(&deps.delegate, req, st.stopped).await;
         }
     }
-    run_step(
-        &config,
+    let prev_root = st.root.clone();
+    let line = run_step(&config, sid.as_str(), &root, &mut st, &mut req, same_step);
+    let resp = finish(&deps.delegate, req, st.stopped).await;
+    // The model's usable room bounds the next step's limit.
+    if let Ok(resp) = &resp {
+        st.last_usable = resp.usable;
+    }
+    commit(
         &deps.store,
         &sid,
         &root,
+        prev_root.as_deref(),
         &mut st,
-        &mut req,
-        same_step,
+        config.step_log.then_some(line),
     )?;
-    let resp = finish(&deps.delegate, req, st.stopped).await?;
-    // The model's usable room bounds the next step's limit; one extra write,
-    // only when it moves (first step, model change).
-    if resp.usable != st.last_usable {
-        st.last_usable = resp.usable;
-        deps.store
-            .save(&sid, &st)
-            .map_err(|e| state_error(&sid, &e))?;
-    }
-    Ok(resp)
+    resp
 }
 
-/// Spec §5.2 steps 2–8: rewrite `req` into this step's outgoing projection,
-/// write the mirror and persist the session state. `recompute` = the step
-/// already served, assembled again (it is not counted as a new step).
+/// Persist the step, then write its mirror (moved when the root changed) and
+/// its step-log line. The state goes first: a failed save leaves the mirror
+/// the saved state wrote, so the next step cannot read its own render as a
+/// model edit. A failed mirror write never fails the step: the state is saved
+/// again without it, and edits are read again once a write succeeds.
+fn commit(
+    store: &Store,
+    sid: &str,
+    root: &str,
+    prev_root: Option<&str>,
+    st: &mut SessionState,
+    line: Option<Value>,
+) -> Result<(), Error> {
+    let save = |st: &SessionState| store.save(sid, st).map_err(|e| state_error(sid, &e));
+    save(st)?;
+    if let Some(text) = &st.written {
+        if let Err(e) = write_mirror(Path::new(root), sid, text) {
+            tracing::warn!(session_id = sid, error = %e, "context-clm: mirror write failed; edits are read again once a write succeeds");
+            st.written = None;
+            save(st)?;
+        }
+    }
+    if let Some(prev) = prev_root.filter(|p| *p != root) {
+        // A previous root that is gone is fine (remove_mirror skips it).
+        if let Err(e) = remove_mirror(Path::new(prev), sid) {
+            tracing::warn!(session_id = sid, root = %prev, error = %e, "context-clm: could not remove the mirror under the previous root");
+        }
+    }
+    if let Some(line) = line {
+        if let Err(e) = store.append_log(sid, &line) {
+            tracing::warn!(session_id = sid, error = %e, "context-clm: step log append failed");
+        }
+    }
+    Ok(())
+}
+
+/// Spec §5.2 steps 2–8: rewrite `req` into this step's outgoing projection
+/// and the state `commit` persists; returns the step-log line. `recompute` =
+/// the step already served, assembled again (it is not counted as a new step).
 fn run_step(
     config: &ClmConfig,
-    store: &Store,
     sid: &str,
     root: &str,
     st: &mut SessionState,
     req: &mut AssembleRequest,
     recompute: bool,
-) -> Result<(), Error> {
+) -> Value {
     let raw = std::mem::take(&mut req.messages);
     let model = req.model.clone();
     let overhead = req.options.request_overhead_tokens.unwrap_or(0);
@@ -502,27 +534,9 @@ fn run_step(
     }
     st.sent_hashes = out.iter().map(msg_hash).collect();
 
-    // 8. Mirror for the next step (moved when the root changed), then persist.
-    // Mirror I/O failures never fail the step: the projection is kept and
-    // edits are read again once a write succeeds.
-    let rendered = render_mirror(&st.proj);
-    st.written = if Path::new(root).is_dir() {
-        match write_mirror(Path::new(root), sid, &rendered) {
-            Ok(()) => Some(rendered),
-            Err(e) => {
-                tracing::warn!(session_id = sid, error = %e, "context-clm: mirror write failed; edits are read again once a write succeeds");
-                None
-            }
-        }
-    } else {
-        None
-    };
-    if read_root != root {
-        // A previous root that is gone is fine (remove_mirror skips it).
-        if let Err(e) = remove_mirror(Path::new(&read_root), sid) {
-            tracing::warn!(session_id = sid, root = %read_root, error = %e, "context-clm: could not remove the mirror under the previous root");
-        }
-    }
+    // 8. The mirror text for the next step; `commit` writes it after the
+    // state (under this root; the previous root's copy is removed).
+    st.written = Path::new(root).is_dir().then(|| render_mirror(&st.proj));
     st.root = Some(root.to_owned());
     st.last_step = req.options.turn_id.clone().zip(req.options.step);
     st.last_overhead = overhead;
@@ -530,43 +544,37 @@ fn run_step(
         messages: out.clone(),
         system_prompt: sys.clone(),
     });
-    store.save(sid, st).map_err(|e| state_error(sid, &e))?;
-    if config.step_log {
-        let action = match &dec {
-            Decision::Ok(_) => "ok",
-            Decision::Rollback => "rollback",
-            Decision::Final(_) => "final",
-            Decision::Stop => "stop",
-        };
-        let nudge = match &dec {
-            Decision::Ok(Some(Nudge::Tier { tier, .. })) => json!(tier),
-            Decision::Ok(Some(Nudge::Persistent { .. })) => json!("persistent"),
-            _ => Value::Null,
-        };
-        let line = json!({
-            "t": now_ms(),
-            "turn_id": req.options.turn_id,
-            "step": req.options.step,
-            "raw": raw.len(),
-            "proj": st.proj.len(),
-            "tc": tc,
-            "limit": limit,
-            "ratio": st.ratio,
-            "edit": edit,
-            "action": action,
-            "nudge": nudge,
-            "rolled": rolled,
-            "k": k,
-            "stripped": stripped,
-            "rebuilt": rebuilt,
-        });
-        if let Err(e) = store.append_log(sid, &line) {
-            tracing::warn!(session_id = sid, error = %e, "context-clm: step log append failed");
-        }
-    }
+    let action = match &dec {
+        Decision::Ok(_) => "ok",
+        Decision::Rollback => "rollback",
+        Decision::Final(_) => "final",
+        Decision::Stop => "stop",
+    };
+    let nudge = match &dec {
+        Decision::Ok(Some(Nudge::Tier { tier, .. })) => json!(tier),
+        Decision::Ok(Some(Nudge::Persistent { .. })) => json!("persistent"),
+        _ => Value::Null,
+    };
+    let line = json!({
+        "t": now_ms(),
+        "turn_id": req.options.turn_id,
+        "step": req.options.step,
+        "raw": raw.len(),
+        "proj": st.proj.len(),
+        "tc": tc,
+        "limit": limit,
+        "ratio": st.ratio,
+        "edit": edit,
+        "action": action,
+        "nudge": nudge,
+        "rolled": rolled,
+        "k": k,
+        "stripped": stripped,
+        "rebuilt": rebuilt,
+    });
     req.messages = out;
     req.system_prompt = Some(sys);
-    Ok(())
+    line
 }
 
 /// Delegate the outgoing request with compaction and pruning off (CLM owns
@@ -1530,6 +1538,31 @@ mod tests {
             "mirror I/O stops; the projection is kept"
         );
         assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_save_leaves_the_mirror_the_saved_state_wrote() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        let mirror = root.join(mirror_rel(SID));
+        let before = std::fs::read_to_string(&mirror).unwrap();
+
+        let state_dir = dir.path().join("state");
+        let mode = |m| std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(m));
+        mode(0o500).unwrap();
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        let failed = assemble(&d, request(&raw, Some(&root), 2)).await;
+        mode(0o700).unwrap();
+        assert!(failed.is_err(), "{failed:?}");
+        assert_eq!(std::fs::read_to_string(&mirror).unwrap(), before);
+
+        // The retry reads no edit: the mirror still matches the saved state.
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!((st.stats.edits_applied, st.covered), (0, 3));
     }
 
     #[tokio::test]
