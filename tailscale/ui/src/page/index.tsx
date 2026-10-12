@@ -372,18 +372,21 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
       act(async () => {
         const key = `${route.host}:${route.port}${route.path}`
         setStoppingRoute(key)
+        let restoreError: string | null | undefined
         try {
           const own = share && share.https_port === route.port && share.path === route.path
-          await trigger(own ? 'tailscale::share::stop' : 'tailscale::serve::remove', {
+          const result = await trigger<{ restore_error?: string | null }>(own ? 'tailscale::share::stop' : 'tailscale::serve::remove', {
             mode: route.mode,
             https_port: route.port,
             path: route.path,
           })
+          restoreError = result?.restore_error
           if (own) setShare(null)
         } finally {
           setStoppingRoute(null)
         }
-        return route.mode === 'funnel' ? 'Public access removed; the tailnet route stays.' : 'Route stopped.'
+        if (route.mode !== 'funnel') return 'Route stopped.'
+        return restoreError ? `Public access removed; ${restoreError}` : 'Public access removed; the tailnet route stays.'
       }),
     [act, trigger, share],
   )

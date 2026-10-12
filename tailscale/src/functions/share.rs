@@ -18,7 +18,7 @@ pub const SERVE_REMOVE_ID: &str = "tailscale::serve::remove";
 pub const SERVE_RESET_ID: &str = "tailscale::serve::reset";
 
 const SHARE_DESC: &str = "Share the local iii Console. Serve is tailnet-only and the default; Funnel is public and requires allow_funnel in the configuration plus confirm_public in the request.";
-const STOP_DESC: &str = "Stop one Console share by mode, HTTPS port, and path. mode=funnel removes public access and keeps the tailnet-only route; mode=serve removes the route entirely. Other routes are never reset.";
+const STOP_DESC: &str = "Stop one Console share by mode, HTTPS port, and path. mode=funnel removes public access and keeps the tailnet-only route (restore_error says why when it could not); mode=serve removes the route entirely. Other routes are never reset.";
 const SERVE_LIST_DESC: &str =
     "List every Serve and Funnel route on this node with its URL, target, and visibility.";
 const SERVE_ADD_DESC: &str = "Publish any local service, port, or directory on this node over Tailscale Serve (tailnet only) or Funnel (public; needs allow_funnel and confirm_public).";
@@ -209,6 +209,9 @@ pub struct StopOutput {
     pub path: String,
     /// Route that remains on that listener and path after the call, if any.
     pub remaining: Option<Route>,
+    /// mode=funnel only: why the tailnet-only route was not restored after public
+    /// access was removed. Call `tailscale::share` with mode=serve once it is fixed.
+    pub restore_error: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -399,14 +402,15 @@ async fn stop_route(
             .await
         }
     };
+    let mut restore_error = None;
     if input.mode == ShareMode::Funnel {
         off("funnel").await?;
-        let target = match (existing, console) {
-            (Some(route), _) => Some(route.target),
-            // Funnel is already off; a missing ADE must not report that applied change as failed.
-            (None, Some(iii)) => console_url(iii, config).await.ok(),
-            (None, None) => None,
+        let lookup = match (&existing, console) {
+            (None, Some(iii)) => Some(console_url(iii, config).await),
+            _ => None,
         };
+        let target;
+        (target, restore_error) = restore_target(existing, lookup);
         if let Some(target) = target {
             run(
                 config,
@@ -438,7 +442,28 @@ async fn stop_route(
         https_port: input.https_port,
         path,
         remaining,
+        restore_error,
     })
+}
+
+/// The tailnet-only route to restore after Funnel is turned off: the route Serve
+/// listed, else this project's ADE. Funnel is already off at that point, so a
+/// failed ADE lookup is reported beside that applied change, not as a failure.
+fn restore_target(
+    existing: Option<Route>,
+    lookup: Option<Result<String, String>>,
+) -> (Option<String>, Option<String>) {
+    match (existing, lookup) {
+        (Some(route), _) => (Some(route.target), None),
+        (None, Some(Ok(url))) => (Some(url), None),
+        (None, Some(Err(error))) => (
+            None,
+            Some(format!(
+                "the tailnet-only route was not restored: {error}; call tailscale::share with mode=serve once this project's ADE is running"
+            )),
+        ),
+        (None, None) => (None, None),
+    }
 }
 
 async fn serve_list(config: &WorkerConfig, _: EmptyInput) -> Result<RoutesOutput, String> {
@@ -614,6 +639,33 @@ pub fn normalize_routes(config: &Value) -> Vec<Route> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_skipped_tailnet_restore_is_reported_not_hidden() {
+        let route = Route {
+            mode: ShareMode::Funnel,
+            host: "node.ts.net".to_string(),
+            port: 443,
+            path: "/".to_string(),
+            target: "http://127.0.0.1:3213/".to_string(),
+            url: "https://node.ts.net/".to_string(),
+        };
+        // The listed route wins; the ADE is not asked.
+        assert_eq!(
+            restore_target(Some(route), None),
+            (Some("http://127.0.0.1:3213/".to_string()), None)
+        );
+        assert_eq!(
+            restore_target(None, Some(Ok("http://127.0.0.1:3214/".to_string()))),
+            (Some("http://127.0.0.1:3214/".to_string()), None)
+        );
+        let (target, error) = restore_target(None, Some(Err("ADE down".to_string())));
+        assert_eq!(target, None);
+        let error = error.expect("a skipped restore must be reported");
+        assert!(error.contains("not restored") && error.contains("ADE down"));
+        assert!(error.contains("mode=serve"));
+        assert_eq!(restore_target(None, None), (None, None));
+    }
 
     #[test]
     fn funnel_requires_supported_port() {
