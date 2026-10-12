@@ -209,7 +209,7 @@ def test_report_checks():
             "peak_prompt": 9e4,
         },
     ]
-    assert all(ok for _, ok, _ in report.checks(rows)) and len(report.checks(rows)) == 8
+    assert all(ok for _, ok, _ in report.checks(rows)) and len(report.checks(rows)) == 9
     # a refused grade (run.py did not grade the episode) fails the check and has its own column, apart from failures
     refused = {**rows[1], "score": 0.0, "grade_refused": True, "grade_refused_reason": "cargo config changed"}
     # (alone, "clm solves >= default - 1" would pass on 0 >= 1 - 1)
@@ -486,6 +486,18 @@ def test_report_on_another_provider():
     names = {n for n, _, _ in res}
     assert names >= {"long gpt-a: clm solves >= default - 1 task", "long gpt-a: clm peak lower"}
     assert "long gpt-a: clm prompt tokens <= default" in names and "long gpt-a: clm cost <= default" not in names
+    # an upstream failure (expired login, 429) is never a wall: it fails --check whatever the scores say
+    dead = {
+        **row,
+        "status": "failed",
+        "error": {"code": "harness.turn_internal", "message": "401 unauthorized"},
+        "score": 0.0,
+    }
+    assert not dict((n, ok) for n, ok, _ in report.checks([dead, {**base, **dead, "arm": "base"}]))[
+        "no upstream turn failures"
+    ]
+    walled = {**row, "status": "failed", "error": {"code": "harness.context_budget_stop"}}
+    assert dict((n, ok) for n, ok, _ in report.checks([walled, base]))["no upstream turn failures"]
     # no spike baseline is never a free pass: a clm score below base fails, and so does a group without base rows
     worse = {**row, "score": 0.0}
     assert ("regression kv 1000 gpt-a", False, "clm 0.00 vs base 0.50 (no spike baseline)") in report.checks(

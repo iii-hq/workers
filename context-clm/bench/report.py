@@ -10,6 +10,7 @@ providers no thinking-drop count (n/a).
 """
 
 import json
+import re
 import statistics
 import sys
 from collections import defaultdict
@@ -32,6 +33,7 @@ SPIKE_CLM = {
     ("fields", 24, O55): 1.0,
 }
 CODE = ("http-brace", "ide-update-op")
+WALL = re.compile(r"context_budget_stop|context_overflow|max_turns|max_cost|budget")
 REGRESSION = {(t, lv) for t, lv, _ in SPIKE_CLM}  # the §7.1 groups
 
 
@@ -149,6 +151,12 @@ def checks(rows, crashed=()):
     out.append(("no refused grades", not refused, ", ".join(refused[:10]) or "none"))
     clm = [r for r in rows if r["arm"] == "clm"]
     out.append(("clm rows graded", bool(clm), f"{len(clm)} rows"))
+    # a turn may end at the wall (budget stop, overflow, max_turns, cost cap); anything else is an upstream failure
+    # (expired login, rate limit, provider error) that would grade every arm 0 and pass the comparisons vacuously
+    upstream = [r for r in rows if r.get("status") == "failed" and not WALL.search(json.dumps(r.get("error")))]
+    out.append(
+        ("no upstream turn failures", not upstream, ", ".join(r.get("sid", "?") for r in upstream[:5]) or "none")
+    )
     # the spike's groups first, then the regression groups of models the spike never ran (no baseline to fail)
     other = sorted({(r["task"], r["level"], r["model"]) for r in rows if (r["task"], r["level"]) in REGRESSION})
     other = [k for k in other if k not in SPIKE_CLM]
