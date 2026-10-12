@@ -157,7 +157,13 @@ def checks(rows, crashed=()):
         xs = [r["score"] for r in group if r["arm"] == "clm"]
         label, spike = f"regression {task} {level} {name(model)}", SPIKE_CLM.get((task, level, model))
         if xs and spike is None:
-            out.append((label, True, f"clm {statistics.mean(xs):.2f}; no spike baseline"))
+            # no spike baseline (a model the spike never ran): clm must match the unmanaged base arm of the same group
+            got, base = statistics.mean(xs), [r["score"] for r in group if r["arm"] == "base"]
+            if base:
+                b = statistics.mean(base)
+                out.append((label, got >= b - 0.05, f"clm {got:.2f} vs base {b:.2f} (no spike baseline)"))
+            else:
+                out.append((label, False, f"clm {got:.2f}; no spike baseline and no base rows to compare"))
         elif xs:
             got = statistics.mean(xs)
             out.append((label, got >= spike, f"clm {got:.2f} vs spike {spike:.2f}"))
@@ -195,8 +201,23 @@ def checks(rows, crashed=()):
         out.append((f"long {name(model)}: clm solves >= default - 1 task", c >= d - 1, f"clm {c} vs default {d}"))
         cp, dp = avg("clm", "peak_prompt"), avg("default", "peak_prompt")
         out.append((f"long {name(model)}: clm peak lower", cp < dp, f"clm {cp:.0f} vs default {dp:.0f}"))
-        cc, dc = avg("clm", "cost_usd"), avg("default", "cost_usd")
-        out.append((f"long {name(model)}: clm cost <= default", cc <= dc, f"clm ${cc:.2f} vs default ${dc:.2f}"))
+        if all(anthropic(x) for xs in by.values() for x in xs):
+            cc, dc = avg("clm", "cost_usd"), avg("default", "cost_usd")
+            out.append((f"long {name(model)}: clm cost <= default", cc <= dc, f"clm ${cc:.2f} vs default ${dc:.2f}"))
+        else:
+            # no pricing (cost reads 0): compare the prompt tokens the provider billed instead
+            def toks(arm, by=by):
+                return statistics.mean(
+                    (x.get("input") or 0) + (x.get("cache_read") or 0) + (x.get("cache_write") or 0)
+                    for (a, _), xs in by.items()
+                    if a == arm
+                    for x in xs
+                )
+
+            ct, dt = toks("clm"), toks("default")
+            out.append(
+                (f"long {name(model)}: clm prompt tokens <= default", ct <= dt, f"clm {ct:.0f} vs default {dt:.0f}")
+            )
     return out
 
 

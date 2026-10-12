@@ -186,8 +186,10 @@ and writes `provider` into each episode. Without `--model2` the Opus-only groups
   report shows `n/a`, and only Anthropic `clm` rows count toward "zero thinking-drop events".
 - No spike baseline: `SPIKE_CLM` was measured on Claude, so another model's regression groups print
   "no spike baseline" instead of failing. The long-task checks (§7.2) apply to every model.
-- Cost may read 0: a subscription may report `cost_usd` 0, so the harness cap (`max_cost_usd`) may never bind and
-  `max_turns` is what bounds an episode. The estimate says so; `cost $` and `$/success` then mean nothing.
+- No cost cap: the codex catalog has no pricing, and the harness refuses `max_cost_usd` for such a model, so codex
+  episodes run without one and `max_turns` bounds them. `cost $` reads 0; the long-task cost check compares the
+  billed prompt tokens (input + cache) instead, and a regression group without a spike baseline must match its `base`
+  arm (within 0.05).
 - Rate limits: the subscription's limits are shared with your own codex use. Run `--workers 2` or fewer.
 - An expired access token needs a fresh `codex` CLI login (the provider never refreshes it). Log in again before you
   boot the stack.

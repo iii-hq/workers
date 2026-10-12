@@ -110,12 +110,16 @@ start queue "$RUN/bin/queue" --url "$III_URL" --config "$RUN/queue.yaml"; waitfn
 start session-manager "$RUN/bin/session-manager" --url "$III_URL" --config "$RUN/session-manager.yaml"; waitfn session::messages
 start llm-router "$RUN/bin/llm-router" --url "$III_URL"; waitfn router::models::get
 start "provider-$PROVIDER" "$RUN/bin/provider-$PROVIDER" --url "$III_URL"; waitfn "provider::$PROVIDER::stream"
-# Not fatal (as before): the episodes then fail at their first harness::send.
+# Fatal only for an explicit BENCH_MODEL (the dummy-key smoke lists no model and only warns).
 if [ -n "$MODEL" ]; then
   Q=$(jq -nc --arg p "$PROVIDER" --arg m "$MODEL" '{provider: $p, id: $m}')
   for i in $(seq 240); do
     "$III" trigger router::models::get --engine "$III_URL" --json "$Q" 2>/dev/null | jq -e '.model.id' >/dev/null && break
-    [ "$i" = 240 ] && echo "warning: the router has no model $Q after 120 s (a bad key or an expired login lists none)" >&2
+    if [ "$i" = 240 ]; then
+      echo "the router has no model $Q after 120 s (a bad key or an expired login lists none)" >&2
+      # an explicit BENCH_MODEL is what the episodes will use: stop here instead of failing every episode later
+      [ -n "${BENCH_MODEL:-}" ] && { "$(dirname "$0")/down.sh"; exit 1; }
+    fi
     sleep 0.5
   done
 fi

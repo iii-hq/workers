@@ -473,16 +473,25 @@ def test_budget_per_provider():
 def test_report_on_another_provider():
     row = {"arm": "clm", "task": "kv", "level": 1000, "seed": 0, "status": "completed", "llm_calls": 10}
     row.update(model="gpt-a", provider="openai-codex", drops=None, strategy={}, score=1.0, cost_usd=0.0)
-    row.update(peak_prompt=3e4, ops_delivered=34, ops_total=34)
+    row.update(peak_prompt=3e4, ops_delivered=34, ops_total=34, input=100, cache_read=900, cache_write=0)
+    base = {**row, "arm": "base", "score": 0.5}
     long = [
-        {**row, "task": "http-brace", "level": 0, "arm": a, "peak_prompt": p}
-        for a, p in (("clm", 2e4), ("default", 3e4))
+        {**row, "task": "http-brace", "level": 0, "arm": a, "peak_prompt": p, "input": t}
+        for a, p, t in (("clm", 2e4, 1000), ("default", 3e4, 5000))
     ]
-    res = report.checks([row, *long])
+    res = report.checks([row, base, *long])
     assert all(ok for _, ok, _ in res), res
-    assert ("regression kv 1000 gpt-a", True, "clm 1.00; no spike baseline") in res
+    assert ("regression kv 1000 gpt-a", True, "clm 1.00 vs base 0.50 (no spike baseline)") in res
     assert any(n == "zero thinking-drop events on clm" and "n/a" in d for n, _, d in res)
-    assert {n for n, _, _ in res} >= {"long gpt-a: clm solves >= default - 1 task", "long gpt-a: clm peak lower"}
+    names = {n for n, _, _ in res}
+    assert names >= {"long gpt-a: clm solves >= default - 1 task", "long gpt-a: clm peak lower"}
+    assert "long gpt-a: clm prompt tokens <= default" in names and "long gpt-a: clm cost <= default" not in names
+    # no spike baseline is never a free pass: a clm score below base fails, and so does a group without base rows
+    worse = {**row, "score": 0.0}
+    assert ("regression kv 1000 gpt-a", False, "clm 0.00 vs base 0.50 (no spike baseline)") in report.checks(
+        [worse, base]
+    )
+    assert not dict((n, ok) for n, ok, _ in report.checks([row]))["regression kv 1000 gpt-a"]
     lines = report.tables([row, *long])
     assert "\n### ContextBench-style — gpt-a\n" in lines
     assert any(x.startswith("| kv 1000 clm | 1 |") and x.endswith(" | n/a | 1.00 |") for x in lines), lines
@@ -490,6 +499,13 @@ def test_report_on_another_provider():
     # the same row on Anthropic still needs its provider log
     claude = {**row, "model": run.S55, "provider": "anthropic"}
     assert [n for n, ok, _ in report.checks([claude]) if not ok] == ["zero thinking-drop events on clm"]
+
+
+def test_codex_episodes_carry_no_cost_cap():
+    ep = {"arm": "clm", "task": "http-brace", "level": 0, "seed": 0, "model": "gpt-a", "provider": "openai-codex"}
+    assert run.cost_cap(ep) == {}
+    assert run.cost_cap({**ep, "provider": "anthropic"}) == {"max_cost_usd": 10}
+    assert run.cost_cap({k: v for k, v in ep.items() if k != "provider"}) == {"max_cost_usd": 10}
 
 
 def test_run_refuses_the_live_engine():

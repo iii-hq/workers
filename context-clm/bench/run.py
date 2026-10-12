@@ -236,6 +236,12 @@ def cap_of(ep):
     return ep.get("max_cost_usd") or {"ctx": 15, "fields": 5, "code": 10}[kind(ep["task"])]
 
 
+def cost_cap(ep):
+    """The harness spend cap for an episode. The harness refuses max_cost_usd for a model without catalog pricing
+    (every openai-codex model), so only Anthropic episodes carry one; max_turns bounds the rest."""
+    return {"max_cost_usd": cap_of(ep)} if provider_of(ep) == "anthropic" else {}
+
+
 def ep_key(ep):
     return f"{ep['arm']}|{ep['task']}|{ep.get('level', 0)}|{ep['model']}"
 
@@ -332,7 +338,7 @@ def estimate(eps, priors):
     for ep in eps:
         g = groups.setdefault(ep_key(ep), {"n": 0, "cap": 0.0, "prior": priors.get(ep_key(ep))})
         g["n"] += 1
-        g["cap"] += cap_of(ep)
+        g["cap"] += cost_cap(ep).get("max_cost_usd", 0)
     expected = sum(g["n"] * g["prior"] if g["prior"] is not None else g["cap"] for g in groups.values())
     cap = sum(g["cap"] for g in groups.values())
     print("| group | n | prior $/ep | cap $ |\n|---|---|---|---|")
@@ -343,8 +349,8 @@ def estimate(eps, priors):
     print("The sum arm's summariser calls are outside the harness cap (its priors include them).")
     if any(provider_of(ep) != "anthropic" for ep in eps):
         print(
-            "A subscription provider may report cost_usd 0: the harness cap may then never bind, and max_turns is "
-            "what bounds those episodes."
+            "Episodes on a provider without catalog pricing (openai-codex) run with no harness cost cap (the harness "
+            "refuses one); max_turns bounds them, and their cost reads 0."
         )
     return expected, cap
 
@@ -682,7 +688,7 @@ def episode(run, ep):
         "system_prompt": SYSTEM,
         "system_prompt_strategy": "override",
         "thinking_level": ep.get("effort", "medium"),
-        "max_cost_usd": cap_of(ep),
+        **cost_cap(ep),
         "functions": {"allow": allow, "expose": "native"},
     }
     t0 = time.time()
