@@ -107,6 +107,15 @@ impl Store {
                     json!({"sessions":self.sessions.values().filter(|m| &m["metadata"]["parent_session_id"] == parent).cloned().collect::<Vec<_>>()}),
                 )
             }
+            "session::ensure" => {
+                let created = !self.sessions.contains_key(sid);
+                let meta = self
+                    .sessions
+                    .entry(sid.into())
+                    .or_insert_with(|| json!({"session_id":sid,"metadata":data["metadata"]}))
+                    .clone();
+                Ok(json!({"created":created,"meta":meta}))
+            }
             "session::messages" => {
                 Ok(json!({"messages":self.messages.get(sid).cloned().unwrap_or_default()}))
             }
@@ -2351,4 +2360,69 @@ async fn status_reports_a_session_without_its_prompt_body() {
     .unwrap()
     .expect("a report");
     assert_eq!(report.turn_id.as_deref(), Some("t_parent"));
+}
+
+/// Put a context strategy on `id`'s turn record, as a seeding send froze it.
+fn carry_clm(stack: &Stack, id: &str, options: Value) {
+    let mut store = stack.store.lock().unwrap();
+    let mut turn = store.state("harness_turn", id);
+    for (key, value) in options.as_object().unwrap() {
+        turn["options"][key] = value.clone();
+    }
+    turn["options"]["context_strategy"] = json!({"name":"clm","effective":true});
+    store.put("harness_turn", id, turn);
+}
+
+/// A wake reseeds from the prior turn's options; the strategy it carries is
+/// decided again for the new turn, not trusted from the old one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_inject_reseed_settles_the_carried_context_strategy_again() {
+    let stack = Stack::new("completed").await;
+    // No root on the prior turn: effective there, gone by the reseed.
+    carry_clm(&stack, "parent", json!({"functions":{"allow":["*"]}}));
+    let outcome = harness::functions::send::inject(
+        &stack.deps,
+        "parent",
+        harness::types::message::AgentMessage::user_text("wake"),
+        Some("wake-clm"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(!outcome.merged);
+    let turn = turn(&stack, "parent");
+    assert_eq!(turn["turn_id"], outcome.turn_id.as_str());
+    assert_eq!(
+        turn["options"]["context_strategy"],
+        json!({"name":"clm","budget_tokens":null,"effective":false,"skipped_reason":"no filesystem root"})
+    );
+}
+
+/// Spec §4.6: a sub-agent never inherits its parent's context strategy, even
+/// from a parent whose strategy runs and whose root and policy it inherits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_spawned_child_gets_no_context_strategy() {
+    let stack = Stack::new("running").await;
+    carry_clm(
+        &stack,
+        "parent",
+        json!({"functions":{"allow":["*"]},"metadata":{"fs_scope":{"root":"/work"}}}),
+    );
+    let parent: TurnRecord = serde_json::from_value(turn(&stack, "parent")).unwrap();
+    assert!(parent.options.effective_context_strategy().is_some());
+    let child = harness::subagent::spawn_from_turn(
+        &stack.deps,
+        &parent,
+        "call-spawn",
+        &json!({"session_id":"clm-child","task":"look around","model":"fake"}),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("spawn: {error:?}"));
+    let record = turn(&stack, &child.session_id);
+    assert_eq!(record["turn_id"], child.turn_id.as_str());
+    assert_eq!(record["options"]["metadata"]["fs_scope"]["root"], "/work");
+    assert!(
+        record["options"].get("context_strategy").is_none(),
+        "{record}"
+    );
 }
