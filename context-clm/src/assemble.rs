@@ -355,17 +355,35 @@ fn run_step(
     // A projection built from a window the provider saw in another shape (a
     // reset, or a session that opted in mid-way): strip everything after the task.
     let rebuilt = is_new && raw.len() > 1;
-    let fresh = raw[st.covered..].to_vec();
+    let mut fresh = raw[st.covered..].to_vec();
     if !recompute {
         st.stats.steps += 1;
     }
 
-    // Calibrate the ruler against the provider's count of the previous request (§5.6).
-    let usage = fresh
-        .iter()
-        .rev()
-        .filter(|m| m.role == "assistant")
-        .find_map(|m| m.rest.get("usage"));
+    // Model calls since the last request CLM sent: the first assistant turn
+    // past `covered` answers it (none after a stop, whose request was
+    // preview-only). Any later one answers a request CLM did not serve (a
+    // turn on context-manager, a step passed through), so its thinking is
+    // bound to a prefix CLM never sends: strip from there on. A rebuilt
+    // projection is stripped whole below.
+    // NOTE: a CLM request that got no reply (the turn failed) makes the next
+    // foreign reply look like CLM's; only per-entry provenance would tell.
+    let replies: Vec<usize> = (0..fresh.len())
+        .filter(|&i| fresh[i].role == "assistant")
+        .collect();
+    let answered = usize::from(!st.stopped);
+    let mut stripped = 0u64;
+    if let Some(&i) = replies.get(answered) {
+        if config.strip_thinking && !is_new {
+            stripped += strip_all(&mut fresh[i..]);
+        }
+    }
+
+    // Calibrate the ruler against the provider's count of the request CLM
+    // sent (§5.6): only its direct reply, with no other model call after it.
+    let usage = (answered == 1 && replies.len() == 1 && !is_new)
+        .then(|| fresh[replies[0]].rest.get("usage"))
+        .flatten();
     if let (Some(usage), true) = (usage, st.raw_sent > 0) {
         let n = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
         let r = (n("input") + n("cache_read") + n("cache_write")) as f64 / st.raw_sent as f64;
@@ -614,15 +632,8 @@ fn run_step(
         .unwrap_or(st.sent_hashes.len());
     let changed = rebuilt || first_changed < st.sent_hashes.len();
     let k = if rebuilt { 1 } else { first_changed };
-    let mut stripped = 0u64;
     if config.strip_thinking && changed {
-        for m in out.iter_mut().skip(k) {
-            let bare = strip_thinking(m);
-            if bare != *m {
-                *m = bare;
-                stripped += 1;
-            }
-        }
+        stripped += strip_all(out.get_mut(k..).unwrap_or_default());
         // Persist the stripped copies so a later step cannot resurrect them.
         if st.ledger.is_some() {
             st.ledger = Some(out[1].clone());
@@ -730,6 +741,19 @@ async fn forward<D: Delegate>(
         .map_err(|e| Error::Handler(format!("{CONTEXT_ASSEMBLE_ID}: {e}")))?;
     serde_json::from_value(value)
         .map_err(|e| Error::Serde(format!("{CONTEXT_ASSEMBLE_ID} response: {e}")))
+}
+
+/// Strip thinking from every message; returns how many changed.
+fn strip_all(msgs: &mut [Msg]) -> u64 {
+    let mut n = 0;
+    for m in msgs {
+        let bare = strip_thinking(m);
+        if bare != *m {
+            *m = bare;
+            n += 1;
+        }
+    }
+    n
 }
 
 fn prefix_len(st: &SessionState) -> usize {
@@ -1148,6 +1172,69 @@ mod tests {
             (5, 2),
             "a recompute is not a new step"
         );
+    }
+
+    #[tokio::test]
+    async fn calibration_ignores_usage_from_requests_clm_did_not_send() {
+        let (_dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        let raw_sent = d.store.load(SID).unwrap().unwrap().raw_sent;
+        // CLM's turn ends; a turn on context-manager follows, whose request
+        // was three times the one CLM last sent.
+        let mut c2 = call("c2", "cat a.txt");
+        c2["usage"] = json!({ "input": 3 * raw_sent });
+        raw.extend([
+            reply("done"),
+            user("plain turn"),
+            c2,
+            result("c2", "hello"),
+            reply("ok"),
+            user("with clm again"),
+        ]);
+        let mut next = request(&raw, Some(&root), 1);
+        next.options.turn_id = Some("turn-2".into());
+        assemble(&d, next).await.unwrap();
+        assert_eq!(d.store.load(SID).unwrap().unwrap().ratio, 1.0);
+    }
+
+    #[tokio::test]
+    async fn turns_generated_while_on_context_manager_lose_their_thinking() {
+        let (_dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        // CLM's reply ends turn 1; turn 2 runs on context-manager, so its
+        // thinking is signed over a prefix CLM never sends.
+        let mut done = reply("done");
+        done["content"] = json!([
+            { "type": "thinking", "text": "wrap up", "signature": "sig" },
+            { "type": "text", "text": "done" },
+        ]);
+        let mut six = done.clone();
+        six["content"][1]["text"] = json!("six bytes");
+        raw.extend([
+            done,
+            user("plain turn"),
+            call("c2", "wc a.txt"),
+            result("c2", "1 1 6"),
+            six,
+            user("with clm again"),
+        ]);
+        let mut next = request(&raw, Some(&root), 1);
+        next.options.turn_id = Some("turn-2".into());
+        assemble(&d, next).await.unwrap();
+        let sent = messages(&d.delegate.last());
+        assert_eq!(sent.len(), 9, "{sent:#?}");
+        assert!(
+            has_thinking(&sent[1]) && has_thinking(&sent[3]),
+            "{sent:#?}"
+        );
+        assert!(sent[4..].iter().all(|m| !has_thinking(m)), "{sent:#?}");
+        assert_eq!(d.store.load(SID).unwrap().unwrap().stats.stripped, 2);
     }
 
     #[tokio::test]
