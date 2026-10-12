@@ -282,11 +282,14 @@
   font-size: 12px;
 }
 
+/* Why a choice would not be used names its fix: it wraps, never truncates. */
 [data-iii-ui='judge'] .judge-ui-session-option[data-warning] .judge-ui-session-option-description {
   color: var(--color-warn);
+  white-space: normal;
 }
 
 [data-iii-ui='judge'] .judge-ui-session-option-description > svg {
+  display: inline-block;
   margin-right: 4px;
   vertical-align: -4px;
 }
