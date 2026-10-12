@@ -21,8 +21,8 @@ clap = { version = "4", features = ["derive", "env"] }
 cron = "0.12"
 iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui" }
-iii-helpers = "=0.23.0"
-iii-sdk = "=0.23.0"
+iii-helpers = "=0.24.6-rc.4"
+iii-sdk = "=0.24.6-rc.4"
 regex = "1"
 schemars = "0.8"
 serde = { version = "1", features = ["derive"] }
