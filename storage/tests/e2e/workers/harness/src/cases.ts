@@ -2,7 +2,7 @@
 // keys are namespaced under `harness/<case-name>/...` so they don't collide
 // across runs (the schema-reset case best-effort-deletes the namespace at
 // the start of the run).
-import type { ISdk } from 'iii-sdk';
+import type { IIIClient } from 'iii-sdk';
 
 export type Provider = 'local' | 's3' | 'r2';
 
@@ -35,7 +35,7 @@ export interface CaseContext {
   bucket: string;
   /** Which provider this case execution is targeting. */
   provider: Provider;
-  iii: ISdk;
+  iii: IIIClient;
 
   /** Invoke a storage RPC; throws on Err. */
   call: (functionId: string, payload: unknown) => Promise<any>;

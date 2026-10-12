@@ -1,6 +1,6 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { ISdk } from 'iii-sdk';
+import type { IIIClient } from 'iii-sdk';
 import {
   BUCKETS,
   LOCAL_BUCKET,
@@ -32,7 +32,7 @@ interface CaseResult {
 }
 
 export interface RunnerOptions {
-  iii: ISdk;
+  iii: IIIClient;
   reportPath: string;
   providers: Provider[];
   /**
