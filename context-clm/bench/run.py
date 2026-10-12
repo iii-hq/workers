@@ -567,6 +567,7 @@ def grade_code(name, root):
     `refusal` (None when graded) says why the episode was not graded: the user's cargo config differs from the one the
     run started with, before cargo runs or after it (a parallel episode may write it meanwhile), or restore_protected
     refused the snapshot (a graded path linked out of place, or a planted cargo config, which it deleted)."""
+    root = Path(root).absolute()  # cargo resolves a relative CARGO_TARGET_DIR against its own cwd
     if cargo_config() != CARGO_CONFIG:
         return refuse(CONFIG_CHANGED)
     t = LONG[name]
