@@ -63,7 +63,11 @@ export async function expectError(
   try {
     await fn()
   } catch (e: any) {
-    const msg = e?.message ?? String(e)
+    // iii-sdk >= 0.24 prefixes InvocationError messages with the wire code
+    // (`invocation_failed: …`); the cases pin the handler's own text.
+    const raw: string = e?.message ?? String(e)
+    const prefix = typeof e?.code === 'string' ? `${e.code}: ` : ''
+    const msg = prefix && raw.startsWith(prefix) ? raw.slice(prefix.length) : raw
     if (msg !== expected) {
       throw new Error(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(msg)}`)
     }
