@@ -236,7 +236,7 @@ def cap_of(ep):
     return ep.get("max_cost_usd") or {"ctx": 15, "fields": 5, "code": 10}[kind(ep["task"])]
 
 
-UPSTREAM_RETRIES = 4
+UPSTREAM_RETRIES = int(os.environ.get("BENCH_UPSTREAM_RETRIES", "4"))
 CONTINUE = (
     "(The model provider failed while answering the last request; nothing in this conversation caused it. "
     "Continue exactly where you left off.)"
