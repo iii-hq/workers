@@ -642,37 +642,44 @@ fn run_step(
         }
         keep.reverse();
         let kept = keep.len();
+        // The ledger that goes out with the request once `dropped` is gone.
+        let ledger = |ctl: &Ctl, dropped: &[Msg], tokens_after: u64| {
+            let mut ctl = ctl.clone();
+            note_commands(&mut ctl, dropped);
+            let text = ledger_text(&LedgerArgs {
+                retry: ctl.n_retry,
+                max_retry: cfg.max_retry,
+                n_dropped: dropped.len(),
+                n_rolled: ctl.n_rolled + dropped.len(),
+                tokens_after,
+                limit,
+                hint: hint.clone(),
+                cmds: ctl.cmds,
+            });
+            text_msg("user", &text, &model)
+        };
+        // Pop until the request fits the target with its ledger in place,
+        // the ledger's figure at its widest, so the ledger sent never pushes
+        // it back over.
         let mut dropped = Vec::new();
-        while !st.proj.is_empty() && cal(&window(st, &st.proj, &keep)) > target {
+        loop {
+            st.ledger = Some(ledger(&st.ctl, &dropped, u64::MAX));
+            if st.proj.is_empty() || cal(&window(st, &st.proj, &keep)) <= target {
+                break;
+            }
             dropped.extend(pop_step(&mut st.proj));
         }
         st.proj.append(&mut keep);
         st.edit_mark = st.edit_mark.min(st.proj.len());
-        note_commands(&mut st.ctl, &dropped);
-        st.ctl.n_rolled += dropped.len();
-        let args = LedgerArgs {
-            retry: st.ctl.n_retry,
-            max_retry: cfg.max_retry,
-            n_dropped: dropped.len(),
-            n_rolled: st.ctl.n_rolled,
-            tokens_after: 0,
-            limit,
-            hint: hint.clone(),
-            cmds: st.ctl.cmds.clone(),
-        };
-        // The ledger goes out with the request, so the figure it states and
-        // the degrade check below count it: measured with the ledger in
-        // place, once more after the figure's digits changed its length.
-        st.ledger = None;
+        // The figure the ledger states and the degrade check below count the
+        // ledger: measured again after the figure's digits changed its length.
         let mut tokens_after = cal(&window(st, &st.proj, &[]));
         for _ in 0..2 {
-            let text = ledger_text(&LedgerArgs {
-                tokens_after,
-                ..args.clone()
-            });
-            st.ledger = Some(text_msg("user", &text, &model));
+            st.ledger = Some(ledger(&st.ctl, &dropped, tokens_after));
             tokens_after = cal(&window(st, &st.proj, &[]));
         }
+        note_commands(&mut st.ctl, &dropped);
+        st.ctl.n_rolled += dropped.len();
         st.stats.rollbacks += 1;
         rolled = json!({
             "dropped": dropped.len(),
@@ -1819,6 +1826,55 @@ mod tests {
             line["rolled"]["tokens_after"],
             raw_count(&section(st.section_limit), &sent)
         );
+    }
+
+    #[tokio::test]
+    async fn a_rollback_pops_room_for_its_ledger_instead_of_ending_the_run() {
+        let cfg = ClmConfig {
+            reserve_tokens: 0,
+            rollback_margin_tokens: 0,
+            nudge_ratios: vec![],
+            persistent_nudge: PersistentNudge::Off,
+            observation_max_chars: 100_000,
+            ..ClmConfig::default()
+        };
+        let (dir, root, d) = setup(cfg);
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        for i in 1..=4u64 {
+            let id = format!("c{i}");
+            raw.extend([call(&id, "cat part"), result(&id, &"y".repeat(12_000))]);
+            assemble(&d, request(&raw, Some(&root), 1 + i))
+                .await
+                .unwrap();
+        }
+        raw.extend([reply("checkpoint"), user("next")]);
+        // A limit 20 tokens over the task, the c1 and c2 steps and the
+        // unseen message: popping to there leaves no room for the ledger.
+        let st = d.store.load(SID).unwrap().unwrap();
+        let msgs: Vec<Msg> = st
+            .raw0
+            .iter()
+            .chain(&st.proj[..4])
+            .cloned()
+            .chain([serde_json::from_value(user("next")).unwrap()])
+            .collect();
+        let limit = raw_count(&section(st.section_limit), &msgs) + 20;
+        let mut req = request(&raw, Some(&root), 6);
+        req.options.budget_tokens = Some(limit);
+        assemble(&d, req).await.unwrap();
+
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!(st.stats.rollbacks, 1);
+        assert!(!st.ctl.finalized, "the run goes on");
+        let sent = messages(&d.delegate.last());
+        assert_eq!(sent.last().unwrap()["content"][0]["text"], "next");
+        assert!(has_call(&sent[2], "c1") && !sent.iter().any(|m| has_call(m, "c2")));
+        let log =
+            std::fs::read_to_string(dir.path().join(format!("state/log/{}.jsonl", safe_id(SID))))
+                .unwrap();
+        let line: Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        assert!(line["rolled"]["tokens_after"].as_u64().unwrap() <= limit);
     }
 
     #[tokio::test]
