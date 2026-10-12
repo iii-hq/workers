@@ -203,8 +203,14 @@ mod imp {
         let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW;
         match open_at(&dir, GITIGNORE, flags, 0o600) {
             Ok(mut ignore) => {
-                ignore.set_permissions(Permissions::from_mode(0o600))?;
-                ignore.write_all(b"*\n")?;
+                let filled = ignore
+                    .set_permissions(Permissions::from_mode(0o600))
+                    .and_then(|()| ignore.write_all(b"*\n"));
+                if let Err(e) = filled {
+                    // An empty one would never be rewritten: the next write retries.
+                    unlink_at(&dir, GITIGNORE)?;
+                    return Err(e);
+                }
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e),
