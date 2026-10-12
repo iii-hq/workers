@@ -306,9 +306,21 @@ mod imp {
             },
             Err(e) => return Err(e),
         }
-        match new_private_file(&dir.join(GITIGNORE)) {
-            Ok(mut ignore) => ignore.write_all(b"*\n")?,
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        let ignore = dir.join(GITIGNORE);
+        match fs::symlink_metadata(&ignore) {
+            Ok(_) => {}
+            // Written to a temp of this session's own (sessions on one root
+            // hold different locks) and renamed into place: a failed or
+            // interrupted write never leaves an empty one behind.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let tmp = dir.join(format!("{GITIGNORE}.{name}.tmp"));
+                remove_if_exists(&tmp)?;
+                let mut file = new_private_file(&tmp)?;
+                file.write_all(b"*\n")?;
+                file.sync_all()?;
+                drop(file);
+                fs::rename(&tmp, &ignore)?;
+            }
             Err(e) => return Err(e),
         }
         write_private(&dir.join(name), bytes)
