@@ -23,10 +23,11 @@ iii trigger compose::add worker=context-clm
 Compose starts the worker with its `configuration` and `context-manager`
 dependencies. Run it next to `harness` and
 [`session-manager`](https://github.com/iii-hq/workers/tree/main/session-manager).
-A CLM turn needs a filesystem root (`fs_scope.root`) and permission to call
-`shell::exec`, because the model edits the mirror with shell commands.
-Without either, the harness keeps the default strategy for that turn and
-says why under `context_strategy` in `harness::status {"verbose": true}`.
+A CLM turn needs an absolute filesystem root (`fs_scope.root`) and
+permission to call `shell::exec`, because the model edits the mirror with
+shell commands. Without either, the harness keeps the default strategy for
+that turn and says why under `context_strategy` in
+`harness::status {"verbose": true}`.
 
 ## Quickstart
 
@@ -78,7 +79,8 @@ iii trigger context-clm::status --json '{"session_id": "s_123"}'
 ```
 
 `projection_tokens` is the calibrated size of the task, the rollback ledger
-and the projection. `budget_tokens` is the budget the session's last step ran
+and the projection; it leaves out the system prompt, which `peak_tc` counts.
+`budget_tokens` is the budget the session's last step ran
 under (its `context_budget_tokens`, else the worker default, lowered to fit
 the model's usable room), and
 `configured_budget_tokens` is the worker default. `stats` holds the
@@ -88,7 +90,7 @@ stops, the peak calibrated context (`peak_tc`) and stripped thinking blocks
 token. A session the worker has not seen answers `"found": false`.
 
 Opt out by removing `context_strategy` from the session metadata; the next
-turn uses context-manager again:
+`harness::send` uses context-manager again:
 
 ```bash
 META=$(iii trigger session::get --json '{"session_id":"s_123"}' | jq -c '(.meta.metadata // {}) | del(.context_strategy, .context_budget_tokens)')
