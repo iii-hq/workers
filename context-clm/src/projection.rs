@@ -167,8 +167,15 @@ pub fn strip_thinking(m: &Msg) -> Msg {
 /// match an original turn and whose text is unchanged keeps the original
 /// message; anything else becomes a text turn (assistant only where an
 /// assistant turn was, user otherwise). Call/result pairs stay whole and in
-/// order: if either side was edited, dropped or moved, both become text.
+/// order: if either side was edited, dropped or moved, both become text. A
+/// kept pair need not stay adjacent (a turn the model inserted between them
+/// stays there): llm-router's `reorder_displaced_results` moves each result up
+/// to its call before every provider request. CRLF line ends read as LF.
 pub fn parse_mirror(text: &str, proj: &[Msg], model: &ModelRef) -> Vec<Msg> {
+    let text = &text.replace("\r\n", "\n");
+    // Each original as the mirror shows it, rendered once: the number of
+    // headers is bounded only by the mirror's size.
+    let shown: Vec<String> = proj.iter().map(|o| esc(&render_msg(o))).collect();
     // (header start, body start, n, role) for every header line
     let mut heads: Vec<(usize, usize, usize, &str)> = Vec::new();
     let mut pos = 0;
@@ -197,7 +204,7 @@ pub fn parse_mirror(text: &str, proj: &[Msg], model: &ModelRef) -> Vec<Msg> {
         }
         let orig = n.checked_sub(1).and_then(|i| proj.get(i));
         if let Some(o) =
-            orig.filter(|o| !used.contains(&n) && label(o) == role && body == esc(&render_msg(o)))
+            orig.filter(|o| !used.contains(&n) && label(o) == role && body == shown[n - 1])
         {
             used.insert(n);
             out.push(o.clone());
@@ -536,6 +543,47 @@ mod tests {
         let out = parse_mirror(&as_user, &p, &model());
         assert_eq!(out[1].role, "user");
         assert_eq!(text_of(&out[1]), "a\nb\nhuge output");
+    }
+
+    #[test]
+    fn a_crlf_mirror_parses_like_the_lf_one() {
+        let mut thought = call();
+        thought.content.insert(
+            0,
+            serde_json::from_value(
+                json!({"type": "thinking", "text": "plan\nit", "signature": "s"}),
+            )
+            .unwrap(),
+        );
+        let p = vec![thought, result(), note()];
+        let crlf = render_mirror(&p).replace('\n', "\r\n");
+        assert_eq!(parse_mirror(&crlf, &p, &model()), p);
+        let edited = crlf.replace("keep going", "carry on");
+        let out = parse_mirror(&edited, &p, &model());
+        assert_eq!(out[..2], p[..2]);
+        assert_eq!(text_of(&out[2]), "carry on");
+    }
+
+    #[test]
+    fn a_turn_inserted_between_a_call_and_its_result_keeps_the_pair() {
+        // The pair stays structured with the note between them; llm-router's
+        // reorder_displaced_results moves the result up before the provider.
+        let p = proj();
+        let mirror = render_mirror(&p);
+        let turns: Vec<&str> = mirror.split("\n\n").collect();
+        let inserted = [
+            turns[0],
+            "[[CTX_TURN 9 role=user]]\nnote to self",
+            turns[1],
+            turns[2],
+        ];
+        let out = parse_mirror(&inserted.join("\n\n"), &p, &model());
+        assert_eq!(
+            roles(&out),
+            vec!["assistant", "user", "function_result", "user"]
+        );
+        assert_eq!((&out[0], &out[2], &out[3]), (&p[0], &p[1], &p[2]));
+        assert_eq!(text_of(&out[1]), "note to self");
     }
 
     #[test]
