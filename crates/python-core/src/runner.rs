@@ -20,7 +20,7 @@ use wasmtime::{Engine, InstancePre, Linker, ResourceLimiter, Store, Trap};
 use wasmtime_wasi::cli::{IsTerminal, StdinStream, StdoutStream};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::p2::{InputStream, OutputStream, Pollable, StreamResult};
-use wasmtime_wasi::{DirPerms, FilePerms, I32Exit, WasiCtxBuilder};
+use wasmtime_wasi::{FsPerms, I32Exit, WasiCtxBuilder};
 
 use crate::artifact::{self, EPOCH_TICK_MS};
 use crate::config::{MAX_LOG_BYTES, MAX_PAYLOAD_BYTES, MAX_RESULT_BYTES};
@@ -293,7 +293,7 @@ impl AsyncWrite for CappedPipe {
 /// as *absent* rather than truncated: a truncated prefix could still parse
 /// into a plausible-looking envelope.
 ///
-/// `/out` has `DirPerms::MUTATE`, which is all `path_symlink` is gated on
+/// `/out` has `FsPerms::ReadWrite`, which is all `path_symlink` is gated on
 /// (`wasmtime-wasi/src/filesystem.rs`), and cap-primitives rejects only
 /// *rooted* symlink targets — so `os.symlink("../../../../etc/passwd",
 /// "/out/result.json")` is a link the guest can create. `File::open` is the
@@ -789,9 +789,9 @@ impl Runner {
         let mut builder = WasiCtxBuilder::new();
         builder
             .args(&["python", "-I", "-B", "/run/main.py", "/run", "/out"])
-            .preopened_dir(&self.stdlib_root, "/", DirPerms::READ, FilePerms::READ)?
-            .preopened_dir(&p.run_dir, "/run", DirPerms::READ, FilePerms::READ)?
-            .preopened_dir(&p.out_dir, "/out", DirPerms::all(), FilePerms::all())?
+            .preopened_dir(&self.stdlib_root, "/", FsPerms::ReadOnly)?
+            .preopened_dir(&p.run_dir, "/run", FsPerms::ReadOnly)?
+            .preopened_dir(&p.out_dir, "/out", FsPerms::ReadWrite)?
             .stderr(p.stderr.clone());
         match &p.framing {
             // With a bridge, stdout is scanned for request frames and the
@@ -808,7 +808,7 @@ impl Runner {
         // it is the guest's own directory, addressed by absolute path, and the
         // wrapper has no business in it. That keeps `wrapper.py` unchanged.
         if let Some(w) = &p.work_dir {
-            builder.preopened_dir(w, "/work", DirPerms::all(), FilePerms::all())?;
+            builder.preopened_dir(w, "/work", FsPerms::ReadWrite)?;
         }
         let wasi = builder.build_p1();
 
