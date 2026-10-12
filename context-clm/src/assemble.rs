@@ -699,9 +699,9 @@ fn run_step(
     match &dec {
         // Over the configured limit only: the model's room still holds it.
         Decision::Final(text) => st.proj.push(text_msg("user", text, &model)),
-        // The first run of this step already pushed its nudge.
+        // A recompute that ingested nothing new pushed its nudge on the first run.
         Decision::Ok(Some(Nudge::Tier { text, .. } | Nudge::Persistent { text })) => {
-            if !recompute {
+            if !recompute || !fresh.is_empty() {
                 st.proj.push(text_msg("user", text, &model));
             }
         }
@@ -2112,6 +2112,30 @@ mod tests {
             .count();
         assert_eq!(nudges, 1, "{again:#?}");
         assert_eq!(again, messages(&first));
+    }
+
+    #[tokio::test]
+    async fn a_recompute_over_a_grown_window_pushes_the_tier_it_crosses() {
+        let cfg = ClmConfig {
+            nudge_ratios: vec![0.25],
+            persistent_nudge: PersistentNudge::Off,
+            observation_max_chars: 100_000,
+            ..ClmConfig::default()
+        };
+        let (_dir, root, d) = setup(cfg);
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        // Step 2 redelivered with the reply and a ~20k-token result: over a
+        // quarter of the 65536-token budget for the first time.
+        raw.extend([call("c2", "cat big.log"), result("c2", &"y".repeat(80_000))]);
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        let sent = messages(&d.delegate.last());
+        let nudge = sent.last().unwrap()["content"][0]["text"].as_str().unwrap();
+        assert!(nudge.starts_with("[context note]"), "{nudge}");
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!((st.ctl.nudged.clone(), st.stats.steps), (vec![0.25], 2));
     }
 
     #[tokio::test]
